@@ -651,9 +651,9 @@ export class BrowserErasure {
         if (this.isNativeDomBridge(callee.expression)) return true;
 
         return (
-            callee.name.text === "appendChild" &&
+            (callee.name.text === "append" || (callee.name.text === "appendChild" &&
             call.arguments.length === 1 &&
-            this.isNativeDomBridge(argumentAt(call, 0)) &&
+            this.isNativeDomBridge(argumentAt(call, 0)))) &&
             ts.isPropertyAccessExpression(callee.expression) &&
             (callee.expression.name.text === "body" ||
                 callee.expression.name.text === "head") &&

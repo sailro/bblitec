@@ -4613,6 +4613,7 @@ export class UiProjection {
                 }
             }
             if (property === "textContent" || property === "innerText") {
+                this.recordUiStaticReplaceChildren(directElement);
                 let textCpp: string;
                 if (
                     this.uiCreatedElementTag(expression.left.expression) ===
@@ -4666,6 +4667,7 @@ export class UiProjection {
                 return true;
             }
             if (property === "innerHTML") {
+                this.recordUiStaticReplaceChildren(directElement);
                 this.context.emit(
                     `bbl::ui_set_inner_rml(${engine}, ${directElement.cpp}, ` +
                         `${this.compileUiMarkupString(

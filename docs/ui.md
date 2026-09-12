@@ -41,7 +41,7 @@ retain every canvas at its page position, so labels cannot conceal a rendering r
 
 | Area | Supported |
 | --- | --- |
-| Construction | Static-tag createElement, appendChild/append, root attachment, remove |
+| Construction | Static-tag createElement, appendChild, mixed text/element append, root attachment, remove |
 | Content | textContent/innerText, bounded innerHTML, className/id/type, static attributes |
 | Styles/classes | cssText, reached style fields, classList add/remove/forced toggle |
 | Queries | Static class query on a known complete retained subtree; Window document ID lookup returns the first attached match in tree order, or null |
@@ -55,6 +55,10 @@ Boolean `hidden` reads and writes reflect attribute presence; clearing it restor
 display rules. Author CSS can override its default `display:none`, following the
 [HTML hidden contract](https://html.spec.whatwg.org/multipage/interaction.html#the-hidden-attribute).
 The `until-found` state requires find-in-page behavior and is refused.
+
+`append` evaluates arguments before insertion and retains literal text in order beside controls.
+Adjacent text uses one layout run, including anonymous flex items; changing the parent layout
+preserves its controls. Setting `textContent` or `innerHTML` replaces the prior children.
 
 UI receives pointer input before cameras. Consumed events do not move cameras;
 Window keyboard listeners run before default UI actions. `preventDefault`

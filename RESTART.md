@@ -8,10 +8,9 @@ dependencies will not be present in a fresh clone.
 
 ## Read this first
 
-**Work is paused after a green sweep.** The user's latest implementation
-instruction was to stop once the sweep was green. That condition is satisfied.
-Creating this handoff does not authorize automatically restarting implementation.
-Resume the integration when the user asks to continue.
+**Work resumed on 2026-09-12.** The user explicitly asked to continue. The earlier
+stop-after-green checkpoint is historical; continue the generic integration work
+and save completed units as regular commits.
 
 **The external application does not fully compile yet.** Its latest attempt
 stopped during TypeScript-to-C++ generation. Its native build and application
@@ -24,7 +23,7 @@ it does not establish that this external application compiles or runs.
 | Branch | `codex/external-project-support` |
 | Remote | `https://github.com/sailro/bblitec.git` |
 | Branch base used in this session | `3474e835` on `main` |
-| Last executable-code/test commit | `b00cafdc` |
+| Last completed executable-code/test commit | `58bccd0b` (2026-09-12) |
 | Draft PR | [#247 — Extend generic application compilation and retained UI support](https://github.com/sailro/bblitec/pull/247) |
 | External checkout | `C:/Dev/_prototypes/external-native-app` |
 | External source revision | `d7c477a6d5963680c55249dceb93cb6e4ab9ce56` |
@@ -63,8 +62,8 @@ incomplete. Do not merge or mark it ready merely because the sweep passes.
   explicitly requested and authorized. Avoid one giant end-of-task commit.
 - During authorized implementation, status questions are steering, not requests
   to stop. The user previously objected when an intermediate checkpoint was
-  treated as completion. The later explicit stop-after-green instruction now
-  controls: pause until asked to resume.
+  treated as completion. The explicit 2026-09-12 resume supersedes the earlier
+  pause after a green sweep.
 - Give concise progress updates, distinguish assessed/implemented/integrated
   work, and state the exact stage reached. Do not repeatedly seek permission for
   routine fixes already authorized. PR creation and pushing this branch were
@@ -72,9 +71,59 @@ incomplete. Do not merge or mark it ready merely because the sweep passes.
 - Do not infer ongoing automation or credit-reset authorization. No follow-up
   automation is needed to resume this work.
 
-## Verified result at the pause
+## Resume on 2026-09-12
 
-The definitive current results are the `227` logs, not earlier failed runs.
+- `d30af200` restores document ownership when typed DOM handles come out of
+  records, arrays, nullable fields and helper parameters. `documentEngine` in
+  `compiler/window-events.ts` is shared by creation and data-handle recovery.
+  Window DOM belongs to the Window document even with a rendering engine in
+  scope. The 13 focused tests passed with no skips (`focused232.log`). Window
+  and scene ownership run natively; the combined Window/rendering-engine case
+  checks generated ownership expressions.
+- `58bccd0b` supports boolean `hidden` reads/writes through retained attribute
+  presence and the native default stylesheet. Author display overrides remain
+  effective. The `until-found` state refuses. The two new tests and five nearby
+  regressions passed without skips (`hidden233.log`, `focused233.log`). Both
+  completed units are pushed to the existing draft PR.
+- Attempt `compile232` moved past the saved ownership error and stopped on a
+  mixed string/element `append()` call. Generic mixed append support adds retained
+  text runs, shared flex text wrappers, root append handling and replacement of
+  old children by content setters. Its generated C++ fixture checks argument
+  evaluation, including later arguments reassigning the receiver and earlier
+  element bindings; ten focused tests passed before that final review fix.
+- `full237` passed all 2,562 tests with zero failures/skips. This predates the
+  final argument snapshot fix. `focused238` ran 652 checks afterward: the native
+  regression passed; one existing assertion expected the original variable name
+  instead of the captured handle. That assertion now follows the captured value.
+  `focused239` checks the corrected assertion and the native append fixture.
+- `compile237` (exit 1) advanced to a two-callback `Promise.then` at
+  `src/ui/crash-reporter.ts:612:10`: "This promise reaction requires one callback."
+  Neither C++ generation nor the full application's native build has completed.
+  The reached code also writes a button's `disabled` property, which still needs
+  retained boolean-attribute support; the `hidden` unit supplies a reusable PAL.
+- Open GitHub issues were checked on 2026-09-12: none. Neither completed DOM
+  unit closes a listed TODO item. The broader UI and worker gaps remain open.
+- A separate neutral probe found that creating a realm rendering engine without
+  starting it can omit `pal_async_engine.hpp` from generated includes. Creation
+  needs a native canvas argument and an async function in a Window realm. This
+  include gap was not changed or established as the external app's next blocker.
+
+The resumed environment uses a workspace-write sandbox. Git metadata writes and
+network access may need escalation; the requested unit commits/pushes remain
+authorized. Read-only Git commands under the sandbox require
+`git -c safe.directory=C:/Dev/babylonlite ...` because the sandbox account differs
+from the checkout owner. Do not change global Git trust settings. For helper
+scripts that spawn Git, use the process-local `GIT_CONFIG_COUNT=1`,
+`GIT_CONFIG_KEY_0=safe.directory`, `GIT_CONFIG_VALUE_0=C:/Dev/babylonlite`.
+The sandbox cannot use the user-installed npm launcher: invoke
+`node tools/build-if-stale.mjs`, then the relevant `dist` entry point directly.
+Native fixture compilers work. The full test suite was launched with escalation
+to use the normal user's installed tools. Keep the CMake fallback below.
+
+## Verified result at the earlier pause
+
+The definitive results at the earlier pause are the `227` logs. They precede the
+resumed code changes and do not validate the current working tree.
 
 | Check | Result | Local evidence |
 | --- | --- | --- |

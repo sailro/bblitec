@@ -7,6 +7,7 @@ import { argumentAt } from "./syntax.js";
 import type { Value } from "./types.js";
 import { UiProjection } from "./ui-projection.js";
 import { requireWindowHost, windowErrorEventValue } from "./window-events.js";
+import { browserGlobalNamed } from "./browser-erasure.js";
 
 
 
@@ -97,6 +98,7 @@ interface PlatformCallContext extends CharacterIntrinsicContext, Pick<LoweringSe
     "lookupOptional" |
     "objectProperty" |
     "options" |
+    "pinValueToTemporary" |
     "reachFeature" |
     "reachJsData" |
     "registerAsset" |
@@ -732,7 +734,14 @@ export class PlatformCalls {
             (callee.name.text === "add" ||
                 callee.name.text === "remove" ||
                 callee.name.text === "toggle");
-        const element = classListMutation
+        const rootAppend = (callee.name.text === "append" || callee.name.text === "appendChild") &&
+            ts.isPropertyAccessExpression(callee.expression) &&
+            (callee.expression.name.text === "body" || callee.expression.name.text === "head") &&
+            browserGlobalNamed(this.context, callee.expression.expression)?.text === "document";
+        if (rootAppend && callee.name.text === "append" && call.arguments.length === 0) return {kind:"void", cpp:""};
+        const element: Value | undefined = rootAppend
+            ? {kind:"ui-element", cpp:"{}", uiRoot:true, engineCpp:this.ui.documentEngine(call)}
+            : classListMutation
             ? undefined
             : this.ui.uiElementValue(callee.expression);
         if (element?.uiTag === "image-bitmap" &&
@@ -1121,24 +1130,37 @@ export class PlatformCalls {
             };
         }
         if (element && callee.name.text === "append") {
+            // Even named handles need a snapshot: later arguments may rebind
+            // the receiver or an earlier argument before insertion begins.
+            const snapshot = (value: Value, label: string, node: ts.Expression): Value => {
+                const {nativeBinding, ...expression} = value;
+                return this.context.pinValueToTemporary(expression, label, node);
+            };
+            const receiver = element.uiRoot ? element : snapshot(element, "append_receiver", callee.expression);
             const children = call.arguments.map((argument) => {
                 const child = this.context.compileValue(argument);
-                this.context.expectKind(child, "ui-element", argument);
-                return child;
+                if (child.kind !== "string") this.context.expectKind(child, "ui-element", argument);
+                return snapshot(child, "append_argument", argument);
             });
             if (children.length === 0) {
                 return { kind: "void", cpp: "" };
             }
-            const engine = this.context.requireEngine(element.uiRoot ? children[0]! : element, call);
-            const appends = children.map((child) => {
-                if (element.uiRoot) {
-                    this.context.expectSameEngine(children[0]!, child, call);
+            const engine = receiver.uiRoot ? this.ui.documentEngine(call) : this.context.requireEngine(receiver, call);
+            const appends = children.map((value) => {
+                const child: Value = value.kind === "string" ? {
+                    kind:"ui-element", cpp:"", engineCpp:engine,
+                    uiTag:"#text", uiStaticId:this.ui.createUiStaticElement("#text"),
+                } : value;
+                if (receiver.uiRoot) {
+                    this.context.expectSameEngine({kind:"engine", cpp:engine, engineCpp:engine}, child, call);
                     this.ui.recordUiStaticRootAppend(child);
+                    if (value.kind === "string") return `bbl::ui_append_text(${engine}, {}, ${value.cpp})`;
                     return `bbl::ui_append_to_root(${engine}, ${child.cpp})`;
                 }
-                this.context.expectSameEngine(element, child, call);
-                this.ui.recordUiStaticAppend(element, child);
-                return `bbl::ui_append_child(${engine}, ${element.cpp}, ${child.cpp})`;
+                this.context.expectSameEngine(receiver, child, call);
+                this.ui.recordUiStaticAppend(receiver, child);
+                if (value.kind === "string") return `bbl::ui_append_text(${engine}, ${receiver.cpp}, ${value.cpp})`;
+                return `bbl::ui_append_child(${engine}, ${receiver.cpp}, ${child.cpp})`;
             });
             return { kind: "void", cpp: appends.join(", ") };
         }
@@ -1251,24 +1273,6 @@ export class PlatformCalls {
                         : mutation,
                 };
             }
-        }
-        if (callee.name.text === "appendChild" &&
-            ts.isPropertyAccessExpression(callee.expression) &&
-            (callee.expression.name.text === "body" ||
-                callee.expression.name.text === "head") &&
-            ts.isIdentifier(callee.expression.expression) &&
-            callee.expression.expression.text === "document" &&
-            this.context.isDefaultLibraryIdentifier(callee.expression.expression)) {
-            this.context.expectArgumentCount(call, 1, 1);
-            const child = this.context.compileValue(argumentAt(call, 0));
-            this.context.expectKind(child, "ui-element", argumentAt(call, 0));
-            const engine = this.context.requireEngine(child, call);
-            this.ui.recordUiStaticRootAppend(child);
-            return {
-                ...child,
-                cpp: `bbl::ui_append_to_root(${engine}, ${child.cpp})`,
-                engineCpp: engine,
-            };
         }
         return undefined;
     }

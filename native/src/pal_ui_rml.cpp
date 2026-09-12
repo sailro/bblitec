@@ -211,6 +211,32 @@ UiElementHandle ui_create_element(Engine& engine, std::string_view tag) {
     return handle;
 }
 
+UiElementHandle ui_create_text_node(Engine& engine, std::string text) {
+    const auto handle = ui_create_element(engine, "#text");
+    ui_set_text(engine, handle, std::move(text));
+    return handle;
+}
+
+void ui_append_text(Engine& engine, UiElementHandle parent, std::string text) {
+    const bool root = parent.value == invalid_handle;
+    if (!root) {
+        const auto& record = ui_element(engine, parent);
+        if (record.children.empty() && record.inner_rml.empty()) {
+            ui_set_text(engine, parent, record.text + text);
+            return;
+        }
+    }
+    const auto& children = root ? engine.ui_root_children : ui_element(engine, parent).children;
+    if (!children.empty() && ui_element(engine, children.back()).tag == "#text") {
+        const auto last = children.back();
+        ui_set_text(engine, last, ui_element(engine, last).text + text);
+        return;
+    }
+    const auto child = ui_create_text_node(engine, std::move(text));
+    if (root) ui_append_to_root(engine, child);
+    else ui_append_child(engine, parent, child);
+}
+
 js::Nullable<UiElementHandle> ui_find_element_by_id(Engine& engine, std::string_view id) {
     if (id.empty()) return std::nullopt;
     const auto visit = [&](auto&& self, UiElementHandle handle) -> js::Nullable<UiElementHandle> {
@@ -259,7 +285,8 @@ void ui_set_text(
     UiElementHandle element,
     std::string text) {
     UiElementRecord& record = ui_element(engine, element);
-    if (record.text == text && record.inner_rml.empty()) return;
+    if (record.text == text && record.inner_rml.empty() && record.children.empty()) return;
+    if (!record.children.empty()) ui_replace_children(engine, element);
     record.text = std::move(text);
     record.inner_rml.clear();
     mark_ui_changed(engine, record);
@@ -270,7 +297,8 @@ void ui_set_inner_rml(
     UiElementHandle element,
     std::string markup) {
     UiElementRecord& record = ui_element(engine, element);
-    if (record.inner_rml == markup && record.text.empty()) return;
+    if (record.inner_rml == markup && record.text.empty() && record.children.empty()) return;
+    if (!record.children.empty()) ui_replace_children(engine, element);
     record.inner_rml = std::move(markup);
     record.text.clear();
     mark_ui_changed(engine, record);
@@ -3716,23 +3744,35 @@ struct UiRmlRuntime {
         return display == "flex" || display == "inline-flex";
     }
 
-    void append_text_content(
-        Rml::Element& parent,
+    Rml::ElementPtr create_text_content(
         const std::string& text,
         bool wrapped) {
         const bool normalize = ui_text_needs_emoji_normalization(text);
         if (!wrapped && !normalize) {
-            parent.AppendChild(document->CreateTextNode(text));
-            return;
+            return document->CreateTextNode(text);
         }
 
         Rml::ElementPtr wrapper = document->CreateElement("span");
+        if (wrapped && text.find_first_not_of(" \t\r\n\f") == std::string::npos) {
+            wrapper->SetProperty("display", "none");
+        }
         if (!normalize) {
             wrapper->AppendChild(document->CreateTextNode(text));
         } else {
             wrapper->SetInnerRML(ui_normalize_emoji_presentation(ui_escape_rml(text)));
         }
-        parent.AppendChild(std::move(wrapper));
+        return wrapper;
+    }
+
+    void append_text_content(Rml::Element& parent, const std::string& text, bool wrapped) {
+        parent.AppendChild(create_text_content(text, wrapped));
+    }
+
+    bool text_node_wrapped(const UiElementRecord& record) const {
+        if (record.parent.value == invalid_handle) return false;
+        std::string display;
+        resolved_style_attribute(record.parent, ui_element(engine, record.parent), &display);
+        return text_needs_flex_wrapper(display);
     }
 
     void append_crosshair(
@@ -3941,6 +3981,14 @@ struct UiRmlRuntime {
         invalidate_gradient_text();
         ensure_projection_size();
         const UiElementRecord& record = ui_element(engine, handle);
+        if (record.tag == "#text") {
+            ProjectedUiElement& projected = handle_at(projected_elements, handle);
+            projected = {};
+            projected.text_wrapped = text_node_wrapped(record);
+            projected.element = parent.AppendChild(create_text_content(record.text, projected.text_wrapped));
+            projected.text = record.text;
+            return;
+        }
         Rml::ElementPtr element = document->CreateElement(record.tag);
         if (!element) {
             throw std::runtime_error(
@@ -4111,6 +4159,18 @@ struct UiRmlRuntime {
         ProjectedUiElement& projected = handle_at(projected_elements, handle);
         UiElementRecord& record = ui_element(engine, handle);
         Rml::Element& raw = *projected.element;
+        if (record.tag == "#text") {
+            const bool wrapped = text_node_wrapped(record);
+            if (projected.text != record.text || projected.text_wrapped != wrapped) {
+                auto* parent = raw.GetParentNode();
+                if (!parent) throw std::runtime_error("Native UI text node lost its parent.");
+                projected.element = parent->InsertBefore(create_text_content(record.text, wrapped), &raw);
+                parent->RemoveChild(&raw);
+                projected.text = record.text;
+                projected.text_wrapped = wrapped;
+            }
+            return;
+        }
         const auto attribute_changed = [&](std::string_view name) {
             const auto old_value = projected.attributes.find(std::string(name));
             const auto new_value = record.attributes.find(std::string(name));
@@ -4221,11 +4281,6 @@ struct UiRmlRuntime {
             }
             projected.resolved_style = resolved_style;
         }
-        sync_grid_children_container(
-            projected,
-            raw,
-            record,
-            grid_children_style);
         projected.intrinsic_min_width = intrinsic_min_width;
         projected.attributes = record.attributes;
 
@@ -4260,19 +4315,12 @@ struct UiRmlRuntime {
             projected.inner_rml != record.inner_rml ||
             projected.text_wrapped != text_wrapped ||
             crosshair_changed) {
-            // The lowered surface currently models either text or element
-            // children, matching every reached scene. Keep the owning element
-            // stable while replacing only its text node so hover, active, and
-            // pointer-capture state survive per-frame HUD updates.
-            if (
-                !record.children.empty() &&
-                (!record.text.empty() || !record.inner_rml.empty())) {
-                throw std::runtime_error(
-                    "Mixed text and element children are not implemented in native UI: <" +
-                    record.tag + "> text='" + record.text + "' inner_rml='" +
-                    record.inner_rml + "' children=" +
-                    std::to_string(record.children.size()) + ".");
-            }
+            // Updating the text prefix or its anonymous flex wrapper must not
+            // recreate retained controls appended after it.
+            auto children = detach_authored_children(projected.children_container
+                ? *projected.children_container : raw, record);
+            projected.children_container = nullptr;
+            projected.grid_children_style.clear();
             clear_markup_descendants(handle);
             while (raw.GetNumChildren() > 0) {
                 projected.inset_outline_element = nullptr;
@@ -4303,9 +4351,11 @@ struct UiRmlRuntime {
             projected.text = record.text;
             projected.inner_rml = record.inner_rml;
             projected.text_wrapped = text_wrapped;
+            for (auto& child : children) raw.AppendChild(std::move(child));
         }
         projected.crosshair_color = crosshair_color;
 
+        sync_grid_children_container(projected, raw, record, grid_children_style);
         attach_listeners(projected, handle);
         Rml::Element& children_parent = projected.children_container
             ? *projected.children_container

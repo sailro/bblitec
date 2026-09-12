@@ -8638,8 +8638,11 @@ test("carries document.body through an inlined retained UI mount helper", () => 
         void main();
     `);
 
-    assert.match(result.cpp, /ui_append_to_root\([^,]+, v_[^)]+panel\)/);
-    assert.match(result.cpp, /ui_append_to_root\([^,]+, v_[^)]+footer\)/);
+    for (const element of ["panel", "footer"]) {
+        const argument = result.cpp.match(new RegExp(`const auto (\\w+) = v_\\w+${element};`))?.[1];
+        assert.ok(argument, "the mount argument is captured before insertion");
+        assert.match(result.cpp, new RegExp(`ui_append_to_root\\([^,]+, ${argument}\\)`));
+    }
 });
 
 test("carries document.body through a retained UI class constructor", () => {
