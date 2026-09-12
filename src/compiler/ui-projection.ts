@@ -145,6 +145,14 @@ export class UiProjection {
         return documentEngine(this.context, node) ?? this.context.requireDefaultEngine(node);
     }
 
+    public booleanAttribute(element: Value, property: string, site: ts.Node): string | undefined {
+        if (property !== "hidden" && property !== "disabled") return undefined;
+        if (property === "disabled" && element.uiTag && !["button", "input", "textarea"].includes(element.uiTag)) {
+            this.context.fail(site, "UI disabled requires a supported form control.");
+        }
+        return property;
+    }
+
 
     public uiElementValue(expression: ts.Expression): Value | undefined {
         const owner = this.context.unwrap(expression);
@@ -4496,8 +4504,9 @@ export class UiProjection {
         const directElement = this.uiElementValue(expression.left.expression);
         if (directElement) {
             const engine = this.context.requireEngine(directElement, expression.left);
-            if (property === "hidden") {
-                this.context.emit(`bbl::ui_set_boolean_attribute(${engine}, ${directElement.cpp}, "hidden", ${this.context.compileBoolean(expression.right)});`);
+            const booleanAttribute = this.booleanAttribute(directElement, property, expression.left);
+            if (booleanAttribute) {
+                this.context.emit(`bbl::ui_set_boolean_attribute(${engine}, ${directElement.cpp}, ${this.context.cppString(booleanAttribute)}, ${this.context.compileBoolean(expression.right)});`);
                 return true;
             }
             if (property === "value" && (directElement.uiTag === "textarea" || directElement.uiTag === "input") && !directElement.uiFileInput) {

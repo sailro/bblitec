@@ -10,6 +10,7 @@
 #include <RmlUi/Core/Event.h>
 #include <RmlUi/Core/EventListener.h>
 #include <RmlUi/Core/ElementText.h>
+#include <RmlUi/Core/ElementInstancer.h>
 #include <RmlUi/Core/Elements/ElementFormControl.h>
 #include <RmlUi/Core/Factory.h>
 #include <RmlUi/Core/FileInterface.h>
@@ -845,6 +846,9 @@ void ui_on_click(
 }
 
 void ui_click(Engine& engine, UiElementHandle element) {
+    const auto& record = ui_element(engine, element);
+    if ((record.tag == "button" || record.tag == "input" || record.tag == "textarea") &&
+        record.attributes.contains("disabled")) return;
     // Copy first, matching event dispatch: a callback may mutate the retained
     // element or register another callback without invalidating this event.
     const auto callbacks = ui_element(engine, element).click_callbacks;
@@ -3203,6 +3207,7 @@ struct UiRmlRuntime {
                 throw std::runtime_error("RmlUi initialization failed.");
             }
             initialized = true;
+            Rml::Factory::RegisterElementInstancer("button", &button_instancer);
             scrollbar_properties = register_ui_scrollbar_properties();
             Rml::Factory::RegisterDecoratorInstancer("bbl-native-range", &range_decorator);
 #if defined(_WIN32)
@@ -5139,6 +5144,7 @@ struct UiRmlRuntime {
     UiSystemInterface system_interface;
     UiRenderRecorder render_interface;
     UiRangeDecoratorInstancer range_decorator;
+    Rml::ElementInstancerGeneric<UiButtonElement> button_instancer;
     Rml::Context* context = nullptr;
     Rml::ElementDocument* document = nullptr;
     std::vector<std::unique_ptr<UiEventListener>> listeners;

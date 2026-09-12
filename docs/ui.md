@@ -56,6 +56,10 @@ display rules. Author CSS can override its default `display:none`, following the
 [HTML hidden contract](https://html.spec.whatwg.org/multipage/interaction.html#the-hidden-attribute).
 The `until-found` state requires find-in-page behavior and is refused.
 
+Boolean `disabled` reflects attribute presence on buttons, inputs and textareas.
+Disabled controls cannot focus or activate through pointer input or `click()`;
+re-enabling a control preserves its identity and listeners.
+
 `append` evaluates arguments before insertion and retains literal text in order beside controls.
 Adjacent text uses one layout run, including anonymous flex items; changing the parent layout
 preserves its controls. Setting `textContent` or `innerHTML` replaces the prior children.
