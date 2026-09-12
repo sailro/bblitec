@@ -44,8 +44,8 @@ it does not establish that this external application compiles or runs.
 | External generated output | `generated/external-app` (ignored; not a successful complete generation) |
 | Session diagnostics | `artifacts/external-integration` (ignored) |
 
-Latest complete-entry diagnostic: `compile532` passed direct context construction
-and stopped at capability detection for `createMediaStreamDestination`.
+Latest complete-entry diagnostic: `compile535` passed the recording capability guard
+and stopped at an await inside an async IIFE loading audio buffers with Promise.all.
 Generation, native build and application runtime remain incomplete.
 
 Current assessment artifacts: `requirements356.json` inventories the unchanged
@@ -1207,6 +1207,23 @@ an invalid top-level await and then exposed the AudioEngine promise result gap;
 do not present them as native AudioContext failures. `population527` is green for
 all 288 scenes (286 regenerated, two current); it validates the callback savepoint
 before the audio unit. The application still has never completed generation/build/runtime.
+
+Recording capability guards: optional stream factories and media-element audio
+sources now report absence on native contexts/prototype aliases, with the same
+table preserving named refusals for unguarded calls. MediaRecorder reports absence
+through bare/window/globalThis typeof; the default-library check preserves lexical
+shadows. This selects authored unavailable-recording fallbacks, not recording
+support. `audio534` passes the native receiver-evaluation guard check. The new
+static `typeof535.json` inventory records 217 groups/456 checks in external source,
+including scalar checks and unused bodies; it is not a support denominator.
+
+The next async-loading batch must cover async IIFEs/arrow callbacks, Promise.all
+with owned ordered results, and destructuring assignments into existing variables
+and record fields (matching the member-target TODO). AsyncLowerer currently only
+starts activations for named async function declarations; Promise.all falls through
+to the synchronous immediate-promise path. Do not let that path silently unwrap
+unsettled asynchronous results. Full application generation/build/runtime remain
+unpassed. No current tool processes need to survive a restart.
 
 ## Artifact guide and pitfalls
 

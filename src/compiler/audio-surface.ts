@@ -101,6 +101,15 @@ const NODE_FACTORIES: Readonly<
     },
 };
 
+/** Optional host capabilities absent from the native audio platform. Keep
+ * their feature-detection answer and unguarded-call diagnostic together. */
+const UNAVAILABLE_CONTEXT_METHODS: Readonly<Record<string, string>> = {
+    setSinkId: "native output-device selection is unavailable",
+    createMediaStreamDestination: "native recording streams are unavailable",
+    createMediaStreamSource: "native recording streams are unavailable",
+    createMediaElementSource: "an HTMLAudioElement has no native audio producer",
+};
+
 /**
  * Browser applications sometimes feature-detect an AudioContext factory
  * before calling it. A factory this native surface implements is present by
@@ -116,20 +125,21 @@ export function audioTypeof(
     if (!ts.isPropertyAccessExpression(property)) return undefined;
     const receiver = resolveAudioReceiver(context, property.expression);
     if (receiver?.kind !== "audio-context") return undefined;
-    const result = property.name.text === "setSinkId" ? "undefined" :
+    const result = UNAVAILABLE_CONTEXT_METHODS[property.name.text] ? "undefined" :
         NODE_FACTORIES[property.name.text] || ["resume", "suspend", "close"].includes(property.name.text) ? "function" : undefined;
     if (result && receiver.cpp) context.emit(`static_cast<void>(${receiver.cpp});`);
     return result;
 }
 
-/** The native output device currently has no optional sink-selection API. */
+/** Prototype aliases preserve the same absent optional host capabilities. */
 export function audioPrototypeValue(
     context: Pick<LoweringServices, "isDefaultLibraryIdentifier">,
     expression: ts.PropertyAccessExpression,
 ): Value | undefined {
     if (expression.name.text !== "prototype" || !ts.isIdentifier(expression.expression) ||
         expression.expression.text !== "AudioContext" || !context.isDefaultLibraryIdentifier(expression.expression)) return undefined;
-    return {kind:"record", cpp:"", recordProperties:{setSinkId:{kind:"json-null", cpp:"std::nullopt"}}};
+    return {kind:"record", cpp:"", recordProperties:Object.fromEntries(
+        Object.keys(UNAVAILABLE_CONTEXT_METHODS).map(name => [name, {kind:"json-null" as const, cpp:"std::nullopt"}]))};
 }
 
 export function compileAudioConstructor(
@@ -164,10 +174,7 @@ const REFUSED_METHODS: Readonly<Record<string, string>> = {
     createConvolver: "the convolver is not lowered",
     createDynamicsCompressor: "the compressor is not lowered",
     createWaveShaper: "the wave shaper is not lowered",
-    createMediaStreamSource: "a MediaStream has no native equivalent here",
-    createMediaElementSource:
-        "an HTMLAudioElement has no native equivalent here",
-    setSinkId: "native output-device selection is unavailable; feature detection reports an absent method",
+    ...UNAVAILABLE_CONTEXT_METHODS,
     setValueCurveAtTime:
         "a value curve needs the array to reach the PAL as a span, and " +
         "the pinned `audio-param.ts` curve component lowered with it",

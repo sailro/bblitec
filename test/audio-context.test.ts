@@ -25,6 +25,10 @@ test("direct audio contexts preserve owned aliases and lifecycle promises", t =>
             gain.connect(context.destination);
             if (typeof context.createGain !== "function") throw new Error("factory capability");
             if (typeof context.setSinkId !== "undefined") throw new Error("sink capability");
+            let inspected = 0;
+            function inspect(): AudioContext { inspected++; return context; }
+            if (typeof inspect().createMediaStreamDestination === "function") throw new Error("recording capability");
+            if (inspected !== 1) throw new Error("capability receiver evaluation");
             let order = "";
             const resumed = context.resume().then(() => { order += "r"; });
             order += "s";
@@ -72,9 +76,13 @@ test("direct audio contexts preserve owned aliases and lifecycle promises", t =>
 test("audio capability guards and constructor boundaries", () => {
     const guarded = compileSource(`
         const prototype = typeof AudioContext === "undefined" ? null : AudioContext.prototype;
+        if (typeof AudioContext !== "function") throw new Error("constructor capability");
         if (typeof prototype?.setSinkId === "function") throw new Error("unavailable sink");
+        if (typeof prototype?.createMediaStreamDestination === "function") throw new Error("unavailable recording");
     `);
     assert.doesNotMatch(guarded.cpp, /throw std::runtime_error\("unavailable sink"\)/);
+    assert.doesNotMatch(guarded.cpp, /throw std::runtime_error\("(?:constructor capability|unavailable recording)"\)/);
+    assert.throws(() => compileSource("const context = new AudioContext(); context.createMediaStreamDestination();"), /native recording streams are unavailable/);
     assert.throws(() => compileSource("const context = new AudioContext({sampleRate: 44100});"), /constructor options/);
     assert.throws(() => compileSource("const context = new AudioContext(); context.resume();"), /asynchronous application realm/);
     const shadowed = compileSource("class AudioContext { value = 7; } const context = new AudioContext(); if (context.value !== 7) throw new Error('local');");

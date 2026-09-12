@@ -287,8 +287,9 @@ LabSound implements the reached Web Audio boundary and remains independent of
 the renderer. Matching graph topology/scheduling does not establish PCM fidelity.
 Native contexts start with the playback device running and have no browser autoplay
 permission gate. Suspend/resume/close perform the device transition before a realm
-task settles their promise. Output-device selection is unavailable; its capability
-guard reports an absent method. Closed-context node graph operations are outside
+task settles their promise. Output-device selection and browser recording streams
+are unavailable; capability guards report absent methods and `MediaRecorder`.
+Closed-context node graph operations are outside
 the represented lifecycle surface.
 
 ## What is measured: the full page

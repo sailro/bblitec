@@ -576,7 +576,9 @@ Direct no-options `new AudioContext()` shares session ownership with contexts cr
 Aliases and helper returns preserve context identity. Asynchronous realms support `resume`, `suspend`
 and `close` promises; closed aliases retain state, sample rate and their stopped clock. Later lifecycle
 operations reject. Constructor options and state-change listeners remain unsupported. Context/prototype
-`typeof` guards report optional `setSinkId` as absent; direct output-device selection refuses.
+`typeof` guards report optional `setSinkId`, media-stream factories and media-element sources as absent;
+direct calls refuse. The native platform also reports `MediaRecorder` as absent, allowing authored
+recording fallbacks to run. This does not implement audio/video recording.
 
 Feature-selected LabSound/SDL3 supports reached Web Audio lifecycle, gain, oscillators, buffers, filters,
 panning and AudioParam scheduling. `decodeAudioData` consumes encoded ArrayBuffer bytes at the context's

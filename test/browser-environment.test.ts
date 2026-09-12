@@ -67,6 +67,20 @@ test("local storage can be injected through nullable method records", async t =>
     });
 });
 
+test("optional browser recording detection preserves native absence and lexical shadows", () => {
+    const guarded = compileSource(`
+        if (typeof MediaRecorder !== "undefined") throw new Error("recording present");
+        if (typeof window.MediaRecorder !== "undefined") throw new Error("recording present");
+        if (typeof globalThis.MediaRecorder !== "undefined") throw new Error("recording present");
+    `);
+    assert.doesNotMatch(guarded.cpp, /throw std::runtime_error\("recording present"\)/);
+    const local = compileSource(`
+        const MediaRecorder = 4;
+        if (typeof MediaRecorder !== "number") throw new Error("local capability");
+    `);
+    assert.doesNotMatch(local.cpp, /throw std::runtime_error\("local capability"\)/);
+});
+
 test("storage availability guards reach durable native reads", () => {
     for (const storage of ["localStorage", "window.localStorage", "globalThis.localStorage"]) {
         const result = compileSource(`

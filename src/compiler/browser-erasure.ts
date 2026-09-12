@@ -771,6 +771,9 @@ export class BrowserErasure {
         if (deployed !== undefined) return { kind: "string", value: deployed };
         if (ts.isTypeOfExpression(unwrapped)) {
             const global = this.browserGlobalNamed(this.context.unwrap(unwrapped.expression));
+            // Native has no browser recording pipeline; authored capability
+            // guards can select their own unavailable-recording path.
+            if (global?.text === "MediaRecorder") return {kind:"string", value:"undefined"};
             if (global && ["location", "window", "globalThis", "document", "localStorage", "navigator"].includes(global.text)) {
                 return { kind: "string", value: "object" };
             }
