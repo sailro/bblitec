@@ -64,6 +64,7 @@ std::string ui_get_style_property(
     Engine& engine,
     UiElementHandle element,
     std::string_view name);
+std::string ui_remove_style_property(Engine& engine, UiElementHandle element, std::string_view name);
 void ui_toggle_class(
     Engine& engine,
     UiElementHandle element,

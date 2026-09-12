@@ -89,6 +89,34 @@ std::string_view trim_css_token(std::string_view value) {
     return value.substr(first, last - first + 1);
 }
 
+bool css_property_name_equals(std::string_view left, std::string_view right) {
+    return right.starts_with("--") ? left == right : ascii_iequals(left, right);
+}
+
+template <typename Callback>
+void for_each_css_declaration(std::string_view source, Callback&& callback) {
+    std::size_t start = 0;
+    std::string closing_brackets;
+    char quote = 0;
+    for (std::size_t index = 0; index <= source.size(); ++index) {
+        const char token = index < source.size() ? source[index] : ';';
+        if (index == source.size() || (!quote && closing_brackets.empty() && token == ';')) {
+            callback(source.substr(start, index - start));
+            start = index + 1;
+        } else if (token == '\\') {
+            if (index + 1 < source.size()) ++index;
+        } else if (quote) {
+            if (token == quote) quote = 0;
+        } else if (token == '/' && index + 1 < source.size() && source[index + 1] == '*') {
+            const auto end = source.find("*/", index + 2);
+            index = end == std::string_view::npos ? source.size() - 1 : end + 1;
+        } else if (token == '\'' || token == '"') quote = token;
+        else if (token == '(' || token == '[' || token == '{')
+            closing_brackets += token == '(' ? ')' : token == '[' ? ']' : '}';
+        else if (!closing_brackets.empty() && token == closing_brackets.back()) closing_brackets.pop_back();
+    }
+}
+
 std::string normalized_css_keyword(std::string_view value) {
     return js::string_lower(std::string(trim_css_token(value)));
 }
@@ -541,26 +569,22 @@ std::string ui_get_style_property(
     const auto attribute = record.attributes.find("style");
     if (attribute == record.attributes.end()) return {};
     const std::string_view source = attribute->second;
-    for (std::size_t start = 0; start <= source.size();) {
-        const std::size_t end = source.find(';', start);
-        const std::string_view declaration = source.substr(
-            start,
-            end == std::string_view::npos
-                ? std::string_view::npos
-                : end - start);
+    std::string value;
+    for_each_css_declaration(source, [&](std::string_view declaration) {
         const std::size_t colon = declaration.find(':');
         if (
             colon != std::string_view::npos &&
-            ascii_iequals(
-                trim_css_token(declaration.substr(0, colon)),
-                name)) {
-            return std::string(
-                trim_css_token(declaration.substr(colon + 1)));
+            css_property_name_equals(trim_css_token(declaration.substr(0, colon)), name)) {
+            value = std::string(trim_css_token(declaration.substr(colon + 1)));
         }
-        if (end == std::string_view::npos) break;
-        start = end + 1;
-    }
-    return {};
+    });
+    return value;
+}
+
+std::string ui_remove_style_property(Engine& engine, UiElementHandle element, std::string_view name) {
+    std::string previous = ui_get_style_property(engine, element, name);
+    ui_set_style_property(engine, element, std::string(name), "");
+    return previous;
 }
 
 void ui_toggle_class(
@@ -1813,17 +1837,11 @@ std::string take_css_declaration(
     std::string retained;
     std::string result;
     const std::string_view source = style;
-    for (std::size_t start = 0; start <= source.size();) {
-        const std::size_t end = source.find(';', start);
-        const std::string_view declaration = source.substr(
-            start,
-            end == std::string_view::npos
-                ? std::string_view::npos
-                : end - start);
+    for_each_css_declaration(source, [&](std::string_view declaration) {
         const std::size_t colon = declaration.find(':');
         if (
             colon != std::string_view::npos &&
-            ascii_iequals(
+            css_property_name_equals(
                 trim_css_token(declaration.substr(0, colon)),
                 requested_name)) {
             result = std::string(
@@ -1832,9 +1850,7 @@ std::string take_css_declaration(
             if (!retained.empty()) retained += ';';
             retained += declaration;
         }
-        if (end == std::string_view::npos) break;
-        start = end + 1;
-    }
+    });
     style = std::move(retained);
     return result;
 }
@@ -1851,25 +1867,14 @@ std::string filter_private_ui_declarations(
     std::string_view style,
     bool retain_private) {
     std::string result;
-    std::size_t start = 0;
-    int parenthesis_depth = 0;
-    for (std::size_t index = 0; index <= style.size(); ++index) {
-        const char character = index < style.size() ? style[index] : ';';
-        if (character == '(') ++parenthesis_depth;
-        if (character == ')') --parenthesis_depth;
-        if (index < style.size() &&
-            (character != ';' || parenthesis_depth > 0)) {
-            continue;
-        }
-        const std::string_view declaration = style.substr(start, index - start);
+    for_each_css_declaration(style, [&](std::string_view declaration) {
         if (
             !declaration.empty() &&
             is_private_ui_declaration(declaration) == retain_private) {
             if (!result.empty()) result += ';';
             result += declaration;
         }
-        start = index + 1;
-    }
+    });
     return result;
 }
 

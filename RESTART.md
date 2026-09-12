@@ -23,7 +23,7 @@ it does not establish that this external application compiles or runs.
 | Branch | `codex/external-project-support` |
 | Remote | `https://github.com/sailro/bblitec.git` |
 | Branch base used in this session | `3474e835` on `main` |
-| Latest completed executable-code/test commit | `b5b805af` (2026-09-12), followed by retained attribute removal in this savepoint |
+| Latest executable-code/test unit | CSS declaration methods, based on `bd9d8ddf` (2026-09-12) |
 | Draft PR | [#247 — Extend generic application compilation and retained UI support](https://github.com/sailro/bblitec/pull/247) |
 | External checkout | `C:/Dev/_prototypes/external-native-app` |
 | External source revision | `d7c477a6d5963680c55249dceb93cb6e4ab9ce56` |
@@ -333,11 +333,38 @@ incomplete. Do not merge or mark it ready merely because the sweep passes.
   has narrowed it to null. `attributes327` passed two generated native tests,
   covering missing receivers and live image/style updates. `attributes324`
   passed the four existing hidden/disabled checks, and `file324` passed all ten
-  browser-file checks. `full327` was launched afterward; inspect its result.
+  browser-file checks. `full327` passed all 2,586 tests with zero failures or
+  skips; this unit is saved and pushed as `bd9d8ddf`.
   `compile324` (exit 1) advanced to `image.style.setProperty(...)`, including a
   custom CSS property. CSS declaration methods and distinct document roots
   remain unimplemented. There is no verified file-by-file compilation matrix;
   the user requested not to spend time computing one. No TODO clause closed.
+
+- The CSS declaration unit shares `setProperty` with field writes and exposes
+  inline `getPropertyValue`/`removeProperty`. Property names are static; ASCII
+  custom names retain case, with `--bbl-` reserved. Nonempty priority explicitly
+  refuses. Receivers are captured before value effects. Native getters select
+  the last inline declaration, preserve custom-name casing, and share a quoted/
+  nested declaration walk with private style extraction. `styles329` passed the
+  generated native custom-property/effect fixture and refusal check; `ui330`
+  passed 702 compiler/UI checks without skips. `ui331` through `styles334`
+  exposed quoted and nested declaration boundaries in pinned RmlUi. The new
+  `rmlui-css-declarations.patch` preserves both quote delimiters, escaped tokens,
+  comment markers in strings and nested blocks. Compiler and native declaration
+  walks share the same boundaries; custom tokens bypass ordinary property
+  rewrites. `styles336` passed the expanded generated native fixture and refusal
+  check. `full337` passed 2,587 of 2,588 tests with zero skips; the only failure
+  named the old comparison helper in a source-structure assertion. That assertion
+  now follows the shared case-aware helper. `focused338` passed all 22 checks,
+  including that assertion and the native CSS fixture, with zero skips. All three
+  RmlUi variants rebuilt successfully with eleven maintained patches
+  (`rml-css336`, `rml-css-static336`, `rml-css-static-svg337`). The earlier failed
+  `rml-css335` captured a pre-existing flex patch in the new diff; the corrected
+  patch excludes it and all three builds apply the complete list successfully.
+  `compile329` (exit 1) advanced to boolean capture options on platform event
+  listeners; the reached block also uses pointerout and Window blur listeners.
+  Distinct document roots remain a known silent erasure gap and are unimplemented.
+  No remaining core-library TODO clause is closed by these DOM/CSS units.
 
 The refreshed harness explicitly reports `danger-full-access`, networking
 enabled and approval policy `never`. Do not pass `sandbox_permissions` or ask

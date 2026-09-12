@@ -54,7 +54,7 @@ retain every canvas at its page position, so labels cannot conceal a rendering r
 | --- | --- |
 | Construction | Static-tag createElement, appendChild, mixed text/element append, root attachment, remove |
 | Content | textContent/innerText, bounded innerHTML, className/id/type, static-named attributes and removal |
-| Styles/classes | cssText, reached style fields, classList add/remove/forced toggle |
+| Styles/classes | cssText, reached style fields and declaration methods, classList add/remove/forced toggle |
 | Queries | Static class query on a known complete retained subtree; Window document ID lookup returns the first attached match in tree order, or null |
 | Input | Reached click/mousedown/pointerdown/up/cancel/lost-capture callbacks; one pointer |
 | Focus | Control/canvas focus, focus listeners, activeElement identity, button navigation |
@@ -65,6 +65,14 @@ retain every canvas at its page position, so labels cannot conceal a rendering r
 Removing an attribute updates retained and rendered state, including image sources, boolean attributes,
 classes and all inline style declarations. Attribute names follow HTML ASCII casing. Removing the type
 of an active native file input refuses; its control transition is not represented.
+
+Direct `element.style.setProperty`, `getPropertyValue` and `removeProperty` accept static CSS property names
+and share inline storage with field assignments. Reads return stored inline values; removal returns the
+previous value. ASCII custom property names preserve case, inherit and participate in `var()` fallback;
+quoted values and nested blocks retain embedded semicolons. Custom values bypass ordinary property rewrites,
+following the [custom-property declaration model](https://www.w3.org/TR/css-variables-1/#defining-variables).
+The `--bbl-` prefix is reserved for the projection. `setProperty` admits omitted or empty priority;
+nonempty priority refuses.
 
 Boolean `hidden` reads and writes reflect attribute presence; clearing it restores the authored
 display rules. Author CSS can override its default `display:none`, following the
@@ -192,6 +200,7 @@ native range painting follows browser geometry and control states.
 | Maintained RmlUi patch | Purpose |
 | --- | --- |
 | `rmlui-css-box-model.patch` | Solid backgrounds under borders; offset shrink-to-fit sizing |
+| `rmlui-css-declarations.patch` | Preserve quoted/escaped values and nested blocks across declaration boundaries |
 | `rmlui-flex-layout.patch` | Flex shorthand defaults, unordered flow resets and start/end alignment under reversal |
 | `rmlui-solid-background-clip.patch` | Solid border/padding/content-box clipping and invalidation after style changes |
 | `rmlui-textured-borders.patch` | Stretch raster border slices, live widths and CSS overlap reduction |

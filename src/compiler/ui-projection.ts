@@ -126,6 +126,7 @@ interface UiProjectionContext extends Pick<LoweringServices,
     "isInRuntimeControlFlow" |
     "lookupOptional" |
     "options" |
+    "pinValueToTemporary" |
     "reachFeature" |
     "registerAsset" |
     "reachJsData" |
@@ -375,6 +376,18 @@ export class UiProjection {
 
     public uiAttributeName(expression: ts.Expression): string {
         return this.context.compileStringLiteral(expression).replace(/[A-Z]/g, letter => letter.toLowerCase());
+    }
+
+    public uiStylePropertyName(expression: ts.Expression): string {
+        return UiProjection.cssPropertyName(this.context.compileStringLiteral(expression));
+    }
+
+    private static cssPropertyName(name: string): string {
+        return name.startsWith("--") ? name : name.replace(/[A-Z]/g, letter => letter.toLowerCase());
+    }
+
+    private static isCustomStyleProperty(name: string): boolean {
+        return /^--[A-Za-z0-9_-]+$/.test(name) && !name.startsWith("--bbl-");
     }
 
 
@@ -697,7 +710,7 @@ export class UiProjection {
             const colon = declaration.indexOf(":");
             if (
                 colon < 0 ||
-                declaration.slice(0, colon).trim().toLowerCase() !== name
+                UiProjection.cssPropertyName(declaration.slice(0, colon).trim()) !== name
             ) {
                 if (declaration.trim()) declarations.push(declaration);
             }
@@ -711,10 +724,11 @@ export class UiProjection {
         value: Value,
         name: string,
         expression: ts.Expression,
+        knownValue?: string,
     ): void {
         const element = this.uiStaticElement(value);
         if (!element) return;
-        const staticValue = this.tryUiStaticString(expression);
+        const staticValue = knownValue ?? this.tryUiStaticString(expression);
         const updated = element.styles.map((style) =>
             UiProjection.uiStyleWithProperty(
                 style,
@@ -1196,7 +1210,7 @@ export class UiProjection {
     /**
      * Walks one inline declaration list, calling `visit` for each
      * declaration split at top-level semicolons only — a `;` inside
-     * parentheses (`url(...)`, a gradient argument) does not end a
+     * strings or nested blocks (`url(...)`, a gradient argument) does not end a
      * declaration. The one segmentation authority for the audit and the
      * projection.
      */
@@ -1204,17 +1218,24 @@ export class UiProjection {
         value: string,
         visit: (declaration: string) => void,
     ): void {
-        let depth = 0;
+        const closingBrackets: string[] = [];
+        let quote = "";
         let start = 0;
         for (let index = 0; index <= value.length; index++) {
             const character = value[index];
-            if (character === "(") depth++;
-            if (character === ")") depth--;
-            if (index !== value.length && (character !== ";" || depth > 0)) {
-                continue;
-            }
-            visit(value.slice(start, index));
-            start = index + 1;
+            if (index === value.length || (!quote && closingBrackets.length === 0 && character === ";")) {
+                visit(value.slice(start, index));
+                start = index + 1;
+            } else if (character === "\\") index++;
+            else if (quote) {
+                if (character === quote) quote = "";
+            } else if (character === "/" && value[index + 1] === "*") {
+                const end = value.indexOf("*/", index + 2);
+                index = end < 0 ? value.length - 1 : end + 1;
+            } else if (character === "'" || character === '"') quote = character;
+            else if (character === "(" || character === "[" || character === "{")
+                closingBrackets.push(character === "(" ? ")" : character === "[" ? "]" : "}");
+            else if (character === closingBrackets.at(-1)) closingBrackets.pop();
         }
     }
 
@@ -1423,12 +1444,13 @@ export class UiProjection {
                 // a declaration once it names a property.
                 return;
             }
-            const property = declaration.slice(0, colon).trim().toLowerCase();
+            const property = UiProjection.cssPropertyName(declaration.slice(0, colon).trim());
             const literalValue = declaration
                 .slice(colon + 1)
                 .trim()
                 .toLowerCase();
             if (property.length === 0) return;
+            if (UiProjection.isCustomStyleProperty(property)) return;
             if (property === "object-fit" && !/^(?:fill|contain|cover|none|scale-down)$/.test(literalValue)) {
                 this.uiStyleRefusal(site, property, "only fill, contain, cover, none and scale-down are represented");
             }
@@ -1620,6 +1642,7 @@ export class UiProjection {
      * runtime string.
      */
     public auditUiStylePropertyName(cssName: string, site: ts.Node): void {
+        if (UiProjection.isCustomStyleProperty(cssName)) return;
         if (UiProjection.DEGRADED_UI_STYLE_PROPERTIES.has(cssName)) {
             this.uiDegradedStyleProperties.add(cssName);
             return;
@@ -1784,6 +1807,7 @@ export class UiProjection {
 
     /** CSSStyleDeclaration camelCase to the CSS spelling consumed by RmlUi. */
     public nativeUiStyleProperty(property: string): string {
+        if (property.startsWith("--")) return property;
         const cssName = property
             .replace(/([a-z0-9])([A-Z])/g, "$1-$2")
             .toLowerCase();
@@ -1858,6 +1882,14 @@ export class UiProjection {
             this.context.fail(site ?? this.context.sourceFile, "UI hidden='until-found' requires find-in-page support.");
         }
         if (name !== "style") return value;
+        const customDeclarations: string[] = [];
+        const authoredDeclarations: string[] = [];
+        UiProjection.forEachUiStyleDeclaration(value, declaration => {
+            const colon = declaration.indexOf(":");
+            authoredDeclarations.push(colon >= 0 && UiProjection.isCustomStyleProperty(declaration.slice(0, colon).trim())
+                ? `\u0002${customDeclarations.push(declaration) - 1}\u0002` : declaration);
+        });
+        value = authoredDeclarations.join(";");
         this.auditUiStyleDeclarations(value, site);
         {
             const declarations: string[] = [];
@@ -1875,7 +1907,7 @@ export class UiProjection {
             value = declarations.join(";");
         }
         // From here every read and rewrite is declaration-scoped by
-        // regex; masking parenthesized semicolons makes those regexes
+        // regex; masking nested semicolons and custom declarations makes those regexes
         // segment exactly where the audit's splitter did. The mask is
         // restored on the single return below.
         const clipsGradientToText =
@@ -2152,7 +2184,8 @@ export class UiProjection {
                 lowered += `;line-height:${height};text-align:center;`;
             }
         }
-        return lowered.replaceAll(UiProjection.UI_MASKED_SEMICOLON, ";");
+        return lowered.replaceAll(UiProjection.UI_MASKED_SEMICOLON, ";")
+            .replace(/\u0002(\d+)\u0002/g, (_match, index: string) => customDeclarations[Number(index)]!);
     }
 
 
@@ -4771,21 +4804,29 @@ export class UiProjection {
             );
             return true;
         }
+        this.emitUiStyleProperty(styleElement, property, expression.right, expression.left.name);
+        return true;
+    }
+
+    public emitUiStyleProperty(element: Value, property: string, valueExpression: ts.Expression, site: ts.Node): void {
         const nativeProperty = this.nativeUiStyleProperty(property);
-        this.auditUiStylePropertyName(nativeProperty, expression.left.name);
+        this.auditUiStylePropertyName(nativeProperty, site);
+        const {nativeBinding, ...receiver} = element;
+        const styleElement = this.context.pinValueToTemporary(receiver, "style_receiver");
+        const engine = this.context.requireEngine(styleElement, site);
         if (["filter", "overflow-wrap", "word-break"].includes(nativeProperty) || isUiLayoutProperty(nativeProperty)) {
-            const value = this.tryUiStaticString(expression.right);
-            if (value !== undefined && value !== "") this.auditUiStyleDeclarations(`${nativeProperty}:${value}`, expression.right);
+            const value = this.tryUiStaticString(valueExpression);
+            if (value !== undefined && value !== "") this.auditUiStyleDeclarations(`${nativeProperty}:${value}`, valueExpression);
         }
         this.recordUiStaticStyleProperty(
             styleElement,
             nativeProperty,
-            expression.right,
+            valueExpression,
         );
         const styleValue = nativeProperty === "border-image"
             ? this.context.cppString(this.lowerUiBorderImage(
-                this.context.compileStringLiteral(expression.right), expression.right))
-            : this.uiStringCpp(expression.right, `UI style.${property}`);
+                this.context.compileStringLiteral(valueExpression), valueExpression))
+            : this.uiStringCpp(valueExpression, `UI style.${property}`);
         this.context.emit(
             `bbl::ui_set_style_property(${engine}, ${styleElement.cpp}, ` +
                 `${this.context.cppString(nativeProperty)}, ` +
@@ -4794,7 +4835,14 @@ export class UiProjection {
         for (const [name, value] of UiProjection.UI_SHORTHAND_RESETS.get(property) ?? []) {
             this.context.emit(`bbl::ui_set_style_property(${engine}, ${styleElement.cpp}, ${this.context.cppString(name)}, ${this.context.cppString(value)});`);
         }
-        return true;
+    }
+
+    public removeUiStyleProperty(element: Value, property: string, site: ts.Expression): Value {
+        const nativeProperty = this.nativeUiStyleProperty(property);
+        this.auditUiStylePropertyName(nativeProperty, site);
+        this.recordUiStaticStyleProperty(element, nativeProperty, site, "");
+        const engine = this.context.requireEngine(element, site);
+        return {kind:"string", cpp:`bbl::ui_remove_style_property(${engine}, ${element.cpp}, ${this.context.cppString(nativeProperty)})`};
     }
 
 
