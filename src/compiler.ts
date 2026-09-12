@@ -5023,20 +5023,8 @@ class Compiler
                 };
             }
         }
-        if (
-            (expression.name.text === "body" ||
-                expression.name.text === "head") &&
-            ts.isIdentifier(ownerExpression) &&
-            ownerExpression.text === "document" &&
-            this.isDefaultLibraryIdentifier(ownerExpression)
-        ) {
-            return {
-                kind: "ui-element",
-                cpp: "",
-                uiRoot: true,
-                truthinessCpp: "true",
-            };
-        }
+        const documentRoot = this.ui.documentRootValue(expression);
+        if (documentRoot) return documentRoot;
         if (
             expression.name.text === "hidden" &&
             ts.isIdentifier(ownerExpression) &&
@@ -5170,6 +5158,8 @@ class Compiler
             return { ...owner, uiDataset: true };
         }
         if (owner.kind === "ui-element" && !owner.uiDataset) {
+            if (property === "lang") return {kind:"string",
+                cpp:`bbl::ui_get_attribute(${this.requireEngine(owner, expression)}, ${owner.cpp}, "lang")`, dataType:{kind:"string"}};
             const attribute = this.ui.booleanAttribute(owner, property, expression);
             if (attribute) return {kind:"boolean", cpp:`bbl::ui_has_attribute(${this.requireEngine(owner, expression)}, ${owner.cpp}, ${this.cppString(attribute)})`, impure:true};
         }

@@ -1272,28 +1272,6 @@ export class UserFunctionLowerer {
         context: UserFunctionContext,
         argument: ts.Expression,
     ): Value {
-        const unwrapped = unwrapExpression(argument);
-        if (
-            ts.isPropertyAccessExpression(unwrapped) &&
-            unwrapped.name.text === "body" &&
-            ts.isIdentifier(unwrapped.expression) &&
-            unwrapped.expression.text === "document" &&
-            (
-                this.checker.getSymbolAtLocation(unwrapped.expression)
-                    ?.declarations ?? []
-            ).some((declaration) =>
-                /(?:^|[\\/])lib\.dom\.d\.ts$/i.test(
-                    declaration.getSourceFile().fileName,
-                ),
-            )
-        ) {
-            return {
-                kind: "ui-element",
-                cpp: "",
-                uiRoot: true,
-                truthinessCpp: "true",
-            };
-        }
         if (ts.isArrowFunction(argument) || ts.isFunctionExpression(argument)) {
             return {
                 kind: "callback",

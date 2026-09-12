@@ -3694,6 +3694,10 @@ struct Engine {
     bool ui_focus_visible = true;
     /** Direct document children in live DOM attachment order. */
     std::vector<UiElementHandle> ui_root_children;
+    struct DocumentRoots {
+        UiElementHandle html, head, body;
+        [[nodiscard]] bool active() const noexcept { return html.value != invalid_handle; }
+    } ui_document_roots;
     /** Audited host-page rules, preceding scene-created sheets in cascade. */
     std::vector<UiStyleRule> ui_host_style_rules;
     /** Any tree/text/style/listener mutation invalidates the PAL projection. */

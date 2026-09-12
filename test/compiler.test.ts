@@ -8641,7 +8641,7 @@ test("carries document.body through an inlined retained UI mount helper", () => 
     for (const element of ["panel", "footer"]) {
         const argument = result.cpp.match(new RegExp(`const auto (\\w+) = v_\\w+${element};`))?.[1];
         assert.ok(argument, "the mount argument is captured before insertion");
-        assert.match(result.cpp, new RegExp(`ui_append_to_root\\([^,]+, ${argument}\\)`));
+        assert.match(result.cpp, new RegExp(`ui_append_child\\([^,]+, [^,]+, ${argument}\\)`));
     }
 });
 
@@ -8665,7 +8665,7 @@ test("carries document.body through a retained UI class constructor", () => {
         void main();
     `);
 
-    assert.match(result.cpp, /ui_append_to_root\([^,]+, v_[^)]+panel\)/);
+    assert.match(result.cpp, /ui_append_child\([^,]+, [^,]+, v_[^)]+panel\)/);
 });
 
 test("lowers static retained UI innerHTML to RmlUi markup", () => {
@@ -8837,7 +8837,7 @@ test("attaches head styles and proves grids in reattached stylesheet order", () 
     `);
 
     assert.equal(
-        [...result.cpp.matchAll(/ui_append_to_root\([^;]+v_(?:first|last)\)/g)]
+        [...result.cpp.matchAll(/ui_append_child\([^;]+UiDocumentPart::Head[^;]+v_(?:first|last)\)/g)]
             .length,
         4,
     );

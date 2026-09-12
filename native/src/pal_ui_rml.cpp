@@ -240,6 +240,33 @@ UiElementHandle ui_create_element(Engine& engine, std::string_view tag) {
     return handle;
 }
 
+UiElementHandle ui_document_root(Engine& engine, UiDocumentPart part) {
+    if (!engine.ui_document_roots.active()) {
+        auto previous = std::move(engine.ui_root_children);
+        const auto html = ui_create_element(engine, "html");
+        const auto head = ui_create_element(engine, "head");
+        const auto body = ui_create_element(engine, "body");
+        engine.ui_document_roots = {html, head, body};
+        ui_element(engine, html).children = {head, body};
+        ui_element(engine, html).attached_to_root = true;
+        ui_element(engine, head).parent = html;
+        ui_element(engine, body).parent = html;
+        ui_element(engine, body).children = std::move(previous);
+        for (const auto child : ui_element(engine, body).children) {
+            ui_element(engine, child).parent = body;
+            ui_element(engine, child).attached_to_root = false;
+        }
+        engine.ui_root_children = {html};
+        ++engine.ui_style_revision;
+    }
+    switch (part) {
+    case UiDocumentPart::Html: return engine.ui_document_roots.html;
+    case UiDocumentPart::Head: return engine.ui_document_roots.head;
+    case UiDocumentPart::Body: return engine.ui_document_roots.body;
+    }
+    throw std::runtime_error("Unknown native document root.");
+}
+
 UiElementHandle ui_create_text_node(Engine& engine, std::string text) {
     const auto handle = ui_create_element(engine, "#text");
     ui_set_text(engine, handle, std::move(text));
@@ -247,6 +274,7 @@ UiElementHandle ui_create_text_node(Engine& engine, std::string text) {
 }
 
 void ui_append_text(Engine& engine, UiElementHandle parent, std::string text) {
+    if (parent.value == invalid_handle && engine.ui_document_roots.active()) parent = engine.ui_document_roots.body;
     const bool root = parent.value == invalid_handle;
     if (!root) {
         const auto& record = ui_element(engine, parent);
@@ -787,14 +815,16 @@ UiElementHandle ui_append_child(
                 "A native UI element cannot contain one of its ancestors.");
         }
     }
-    if (
-        child_record.parent.value != invalid_handle ||
-        child_record.attached_to_root) {
-        throw std::runtime_error(
-            "Reparenting an attached native UI element is not implemented.");
-    }
+    if (engine.ui_document_roots.active() && (child == engine.ui_document_roots.html ||
+        child == engine.ui_document_roots.head || child == engine.ui_document_roots.body))
+        throw std::runtime_error("Reparenting document roots is not supported.");
+    if (child_record.parent.value != invalid_handle)
+        std::erase(ui_element(engine, child_record.parent).children, child);
+    if (child_record.attached_to_root) std::erase(engine.ui_root_children, child);
+    child_record.attached_to_root = false;
     child_record.parent = parent;
     parent_record.children.push_back(child);
+    ++engine.ui_style_revision;
     mark_ui_changed(engine);
     return child;
 }
@@ -802,10 +832,12 @@ UiElementHandle ui_append_child(
 UiElementHandle ui_append_to_root(
     Engine& engine,
     UiElementHandle child) {
+    if (engine.ui_document_roots.active()) return ui_append_child(engine, engine.ui_document_roots.body, child);
     UiElementRecord& record = ui_element(engine, child);
     if (record.parent.value != invalid_handle) {
-        throw std::runtime_error(
-            "A native UI element may only be attached to one parent.");
+        std::erase(ui_element(engine, record.parent).children, child);
+        record.parent = {};
+        ++engine.ui_style_revision;
     }
     if (record.attached_to_root) {
         const auto existing = std::find_if(
@@ -833,6 +865,7 @@ UiElementHandle ui_append_to_root(
 }
 
 void ui_replace_children(Engine& engine, UiElementHandle parent) {
+    if (parent == engine.ui_document_roots.html) throw std::runtime_error("Replacing the document root children is not supported.");
     UiElementRecord& record = ui_element(engine, parent);
     for (const UiElementHandle child : record.children) {
 #if defined(BBLITE_HAS_BROWSER_FILE) && BBLITE_HAS_BROWSER_FILE
@@ -849,10 +882,14 @@ void ui_replace_children(Engine& engine, UiElementHandle parent) {
     record.children.clear();
     record.text.clear();
     record.inner_rml.clear();
+    ++engine.ui_style_revision;
     mark_ui_changed(engine, record);
 }
 
 void ui_remove(Engine& engine, UiElementHandle element) {
+    if (engine.ui_document_roots.active() && (element == engine.ui_document_roots.html ||
+        element == engine.ui_document_roots.head || element == engine.ui_document_roots.body))
+        throw std::runtime_error("Removing document roots is not supported.");
     UiElementRecord& record = ui_element(engine, element);
     const bool changed =
         record.parent.value != invalid_handle || record.attached_to_root;
@@ -883,6 +920,7 @@ void ui_remove(Engine& engine, UiElementHandle element) {
             engine.ui_root_children.end());
         record.attached_to_root = false;
     }
+    ++engine.ui_style_revision;
     mark_ui_changed(engine, record);
 }
 
@@ -1910,7 +1948,7 @@ bool ui_style_rule_matches(
     case UiStyleSelectorKind::TagChildClass:
         return ui_record_has_class(record, rule.primary) &&
             (rule.secondary.empty() || ui_record_has_class(record, rule.secondary)) &&
-            (record.parent.value == invalid_handle ? record.attached_to_root && rule.tag == "body"
+            (record.parent.value == invalid_handle ? !engine.ui_document_roots.active() && record.attached_to_root && rule.tag == "body"
                 : handle_at(engine.ui_elements, record.parent).tag == rule.tag);
     case UiStyleSelectorKind::TagAttribute: {
         const auto attribute = record.attributes.find(rule.primary);
@@ -2500,6 +2538,7 @@ struct ProjectedUiElement {
     std::string grid_children_style;
     std::string fractional_grid_tracks;
     std::vector<UiElementHandle> fractional_grid_children;
+    std::vector<UiElementHandle> child_order;
     std::string intrinsic_min_width;
     std::string crosshair_color;
     std::string inset_outline;
@@ -3383,14 +3422,13 @@ struct UiRmlRuntime {
                 throw std::runtime_error("RmlUi context creation failed.");
             }
             update_density_ratio();
+            context->SetDocumentsBaseTag("html");
             document = context->CreateDocument();
             if (!document) {
                 throw std::runtime_error("RmlUi document creation failed.");
             }
-            document->SetAttribute(
-                "style",
-                "width:100%;height:100%;font-family:" + css_font_family +
-                    ";font-size:16dp;line-height:1.32;pointer-events:none;");
+            document_head = document->AppendChild(Rml::Factory::InstanceElement(document, "*", "head", Rml::XMLAttributes{}));
+            document_body = document->AppendChild(Rml::Factory::InstanceElement(document, "*", "body", Rml::XMLAttributes{}));
             sync_style_sheet();
             sync_motion_preference();
             document->Show(
@@ -3502,12 +3540,15 @@ struct UiRmlRuntime {
 
     template <typename Callback>
     void for_each_active_style_element(Callback&& callback) const {
+        const auto visit = [&](auto&& self, UiElementHandle handle) -> void {
+            const auto& record = handle_at(engine.ui_elements, handle);
+            if (record.tag == "style") callback(record);
+            for (const auto child : record.children) self(self, child);
+        };
         for (const UiElementHandle handle : engine.ui_root_children) {
             if (handle.value >= engine.ui_elements.size()) continue;
             const UiElementRecord& record = handle_at(engine.ui_elements, handle);
-            if (record.tag == "style" && record.attached_to_root) {
-                callback(record);
-            }
+            if (record.attached_to_root) visit(visit, handle);
         }
     }
 
@@ -3581,6 +3622,8 @@ struct UiRmlRuntime {
         // in this sheet rather than on each element also lets :hover and media
         // rules participate in the ordinary RmlUi cascade.
         std::string source(ui_user_agent_css);
+        source += "html{width:100%;height:100%;font-family:" + css_font_family +
+            ";font-size:16dp;line-height:1.32;pointer-events:none;}head{display:none;}body{display:block;height:100%;}\n";
         observes_motion_preference = false;
         const auto append_rule = [&source, this](const UiStyleRule& rule) {
             const bool motion = rule.motion != UiMotionPreference::Any;
@@ -4192,7 +4235,25 @@ struct UiRmlRuntime {
         handle_at(projected_elements, handle) = {};
     }
 
+    void sync_child_order(Rml::Element& parent, const std::vector<UiElementHandle>& children) {
+        std::vector<Rml::Element*> desired;
+        std::unordered_set<Rml::Element*> authored;
+        for (const auto child : children) {
+            auto* raw = projected_elements.at(child.value).element;
+            if (raw && raw->GetParentNode() == &parent) {
+                desired.push_back(raw);
+                authored.insert(raw);
+            }
+        }
+        std::vector<Rml::Element*> current;
+        for (int index = 0; index < parent.GetNumChildren(); ++index)
+            if (auto* raw = parent.GetChild(index); authored.contains(raw)) current.push_back(raw);
+        if (current == desired) return;
+        for (auto* raw : desired) parent.AppendChild(parent.RemoveChild(raw));
+    }
+
     void sync_projected_root_order() {
+        if (engine.ui_document_roots.active()) return;
         std::vector<std::uint32_t> desired;
         for (const UiElementHandle handle : engine.ui_root_children) {
             if (
@@ -4204,17 +4265,7 @@ struct UiRmlRuntime {
         }
         if (desired == projected_root_order) return;
 
-        std::vector<Rml::ElementPtr> roots;
-        roots.reserve(desired.size());
-        for (const std::uint32_t index : desired) {
-            Rml::Element* element = projected_elements[index].element;
-            if (element && element->GetParentNode() == document) {
-                roots.push_back(document->RemoveChild(element));
-            }
-        }
-        for (Rml::ElementPtr& root : roots) {
-            document->AppendChild(std::move(root));
-        }
+        sync_child_order(*document_body, engine.ui_root_children);
         projected_root_order = std::move(desired);
     }
 
@@ -4435,11 +4486,21 @@ struct UiRmlRuntime {
                 update_element(child);
             }
         }
+        if (projected.child_order != record.children) {
+            sync_child_order(children_parent, record.children);
+            projected.child_order = record.children;
+        }
         sync_inset_outline(projected, raw, inset_outline);
     }
 
     void sync_tree() {
         ensure_projection_size();
+        if (engine.ui_document_roots.active()) {
+            const auto& roots = engine.ui_document_roots;
+            projected_elements.at(roots.html.value).element = document;
+            projected_elements.at(roots.head.value).element = document_head;
+            projected_elements.at(roots.body.value).element = document_body;
+        }
         std::vector<bool> reachable(engine.ui_elements.size(), false);
         for (const UiElementHandle handle : engine.ui_root_children) {
             if (
@@ -4459,7 +4520,7 @@ struct UiRmlRuntime {
             if (!element || !reachable[index]) continue;
             auto* parent = element->GetParentNode();
             std::uint32_t previous = invalid_handle;
-            for (auto* ancestor = parent; ancestor && ancestor != document; ancestor = ancestor->GetParentNode()) {
+            for (auto* ancestor = parent; ancestor; ancestor = ancestor->GetParentNode()) {
                 if (const auto found = authored.find(ancestor); found != authored.end()) {
                     previous = found->second;
                     break;
@@ -4499,7 +4560,8 @@ struct UiRmlRuntime {
             const std::uint32_t index = handle.value;
             if (!engine.ui_elements[index].attached_to_root) continue;
             if (engine.ui_elements[index].tag == "style") continue;
-            sync_element(*document, handle);
+            if (handle == engine.ui_document_roots.html) update_element(handle);
+            else sync_element(*document_body, handle);
         }
         if (!pending_reparents.empty()) throw std::runtime_error("A moved UI element has no projected parent.");
         sync_projected_root_order();
@@ -5220,6 +5282,8 @@ struct UiRmlRuntime {
     Rml::ElementInstancerGeneric<UiButtonElement> button_instancer;
     Rml::Context* context = nullptr;
     Rml::ElementDocument* document = nullptr;
+    Rml::Element* document_head = nullptr;
+    Rml::Element* document_body = nullptr;
     std::unordered_map<std::uint32_t, Rml::ElementPtr> pending_reparents;
     std::vector<std::unique_ptr<UiEventListener>> listeners;
     std::vector<ProjectedUiElement> projected_elements;

@@ -16,6 +16,8 @@ union SDL_Event;
 namespace bbl {
 
 /** DOM-lowering entry points. They mutate only the retained UI IR. */
+enum class UiDocumentPart { Html, Head, Body };
+UiElementHandle ui_document_root(Engine& engine, UiDocumentPart part);
 UiElementHandle ui_create_element(Engine& engine, std::string_view tag);
 UiElementHandle ui_create_text_node(Engine& engine, std::string text);
 // An invalid parent denotes the document root.

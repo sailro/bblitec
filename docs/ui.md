@@ -176,8 +176,12 @@ Selectors are bounded class/id/compound and proven ancestor forms, with optional
 hover, active and focus-visible states, shared by CSS text and host UI rules.
 Direct-child forms `tag > .class` and `tag > .class.other` match the immediate
 retained parent and follow live class changes and reparenting. Reparenting retains
-the rendered element, its listeners and state. The current virtual document root
-has the `body` tag; distinct HTML/head/body root identities remain unmodeled.
+the rendered element, its listeners and state. `document.documentElement`, `head`
+and `body` expose distinct retained roots with ordinary attributes, styles and
+child attachment. Root handles pass through helpers; `lang` reflects its stored
+attribute. Stylesheets participate in attached tree order, including under head
+and body. Removing or reparenting the three roots, or replacing HTML's root
+children, remains unsupported.
 [Tag-only projection](../src/compiler/ui-projection.ts) is unsupported. Static selectors/properties are
 validated; source/sheet order and live max-width rules are retained.
 Reduced-motion media rules support `reduce` and `no-preference` through the same cascade.
@@ -201,6 +205,7 @@ native range painting follows browser geometry and control states.
 | --- | --- |
 | `rmlui-css-box-model.patch` | Solid backgrounds under borders; offset shrink-to-fit sizing |
 | `rmlui-css-declarations.patch` | Preserve quoted/escaped values and nested blocks across declaration boundaries |
+| `rmlui-fragment-root.patch` | Parse inline fragments under a custom document tag without an XML handler |
 | `rmlui-flex-layout.patch` | Flex shorthand defaults, unordered flow resets and start/end alignment under reversal |
 | `rmlui-solid-background-clip.patch` | Solid border/padding/content-box clipping and invalidation after style changes |
 | `rmlui-textured-borders.patch` | Stretch raster border slices, live widths and CSS overlap reduction |
