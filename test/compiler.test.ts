@@ -321,7 +321,7 @@ test("runs successful nullable audio constructors and preserves source loops", (
         await LoopingSound.create();
     `);
 
-    assert.match(result.cpp, /bbl::on_key_down\(/);
+    assert.match(result.cpp, /bbl::on_dom_keyboard\([^\n]*"keydown"/);
     assert.match(result.cpp, /bbl::pal::audio_set_loop\([^;]*, true\);/);
     assert.match(result.cpp, /AudioParamName::PlaybackRate\), 0\.75f\);/);
     assert.match(
@@ -1053,7 +1053,7 @@ test("materializes mutable module state used only at call time", () => {
         result.cpp,
         new RegExp(`bool v_selected = \\(\\*${active[1]}\\)`),
     );
-    assert.match(result.cpp, /bbl::on_pointer_down/);
+    assert.match(result.cpp, /bbl::on_dom_pointer\([^\n]*"pointerdown"/);
     assert.match(
         result.cpp,
         new RegExp(`\\(\\*${active[1]}\\) = !\\(\\(\\*${active[1]}\\)\\)`),
@@ -4473,7 +4473,7 @@ test("keeps listener-producing class methods on the per-instance inliner", () =>
         }
     `);
 
-    assert.match(result.cpp, /bbl::on_canvas_click/);
+    assert.match(result.cpp, /bbl::on_dom_pointer\([^\n]*"click"/);
     assert.doesNotMatch(result.cpp, /void Controls_bind\(/);
 });
 
@@ -5767,7 +5767,7 @@ test("retains an escaping recursive callback's closure and self reference", () =
         result.cpp,
         new RegExp(`\\(\\*${owner}\\) = bbl::js::make_closure\\(std::tuple\\{v_busy, v_queued, ${owner}\\}, \\[\\]`),
     );
-    const mouseCaptures = result.cpp.match(/bbl::on_mouse_move\([^\n]*?std::tuple\{([^}]+)\}/)?.[1];
+    const mouseCaptures = result.cpp.match(/bbl::on_dom_pointer\([^\n]*?std::tuple\{([^}]+)\}/)?.[1];
     assert.deepEqual(mouseCaptures?.split(", ").sort(), ["v_busy", "v_queued", owner].sort());
     assert.doesNotMatch(result.cpp, new RegExp(`std::ref\\(${owner}\\)`));
 });
@@ -8331,7 +8331,7 @@ test("lowers scene-created DOM controls to the retained native UI IR", () => {
     assert.match(result.cpp, /bbl::ui_set_attribute/);
     assert.match(result.cpp, /left:50%;margin-left:-60px;/);
     assert.doesNotMatch(result.cpp, /calc\(/);
-    assert.match(result.cpp, /bbl::ui_on_click/);
+    assert.match(result.cpp, /bbl::on_dom_pointer\([^\n]*"click"/);
     assert.match(result.cpp, /bbl::ui_append_to_root/);
     assert.doesNotMatch(result.cpp, /document|createElement|textContent/);
 });
@@ -10121,7 +10121,7 @@ test("carries retained mousedown cancellation from the executed callback", () =>
         result.cpp,
         /(?:^|\n)\s*auto v_[^ ]*alias = v_[^;]*event;/,
     );
-    assert.match(result.cpp, /ui_on_event[^\n]*"mousedown"/);
+    assert.match(result.cpp, /on_dom_pointer[^\n]*"mousedown"/);
     assert.doesNotMatch(result.cpp, /"mousedown", true/);
     const projection = palUiRmlSource;
     assert.match(
@@ -10703,10 +10703,10 @@ test("names the refused element tag, context kind, and event type", () => {
         () =>
             compileSource(
                 withStatement(
-                    'const button = document.createElement("button"); button.addEventListener("dblclick", () => {});',
+                    'const button = document.createElement("button"); button.addEventListener("animationend", () => {});',
                 ),
             ),
-        /do not support the 'dblclick' event/,
+        /do not support the 'animationend' event/,
     );
 });
 
@@ -11095,7 +11095,7 @@ test("resolves audited host UI ids before unchanged scene setup binds listeners"
     const lookup = result.cpp.indexOf("ui_get_element_by_id");
     assert.ok(create >= 0 && lookup > create);
     assert.match(result.cpp, /ui_get_element_by_id[^\n]*"rotateToggle"/);
-    assert.match(result.cpp, /ui_on_click/);
+    assert.match(result.cpp, /on_dom_pointer[^\n]*"click"/);
     assert.match(result.cpp, /ui_set_text/);
     assert.doesNotMatch(result.cpp, /if \(false\)/);
 });
@@ -11127,11 +11127,11 @@ test("materializes a callback returned through its own closure cycle", () => {
     `);
 
     assert.match(result.cpp, /bbl::js::make_gc_shared<bbl::js::Callback<void\(double\)>>/);
-    assert.match(result.cpp, /ui_on_click/);
+    assert.match(result.cpp, /on_dom_pointer[^\n]*"click"/);
     assert.match(result.cpp, /ui_set_style_property/);
     assert.match(result.cpp, /\(\*v_update_owner\)\(1\.0\)/);
     assert.match(result.cpp, /\(\*v_update_owner\) = bbl::js::make_closure\(std::tuple\{v_fn\d+_button, std::ref\(v_\w+engine\w*\)\}, \[\]\(\[\[maybe_unused\]\] decltype\(std::tuple\{[^}\n]*\}\)& \w+, double/);
-    assert.doesNotMatch(result.cpp, /ui_on_click[^\n]*v_update\(1\.0\)/);
+    assert.doesNotMatch(result.cpp, /on_dom_pointer[^\n]*v_update\(1\.0\)/);
 });
 
 test("reuses a stored callback while compiling its self-referential record", () => {
@@ -11206,8 +11206,8 @@ test("lowers retained pointer state and class toggles", () => {
         void main();
     `);
 
-    assert.match(result.cpp, /ui_on_event[^\n]*"mousedown"/);
-    assert.match(result.cpp, /ui_on_event[^\n]*"mouseup"/);
+    assert.match(result.cpp, /on_dom_pointer[^\n]*"pointerdown"/);
+    assert.match(result.cpp, /on_dom_pointer[^\n]*"pointerup"/);
     assert.match(result.cpp, /ui_toggle_class/);
     assert.doesNotMatch(result.cpp, /setPointerCapture|releasePointerCapture/);
 });
@@ -11232,7 +11232,7 @@ test("lowers retained layout reads and pointer motion coordinates", () => {
         void main();
     `);
 
-    assert.match(result.cpp, /ui_on_event[^\n]*"mousemove"/);
+    assert.match(result.cpp, /on_dom_pointer[^\n]*"pointermove"/);
     assert.match(
         result.cpp,
         /make_closure\(std::tuple\{v_hit, std::ref\(v_bblite_inline_engine_\d+\)\}, \[\]\(\[\[maybe_unused\]\] decltype\(std::tuple\{[^}\n]*\}\)& \w+, \[\[maybe_unused\]\] const bbl::PlatformMouseEvent&[^\n]*\)/,
@@ -11265,7 +11265,7 @@ test("captures callback-local values by value in retained UI listeners", () => {
     `);
 
     assert.equal(
-        result.cpp.match(/ui_on_event\([^\n]*"mousedown", bbl::js::make_closure\(std::tuple\{/g)?.length,
+        result.cpp.match(/on_dom_pointer\([^\n]*"mousedown", \d+u, bbl::js::make_closure\(std::tuple\{/g)?.length,
         2,
     );
     assert.doesNotMatch(result.cpp, /"mousedown", \[&\]/);
@@ -13786,10 +13786,10 @@ test("lowers platform listeners through generic engine callbacks", () => {
         }
     `);
 
-    assert.match(result.cpp, /bbl::on_key_down/);
-    assert.match(result.cpp, /bbl::on_key_up/);
-    assert.match(result.cpp, /bbl::on_pointer_down/);
-    assert.match(result.cpp, /bbl::on_window_resize/);
+    assert.match(result.cpp, /bbl::on_dom_keyboard\([^\n]*"keydown"/);
+    assert.match(result.cpp, /bbl::on_dom_keyboard\([^\n]*"keyup"/);
+    assert.match(result.cpp, /bbl::on_dom_pointer\([^\n]*"pointerdown"/);
+    assert.match(result.cpp, /bbl::on_dom_pointer\([^\n]*"resize"/);
     assert.match(result.cpp, /bbl::on_visibility_change/);
     assert.match(result.cpp, /const bbl::PlatformKeyboardEvent&/);
     assert.match(result.cpp, /std::string_view/);
@@ -13826,11 +13826,11 @@ test("registers a callback returned by a local factory as a platform listener", 
 
     assert.match(
         result.cpp,
-        /on_key_down\([^;]*\{[\s\S]*\(\*v_onDown_owner\)\(bbl::js::Borrowed<const bbl::PlatformKeyboardEvent>\([^)]*key_event/,
+        /on_dom_keyboard\([^;]*\{[\s\S]*\(\*v_onDown_owner\)\(bbl::js::Borrowed<const bbl::PlatformKeyboardEvent>\([^)]*dom_event/,
     );
     assert.match(
         result.cpp,
-        /on_key_up\([^;]*\{[\s\S]*\(\*v_onUp_owner\)\(bbl::js::Borrowed<const bbl::PlatformKeyboardEvent>\([^)]*key_event/,
+        /on_dom_keyboard\([^;]*\{[\s\S]*\(\*v_onUp_owner\)\(bbl::js::Borrowed<const bbl::PlatformKeyboardEvent>\([^)]*dom_event/,
     );
 });
 
@@ -13865,13 +13865,13 @@ test("removes a dynamically registered platform listener by callback identity", 
         }
     `);
 
-    const registration = result.cpp.match(/bbl::on_key_down\([^,]+, (\d+)u,/);
+    const registration = result.cpp.match(/bbl::on_dom_keyboard\([^,]+, bbl::DomEventTarget::window\(\), "keydown", (\d+)u,/);
     assert.ok(registration);
     assert.match(
         result.cpp,
-        new RegExp(`bbl::off_key_down\\([^,]+, ${registration[1]}u\\)`),
+        new RegExp(`bbl::off_dom_keyboard\\([^,]+, bbl::DomEventTarget::window\\(\\), "keydown", ${registration[1]}u, false\\)`),
     );
-    assert.doesNotMatch(result.cpp, /bbl::on_key_down\([^;]+, \[&\]/);
+    assert.doesNotMatch(result.cpp, /bbl::on_dom_keyboard\([^;]+, \[&\]/);
 });
 
 test("retained platform listeners keep live scene aliases", () => {
@@ -13910,7 +13910,7 @@ test("retained platform listeners keep live scene aliases", () => {
 
     assert.match(
         result.cpp,
-        /bbl::on_mouse_move\([^;]*make_closure\(std::tuple\{v_bblite_class_field_scene_\d+, std::ref\(v_engine\)\}, \[\]/,
+        /bbl::on_dom_pointer\([^;]*make_closure\(std::tuple\{v_bblite_class_field_scene_\d+, std::ref\(v_engine\)\}, \[\]/,
     );
 });
 
@@ -13928,7 +13928,7 @@ test("maps canvas pointer offsets to its platform-relative coordinates", () => {
         }
     `);
 
-    assert.match(result.cpp, /bbl::on_mouse_down/);
+    assert.match(result.cpp, /bbl::on_dom_pointer\([^\n]*"pointerdown"/);
     assert.equal((result.cpp.match(/\.client_x/g) ?? []).length, 2);
     assert.equal((result.cpp.match(/\.client_y/g) ?? []).length, 2);
     assert.match(result.cpp, /\.button/);
@@ -14013,11 +14013,11 @@ test("lowers focusable-canvas FPS controls and pointer lock", () => {
         }
     `);
 
-    assert.match(result.cpp, /bbl::on_key_down/);
-    assert.match(result.cpp, /bbl::on_key_up/);
-    assert.match(result.cpp, /bbl::on_mouse_move/);
-    assert.match(result.cpp, /bbl::on_mouse_wheel/);
-    assert.match(result.cpp, /bbl::on_mouse_cancel/);
+    assert.match(result.cpp, /bbl::on_dom_keyboard\([^\n]*"keydown"/);
+    assert.match(result.cpp, /bbl::on_dom_keyboard\([^\n]*"keyup"/);
+    assert.match(result.cpp, /bbl::on_dom_pointer\([^\n]*"pointermove"/);
+    assert.match(result.cpp, /bbl::on_dom_pointer\([^\n]*"wheel"/);
+    assert.match(result.cpp, /bbl::on_dom_pointer\([^\n]*"pointercancel"/);
     assert.match(result.cpp, /bbl::on_pointer_lock_change/);
     assert.match(result.cpp, /bbl::request_pointer_lock/);
     assert.match(result.cpp, /bbl::exit_pointer_lock/);
@@ -14048,7 +14048,7 @@ test("lowers document mousemove for pointer-lock camera controls", () => {
         });
     `);
 
-    assert.match(result.cpp, /bbl::on_mouse_move/);
+    assert.match(result.cpp, /bbl::on_dom_pointer\([^\n]*"mousemove"/);
     assert.match(result.cpp, /\.movement_x \* 0\.002/);
     assert.doesNotMatch(result.cpp, /addEventListener|movementX/);
 });
@@ -14073,8 +14073,8 @@ test("lowers canvas clicks with discarded async audio initialization", () => {
         }
     `);
 
-    assert.match(result.cpp, /bbl::on_canvas_click/);
-    assert.doesNotMatch(result.cpp, /bbl::on_pointer_down/);
+    assert.match(result.cpp, /bbl::on_dom_pointer\([^\n]*"click"/);
+    assert.doesNotMatch(result.cpp, /bbl::on_dom_pointer\([^\n]*"pointerdown"/);
     assert.match(result.cpp, /bbl::request_pointer_lock/);
     assert.match(result.cpp, /bbl::pal::audio_create_context/);
     assert.ok(result.manifest.features.includes("audio:engine"));
@@ -14103,7 +14103,7 @@ test("keeps callback-local declarations inside platform listeners", () => {
         }
     `);
 
-    const listener = result.cpp.indexOf("bbl::on_key_down");
+    const listener = result.cpp.indexOf("bbl::on_dom_keyboard");
     const toggleAssignment = result.cpp.search(
         /\(\*v_(?:fn\d+_)?on\) = !\(\(\*v_(?:fn\d+_)?on\)\)/,
     );

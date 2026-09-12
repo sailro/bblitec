@@ -493,6 +493,7 @@ if(NOT SDL3_FOUND)
 endif()
 target_link_libraries(bblite_features INTERFACE SDL3::SDL3)
 bblite_feature_define(BBLITE_HAS_GAMEPAD "input:gamepad")
+bblite_feature_define(BBLITE_HAS_DOM_INPUT "input:dom")
 bblite_feature_define(BBLITE_HAS_BROWSER_FILE "browser:file")
 
 target_compile_definitions(bblite_features INTERFACE BBLITE_HAS_SDL_GPU=$<BOOL:${BBLITE_BACKEND_SDL_GPU}>)

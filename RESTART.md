@@ -36,7 +36,7 @@ it does not establish that this external application compiles or runs.
 | Branch | `codex/external-project-support` |
 | Remote | `https://github.com/sailro/bblitec.git` |
 | Branch base used in this session | `3474e835` on `main` |
-| Latest executable-code/test unit | `58c6fe8c`: shared mixed-tuple array storage and ordered array operations (2026-09-12; pushed) |
+| Latest executable-code/test unit | Shared DOM input routing and listener options; prior savepoints `61f878fb` (native dispatcher) and `58c6fe8c` (mixed tuples) |
 | Draft PR | [#247 — Extend generic application compilation and retained UI support](https://github.com/sailro/bblitec/pull/247) |
 | External checkout | `C:/Dev/_prototypes/external-native-app` |
 | External source revision | `d7c477a6d5963680c55249dceb93cb6e4ab9ce56` |
@@ -127,14 +127,29 @@ the private checkout remains unchanged. Keep the unused event draft out of the
 tuple commit and continue to events. Full application generation, build and runtime
 remain unpassed.
 
-Event work is active after that pushed unit. `artifacts/external-integration/event-batch.md`
-records the current connections and ownership constraints. The uncommitted native
-foundation adds owned event paths and shared pointer/keyboard phase dispatch,
-reusing listener identity/once/removal and traced callback storage. `events410`
-passes three native checks (ordinary ownership, worker ownership and the existing
-callback snapshot fixture); the complete callback-registry run `events411` passes
-14 checks without skips. Compiler lowering and real Window/RmlUi delivery are
-not connected yet; do not report any event probe or application milestone complete.
+The shared input bridge now connects compiler listeners to SDL/RmlUi hit paths and
+the Window application mailbox. `DomEventBatch` owns native packets; its release/acquire
+completion lets the display defer defaults while continuing layout snapshots. Script
+callbacks remain on the application thread. Synchronous scene/replay paths reuse the
+same dispatch. Keyboard and cross-realm cancellation clauses have been removed from
+the matching Window TODO; ResizeObserver entries and draw-call transport remain open.
+
+`events430` passes 671 focused compiler/callback/UI checks without skips. The generated
+RmlUi fixture covers options, removal, phase order, pointer fields, cancellation,
+programmatic clicks and disabled controls. `window427` builds and runs a neutral Window
+application on SDL_GPU and Dawn, checks callback order through durable storage, and
+requests layout inside the callback; `window431` repeats that check successfully for the
+final unit on both backends. `capabilities416` accepts 23/24 fixed generation probes; event-target
+projection remains refused. This ratio is not application completion. `compile407` is
+still the latest unchanged-application attempt; complete generation/build/runtime remain
+unpassed. Do not run another full application after each small event-field edit.
+
+Next work: target/currentTarget/relatedTarget identities, AbortSignal, explicit pointer
+capture (existing set/release are no-ops and hasCapture is true), coalesced events, and
+shared focus/form input propagation. Focus/form callbacks still take their old path.
+Compound retained text writes were found to erase silently and now refuse explicitly;
+the corresponding getter/lowering is recorded in TODO. The event-batch working notes
+predate the connected bridge; prefer these current notes and actual source.
 
 The branch was clean and synchronized with its remote before adding this
 document. All 14 implementation/test commits listed below were pushed. The PR

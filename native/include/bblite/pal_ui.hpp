@@ -130,7 +130,7 @@ void ui_on_click(
     UiElementHandle element,
     std::function<void()> callback);
 /** Programmatic HTMLElement.click(), including reached default actions. */
-void ui_click(Engine& engine, UiElementHandle element);
+void ui_click(Engine& engine, UiElementHandle element, bool trusted = false);
 void ui_focus(Engine& engine, UiElementHandle element, bool visible = true);
 UiElementHandle ui_active_element(Engine& engine);
 #if defined(BBLITE_HAS_BROWSER_FILE) && BBLITE_HAS_BROWSER_FILE

@@ -269,6 +269,10 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
         provenance: "src/engine/device-lost-recovery.ts + src/engine/device-lost-scene-recovery.ts; native device and scene-resource reconstruction",
         consumers: CMAKE,
     },
+    "input:dom": {
+        provenance: "DOM event target/phase dispatch; native-architecture: owned input packets and realm-local listeners",
+        consumers: CMAKE,
+    },
     "input:gamepad": {
         provenance:
             "browser navigator.getGamepads + Gamepad standard mapping; " +

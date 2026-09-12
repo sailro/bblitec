@@ -1,4 +1,5 @@
 #include <bblite/pal_ui.hpp>
+#include <bblite/pal_dom_events.hpp>
 #if defined(BBLITE_HAS_BROWSER_FILE) && BBLITE_HAS_BROWSER_FILE
 #include <bblite/js_file.hpp>
 #endif
@@ -936,13 +937,21 @@ void ui_on_click(
     mark_ui_changed(engine);
 }
 
-void ui_click(Engine& engine, UiElementHandle element) {
+void ui_click(Engine& engine, UiElementHandle element, bool trusted) {
     const auto& record = ui_element(engine, element);
     if ((record.tag == "button" || record.tag == "input" || record.tag == "textarea") &&
         record.attributes.contains("disabled")) return;
     // Copy first, matching event dispatch: a callback may mutate the retained
     // element or register another callback without invalidating this event.
     const auto callbacks = ui_element(engine, element).click_callbacks;
+    if (engine.dom_input && !engine.dom_input->native_pointer_default) {
+        PlatformMouseEvent pointer;
+        pointer.pointer_id = -1; pointer.pointer_type.clear();
+        const auto event = dom_event(pointer, "click", dom_ui_path(engine, element));
+        event.dom->trusted = trusted;
+        dispatch_dom_pointer(engine, event);
+        if (event.default_prevented) return;
+    }
     for (const auto& callback : callbacks) callback();
 #if defined(BBLITE_HAS_BROWSER_FILE) && BBLITE_HAS_BROWSER_FILE
     // Default actions carry the stable handle because opening a dialog can
@@ -1548,7 +1557,7 @@ public:
         if (event_type == "focus") {
             ui_focus(engine, element, engine.ui_focus_visible);
         } else if (event_type == "click") {
-            ui_click(engine, element);
+            ui_click(engine, element, true);
         } else {
             float fallback_x = 0.0f;
             float fallback_y = 0.0f;
@@ -3445,6 +3454,20 @@ struct UiRmlRuntime {
                 context->Update();
             }
             update_intrinsic_widths();
+#if defined(BBLITE_HAS_DOM_INPUT) && BBLITE_HAS_DOM_INPUT
+            auto& input = dom_input(engine);
+            input.hit_path = [this](double x, double y) {
+                if (this->engine.pointer_locked) return dom_canvas_path();
+                return event_path(context->GetElementAtPoint(Rml::Vector2f{
+                    static_cast<float>(x) * density_ratio, static_cast<float>(y) * density_ratio}));
+            };
+            input.focus_path = [this] { return event_path(context->GetFocusElement()); };
+            input.can_activate = [this](DomEventTarget target) {
+                if (target.kind != DomEventTargetKind::Element) return true;
+                const auto& record = this->engine.ui_elements.at(target.element);
+                return !((record.tag == "button" || record.tag == "input" || record.tag == "textarea") && record.attributes.contains("disabled"));
+            };
+#endif
         } catch (...) {
             if (initialized) {
                 Rml::Shutdown();
@@ -3455,6 +3478,11 @@ struct UiRmlRuntime {
     }
 
     ~UiRmlRuntime() {
+        if (engine.dom_input) {
+            engine.dom_input->hit_path = {};
+            engine.dom_input->focus_path = {};
+            engine.dom_input->can_activate = {};
+        }
         if (initialized) {
             Rml::Shutdown();
         }
@@ -3464,6 +3492,16 @@ struct UiRmlRuntime {
         if (projected_elements.size() < engine.ui_elements.size()) {
             projected_elements.resize(engine.ui_elements.size());
         }
+    }
+
+    std::vector<DomEventTarget> event_path(Rml::Element* element) const {
+        std::vector<DomEventTarget> path;
+        for (auto* cursor = element; cursor; cursor = cursor->GetParentNode()) {
+            if (const auto found = event_targets.find(cursor); found != event_targets.end()) path.push_back(found->second);
+        }
+        path.push_back(DomEventTarget::document());
+        path.push_back(DomEventTarget::window());
+        return path;
     }
 
     bool update_density_ratio() {
@@ -3954,7 +3992,7 @@ struct UiRmlRuntime {
         }
         if (
             !projected.click_listener_attached &&
-            !record.click_callbacks.empty()) {
+            (!record.click_callbacks.empty() || (engine.dom_input && engine.dom_input->event_types.contains("click")))) {
             auto listener = std::make_unique<UiEventListener>(
                 engine,
                 handle,
@@ -4566,6 +4604,9 @@ struct UiRmlRuntime {
         if (!pending_reparents.empty()) throw std::runtime_error("A moved UI element has no projected parent.");
         sync_projected_root_order();
         refresh_current_color_svg_elements();
+        event_targets.clear();
+        for (std::uint32_t index = 0; index < projected_elements.size(); ++index)
+            if (auto* element = projected_elements[index].element) event_targets.emplace(element, DomEventTarget::node(index));
         projected_revision = engine.ui_revision;
     }
 
@@ -5287,6 +5328,7 @@ struct UiRmlRuntime {
     std::unordered_map<std::uint32_t, Rml::ElementPtr> pending_reparents;
     std::vector<std::unique_ptr<UiEventListener>> listeners;
     std::vector<ProjectedUiElement> projected_elements;
+    std::unordered_map<Rml::Element*, DomEventTarget> event_targets;
     std::vector<ProjectedGradientText> gradient_text;
     bool gradient_text_dirty = true;
     bool style_trace_written = false;
@@ -5332,6 +5374,14 @@ void destroy_ui_rml_runtime(UiRmlRuntime* runtime) noexcept {
 }
 
 bool handle_ui_rml_event(UiRmlRuntime& runtime, SDL_Event& event) {
+    const auto input = runtime.engine.dom_input;
+    const bool previous_pointer_default = input && input->native_pointer_default;
+    if (input) input->native_pointer_default = event.type == SDL_EVENT_MOUSE_BUTTON_UP;
+    struct RestorePointerDefault {
+        std::shared_ptr<DomInput> input;
+        bool previous;
+        ~RestorePointerDefault() { if (input) input->native_pointer_default = previous; }
+    } restore_pointer_default{input, previous_pointer_default};
     if (event.type == SDL_EVENT_MOUSE_BUTTON_DOWN && event.button.button == SDL_BUTTON_LEFT) {
         for (std::uint32_t i = 0; i < runtime.projected_elements.size(); ++i) {
             const auto& record = runtime.engine.ui_elements.at(i);

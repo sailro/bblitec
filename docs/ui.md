@@ -56,7 +56,7 @@ retain every canvas at its page position, so labels cannot conceal a rendering r
 | Content | textContent/innerText, bounded innerHTML, className/id/type, static-named attributes and removal |
 | Styles/classes | cssText, reached style fields and declaration methods, classList add/remove/forced toggle |
 | Queries | Static class query on a known complete retained subtree; Window document ID lookup returns the first attached match in tree order, or null |
-| Input | Reached click/mousedown/pointerdown/up/cancel/lost-capture callbacks; one pointer |
+| Input | Mouse/pointer movement, buttons, boundaries, click/dblclick, wheel and contextmenu; one mouse pointer |
 | Focus | Control/canvas focus, focus listeners, activeElement identity, button navigation |
 | Text forms | Retained input/textarea value and input callbacks; textarea editing and vertical resize |
 | Range forms | Retained value/input callbacks and native range widgets |
@@ -89,8 +89,14 @@ preserves its controls. Setting `textContent` or `innerHTML` replaces the prior 
 
 UI receives pointer input before cameras. Consumed events do not move cameras;
 Window keyboard listeners run before default UI actions. `preventDefault`
-suppresses those actions and camera propagation. Retained elements preserve
-focus/hover/capture identity. Borrowed events cannot escape dispatch; copy
+suppresses those actions and camera propagation. Mouse/pointer and keyboard listeners
+share target/capture/bubble dispatch, callback identity, removal and `once`.
+Boolean capture and represented `capture`/`once`/`passive` option records are supported;
+passive listeners cannot cancel defaults. `stopPropagation` and `stopImmediatePropagation`
+control traversal. Common event flags, phase, pointer type/ID and modifiers are exposed.
+Window input waits for callback completion before applying defaults while continuing
+to service document layout requests. Retained elements preserve focus and hover identity.
+Borrowed events cannot escape dispatch; copy
 owned scalar fields.
 
 Optional calls on nullable retained elements evaluate the receiver once, skip
@@ -245,7 +251,7 @@ subtrees may contain backdrop blur; canvas-only capture excludes UI filters.
 Single-row inline grids support positive px/fr tracks with one element child per track.
 Runtime track replacement and implicit extra rows refuse. Form dimensions support content-box and border-box.
 
-- No general selectors/traversal/observers, full browser form semantics, JavaScript hover callbacks,
+- No general selectors/traversal/observers, full browser form semantics,
   multiple pointer identities or arbitrary events.
 - Supported inset outlines become borders; other shadows/font-variant-numeric
   can degrade. General grid and unsupported text-shadow forms refuse.
@@ -253,7 +259,10 @@ Runtime track replacement and implicit extra rows refuse. Form dimensions suppor
   modes refuse. Saved layer textures and general mask-image filters are unsupported.
 - blur(px)/none are supported; other reached backdrop functions can degrade.
 - will-change, touch-action, user-select and image-rendering are accepted hints.
-- element.animate and listener removal are no-ops; CSS keyframes use mapped easing.
+- Abort signals, event-target value projection and explicit pointer-capture lifecycle remain unsupported.
+  Focus and form-input callbacks retain their earlier per-element dispatch path.
+- element.animate and removal of listeners outside the shared input dispatch remain no-ops;
+  CSS keyframes use mapped easing. Compound textContent/innerText writes refuse.
 
 Parity measures the [full page](fidelity.md#what-is-measured-the-full-page);
 do not infer that every UI residual is unavoidable.

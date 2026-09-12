@@ -296,6 +296,9 @@ const KEY_EVENT_FIELDS = new EmissionMap<string, string>([
     ["altKey", "alt_key"],
     ["metaKey", "meta_key"],
 ]);
+const DOM_EVENT_FLAGS = new EmissionMap<string, string>([
+    ["bubbles", "bubbles"], ["cancelable", "cancelable"], ["composed", "composed"], ["isTrusted", "trusted"],
+]);
 
 /**
  * A nullable name's resource kind, keyed by the type's name alone.
@@ -5239,6 +5242,13 @@ class Compiler
             // source's optional chain and fallback lower unchanged.
             return { kind: "json-null", cpp: "std::nullopt" };
         }
+        if (owner.kind === "platform-mouse-event" || owner.kind === "platform-keyboard-event") {
+            if (property === "defaultPrevented") return {kind: "boolean", cpp: `${owner.cpp}.default_prevented`};
+            if (property === "type") return {kind: "string", cpp: `bbl::dom_event_state(${owner.cpp}).type`};
+            if (property === "eventPhase") return {kind: "number", cpp: `bbl::dom_event_state(${owner.cpp}).phase`};
+            const booleanField = DOM_EVENT_FLAGS.get(property);
+            if (booleanField) return {kind: "boolean", cpp: `bbl::dom_event_state(${owner.cpp}).${booleanField}`};
+        }
         if (owner.platformEventBase) {
             this.fail(
                 expression.name,
@@ -5275,6 +5285,10 @@ class Compiler
             );
         }
         if (owner.kind === "platform-mouse-event") {
+            if (property === "pointerType") return {kind: "string", cpp: `${owner.cpp}.pointer_type`};
+            if (property === "isPrimary") return {kind: "boolean", cpp: `${owner.cpp}.is_primary`};
+            const modifier = KEY_EVENT_FIELDS.get(property);
+            if (modifier && property !== "repeat") return {kind: "boolean", cpp: `${owner.cpp}.${modifier}`};
             if (
                 property === "button" ||
                 property === "buttons" ||
@@ -5291,7 +5305,7 @@ class Compiler
                     kind: "number",
                     cpp:
                         property === "pointerId"
-                            ? "0.0"
+                            ? `${owner.cpp}.pointer_id`
                             : property === "button"
                               ? `${owner.cpp}.button`
                               : property === "buttons"
@@ -10789,14 +10803,14 @@ class Compiler
                     const parameterTypes = bound.nativeCallbackParameterTypes;
                     if (
                         parameterTypes &&
-                        parameterTypes.length !== values.length
+                        parameterTypes.length > values.length
                     ) {
                         this.fail(
                             callback,
                             "Stored platform callback received the wrong number of arguments.",
                         );
                     }
-                    const argumentsCpp = values.map((value, index) => {
+                    const argumentsCpp = values.slice(0, parameterTypes?.length ?? values.length).map((value, index) => {
                         const type = parameterTypes?.[index];
                         return type
                             ? this.dataLowerer.compileKnownValueForSink(

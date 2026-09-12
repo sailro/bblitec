@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <stdexcept>
 #include <vector>
 
 namespace bbl {
@@ -44,5 +45,11 @@ struct DomEventState {
     }
     [[nodiscard]] bool can_prevent_default() const noexcept { return cancelable && !passive_listener; }
 };
+
+template <typename Event>
+DomEventState& dom_event_state(const Event& event) {
+    if (!event.dom) throw std::logic_error("This platform callback has no DOM dispatch state.");
+    return *event.dom;
+}
 
 } // namespace bbl

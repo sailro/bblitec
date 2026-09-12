@@ -32,6 +32,7 @@
 namespace bbl {
 
 struct Engine;
+struct DomInput;
 /** The first OS language preference, with a hyphenated region when available. */
 [[nodiscard]] std::string preferred_language();
 [[nodiscard]] std::string native_platform();
@@ -150,14 +151,14 @@ struct PlatformKeyboardEvent {
     bool alt_key = false;
     bool meta_key = false;
     mutable bool default_prevented = false;
-    std::shared_ptr<DomEventState> dom;
+    std::shared_ptr<DomEventState> dom{};
 
     void prevent_default() const noexcept {
         if (dom && !dom->can_prevent_default()) return;
         default_prevented = true;
     }
-    void stop_propagation() const noexcept { if (dom) dom->stop_propagation(); }
-    void stop_immediate_propagation() const noexcept { if (dom) dom->stop_immediate_propagation(); }
+    void stop_propagation() const { dom_event_state(*this).stop_propagation(); }
+    void stop_immediate_propagation() const { dom_event_state(*this).stop_immediate_propagation(); }
 };
 
 /** Browser-neutral mouse data delivered by the platform event loop. */
@@ -170,7 +171,7 @@ struct PlatformMouseEvent {
     double movement_y = 0.0;
     double delta_y = 0.0;
     mutable bool default_prevented = false;
-    std::shared_ptr<DomEventState> dom;
+    std::shared_ptr<DomEventState> dom{};
     std::string pointer_type = "mouse";
     double pointer_id = 1;
     bool is_primary = true;
@@ -183,8 +184,8 @@ struct PlatformMouseEvent {
         if (dom && !dom->can_prevent_default()) return;
         default_prevented = true;
     }
-    void stop_propagation() const noexcept { if (dom) dom->stop_propagation(); }
-    void stop_immediate_propagation() const noexcept { if (dom) dom->stop_immediate_propagation(); }
+    void stop_propagation() const { dom_event_state(*this).stop_propagation(); }
+    void stop_immediate_propagation() const { dom_event_state(*this).stop_immediate_propagation(); }
 };
 
 /**
@@ -3672,6 +3673,7 @@ struct Engine {
     std::vector<IntervalCallback> interval_callbacks;
     std::uint64_t next_interval_id = 1;
     /** Platform callbacks with DOM listener identity and removal semantics. */
+    std::shared_ptr<DomInput> dom_input;
     PlatformEventListeners<void(const PlatformKeyboardEvent&)>
         key_down_callbacks;
     PlatformEventListeners<void(const PlatformKeyboardEvent&)>

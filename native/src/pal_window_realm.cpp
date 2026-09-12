@@ -24,6 +24,9 @@ struct WindowEvent final : ExternalEvent {
     std::string type;
     PlatformMouseEvent mouse;
 };
+struct WindowDomEvent final : ExternalEvent {
+    std::shared_ptr<DomEventBatch> batch;
+};
 /** Only mouse event structs are copied; SDL events containing pointers are
  * never admitted to the realm mailbox. */
 struct WindowPointerEvent final : ExternalEvent {
@@ -44,6 +47,7 @@ struct DocumentSnapshot {
     std::vector<UiElementHandle> roots;
     std::vector<UiStyleRule> styles;
     std::uint64_t style_revision = 0;
+    std::set<std::string> dom_event_types;
 };
 struct LayoutSnapshot {
     std::vector<UiClientRect> rectangles;
@@ -109,6 +113,7 @@ struct WindowDocument {
     std::shared_ptr<WindowServices> host;
     Engine engine;
     std::uint64_t published_revision = std::numeric_limits<std::uint64_t>::max();
+    std::uint64_t published_input_revision = 0;
     std::shared_ptr<const LayoutSnapshot> layout;
     std::unordered_map<std::uint32_t, std::shared_ptr<CanvasElement>> canvases;
     struct InputTarget {
@@ -153,6 +158,7 @@ std::unique_ptr<DocumentSnapshot> snapshot_document(const Engine& engine) {
     snapshot->document_roots = engine.ui_document_roots;
     snapshot->styles = engine.ui_host_style_rules;
     snapshot->style_revision = engine.ui_style_revision;
+    if (engine.dom_input) snapshot->dom_event_types = engine.dom_input->event_types;
     return snapshot;
 }
 
@@ -162,6 +168,21 @@ void apply_document(Engine& engine, DocumentSnapshot snapshot, const std::shared
     engine.ui_document_roots = snapshot.document_roots;
     engine.ui_host_style_rules = std::move(snapshot.styles);
     engine.ui_style_revision = snapshot.style_revision;
+    if (!snapshot.dom_event_types.empty()) {
+        auto& input = dom_input(engine);
+        input.event_types = std::move(snapshot.dom_event_types);
+        input.batch_sink = [inbox](std::shared_ptr<DomEventBatch> batch) {
+            auto event = std::make_unique<WindowDomEvent>();
+            event->batch = std::move(batch);
+            inbox->post(std::move(event));
+        };
+        input.pointer_sink = [inbox](const PlatformMouseEvent& payload) {
+            auto event = std::make_unique<WindowDomEvent>();
+            event->batch = std::make_shared<DomEventBatch>();
+            event->batch->add(payload);
+            inbox->post(std::move(event));
+        };
+    }
     for (std::size_t index = 0; index < snapshot.listeners.size(); ++index) {
         const UiElementHandle element{static_cast<std::uint32_t>(index)};
         auto& target = engine.ui_elements[index];
@@ -217,7 +238,7 @@ void dispatch_canvas_input(const WindowPointerEvent& packet) {
         const PlatformMouseEvent mouse{.button = -1, .buttons = dom_mouse_buttons(event.motion.state),
             .client_x = event.motion.x, .client_y = event.motion.y,
             .movement_x = event.motion.xrel, .movement_y = event.motion.yrel};
-        engine->mouse_move_callbacks.dispatch(mouse);
+        dispatch_platform_mouse_move(*engine, mouse);
     } else if (event.type == SDL_EVENT_MOUSE_BUTTON_DOWN || event.type == SDL_EVENT_MOUSE_BUTTON_UP) {
         const PlatformMouseEvent mouse{.button = static_cast<double>(event.button.button - 1), .buttons = dom_mouse_buttons(packet.buttons),
             .client_x = event.button.x, .client_y = event.button.y};
@@ -285,13 +306,16 @@ void update_window_document() {
     auto& doc = current_document();
     auto& host = *doc.host;
     // Snapshot source state on its owner before taking the presentation lock.
-    auto snapshot = doc.published_revision != doc.engine.ui_revision ? snapshot_document(doc.engine) : nullptr;
+    const auto input_revision = doc.engine.dom_input ? doc.engine.dom_input->revision : 0;
+    auto snapshot = doc.published_revision != doc.engine.ui_revision || doc.published_input_revision != input_revision
+        ? snapshot_document(doc.engine) : nullptr;
     std::unique_lock lock(host.mutex);
     if (host.stopping) throw WorkerTerminated{};
     if (snapshot) {
         host.pending = std::move(snapshot);
         const auto revision = ++host.requested;
         doc.published_revision = doc.engine.ui_revision;
+        doc.published_input_revision = input_revision;
         host.wake.wait(lock, [&] { return host.stopping || host.completed >= revision; });
         if (host.stopping) throw WorkerTerminated{};
     }
@@ -446,6 +470,12 @@ int run_window_application(WorkerEntry initialize, EngineOptions options) {
                     ApplicationErrors errors(loop);
                     owner.errors = &errors;
                     realm.on_platform_event([](std::unique_ptr<ExternalEvent> packet) {
+                        if (const auto* event = dynamic_cast<WindowDomEvent*>(packet.get())) {
+                            event->batch->dispatch(window_document_engine(), [](auto& callback, const auto& payload) {
+                                EventLoop::current().dispatch_callback([&] { callback(payload); });
+                            });
+                            return;
+                        }
                         if (const auto* pointer = dynamic_cast<WindowPointerEvent*>(packet.get())) {
                             EventLoop::current().dispatch_callback([&] { dispatch_canvas_input(*pointer); });
                             return;
@@ -475,6 +505,8 @@ int run_window_application(WorkerEntry initialize, EngineOptions options) {
             std::shared_ptr<const LayoutSnapshot> layout;
             UiElementHandle pointer_capture{};
             SDL_MouseButtonFlags pointer_buttons = 0;
+            std::optional<SDL_Event> pending_input;
+            std::shared_ptr<DomEventBatch> pending_dispatch;
             long presented = 0;
             const bool trace_window = runtime_trace_enabled() || environment_variable("BBLITE_WINDOW_TRACE") == "1";
             bool running = true;
@@ -492,9 +524,31 @@ int run_window_application(WorkerEntry initialize, EngineOptions options) {
                     services->inbox->post(std::move(request));
                 }
                 SDL_Event event;
-                while (SDL_PollEvent(&event)) {
-                    if (event.type == SDL_EVENT_QUIT || event.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED) running = false;
-                    if (frame_options.test_pass && is_platform_input_event(event) && !is_replayed_ui_event(event)) continue;
+                for (;;) {
+                    if (pending_input) {
+                        if (!pending_dispatch->ready()) break;
+                        event = *pending_input;
+                        pending_input.reset();
+                        const bool prevented = pending_dispatch->default_prevented;
+                        pending_dispatch.reset();
+                        if (prevented) continue;
+                    } else {
+                        if (!SDL_PollEvent(&event)) break;
+                        if (event.type == SDL_EVENT_QUIT || event.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED) running = false;
+                        if (frame_options.test_pass && is_platform_input_event(event) && !is_replayed_ui_event(event)) continue;
+                        if (auto batch = prepare_dom_platform_input(display, event)) {
+                            dispatch_dom_batch(display, batch);
+                            if (!batch->ready()) {
+                                // prepare_dom_platform_input only admits SDL payloads
+                                // containing no borrowed pointers. Other events remain
+                                // in SDL's queue until this default action is resolved.
+                                pending_input = event;
+                                pending_dispatch = std::move(batch);
+                                break;
+                            }
+                            if (batch->default_prevented) continue;
+                        }
+                    }
                     const bool reaches_canvas = handle_ui_rml_event(*ui, event);
                     if (event.type == SDL_EVENT_WINDOW_FOCUS_LOST) {
                         pointer_capture = {}; pointer_buttons = 0;
