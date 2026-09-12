@@ -705,29 +705,22 @@ export function compileDataMethodCall(
         (narrowed.kind === "string"
             ? ({ kind: "string" } as const)
             : undefined);
-    if (dataType?.kind === "struct") {
+    const recordType = dataType?.kind === "optional" ? dataType.inner : dataType;
+    if (recordType?.kind === "struct") {
         const field = lowerer.context.dataTypes
-            .structFields(dataType.name, callee.name)
+            .structFields(recordType.name, callee.name)
             .find((candidate) => candidate.name === method);
         const functionType = field?.type;
         if (functionType?.kind === "function") {
-            const referenceReceiver = lowerer.context.dataTypes.isReferenceStruct(dataType.name);
+            const referenceReceiver = lowerer.context.dataTypes.isReferenceStruct(recordType.name);
             const member = referenceReceiver ? "->" : ".";
-            if (call.questionDotToken || callee.questionDotToken) {
-                const receiver = lowerer.context.allocateTemporaryCppName("callback_receiver");
-                lowerer.context.emit({ kind: "declaration", type: referenceReceiver ? "const auto" : "const auto&", name: receiver, initializer: narrowed.cpp });
-                return lowerer.compileOptionalStoredCall(call, `${receiver}${member}${field!.name}`, functionType,
-                    callee.questionDotToken ? receiver : undefined);
-            }
-            const argumentsCpp = lowerer.compileFunctionArguments(
-                call,
-                functionType,
-                `Stored function '${method}'`,
-            );
-            const cpp = `${narrowed.cpp}${member}${field!.name}(${argumentsCpp.join(", ")})`;
-            return functionType.result
-                ? lowerer.leafValue(cpp, functionType.result)
-                : { kind: "void", cpp };
+            const receiver = lowerer.context.allocateTemporaryCppName("callback_receiver");
+            const optional = dataType?.kind === "optional";
+            lowerer.context.emit({kind:"declaration", type:referenceReceiver || optional ? "const auto" : "const auto&",
+                name:receiver, initializer:narrowed.cpp});
+            const record = optional ? `(*${receiver})` : receiver;
+            const present = optional ? `${receiver}.has_value()` : referenceReceiver ? receiver : undefined;
+            return lowerer.compileStoredCall(call, `${record}${member}${field!.name}`, functionType, present);
         }
     }
     if (dataType?.kind === "map") { return compileMapDataMethod(lowerer, call, callee, method, narrowed, dataType); }

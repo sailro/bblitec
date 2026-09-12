@@ -23,7 +23,7 @@ it does not establish that this external application compiles or runs.
 | Branch | `codex/external-project-support` |
 | Remote | `https://github.com/sailro/bblitec.git` |
 | Branch base used in this session | `3474e835` on `main` |
-| Last completed executable-code/test commit before the optional DOM unit | `a6a9d124` (2026-09-12) |
+| Last completed executable-code/test commit before nullable record dispatch | `a17d0872` (2026-09-12) |
 | Draft PR | [#247 — Extend generic application compilation and retained UI support](https://github.com/sailro/bblitec/pull/247) |
 | External checkout | `C:/Dev/_prototypes/external-native-app` |
 | External source revision | `d7c477a6d5963680c55249dceb93cb6e4ab9ce56` |
@@ -167,6 +167,14 @@ incomplete. Do not merge or mark it ready merely because the sweep passes.
   on a nullable injected method record. This is a general stored-record method
   dispatch gap, not missing native localStorage support. The record includes an
   optional removal callback, so retain both receiver and callback absence checks.
+- `a17d0872` saves the nullable class-handle fix and is pushed. PR #247 now
+  describes resumed work and the latest verified limits rather than the old pause.
+- The nullable record-method unit extends the shared stored-call path to optional
+  records. Receiver storage and callbacks are captured before argument effects;
+  missing receivers and missing optional callbacks skip arguments independently.
+  `focused258` passed 17 tests, including existing storage and callback tests;
+  `focused259` additionally proves a helper receiver is evaluated once.
+  `compile259` and `full259` are running after these changes; inspect their exits.
 
 The resumed environment uses a workspace-write sandbox. Git metadata writes and
 network access may need escalation; the requested unit commits/pushes remain
@@ -219,7 +227,7 @@ Still pending, and **not implied by the green sweep**:
 - New behavior-specific interaction checks for future integration changes.
   The sweep does not run every declared interaction check.
 
-## Current external-app blocker and the first investigation
+## Earlier external-app blocker and the first investigation
 
 Latest external generation: `artifacts/external-integration/compile222.log`.
 It reports, at external `src/ui/crash-reporter.ts:657:5`:
@@ -589,7 +597,7 @@ build still drains the whole set and reports every failure.
 
 | Local artifact | Purpose / caution |
 | --- | --- |
-| `compile222.log` | Latest actual external-app blocker |
+| `compile222.log` | Historical external-app blocker before the resume |
 | `full227.log`, `sweep227.log`, corresponding `.exit` files | Definitive green validation at this pause |
 | `sweep224.log` | Initial full sweep: only Doom failed native compilation; later stages skipped |
 | `regression225.log` | Neutral test reproducing namespace/local constant mismatch |
