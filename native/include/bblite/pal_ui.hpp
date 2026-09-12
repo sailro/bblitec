@@ -26,6 +26,13 @@ js::Nullable<UiElementHandle> ui_find_element_by_id(Engine& engine, std::string_
 UiElementHandle ui_get_element_by_id(
     Engine& engine,
     std::string_view id);
+enum class UiQueryMode { All, First, Closest, Matches };
+js::Array<UiElementHandle> ui_query_elements(Engine& engine, UiElementHandle root,
+    const std::vector<std::vector<UiSelectorStep>>& selectors, UiQueryMode mode = UiQueryMode::All);
+js::Nullable<UiElementHandle> ui_query_element(Engine& engine, UiElementHandle root,
+    const std::vector<std::vector<UiSelectorStep>>& selectors, UiQueryMode mode = UiQueryMode::First);
+bool ui_matches_element(Engine& engine, UiElementHandle element,
+    const std::vector<std::vector<UiSelectorStep>>& selectors);
 std::string ui_get_form_value(Engine& engine, UiElementHandle element);
 void ui_set_form_value(Engine& engine, UiElementHandle element, std::string value);
 UiClientRect ui_get_client_rect(

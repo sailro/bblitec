@@ -304,9 +304,11 @@ export class UiProjection {
             }
             if (
                 ts.isPropertyAccessExpression(callee) &&
-                (callee.name.text === "querySelector" || this.isNativeHostUiLookup(owner))
+                (callee.name.text === "querySelector" || callee.name.text === "closest" || this.isNativeHostUiLookup(owner))
             ) {
-                return asElement(this.context.compilePlatformCall(owner));
+                const value = this.context.compilePlatformCall(owner);
+                return asElement(value?.kind === "data" && value.dataType?.kind === "optional"
+                    ? this.context.pinValueToTemporary(value, "ui_lookup", owner) : value);
             }
         }
         return undefined;
@@ -4989,7 +4991,8 @@ export class UiProjection {
         const callee = this.context.unwrap(call.expression);
         if (
             !ts.isPropertyAccessExpression(callee) ||
-            callee.name.text !== "getElementById" ||
+            !(callee.name.text === "getElementById" || (this.context.options.workers &&
+                (callee.name.text === "querySelector" || callee.name.text === "querySelectorAll"))) ||
             !ts.isIdentifier(callee.expression) ||
             callee.expression.text !== "document" ||
             !this.context.isDefaultLibraryIdentifier(callee.expression) ||

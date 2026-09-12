@@ -55,7 +55,7 @@ retain every canvas at its page position, so labels cannot conceal a rendering r
 | Construction | Static-tag createElement, appendChild, mixed text/element append, root attachment, remove |
 | Content | textContent/innerText, bounded innerHTML, className/id/type, static-named attributes and removal |
 | Styles/classes | cssText, reached style fields and declaration methods, classList add/remove/forced toggle |
-| Queries | Static class query on a known complete retained subtree; Window document ID lookup returns the first attached match in tree order, or null |
+| Queries | Retained querySelector/querySelectorAll, matches and closest with literal selectors; Window document queries and ID lookup return attached matches in tree order |
 | Input | Mouse/pointer movement, buttons, boundaries, click/dblclick, wheel and contextmenu; one mouse pointer |
 | Focus | Control/canvas focus, focus listeners, activeElement identity, button navigation |
 | Text forms | Retained input/textarea value and input callbacks; textarea editing and vertical resize |
@@ -65,6 +65,14 @@ retain every canvas at its page position, so labels cannot conceal a rendering r
 Removing an attribute updates retained and rendered state, including image sources, boolean attributes,
 classes and all inline style declarations. Attribute names follow HTML ASCII casing. Removing the type
 of an active native file input refuses; its control transition is not represented.
+
+Queries share the stylesheet selector matcher and observe current attributes and child order,
+including detached element subtrees. Single queries and closest return null when absent;
+querySelectorAll returns an ordered, duplicate-free snapshot. Lists, compound selectors,
+structural formulas and :is/:where/:not/:has are represented. Interaction-state queries,
+:scope, computed selector strings and pseudo-element queries refuse. Dynamic traversal into
+innerHTML needs an authored markup tree and raises an explicit runtime error; the existing
+generation-proven static markup queries retain their bounded path.
 
 Direct `element.style.setProperty`, `getPropertyValue` and `removeProperty` accept static CSS property names
 and share inline storage with field assignments. Reads return stored inline values; removal returns the

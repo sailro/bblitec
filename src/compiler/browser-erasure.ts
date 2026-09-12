@@ -671,6 +671,9 @@ export class BrowserErasure {
     ): boolean {
         const owner = (node: ts.Expression): Value | undefined => {
             const unwrapped = this.context.unwrap(node);
+            if (ts.isCallExpression(unwrapped) && this.context.isNativeHostUiLookup(unwrapped)) {
+                return {kind:"ui-element", cpp:""};
+            }
             if (
                 (ts.isElementAccessExpression(unwrapped) || ts.isPropertyAccessExpression(unwrapped)) &&
                 this.context.isNativeUiValueExpression(unwrapped)

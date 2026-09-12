@@ -226,7 +226,88 @@ bool ui_record_has_class(
     return false;
 }
 
+struct RetainedUiSelectorTree {
+    using Node = UiElementHandle;
+    Engine& engine;
+    static constexpr Node document{invalid_handle - 1};
+    bool valid(Node node) const { return node == document || node.value < engine.ui_elements.size(); }
+    bool element(Node node) const { return valid(node) && node != document && ui_element(engine, node).tag != "#text"; }
+    std::string_view tag(Node node) const { return ui_element(engine, node).tag; }
+    Node parent(Node node) const {
+        if (node == document) return {};
+        const auto& record = ui_element(engine, node);
+        return record.attached_to_root ? document : record.parent;
+    }
+    std::size_t child_count(Node node) const {
+        if (node == document) return engine.ui_root_children.size();
+        const auto& record = ui_element(engine, node);
+        if (!record.inner_rml.empty()) throw std::runtime_error("Dynamic UI queries into innerHTML need an authored markup tree.");
+        return record.children.size();
+    }
+    Node child(Node node, std::size_t index) const {
+        return node == document ? engine.ui_root_children.at(index) : ui_element(engine, node).children.at(index);
+    }
+    std::optional<std::string_view> attribute(Node node, const std::string& name) const {
+        const auto& attributes = ui_element(engine, node).attributes;
+        const auto found = attributes.find(name);
+        return found == attributes.end() ? std::nullopt : std::optional<std::string_view>{found->second};
+    }
+    bool has_class(Node node, const std::string& name) const { return ui_record_has_class(ui_element(engine, node), name); }
+    bool empty(Node node) const {
+        if (!ui_element(engine, node).text.empty()) return false;
+        for (std::size_t index = 0; index < child_count(node); ++index) {
+            const auto candidate = child(node, index);
+            if (element(candidate) || !ui_element(engine, candidate).text.empty()) return false;
+        }
+        return true;
+    }
+    bool state(Node, UiSelectorTestKind) const {
+        throw std::runtime_error("Interaction states require a retained DOM query snapshot.");
+    }
+};
+
 } // namespace
+
+js::Array<UiElementHandle> ui_query_elements(Engine& engine, UiElementHandle root,
+    const std::vector<std::vector<UiSelectorStep>>& selectors, UiQueryMode mode) {
+    if (selectors.empty()) throw std::runtime_error("A DOM query needs a selector.");
+    static_cast<void>(ui_document_root(engine, UiDocumentPart::Html));
+    const RetainedUiSelectorTree tree{engine};
+    const pal::UiSelectorMatcher matcher{tree};
+    js::Array<UiElementHandle> result;
+    const auto accept = [&](UiElementHandle candidate) {
+        if (!tree.element(candidate)) return false;
+        if (!std::any_of(selectors.begin(), selectors.end(), [&](const auto& sequence) { return matcher.sequence(candidate, sequence); })) return false;
+        result.push_back(candidate);
+        return mode != UiQueryMode::All;
+    };
+    if (mode == UiQueryMode::Matches || mode == UiQueryMode::Closest) {
+        for (auto candidate = root; tree.valid(candidate); candidate = tree.parent(candidate)) {
+            if (accept(candidate) || mode == UiQueryMode::Matches) break;
+        }
+    } else {
+        const auto visit = [&](const auto& self, UiElementHandle parent) -> bool {
+            for (std::size_t index = 0; index < tree.child_count(parent); ++index) {
+                const auto candidate = tree.child(parent, index);
+                if (accept(candidate) || self(self, candidate)) return true;
+            }
+            return false;
+        };
+        visit(visit, root.value == invalid_handle ? RetainedUiSelectorTree::document : root);
+    }
+    return result;
+}
+
+js::Nullable<UiElementHandle> ui_query_element(Engine& engine, UiElementHandle root,
+    const std::vector<std::vector<UiSelectorStep>>& selectors, UiQueryMode mode) {
+    const auto result = ui_query_elements(engine, root, selectors, mode);
+    return result.empty() ? std::nullopt : js::Nullable<UiElementHandle>{result.front()};
+}
+
+bool ui_matches_element(Engine& engine, UiElementHandle element,
+    const std::vector<std::vector<UiSelectorStep>>& selectors) {
+    return !ui_query_elements(engine, element, selectors, UiQueryMode::Matches).empty();
+}
 
 UiElementHandle ui_create_element(Engine& engine, std::string_view tag) {
     if (tag.empty()) {

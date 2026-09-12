@@ -288,7 +288,25 @@ same 164 modules in the same order (`initializer-before497` / `initializer-after
 `planner497` passed all 673 existing compiler/worker/transaction/analysis checks;
 `planner498` passes the new alias/recursive-call/dormant-body fixture after correcting
 its assumption about the separate conservative container-mutation scan.
-Whole-application timing after the optimization has not yet been measured.
+`compile499` reaches the same refusal with 49.0 seconds sampled, down from 99.4;
+the full generation checkpoint is about twice as fast. `eb79fdb1` is pushed.
+
+The following query unit shares native selector traversal between RmlUi and retained
+authored records (`ui_selector_match.hpp`). It adds runtime querySelector/querySelectorAll,
+matches and closest, including Window document lookup routing, tree-order snapshots,
+missing matches, helper values, detached/reparented nodes and optional/chained receivers.
+Query setup materializes logical html/head/body through the existing document path.
+The new native fixture rethrows application errors instead of leaving its test EventLoop
+waiting after a failed assertion. Interaction snapshots, :scope/computed selectors and
+dynamic innerHTML traversal remain explicit gaps. Static proven markup queries retain
+their existing path; do not claim arbitrary markup query support.
+
+`query-batch507` passes 667/669 checks, including every native fixture. Its two failures
+are old expectations of class-only lowering and refusal of empty results; both assertions
+now describe runtime queries while preserving the independent grid refusal. `window508`
+builds and runs the input/selector/query fixture on both SDL_GPU and Dawn, checking queried
+identities and snapshots inside pointer callbacks alongside fresh layout. The application
+has not yet been retried after this query unit.
 
 `declaration-batch-notes.md` records the
 next CSS assessment: do not simply allow registered names. Pinned text-transform

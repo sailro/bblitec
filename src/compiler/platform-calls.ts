@@ -9,6 +9,7 @@ import { UiProjection } from "./ui-projection.js";
 import { requireWindowHost, windowErrorEventValue } from "./window-events.js";
 import { browserGlobalNamed } from "./browser-erasure.js";
 import { emitDomEventListener } from "./dom-listeners.js";
+import {parseUiSelectorSequence, splitUiSelectorList, uiSelectorSequenceCpp, uiSelectorSequenceTests, isUiSelectorState} from "../ui-selector.js";
 
 
 
@@ -723,6 +724,9 @@ export class PlatformCalls {
             this.context.requirePresentationHost(call);
         }
         if (this.context.isNativeHostUiLookup(call)) {
+            if (callee.name.text !== "getElementById") {
+                return this.compileUiQuery(call, callee.name.text, this.ui.documentEngine(call), "{}");
+            }
             const id = this.context.evaluator.staticTextValue(argumentAt(call, 0));
             const engine = this.ui.documentEngine(call);
             this.context.reachFeature("ui:rml", call);
@@ -994,6 +998,10 @@ export class PlatformCalls {
                 kind: "void",
                 cpp: `bbl::ui_click(${engine}, ${element.cpp})`,
             };
+        }
+        if (element && ["querySelector", "querySelectorAll", "matches", "closest"].includes(callee.name.text) &&
+            !(callee.name.text.startsWith("querySelector") && element.uiStaticId !== undefined && this.ui.uiStaticDescendants(element.uiStaticId).markup.length > 0)) {
+            return this.compileUiQuery(call, callee.name.text, this.context.requireEngine(element, call), element.cpp, element.optionalFoundCpp);
         }
         if (element && callee.name.text === "querySelector") {
             this.context.expectArgumentCount(call, 1, 1);
@@ -1319,5 +1327,37 @@ export class PlatformCalls {
             }
         }
         return undefined;
+    }
+
+    private compileUiQuery(call: ts.CallExpression, method: string, engine: string, root: string, found?: string): Value {
+        this.context.expectArgumentCount(call, 1, 1);
+        const source = this.context.compileStringLiteral(argumentAt(call, 0));
+        const selectors = splitUiSelectorList(source).map(part => {
+            const sequence = parseUiSelectorSequence(part);
+            if (!sequence) this.context.fail(call, `Retained DOM query selector '${part}' is not lowered.`);
+            for (const test of uiSelectorSequenceTests(sequence)) {
+                if (isUiSelectorState(test.kind)) this.context.fail(call, `Retained DOM query state ':${test.kind}' requires an interaction snapshot.`);
+            }
+            return uiSelectorSequenceCpp(sequence, text => this.context.cppString(text));
+        });
+        if (!selectors.length) this.context.fail(call, "Retained DOM query requires a selector.");
+        this.context.reachFeature("ui:rml", call);
+        this.context.reachJsData();
+        const terms = `{${selectors.join(", ")}}`;
+        if (method === "matches") {
+            const query = `bbl::ui_matches_element(${engine}, ${root}, ${terms})`;
+            return found ? {kind:"data", cpp:`(${found} ? std::optional<bool>{${query}} : std::nullopt)`,
+                dataType:{kind:"optional", inner:{kind:"boolean"}}} : {kind:"boolean", cpp:query};
+        }
+        if (method === "querySelectorAll") {
+            const query = `bbl::ui_query_elements(${engine}, ${root}, ${terms})`;
+            const array = {kind:"vector", element:{kind:"handle", handle:"ui-element"}} as const;
+            const dataType = found ? {kind:"optional" as const, inner:array} : array;
+            const cppType = this.context.dataTypes.cppType(dataType);
+            return {kind:"data", cpp:found ? `(${found} ? ${cppType}{${query}} : ${cppType}{std::nullopt})` : query, dataType, engineCpp:engine};
+        }
+        const query = `bbl::ui_query_element(${engine}, ${root}, ${terms}${method === "closest" ? ", bbl::UiQueryMode::Closest" : ""})`;
+        return {kind:"data", cpp:found ? `(${found} ? ${query} : bbl::js::Nullable<bbl::UiElementHandle>{})` : query,
+            dataType:{kind:"optional", inner:{kind:"handle", handle:"ui-element"}}, engineCpp:engine};
     }
 }

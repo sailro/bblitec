@@ -10063,7 +10063,7 @@ test("lowers scoped class queries to retained DOM-order iteration", () => {
         void main();
     `);
 
-    assert.match(result.cpp, /ui_query_class[^\n]*"swatch"/);
+    assert.match(result.cpp, /ui_query_elements[^\n]*UiSelectorTestKind::Class, "swatch"/);
     assert.match(result.cpp, /for \(std::size_t [^;]+;/);
     assert.match(result.cpp, /ui_toggle_class[^\n]*"active"/);
 });
@@ -10456,7 +10456,7 @@ test("refuses unsafe or unbounded retained innerHTML", () => {
     );
 });
 
-test("admits unused scoped sheets while refusing unproven queries and grid substitutions", () => {
+test("admits unused scoped sheets and empty queries while refusing unproven grid substitutions", () => {
     assert.match(
             compileSource(`
                 import { createEngine } from "@babylonjs/lite";
@@ -10470,8 +10470,7 @@ test("admits unused scoped sheets while refusing unproven queries and grid subst
             `).cpp,
         /UiStyleSelectorKind::ClassDescendantTag/,
     );
-    assert.throws(
-        () =>
+    assert.match(
             compileSource(`
                 import { createEngine } from "@babylonjs/lite";
                 async function main(): Promise<void> {
@@ -10483,8 +10482,8 @@ test("admits unused scoped sheets while refusing unproven queries and grid subst
                     document.body.appendChild(root);
                 }
                 void main();
-            `),
-        /requires a complete statically-known retained subtree/,
+            `).cpp,
+        /ui_query_elements[^\n]*UiSelectorTestKind::Class, "missing"/,
     );
     assert.throws(
         () =>
