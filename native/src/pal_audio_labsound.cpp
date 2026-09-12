@@ -66,6 +66,13 @@
 
 namespace bbl::pal {
 
+struct AudioContextState {
+    enum class Status { Running, Suspended, Closed };
+    Status status = Status::Running;
+    double sample_rate = 48000.0;
+    double closed_time = 0.0;
+};
+
 struct AudioSourceState {
     bool started = false;
     bool completed = false;
@@ -124,6 +131,7 @@ struct ContextRecord {
     }
 
     std::shared_ptr<lab::AudioContext> context;
+    std::shared_ptr<AudioContextState> state = std::make_shared<AudioContextState>();
     std::shared_ptr<lab::AudioDestinationNode> destination;
     std::shared_ptr<detail::AudioDeviceSdl3> device;
     /**
@@ -647,13 +655,21 @@ AudioContextHandle audio_create_context()
     auto destination_entry = record.nodes.insert(std::move(destination_record));
     record.destination_handle = {pack(id, destination_entry.index), std::move(destination_entry.ownership)};
     register_graph_node(record, record.destination_handle);
+    record.state->sample_rate = record.sample_rate;
+    AudioContextHandle handle{id, record.state};
     contexts().emplace(id, std::move(record));
-    return AudioContextHandle{id};
+    return handle;
 }
 
 void audio_close_context(AudioContextHandle context)
 {
-    contexts().erase(context.value);
+    const auto found = contexts().find(context.value);
+    if (found == contexts().end()) return;
+    auto& record = found->second;
+    if (record.device) record.device->stop();
+    record.state->closed_time = record.context->currentTime();
+    record.state->status = AudioContextState::Status::Closed;
+    contexts().erase(found);
 }
 
 AudioContextHandle audio_create_context(std::shared_ptr<AudioSession>& session) {
@@ -682,26 +698,40 @@ void audio_collect_finished() {
 double audio_current_time(AudioContextHandle context)
 {
     require_runtime_execution("an audio clock read");
+    if (context.state && context.state->status == AudioContextState::Status::Closed)
+        return context.state->closed_time;
     return require_context(context.value).context->currentTime();
 }
 
 double audio_sample_rate(AudioContextHandle context)
 {
+    if (context.state) return context.state->sample_rate;
     return require_context(context.value).sample_rate;
 }
 
 std::string audio_state(AudioContextHandle context)
 {
-    require_context(context.value);
-    // Creation opens and starts the native device atomically. A failed open
-    // throws, so every live handle has reached Web Audio's running state.
-    return "running";
+    const auto& state = context.state ? *context.state : *require_context(context.value).state;
+    switch (state.status) {
+        case AudioContextState::Status::Running: return "running";
+        case AudioContextState::Status::Suspended: return "suspended";
+        case AudioContextState::Status::Closed: return "closed";
+    }
+    throw std::logic_error("Invalid audio context state.");
 }
 
 void audio_resume(AudioContextHandle context)
 {
     ContextRecord& record = require_context(context.value);
     if (record.device) record.device->start();
+    record.state->status = AudioContextState::Status::Running;
+}
+
+void audio_suspend(AudioContextHandle context)
+{
+    ContextRecord& record = require_context(context.value);
+    if (record.device) record.device->stop();
+    record.state->status = AudioContextState::Status::Suspended;
 }
 
 AudioNodeHandle audio_destination(AudioContextHandle context)

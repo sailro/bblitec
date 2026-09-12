@@ -106,9 +106,9 @@ enum class BiquadFilterKind : std::uint8_t {
 // -- context lifecycle ---------------------------------------------------
 
 /**
- * `new AudioContext()`. The rate and channel count are the device's --
- * Web Audio's constructor takes neither, and which they are is a
- * platform answer rather than a Babylon one. Opening fails by throwing,
+ * The supported no-options `new AudioContext()` uses the device's rate
+ * and channel count. Browser constructor options, including a requested
+ * sample rate, are outside this entry point. Opening fails by throwing,
  * exactly as this project's GPU backends throw rather than degrading.
  *
  * When the capture capability was compiled, `BBLITE_AUDIO_CAPTURE` builds a
@@ -118,7 +118,7 @@ enum class BiquadFilterKind : std::uint8_t {
 AudioContextHandle audio_create_context();
 AudioContextHandle audio_create_context(std::shared_ptr<AudioSession>& session);
 
-/** `ctx.close()` plus the device teardown a real-time context owns. */
+/** Idempotent session teardown; asynchronous close checks lifecycle separately. */
 void audio_close_context(AudioContextHandle context);
 
 /** `ctx.currentTime`. */
@@ -127,11 +127,14 @@ double audio_current_time(AudioContextHandle context);
 /** `ctx.sampleRate`. */
 double audio_sample_rate(AudioContextHandle context);
 
-/** `AudioContext.state` for a live context. */
+/** `AudioContext.state`, including closed aliases retained after device teardown. */
 std::string audio_state(AudioContextHandle context);
 
 /** `ctx.resume()`. Inert on a capture context, as the pin's unlock is. */
 void audio_resume(AudioContextHandle context);
+
+/** Pause rendering and its clock while retaining the graph. */
+void audio_suspend(AudioContextHandle context);
 
 /** `ctx.destination`. */
 AudioNodeHandle audio_destination(AudioContextHandle context);

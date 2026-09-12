@@ -457,7 +457,7 @@ export function renderMainCpp(projection: MainCppProjection): string {
     // directly for now -- the pinned engine/bus/sub-graph modules are not
     // lowered yet (TODO), so the intrinsics emit `bbl::pal::audio_*`.
     const audioInclude = features.includes("audio:engine")
-        ? "#include <bblite/pal_audio.hpp>\n"
+        ? "#include <bblite/pal_audio.hpp>\n" + (projection.workers ? "#include <bblite/pal_audio_async.hpp>\n" : "")
         : "";
     // Keyed on this translation unit's own decode emission, not on
     // `texture:file`: the texture loaders decode inside their own generated

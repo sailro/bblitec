@@ -30,7 +30,9 @@ import {isAbsentTypeofIdentifier} from "./symbols.js";
 import { compileNumberPredicate, numberConstant, numberConstantValue } from "./number-intrinsics.js";
 import {
     compileAudioMethodCall,
-    isSupportedAudioMethodProperty,
+    compileAudioConstructor,
+    audioPrototypeValue,
+    audioTypeof,
 } from "./audio-surface.js";
 import { compileVatMethodCall } from "./intrinsics/vat.js";
 import {
@@ -128,6 +130,7 @@ export interface ExpressionContext
     UserFunctionContext,
     Pick<LoweringServices,
         | "compileWorkerValue"
+        | "audioSessionCpp"
         | "checker"
         | "options"
         | "evaluator"
@@ -549,6 +552,8 @@ export class ExpressionLowerer {
             return this.context.lookup(unwrapped);
         }
         if (ts.isPropertyAccessExpression(unwrapped)) {
+            const audioPrototype = audioPrototypeValue(this.context, unwrapped);
+            if (audioPrototype) return audioPrototype;
             const member = this.context.checker.getSymbolAtLocation(unwrapped.name)?.valueDeclaration;
             const constant = member && ts.isEnumMember(member)
                 ? this.context.checker.getConstantValue(member)
@@ -611,6 +616,8 @@ export class ExpressionLowerer {
             return property;
         }
         if (ts.isNewExpression(unwrapped)) {
+            const audio = compileAudioConstructor(this.context, unwrapped);
+            if (audio) return audio;
             const browserFile = compileBrowserFileConstructor(
                 this.context,
                 unwrapped,
@@ -972,18 +979,8 @@ export class ExpressionLowerer {
             const expression = this.context.unwrap(
                 unwrapped.expression,
             );
-            if (
-                isSupportedAudioMethodProperty(
-                    this.context,
-                    expression,
-                )
-            ) {
-                return {
-                    kind: "string",
-                    cpp: this.context.cppString("function"),
-                    staticString: "function",
-                };
-            }
+            const audio = audioTypeof(this.context, expression);
+            if (audio) return staticStringValue(audio, text => this.context.cppString(text));
             if (
                 expression.kind === ts.SyntaxKind.NullKeyword
             ) {

@@ -44,8 +44,8 @@ it does not establish that this external application compiles or runs.
 | External generated output | `generated/external-app` (ignored; not a successful complete generation) |
 | Session diagnostics | `artifacts/external-integration` (ignored) |
 
-Latest complete-entry diagnostic: `compile510` passed the retained-element query
-blocker and stopped at direct `new AudioContext()` construction.
+Latest complete-entry diagnostic: `compile532` passed direct context construction
+and stopped at capability detection for `createMediaStreamDestination`.
 Generation, native build and application runtime remain incomplete.
 
 Current assessment artifacts: `requirements356.json` inventories the unchanged
@@ -1185,6 +1185,28 @@ The inventory includes unused audio code; a refused probe alone does not establi
 application reach. Preserve the original probe set and track asynchronous-realm
 probes separately. Full application generation, native build and runtime remain
 unpassed. Open GitHub issues were empty at this batch boundary.
+
+Audio lifecycle unit: direct no-options construction uses the existing AudioSession
+factory. The synthetic session binding is registered before nested emission, so
+first creation inside a coroutine captures its entry owner. Context handles retain
+small shared state after device teardown; close freezes the clock and keeps sample
+rate/state readable through aliases. Resume/suspend/close return realm promises,
+settled by a task after device transitions; repeated closed transitions reject.
+Native starts running and has no autoplay permission gate. Constructor options,
+statechange, DOMException identity and post-close node operations remain outside
+this unit. Optional setSinkId detection reports absence on instances/prototype;
+unguarded calls refuse.
+
+`audio531` passes all 24 audio/promise checks without skips. The new native fixture
+checks ownership through helpers/arrays/awaits, deferred reactions, suspended and
+closed clocks, rejected closed transitions and session/device cleanup. The original
+fixed probes improve from 2/12 to 6/12 (`audio528.json`); lifecycle requires an async
+realm. Separate direct-context realm probes accept 9/12 (`audio-realm533.json`),
+leaving ended listeners and stream graphs. Early realm diagnostics 530/531 used
+an invalid top-level await and then exposed the AudioEngine promise result gap;
+do not present them as native AudioContext failures. `population527` is green for
+all 288 scenes (286 regenerated, two current); it validates the callback savepoint
+before the audio unit. The application still has never completed generation/build/runtime.
 
 ## Artifact guide and pitfalls
 

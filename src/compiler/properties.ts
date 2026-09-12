@@ -467,6 +467,7 @@ export const propertyRules: readonly PropertyRule[] = [
     value: "data",
     helper: "bbl::pal::audio_state",
     dataType: { kind: "string" },
+    impure: true,
   },
   {
     owner: "audio-engine",

@@ -23,6 +23,8 @@ interface AudioReceiverContext
         | "compileValue"
         | "unwrap"
         | "checker"
+        | "isDefaultLibraryIdentifier"
+        | "emit"
     > {}
 
 /** What a property write needs. `AssignmentContext` satisfies it. */
@@ -44,6 +46,7 @@ interface AudioCallContext
         | "allocateTemporaryCppName"
         | "cppString"
         | "registerAsset"
+        | "dataLowerer"
         | "options"
     > {}
 
@@ -103,17 +106,42 @@ const NODE_FACTORIES: Readonly<
  * before calling it. A factory this native surface implements is present by
  * construction, so its `typeof` result is the same constant as the browser's.
  */
-export function isSupportedAudioMethodProperty(
+export function audioTypeof(
     context: AudioReceiverContext,
     expression: ts.Expression,
-): boolean {
+): "function" | "undefined" | undefined {
     const property = context.unwrap(expression);
-    if (!ts.isPropertyAccessExpression(property)) return false;
+    if (ts.isIdentifier(property) && property.text === "AudioContext" &&
+        context.isDefaultLibraryIdentifier(property)) return "function";
+    if (!ts.isPropertyAccessExpression(property)) return undefined;
     const receiver = resolveAudioReceiver(context, property.expression);
-    return Boolean(
-        receiver?.kind === "audio-context" &&
-        NODE_FACTORIES[property.name.text],
-    );
+    if (receiver?.kind !== "audio-context") return undefined;
+    const result = property.name.text === "setSinkId" ? "undefined" :
+        NODE_FACTORIES[property.name.text] || ["resume", "suspend", "close"].includes(property.name.text) ? "function" : undefined;
+    if (result && receiver.cpp) context.emit(`static_cast<void>(${receiver.cpp});`);
+    return result;
+}
+
+/** The native output device currently has no optional sink-selection API. */
+export function audioPrototypeValue(
+    context: Pick<LoweringServices, "isDefaultLibraryIdentifier">,
+    expression: ts.PropertyAccessExpression,
+): Value | undefined {
+    if (expression.name.text !== "prototype" || !ts.isIdentifier(expression.expression) ||
+        expression.expression.text !== "AudioContext" || !context.isDefaultLibraryIdentifier(expression.expression)) return undefined;
+    return {kind:"record", cpp:"", recordProperties:{setSinkId:{kind:"json-null", cpp:"std::nullopt"}}};
+}
+
+export function compileAudioConstructor(
+    context: Pick<LoweringServices, "isDefaultLibraryIdentifier" | "reachFeature" | "audioSessionCpp" | "fail">,
+    expression: ts.NewExpression,
+): Value | undefined {
+    if (!ts.isIdentifier(expression.expression) || expression.expression.text !== "AudioContext" ||
+        !context.isDefaultLibraryIdentifier(expression.expression)) return undefined;
+    if (expression.arguments?.length) context.fail(expression, "AudioContext constructor options are not represented.");
+    context.reachFeature("audio:engine", expression);
+    return {kind:"audio-context", cpp:`bbl::pal::audio_create_context(${context.audioSessionCpp()})`,
+        dataType:{kind:"handle", handle:"audio-context"}, impure:true};
 }
 
 /** `param.<method>(value, time)`. */
@@ -139,6 +167,7 @@ const REFUSED_METHODS: Readonly<Record<string, string>> = {
     createMediaStreamSource: "a MediaStream has no native equivalent here",
     createMediaElementSource:
         "an HTMLAudioElement has no native equivalent here",
+    setSinkId: "native output-device selection is unavailable; feature detection reports an absent method",
     setValueCurveAtTime:
         "a value curve needs the array to reach the PAL as a span, and " +
         "the pinned `audio-param.ts` curve component lowered with it",
@@ -284,6 +313,14 @@ export function compileAudioMethodCall(
     refuseAudioName(context, REFUSED_METHODS, method, call, "Web Audio");
 
     if (receiver.kind === "audio-context") {
+        if (method === "resume" || method === "suspend" || method === "close") {
+            if (call.arguments.length) context.fail(call, `AudioContext.${method} takes no arguments.`);
+            if (!context.options.workers) context.fail(call, "AudioContext lifecycle promises require an asynchronous application realm.");
+            const action = method === "resume" ? "Resume" : method === "suspend" ? "Suspend" : "Close";
+            return {...context.dataLowerer.leafValue(
+                `bbl::pal::audio_context_transition(${receiver.cpp}, bbl::pal::AudioContextAction::${action})`,
+                {kind:"promise"}), impure:true};
+        }
         if (method === "createBuffer") {
             if (call.arguments.length !== 3) {
                 context.fail(

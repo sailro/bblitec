@@ -784,6 +784,9 @@ class Compiler
     }
 
     public compile(): CompileResult {
+        // The session is emitted at entry scope when reached, even if its first
+        // use occurs while compiling a nested coroutine or callback.
+        this.registerNativeBinding("bbl_audio_session");
         if (this.options.workers) this.reachFeature("platform:workers", this.sourceFile);
         this.dataTypes.registerPartialRecords(this.program.getSourceFiles());
         this.collectSourceCppNames();

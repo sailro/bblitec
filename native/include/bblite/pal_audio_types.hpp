@@ -6,8 +6,10 @@
 namespace bbl::pal {
 
 /** Resource identity is available to data containers without starting audio. */
+struct AudioContextState;
 struct AudioContextHandle {
     std::uint32_t value = 0;
+    std::shared_ptr<AudioContextState> state{};
     bool operator==(const AudioContextHandle&) const = default;
 };
 

@@ -572,6 +572,12 @@ made by later arguments. Dynamic option aliases without native field storage ref
 
 ## Audio
 
+Direct no-options `new AudioContext()` shares session ownership with contexts created by the audio engine.
+Aliases and helper returns preserve context identity. Asynchronous realms support `resume`, `suspend`
+and `close` promises; closed aliases retain state, sample rate and their stopped clock. Later lifecycle
+operations reject. Constructor options and state-change listeners remain unsupported. Context/prototype
+`typeof` guards report optional `setSinkId` as absent; direct output-device selection refuses.
+
 Feature-selected LabSound/SDL3 supports reached Web Audio lifecycle, gain, oscillators, buffers, filters,
 panning and AudioParam scheduling. `decodeAudioData` consumes encoded ArrayBuffer bytes at the context's
 sample rate; fetched clips are packaged. Direct response-buffer reads select codecs by container signature.
