@@ -4621,7 +4621,7 @@ class Compiler
         if (value.kind === "text-vector" && (ts.isConditionalExpression(this.unwrap(expression)) || ts.isBinaryExpression(this.unwrap(expression)))) {
             this.fail(expression, "Conditional text transform objects require a runtime vector identity carrier; select the renderable before reading its transform.");
         }
-        if (this.options.workers && value.kind === "boolean" && (value.cpp === "true" || value.cpp === "false")) {
+        if (value.kind === "boolean" && (value.cpp === "true" || value.cpp === "false")) {
             value = { ...value, staticBoolean: value.cpp === "true" };
         }
         // CSG values retain materialized geometry plans, not the native mesh

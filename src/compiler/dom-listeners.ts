@@ -15,6 +15,7 @@ type Context = Pick<LoweringServices,
 const pointerNames = new Set([
     "click", "dblclick", "mousedown", "mouseup", "mousemove", "mouseover", "mouseout", "mouseenter", "mouseleave",
     "pointerdown", "pointerup", "pointermove", "pointerover", "pointerout", "pointerenter", "pointerleave", "pointercancel",
+    "gotpointercapture", "lostpointercapture",
     "wheel", "focus", "blur", "contextmenu", "resize",
 ]);
 

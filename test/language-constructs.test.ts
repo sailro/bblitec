@@ -13,6 +13,43 @@ import { nativeFixtureVcpkgRoot, optionalNativeFixtureTools, runNativeFixtureCom
 // them identically.
 const native = optionalNativeFixtureTools(false);
 
+check("record-arrow-lexical-this", `
+    function select(values: number[], options: {test: (value: number) => boolean}): number[] {
+        function filter(test: (value: number) => boolean): number[] {
+            const selected: number[] = [];
+            for (const value of values) if (test(value)) selected.push(value);
+            return selected;
+        }
+        return filter(options.test);
+    }
+    class Selection {
+        private readonly allowed = new Set([2, 4]);
+        run(): number[] {
+            return select([1, 2, 3, 4], {test: value => this.allowed.has(value)});
+        }
+    }
+    const result = new Selection().run();
+    if (result.join(",") !== "2,4") throw new Error("arrow receiver");
+`);
+
+check("constant-null-guard", `
+    function sum(x: number, y: number): number { return x + y; }
+    function select(x: number | null, y: number | null): number {
+        const valid = x !== null && y !== null && x >= 0 && y >= 0;
+        if (!valid) return -1;
+        return sum(x, y);
+    }
+    if (select(null, null) !== -1 || select(2, 3) !== 5) throw new Error("guarded arithmetic");
+`);
+
+check("callback-helper-signatures", `
+    function accepts(callback: (value: number) => boolean): boolean { return callback(7); }
+    function invokes(count: number): number {
+        return accepts(() => true) ? count + 1 : count;
+    }
+    if (invokes(1) !== 2 || invokes(3) !== 4) throw new Error("omitted callback parameter");
+`);
+
 check("ambient-typeof-guards", `
     declare const OPTIONAL_BUILD: boolean | undefined;
     declare function OPTIONAL_HOOK(): void;

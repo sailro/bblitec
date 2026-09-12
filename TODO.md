@@ -6,6 +6,7 @@ status. One line per item: the gap, where it is, its size (S < 1 h, M < half day
 
 ## Compiler
 
+- [ ] Array predicate constant folding resolves a callback parameter from its declaration instead of its bound function value (user-functions.ts:compilePredicateWithValues); forwarded predicates can refuse before the runtime path. S; reusable collection helpers.
 - [ ] Stored-array destructuring assignments still refuse nested, defaulted and member targets (data-lowering.ts); identifier targets and a final rest are represented. S/M; collection transforms use destructuring.
 - [ ] Retained `textContent`/`innerText` compound assignments need a text getter preserving descendant/markup text; they refuse in ui-projection.ts. M; event-driven UI updates.
 - [ ] Retained DOM queries need authored innerHTML trees, interaction-state snapshots, :scope and computed selector strings (platform-calls.ts, pal_ui_rml.cpp). M/L; reusable UI helpers and application overlays.

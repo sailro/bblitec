@@ -1281,28 +1281,8 @@ export class UserFunctionLowerer {
     private argumentValue(
         context: UserFunctionContext,
         argument: ts.Expression,
+        expected?: ts.Type,
     ): Value {
-        if (ts.isArrowFunction(argument) || ts.isFunctionExpression(argument)) {
-            return {
-                kind: "callback",
-                cpp: "",
-                callbackDeclaration: argument,
-            };
-        }
-        if (ts.isIdentifier(argument)) {
-            const declaration = resolveFunctionDeclaration(
-                this.checker,
-                argument,
-                (node, message) => context.fail(node, message),
-            );
-            if (declaration) {
-                return {
-                    kind: "callback",
-                    cpp: "",
-                    callbackDeclaration: declaration,
-                };
-            }
-        }
         if (
             context.isBrowserOnlyExpression(argument) &&
             !ts.isCallExpression(argument) &&
@@ -1311,6 +1291,13 @@ export class UserFunctionLowerer {
             return { kind: "browser", cpp: "" };
         }
         const value = context.compileValue(argument);
+        if (value.kind === "callback" && value.callbackRecordOwner?.repeatedCallbackEvaluation) {
+            const type = expected ? context.dataTypes.fromTsType(expected, argument) : context.dataLowerer.dataTypeAt(argument);
+            if (type?.kind === "function") {
+                const identityType = {...type, identity:true as const};
+                return context.dataValue(context.dataLowerer.compileKnownValueForSink(value, identityType, argument), identityType);
+            }
+        }
         if (value.kind === "number" && value.staticNumber === undefined && !value.parameterBinding) {
             const staticNumber = staticNumberValue(context, argument);
             if (staticNumber !== undefined && Number.isFinite(staticNumber)) return {...value, staticNumber};
@@ -3210,7 +3197,7 @@ export class UserFunctionLowerer {
                     "A spread argument expands a compile-time tuple, or passes one native array as the whole rest parameter.",
                 );
             }
-            const value = this.argumentValue(context, argument);
+            const value = this.argumentValue(context, argument, ir.parameters[index]?.type);
             if (pinArguments && value.kind === "data" && value.dataType && value.cpp) {
                 const name = context.allocateTemporaryCppName("call_argument");
                 context.emit(`const auto ${name} = ${value.cpp};`);

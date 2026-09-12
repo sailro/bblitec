@@ -121,6 +121,7 @@ export class PlatformCalls {
 
     /** Platform-backed browser APIs that remain ordinary expression values. */
     public compilePlatformCall(call: ts.CallExpression): Value | undefined {
+        if (this.emitPlatformEventListener(call)) return {kind:"void", cpp:""};
         const callee = this.context.unwrap(call.expression);
         if (ts.isPropertyAccessExpression(callee)) {
             const typeName = this.context.checker.getTypeAtLocation(callee.expression).getSymbol()?.getName();
@@ -1281,10 +1282,7 @@ export class PlatformCalls {
             return { kind: "void", cpp: "" };
         }
         if (element && callee.name.text === "removeEventListener") {
-            this.context.expectArgumentCount(call, 2, 2);
-            // Retained UI records share the engine lifetime.
-            // Listener identity/removal is deferred with DOM lifecycle.
-            return { kind: "void", cpp: "" };
+            this.context.fail(call, "Removal of this retained UI event family is not represented.");
         }
         if (classListMutation) {
             const classOwner = callee.expression.expression;

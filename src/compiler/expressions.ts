@@ -3647,8 +3647,11 @@ export class ExpressionLowerer {
                     methods[name] = initializer;
                     continue;
                 }
-                if (ts.isArrowFunction(initializer) ||
-                    ts.isFunctionExpression(initializer)) {
+                if (ts.isArrowFunction(initializer)) {
+                    properties[name] = this.compileValue(initializer);
+                    continue;
+                }
+                if (ts.isFunctionExpression(initializer)) {
                     methods[name] = initializer;
                     continue;
                 }

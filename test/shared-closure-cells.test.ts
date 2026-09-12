@@ -130,7 +130,7 @@ test("a named local function handed to a listener-installing helper shares the c
         main();
     `);
     assert.match(result.cpp, /auto v_destination = bbl::js::make_gc_shared<bbl::js::Nullable<double>>\(std::nullopt\);/);
-    assert.match(result.cpp, /bbl::on_mouse_up\(v_engine, \d+u, bbl::js::make_closure\(std::tuple\{v_destination\}/);
+    assert.match(result.cpp, /bbl::on_dom_pointer\(v_engine, bbl::DomEventTarget::canvas\(\), "pointerup", \d+u, bbl::js::make_closure\(std::tuple\{v_destination\}/);
     assert.match(result.cpp, /\(\*v_destination\) = bbl::js::Nullable<double>\{v_\w+_x\};/);
 });
 

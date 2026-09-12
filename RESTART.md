@@ -44,8 +44,8 @@ it does not establish that this external application compiles or runs.
 | External generated output | `generated/external-app` (ignored; not a successful complete generation) |
 | Session diagnostics | `artifacts/external-integration` (ignored) |
 
-Latest complete-entry diagnostic: `compile495` passed the ambient build guard and
-stopped at a scoped retained-element query requiring a statically known root.
+Latest complete-entry diagnostic: `compile510` passed the retained-element query
+blocker and stopped at direct `new AudioContext()` construction.
 Generation, native build and application runtime remain incomplete.
 
 Current assessment artifacts: `requirements356.json` inventories the unchanged
@@ -1153,6 +1153,38 @@ generation, shaders, native builds, differential parity, published status.
 It is separate from `npm test`. A failed build stops subsequent measurement
 stages so stale binaries are not treated as current evidence. The population
 build still drains the whole set and reports every failure.
+
+## Current regression and audio batch
+
+`population511` generated 286/288 entries. Freeciv reached a constant-null hover
+guard after pointerleave became supported; synchronous boolean values now retain
+the same literal facts as asynchronous values. Antigravity Racer passed a fresh
+callback into a helper; argument lowering now keeps closure ownership and stores
+repeated callbacks with runtime identity using the helper's formal signature.
+`freeciv516` and `antigravity517` are diagnostic generation successes.
+
+The native callback factory fixture also exposed concise cleanup callbacks whose
+removeEventListener call took an old no-op expression path. Listener expressions
+now use the existing statement implementation; unrepresented removal families
+refuse. `callbacks521` passes 26 focused checks without skips, including repeated
+creation, duplicate registration and removal. `regressions522` passes 795 checks.
+`population522` generated 286/288: Freeciv and Antigravity Racer pass, while Doom
+exposed arrow properties materialized with the record as their receiver and Racer
+exposed capture-listener removal. Arrow properties now keep their lexical owner;
+got/lostpointercapture listeners share DOM registration/removal (actual pointer
+capture remains the separate TODO). `callbacks526` passes 667 checks and
+`lexical526` passes all six JavaScript/native checks. `doom526` and `racer526`
+complete real CLI generation. A full population rerun after these corrections
+still needs to complete.
+
+The next fixed audio baseline is `audio519.json`: 12 neutral probes, two generation
+successes and ten refusals. It separates direct context construction/ownership,
+lifecycle promises, output capability detection, ended listeners and stream
+graphs. Existing parameter scheduling and context properties already generate.
+The inventory includes unused audio code; a refused probe alone does not establish
+application reach. Preserve the original probe set and track asynchronous-realm
+probes separately. Full application generation, native build and runtime remain
+unpassed. Open GitHub issues were empty at this batch boundary.
 
 ## Artifact guide and pitfalls
 
