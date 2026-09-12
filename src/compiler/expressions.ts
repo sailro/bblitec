@@ -2826,14 +2826,7 @@ export class ExpressionLowerer {
         }
         const callback = this.context.unwrap(argumentAt(call, 0));
         const local = ts.isArrowFunction(callback) || ts.isFunctionExpression(callback) || ts.isIdentifier(callback) ? callback : undefined;
-        const value = ts.isIdentifier(callback) ? this.context.lookupOptional(callback)
-            : !local ? this.context.compileValue(callback) : undefined;
-        let stored: Value | undefined;
-        if (value?.dataType?.kind === "function") {
-            const cpp = this.context.allocateTemporaryCppName("tuple_callback");
-            this.context.emit(`const auto ${cpp} = ${value.cpp};`);
-            stored = {...value, cpp, nativeCaptures:[this.context.registerNativeBinding(cpp)]};
-        }
+        const stored = this.context.dataLowerer.prepareCallbackValue(callback, "tuple");
         if (!local && !stored) {
             this.context.fail(
                 callback,
@@ -2854,7 +2847,7 @@ export class ExpressionLowerer {
             if (stored) {
                 const result = this.context.dataLowerer.compileFunctionValueCall(stored, values, call);
                 if (method === "forEach") { this.context.emitDiscardedValue(result); return {kind:"void", cpp:""} satisfies Value; }
-                return result;
+                return method === "map" ? this.context.pinValueToTemporary(result, "mapped_result", callback) : result;
             }
             return this.compileStaticTupleCallback(local!, values, call, method === "forEach");
         };

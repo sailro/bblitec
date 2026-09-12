@@ -36,7 +36,7 @@ it does not establish that this external application compiles or runs.
 | Branch | `codex/external-project-support` |
 | Remote | `https://github.com/sailro/bblitec.git` |
 | Branch base used in this session | `3474e835` on `main` |
-| Latest executable-code/test unit | Promise cache bindings, async reactions and typed adoption; prior savepoints `53ba4164` (recursive async and hardened validation), `f5cd2061` (AudioBuffer surface), `310e61dc` (Math and forwarded callbacks) and `acfebcc6` (owned packaged fetch) |
+| Latest executable-code/test unit | Owned async collection invocation; prior savepoints `24281f2c` (promise caches/reactions), `53ba4164` (recursive async and hardened validation), `f5cd2061` (AudioBuffer surface) and `310e61dc` (Math and forwarded callbacks) |
 | Draft PR | [#247 — Extend generic application compilation and retained UI support](https://github.com/sailro/bblitec/pull/247) |
 | External checkout | `C:/Dev/_prototypes/external-native-app` |
 | External source revision | `d7c477a6d5963680c55249dceb93cb6e4ab9ce56` |
@@ -44,10 +44,26 @@ it does not establish that this external application compiles or runs.
 | External generated output | `generated/external-app` (ignored; not a successful complete generation) |
 | Session diagnostics | `artifacts/external-integration` (ignored) |
 
-Latest complete-entry diagnostic: `compile605` passed nullable promise-cache
-rebinding and stopped at an inline async array mapper producing a record where
-the result sink expects a promise.
+Latest complete-entry diagnostic: `compile613` passed the inline async record
+mapper and stopped at an early null return inside its calling async function.
+Direct async bodies with multiple value-return paths still use the synchronous
+value-lambda protocol and attempt to store the returned value as a promise.
 Generation, native build and application runtime remain incomplete.
+
+Async collections now reuse one callback preparation helper and typed stored
+coroutines across vector/tuple mapping, predicates, forEach, reduce and Array.from.
+The callback is evaluated before iteration; promise predicates remain truthy,
+and tuple mapper invocations start before the following statement. Promise result
+types mark object references before constructor emission, retaining settlement
+identity and avoiding later aggregate uses changing an already-emitted layout.
+`async-collections608` is the strong twelve-probe baseline: six generation accepts,
+but only the stored mapper builds and runs correctly. `async-collections610-native`
+passes all twelve. The permanent combined fixture adds getter snapshots, escaped
+captures, promise result identity/mutation, allocation-form Array.from and errors.
+`regressions613` passes all 817 compiler/language/callback/async/fetch/worker checks
+with no skips. `collections612` passed all four focused async fixtures before
+the final settlement identity assertions, which also pass in the broad run.
+`population614` generated all 288 registered corpus entries for this unit.
 
 The promise-cache baseline (`promise-caches593`) accepted 2/10 generation probes
 and built/ran 1/10; `promise-caches604-native.json` builds and runs all ten.
@@ -65,11 +81,10 @@ five aggregate/cache/reaction/optional/native-promise checks. Rebinding across
 different tuple representations still refuses explicitly.
 `population607` generated all 288 registered corpus entries after that repair.
 
-The next batch uses `assess-async-collections.mjs` with twelve independent forms:
-async mappers, named/stored callbacks, tuple mapping, forEach, filter, some/every,
-find, flatMap, reduce and Array.from. It must preserve synchronous iteration and
-promise truthiness while each async callback owns its suspension. Do not merely
-make the returned element type match by inlining awaits into the caller.
+`assess-async-collections.mjs` retains the fixed sources. The earlier 607 draft
+tuple probe checked values without concurrent-start assertions; use 608 as its
+baseline. The next batch assesses direct/reaction async control flow and should
+reuse the existing stored-function coroutine implementation.
 
 The recursive-async baseline (`deferred583`) accepted 3/10 generation probes,
 but only 1/10 built and ran. `deferred588-native.json` builds and runs all ten:

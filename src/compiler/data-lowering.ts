@@ -3539,6 +3539,7 @@ export class DataLowerer {
         this.context.reachJsData();
         const source = this.context.allocateTemporaryCppName("array_from_source");
         this.context.emit(`const auto ${source} = ${range.container.cpp};`);
+        const storedMapper = this.prepareCallbackValue(mapper, "array_from");
         const result = this.context.allocateTemporaryCppName("array_from_result");
         this.context.emit(`${this.context.dataTypes.cppType(resultType)} ${result};`);
         if (range.container.dataType?.kind !== "iterator") this.context.emit(`${result}.reserve(${source}.size());`);
@@ -3551,16 +3552,14 @@ export class DataLowerer {
             this.context.enterRuntimeControlFlow();
             this.context.enterRuntimeIteration();
             try {
-                const value = this.context.compileCallbackWithValues(
-                    mapper,
-                    [
-                        element.kind === "map-entry" || element.kind === "set-entry"
-                            ? this.materializeIterationPair(item, element, call)
-                            : this.iterationElementValue(item, element),
-                        { kind: "number", cpp: `static_cast<double>(${index})`, dataType: { kind: "number" } },
-                    ],
-                    call,
-                );
+                const arguments_: Value[] = [
+                    element.kind === "map-entry" || element.kind === "set-entry"
+                        ? this.materializeIterationPair(item, element, call)
+                        : this.iterationElementValue(item, element),
+                    { kind: "number", cpp: `static_cast<double>(${index})`, dataType: { kind: "number" } },
+                ];
+                const value = storedMapper ? this.compileFunctionValueCall(storedMapper, arguments_, call)
+                    : this.context.compileCallbackWithValues(mapper, arguments_, call);
                 this.context.emit(
                     `${result}.push_back(${this.compileKnownValueForSink(value, resultType.element, call)});`,
                 );
@@ -3720,6 +3719,7 @@ export class DataLowerer {
         this.context.emit(
             { kind: "declaration", type: "const std::size_t", name: count, initializer: `bbl::js::array_from_length(${this.context.compileNumber(lengthProperty.initializer, "double")})` },
         );
+        const storedMapper = this.prepareCallbackValue(callback, "array_from");
         this.context.emit(`bbl::js::Array<${cppType}> ${output};`);
         this.context.emit(`${output}.reserve(${count});`);
         this.context.emit(
@@ -3729,14 +3729,12 @@ export class DataLowerer {
         this.context.pushScope(this.context.allocateBlockPrefix());
         this.context.enterRuntimeIteration();
         try {
-            const result = this.context.compileCallbackWithValues(
-                callback,
-                [
-                    { kind: "json-null", cpp: "std::nullopt" },
-                    { kind: "number", cpp: `static_cast<double>(${index})`, dataType: { kind: "number" } },
-                ],
-                call,
-            );
+            const arguments_: Value[] = [
+                { kind: "json-null", cpp: "std::nullopt" },
+                { kind: "number", cpp: `static_cast<double>(${index})`, dataType: { kind: "number" } },
+            ];
+            const result = storedMapper ? this.compileFunctionValueCall(storedMapper, arguments_, call)
+                : this.context.compileCallbackWithValues(callback, arguments_, call);
             const value = this.compileKnownValueForSink(
                 result,
                 mappedType.element,
@@ -4050,6 +4048,31 @@ export class DataLowerer {
         return name;
     }
 
+    /** Promise-producing callbacks need retained invocation even inside a synchronous iterator. */
+    public promiseCallbackType(callback: ts.Expression): DataType<"function"> | undefined {
+        if (!this.context.options.workers) return undefined;
+        const signature = this.context.checker.getTypeAtLocation(callback).getCallSignatures()[0];
+        if (!signature || this.context.checker.getReturnTypeOfSignature(signature).getSymbol()?.name !== "Promise") return undefined;
+        const type = this.dataTypeAt(callback);
+        if (type?.kind !== "function" || type.result?.kind !== "promise")
+            return this.context.fail(callback, "Asynchronous collection callbacks require an owned function signature.");
+        return type;
+    }
+
+    /** Evaluate one retained callback before iteration, sharing ordinary function sinks. */
+    public prepareCallbackValue(callback: ts.Expression, label: string): Value | undefined {
+        const local = ts.isIdentifier(callback) || ts.isArrowFunction(callback) || ts.isFunctionExpression(callback);
+        const value = ts.isIdentifier(callback) ? this.context.lookupIdentifierValue(callback)
+            : !local ? this.context.compileValue(callback) : undefined;
+        const type = value?.dataType?.kind === "function" ? value.dataType : this.promiseCallbackType(callback);
+        if (!type) return undefined;
+        if (value) this.context.useNativeValue(value);
+        const cpp = value ? this.compileKnownValueForSink(value, type, callback) : this.compileForSink(callback, type);
+        const name = this.context.allocateTemporaryCppName(`${label}_callback`);
+        this.context.emit({kind:"declaration", type:"const auto", name, initializer:cpp});
+        return {...this.leafValue(name, type), nativeCaptures:[this.context.registerNativeBinding(name)]};
+    }
+
     /** Emit the shared callback protocol for reached JavaScript array methods. */
     public emitArrayCallbackLoop(
         call: ts.CallExpression,
@@ -4090,15 +4113,7 @@ export class DataLowerer {
             this.context.allocateTemporaryCppName(`${label}_index`);
         this.context.emit({ kind: "declaration", type: receiverPolicy.snapshotIdentity ? "auto" : "auto&&", name: source, initializer: narrowed.cpp });
         const sourceCapture = this.context.registerNativeBinding(source);
-        const namedCallback = ts.isIdentifier(callback) ? this.context.lookupIdentifierValue(callback)
-            : !local ? this.context.compileValue(callback) : undefined;
-        let storedCallback: Value | undefined;
-        if (namedCallback?.dataType?.kind === "function") {
-            this.context.useNativeValue(namedCallback);
-            const name = this.context.allocateTemporaryCppName(`${label}_callback`);
-            this.context.emit(`const auto ${name} = ${namedCallback.cpp};`);
-            storedCallback = { ...namedCallback, cpp: name, nativeCaptures: [this.context.registerNativeBinding(name)] };
-        }
+        const storedCallback = this.prepareCallbackValue(callback, label);
         if (!local && !storedCallback) this.context.fail(callback, `Array.${method} requires a represented callback.`);
         initialize(source);
         let bound = `${source}.size()`;
@@ -7333,6 +7348,7 @@ export class DataLowerer {
 
     /** JavaScript truthiness for a value the caller already compiled. */
     public conditionFromValue(value: Value): string | undefined {
+        if (value.kind === "promise") return `(static_cast<void>(${value.cpp}), true)`;
         if (value.kind === "data" && value.dataType?.kind === "event-target") return "true";
         if (value.kind === "data" && isOpaqueReference(value.dataType)) {
             return value.truthinessCpp ?? value.optionalFoundCpp ?? `static_cast<bool>(${value.cpp})`;

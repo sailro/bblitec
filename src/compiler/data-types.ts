@@ -563,6 +563,8 @@ export class DataTypeRegistry {
    */
   public markStoredObjectReferences(dataType: DataType): DataType {
     switch (dataType.kind) {
+      case "promise":
+        return dataType.result ? {kind:"promise", result:this.markStoredObjectReferences(dataType.result)} : dataType;
       case "product":
         return { kind: "product", elements: dataType.elements.map(element => this.markStoredObjectReferences(element)) };
       case "union":
@@ -805,7 +807,7 @@ export class DataTypeRegistry {
         if (this.asynchronous) {
           if ((resolvedType.flags & ts.TypeFlags.Void) !== 0) return {kind:"promise"};
           const result = this.fromStoredTsType(resolvedType, node);
-          return result ? {kind:"promise", result} : undefined;
+          return result ? {kind:"promise", result:this.markStoredObjectReferences(result)} : undefined;
         }
         // Reached async work executes synchronously in the native lowering.
         // A promise retained in a data container therefore stores its

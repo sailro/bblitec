@@ -88,6 +88,10 @@ Local and nullable promise bindings can be replaced or cached in collections whi
 promise identity. Async reactions own their suspended arguments; stored callbacks and callback
 properties are read at registration after the receiver. Async returns adopt wider nullable results
 and preserve rejection when their fulfillment value is discarded by a void callback signature.
+Collection callbacks returning promises use retained function invocation for mapping, predicates,
+forEach, reduction and Array.from, including tuple mapping. Iteration remains synchronous while
+each callback owns its suspension; predicate promises are truthy without awaiting fulfillment.
+Promise-settled records preserve identity across aliases and aggregation.
 Engine contexts
 can be stored in records and collections as references to the entry engine. Empty asserted output records
 retain absent fields until initialized; aliases observe subsequent writes. Loose `== null` and `!= null`

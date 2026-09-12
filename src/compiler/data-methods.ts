@@ -431,7 +431,7 @@ export function compileDataMethodCall(
             // path; speculative folding must not re-run their getters.
             return undefined;
         }
-        const folded = lowerer.context.probeEmission(
+        const folded = lowerer.promiseCallbackType(callback) ? undefined : lowerer.context.probeEmission(
             (): Value | undefined => {
                 const selected: Value[] = [];
                 for (let index = 0; index < tupleOwnerElements.length; ++index) {
@@ -508,25 +508,25 @@ export function compileDataMethodCall(
                 "Tuple Array.map requires a local function or function literal callback.",
             );
         }
+        const storedCallback = lowerer.prepareCallbackValue(callback, "tuple_map");
         return {
             kind: "tuple",
             cpp: "",
-            tupleElements: tupleOwnerElements.map((element, index) =>
-                lowerer.context.compileCallbackWithValues(
-                    callback,
-                    [
-                        element,
-                        {
-                            kind: "number",
-                            cpp: `${index}.0`,
-                            staticNumber: index,
-                            dataType: { kind: "number" },
-                        },
-                        dynamicOwner,
-                    ],
-                    call,
-                ),
-            ),
+            tupleElements: tupleOwnerElements.map((element, index) => {
+                const arguments_: Value[] = [
+                    element,
+                    {
+                        kind: "number",
+                        cpp: `${index}.0`,
+                        staticNumber: index,
+                        dataType: { kind: "number" },
+                    },
+                    dynamicOwner,
+                ];
+                return storedCallback ? lowerer.context.pinValueToTemporary(
+                    lowerer.compileFunctionValueCall(storedCallback, arguments_, call), "mapped_result", callback)
+                    : lowerer.context.compileCallbackWithValues(callback, arguments_, call);
+            }),
         };
     }
     // A constructor receiver was already evaluated above. Recompiling it as
@@ -1140,6 +1140,7 @@ function compileArrayReduce(state: ArrayMethodState): Value {
     const index = lowerer.context.allocateTemporaryCppName("reduce_index");
     const accumulator = lowerer.context.allocateTemporaryCppName("reduce_result");
     lowerer.context.emit({ kind: "declaration", type: "auto&&", name: source, initializer: narrowed.cpp });
+    const storedCallback = lowerer.prepareCallbackValue(callback, "reduce");
     lowerer.context.emit({ kind: "declaration", type: "const std::size_t", name: count, initializer: `${source}.size()` });
     lowerer.context.emit({ kind: "declaration", type: lowerer.context.dataTypes.cppType(resultType), name: accumulator, initializer: lowerer.compileForSink(argumentAt(call, 1), resultType) });
     lowerer.context.emit(`for (std::size_t ${index} = 0; ${index} < ${count}; ++${index}) {`);
@@ -1148,7 +1149,7 @@ function compileArrayReduce(state: ArrayMethodState): Value {
     try {
         lowerer.context.enterRuntimeIteration();
         try {
-            const reduced = lowerer.context.compileCallbackWithValues(callback, [
+            const arguments_: Value[] = [
                 { ...lowerer.leafValue(accumulator, resultType), nativeCaptures: [lowerer.context.registerNativeBinding(accumulator)] },
                 { ...lowerer.leafValue(`${source}[${index}]`, dataType.element),
                     nativeCaptures: [lowerer.context.registerNativeBinding(source), lowerer.context.registerNativeBinding(index)] },
@@ -1165,7 +1166,9 @@ function compileArrayReduce(state: ArrayMethodState): Value {
                     dataType,
                     nativeCaptures: [lowerer.context.registerNativeBinding(source)],
                 },
-            ], call);
+            ];
+            const reduced = storedCallback ? lowerer.compileFunctionValueCall(storedCallback, arguments_, call)
+                : lowerer.context.compileCallbackWithValues(callback, arguments_, call);
             lowerer.context.emit(`${accumulator} = ${lowerer.compileKnownValueForSink(reduced, resultType, callback)};`);
         }
         finally {
