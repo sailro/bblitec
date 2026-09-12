@@ -17,6 +17,14 @@ tests and commits are not stopping points. Continue implementation and validatio
 until the complete external application compiles and runs. Only the user decides
 to pause. Do not end an active work turn after a status answer or savepoint.
 
+**Workflow steering on 2026-09-12:** the user asked for measurable progress and
+faster iteration after several days of first-error repairs. Use independent
+capability probes and a static requirements inventory to expose groups of gaps
+before implementing them. Do not resume a full-suite/full-application retry after
+each small edit. Keep focused checks during a batch; use the unchanged entry and
+broader regression checks at useful batch boundaries. Unknown requirements stay
+visible; do not invent an overall completion percentage from static counts.
+
 **The external application does not fully compile yet.** Its latest attempt
 stopped during TypeScript-to-C++ generation. Its native build and application
 runtime have never been reached. A green sweep validates the registered corpus;
@@ -35,6 +43,16 @@ it does not establish that this external application compiles or runs.
 | External checkout changes | Clean when this handoff was prepared |
 | External generated output | `generated/external-app` (ignored; not a successful complete generation) |
 | Session diagnostics | `artifacts/external-integration` (ignored) |
+
+Current assessment artifacts: `requirements356.json` inventories the unchanged
+entry's static local import graph (1,343 files, 1,002 unassessed API/syntax groups;
+these include potentially unused code). `capabilities356.json` records 24 neutral
+generation probes: two accepted, 22 refused, no native execution attempted by
+that diagnostic runner. `assess-capabilities.mjs` and `capability-probes/` retain
+the independent sources for reruns. They expose the five core-library clauses
+and Window/retained-element event ownership, options and field gaps together.
+The generic inventory tool is `tools/project-requirements.mjs`; it reuses the
+compiler frontend and does not implement a second support classifier.
 
 The branch was clean and synchronized with its remote before adding this
 document. All 14 implementation/test commits listed below were pushed. The PR
