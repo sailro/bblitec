@@ -469,12 +469,41 @@ bool ui_has_attribute(Engine& engine, UiElementHandle element, std::string_view 
     return ui_element(engine, element).attributes.contains(std::string(name));
 }
 
+void ui_remove_attribute(Engine& engine, UiElementHandle element, std::string_view name) {
+    std::string normalized(name);
+    std::transform(normalized.begin(), normalized.end(), normalized.begin(), ascii_lower);
+    auto& record = ui_element(engine, element);
+#if defined(BBLITE_HAS_BROWSER_FILE) && BBLITE_HAS_BROWSER_FILE
+    if (normalized == "type" && record.file_input)
+        throw std::runtime_error("Removing the type of a native file input is not represented.");
+#endif
+    bool changed = record.attributes.erase(normalized) != 0;
+    if (normalized == "style") {
+        changed = changed || !record.style_properties.empty();
+        record.style_properties.clear();
+        record.style_property_order.clear();
+    }
+#if defined(BBLITE_HAS_BROWSER_FILE) && BBLITE_HAS_BROWSER_FILE
+    if (normalized == "href" && record.download_url.value != invalid_handle) {
+        record.download_url = {};
+        changed = true;
+    }
+    if (normalized == "download" && !record.download_name.empty()) {
+        record.download_name.clear();
+        changed = true;
+    }
+    if (normalized == "accept" && !record.file_accept.empty()) {
+        record.file_accept.clear();
+        changed = true;
+    }
+#endif
+    if (changed) mark_ui_changed(engine, record);
+}
+
 void ui_set_boolean_attribute(Engine& engine, UiElementHandle element, std::string name, bool present) {
     if (present) {
         ui_set_attribute(engine, element, std::move(name), "");
-    } else if (ui_element(engine, element).attributes.erase(name)) {
-        mark_ui_changed(engine);
-    }
+    } else ui_remove_attribute(engine, element, name);
 }
 
 void ui_set_style_property(

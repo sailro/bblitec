@@ -1,0 +1,44 @@
+import assert from "node:assert/strict";
+import {mkdirSync, writeFileSync} from "node:fs";
+import {join, resolve} from "node:path";
+import test from "node:test";
+import {PNG} from "pngjs";
+import {compileSource} from "../src/compiler.js";
+import {runRmlUiFixture} from "./native-fixture.js";
+
+test("attribute removal preserves absence, style reset and rendered image updates", t => {
+    const directory = resolve("artifacts/ui-attributes");
+    mkdirSync(directory, {recursive:true});
+    writeFileSync(join(directory, "worker.ts"), "self.close();");
+    const result = compileSource(`
+        const worker = new Worker(new URL("./worker.ts", import.meta.url), {type:"module"});
+        worker.terminate();
+        const panel = document.createElement("div");
+        panel.id = "panel";
+        panel.className = "active";
+        panel.style.cssText = "width:120px;height:40px";
+        panel.style.height = "60px";
+        panel.removeAttribute("STYLE");
+        panel.removeAttribute("class");
+        if (panel.style.height !== "") throw new Error("removed styles");
+        panel.hidden = true;
+        const state: {element: HTMLElement | null} = {element: panel};
+        state.element?.removeAttribute("hidden");
+        if (panel.hidden) throw new Error("optional removal");
+        state.element = null;
+        state.element?.removeAttribute("hidden");
+        const button = document.createElement("button");
+        button.disabled = true;
+        button.removeAttribute("disabled");
+        if (button.disabled) throw new Error("removed boolean attribute");
+        panel.appendChild(button);
+        document.body.appendChild(panel);
+        globalThis.close();
+    `, {fileName:join(directory, "entry.ts")});
+    assert.ok(result.cpp.includes("ui_remove_attribute"));
+    writeFileSync(join(directory, "program.hpp"), result.cpp);
+    const texture = new PNG({width:4, height:4});
+    texture.data.fill(255);
+    writeFileSync(join(directory, "tile.png"), PNG.sync.write(texture));
+    runRmlUiFixture(t, "ui-attributes", {imageDecoder:true});
+});

@@ -53,7 +53,7 @@ retain every canvas at its page position, so labels cannot conceal a rendering r
 | Area | Supported |
 | --- | --- |
 | Construction | Static-tag createElement, appendChild, mixed text/element append, root attachment, remove |
-| Content | textContent/innerText, bounded innerHTML, className/id/type, static attributes |
+| Content | textContent/innerText, bounded innerHTML, className/id/type, static-named attributes and removal |
 | Styles/classes | cssText, reached style fields, classList add/remove/forced toggle |
 | Queries | Static class query on a known complete retained subtree; Window document ID lookup returns the first attached match in tree order, or null |
 | Input | Reached click/mousedown/pointerdown/up/cancel/lost-capture callbacks; one pointer |
@@ -61,6 +61,10 @@ retain every canvas at its page position, so labels cannot conceal a rendering r
 | Text forms | Retained input/textarea value and input callbacks; textarea editing and vertical resize |
 | Range forms | Retained value/input callbacks and native range widgets |
 | Files | Object-URL download anchors and static single-file inputs |
+
+Removing an attribute updates retained and rendered state, including image sources, boolean attributes,
+classes and all inline style declarations. Attribute names follow HTML ASCII casing. Removing the type
+of an active native file input refuses; its control transition is not represented.
 
 Boolean `hidden` reads and writes reflect attribute presence; clearing it restores the authored
 display rules. Author CSS can override its default `display:none`, following the

@@ -90,6 +90,7 @@ interface PlatformCallContext extends CharacterIntrinsicContext, Pick<LoweringSe
     "fail" |
     "hasPresentationHost" |
     "hoistForwardCallbackBindings" |
+    "probeEmission" |
     "isBrowserOnlyExpression" |
     "isCanvasElement" |
     "isDefaultLibraryIdentifier" |
@@ -675,9 +676,14 @@ export class PlatformCalls {
 
     private compileUiCall(call: ts.CallExpression, callee: ts.PropertyAccessExpression, preparedElement?: Value): Value | undefined {
         if (!preparedElement && callee.questionDotToken) {
-            const type = this.context.dataLowerer.dataTypeAt(callee.expression);
+            const stored = this.context.probeEmission(() => {
+                const value = this.context.dataLowerer.compileDataPath(callee.expression, "read");
+                return value?.dataType?.kind === "optional" && value.dataType.inner.kind === "handle" &&
+                    value.dataType.inner.handle === "ui-element" ? value : undefined;
+            });
+            const type = stored?.dataType ?? this.context.dataLowerer.dataTypeAt(callee.expression);
             if (type?.kind === "optional" && type.inner.kind === "handle" && type.inner.handle === "ui-element") {
-                return this.context.dataLowerer.optionalAccess(this.context.compileValue(callee.expression), call,
+                return this.context.dataLowerer.optionalAccess(stored ?? this.context.compileValue(callee.expression), call,
                     element => this.compileUiCall(call, callee, element));
             }
         }
@@ -1075,9 +1081,18 @@ export class PlatformCalls {
                 },
             };
         }
+        if (element && callee.name.text === "removeAttribute") {
+            this.context.expectArgumentCount(call, 1, 1);
+            const name = this.ui.uiAttributeName(argumentAt(call, 0));
+            const engine = this.context.requireEngine(element, call);
+            if (name === "class" || name === "id")
+                this.ui.recordUiStaticAttribute(element, name, argumentAt(call, 0), "");
+            else if (name === "style") this.ui.recordUiStaticStyle(element, "");
+            return {kind: "void", cpp: `bbl::ui_remove_attribute(${engine}, ${element.cpp}, ${this.context.cppString(name)})`};
+        }
         if (element && callee.name.text === "setAttribute") {
             this.context.expectArgumentCount(call, 2, 2);
-            const name = this.context.compileStringLiteral(argumentAt(call, 0));
+            const name = this.ui.uiAttributeName(argumentAt(call, 0));
             const engine = this.context.requireEngine(element, call);
             const browserFile = this.ui.compileUiBrowserFileAttribute(element, engine, name, argumentAt(call, 1), call, "attribute");
             if (browserFile) {
