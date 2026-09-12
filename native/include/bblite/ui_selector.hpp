@@ -2,8 +2,49 @@
 
 #include <bblite/runtime.hpp>
 #include <RmlUi/Core/Element.h>
+#include <algorithm>
 
 namespace bbl::pal {
+
+inline bool ui_selector_sequence_matches(Rml::Element* element, const std::vector<UiSelectorStep>& steps);
+
+inline bool ui_selector_uses_test(const std::vector<UiSelectorStep>& steps, UiSelectorTestKind kind) {
+    for (const auto& step : steps) for (const auto& test : step.tests) {
+        if (test.kind == kind) return true;
+        for (const auto& alternative : test.alternatives) if (ui_selector_uses_test(alternative, kind)) return true;
+    }
+    return false;
+}
+
+inline bool ui_selector_position_matches(Rml::Element& element, const UiSelectorTest& test) {
+    auto* parent = element.GetParentNode();
+    if (!parent) return false;
+    const bool of_type = test.kind == UiSelectorTestKind::NthOfType || test.kind == UiSelectorTestKind::NthLastOfType || test.kind == UiSelectorTestKind::OnlyOfType;
+    std::int64_t position = 0, count = 0;
+    for (int index = 0; index < parent->GetNumChildren(); ++index) {
+        auto* child = parent->GetChild(index);
+        if (child->GetTagName() == "#text" || (of_type && child->GetTagName() != element.GetTagName())) continue;
+        ++count;
+        if (child == &element) position = count;
+    }
+    if (!position) return false;
+    if (test.kind == UiSelectorTestKind::OnlyChild || test.kind == UiSelectorTestKind::OnlyOfType) return count == 1;
+    if (test.kind == UiSelectorTestKind::NthLastChild || test.kind == UiSelectorTestKind::NthLastOfType) position = count - position + 1;
+    const auto delta = position - test.b;
+    return test.a == 0 ? delta == 0 : delta % test.a == 0 && delta / test.a >= 0;
+}
+
+inline std::uint32_t ui_selector_sequence_specificity(const std::vector<UiSelectorStep>& steps) {
+    std::uint32_t result = 0;
+    for (const auto& step : steps) for (const auto& test : step.tests) {
+        if (test.kind == UiSelectorTestKind::Not) {
+            std::uint32_t alternative = 0;
+            for (const auto& sequence : test.alternatives) alternative = std::max(alternative, ui_selector_sequence_specificity(sequence));
+            result += alternative;
+        } else result += test.kind == UiSelectorTestKind::Id ? 0x10000u : test.kind == UiSelectorTestKind::Tag ? 1u : 0x100u;
+    }
+    return result;
+}
 
 inline bool ui_selector_test_matches(Rml::Element& element, const UiSelectorTest& test) {
     switch (test.kind) {
@@ -19,8 +60,19 @@ inline bool ui_selector_test_matches(Rml::Element& element, const UiSelectorTest
     case UiSelectorTestKind::Active: return element.IsPseudoClassSet("active");
     case UiSelectorTestKind::Focus: return element.IsPseudoClassSet("focus");
     case UiSelectorTestKind::FocusVisible: return element.IsPseudoClassSet("focus-visible");
+    case UiSelectorTestKind::FocusWithin: return element.IsPseudoClassSet("focus-within");
     case UiSelectorTestKind::Disabled: return element.IsPseudoClassSet("disabled");
     case UiSelectorTestKind::Checked: return element.IsPseudoClassSet("checked");
+    case UiSelectorTestKind::Empty: return element.GetNumChildren() == 0;
+    case UiSelectorTestKind::NthChild: case UiSelectorTestKind::NthLastChild:
+    case UiSelectorTestKind::NthOfType: case UiSelectorTestKind::NthLastOfType:
+    case UiSelectorTestKind::OnlyChild: case UiSelectorTestKind::OnlyOfType:
+        return ui_selector_position_matches(element, test);
+    case UiSelectorTestKind::Not:
+        if (test.alternatives.empty()) throw std::logic_error("A compiled :not selector needs alternatives.");
+        return std::none_of(test.alternatives.begin(), test.alternatives.end(), [&](const auto& sequence) {
+            return ui_selector_sequence_matches(&element, sequence);
+        });
     }
     throw std::logic_error("Invalid compiled UI selector test.");
 }

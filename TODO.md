@@ -73,7 +73,7 @@ status. One line per item: the gap, where it is, its size (S < 1 h, M < half day
 - [ ] Morph-shadow is emitted in 19 trees and reached in 2; light/camera gizmos 7/1. Gate at reach. M, deletes generated code.
 - [ ] Shadow generator maps/buffers are released only at teardown (pal_sdl_gpu.cpp:3891, :6022) and handles index the vector; reclaim retired generators without compacting. M.
 - [ ] The crosshair is a private property (pal_ui_rml.cpp), and line height is hardcoded 1.32. M.
-- [ ] Retained selectors need generated-content pseudo-elements, functional/structural pseudo-classes and general child/sibling chains across projected grid containers (ui-selector.ts, ui-projection.ts, pal_ui_rml.cpp). L.
+- [ ] Retained selectors need generated-content pseudo-elements, relational/matching-list functions beyond :not, and general structural chains across projected grid containers (ui-selector.ts, ui-projection.ts, pal_ui_rml.cpp). L.
 - [ ] Dawn builds and deploys on Windows only (build-dawn.ps1:60-65, :105) and no SPIR-V ships. L; validate Linux/macOS against browser references before claiming either.
 - [ ] Drop sdl-multisample-read.patch (SDL#15838) and d3d12-multisample-lines.patch (SDL#16182) when an SDL release passes their controls; png-grey-ramp-last-index.patch self-retires. S per release.
 - [ ] A floating-origin transform-only version bump rebakes and re-uploads whole vertex buffers, twice with pinned_vertices (pal_dawn.cpp:13137-13181). M; 9 trees.

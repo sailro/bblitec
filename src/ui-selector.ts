@@ -1,16 +1,27 @@
 /** Compound selector chains admitted by the retained CSS projection. The same
  * parsed terms drive native matching, serialization and conservative proofs. */
+export const UI_SELECTOR_STATES = {
+    hover: "Hover", active: "Active", focus: "Focus", "focus-visible": "FocusVisible",
+    "focus-within": "FocusWithin", disabled: "Disabled", checked: "Checked",
+} as const;
 export const UI_SELECTOR_TESTS = {
     tag: "Tag", id: "Id", class: "Class", attribute: "Attribute", equals: "Equals",
-    hover: "Hover", active: "Active", focus: "Focus", "focus-visible": "FocusVisible",
-    disabled: "Disabled", checked: "Checked",
+    ...UI_SELECTOR_STATES,
+    "nth-child": "NthChild", "nth-last-child": "NthLastChild",
+    "nth-of-type": "NthOfType", "nth-last-of-type": "NthLastOfType",
+    "only-child": "OnlyChild", "only-of-type": "OnlyOfType", empty: "Empty", not: "Not",
 } as const;
 export type UiSelectorTestKind = keyof typeof UI_SELECTOR_TESTS;
-export interface UiSelectorTest { kind: UiSelectorTestKind; name: string; value: string; }
+export interface UiSelectorTest {
+    kind: UiSelectorTestKind; name: string; value: string;
+    alternatives?: UiSelectorStep[][];
+    a?: number; b?: number;
+}
 export const UI_SELECTOR_RELATIONS = { self: "Self", descendant: "Descendant", child: "Child", next: "Next", following: "Following" } as const;
 export interface UiSelectorStep { relation: keyof typeof UI_SELECTOR_RELATIONS; tests: UiSelectorTest[]; }
 
-export function parseUiSelectorSequence(source: string): UiSelectorStep[] | undefined {
+export function parseUiSelectorSequence(source: string, depth = 0): UiSelectorStep[] | undefined {
+    if (depth > 64) return undefined;
     const steps: UiSelectorStep[] = [];
     let rest = source.trim();
     let relation: UiSelectorStep["relation"] = "self";
@@ -25,7 +36,7 @@ export function parseUiSelectorSequence(source: string): UiSelectorStep[] | unde
         while (rest && !/^[\s>+~]/.test(rest)) {
             const simple = /^([.#])([A-Za-z_][A-Za-z0-9_-]*)/.exec(rest);
             const attribute = /^\[\s*([A-Za-z_][A-Za-z0-9_-]*)\s*(?:=\s*(?:"([^"\\]*)"|'([^'\\]*)'|([A-Za-z0-9_-]+))\s*)?\]/.exec(rest);
-            const state = /^:(hover|active|focus-visible|focus|disabled|checked)(?![A-Za-z0-9_-])/.exec(rest);
+            const state = /^:([a-z][a-z-]*)/.exec(rest);
             if (simple) {
                 if (simple[1] === "#" && tests.some(test => test.kind === "id")) return undefined;
                 tests.push({kind:simple[1] === "." ? "class" : "id", name:simple[2]!, value:""});
@@ -37,10 +48,34 @@ export function parseUiSelectorSequence(source: string): UiSelectorStep[] | unde
                 rest = rest.slice(attribute[0].length);
             } else if (state) {
                 const name = state[1]!;
-                // Narrow the parser token through the shared descriptor table.
-                if (!isUiSelectorState(name) || tests.some(test => test.kind === name)) return undefined;
-                tests.push({kind:name, name:"", value:""});
                 rest = rest.slice(state[0].length);
+                if (isUiSelectorState(name)) {
+                    if (tests.some(test => test.kind === name)) return undefined;
+                    tests.push({kind:name, name:"", value:""});
+                } else if (name === "empty" || name === "only-child" || name === "only-of-type") {
+                    tests.push({kind:name, name:"", value:""});
+                } else if (name === "first-child" || name === "last-child" || name === "first-of-type" || name === "last-of-type") {
+                    const kind = name === "first-child" ? "nth-child" : name === "last-child" ? "nth-last-child" :
+                        name === "first-of-type" ? "nth-of-type" : "nth-last-of-type";
+                    tests.push({kind, name:"", value:"", a:0, b:1});
+                } else if (name === "not" || isUiNthSelector(name)) {
+                    const parameter = uiSelectorFunction(rest);
+                    if (!parameter) return undefined;
+                    rest = parameter.rest;
+                    if (name === "not") {
+                        const alternatives: UiSelectorStep[][] = [];
+                        for (const part of splitUiSelectorList(parameter.body)) {
+                            const sequence = parseUiSelectorSequence(part, depth + 1);
+                            if (!sequence) return undefined;
+                            alternatives.push(sequence);
+                        }
+                        tests.push({kind:"not", name:"", value:"", alternatives});
+                    } else {
+                        const formula = uiNthFormula(parameter.body);
+                        if (!formula) return undefined;
+                        tests.push({kind:name, name:"", value:"", ...formula});
+                    }
+                } else return undefined;
             } else return undefined;
         }
         if (!tag && !tests.length) return undefined;
@@ -59,8 +94,35 @@ export function parseUiSelectorSequence(source: string): UiSelectorStep[] | unde
     return steps.length ? steps : undefined;
 }
 
-function isUiSelectorState(value: string): value is "hover" | "active" | "focus" | "focus-visible" | "disabled" | "checked" {
-    return value === "hover" || value === "active" || value === "focus" || value === "focus-visible" || value === "disabled" || value === "checked";
+export function isUiSelectorState(value: string): value is keyof typeof UI_SELECTOR_STATES {
+    return Object.hasOwn(UI_SELECTOR_STATES, value);
+}
+
+function isUiNthSelector(value: string): value is "nth-child" | "nth-last-child" | "nth-of-type" | "nth-last-of-type" {
+    return value === "nth-child" || value === "nth-last-child" || value === "nth-of-type" || value === "nth-last-of-type";
+}
+
+function uiSelectorFunction(source: string): {body:string; rest:string} | undefined {
+    if (!source.startsWith("(")) return undefined;
+    let depth = 0, quote = "";
+    for (let index = 0; index < source.length; index++) {
+        const token = source[index]!;
+        if (token === "\\") { index++; continue; }
+        if (quote) { if (token === quote) quote = ""; }
+        else if (token === '"' || token === "'") quote = token;
+        else if (token === "(") depth++;
+        else if (token === ")" && --depth === 0) return {body:source.slice(1,index), rest:source.slice(index+1)};
+    }
+    return undefined;
+}
+
+function uiNthFormula(source: string): {a:number; b:number} | undefined {
+    const value = source.trim().toLowerCase();
+    if (value === "even" || value === "odd") return {a:2,b:Number(value === "odd")};
+    const match = /^([+-]?(?:\d+)?)n(?:\s*([+-])\s*(\d+))?$/.exec(value);
+    const a = match ? match[1] === "" || match[1] === "+" ? 1 : match[1] === "-" ? -1 : Number(match[1]) : 0;
+    const b = match ? Number(match[3] ?? 0) * (match[2] === "-" ? -1 : 1) : /^[+-]?\d+$/.test(value) ? Number(value) : NaN;
+    return Number.isInteger(a) && Number.isInteger(b) && Math.abs(a) <= 0x7fffffff && Math.abs(b) <= 0x7fffffff ? {a,b} : undefined;
 }
 
 export function uiSelectorSequenceCss(steps: readonly UiSelectorStep[]): string {
@@ -73,6 +135,9 @@ export function uiSelectorSequenceCss(steps: readonly UiSelectorStep[]): string 
                 case "class": return `.${test.name}`;
                 case "attribute": return `[${test.name}]`;
                 case "equals": return `[${test.name}=${test.value.includes('"') ? `'${test.value}'` : `"${test.value}"`}]`;
+                case "not": return `:not(${test.alternatives!.map(uiSelectorSequenceCss).join(", ")})`;
+                case "nth-child": case "nth-last-child": case "nth-of-type": case "nth-last-of-type":
+                    return `:${test.kind}(${test.a === 0 ? test.b : `${test.a}n${test.b! < 0 ? test.b : `+${test.b}`}`})`;
                 default: return `:${test.kind}`;
             }
         }).join("");
@@ -82,7 +147,21 @@ export function uiSelectorSequenceCss(steps: readonly UiSelectorStep[]): string 
 
 export function uiSelectorSequenceSpecificity(steps: readonly UiSelectorStep[]): number {
     return steps.reduce((sum, step) => sum + step.tests.reduce((value, test) =>
-        value + (test.kind === "id" ? 0x10000 : test.kind === "tag" ? 1 : 0x100), 0), 0);
+        value + (test.kind === "id" ? 0x10000 : test.kind === "tag" ? 1 : test.kind === "not" ?
+            Math.max(...test.alternatives!.map(uiSelectorSequenceSpecificity)) : 0x100), 0), 0);
+}
+
+export function* uiSelectorSequenceTests(steps: readonly UiSelectorStep[]): Generator<UiSelectorTest> {
+    for (const step of steps) for (const test of step.tests) {
+        yield test;
+        for (const alternative of test.alternatives ?? []) yield* uiSelectorSequenceTests(alternative);
+    }
+}
+
+export function uiSelectorSequenceNeedsAuthoredTree(steps: readonly UiSelectorStep[]): boolean {
+    return steps.some(step => step.relation === "child" || step.relation === "next" || step.relation === "following" || step.tests.length === 0 ||
+        step.tests.some(test => isUiNthSelector(test.kind) || test.kind === "only-child" || test.kind === "only-of-type" || test.kind === "empty" ||
+            test.alternatives?.some(uiSelectorSequenceNeedsAuthoredTree)));
 }
 
 /** Attribute/state conditions and relationships are not unconditional static facts. */
@@ -92,7 +171,8 @@ export function uiSelectorSequenceIsConditional(steps: readonly UiSelectorStep[]
 
 export function uiSelectorSequenceCpp(steps: readonly UiSelectorStep[], quote: (value: string) => string): string {
     return `{${steps.map(step => `{bbl::UiSelectorRelation::${UI_SELECTOR_RELATIONS[step.relation]}, {${step.tests.map(test =>
-        `{bbl::UiSelectorTestKind::${UI_SELECTOR_TESTS[test.kind]}, ${quote(test.name)}, ${quote(test.value)}}`).join(", ")}}}`).join(", ")}}`;
+        `{bbl::UiSelectorTestKind::${UI_SELECTOR_TESTS[test.kind]}, ${quote(test.name)}, ${quote(test.value)}` +
+        `${test.alternatives || test.a !== undefined ? `, {${test.alternatives?.map(alternative => uiSelectorSequenceCpp(alternative,quote)).join(", ") ?? ""}}, ${test.a ?? 0}, ${test.b ?? 0}` : ""}}`).join(", ")}}}`).join(", ")}}`;
 }
 
 /** Commas inside quoted attributes or functional selectors do not split a list. */

@@ -2061,12 +2061,7 @@ std::uint32_t ui_style_rule_specificity(const UiStyleRule& rule) {
     std::uint32_t tags = 0;
     switch (rule.selector) {
     case UiStyleSelectorKind::Sequence:
-        for (const auto& step : rule.sequence) for (const auto& test : step.tests) {
-            if (test.kind == UiSelectorTestKind::Id) ++ids;
-            else if (test.kind == UiSelectorTestKind::Tag) ++tags;
-            else ++classes;
-        }
-        break;
+        return ui_selector_sequence_specificity(rule.sequence) + classes * 0x100u;
     case UiStyleSelectorKind::Class:
         ++classes;
         break;
@@ -3681,9 +3676,12 @@ struct UiRmlRuntime {
         source += "html{width:100%;height:100%;font-family:" + css_font_family +
             ";font-size:16dp;line-height:1.32;pointer-events:none;}head{display:none;}body{display:block;height:100%;}\n";
         observes_motion_preference = false;
+        observes_focus_within = false;
+        focus_within_revision = std::numeric_limits<std::uint64_t>::max();
         const auto append_rule = [&source, this](const UiStyleRule& rule) {
             const bool motion = rule.motion != UiMotionPreference::Any;
             observes_motion_preference = observes_motion_preference || motion;
+            observes_focus_within = observes_focus_within || ui_selector_uses_test(rule.sequence, UiSelectorTestKind::FocusWithin);
             const std::string public_style =
                 filter_private_ui_declarations(rule.style, false);
             if (public_style.empty()) return;
@@ -4681,7 +4679,7 @@ struct UiRmlRuntime {
         for (ProjectedUiElement& projected : projected_elements) {
             if (!projected.element) continue;
             std::uint8_t states = 0, bit = 1;
-            for (const auto* state : {"hover", "active", "focus", "focus-visible", "disabled", "checked"}) {
+            for (const auto* state : {"hover", "active", "focus", "focus-visible", "disabled", "checked", "focus-within"}) {
                 if (projected.element->IsPseudoClassSet(state)) states |= bit;
                 bit <<= 1;
             }
@@ -4729,6 +4727,27 @@ struct UiRmlRuntime {
         projected_focus_revision = engine.ui_focus_revision;
         projected_focused = focused;
         return true;
+    }
+
+    bool sync_focus_within() {
+        if (!observes_focus_within) return false;
+        auto* focused_element = context->GetFocusElement();
+        if (focus_within_revision == engine.ui_revision && focus_within_target == focused_element) return false;
+        focus_within_revision = engine.ui_revision;
+        focus_within_target = focused_element;
+        std::unordered_set<Rml::Element*> ancestors;
+        for (auto* node = focused_element; node; node = node->GetParentNode()) ancestors.insert(node);
+        bool changed = false;
+        const auto visit = [&](const auto& self, Rml::Element& element) -> void {
+            const bool focused = ancestors.contains(&element);
+            if (element.IsPseudoClassSet("focus-within") != focused) {
+                element.SetPseudoClass("focus-within", focused);
+                changed = true;
+            }
+            for (int index = 0; index < element.GetNumChildren(); ++index) self(self, *element.GetChild(index));
+        };
+        visit(visit, *document);
+        return changed;
     }
 
     void sync_outlines() {
@@ -5380,6 +5399,9 @@ struct UiRmlRuntime {
     std::uint32_t viewport_height = 0;
     bool (*const motion_preference_reader)();
     bool observes_motion_preference = false;
+    bool observes_focus_within = false;
+    std::uint64_t focus_within_revision = std::numeric_limits<std::uint64_t>::max();
+    Rml::Element* focus_within_target = nullptr;
     bool motion_preference_initialized = false;
     bool reduced_motion = false;
     bool default_prevented = false;
@@ -5507,6 +5529,7 @@ void update_ui_rml_runtime(
     if (runtime.sync_text_form_metrics()) runtime.context->Update();
     const bool focus_changed = runtime.sync_focus();
     if (focus_changed) runtime.context->Update();
+    if (runtime.sync_focus_within()) runtime.context->Update();
     const bool hover_changed = runtime.sync_hover_states();
     if (hover_changed) {
         // Public :hover declarations are handled by RmlUi itself. Re-run the

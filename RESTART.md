@@ -36,7 +36,7 @@ it does not establish that this external application compiles or runs.
 | Branch | `codex/external-project-support` |
 | Remote | `https://github.com/sailro/bblitec.git` |
 | Branch base used in this session | `3474e835` on `main` |
-| Latest executable-code/test unit | Document-owned event target values; prior savepoints `48f5224f` (DOM input bridge), `61f878fb` (native dispatcher) and `58c6fe8c` (mixed tuples) |
+| Latest executable-code/test unit | Structural/negated selectors and focus-within; prior savepoints `6aa3bc40` (selector chains and fresh Window layout), `fadc3ac8` (event targets), `48f5224f` (DOM input bridge) and `58c6fe8c` (mixed tuples) |
 | Draft PR | [#247 — Extend generic application compilation and retained UI support](https://github.com/sailro/bblitec/pull/247) |
 | External checkout | `C:/Dev/_prototypes/external-native-app` |
 | External source revision | `d7c477a6d5963680c55249dceb93cb6e4ab9ce56` |
@@ -194,6 +194,28 @@ values and exactly one host measurement per source call.
 `css452.json` starts a separate fixed 13-case CSS-family baseline: four chain cases
 generate, nine state/structural/functional/generated-content cases refuse. Continue those
 families together; do not treat this new baseline as the original 24-case probe set.
+
+Structural selector unit: compiled terms now include nested negation lists and An+B
+position tests. Negation uses the maximum alternative specificity. A reached
+focus-within rule derives state from the current RmlUi focus path; that traversal is
+cached by focus target and document revision. Positional/negated rules participate in
+the same native cascade, and static grid refusals inspect nested terms too. A bare
+descendant state such as `.panel :hover` must stay a separate compound; do not peel it
+into `.panel:hover` when reusing the legacy trailing-state optimization.
+
+`selectors459` passed 661/662 checks, including all compiler tests. The fixture's manual
+focus-clear assertion incorrectly assumed RmlUi Blur leaves its parent unfocused;
+the corrected test moves focus to an actual outside control. `selectors460` and the
+final `selectors461` both pass all four focused tests without skips. `selector-window459`
+builds/runs on both renderers and transports nested negation terms while validating
+fresh layout during callbacks. `css458` accepts 10/13 generation probes; generated
+content is the remaining family. No further full-application attempt has run.
+
+The ignored `generated-content-plan.md` records the next design direction and dependency
+coordination concern: another task is building in a separate worktree, so use isolated
+RmlUi candidate artifacts while any shared standard libraries are in use. No new RmlUi
+patch or generated-content implementation has been made yet; canonical artifacts still
+record twelve patches at the unchanged pin. Read and verify the plan against source.
 
 The branch was clean and synchronized with its remote before adding this
 document. All 14 implementation/test commits listed below were pushed. The PR
