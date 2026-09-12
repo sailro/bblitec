@@ -15,7 +15,7 @@ interface CanvasContext
     > {}
 
 function hasDomInterface(context: CanvasContext, expression: ts.Expression, name: string): boolean {
-    const symbol = context.checker.getTypeAtLocation(expression).getSymbol();
+    const symbol = context.checker.getNonNullableType(context.checker.getTypeAtLocation(expression)).getSymbol();
     return symbol?.name === name && (symbol.declarations?.some(declaration => ts.isInterfaceDeclaration(declaration) &&
         context.isDefaultLibraryIdentifier(declaration.name)) ?? false);
 }
@@ -28,9 +28,25 @@ function canvasOwner(context: CanvasContext, expression: ts.Expression): Value |
     return context.compileValue(expression);
 }
 
+export function readMediaQueryProperty(context: CanvasContext, owner: Value, access: ts.PropertyAccessExpression): Value | undefined {
+    if (owner.kind !== "worker-media-query" || !["matches", "media"].includes(access.name.text)) return undefined;
+    requireWindowHost(context, access);
+    return {kind: access.name.text === "matches" ? "boolean" : "string",
+        cpp: `(${owner.cpp})->${access.name.text}()`, readOnly: true};
+}
+
 export function compileCanvasValue(context: CanvasContext, expression: ts.Expression): Value | undefined {
     if (!context.options.workers) return undefined;
     const node = context.unwrap(expression);
+    if (ts.isPropertyAccessExpression(node) && ["matches", "media"].includes(node.name.text) &&
+        hasDomInterface(context, node.expression, "MediaQueryList")) {
+        requireWindowHost(context, node);
+        const owner = context.compileValue(node.expression);
+        const read = (present: Value): Value | undefined => readMediaQueryProperty(context, present, node);
+        return node.questionDotToken
+            ? context.dataLowerer.optionalAccess(owner, node, read) ?? read(owner)
+            : read(context.dataLowerer.narrowOptional(owner, node.expression));
+    }
     if (ts.isPropertyAccessExpression(node) && node.name.text === "isSecureContext" &&
         ["globalThis", "window"].includes(browserGlobalNamed(context, node.expression)?.text ?? "")) {
         requireWindowHost(context, node);
@@ -73,7 +89,8 @@ export function compileCanvasValue(context: CanvasContext, expression: ts.Expres
         if (!context.options.workers.namespace && browserGlobalNamed(context, callee)?.text === "matchMedia") {
             if (node.arguments.length !== 1) return context.fail(node, "matchMedia requires one media query string.");
             requireWindowHost(context, node);
-            return { kind: "worker-media-query", cpp: `bbl::pal::create_media_query(${context.dataLowerer.compileForSink(argumentAt(node, 0), { kind: "string" })})`, impure: true };
+            return { kind: "worker-media-query", dataType: {kind: "handle", handle: "worker-media-query"},
+                cpp: `bbl::pal::create_media_query(${context.dataLowerer.compileForSink(argumentAt(node, 0), { kind: "string" })})`, impure: true };
         }
         if (ts.isPropertyAccessExpression(callee) && callee.name.text === "addEventListener" &&
             hasDomInterface(context, callee.expression, "MediaQueryList")) {

@@ -11,6 +11,12 @@ Build switches for RmlUi, FreeType and LunaSVG are in
 static host chrome explicitly; they do not discover arbitrary browser pages.
 Window metrics, media queries, resize observers and application error listeners in an application with workers select the native
 Window host directly; they do not require static host markup. Worker realms cannot use those Window APIs.
+`matchMedia` accepts resolution in `dppx` and `prefers-reduced-motion` (`reduce`,
+`no-preference`, or the boolean form). Results retain identity through typed records
+and nullable values; `matches` reads current state and `media` returns the normalized query.
+Zero-argument `change` listeners run when the result changes. Other query forms,
+event payloads and listener removal are unsupported. Motion queries share the
+platform preference and refresh interval described under CSS below.
 The application `document` can be passed through specialized dependency records with a stable identity
 distinct from `window`; reached DOM operations remain limited to the projection below.
 DOM handles stored in records, arrays, nullable fields and helper parameters retain the document owner.

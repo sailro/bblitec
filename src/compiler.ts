@@ -17,7 +17,7 @@ import { checkNodeGeometryMutation } from "./compiler/node-geometry-admission.js
 import type { CompiledMeshWalk } from "./gltf-mesh-walks.js";
 import { compileWorkerApplication, usesWorkers } from "./compiler/worker-modules.js";
 import { compileWorkerValue, isNativeWorkerExpression } from "./compiler/workers.js";
-import { compileCanvasValue, emitCanvasAssignment } from "./compiler/canvas.js";
+import { compileCanvasValue, emitCanvasAssignment, readMediaQueryProperty } from "./compiler/canvas.js";
 import { compileWindowIdentity } from "./compiler/window-events.js";
 import { writesUnobservedCanvasMetadata } from "./compiler/canvas-instrumentation.js";
 import { AsyncLowerer } from "./compiler/async.js";
@@ -3264,7 +3264,7 @@ class Compiler
         const explicitlyTypedMutableEntryObject =
             declaration.type !== undefined &&
             mutablePlainObject &&
-            this.defaultEngine() !== undefined;
+            (this.defaultEngine() !== undefined || this.options.workers !== undefined);
         if (
             !declaration.type &&
             !inferredMutableArray &&
@@ -11524,6 +11524,8 @@ class Compiler
         owner: Value,
         expression: ts.PropertyAccessExpression,
     ): Value | undefined {
+        const media = readMediaQueryProperty(this, owner, expression);
+        if (media) return media;
         const character = readCharacterProperty(this, owner, expression.name.text);
         if (character) return character;
         if (owner.kind === "physics-body" && expression.name.text === "node") {

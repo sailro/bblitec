@@ -1198,6 +1198,9 @@ export class StaticEvaluator {
                 return undefined;
             }
             const owner = this.resolveValue(left.expression);
+            // Initializer metadata does not settle the current contents of a
+            // materialized field; writes may have happened through a helper.
+            if (owner.kind === "data") return undefined;
             const name = left.name.text;
             const property = owner.recordProperties?.[name];
             if (property) {

@@ -48,7 +48,9 @@ class ResizeObserver {
 
 class MediaQueryList {
   public:
-    explicit MediaQueryList(std::string query);
+    MediaQueryList(std::string query, double (*read_pixel_ratio)(), bool (*read_motion_preference)());
+    [[nodiscard]] bool matches() const;
+    [[nodiscard]] const std::string& media() const noexcept { return media_; }
     void add_change_listener(js::Callback<void()> callback);
     void deliver();
     /**
@@ -60,7 +62,13 @@ class MediaQueryList {
     [[nodiscard]] bool retained() const noexcept { return !listeners_.empty(); }
     void gc_trace(const js::TraceVisitor& visitor) const { visitor(listeners_); }
   private:
+    enum class Feature { Resolution, ReducedMotion };
+    Feature feature_ = Feature::Resolution;
+    std::string media_;
     double resolution_ = 0;
+    bool reduce_ = false;
+    double (*read_pixel_ratio_)();
+    bool (*read_motion_preference_)();
     bool matches_ = false;
     PlatformEventListeners<void()> listeners_;
 };

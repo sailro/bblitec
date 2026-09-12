@@ -37,6 +37,11 @@ export function isNativeWorkerExpression(context: WorkerLoweringContext, express
         ["window", "globalThis", "document"].includes(browserGlobalNamed(context, node)?.text ?? "")) return true;
     if (ts.isCallExpression(node)) node = context.unwrap(node.expression);
     if (ts.isNewExpression(node)) node = context.unwrap(node.expression);
+    if (ts.isPropertyAccessExpression(node)) {
+        const type = context.dataLowerer.dataTypeAt(node.expression);
+        const inner = type?.kind === "optional" ? type.inner : type;
+        if (inner?.kind === "handle" && inner.handle === "worker-media-query") return true;
+    }
     if (ts.isPropertyAccessExpression(node) && node.name.text === "reload" &&
         browserGlobalNamed(context, node.expression)?.text === "location") return true;
     const globalMember = browserGlobalNamed(context, node);

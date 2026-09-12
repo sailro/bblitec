@@ -16,6 +16,7 @@ const handleCppTypes: Record<HandleKind, string> = {
   "text-run-ref": "bbl::TextRunRef",
   "picking-info": "bbl::PickingInfo",
   "offscreen-canvas": "std::shared_ptr<bbl::pal::OffscreenCanvas>",
+  "worker-media-query": "std::shared_ptr<bbl::pal::MediaQueryList>",
   mesh: "bbl::MeshHandle",
   "animation-group": "bbl::AnimationGroupHandle",
   "flow-graph": "bbl::FlowGraphHandle",

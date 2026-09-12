@@ -23,7 +23,7 @@ it does not establish that this external application compiles or runs.
 | Branch | `codex/external-project-support` |
 | Remote | `https://github.com/sailro/bblitec.git` |
 | Branch base used in this session | `3474e835` on `main` |
-| Latest completed executable-code/test commit | `ca1d1cdc` (2026-09-12), followed by direct-child selectors in this savepoint |
+| Latest completed executable-code/test commit | `c51d2405` (2026-09-12), followed by media queries in this savepoint |
 | Draft PR | [#247 — Extend generic application compilation and retained UI support](https://github.com/sailro/bblitec/pull/247) |
 | External checkout | `C:/Dev/_prototypes/external-native-app` |
 | External source revision | `d7c477a6d5963680c55249dceb93cb6e4ab9ce56` |
@@ -280,6 +280,24 @@ incomplete. Do not merge or mark it ready merely because the sweep passes.
   The existing virtual document root combines head/body, and `documentElement`
   needs a real root identity before HTML-child rules can work at runtime. Do not
   silently map HTML-child selectors to body or claim root modeling is complete.
+
+- `c51d2405` saves child selectors and reparenting and is pushed. The media-query
+  unit adds typed retained results, nullable access, live `matches`, normalized
+  `media` and reduced-motion matching through the shared system preference.
+  Existing zero-argument change listeners run on result transitions; richer
+  events, removal and other query features remain unsupported.
+- The media fixture exposed two general issues: explicitly typed mutable records
+  in application realms needed the same reference storage as scene records, and
+  nullish coalescing needed raw nullable field storage plus lazy fallback
+  preparation. `media315` passes the native effect/lifetime checks. `focused315`
+  passed 688 of 689 checks; its one failure exposed checked indexing replacing
+  an absent-array default. The corrected path and nearby nullable regressions
+  passed all four checks in `focused316`. No listed TODO is fully closed.
+- `compile315` (exit 1) advanced to `cancelAnimationFrame` in an application
+  realm. The native event loop already owns one-shot repaint callbacks and
+  cancellation, but the compiler still routes RAF through the synchronous scene
+  conductor. Window/worker repaint subscription also needs checking before
+  exposing those APIs. Complete external generation remains pending.
 
 The refreshed harness explicitly reports `danger-full-access`, networking
 enabled and approval policy `never`. Do not pass `sandbox_permissions` or ask

@@ -29,7 +29,7 @@ export const featureSources: Record<Feature, string[]> = {
     "core": ["src/pal.cpp"],
     "platform:workers": [],
     "platform:http": ["src/pal_http.cpp"],
-    "platform:window": ["src/pal_window_realm.cpp"],
+    "platform:window": ["src/pal_window_realm.cpp", "src/pal_media_query.cpp"],
     "backend:sdl": ["src/pal_sdl.cpp"],
     "engine:device-recovery": [],
     // Browser Gamepad polling maps to SDL's standard gamepad API in the
