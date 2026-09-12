@@ -4068,10 +4068,7 @@ export class DataLowerer {
         initialize: (source: string) => void,
         emitBody: (
             result: Value,
-            callback:
-                | ts.Identifier
-                | ts.ArrowFunction
-                | ts.FunctionExpression,
+            callback: ts.Expression,
             source: string,
             index: string,
         ) => void,
@@ -4083,16 +4080,7 @@ export class DataLowerer {
             );
         }
         const callback = this.context.unwrap(argumentAt(call, 0));
-        if (
-            !ts.isIdentifier(callback) &&
-            !ts.isArrowFunction(callback) &&
-            !ts.isFunctionExpression(callback)
-        ) {
-            this.context.fail(
-                callback,
-                `Array.${method} requires a local function or function literal callback.`,
-            );
-        }
+        const local = ts.isIdentifier(callback) || ts.isArrowFunction(callback) || ts.isFunctionExpression(callback) ? callback : undefined;
         const label = method === "forEach" ? "for_each" : method;
         const receiverPolicy = arrayCallbackReceiverPolicy(method);
         if (receiverPolicy.invalidatesFacts) this.invalidateStaticElements(narrowed);
@@ -4102,7 +4090,8 @@ export class DataLowerer {
             this.context.allocateTemporaryCppName(`${label}_index`);
         this.context.emit({ kind: "declaration", type: receiverPolicy.snapshotIdentity ? "auto" : "auto&&", name: source, initializer: narrowed.cpp });
         const sourceCapture = this.context.registerNativeBinding(source);
-        const namedCallback = ts.isIdentifier(callback) ? this.context.lookupIdentifierValue(callback) : undefined;
+        const namedCallback = ts.isIdentifier(callback) ? this.context.lookupIdentifierValue(callback)
+            : !local ? this.context.compileValue(callback) : undefined;
         let storedCallback: Value | undefined;
         if (namedCallback?.dataType?.kind === "function") {
             this.context.useNativeValue(namedCallback);
@@ -4110,6 +4099,7 @@ export class DataLowerer {
             this.context.emit(`const auto ${name} = ${namedCallback.cpp};`);
             storedCallback = { ...namedCallback, cpp: name, nativeCaptures: [this.context.registerNativeBinding(name)] };
         }
+        if (!local && !storedCallback) this.context.fail(callback, `Array.${method} requires a represented callback.`);
         initialize(source);
         let bound = `${source}.size()`;
         if (snapshotLength) {
@@ -4194,12 +4184,12 @@ export class DataLowerer {
                               )
                     : predicate
                       ? this.context.compilePredicateWithValues(
-                            callback,
+                            local!,
                             callbackArguments,
                             call,
                         )
                       : this.context.compileCallbackWithValues(
-                            callback,
+                            local!,
                             callbackArguments,
                             call,
                             method === "forEach",
@@ -4220,16 +4210,13 @@ export class DataLowerer {
     }
 
     private callbackReturnsBoolean(
-        callback:
-            | ts.Identifier
-            | ts.ArrowFunction
-            | ts.FunctionExpression,
+        callback: ts.Expression,
     ): boolean {
-        const signature = ts.isIdentifier(callback)
-            ? this.context.checker
+        const signature = ts.isArrowFunction(callback) || ts.isFunctionExpression(callback)
+            ? this.context.checker.getSignatureFromDeclaration(callback)
+            : this.context.checker
                   .getTypeAtLocation(callback)
-                  .getCallSignatures()[0]
-            : this.context.checker.getSignatureFromDeclaration(callback);
+                  .getCallSignatures()[0];
         return (
             signature !== undefined &&
             (this.context.checker.getReturnTypeOfSignature(signature)

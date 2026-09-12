@@ -427,10 +427,9 @@ export function compileDataMethodCall(
             !ts.isArrowFunction(callback) &&
             !ts.isFunctionExpression(callback)
         ) {
-            lowerer.context.fail(
-                callback,
-                `Tuple Array.${method} requires a local function or function literal callback.`,
-            );
+            // Stored expressions are evaluated once by the runtime callback
+            // path; speculative folding must not re-run their getters.
+            return undefined;
         }
         const folded = lowerer.context.probeEmission(
             (): Value | undefined => {

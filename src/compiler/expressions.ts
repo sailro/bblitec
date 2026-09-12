@@ -54,6 +54,7 @@ import { regexpCaptureCount } from "./string-replacement.js";
 import {
     FORMATTED_MATH_FOLDS,
     mathMemberAccess,
+    mathFunctionValue,
     mathMemberCall,
 } from "./math-intrinsics.js";
 import {
@@ -205,6 +206,7 @@ export interface ExpressionContext
         | "reachFeature"
         | "resolveRecordMember"
         | "reachJsData"
+        | "reachJsRandom"
         | "noteMaterialColorRead"
         | "enterRuntimeControlFlow"
         | "leaveRuntimeControlFlow"
@@ -552,6 +554,8 @@ export class ExpressionLowerer {
             return this.context.lookup(unwrapped);
         }
         if (ts.isPropertyAccessExpression(unwrapped)) {
+            const mathFunction = mathFunctionValue(this.context, unwrapped);
+            if (mathFunction) return mathFunction;
             const audioPrototype = audioPrototypeValue(this.context, unwrapped);
             if (audioPrototype) return audioPrototype;
             const member = this.context.checker.getSymbolAtLocation(unwrapped.name)?.valueDeclaration;
@@ -2821,21 +2825,24 @@ export class ExpressionLowerer {
             );
         }
         const callback = this.context.unwrap(argumentAt(call, 0));
-        if (
-            !ts.isArrowFunction(callback) &&
-            !ts.isFunctionExpression(callback) &&
-            !ts.isIdentifier(callback)
-        ) {
+        const local = ts.isArrowFunction(callback) || ts.isFunctionExpression(callback) || ts.isIdentifier(callback) ? callback : undefined;
+        const value = ts.isIdentifier(callback) ? this.context.lookupOptional(callback)
+            : !local ? this.context.compileValue(callback) : undefined;
+        let stored: Value | undefined;
+        if (value?.dataType?.kind === "function") {
+            const cpp = this.context.allocateTemporaryCppName("tuple_callback");
+            this.context.emit(`const auto ${cpp} = ${value.cpp};`);
+            stored = {...value, cpp, nativeCaptures:[this.context.registerNativeBinding(cpp)]};
+        }
+        if (!local && !stored) {
             this.context.fail(
                 callback,
                 `Compile-time Array.${method} requires a local function or function literal callback.`,
             );
         }
         const elements = owner.tupleElements ?? [];
-        const results = elements.map((element, index) =>
-            this.compileStaticTupleCallback(
-                callback,
-                [
+        const invoke = (element: Value, index: number): Value => {
+            const values: Value[] = [
                     element,
                     {
                         kind: "number",
@@ -2843,34 +2850,34 @@ export class ExpressionLowerer {
                         staticNumber: index,
                     },
                     owner,
-                ],
-                call,
-                method === "forEach",
-            ),
-        );
-        if (method === "forEach") {
-            return { kind: "void", cpp: "" };
-        }
-        if (method === "some") {
-            for (const result of results) {
-                if (result.kind !== "boolean") {
-                    this.context.fail(
-                        callback,
-                        "Compile-time Array.some callback must return a boolean value.",
-                    );
-                }
+                ];
+            if (stored) {
+                const result = this.context.dataLowerer.compileFunctionValueCall(stored, values, call);
+                if (method === "forEach") { this.context.emitDiscardedValue(result); return {kind:"void", cpp:""} satisfies Value; }
+                return result;
             }
+            return this.compileStaticTupleCallback(local!, values, call, method === "forEach");
+        };
+        if (method === "some") {
+            // Keep each callback's statements inside its short-circuited
+            // operand. Emitting all bodies first would execute skipped calls.
+            const predicates = elements.map((element, index) => {
+                let condition = "";
+                const lines = this.context.captureEmittedLines(() => this.inRuntimeControlFlow(() => {
+                    const result = invoke(element, index);
+                    condition = this.context.dataLowerer.conditionFromValue(result) ??
+                        this.context.fail(callback, "Array predicate return has no native truthiness.");
+                }));
+                return lines.length ? `([&]() -> bool { ${lines.join("\n")} return ${condition}; }())` : `(${condition})`;
+            });
             return {
                 kind: "boolean",
-                cpp:
-                    results.length === 0
-                        ? "false"
-                        : results
-                              .map((result) => `(${result.cpp})`)
-                              .join(" || "),
+                cpp: predicates.length ? predicates.join(" || ") : "false",
                 dataType: { kind: "boolean" },
             };
         }
+        const results = elements.map(invoke);
+        if (method === "forEach") return { kind: "void", cpp: "" };
         const mappedType =
             this.context.dataLowerer.dataTypeAt(call);
         if (

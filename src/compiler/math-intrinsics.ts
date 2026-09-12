@@ -18,6 +18,9 @@
  */
 import { EmissionMap } from "./emission-transaction.js";
 import ts from "typescript";
+import type { LoweringServices } from "./lowering-services.js";
+import type { Value } from "./types.js";
+import type { DataType } from "./data-types.js";
 import {
     pinnedHypotCall,
     pinnedMathSpelling,
@@ -216,4 +219,27 @@ export function mathMemberCall(
         isDefaultLibraryIdentifier,
     );
     return access ? { name: access.name.text, call: expression } : undefined;
+}
+
+/** A fixed-signature Math function shares the same spelling as a direct call. */
+export function mathFunctionValue(
+    context: Pick<LoweringServices, "checker" | "isDefaultLibraryIdentifier" | "dataLowerer" | "dataTypes" | "callbackIdentity" | "reachJsData" | "reachJsRandom" | "fail">,
+    expression: ts.Expression,
+): Value | undefined {
+    const access = mathMemberAccess(expression, identifier => context.isDefaultLibraryIdentifier(identifier));
+    if (!access) return undefined;
+    const member = MATH_MEMBERS.get(access.name.text);
+    if (access.name.text === "max" || access.name.text === "min")
+        return context.fail(access, "Stored variadic Math functions require a variable-argument function representation.");
+    if (!member) return undefined;
+    if (member.variadic) return context.fail(access, "Stored variadic Math functions require a variable-argument function representation.");
+    const declaration = context.checker.getSymbolAtLocation(access.name)?.valueDeclaration;
+    if (!declaration) return context.fail(access, "Math function has no resolved library declaration.");
+    const type: DataType<"function"> = {kind:"function", parameters:Array.from({length:member.arity}, () => ({kind:"number"})),
+        result:{kind:"number"}, identity:true};
+    const parameters = type.parameters.map((_, index) => `argument_${index}`);
+    context.reachJsData();
+    if (member.reach === "js-random") context.reachJsRandom();
+    return context.dataLowerer.leafValue(`${context.dataTypes.cppType(type)}{${context.callbackIdentity(declaration, undefined)}u, ` +
+        `[](${parameters.map(name => `double ${name}`).join(", ")}) -> double { return ${member.cpp(parameters)}; }}`, type);
 }

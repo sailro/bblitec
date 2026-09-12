@@ -36,7 +36,7 @@ it does not establish that this external application compiles or runs.
 | Branch | `codex/external-project-support` |
 | Remote | `https://github.com/sailro/bblitec.git` |
 | Branch base used in this session | `3474e835` on `main` |
-| Latest executable-code/test unit | Ambient declaration/typeof guards; prior savepoints `2d977b31` (selector functions/placeholders), `bf9e1a02` (generated content), `c18e4818` (structural selectors), `6aa3bc40` (selector chains and fresh Window layout), `fadc3ac8` (event targets), `48f5224f` (DOM input bridge) and `58c6fe8c` (mixed tuples) |
+| Latest executable-code/test unit | Fixed-signature Math callback values and forwarded array predicates; prior savepoints `acfebcc6` (owned packaged fetch) and `29def3e0` (async aggregation/destructuring) |
 | Draft PR | [#247 — Extend generic application compilation and retained UI support](https://github.com/sailro/bblitec/pull/247) |
 | External checkout | `C:/Dev/_prototypes/external-native-app` |
 | External source revision | `d7c477a6d5963680c55249dceb93cb6e4ab9ce56` |
@@ -44,8 +44,8 @@ it does not establish that this external application compiles or runs.
 | External generated output | `generated/external-app` (ignored; not a successful complete generation) |
 | Session diagnostics | `artifacts/external-integration` (ignored) |
 
-Latest complete-entry diagnostic: `compile568` passed packaged response ownership
-and async audio loading, then stopped at a `Math.random` default callback value.
+Latest complete-entry diagnostic: `compile576` passed packaged response ownership,
+async audio loading and a Math callback default, then stopped at `AudioBuffer.duration`.
 Generation, native build and application runtime remain incomplete.
 
 The packaged-fetch batch has 681 passing compiler/async/audio/HTTP checks without
@@ -53,9 +53,17 @@ skips (`regressions568`). Native fixtures cover response aliases, consumption,
 UTF-8/JSON/binary reads, closed dynamic selection, missing-file rejection, awaited
 typed-array constructors and concurrent fetch-to-audio PCM. `platform:packaged-fetch`
 shares owned response bodies with HTTP without selecting its transport dependency.
-`population560` generated all 288 corpus entries before this batch. The next unit
-assesses built-in callback values/defaults alongside the remaining forwarded-array
-predicate TODO; the unchanged application is still the acceptance target.
+`population560` generated all 288 corpus entries before this batch.
+
+The callback-value baseline advances from 1/13 accepted generation probes
+(`callbacks570.json`) to 12/13 (`callbacks572.json`); stored variadic Math functions
+remain explicitly refused. The first forwarded-array-predicate TODO is closed.
+Native checks cover defaults, explicit overrides, function identity through arrays
+and Sets, captured/named/returned callbacks, callback replacement during iteration,
+truthiness and short-circuit effects. `regressions576` passes 679/680 checks; the
+sole failure was a generated-text assertion expecting a single-line tuple `some`.
+After updating it, `callbacks577` passes all 654 compiler and focused checks without
+skips. The next unit assesses AudioBuffer properties and neighboring operations.
 
 Current assessment artifacts: `requirements356.json` inventories the unchanged
 entry's static local import graph (1,343 files, 1,002 unassessed API/syntax groups;

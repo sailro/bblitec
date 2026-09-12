@@ -144,6 +144,11 @@ element identity. Nested patterns, defaults and renamed struct fields refuse.
 User code supports `Math.fround`, `acos`, `asin`, `log`, `log2`, `cbrt`, `sinh` and
 `clz32`; Number constants and `isFinite`, `isNaN`, `isInteger`, `isSafeInteger` retain
 their non-coercing predicates. Transcendental operations execute at native double precision.
+Supported fixed-arity Math functions also retain identity as callback values, defaults,
+aliases and container entries. Their numeric signatures use the direct-call implementation;
+stored variadic `min`/`max`/`hypot` functions remain unsupported. Forwarded array predicates
+resolve their bound callback, preserve captures and apply JavaScript truthiness; short-circuited
+tuple `some` calls skip the callback's statements as well as its return expression.
 
 Dense `T[]` arrays of user data support `flatMap`, `concat`, `at`, `lastIndexOf`,
 `copyWithin`, `join` for strings/numbers/booleans/enums, ranged `fill` and `splice` with removal/insertion.

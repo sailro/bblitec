@@ -2525,7 +2525,7 @@ test("unrolls some over a readonly tuple table", () => {
 
     assert.match(
         result.cpp,
-        /return .*v_fn\d+_first.*v_fn\d+_last.*\|\|.*v_fn\d+_first.*v_fn\d+_last/,
+        /return .*v_fn\d+_first.*v_fn\d+_last.*\|\|.*v_fn\d+_first.*v_fn\d+_last/s,
     );
 });
 

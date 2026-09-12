@@ -828,6 +828,7 @@ export interface UserFunctionContext
         | "requiresStaticDataIteration"
         | "probeEmission"
         | "compileCondition"
+        | "withRecordScopes"
         | "isBrowserOnlyExpression"
         | "isInFrameCallback"
         | "compileForDataSink"
@@ -2202,6 +2203,21 @@ export class UserFunctionLowerer {
             context.emitDiscardedValue(result);
             return {kind: "void", cpp: ""};
         }
+        if (bound?.callbackDeclaration && bound.callbackDeclaration !== declaration) {
+            const target = ts.isFunctionDeclaration(bound.callbackDeclaration)
+                ? bound.callbackDeclaration.name ?? context.fail(declaration, "Callback function declarations require a name.")
+                : bound.callbackDeclaration;
+            if (bound.nativeCallbackParameterTypes && bound.cpp && !ts.isIdentifier(bound.callbackDeclaration)) {
+                const result = this.compileSpecializedCallbackCall(context, callNode, bound, arguments_.slice(0, bound.callbackDeclaration.parameters.length));
+                if (!discardReturn) return result;
+                context.emitDiscardedValue(result);
+                return {kind:"void", cpp:""};
+            }
+            if (target !== declaration) {
+                const invoke = () => this.compileCallbackWithValues(context, target, arguments_, callNode, discardReturn);
+                return bound.callbackRecordOwner ? context.withRecordScopes(bound.callbackRecordOwner, invoke) : invoke();
+            }
+        }
         const ir = ts.isIdentifier(declaration)
             ? this.resolve(declaration, (node, message) =>
                   context.fail(node, message),
@@ -2510,6 +2526,14 @@ export class UserFunctionLowerer {
         arguments_: readonly Value[],
         callNode: ts.Node,
     ): Value {
+        const bound = ts.isIdentifier(declaration) ? context.lookupOptional(declaration) : undefined;
+        if (bound?.kind === "callback" || bound?.dataType?.kind === "function") {
+            const value = this.compileCallbackWithValues(context, declaration, arguments_, callNode);
+            const condition = context.dataLowerer.conditionFromValue(value);
+            if (condition === undefined) context.fail(declaration, "Array predicate return has no native truthiness.");
+            return {kind:"boolean", cpp:condition, dataType:{kind:"boolean"},
+                ...(condition === "true" || condition === "false" ? {staticBoolean:condition === "true"} : {})};
+        }
         const ir = ts.isIdentifier(declaration)
             ? this.resolve(declaration, (node, message) =>
                   context.fail(node, message),

@@ -6,7 +6,7 @@ status. One line per item: the gap, where it is, its size (S < 1 h, M < half day
 
 ## Compiler
 
-- [ ] Array predicate constant folding resolves a callback parameter from its declaration instead of its bound function value (user-functions.ts:compilePredicateWithValues); forwarded predicates can refuse before the runtime path. S; reusable collection helpers.
+- [ ] Stored variadic Math functions (min/max/hypot) need a variable-argument function representation (math-intrinsics.ts); fixed signatures share the direct-call table. M; reusable numeric callbacks.
 - [ ] Stored-array destructuring assignments still refuse nested/defaulted patterns and accessor targets (data-lowering.ts); identifiers, stored members, indexed targets and a final rest are represented. S/M; collection transforms use destructuring.
 - [ ] Promise.all still refuses literal spreads, non-array iterables, stored void/value-only arrays and recovery with a different tuple representation (async.ts). M; reusable aggregation.
 - [ ] Retained `textContent`/`innerText` compound assignments need a text getter preserving descendant/markup text; they refuse in ui-projection.ts. M; event-driven UI updates.
