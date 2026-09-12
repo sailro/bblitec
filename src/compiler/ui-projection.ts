@@ -9,6 +9,7 @@ import { nativeHostUiStyleRules, uiStyleSelectorCppKind, uiStyleSelectorDescript
 import { validateFileAccept } from "./browser-file.js";
 import { CompileError } from "./compile-error.js";
 import { documentEngine } from "./window-events.js";
+import { browserGlobalNamed } from "./browser-erasure.js";
 import type { LoweringServices } from "./lowering-services.js";
 import { argumentAt } from "./syntax.js";
 import type { NativeHostUiElement, Value } from "./types.js";
@@ -146,6 +147,34 @@ export class UiProjection {
         return documentEngine(this.context, node) ?? this.context.requireDefaultEngine(node);
     }
 
+    private documentRootTag(expression: ts.Expression): string | undefined {
+        const owner = this.context.unwrap(expression);
+        if (!ts.isPropertyAccessExpression(owner) ||
+            !["documentElement", "head", "body"].includes(owner.name.text) ||
+            browserGlobalNamed(this.context, owner.expression)?.text !== "document") return undefined;
+        return owner.name.text === "documentElement" ? "html" : owner.name.text;
+    }
+
+    public documentRootValue(expression: ts.Expression): Value | undefined {
+        const tag = this.documentRootTag(expression);
+        if (!tag) return undefined;
+        const owner = this.context.unwrap(expression);
+        const engine = this.documentEngine(owner);
+        this.context.reachFeature("ui:rml", owner);
+        if (!this.uiDocumentRootIds.has("html")) {
+            for (const tag of ["html", "head", "body"]) this.uiDocumentRootIds.set(tag, this.createUiStaticElement(tag));
+            const html = this.uiDocumentRootIds.get("html")!;
+            const body = this.uiStaticElements.get(this.uiDocumentRootIds.get("body")!)!;
+            for (const child of this.uiStaticRootOrder) body.children.add(child);
+            this.uiStaticElements.get(html)!.children.add(this.uiDocumentRootIds.get("head")!);
+            this.uiStaticElements.get(html)!.children.add(this.uiDocumentRootIds.get("body")!);
+            this.uiStaticRootOrder.splice(0, this.uiStaticRootOrder.length, html);
+        }
+        const part = tag === "html" ? "Html" : tag === "head" ? "Head" : "Body";
+        return {kind:"ui-element", cpp:`bbl::ui_document_root(${engine}, bbl::UiDocumentPart::${part})`,
+            engineCpp:engine, uiTag:tag, uiStaticId:this.uiDocumentRootIds.get(tag)!, truthinessCpp:"true"};
+    }
+
     public booleanAttribute(element: Value, property: string, site: ts.Node): string | undefined {
         if (property !== "hidden" && property !== "disabled") return undefined;
         if (property === "disabled" && element.uiTag && !["button", "input", "textarea"].includes(element.uiTag)) {
@@ -156,6 +185,8 @@ export class UiProjection {
 
 
     public uiElementValue(expression: ts.Expression): Value | undefined {
+        const root = this.documentRootValue(expression);
+        if (root) return root;
         const owner = this.context.unwrap(expression);
         const asElement = (value: Value | undefined): Value | undefined => {
             if (this.context.hasPresentationHost() &&
@@ -310,6 +341,7 @@ export class UiProjection {
 
     /** Whether an expression is already known to produce retained UI state. */
     public isNativeUiValueExpression(expression: ts.Expression): boolean {
+        if (this.documentRootTag(expression)) return true;
         if (this.primaryCanvasDataset(expression)) return true;
         const value = this.context.unwrap(expression);
         if (
@@ -749,6 +781,10 @@ export class UiProjection {
 
     public recordUiStaticAppend(parent: Value, child: Value): void {
         const parentElement = this.uiStaticElement(parent);
+        if (!parentElement || this.uiStaticMutationIsDynamic()) {
+            const childElement = this.uiStaticElement(child);
+            if (!childElement || childElement.tag === "style") this.uiStaticStyleCascadeKnown = false;
+        }
         if (!parentElement) return;
         if (child.uiStaticId === undefined) {
             parentElement.childCardinalityKnown = false;
@@ -768,6 +804,8 @@ export class UiProjection {
         for (const element of this.uiStaticElements.values()) {
             element.children.delete(child.uiStaticId);
         }
+        const rootIndex = this.uiStaticRootOrder.indexOf(child.uiStaticId);
+        if (rootIndex >= 0) this.uiStaticRootOrder.splice(rootIndex, 1);
         parentElement.children.add(child.uiStaticId);
     }
 
@@ -800,6 +838,13 @@ export class UiProjection {
         }
         const previous = this.uiStaticRootOrder.indexOf(id);
         if (previous >= 0) this.uiStaticRootOrder.splice(previous, 1);
+        const body = this.uiDocumentRootIds.get("body");
+        if (body !== undefined) {
+            const children = this.uiStaticElements.get(body)!.children;
+            children.delete(id);
+            children.add(id);
+            return;
+        }
         this.uiStaticRootOrder.push(id);
     }
 
@@ -1295,6 +1340,7 @@ export class UiProjection {
 
     /** Final direct-document order for statically sequenced root mutations. */
     private readonly uiStaticRootOrder: number[] = emissionArray([]);
+    private readonly uiDocumentRootIds = new EmissionMap<string, number>();
 
     private uiValidation: UiValidationState | undefined;
 
@@ -2646,9 +2692,13 @@ export class UiProjection {
             owned.push(rule);
             rulesByOwner.set(rule.ownerId, owned);
         }
-        return this.uiStaticRootOrder.flatMap(
-            (ownerId) => rulesByOwner.get(ownerId) ?? [],
-        );
+        const active: LoweredUiStyleRule[] = [];
+        const visit = (id: number): void => {
+            active.push(...(rulesByOwner.get(id) ?? []));
+            for (const child of this.uiStaticElements.get(id)?.children ?? []) visit(child);
+        };
+        this.uiStaticRootOrder.forEach(visit);
+        return active;
     }
 
 
@@ -2701,7 +2751,7 @@ export class UiProjection {
 
 
     private uiStaticParentHasTag(id: number, tag: string): boolean {
-        if (tag === "body" && this.uiStaticRootOrder.includes(id)) return true;
+        if (!this.uiDocumentRootIds.has("html") && tag === "body" && this.uiStaticRootOrder.includes(id)) return true;
         const parents = this.uiValidation?.parentsByChild.get(id);
         return parents ? parents.some(parent => this.uiStaticElements.get(parent)?.tag === tag)
             : [...this.uiStaticElements.values()].some(parent => parent.tag === tag && parent.children.has(id));
@@ -4758,7 +4808,7 @@ export class UiProjection {
             const attribute =
                 property === "className"
                     ? "class"
-                    : property === "id" || property === "type"
+                    : property === "id" || property === "type" || property === "lang"
                       ? property
                       : undefined;
             if (attribute) {

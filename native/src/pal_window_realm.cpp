@@ -38,6 +38,7 @@ struct ClipboardWrite final : CompletionEvent {
     ClipboardWrite(std::uint64_t id, std::string value) : CompletionEvent(id), text(std::move(value)) {}
 };
 struct DocumentSnapshot {
+    Engine::DocumentRoots document_roots;
     std::vector<UiElementRecord> elements;
     std::vector<ListenerNames> listeners;
     std::vector<UiElementHandle> roots;
@@ -101,7 +102,10 @@ struct WindowServices final : CanvasProvider {
 
 struct WindowDocument {
     explicit WindowDocument(std::shared_ptr<WindowServices> host, EngineOptions options)
-        : host(std::move(host)) { engine.options = std::move(options); }
+        : host(std::move(host)) {
+        engine.options = std::move(options);
+        static_cast<void>(ui_document_root(engine, UiDocumentPart::Html));
+    }
     std::shared_ptr<WindowServices> host;
     Engine engine;
     std::uint64_t published_revision = std::numeric_limits<std::uint64_t>::max();
@@ -146,6 +150,7 @@ std::unique_ptr<DocumentSnapshot> snapshot_document(const Engine& engine) {
         snapshot->listeners.push_back(std::move(names));
     }
     snapshot->roots = engine.ui_root_children;
+    snapshot->document_roots = engine.ui_document_roots;
     snapshot->styles = engine.ui_host_style_rules;
     snapshot->style_revision = engine.ui_style_revision;
     return snapshot;
@@ -154,6 +159,7 @@ std::unique_ptr<DocumentSnapshot> snapshot_document(const Engine& engine) {
 void apply_document(Engine& engine, DocumentSnapshot snapshot, const std::shared_ptr<EventLoop::Inbox>& inbox) {
     engine.ui_elements = std::move(snapshot.elements);
     engine.ui_root_children = std::move(snapshot.roots);
+    engine.ui_document_roots = snapshot.document_roots;
     engine.ui_host_style_rules = std::move(snapshot.styles);
     engine.ui_style_revision = snapshot.style_revision;
     for (std::size_t index = 0; index < snapshot.listeners.size(); ++index) {

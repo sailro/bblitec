@@ -12,6 +12,11 @@ dependencies will not be present in a fresh clone.
 stop-after-green checkpoint is historical; continue the generic integration work
 and save completed units as regular commits.
 
+On resuming again, the user explicitly reiterated: status answers, green unit
+tests and commits are not stopping points. Continue implementation and validation
+until the complete external application compiles and runs. Only the user decides
+to pause. Do not end an active work turn after a status answer or savepoint.
+
 **The external application does not fully compile yet.** Its latest attempt
 stopped during TypeScript-to-C++ generation. Its native build and application
 runtime have never been reached. A green sweep validates the registered corpus;
@@ -23,7 +28,7 @@ it does not establish that this external application compiles or runs.
 | Branch | `codex/external-project-support` |
 | Remote | `https://github.com/sailro/bblitec.git` |
 | Branch base used in this session | `3474e835` on `main` |
-| Latest executable-code/test unit | CSS declaration methods, based on `bd9d8ddf` (2026-09-12) |
+| Latest executable-code/test unit | Retained document roots, based on `095eda03` (2026-09-12) |
 | Draft PR | [#247 — Extend generic application compilation and retained UI support](https://github.com/sailro/bblitec/pull/247) |
 | External checkout | `C:/Dev/_prototypes/external-native-app` |
 | External source revision | `d7c477a6d5963680c55249dceb93cb6e4ab9ce56` |
@@ -365,6 +370,39 @@ incomplete. Do not merge or mark it ready merely because the sweep passes.
   listeners; the reached block also uses pointerout and Window blur listeners.
   Distinct document roots remain a known silent erasure gap and are unimplemented.
   No remaining core-library TODO clause is closed by these DOM/CSS units.
+
+- `095eda03` saves CSS declaration methods and is pushed. The draft PR was
+  updated with `pr338.json`. The following root unit makes HTML/head/body
+  real retained roots with a shared `ui_document_root` API, stable identities,
+  language reflection, inherited styles and nested stylesheet order. Persistent
+  Rml HTML/head/body elements preserve existing raw nodes during late activation;
+  Window document snapshots carry root metadata. Window realms initialize roots
+  on construction. Direct body append retains its old lowering but routes to the
+  real body once active; stored/helper body values are ordinary handles.
+  `roots341` passed the first generated native fixture. `ui342` passed 718/723:
+  three old emitted-code assertions, a missed dynamic stylesheet-order refusal,
+  and Rml fragment parsing with a custom document tag. These are corrected;
+  `roots344` passed 653 compiler/root/markup checks without skips.
+- `rmlui-fragment-root.patch` lets Rml parse an inline fragment through its body
+  XML handler when the configured document tag has no XML handler. Development
+  and static Rml builds succeeded with twelve patches (`rml-roots344`,
+  `rml-roots-static344`); SVG static also passed (`rml-roots-static-svg346`).
+  Attached append now reparents while preserving handles, and a shared projected
+  child-order helper covers same-parent moves. `roots346` passed both fixtures,
+  including stylesheet reattachment and existing markup behavior.
+  Root removal/reparenting and replacement of HTML's root children refuse.
+  `ui347` passed all 703 compiler/UI checks, without skips. `offscreen347`
+  generated, compiled shaders and built the registered `offscreen` demo with
+  both renderers, exercising the actual Window document translation unit.
+  Fresh full-corpus validation remains pending. No core-library TODO clause is
+  closed by this unit; open GitHub issues were checked again and remain empty.
+- `compile342` (exit 1) still reports platform event capture options. The reached
+  callbacks additionally read `pointerType` and test `relatedTarget` against null.
+  Model capture ordering and pointer boundary events, not just the option syntax.
+  Native UI callbacks currently stop Rml propagation; Window UI events cross a
+  mailbox independently. Window/document mouse registration also currently uses
+  the scene engine callback channels. These ownership/order constraints must be
+  addressed when implementing the event unit.
 
 The refreshed harness explicitly reports `danger-full-access`, networking
 enabled and approval policy `never`. Do not pass `sandbox_permissions` or ask

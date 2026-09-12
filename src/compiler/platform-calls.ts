@@ -771,7 +771,7 @@ export class PlatformCalls {
                 callee.name.text === "toggle");
         const rootAppend = (callee.name.text === "append" || callee.name.text === "appendChild") &&
             ts.isPropertyAccessExpression(callee.expression) &&
-            (callee.expression.name.text === "body" || callee.expression.name.text === "head") &&
+            callee.expression.name.text === "body" &&
             browserGlobalNamed(this.context, callee.expression.expression)?.text === "document";
         if (rootAppend && callee.name.text === "append" && call.arguments.length === 0) return {kind:"void", cpp:""};
         const element: Value | undefined = preparedElement ?? (rootAppend
