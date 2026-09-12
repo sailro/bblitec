@@ -23,7 +23,7 @@ it does not establish that this external application compiles or runs.
 | Branch | `codex/external-project-support` |
 | Remote | `https://github.com/sailro/bblitec.git` |
 | Branch base used in this session | `3474e835` on `main` |
-| Latest completed executable-code/test commit | `c6482350` (2026-09-12) |
+| Latest completed executable-code/test commit | `0c3556fd` (2026-09-12) |
 | Draft PR | [#247 — Extend generic application compilation and retained UI support](https://github.com/sailro/bblitec/pull/247) |
 | External checkout | `C:/Dev/_prototypes/external-native-app` |
 | External source revision | `d7c477a6d5963680c55249dceb93cb6e4ab9ce56` |
@@ -204,6 +204,29 @@ incomplete. Do not merge or mark it ready merely because the sweep passes.
   checks. `focused267` passed 679 compiler checks with no skips. `compile267`
   is the next attempt; inspect its exit file before reporting the outcome.
   No TODO item is fully closed by this unit.
+- `0c3556fd` saves readonly-table search and string-tag comparison/narrowing;
+  it is pushed. `readonly268` passed the final native fixture after a small
+  comparison helper cleanup. `compile267` reached CSS `object-fit`.
+- The user clarified that TODO's first "Remaining core-library forms" item came
+  from this application audit and should be fully solved during the integration.
+  Track its individual clauses and keep it open until all are implemented and
+  tested; it is part of the task scope, not an unrelated audit.
+- The object-fit unit extends pinned RmlUi's image geometry for all five modes,
+  keeping layout unchanged and clipping UVs at the centered content box. The
+  native fixture checks live modes, source changes, resize, display scale,
+  invalid keyword validation and the explicit Canvas2D non-fill refusal.
+  `fit271` passed both tests; `focused272` passed all twelve nearby UI checks.
+  `compile272` is the subsequent external attempt; inspect its exit file.
+  Native source and image fixtures remain neutral.
+- RmlUi now has ten maintained patches, with `rmlui-object-fit.patch` added to
+  the pin's patch list. Development rebuilt successfully (`rml-fit270`). Static
+  variants need explicit absolute FreeType roots: `artifacts/vcpkg-installed/
+  shipping-demo-png/x64-windows-static` without SVG, and `shipping-demo-jpeg-png/
+  x64-windows-static` with SVG, both under the compiler checkout. Runs
+  `rml-fit-static273` and `rml-fit-static-svg273` both completed successfully
+  using those installed roots.
+  Earlier 271/272 attempts used the wrong/default root and are superseded by
+  the successful 273 runs. No dependency installation was needed.
 
 The refreshed harness explicitly reports `danger-full-access`, networking
 enabled and approval policy `never`. Do not pass `sandbox_permissions` or ask

@@ -8,6 +8,7 @@
     "rmlui-flex-layout.patch",
     "rmlui-fractional-letter-spacing.patch",
     "rmlui-line-leading.patch",
+    "rmlui-object-fit.patch",
     "rmlui-overflow-wrap.patch",
     "rmlui-premultiplied-rounding.patch",
     "rmlui-solid-background-clip.patch",

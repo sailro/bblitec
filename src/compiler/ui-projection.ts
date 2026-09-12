@@ -875,6 +875,7 @@ export class UiProjection {
         "max-width",
         "min-height",
         "min-width",
+        "object-fit",
         "opacity",
         "overflow",
         "overflow-x",
@@ -1423,6 +1424,9 @@ export class UiProjection {
                 .trim()
                 .toLowerCase();
             if (property.length === 0) return;
+            if (property === "object-fit" && !/^(?:fill|contain|cover|none|scale-down)$/.test(literalValue)) {
+                this.uiStyleRefusal(site, property, "only fill, contain, cover, none and scale-down are represented");
+            }
             if (supportedUiLayoutValue(property, literalValue) === false) {
                 this.uiStyleRefusal(site, property, "the value requires layout outside the supported literal flex and box forms");
             }

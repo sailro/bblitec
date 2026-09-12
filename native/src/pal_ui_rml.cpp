@@ -3422,7 +3422,7 @@ struct UiRmlRuntime {
             element.RemoveProperty(name);
             return;
         }
-        const bool checked = name == "filter" || name == "overflow-wrap" || name == "word-break" ||
+        const bool checked = name == "object-fit" || name == "filter" || name == "overflow-wrap" || name == "word-break" ||
             name == "flex" || name.starts_with("flex-") || name == "align-self" || name == "align-content" ||
             name == "row-gap" || name == "column-gap" || name.starts_with("padding-") ||
             name == "margin-left" || name == "margin-right";
@@ -4776,6 +4776,8 @@ struct UiRmlRuntime {
                 continue;
             }
             Rml::Element& element = *projected_elements[index].element;
+            if (element.GetProperty("object-fit")->Get<int>() != 0)
+                throw std::runtime_error("Retained canvas object-fit currently supports fill only.");
             const Rml::Vector2f offset = element.GetAbsoluteOffset(
                 Rml::BoxArea::Content);
             const double layout_width = element.GetClientWidth();
