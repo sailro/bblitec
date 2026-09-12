@@ -5,6 +5,17 @@
 
 namespace bbl::pal {
 
+inline js::Promise<AudioBufferHandle> audio_decode_async(AudioContextHandle context, js::ArrayBuffer encoded) {
+    js::Promise<AudioBufferHandle> result;
+    try {
+        const auto decoded = audio_decode_buffer(context, encoded);
+        if (decoded.value == 0) throw std::runtime_error("Audio data could not be decoded.");
+        EventLoop::current().post([result, decoded] { result.resolve(decoded); });
+    } catch (const WorkerTerminated&) { throw; }
+    catch (...) { result.reject(std::current_exception()); }
+    return result;
+}
+
 enum class AudioContextAction { Resume, Suspend, Close };
 
 /** Device transitions finish before a task settles the realm-owned promise. */

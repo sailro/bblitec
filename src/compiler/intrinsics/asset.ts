@@ -39,6 +39,7 @@ export interface AssetIntrinsicContext
     ObjectValidationContext,
     Pick<LoweringServices,
         | "options"
+        | "dataLowerer"
         | "expectObjectLiteral"
         | "compileStringLiteral"
         | "compileNumber"

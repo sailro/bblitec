@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import {execFileSync} from "node:child_process";
-import {existsSync, mkdirSync, writeFileSync} from "node:fs";
-import {join, resolve} from "node:path";
+import {copyFileSync, existsSync, mkdirSync, writeFileSync} from "node:fs";
+import {dirname, join, resolve} from "node:path";
 import test from "node:test";
 import {compileSource} from "../src/compiler.js";
 import {nativeFixtureVcpkgRoot, optionalNativeFixtureTools, runNativeFixtureCompiler} from "./native-fixture.js";
@@ -10,6 +10,14 @@ test("direct audio contexts preserve owned aliases and lifecycle promises", t =>
     const output = resolve("artifacts/audio-context-check");
     mkdirSync(output, {recursive:true});
     writeFileSync(join(output, "worker.ts"), "self.close();");
+    const wave=Buffer.alloc(44+1024*2);
+    wave.write("RIFF"); wave.writeUInt32LE(wave.length-8,4); wave.write("WAVEfmt ",8);
+    wave.writeUInt32LE(16,16); wave.writeUInt16LE(1,20); wave.writeUInt16LE(1,22);
+    wave.writeUInt32LE(48000,24); wave.writeUInt32LE(96000,28);
+    wave.writeUInt16LE(2,32); wave.writeUInt16LE(16,34); wave.write("data",36);
+    wave.writeUInt32LE(wave.length-44,40);
+    for(let frame=0;frame<1024;frame++) wave.writeInt16LE(8192,44+frame*2);
+    writeFileSync(join(output,"tone.wav"),wave);
     const result = compileSource(`
         const worker = new Worker(new URL("./worker.ts", import.meta.url), {type:"module"});
         worker.terminate();
@@ -38,6 +46,18 @@ test("direct audio contexts preserve owned aliases and lifecycle promises", t =>
             [first,destination.buffer]=await Promise.all([load(4),load(8)]);
             if(!first||!destination.buffer||first.getChannelData(0).length!==4||destination.buffer.getChannelData(0).length!==8)
                 throw new Error("owned buffer aggregation");
+            async function decode():Promise<AudioBuffer|null>{
+                const encoded=await fetch("tone.wav").then(response=>response.arrayBuffer());
+                return context.decodeAudioData(encoded);
+            }
+            [first,destination.buffer]=await Promise.all([decode(),decode()]);
+            if(!first||!destination.buffer) throw new Error("fetched audio decode");
+            const samples=first.getChannelData(0);
+            if(samples.length<900||samples.length>1100||Math.abs(samples[100]-0.25)>0.001)
+                throw new Error("fetched audio PCM");
+            let invalid=false;
+            try{await context.decodeAudioData(new ArrayBuffer(0));}catch{invalid=true;}
+            if(!invalid) throw new Error("invalid audio must reject");
             let order = "";
             const resumed = context.resume().then(() => { order += "r"; });
             order += "s";
@@ -64,6 +84,11 @@ test("direct audio contexts preserve owned aliases and lifecycle promises", t =>
         }
         void exercise().catch(error=>{console.log(error);globalThis.close();});
     `, {fileName:join(output, "entry.ts")});
+    for(const asset of result.manifest.assets) {
+        const destination=join(output,asset.output);
+        mkdirSync(dirname(destination),{recursive:true});
+        copyFileSync(resolve(output,asset.source),destination);
+    }
     writeFileSync(join(output, "program.hpp"), result.cpp);
     const tools = optionalNativeFixtureTools();
     const labsound = resolve("artifacts/tools/labsound");
@@ -74,10 +99,10 @@ test("direct audio contexts preserve owned aliases and lifecycle promises", t =>
     runNativeFixtureCompiler(tools, ["/nologo", "/std:c++20", "/W4", "/WX", "/EHsc", "/MD", "/O2", "/Gy",
         `/Fo:${output}/`, `/Fe:${executable}`, "/I", "native/src", "/I", "native/include",
         `/external:I${join(nativeFixtureVcpkgRoot,"include")}`, `/external:I${join(labsound,"include")}`, "/external:W0",
-        "test/fixtures/audio-context-check.cpp", "/link", "/OPT:REF",
+        "test/fixtures/audio-context-check.cpp", "test/fixtures/packaged-fetch-check.cpp", "/link", "/OPT:REF",
         `/LIBPATH:${join(nativeFixtureVcpkgRoot,"lib")}`, `/LIBPATH:${join(labsound,"lib")}`,
         "LabSound.lib", "libnyquist.lib", "SDL3.lib"]);
-    assert.equal(execFileSync(executable, {encoding:"utf8", timeout:30000,
+    assert.equal(execFileSync(executable, {cwd:output,encoding:"utf8", timeout:30000,
         env:{...tools.environment, SDL_AUDIODRIVER:"dummy", BBLITE_AUDIO_CAPTURE:"",
             PATH:`${join(nativeFixtureVcpkgRoot,"bin")};${tools.environment.PATH ?? ""}`}}), "");
 });

@@ -44,9 +44,18 @@ it does not establish that this external application compiles or runs.
 | External generated output | `generated/external-app` (ignored; not a successful complete generation) |
 | Session diagnostics | `artifacts/external-integration` (ignored) |
 
-Latest complete-entry diagnostic: `compile556` passed async IIFE activation and
-stopped while adopting a packaged fetch response into an owned promise for audio decoding.
+Latest complete-entry diagnostic: `compile568` passed packaged response ownership
+and async audio loading, then stopped at a `Math.random` default callback value.
 Generation, native build and application runtime remain incomplete.
+
+The packaged-fetch batch has 681 passing compiler/async/audio/HTTP checks without
+skips (`regressions568`). Native fixtures cover response aliases, consumption,
+UTF-8/JSON/binary reads, closed dynamic selection, missing-file rejection, awaited
+typed-array constructors and concurrent fetch-to-audio PCM. `platform:packaged-fetch`
+shares owned response bodies with HTTP without selecting its transport dependency.
+`population560` generated all 288 corpus entries before this batch. The next unit
+assesses built-in callback values/defaults alongside the remaining forwarded-array
+predicate TODO; the unchanged application is still the acceptance target.
 
 Current assessment artifacts: `requirements356.json` inventories the unchanged
 entry's static local import graph (1,343 files, 1,002 unassessed API/syntax groups;

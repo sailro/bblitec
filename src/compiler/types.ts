@@ -2427,6 +2427,7 @@ export interface ValueFields {
 
 export type Feature =
   | "platform:http"
+  | "platform:packaged-fetch"
   | "text:data"
   | "text:layout"
   | "text:weight"

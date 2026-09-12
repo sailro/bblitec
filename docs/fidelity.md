@@ -289,6 +289,8 @@ Native contexts start with the playback device running and have no browser autop
 permission gate. Suspend/resume/close perform the device transition before a realm
 task settles their promise. Output-device selection and browser recording streams
 are unavailable; capability guards report absent methods and `MediaRecorder`.
+Decode reads bytes on the realm thread before a task fulfills its owned buffer
+promise; invalid audio rejects. Native ArrayBuffers remain attached after decoding.
 Closed-context node graph operations are outside
 the represented lifecycle surface.
 

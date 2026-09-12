@@ -239,7 +239,10 @@ asset handling. Without a public directory, existing entry-relative and pinned c
 ### Runtime HTTP
 
 In asynchronous realms, `fetch(url, options)` and constant aliases of `fetch` select `platform:http`.
-One-argument direct asset fetches retain their packaging behavior. Runtime requests take absolute HTTP(S)
+One-argument direct asset fetches select `platform:packaged-fetch`: known files and closed runtime
+selections produce owned responses across awaits, callbacks, helpers and containers, without HTTP transport.
+Selections snapshot at the call; `url` resolves against the deployment base, and missing files or unknown
+selection keys reject. Pre-render inputs retain generation-time fetch evaluation. Runtime HTTP requests take absolute HTTP(S)
 URLs and specialized options with `method`, string-record `headers`, and an optional string `body`.
 Responses expose `ok`, `status`, `url`, `bodyUsed`, `text()`, `json()` and `arrayBuffer()`.
 Body reads consume once; text uses UTF-8 replacement decoding. HTTP error statuses fulfill the promise;
@@ -590,6 +593,7 @@ recording fallbacks to run. This does not implement audio/video recording.
 Feature-selected LabSound/SDL3 supports reached Web Audio lifecycle, gain, oscillators, buffers, filters,
 panning and AudioParam scheduling. `decodeAudioData` consumes encoded ArrayBuffer bytes at the context's
 sample rate; fetched clips are packaged. Direct response-buffer reads select codecs by container signature.
+Asynchronous realms return owned buffer promises and reject decode failures.
 Stored or constructed buffers retain all supported codecs. Broader Babylon sound/bus/spatial APIs and master ramps are unsupported.
 Audio nodes and parameters retain their identity through records, arrays and collection keys.
 

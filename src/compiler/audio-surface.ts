@@ -301,6 +301,9 @@ export function compileAudioMethodCall(
                 return codec ? [codec] : [];
             })) : AUDIO_CODECS;
             for (const codec of codecs) context.reachFeature(`audio:decode-${codec}`, call);
+            if (context.options.workers) return context.dataLowerer.leafValue(
+                `bbl::pal::audio_decode_async(${receiver.cpp}, ${encoded.cpp})`,
+                {kind:"promise", result:{kind:"handle", handle:"audio-buffer"}});
             const decoded = context.allocateTemporaryCppName(
                 "decoded_audio",
             );

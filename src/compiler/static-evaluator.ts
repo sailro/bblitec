@@ -530,8 +530,14 @@ export class StaticEvaluator {
                 return this.castNumber(asserted, precision);
             }
         }
-        const unwrapped =
-            this.resolveStaticExpression(expression);
+        const awaited = unwrapExpression(expression);
+        if (ts.isAwaitExpression(awaited)) {
+            const value = narrowNumeric(this.resolveValue(awaited), awaited);
+            if (value.kind !== "number" && !(value.kind === "data" && value.dataType?.kind === "number"))
+                this.fail(awaited, `Expected number, received ${value.kind}.`);
+            return this.castNumber(value, precision);
+        }
+        const unwrapped = this.resolveStaticExpression(expression);
         const browserValue = this.isBrowserOnlyExpression(
             unwrapped,
         )

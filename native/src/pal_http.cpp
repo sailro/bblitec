@@ -68,33 +68,6 @@ struct InternetHandle {
 #endif
 } // namespace
 
-/** WHATWG UTF-8 replacement decoding, including initial BOM removal. */
-std::string decode_http_text(const std::vector<std::uint8_t>& bytes) {
-    std::string result;
-    result.reserve(bytes.size());
-    for (std::size_t index = 0; index < bytes.size();) {
-        const auto start = index;
-        const auto first = bytes[index++];
-        if (first < 0x80) { result.push_back(static_cast<char>(first)); continue; }
-        unsigned remaining = first >= 0xc2 && first <= 0xdf ? 1u :
-            first >= 0xe0 && first <= 0xef ? 2u : first >= 0xf0 && first <= 0xf4 ? 3u : 0u;
-        bool valid = remaining != 0;
-        auto lower = first == 0xe0 ? 0xa0 : first == 0xf0 ? 0x90 : 0x80;
-        auto upper = first == 0xed ? 0x9f : first == 0xf4 ? 0x8f : 0xbf;
-        while (remaining && index < bytes.size() && bytes[index] >= lower && bytes[index] <= upper) {
-            ++index;
-            --remaining;
-            lower = 0x80;
-            upper = 0xbf;
-        }
-        valid = valid && remaining == 0;
-        if (!valid) result += "\xef\xbf\xbd";
-        else if (!(start == 0 && index == 3 && first == 0xef && bytes[1] == 0xbb && bytes[2] == 0xbf))
-            result.append(reinterpret_cast<const char*>(bytes.data() + start), index - start);
-    }
-    return result;
-}
-
 HttpResponseData perform_http_request(const std::string& url, HttpRequest request, std::stop_token stop) {
     std::string normalized = request.method;
     std::transform(normalized.begin(), normalized.end(), normalized.begin(), [](unsigned char character) { return static_cast<char>(std::toupper(character)); });

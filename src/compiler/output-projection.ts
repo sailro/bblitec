@@ -29,6 +29,7 @@ export const featureSources: Record<Feature, string[]> = {
     "core": ["src/pal.cpp"],
     "platform:workers": [],
     "platform:http": ["src/pal_http.cpp"],
+    "platform:packaged-fetch": [],
     "platform:window": ["src/pal_window_realm.cpp", "src/pal_media_query.cpp"],
     "backend:sdl": ["src/pal_sdl.cpp"],
     "engine:device-recovery": [],
@@ -522,6 +523,7 @@ export function renderMainCpp(projection: MainCppProjection): string {
             ? "#include <bblite/pal_locale.hpp>\n"
             : "") +
         (features.includes("platform:http") ? "#include <bblite/pal_http.hpp>\n" : "") +
+        (features.includes("platform:packaged-fetch") ? "#include <bblite/pal_packaged_fetch.hpp>\n" : "") +
         (features.includes("storage:local")
             ? "#include <bblite/js_storage.hpp>\n"
             : "") +

@@ -4755,7 +4755,7 @@ export class DataLowerer {
                 dataType,
             };
         }
-        const unwrapped = this.context.unwrap(argument);
+        const unwrapped = unwrapExpression(argument);
         if (name === "Uint8Array") {
             if (
                 ts.isCallExpression(unwrapped) &&
@@ -4794,7 +4794,7 @@ export class DataLowerer {
         // Resolve that value before selecting the overload. A non-buffer
         // probe must discard emissions so length/sequence arguments run once.
         const source = this.context.probeEmission(() => {
-            const value = this.compileDataPath(unwrapped, "read") ??
+            const value = (ts.isAwaitExpression(unwrapped) ? this.context.compileValue(unwrapped) : this.compileDataPath(unwrapped, "read")) ??
                 (sourceType?.kind === "arraybuffer"
                     ? this.context.compileValue(unwrapped) : undefined);
             return value?.dataType?.kind === "arraybuffer" ? value : undefined;
@@ -4895,7 +4895,7 @@ export class DataLowerer {
             );
         }
         const source =
-            this.compileDataPath(unwrapped, "read") ??
+            (ts.isAwaitExpression(unwrapped) ? this.context.compileValue(unwrapped) : this.compileDataPath(unwrapped, "read")) ??
             (ts.isCallExpression(unwrapped)
                 ? this.context.compileValue(unwrapped)
                 : undefined);
@@ -7079,7 +7079,11 @@ export class DataLowerer {
                 : value.dataType?.kind === "vector" ? this.readVectorBindingElement(value, index, name)
                 : this.fixedTupleElement(value, index, name) ?? {kind: "json-null" as const, cpp: "std::nullopt"};
             this.context.refuseBorrowedPlatformEventEscape(item, name, "a destructuring assignment");
-            const cpp = this.compileKnownValueForSink(item, targetType, name);
+            let cpp = this.compileKnownValueForSink(item, targetType, name);
+            // Legacy nullable resource locals store std::optional, while data
+            // fields and arrays retain JavaScript's null/undefined wrapper.
+            if (!entry && target.optionalStorageCpp && target.dataType?.kind !== "optional")
+                cpp = `${this.context.dataTypes.cppType(targetType)}{${cpp}}.to_optional()`;
             this.context.emit(entry ? `${slot}.set(${key}, ${cpp});` : `${slot} = ${target.dataStore ? typedArrayStoreExpression(target.dataStore, cpp) : cpp};`);
             this.invalidateStaticElements(target);
             this.context.invalidateRecordProperties(target);

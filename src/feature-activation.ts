@@ -1246,6 +1246,10 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
         provenance: "runtime HTTP(S) requests and response data through native platform transport",
         consumers: CMAKE,
     },
+    "platform:packaged-fetch": {
+        provenance: "owned fetch responses from the closed packaged asset manifest, without network transport",
+        consumers: CMAKE,
+    },
     "platform:window": {
         provenance: "the Window document, layout observers and native presentation host, independent of application and worker execution",
         consumers: CMAKE,
