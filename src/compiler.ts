@@ -8720,6 +8720,15 @@ class Compiler
         );
     }
 
+    /** Capture the lexical variables and types used by a returned callable. */
+    public captureRecordScopes(): Pick<Value, "recordScopes" | "recordTypeArguments"> {
+        const recordTypeArguments = this.dataTypes.captureTypeArguments();
+        return {
+            recordScopes: [...this.variableScopes],
+            ...(recordTypeArguments ? {recordTypeArguments} : {}),
+        };
+    }
+
     /**
      * Runs `work` with a record's captured scope chain in force, so a
      * method or getter of that record sees the state it closed over
@@ -8737,7 +8746,7 @@ class Compiler
         const bindThis =
             owner.classDeclaration !== undefined ||
             (method !== undefined && !ts.isArrowFunction(method));
-        if (!owner.recordScopes && !bindThis) {
+        if (!owner.recordScopes && !owner.recordTypeArguments && !bindThis) {
             return work();
         }
         const saved = [...this.variableScopes];
@@ -8750,7 +8759,7 @@ class Compiler
             this.defineThis(owner);
         }
         try {
-            return work();
+            return this.dataTypes.withTypeArguments(owner.recordTypeArguments, work);
         } finally {
             this.defineThis(previousThis);
             if (owner.recordScopes) {
@@ -10769,7 +10778,7 @@ class Compiler
                                     callbackRecordOwner: {
                                         kind: "record",
                                         cpp: "",
-                                        recordScopes: [...this.variableScopes],
+                                        ...this.captureRecordScopes(),
                                     },
                                 } satisfies Value)
                               : this.compileValue(unwrapped);
@@ -12346,7 +12355,7 @@ class Compiler
                       callbackRecordOwner: {
                           kind: "record",
                           cpp: "",
-                          recordScopes: [...this.variableScopes],
+                          ...this.captureRecordScopes(),
                       },
                   } satisfies Value)
                 : this.compileValue(argument);
@@ -12431,7 +12440,7 @@ class Compiler
                     callbackRecordOwner: {
                         kind: "record",
                         cpp: "",
-                        recordScopes: [...this.variableScopes],
+                        ...this.captureRecordScopes(),
                     },
                 };
             }
@@ -12869,7 +12878,7 @@ class Compiler
                           kind: "record" as const,
                           cpp: "",
                       }),
-                      recordScopes: [...this.variableScopes],
+                      ...this.captureRecordScopes(),
                       ...(this.isInRuntimeIteration() ||
                       this.isInNativeFunctionBody() ||
                       (lexicalThis?.dataType?.kind === "struct" &&

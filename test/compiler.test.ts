@@ -10969,7 +10969,7 @@ test("supplies omitted optional arguments to stored functions", () => {
         hud.banner("READY");
     `);
 
-    assert.match(result.cpp, /\.banner\([^,]+, std::nullopt\)/);
+    assert.match(result.cpp, /const auto (\w+) = [^;]+\.banner;\s*\1\([^,]+, std::nullopt\)/);
     assert.match(result.cpp, /has_value\(\) \? \*[^:]+ : ""/);
 });
 

@@ -156,6 +156,7 @@ export interface ExpressionContext
         | "registerClassInstance"
         | "classOf"
         | "withRecordScopes"
+        | "captureRecordScopes"
         | "probeEmission"
         | "recordAccessor"
         | "requireEngine"
@@ -378,9 +379,7 @@ export class ExpressionLowerer {
                         kind: "record" as const,
                         cpp: "",
                     }),
-                    recordScopes: [
-                        ...this.context.variableScopes,
-                    ],
+                    ...this.context.captureRecordScopes(),
                     ...(this.context.isInRuntimeIteration() ||
                     this.context.isInNativeFunctionBody()
                         ? { repeatedCallbackEvaluation: true }
@@ -531,9 +530,7 @@ export class ExpressionLowerer {
                     callbackRecordOwner: {
                         kind: "record",
                         cpp: "",
-                        recordScopes: [
-                            ...this.context.variableScopes,
-                        ],
+                        ...this.context.captureRecordScopes(),
                         ...(this.context.isLocalCallbackEvaluationRepeated(
                             callback,
                         )
@@ -3654,9 +3651,7 @@ export class ExpressionLowerer {
             // plain property already holds a resolved value.
             ...(closes
                 ? {
-                    recordScopes: [
-                        ...this.context.variableScopes,
-                    ],
+                    ...this.context.captureRecordScopes(),
                     ...(this.context.isInRuntimeIteration() ||
                         this.context.isInNativeFunctionBody()
                         ? {

@@ -23,7 +23,7 @@ it does not establish that this external application compiles or runs.
 | Branch | `codex/external-project-support` |
 | Remote | `https://github.com/sailro/bblitec.git` |
 | Branch base used in this session | `3474e835` on `main` |
-| Last completed executable-code/test commit before nullable record dispatch | `a17d0872` (2026-09-12) |
+| Latest completed executable-code/test commit | `9594ebb8` (2026-09-12) |
 | Draft PR | [#247 — Extend generic application compilation and retained UI support](https://github.com/sailro/bblitec/pull/247) |
 | External checkout | `C:/Dev/_prototypes/external-native-app` |
 | External source revision | `d7c477a6d5963680c55249dceb93cb6e4ab9ce56` |
@@ -174,19 +174,35 @@ incomplete. Do not merge or mark it ready merely because the sweep passes.
   missing receivers and missing optional callbacks skip arguments independently.
   `focused258` passed 17 tests, including existing storage and callback tests;
   `focused259` additionally proves a helper receiver is evaluated once.
-  `compile259` and `full259` are running after these changes; inspect their exits.
+  This unit is saved and pushed as `9594ebb8`.
+- The user stopped work to restart the harness after unnecessary approval
+  prompts. `compile259` and `full259` were canceled; neither is completed
+  validation. After the explicit resume, `compile260` and `full260` were started
+  from the clean saved tree. `full260` completed with 2,568 passes, one failure
+  and zero skips. The sole failure was a stale assertion expecting a direct
+  method call before the callback snapshot; the corrected assertion passes.
+- `compile260` stopped on a generic nullable string inside a returned callback.
+  A neutral native fixture reproduced the missing lexical type arguments.
+  Returned callbacks and method records now capture the generic substitutions
+  alongside their existing variable scopes. `focused264` passed the new fixture
+  and both stored-call regressions (three tests, no skips), including independent
+  string-enum and number/string instantiations. No listed TODO is closed by this
+  unit. `compile264` is the next external attempt; inspect its exit before making
+  claims about progression. Complete external generation remains pending.
 
-The resumed environment uses a workspace-write sandbox. Git metadata writes and
-network access may need escalation; the requested unit commits/pushes remain
-authorized. Read-only Git commands under the sandbox require
-`git -c safe.directory=C:/Dev/babylonlite ...` because the sandbox account differs
-from the checkout owner. Do not change global Git trust settings. For helper
-scripts that spawn Git, use the process-local `GIT_CONFIG_COUNT=1`,
-`GIT_CONFIG_KEY_0=safe.directory`, `GIT_CONFIG_VALUE_0=C:/Dev/babylonlite`.
-The sandbox cannot use the user-installed npm launcher: invoke
-`node tools/build-if-stale.mjs`, then the relevant `dist` entry point directly.
-Native fixture compilers work. The full test suite was launched with escalation
-to use the normal user's installed tools. Keep the CMake fallback below.
+The refreshed harness explicitly reports `danger-full-access`, networking
+enabled and approval policy `never`. Do not pass `sandbox_permissions` or ask
+for confirmation for the already authorized implementation, tests, unit commits
+and pushes. Git index refresh and remote access were verified directly after
+the restart. The prior workspace-write restriction is historical and must not
+be carried forward as current policy. Always use the actual session permissions.
+
+The earlier restricted account needed `git -c safe.directory=C:/Dev/babylonlite`
+and could not use the user-installed npm launcher. Direct
+`node tools/build-if-stale.mjs` and `dist` entry points remain reliable. Git helper
+scripts can use process-local `GIT_CONFIG_COUNT=1`,
+`GIT_CONFIG_KEY_0=safe.directory`, `GIT_CONFIG_VALUE_0=C:/Dev/babylonlite`;
+do not change global trust settings. Keep the CMake fallback below.
 
 ## Verified result at the earlier pause
 
@@ -643,7 +659,7 @@ When the user asks to continue the integration:
    active.
 2. Confirm the working tree is safe to build, set the CMake fallback, and build
    `dist` only after existing consumers finish.
-3. Retry the unchanged external source and reproduce the current ownership
+3. Retry the unchanged external source and reproduce the current generation
    blocker with a small neutral fixture. Keep generic handling and explicit
    refusals; do not simply erase the reached operation.
 4. Implement and validate one coherent unit, inspect overlapping TODOs/issues,
@@ -654,5 +670,5 @@ When the user asks to continue the integration:
    diff review, current tests/sweep, saved-baseline comparison and relevant
    interaction checks on both backends. Keep PR claims proportional to evidence.
 
-At this saved checkpoint, steps 3–6 remain future work. The user's requested
-green-sweep stopping point has already been reached.
+After the explicit resume, steps 3–6 are active work. The earlier green sweep
+does not validate changes made since that checkpoint.
