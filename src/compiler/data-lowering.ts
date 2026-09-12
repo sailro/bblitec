@@ -5,7 +5,7 @@ import { EmissionSet, EmissionMap, EmissionWeakMap } from "./emission-transactio
 import type { LoweringServices } from "./lowering-services.js";
 import ts from "typescript";
 import { storageValue } from "./web-storage.js";
-import { windowErrorEventValue } from "./window-events.js";
+import { documentEngine, windowErrorEventValue } from "./window-events.js";
 import { CompilerSymbols } from "./symbols.js";
 import { compileMapInitializer } from "./collection-methods.js";
 import { compileDateNew } from "./dates.js";
@@ -3076,11 +3076,13 @@ export class DataLowerer {
             // Handle leaves surface as ordinary resource values, so
             // every mesh intrinsic and property assignment works on a
             // mesh read out of a struct or array exactly as it does on
-            // a mesh local. The reached subset has one engine.
+            // a mesh local. The Window document has its own UI owner.
             const engineCpp = dataType.handle.startsWith("text-") || dataType.handle === "node-input"
                 ? undefined
                 : dataType.handle === "picking-info"
                 ? `bbl::picking_engine(${cpp})`
+                : dataType.handle === "ui-element"
+                ? documentEngine(this.context, this.context.sourceFile)
                 : this.context.defaultEngine();
             return valueForKind(dataType.handle ===
                     "property-animation-group"

@@ -13,6 +13,9 @@ Window metrics, media queries, resize observers and application error listeners 
 Window host directly; they do not require static host markup. Worker realms cannot use those Window APIs.
 The application `document` can be passed through specialized dependency records with a stable identity
 distinct from `window`; reached DOM operations remain limited to the projection below.
+DOM handles stored in records, arrays, nullable fields and helper parameters retain the document owner.
+In a Window application this is the Window document, even when a rendering engine is also in scope;
+synchronous scenes use their scene engine.
 `window` error and unhandled-rejection listeners receive native exception messages before engine creation.
 Removal, `once` and `preventDefault` are supported; events borrow their dispatch frame. Native error
 names remain `Error`, `stack` is undefined and source locations are unavailable; `rejectionhandled` and arbitrary rejection values are unsupported.

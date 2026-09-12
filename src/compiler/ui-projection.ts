@@ -8,7 +8,7 @@ import { isUiLayoutProperty, supportedUiLayoutValue } from "../ui-layout.js";
 import { nativeHostUiStyleRules, uiStyleSelectorCppKind, uiStyleSelectorDescriptor, uiStyleInteractionStateCount, uiStyleRuleHasMedia, uiMotionPreferenceCpp, isUiScrollbarPart, uiScrollbarPartCpp, type UiStyleSelectorShape, type UiStyleSelectorKind } from "../ui-style-rule.js";
 import { validateFileAccept } from "./browser-file.js";
 import { CompileError } from "./compile-error.js";
-import { requireWindowHost } from "./window-events.js";
+import { documentEngine } from "./window-events.js";
 import type { LoweringServices } from "./lowering-services.js";
 import { argumentAt } from "./syntax.js";
 import type { NativeHostUiElement, Value } from "./types.js";
@@ -142,9 +142,7 @@ export class UiProjection {
     public constructor(private readonly context: UiProjectionContext) {}
 
     public documentEngine(node: ts.Node): string {
-        if (!this.context.options.workers) return this.context.requireDefaultEngine(node);
-        requireWindowHost(this.context, node);
-        return "bbl::pal::window_document_engine()";
+        return documentEngine(this.context, node) ?? this.context.requireDefaultEngine(node);
     }
 
 
@@ -209,11 +207,7 @@ export class UiProjection {
                 dataType: value.dataType.inner,
                 optionalFoundCpp:
                     value.optionalFoundCpp ?? `${value.cpp}.has_value()`,
-                ...((value.engineCpp ?? this.context.defaultEngine())
-                    ? {
-                          engineCpp: value.engineCpp ?? this.context.defaultEngine()!,
-                      }
-                    : {}),
+                engineCpp: value.engineCpp ?? this.documentEngine(owner),
             }));
         };
         if (ts.isIdentifier(owner)) {
