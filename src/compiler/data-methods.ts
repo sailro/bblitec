@@ -21,6 +21,7 @@ import {
 import type { DataLowerer } from "./data-lowering.js";
 import { isJsonValue } from "./json-bridge.js";
 import { commonResourceValue, runtimeMeshValue, type Value } from "./types.js";
+import { replacementCallback } from "./string-replacement.js";
 
 /**
  * `Array.isArray(value)` over the data model. Parsed JSON remains dynamic;
@@ -593,6 +594,7 @@ function compileKnownDataMethod(
     const narrowedOwner = lowerer.stringReceiver(lowerer.narrowOptional(
         owner,
         callee.expression,
+        !ts.isOptionalChain(callee),
     ), callee.expression);
     // An array method on a parsed document runs over the document's own
     // elements, each of which is another document. Handing the element
@@ -1874,38 +1876,7 @@ function compileStringDataMethod(lowerer: DataLowerer, call: ts.CallExpression, 
             const search = snapshot(pattern, "replace_search");
             const replacementValue = lowerer.context.compileValue(argumentAt(call, 1));
             if (replacementValue.kind === "callback" || replacementValue.dataType?.kind === "function") {
-                const callbackType: DataType<"function"> = {
-                    kind: "function", parameters: [{kind: "string"}, {kind: "number"}, {kind: "string"}], result: {kind: "string"},
-                };
-                let storedCallback: Value | undefined;
-                if (replacementValue.dataType?.kind === "function") {
-                    const stored = lowerer.context.allocateTemporaryCppName("replacement_callback");
-                    lowerer.context.emit(`const auto ${stored} = ${replacementValue.cpp};`);
-                    storedCallback = {...replacementValue, cpp: stored, nativeCaptures: [lowerer.context.registerNativeBinding(stored)]};
-                }
-                const adapter = lowerer.context.allocateTemporaryCppName("replacement_invoke");
-                const supplied = callbackType.parameters.map(type => lowerer.leafValue(lowerer.context.allocateTemporaryCppName("replacement_arg"), type));
-                const parameters = supplied.map(value => `[[maybe_unused]] ${lowerer.context.dataTypes.cppType(value.dataType!)} ${value.cpp}`).join(", ");
-                lowerer.context.emit(`const auto ${adapter} = [&](${parameters}) -> std::string {`);
-                lowerer.context.increaseIndent();
-                lowerer.context.pushScope(lowerer.context.allocateBlockPrefix());
-                lowerer.context.enterRuntimeControlFlow();
-                lowerer.context.enterRuntimeIteration();
-                try {
-                    const arguments_ = supplied.map(value => ({...value, nativeCaptures: [lowerer.context.registerNativeBinding(value.cpp)]}));
-                    const invoke = () => replacementValue.callbackDeclaration
-                        ? lowerer.context.compileCallbackWithValues(replacementValue.callbackDeclaration, arguments_, call)
-                        : lowerer.context.fail(call, "String replacement requires a callable value.");
-                    const result = storedCallback ? lowerer.compileFunctionValueCall(storedCallback, arguments_, call)
-                        : replacementValue.callbackRecordOwner ? lowerer.context.withRecordScopes(replacementValue.callbackRecordOwner, invoke) : invoke();
-                    lowerer.context.emit(`return ${lowerer.compileKnownValueForSink(result, {kind: "string"}, call)};`);
-                } finally {
-                    lowerer.context.leaveRuntimeIteration();
-                    lowerer.context.leaveRuntimeControlFlow();
-                    lowerer.context.popScope();
-                    lowerer.context.decreaseIndent();
-                }
-                lowerer.context.emit("};");
+                const adapter = replacementCallback(lowerer, call, replacementValue);
                 return lowerer.leafValue(`bbl::js::string_replace_with(${source}, ${search}, ${adapter}, ${method === "replaceAll"})`, {kind: "string"});
             }
             if (narrowed.staticString !== undefined && pattern.staticString !== undefined && replacementValue.staticString !== undefined) {
@@ -1917,12 +1888,17 @@ function compileStringDataMethod(lowerer: DataLowerer, call: ts.CallExpression, 
             const replacement = lowerer.compileKnownValueForSink(replacementValue, { kind: "string" }, argumentAt(call, 1));
             return lowerer.leafValue(`bbl::js::string_replace(${source}, ${search}, ${replacement}, ${method === "replaceAll"})`, { kind: "string" });
         }
-        if (method === "replaceAll")
-            lowerer.context.fail(call, "String.replaceAll currently requires a string pattern.");
         if (pattern.kind !== "regexp") {
             lowerer.context.fail(argumentAt(call, 0), "Reached String.replace uses a RegExp pattern.");
         }
+        const regex = lowerer.context.allocateTemporaryCppName("replace_pattern");
+        lowerer.context.emit(`[[maybe_unused]] const auto ${regex} = ${pattern.cpp};`);
         const replacementValue = lowerer.context.compileValue(argumentAt(call, 1));
+        if (replacementValue.kind === "callback" || replacementValue.dataType?.kind === "function") {
+            const adapter = replacementCallback(lowerer, call, replacementValue, pattern);
+            return lowerer.leafValue(`${regex}.replace_with(${source}, ${adapter}, ${method === "replaceAll"})`, {kind: "string"});
+        }
+        if (method === "replaceAll") lowerer.context.fail(call, "String.replaceAll currently requires a string pattern or RegExp callback.");
         const patternExpression = lowerer.context.unwrap(argumentAt(call, 0));
         if (narrowed.staticString !== undefined &&
             replacementValue.staticString !== undefined &&
@@ -1944,7 +1920,7 @@ function compileStringDataMethod(lowerer: DataLowerer, call: ts.CallExpression, 
         const replacement = replacementValue.cpp;
         return {
             kind: "data",
-            cpp: `${pattern.cpp}.replace(${source}, ${replacement})`,
+            cpp: `${regex}.replace(${source}, ${replacement})`,
             dataType: { kind: "string" },
         };
     }

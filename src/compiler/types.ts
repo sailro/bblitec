@@ -1889,6 +1889,8 @@ export interface ValueFields {
   /** A pinned function retained as a compile-time alias of its intrinsic. */
   intrinsicName?: string;
   hostFunction?: "fetch" | "clipboard-write";
+  /** Known RegExp grammar determines the positional replacement callback arguments. */
+  regexpCaptureCount?: number;
   callbackDeclaration?:
     | ts.Identifier
     | ts.FunctionDeclaration

@@ -1129,7 +1129,7 @@ export function emitPropertyAssignment(
       );
     }
     context.emit(
-      `${regexpOwner.cpp}.last_index = ${context.compileNumber(expression.right, "double")};`,
+      `${regexpOwner.cpp}.last_index() = ${context.compileNumber(expression.right, "double")};`,
     );
     return;
   }

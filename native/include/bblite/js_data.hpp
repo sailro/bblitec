@@ -960,40 +960,62 @@ class Nullable {
     std::optional<T> owned_;
 };
 
-/** The reached JavaScript RegExp surface: mutable global exec state. */
+[[nodiscard]] inline std::u16string string_code_units(const std::string& value);
+[[nodiscard]] inline std::string string_from_code_units(const std::u16string& units);
+
+/** A replacement receives owned captures; unmatched groups remain undefined. */
+struct RegExpReplacement {
+    std::vector<Nullable<std::string>> groups;
+    double offset = 0;
+    const std::string& input;
+
+    template <typename T>
+    [[nodiscard]] Nullable<T> argument(std::size_t index) const {
+        const auto convert = []<typename V>(const V& value) -> Nullable<T> {
+            if constexpr (std::is_constructible_v<T, V>) return T(value);
+            else throw std::runtime_error("RegExp callback argument does not match its declared type.");
+        };
+        if (index < groups.size()) {
+            if (!groups[index]) return std::nullopt;
+            return convert(*groups[index]);
+        } else if (index == groups.size()) {
+            return convert(offset);
+        } else if (index == groups.size() + 1) {
+            return convert(input);
+        } else return std::nullopt;
+    }
+};
+
+/** RegExp aliases share their expression and lastIndex, measured in UTF-16 units. */
 class RegExp {
   public:
     RegExp(std::string source, bool global, bool ignore_case)
-        : expression_(
-              std::move(source),
-              std::regex_constants::ECMAScript |
-                  (ignore_case ? std::regex_constants::icase
-                               : std::regex_constants::syntax_option_type{})),
-          global_(global) {}
+        : state_(std::make_shared<State>(source, global, ignore_case)) {}
+
+    [[nodiscard]] double& last_index() const { return state_->last_index; }
 
     [[nodiscard]] Nullable<Array<std::string>> exec(
         const std::string& input) {
-        const auto requested = global_ && std::isfinite(last_index)
-            ? std::max(0.0, std::trunc(last_index))
-            : 0.0;
-        const auto start = static_cast<std::size_t>(requested);
-        if (start > input.size()) {
-            if (global_) last_index = 0.0;
+        const auto units = wide(input);
+        const auto requested = state_->global && !std::isnan(last_index())
+            ? std::max(0.0, std::trunc(last_index())) : 0.0;
+        if (requested > static_cast<double>(units.size())) {
+            if (state_->global) last_index() = 0.0;
             return std::nullopt;
         }
-        std::match_results<std::string::const_iterator> match;
-        const auto first = input.cbegin() + static_cast<std::ptrdiff_t>(start);
-        if (!std::regex_search(first, input.cend(), match, expression_)) {
-            if (global_) last_index = 0.0;
+        const auto start = static_cast<std::size_t>(requested);
+        std::wsmatch match;
+        if (!search(units, start, match)) {
+            if (state_->global) last_index() = 0.0;
             return std::nullopt;
         }
         Array<std::string> groups;
         groups.reserve(match.size());
         for (const auto& group : match) {
-            groups.push_back(group.matched ? group.str() : std::string{});
+            groups.push_back(group.matched ? narrow(group.str()) : std::string{});
         }
-        if (global_) {
-            last_index = static_cast<double>(
+        if (state_->global) {
+            last_index() = static_cast<double>(
                 start + static_cast<std::size_t>(match.position()) + match.length());
         }
         return groups;
@@ -1002,30 +1024,20 @@ class RegExp {
     [[nodiscard]] Array<std::string> split(
         const std::string& input) const {
         Array<std::string> result;
-        std::sregex_token_iterator part(input.begin(), input.end(), expression_, -1);
-        const std::sregex_token_iterator end;
-        for (; part != end; ++part) result.push_back(part->str());
+        const auto units = wide(input);
+        std::wsregex_token_iterator part(units.begin(), units.end(), state_->expression, -1);
+        const std::wsregex_token_iterator end;
+        for (; part != end; ++part) result.push_back(narrow(part->str()));
         return result;
     }
 
     [[nodiscard]] Nullable<Array<std::string>> match(
         const std::string& input) const {
         Array<std::string> result;
-        if (global_) {
-            const std::sregex_iterator end;
-            for (std::sregex_iterator found(input.begin(), input.end(), expression_);
-                 found != end;
-                 ++found) {
-                result.push_back(found->str());
-            }
-        } else {
-            std::smatch found;
-            if (std::regex_search(input, found, expression_)) {
-                result.reserve(found.size());
-                for (const auto& group : found) {
-                    result.push_back(
-                        group.matched ? group.str() : std::string{});
-                }
+        for (const auto& found : replacements(input)) {
+            if (state_->global) result.push_back(*found.groups[0]);
+            else {
+                for (const auto& group : found.groups) result.push_back(group ? *group : std::string{});
             }
         }
         return result.empty()
@@ -1035,21 +1047,25 @@ class RegExp {
 
     [[nodiscard]] Array<Array<std::string>> match_all(
         const std::string& input) const {
-        if (!global_) {
+        if (!state_->global) {
             throw std::runtime_error("String.matchAll requires a global RegExp.");
         }
         Array<Array<std::string>> result;
-        const std::sregex_iterator end;
-        for (std::sregex_iterator found(input.begin(), input.end(), expression_);
-             found != end;
-             ++found) {
+        const auto units = wide(input);
+        const auto requested = std::isnan(last_index()) ? 0.0 : std::max(0.0, std::trunc(last_index()));
+        if (requested > static_cast<double>(units.size())) return result;
+        std::size_t start = static_cast<std::size_t>(requested);
+        std::wsmatch found;
+        while (start <= units.size() && search(units, start, found)) {
             Array<std::string> groups;
-            groups.reserve(found->size());
-            for (const auto& group : *found) {
+            groups.reserve(found.size());
+            for (const auto& group : found) {
                 groups.push_back(
-                    group.matched ? group.str() : std::string{});
+                    group.matched ? narrow(group.str()) : std::string{});
             }
             result.push_back(std::move(groups));
+            start += static_cast<std::size_t>(found.position() + found.length());
+            if (found.length() == 0) ++start;
         }
         return result;
     }
@@ -1057,24 +1073,80 @@ class RegExp {
     [[nodiscard]] std::string replace(
         const std::string& input,
         const std::string& replacement) const {
-        return std::regex_replace(
-            input,
-            expression_,
-            replacement,
-            global_
+        const auto units = wide(input);
+        if (state_->global) last_index() = 0.0;
+        return narrow(std::regex_replace(
+            units,
+            state_->expression,
+            wide(replacement),
+            state_->global
                 ? std::regex_constants::format_default
-                : std::regex_constants::format_first_only);
+                : std::regex_constants::format_first_only));
+    }
+
+    template <typename Callback>
+    [[nodiscard]] std::string replace_with(const std::string& input, Callback&& callback, bool require_global = false) const {
+        if (require_global && !state_->global) throw std::runtime_error("String.replaceAll requires a global RegExp.");
+        // Collect before invoking any callback: callback effects cannot change the match list.
+        const auto matches = replacements(input);
+        const auto units = string_code_units(input);
+        std::u16string output;
+        std::size_t end = 0;
+        for (const auto& match : matches) {
+            const auto position = static_cast<std::size_t>(match.offset);
+            output.append(units, end, position - end);
+            output += string_code_units(callback(match));
+            end = position + string_code_units(*match.groups[0]).size();
+        }
+        output.append(units, end, units.size() - end);
+        return string_from_code_units(output);
     }
 
     [[nodiscard]] bool test(const std::string& input) {
         return exec(input).has_value();
     }
 
-    double last_index = 0.0;
-
   private:
-    std::regex expression_;
-    bool global_ = false;
+    static std::wstring wide(const std::string& input) {
+        const auto units = string_code_units(input);
+        return {units.begin(), units.end()};
+    }
+    static std::string narrow(const std::wstring& input) {
+        return string_from_code_units({input.begin(), input.end()});
+    }
+    struct State {
+        std::wregex expression;
+        bool global;
+        double last_index = 0;
+        State(const std::string& source, bool global_, bool ignore_case)
+            : expression(wide(source), std::regex_constants::ECMAScript |
+                (ignore_case ? std::regex_constants::icase : std::regex_constants::syntax_option_type{})), global(global_) {}
+    };
+    std::shared_ptr<State> state_;
+
+    bool search(const std::wstring& input, std::size_t start, std::wsmatch& match) const {
+        const auto flags = start == 0 ? std::regex_constants::match_default : std::regex_constants::match_prev_avail;
+        return std::regex_search(input.cbegin() + static_cast<std::ptrdiff_t>(start), input.cend(), match, state_->expression, flags);
+    }
+
+    std::vector<RegExpReplacement> replacements(const std::string& input) const {
+        std::vector<RegExpReplacement> results;
+        const auto units = wide(input);
+        if (state_->global) last_index() = 0.0;
+        std::size_t start = 0;
+        std::wsmatch match;
+        while (start <= units.size() && search(units, start, match)) {
+            const auto position = start + static_cast<std::size_t>(match.position());
+            RegExpReplacement result{{}, static_cast<double>(position), input};
+            result.groups.reserve(match.size());
+            for (const auto& group : match) result.groups.push_back(group.matched ? Nullable<std::string>(narrow(group.str())) : std::nullopt);
+            results.push_back(std::move(result));
+            if (!state_->global) break;
+            start = position + static_cast<std::size_t>(match.length());
+            if (match.length() == 0) ++start;
+        }
+        return results;
+    }
 };
 
 /**
@@ -2213,15 +2285,6 @@ relative_slice_bounds(
     return value.ends_with(suffix);
 }
 
-[[nodiscard]] inline double string_char_code_at(
-    const std::string& value,
-    double index_value) {
-    const auto index = static_cast<std::size_t>(std::max(0.0, std::trunc(index_value)));
-    return index < value.size()
-        ? static_cast<unsigned char>(value[index])
-        : std::numeric_limits<double>::quiet_NaN();
-}
-
 // UTF-16 indexing over native UTF-8 strings. Lone surrogates use WTF-8 so
 // slicing through a surrogate pair retains the JavaScript code unit.
 class StringCodeUnitCursor {
@@ -2258,6 +2321,18 @@ class StringCodeUnitCursor {
     std::size_t index_ = 0;
     std::optional<char16_t> trailing_;
 };
+
+[[nodiscard]] inline double string_char_code_at(const std::string& value, double index_value) {
+    const double index = std::isnan(index_value) ? 0.0 : std::trunc(index_value);
+    if (index >= 0 && std::isfinite(index)) {
+        StringCodeUnitCursor cursor(value);
+        std::size_t position = 0;
+        while (const auto unit = cursor.next()) {
+            if (static_cast<double>(position++) == index) return static_cast<double>(*unit);
+        }
+    }
+    return std::numeric_limits<double>::quiet_NaN();
+}
 
 [[nodiscard]] inline std::u16string string_code_units(const std::string& value) {
     std::u16string units;

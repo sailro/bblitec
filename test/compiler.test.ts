@@ -14345,7 +14345,7 @@ test("lowers global RegExp exec loops and lastIndex", () => {
     `);
 
     assert.match(result.cpp, /bbl::js::RegExp/);
-    assert.match(result.cpp, /\.last_index = 0\.0/);
+    assert.match(result.cpp, /\.last_index\(\) = 0\.0/);
     assert.match(result.cpp, /\.exec\(/);
 });
 

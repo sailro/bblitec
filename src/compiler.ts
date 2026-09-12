@@ -5341,7 +5341,7 @@ class Compiler
         if (owner.kind === "regexp" && property === "lastIndex") {
             return {
                 kind: "number",
-                cpp: `${owner.cpp}.last_index`,
+                cpp: `${owner.cpp}.last_index()`,
             };
         }
         if (

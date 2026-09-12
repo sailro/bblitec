@@ -169,11 +169,16 @@ spreads and `Array.from`, and resume after an early `for...of` break.
 Strings support string-pattern `replace`/`replaceAll` with string replacements
 and substitution tokens or callbacks receiving the match, UTF-16 offset and original string.
 Callback results are literal replacements and synchronous callbacks retain writes to outer bindings.
+RegExp patterns with supported `g`/`i` flags also accept replacement callbacks in
+`replace` and global `replaceAll`. Arguments include captures (undefined when unmatched),
+the UTF-16 offset and original string. Matches are collected before callbacks run;
+aliases share `lastIndex`, while callbacks can retain owned capture values.
+Runtime-selected capture counts require concrete string/number callback parameter types.
 Other methods include `substring`, `repeat`, string-argument `concat`, `at`,
-`charAt`, `codePointAt`, `padEnd`, `trimStart` and `trimEnd`. Numeric bracket access,
+`charAt`, `charCodeAt`, `codePointAt`, `padEnd`, `trimStart` and `trimEnd`. Numeric bracket access,
 these indexed methods and string length use UTF-16 code units; missing bracket indices return undefined.
-Native storage is UTF-8, with WTF-8 for lone surrogates. RegExp `replaceAll` and
-RegExp replacement callbacks remain unsupported. Supported normalization and collation forms are listed above.
+Native storage is UTF-8, with WTF-8 for lone surrogates. RegExp `replaceAll` with
+a string replacement remains unsupported. Supported normalization and collation forms are listed above.
 Stored string-literal unions expose the same string methods, indexed reads and length.
 
 `Object.freeze`, `seal` and `preventExtensions` are the identity over their argument.
