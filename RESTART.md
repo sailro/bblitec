@@ -54,6 +54,24 @@ and Window/retained-element event ownership, options and field gaps together.
 The generic inventory tool is `tools/project-requirements.mjs`; it reuses the
 compiler frontend and does not implement a second support classifier.
 
+First batch progress: the stored Set iterator clause is implemented and removed
+from TODO; its other four clauses remain open. `core365` passed all 136 selected
+language/callback checks without skips. The generated native iterator fixture
+checks aliasing, next/done, live deletion/clear/insertion, deferred first pull,
+sticky exhaustion, fresh pair lanes, object identity, spread, mapped Array.from,
+early-break resumption and lifetimes through helper returns/stored callbacks.
+`capabilities358.json` records the initial probe improvement from 2/24 accepted
+to 4/24 accepted; those are generation counts, not application completion.
+No application retry or full corpus sweep was needed within this unit.
+
+The iterator implementation adds a shared typed `iterator` data kind and native
+cursor, reusing collection storage, callback ownership and tuple representation.
+Stored iterator for-of pulls in the loop condition, preserving early break and
+avoiding an unreachable native increment. The next core batch still needs
+RegExp callbacks and mixed-tuple mutation/rest/resizing. The untracked
+`native/include/bblite/pal_dom_events.hpp` remains an unused event design draft;
+do not stage it with the core-library work or claim it is integrated.
+
 The branch was clean and synchronized with its remote before adding this
 document. All 14 implementation/test commits listed below were pushed. The PR
 remains a draft because integration and other explicitly pending work are

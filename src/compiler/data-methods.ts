@@ -645,6 +645,20 @@ function compileKnownDataMethod(
             return lowerer.compileStoredCall(call, `${record}${member}${field!.name}`, functionType, present);
         }
     }
+    if (dataType?.kind === "iterator") {
+        if (method !== "next" || call.arguments.length !== 0)
+            lowerer.context.fail(call, "Stored collection iterators support next() without arguments.");
+        const result = lowerer.context.allocateTemporaryCppName("iterator_result");
+        lowerer.context.emit(`auto ${result} = ${narrowed.cpp}.next();`);
+        const nativeCaptures = [lowerer.context.registerNativeBinding(result)];
+        return {
+            kind: "record", cpp: "",
+            recordProperties: {
+                done: {...lowerer.leafValue(`${result}.done`, {kind: "boolean"}), nativeCaptures},
+                value: {...lowerer.leafValue(`${result}.value`, {kind: "optional", inner: dataType.element}), nativeCaptures},
+            },
+        };
+    }
     if (dataType?.kind === "map") { return compileMapDataMethod(lowerer, call, callee, method, narrowed, dataType); }
     if (dataType?.kind === "set") { return compileSetDataMethod(lowerer, call, callee, method, narrowed, dataType); }
     if (dataType?.kind === "string") { const result = compileStringDataMethod(lowerer, call, callee, method, narrowed, dataType); if (result) return result; }
@@ -1642,16 +1656,16 @@ function compileMapDataMethod(lowerer: DataLowerer, call: ts.CallExpression, cal
 }
 
 function compileSetDataMethod(lowerer: DataLowerer, call: ts.CallExpression, callee: ts.PropertyAccessExpression, method: string, narrowed: Value, dataType: DataType & {kind: "set"}): Value | undefined {
+    if (method === "entries" || method === "values" || method === "keys") {
+        lowerer.context.expectArgumentCount(call, 0, 0);
+        lowerer.context.reachJsData();
+        const entries = method === "entries";
+        const element = entries ? lowerer.context.dataTypes.tupleStorage([dataType.element, dataType.element]) : dataType.element;
+        return lowerer.leafValue(`bbl::js::set_iterator<${lowerer.context.dataTypes.cppType(element)}, ${entries}>(${narrowed.cpp})`,
+            {kind: "iterator", element});
+    }
     if (method === "forEach")
         return compileCollectionForEach(lowerer, call, narrowed, dataType);
-    if (method === "values" || method === "keys") {
-        if (call.arguments.length !== 0) {
-            lowerer.context.fail(call, `Set.${method} expects no arguments.`);
-        }
-        // Both iterators yield the set's own members in insertion order,
-        // which is what iterating the set yields.
-        return narrowed;
-    }
     lowerer.context.reachJsData();
     if (method === "clear") {
         if (call.arguments.length !== 0) {

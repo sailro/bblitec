@@ -9,7 +9,7 @@ import { EmissionMap, EmissionSet } from "./emission-transaction.js";
 import ts from "typescript";
 import { createHash } from "node:crypto";
 import { cppIdentifier, doubleLiteral } from "../cpp-literals.js";
-import { isDefaultLibraryIdentifier } from "./symbols.js";
+import { declaredInDefaultLibrary, isDefaultLibraryIdentifier } from "./symbols.js";
 import { nativeReturnTsType } from "./native-return-type.js";
 import { classInstanceProperties } from "./class-properties.js";
 import { forEachAnalysisNode } from "./analysis-walk.js";
@@ -589,9 +589,10 @@ export class DataTypeRegistry {
           ...dataType,
           element: this.markStoredObjectReferences(dataType.element),
         };
+      case "iterator":
       case "set":
         return {
-          kind: "set",
+          kind: dataType.kind,
           element: this.markStoredObjectReferences(dataType.element),
         };
       case "map":
@@ -817,6 +818,12 @@ export class DataTypeRegistry {
         return this.fromTupleType(reference, node);
       }
       const symbolName = type.symbol?.name;
+      if (symbolName && ["SetIterator", "IterableIterator", "IteratorObject", "Iterator"].includes(symbolName) &&
+        type.symbol && declaredInDefaultLibrary(type.symbol)) {
+        const [elementType] = this.checker.getTypeArguments(reference);
+        const element = elementType ? this.fromStoredTsType(elementType, node) : undefined;
+        return element ? {kind: "iterator", element} : undefined;
+      }
       if (symbolName === "ArrayLike") {
         const [elementType] = this.checker.getTypeArguments(reference);
         if (!elementType) return undefined;
@@ -1315,7 +1322,7 @@ export class DataTypeRegistry {
     return this.tupleStorage(complete);
   }
 
-  private tupleStorage(elements: DataType[]): DataType {
+  public tupleStorage(elements: DataType[]): DataType {
     if (elements.every((element) => element.kind === "number")) {
       return {
         kind: "tuple",
@@ -2803,6 +2810,7 @@ export class DataTypeRegistry {
           return;
         case "vector":
         case "set":
+        case "iterator":
         case "span":
           visit(dataType.element);
           return;

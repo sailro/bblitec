@@ -147,6 +147,69 @@ check("set-entry-iteration", `
     if (rewritten.join(",") !== "11,12" || Array.from(original).join(",") !== "1,2") throw new Error("mapper receiver and value snapshots");
 `);
 
+check("stored-set-entry-iterators", `
+    const values = new Set<number>([2,3]);
+    const entries = values.entries();
+    const alias = entries;
+    values.add(4);
+    const first = entries.next();
+    if(first.done || first.value[0] !== 2 || first.value[1] !== 2) throw new Error('first');
+    first.value[0] = 99;
+    if(first.value[1] !== 2 || !values.has(2)) throw new Error('fresh pair lanes');
+    values.delete(2);
+    values.delete(3);
+    let seen = '';
+    for(const [a,b] of alias) {
+        if(a !== b) throw new Error('matching lanes');
+        seen += a;
+        if(a === 4) { values.clear(); values.add(7); }
+    }
+    if(seen !== '47') throw new Error('live cursor');
+    values.add(8);
+    const exhausted = entries.next();
+    if(!exhausted.done || exhausted.value !== undefined) throw new Error('sticky exhaustion');
+    const delayedValues = new Set<string>();
+    const delayed = delayedValues.entries();
+    delayedValues.add('later');
+    const copied = [...delayed];
+    if(copied.length !== 1 || copied[0]![0] !== 'later') throw new Error('deferred start');
+    const shared = {count:1};
+    const objects = new Set<{count:number}>([shared]);
+    const objectEntries = objects.entries();
+    for(const pair of objectEntries) {
+        pair[0].count++;
+        if(pair[1].count !== 2) throw new Error('object identity');
+    }
+    if(shared.count !== 2) throw new Error('retained object');
+    const partial = new Set<number>([1,2,3]).entries();
+    for(const [a] of partial) { if(a !== 1) throw new Error('break'); break; }
+    const remaining = Array.from(partial);
+    if(remaining.length !== 2 || remaining[0]![0] !== 2 || remaining[1]![1] !== 3) throw new Error('resume after break');
+    const mappedValues = new Set<number>([2]);
+    const mappedEntries = mappedValues.entries();
+    const mapped = Array.from(mappedEntries, ([a,b], index) => {
+        if(a === 2) mappedValues.add(3);
+        return a+b+index;
+    });
+    if(mapped.join(',') !== '4,7') throw new Error('mapped iterator');
+    function make(): IterableIterator<[number,number]> {
+        const owner = new Set<number>([5,6]);
+        return owner.entries();
+    }
+    const returned = make();
+    const retained: () => number = () => {
+        const next = returned.next();
+        return next.done ? -1 : next.value[0];
+    };
+    if(retained() !== 5 || retained() !== 6 || retained() !== -1) throw new Error('iterator lifetime');
+    const keyed = new Set<number>([2,3]);
+    const keys = keyed.keys();
+    const scalarValues = keyed.values();
+    if(keys.next().value !== 2 || scalarValues.next().value !== 2) throw new Error('independent cursors');
+    const keysArray = [...keys];
+    if(keysArray.join(',') !== '3') throw new Error('key cursor');
+`);
+
 check("string-replacement-callbacks", `
     let calls = 0;
     let input = "aba";

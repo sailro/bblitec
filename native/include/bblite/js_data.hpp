@@ -836,21 +836,31 @@ class Array {
 template <typename T, typename Iterable>
 [[nodiscard]] inline Array<T> array_from_iterable(
     const Iterable& values) {
-    return Array<T>(values.begin(), values.end());
+    if constexpr (std::is_same_v<decltype(values.begin()), decltype(values.end())>) {
+        return Array<T>(values.begin(), values.end());
+    } else {
+        Array<T> result;
+        for (const auto& value : values) result.push_back(value);
+        return result;
+    }
 }
 
 template <typename T, typename Iterable, typename Transform>
 [[nodiscard]] inline Array<T> array_from_iterable(
     const Iterable& values, Transform transform) {
     Array<T> result;
-    result.reserve(values.size());
+    if constexpr (requires { values.size(); }) result.reserve(values.size());
     for (const auto& value : values) result.push_back(transform(value));
     return result;
 }
 
 template <typename T, typename Iterable>
 inline void array_append(Array<T>& target, const Iterable& values) {
-    target.insert(target.end(), values.begin(), values.end());
+    if constexpr (std::is_same_v<decltype(values.begin()), decltype(values.end())>) {
+        target.insert(target.end(), values.begin(), values.end());
+    } else {
+        for (const auto& value : values) target.push_back(value);
+    }
 }
 
 /** Materialize JavaScript array storage at a native std::vector sink. */
@@ -1618,6 +1628,71 @@ class Set : public IndexedInsertionOrdered<T, T> {
         return *this;
     }
 };
+
+/** A stored JavaScript iterator: aliases share one advancing cursor. */
+template <typename T>
+class Iterator {
+  public:
+    struct Result {
+        bool done;
+        Nullable<T> value;
+        void gc_trace(const TraceVisitor& visitor) const { visitor(value); }
+    };
+    Iterator() = default;
+    template <typename Pull>
+        requires (!std::is_same_v<std::remove_cvref_t<Pull>, Iterator>)
+    explicit Iterator(Pull&& pull) : pull_(std::forward<Pull>(pull)) {}
+    [[nodiscard]] Result next() const {
+        auto value = pull_();
+        return {!value.has_value(), std::move(value)};
+    }
+    class Cursor {
+      public:
+        explicit Cursor(Callback<Nullable<T>()> pull) : pull_(std::move(pull)), value_(pull_()) {}
+        T& operator*() { return *value_; }
+        const T& operator*() const { return *value_; }
+        Cursor& operator++() { value_ = pull_(); return *this; }
+        bool operator!=(std::default_sentinel_t) const { return value_.has_value(); }
+      private:
+        Callback<Nullable<T>()> pull_;
+        Nullable<T> value_;
+    };
+    [[nodiscard]] Cursor begin() const { return Cursor(pull_); }
+    [[nodiscard]] std::default_sentinel_t end() const { return {}; }
+    [[nodiscard]] std::size_t identity() const { return pull_.identity(); }
+    friend bool operator==(const Iterator& left, const Iterator& right) { return left.pull_ == right.pull_; }
+    void gc_trace(const TraceVisitor& visitor) const { visitor(pull_); }
+  private:
+    Callback<Nullable<T>()> pull_;
+};
+
+/** Keep the last yielded slot pinned until the next pull. Deleting it or
+ * clearing the Set can then append entries before iteration resumes. */
+template <typename Yield, typename T, bool Entries>
+struct SetCursor {
+    std::optional<Set<T>> values;
+    std::optional<InsertionOrderedIterator<T, true>> cursor;
+    Nullable<Yield> operator()() {
+        if (!values) return {};
+        const Set<T>& source = *values;
+        if (cursor) ++*cursor;
+        else cursor.emplace(source.begin());
+        if (*cursor == source.end()) {
+            cursor.reset();
+            values.reset();
+            return {};
+        }
+        const T value = **cursor;
+        if constexpr (Entries) return Yield{value, value};
+        else return value;
+    }
+    void gc_trace(const TraceVisitor& visitor) const { visitor(values); visitor(cursor); }
+};
+
+template <typename Yield, bool Entries, typename T>
+[[nodiscard]] Iterator<Yield> set_iterator(const Set<T>& values) {
+    return Iterator<Yield>(SetCursor<Yield, T, Entries>{values, {}});
+}
 
 template <typename T>
 using Span = std::span<T>;

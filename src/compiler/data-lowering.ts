@@ -3477,7 +3477,7 @@ export class DataLowerer {
         this.context.emit(`const auto ${source} = ${range.container.cpp};`);
         const result = this.context.allocateTemporaryCppName("array_from_result");
         this.context.emit(`${this.context.dataTypes.cppType(resultType)} ${result};`);
-        this.context.emit(`${result}.reserve(${source}.size());`);
+        if (range.container.dataType?.kind !== "iterator") this.context.emit(`${result}.reserve(${source}.size());`);
         const index = this.context.allocateTemporaryCppName("array_from_index");
         this.context.emit(`std::size_t ${index} = 0;`);
         const item = this.context.allocateTemporaryCppName("array_from_item");
@@ -3564,11 +3564,11 @@ export class DataLowerer {
             const source = this.context.compileValue(argumentAt(call, 0));
             if (
                 source.kind !== "data" ||
-                (source.dataType?.kind !== "vector" && source.dataType?.kind !== "span" && source.dataType?.kind !== "set")
+                (source.dataType?.kind !== "vector" && source.dataType?.kind !== "span" && source.dataType?.kind !== "set" && source.dataType?.kind !== "iterator")
             ) {
                 this.context.fail(
                     argumentAt(call, 0),
-                    "Array.from with one argument requires a native array or Set value.",
+                    "Array.from with one argument requires a native array, Set or stored iterator value.",
                 );
             }
             // The enclosing value path materializes the returned vector, so
@@ -7797,6 +7797,7 @@ export class DataLowerer {
         if (
             dataType.kind === "vector" ||
             dataType.kind === "span" ||
+            dataType.kind === "iterator" ||
             dataType.kind === "set"
         ) {
             return {
@@ -8403,6 +8404,7 @@ export class DataLowerer {
                         };
                     }
                     const sourceElement = iterable.dataType?.kind === "set" ||
+                        iterable.dataType?.kind === "iterator" ||
                         iterable.dataType?.kind === "vector" ||
                         iterable.dataType?.kind === "span"
                         ? iterable.dataType.element
