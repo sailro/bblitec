@@ -14,6 +14,7 @@
     "rmlui-object-fit.patch",
     "rmlui-overflow-wrap.patch",
     "rmlui-premultiplied-rounding.patch",
+    "rmlui-selector-functions.patch",
     "rmlui-solid-background-clip.patch",
     "rmlui-textured-borders.patch",
     "rmlui-transform-key-ownership.patch"

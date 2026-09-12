@@ -3291,7 +3291,7 @@ enum class UiMotionPreference : std::uint8_t { Any, Reduce, NoPreference };
 
 enum class UiSelectorTestKind : std::uint8_t {
     Tag, Id, Class, Attribute, Equals, Hover, Active, Focus, FocusVisible, FocusWithin, Disabled, Checked,
-    NthChild, NthLastChild, NthOfType, NthLastOfType, OnlyChild, OnlyOfType, Empty, Not,
+    NthChild, NthLastChild, NthOfType, NthLastOfType, OnlyChild, OnlyOfType, Empty, Not, Is, Where, Has,
 };
 enum class UiSelectorRelation : std::uint8_t { Self, Descendant, Child, Next, Following };
 struct UiSelectorStep;
@@ -3301,7 +3301,7 @@ struct UiSelectorTest {
     std::int32_t a = 0, b = 0;
 };
 struct UiSelectorStep { UiSelectorRelation relation; std::vector<UiSelectorTest> tests; };
-enum class UiGeneratedPart : std::uint8_t { None, Before, After };
+enum class UiGeneratedPart : std::uint8_t { None, Before, After, Placeholder };
 enum class UiContentPartKind : std::uint8_t { Text, Attribute };
 struct UiContentPart { UiContentPartKind kind; std::string value; };
 struct UiGeneratedContent { bool enabled = false; std::vector<UiContentPart> parts{}; };

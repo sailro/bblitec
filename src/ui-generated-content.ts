@@ -1,4 +1,8 @@
-export type UiGeneratedPart = "before" | "after";
+const UI_GENERATED_PARTS = {before:"Before", after:"After", placeholder:"Placeholder"} as const;
+export type UiGeneratedPart = keyof typeof UI_GENERATED_PARTS;
+export function isUiGeneratedPart(value: unknown): value is UiGeneratedPart {
+    return typeof value === "string" && Object.hasOwn(UI_GENERATED_PARTS,value);
+}
 export interface UiContentPart { kind: "text" | "attribute"; value: string; }
 export interface UiGeneratedContent { enabled: boolean; parts: UiContentPart[]; }
 
@@ -47,5 +51,5 @@ export function uiGeneratedContentCpp(content: UiGeneratedContent | undefined, q
 }
 
 export function uiGeneratedPartCpp(part: UiGeneratedPart | undefined): string {
-    return part === undefined ? "None" : part === "before" ? "Before" : "After";
+    return part === undefined ? "None" : UI_GENERATED_PARTS[part];
 }

@@ -13,7 +13,7 @@ test("compound selector parsing preserves relations, quoted values and specifici
     assert.equal(uiSelectorSequenceCss(sequence), 'section.panel.selected > button[data-mode="a,b"] + .entry:focus');
     assert.equal(uiSelectorSequenceSpecificity(sequence), 5 * 0x100 + 2);
     assert.deepEqual(splitUiSelectorList(`${selector}, .entry:not(.a,.b),[title="a,b"]`), [selector, ".entry:not(.a,.b)", '[title="a,b"]']);
-    for (const source of ["", "a >", "a ++ b", ".a:unknown", ".a::before", "a[name^=value]", "a:has(.b)", "bbl-grid-children", ".a:hover:hover"])
+    for (const source of ["", "a >", "a ++ b", ".a:unknown", ".a::before", "a[name^=value]", "a:has(:has(.b))", "bbl-grid-children", ".a:hover:hover"])
         assert.equal(parseUiSelectorSequence(source), undefined, source);
     for (const source of ['[title=\'a"b\']', '[data-mode="a,b"]', "button img", ".a.b.c .d > .e ~ .f"])
         assert.deepEqual(parseUiSelectorSequence(uiSelectorSequenceCss(parseUiSelectorSequence(source)!)), parseUiSelectorSequence(source));
@@ -25,9 +25,14 @@ test("structural and negated selector terms normalize formulas and retain specif
     assert.equal(uiSelectorSequenceCss(parse('.item:nth-child(+n - 2)')), '.item:nth-child(1n-2)');
     assert.equal(uiSelectorSequenceCss(parse('.item:nth-last-of-type(odd)')), '.item:nth-last-of-type(2n+1)');
     assert.equal(uiSelectorSequenceSpecificity(parse('.item:not(.muted, #blocked)')), 0x10100);
-    for (const source of ['.item:not(:not(.muted))', '.item:not([title="a)b"], .panel > .entry)', '.item:nth-child(-2n + 5)'])
+    assert.equal(uiSelectorSequenceSpecificity(parse('.item:is(.muted, #blocked)')), 0x10100);
+    assert.equal(uiSelectorSequenceSpecificity(parse('.item:where(.muted, #blocked)')), 0x100);
+    assert.equal(uiSelectorSequenceSpecificity(parse('.item:has(> .child, + #neighbor)')), 0x10100);
+    for (const source of ['.item:not(:not(.muted))', '.item:not([title="a)b"], .panel > .entry)', '.item:nth-child(-2n + 5)',
+        ':is(.entry, [role="dialog"]) > img', '.item:where(.a,.b)', '.item:has(> :is(.child, .other):hover, + .neighbor span)', '.item:not(:has(.child))'])
         assert.deepEqual(parse(uiSelectorSequenceCss(parse(source))), parse(source));
-    for (const source of ['.item:not()', '.item:not(.a,)', '.item:not(.a', '.item:nth-child(2n of .entry)', '.item:nth-child(2 n)', '.item:nth-child(2147483648)', '.item:empty()'])
+    for (const source of ['.item:not()', '.item:not(.a,)', '.item:not(.a', '.item:nth-child(2n of .entry)', '.item:nth-child(2 n)', '.item:nth-child(2147483648)', '.item:empty()',
+        '.item:is()', '.item:where(.a,)', '.item:has(>)', '.item:has(.a:has(.b))', '.item:has(::before)'])
         assert.equal(parseUiSelectorSequence(source), undefined, source);
 });
 
@@ -60,6 +65,12 @@ test("generated selector chains share the rendered and private native cascades",
             .panel:focus-within .lead{color:#abcdef}
             .entry > span:only-child{font-size:13px}
             .entry:empty{background-color:red}
+            :is(.missing, .panel) > .entry{min-height:41px}
+            :where(#panel) > .entry{min-height:42px}
+            .panel:has(> .entry[disabled]) .lead{background-color:#123456}
+            .lead:has(+ .entry){margin-top:6px}
+            .panel:has(> .entry > span){padding-bottom:7px}
+            .panel:not(:has(> .entry:not([disabled]))){padding-top:8px}
         \`;
         document.head.appendChild(sheet);
         const panel = document.createElement("section");

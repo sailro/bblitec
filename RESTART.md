@@ -36,13 +36,17 @@ it does not establish that this external application compiles or runs.
 | Branch | `codex/external-project-support` |
 | Remote | `https://github.com/sailro/bblitec.git` |
 | Branch base used in this session | `3474e835` on `main` |
-| Latest executable-code/test unit | Generated before/after content; prior savepoints `c18e4818` (structural selectors), `6aa3bc40` (selector chains and fresh Window layout), `fadc3ac8` (event targets), `48f5224f` (DOM input bridge) and `58c6fe8c` (mixed tuples) |
+| Latest executable-code/test unit | Selector functions and placeholder styles; prior savepoints `bf9e1a02` (generated content), `c18e4818` (structural selectors), `6aa3bc40` (selector chains and fresh Window layout), `fadc3ac8` (event targets), `48f5224f` (DOM input bridge) and `58c6fe8c` (mixed tuples) |
 | Draft PR | [#247 — Extend generic application compilation and retained UI support](https://github.com/sailro/bblitec/pull/247) |
 | External checkout | `C:/Dev/_prototypes/external-native-app` |
 | External source revision | `d7c477a6d5963680c55249dceb93cb6e4ab9ce56` |
 | External checkout changes | Clean when this handoff was prepared |
 | External generated output | `generated/external-app` (ignored; not a successful complete generation) |
 | Session diagnostics | `artifacts/external-integration` (ignored) |
+
+Latest complete-entry diagnostic: `compile476` passed the former descendant-selector
+refusal and stopped at a reached `:is()` selector. The current selector-function unit
+implements that family; no complete-entry attempt after it has run yet.
 
 Current assessment artifacts: `requirements356.json` inventories the unchanged
 entry's static local import graph (1,343 files, 1,002 unassessed API/syntax groups;
@@ -235,6 +239,33 @@ has a separate ordinary RmlUi directory; do not modify that task's libraries or 
 The ignored `generated-content-plan.md` is historical design context. Further patch edits
 can use `save-rml-content-patch.mjs` and its saved base index; ordinary build scripts reset
 candidate Git indexes while applying the maintained patches.
+
+The next selector batch implements `:is`, `:where`, relative `:has` and color/opacity
+on `::placeholder`. TS/native terms share selector alternatives; relative matching
+walks forward from the owner. RmlUi caches whether a stylesheet reaches `:has` and
+invalidates document definitions after relevant element-definition changes only for
+such sheets. The existing text widget owns placeholder text; its pseudo identity
+switches back to ordinary text when a value is present. Font/layout changes on the
+placeholder refuse because widget metrics come from the control.
+
+`selectors482` passes seven focused checks. `window483` builds/runs on both renderers,
+including live `:has`/`:is` layout inside callbacks and placeholder rendering.
+`selectors484` passes 661/662 checks; the only failure expected the newly supported
+`:has(.icon)` to refuse. The assertion now tests invalid nested `:has` instead.
+The current Rml candidate has fourteen patches (`rmlui481`); `rmlui485` reconciles
+the development artifact. Static/specialized variants still require reconciliation.
+Use `save-rml-selectors-patch.mjs` with its separate `selector-base-index` to edit
+the fourteenth patch; do not regenerate it with the earlier content patch saver.
+
+`selectors484.json` recognizes all 1,209 static selector spellings in the literal
+candidate inventory, with 33 dynamic/unassessed entries. The separate
+`css-bodies476.json` reports 861 lowered literal rule bodies, 263 with declaration
+refusals and 77 dynamic/unassessed bodies. Both include unused code; the latter
+removes refused declarations only in diagnostic memory to expose further groups.
+These are syntax/lowering assessments, not full-rule native fidelity or application
+completion percentages. Declaration groups include grid geometry, text styles,
+visibility, borders and transform origins. Keep full application retries at batch
+boundaries, and continue through native build/runtime and final validation.
 
 The branch was clean and synchronized with its remote before adding this
 document. All 14 implementation/test commits listed below were pushed. The PR

@@ -28,6 +28,7 @@ int main() {
         assert(generated_main()==0);
         pal::UiRmlRuntime runtime(engine,window,640,480);
         const auto item=ui_get_element_by_id(engine,"item"), panel=ui_get_element_by_id(engine,"panel"), tail=ui_get_element_by_id(engine,"tail");
+        const auto hint=ui_get_element_by_id(engine,"hint"), note=ui_get_element_by_id(engine,"note");
         const auto raw=[&](UiElementHandle handle) { return runtime.projected_elements.at(handle.value).element; };
         const auto update=[&](std::uint32_t width=640) { pal::update_ui_rml_runtime(runtime,width,480); };
         const auto box=[&](UiElementHandle handle,Pseudo pseudo) -> Rml::Element* {
@@ -52,6 +53,33 @@ int main() {
             }); return found;
         };
         update();
+        const auto form_text = [&](UiElementHandle handle) -> Rml::ElementText* {
+            auto* origin=raw(handle);
+            for(int i=0;i<origin->GetNumChildren(true);++i)
+                if(auto* value=rmlui_dynamic_cast<Rml::ElementText*>(origin->GetChild(i)); value && !value->GetText().empty()) return value;
+            return nullptr;
+        };
+        const auto placeholder = [&](UiElementHandle handle,const std::string& value) {
+            auto* element=form_text(handle);
+            assert(element && element->GetPseudoElement()==Pseudo::Placeholder && element->GetText()==value);
+            const auto color=element->GetProperty(Rml::PropertyId::Color)->Get<Rml::Colourb>();
+            assert(color.red==0x12 && color.green==0x34 && color.blue==0x56);
+            assert(std::abs(element->GetComputedValues().opacity()-0.8f)<0.001f);
+            const auto owner=raw(handle)->GetProperty(Rml::PropertyId::Color)->Get<Rml::Colourb>();
+            assert(owner.red==0x33 && owner.green==0x44 && owner.blue==0x55);
+        };
+        placeholder(hint,"Type"); placeholder(note,"Notes");
+        static_cast<void>(pal::record_ui_rml_frame(runtime,640,480));
+        ui_set_form_value(engine,hint,"Typed"); update();
+        assert(form_text(hint)->GetPseudoElement()==Pseudo::None && form_text(hint)->GetText()=="Typed");
+        assert(form_text(hint)->GetProperty(Rml::PropertyId::Color)->Get<Rml::Colourb>().red==0x33);
+        assert(form_text(hint)->GetComputedValues().opacity()==1.0f);
+        ui_set_form_value(engine,hint,""); update(); placeholder(hint,"Type");
+        ui_focus(engine,hint,true); update();
+        assert(form_text(hint)->GetProperty(Rml::PropertyId::Color)->Get<Rml::Colourb>().red==0x65);
+        ui_focus(engine,item,true); update(); placeholder(hint,"Type");
+        ui_remove_attribute(engine,note,"placeholder"); update(); assert(!form_text(note));
+        ui_set_attribute(engine,note,"placeholder","Changed"); update(); placeholder(note,"Changed");
         assert(box(panel,Pseudo::Before));
         assert(box(panel,Pseudo::Before)->GetBox().GetSize().y==11);
         assert(text(box(item,Pseudo::Before))=="ID:Ready");
