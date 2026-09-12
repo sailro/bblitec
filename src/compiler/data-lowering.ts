@@ -3403,8 +3403,8 @@ export class DataLowerer {
     /** An element a range yields as a pair or an index rather than a value. */
     private pairedElement(
         element: DataIterationElement,
-    ): element is Extract<DataIterationElement, { kind: "map-entry" | "array-entry" | "array-index" }> {
-        return element.kind === "map-entry" || element.kind === "array-entry" || element.kind === "array-index";
+    ): element is Extract<DataIterationElement, { kind: "map-entry" | "set-entry" | "array-entry" | "array-index" }> {
+        return element.kind === "map-entry" || element.kind === "set-entry" || element.kind === "array-entry" || element.kind === "array-index";
     }
 
     /**
@@ -3421,7 +3421,7 @@ export class DataLowerer {
         const range = this.context.probeEmission(() =>
             this.iterationTarget(argumentAt(call, 0)),
         );
-        if (!range || this.pairedElement(range.element)) {
+        if (!range || range.element.kind === "array-entry" || range.element.kind === "array-index") {
             return undefined;
         }
         const resultType = this.dataTypeAt(call);
@@ -3434,7 +3434,7 @@ export class DataLowerer {
         }
         this.context.reachJsData();
         const source = this.context.allocateTemporaryCppName("array_from_source");
-        this.context.emit(`auto&& ${source} = ${range.container.cpp};`);
+        this.context.emit(`const auto ${source} = ${range.container.cpp};`);
         const result = this.context.allocateTemporaryCppName("array_from_result");
         this.context.emit(`${this.context.dataTypes.cppType(resultType)} ${result};`);
         this.context.emit(`${result}.reserve(${source}.size());`);
@@ -3444,11 +3444,15 @@ export class DataLowerer {
         const element = range.element;
         const lines = this.context.captureEmittedLines(() => {
             this.context.pushScope(this.context.allocateBlockPrefix());
+            this.context.enterRuntimeControlFlow();
+            this.context.enterRuntimeIteration();
             try {
                 const value = this.context.compileCallbackWithValues(
                     mapper,
                     [
-                        this.leafValue(item, element),
+                        element.kind === "map-entry" || element.kind === "set-entry"
+                            ? this.materializeIterationPair(item, element, call)
+                            : this.iterationElementValue(item, element),
                         { kind: "number", cpp: `static_cast<double>(${index})`, dataType: { kind: "number" } },
                     ],
                     call,
@@ -3458,10 +3462,12 @@ export class DataLowerer {
                 );
                 this.context.emit(`++${index};`);
             } finally {
+                this.context.leaveRuntimeIteration();
+                this.context.leaveRuntimeControlFlow();
                 this.context.popScope();
             }
         });
-        this.context.emit(`for (auto&& ${item} : ${source}) {`);
+        this.context.emit(`for (auto ${item} : ${source}) {`);
         this.context.increaseIndent();
         for (const line of lines) this.context.emit(line);
         this.context.decreaseIndent();
@@ -3506,6 +3512,15 @@ export class DataLowerer {
             return { kind: "data", cpp: `${this.context.dataTypes.cppType(type)}{${values.join(", ")}}`, dataType: type };
         }
         if (call.arguments.length === 1) {
+            const paired = this.context.probeEmission(() => {
+                const range = this.iterationTarget(argumentAt(call, 0));
+                return range?.element.kind === "map-entry" || range?.element.kind === "set-entry" ? range : undefined;
+            });
+            if (paired) {
+                const type = this.dataTypeAt(call);
+                if (type?.kind !== "vector") this.context.fail(call, "Array.from entries require a concrete array element type.");
+                return this.leafValue(this.materializeEntryRange(paired, type, call), type);
+            }
             const source = this.context.compileValue(argumentAt(call, 0));
             if (
                 source.kind !== "data" ||
@@ -7814,7 +7829,7 @@ export class DataLowerer {
         if (!iterator) {
             return undefined;
         }
-        const { call, method, receiver } = iterator;
+        const { method, receiver } = iterator;
         // The receiver resolves as a range the way the loop would resolve
         // it directly, so a constant array, a stored vector and a readonly
         // parameter all take the same walk. The whole classification runs
@@ -7833,13 +7848,9 @@ export class DataLowerer {
                 return method === "entries" ? range : undefined;
             }
             if (kind === "set") {
-                if (method === "entries") {
-                    this.context.fail(
-                        call,
-                        "Set.entries() yields [value, value] pairs, which have no native representation; iterate the set itself.",
-                    );
-                }
-                return range;
+                return method === "entries" && container.dataType?.kind === "set"
+                    ? {container, element: {kind: "set-entry", element: container.dataType.element}}
+                    : range;
             }
             if ((kind !== "vector" && kind !== "span") || this.pairedElement(range.element)) {
                 return undefined;
@@ -7905,6 +7916,9 @@ export class DataLowerer {
 
     /** The value yielded by each native iterable's storage representation. */
     private iterationElementValue(itemCpp: string, element: DataIterationElement): Value {
+        if (element.kind === "set-entry") return {kind:"tuple", cpp:"", tupleElements:[
+            this.leafValue(itemCpp, element.element), this.leafValue(itemCpp, element.element),
+        ]};
         if (element.kind === "map-entry") return {kind:"tuple", cpp:"", tupleElements:[
             this.leafValue(`${itemCpp}.first`, element.key), this.leafValue(`${itemCpp}.second`, element.value),
         ]};
@@ -7913,6 +7927,17 @@ export class DataLowerer {
             return element.kind === "array-index" ? index : {kind:"tuple", cpp:"", tupleElements:[index, this.leafValue(itemCpp, element.element)]};
         }
         return this.leafValue(itemCpp, element);
+    }
+
+    private materializeIterationPair(item: string, element: Extract<DataIterationElement, {kind: "map-entry" | "set-entry"}>, site: ts.Node, type?: DataType): Value {
+        const pair = this.iterationElementValue(item, element);
+        const lanes = element.kind === "set-entry" ? [element.element, element.element] : [element.key, element.value];
+        const pairType = type ?? (lanes.every(lane => lane.kind === "number")
+            ? {kind: "tuple", arity: 2} : {kind: "product", elements: lanes});
+        const cpp = this.context.allocateTemporaryCppName("entry_pair");
+        this.context.emit(`auto ${cpp} = ${this.compileKnownValueForSink(pair, pairType, site)};`);
+        this.registerLocal(cpp, "owned");
+        return {...this.leafValue(cpp, pairType), nativeCaptures: [this.context.registerNativeBinding(cpp)]};
     }
 
     /**
@@ -7986,17 +8011,23 @@ export class DataLowerer {
             });
             return;
         }
-        if (element.kind === "map-entry") {
+        if (element.kind === "map-entry" || element.kind === "set-entry") {
+            if (ts.isIdentifier(name)) {
+                const type = this.dataTypeAt(name);
+                if (!type) this.context.fail(name, "Entry iteration requires a concrete pair type.");
+                define(name, this.materializeIterationPair(itemCpp, element, name, type));
+                return;
+            }
             if (!ts.isArrayBindingPattern(name)) {
                 this.context.fail(
                     name,
-                    "Map iteration currently requires a [key, value] binding.",
+                    "Entry iteration requires a pair or destructured pair binding.",
                 );
             }
             if (name.elements.length > 2) {
                 this.context.fail(
                     name,
-                    "Map entry destructuring accepts at most two bindings.",
+                    "Entry destructuring accepts at most two bindings.",
                 );
             }
             const pair = this.iterationElementValue(itemCpp, element).tupleElements!;
@@ -8009,11 +8040,14 @@ export class DataLowerer {
                 ) {
                     this.context.fail(
                         binding,
-                        "Map entry destructuring supports plain identifiers.",
+                        "Entry destructuring supports plain identifiers.",
                     );
                 }
-                const value = pair[index]!;
-                defineItem(binding.name, value);
+                const source = pair[index]!;
+                const cpp = this.context.allocateTemporaryCppName("entry_binding");
+                this.context.emit(`[[maybe_unused]] auto ${cpp} = ${source.cpp};`);
+                const value = {...source, cpp, nativeCaptures: [this.context.registerNativeBinding(cpp)]};
+                define(binding.name, value);
                 if (value.kind === "data") {
                     this.registerLocal(
                         this.rootName(value.cpp),
@@ -8263,6 +8297,19 @@ export class DataLowerer {
         return `${this.context.dataTypes.cppType(dataType)}{${inner}}`;
     }
 
+    /** A fresh pair per entry; object lanes retain the collection member's identity. */
+    private materializeEntryRange(range: {container: Value; element: DataIterationElement}, type: DataType<"vector">, site: ts.Node): string {
+        const source = this.context.allocateTemporaryCppName("entry_source");
+        const entry = this.context.allocateTemporaryCppName("entry_item");
+        const result = this.context.allocateTemporaryCppName("entry_array");
+        this.context.emit(`const auto ${source} = ${range.container.cpp};`);
+        this.context.emit(`${this.context.dataTypes.cppType(type)} ${result};`);
+        this.context.emit(`${result}.reserve(${source}.size());`);
+        const pair = this.compileKnownValueForSink(this.iterationElementValue(entry, range.element), type.element, site);
+        this.context.emit(`for (const auto& ${entry} : ${source}) ${result}.push_back(${pair});`);
+        return result;
+    }
+
     public compileVectorSink(unwrapped: ts.Expression, dataType: DataType & {
         kind: "vector";
     }): string {
@@ -8282,19 +8329,10 @@ export class DataLowerer {
                         ? this.compileDataMethodCall(expression, dataType) : undefined;
                     const mapRange = projected ? undefined : this.context.probeEmission(() => {
                         const range = this.iterationTarget(spread.expression);
-                        return range?.element.kind === "map-entry" ? range : undefined;
+                        return range?.element.kind === "map-entry" || range?.element.kind === "set-entry" ? range : undefined;
                     });
-                    if (mapRange?.element.kind === "map-entry") {
-                        const source = this.context.allocateTemporaryCppName("spread_map");
-                        const entry = this.context.allocateTemporaryCppName("spread_entry");
-                        const result = this.context.allocateTemporaryCppName("spread_entries");
-                        const pair = this.iterationElementValue(entry, mapRange.element);
-                        this.context.emit(`const auto ${source} = ${mapRange.container.cpp};`);
-                        this.context.emit(`${this.context.dataTypes.cppType(dataType)} ${result};`);
-                        this.context.emit(`${result}.reserve(${source}.size());`);
-                        const pairCpp = this.compileKnownValueForSink(pair, dataType.element, spread);
-                        this.context.emit(`for (const auto& ${entry} : ${source}) ${result}.push_back(${pairCpp});`);
-                        return { kind: "data", cpp: result, dataType, freshSpread: true };
+                    if (mapRange) {
+                        return { kind: "data", cpp: this.materializeEntryRange(mapRange, dataType, spread), dataType, freshSpread: true };
                     }
                     const iterable = projected ?? this.compileDataPath(spread.expression, "read") ??
                         this.context.compileValue(spread.expression);
