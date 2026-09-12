@@ -1,0 +1,181 @@
+diff --git a/Source/Core/PropertySpecification.cpp b/Source/Core/PropertySpecification.cpp
+index c0f8bbe..39e7e67 100644
+--- a/Source/Core/PropertySpecification.cpp
++++ b/Source/Core/PropertySpecification.cpp
+@@ -549,7 +549,7 @@ PropertySpecification::ParsePropertyResult PropertySpecification::ParsePropertyV
+ 
+ 	enum ParseState { VALUE, VALUE_PARENTHESIS, VALUE_QUOTE, VALUE_QUOTE_ESCAPE_NEXT };
+ 	ParseState state = VALUE;
+-	int open_parentheses = 0;
++	String closing_brackets;
+ 	char open_quote_character = 0;
+ 	size_t character_index = 0;
+ 
+@@ -587,11 +587,11 @@ PropertySpecification::ParsePropertyResult PropertySpecification::ParsePropertyV
+ 				else
+ 					return Error();
+ 			}
+-			else if (character == '(')
++			else if (character == '(' || character == '[' || character == '{')
+ 			{
+-				if (EndsWithVariable(value))
++				if (character == '(' && EndsWithVariable(value))
+ 					return ContainsVariable();
+-				open_parentheses = 1;
++				closing_brackets += (character == '(' ? ')' : character == '[' ? ']' : '}');
+ 				value += character;
+ 				state = VALUE_PARENTHESIS;
+ 			}
+@@ -603,16 +603,16 @@ PropertySpecification::ParsePropertyResult PropertySpecification::ParsePropertyV
+ 		break;
+ 		case VALUE_PARENTHESIS:
+ 		{
+-			if (character == '(')
++			if (character == '(' || character == '[' || character == '{')
+ 			{
+-				if (EndsWithVariable(value))
++				if (character == '(' && EndsWithVariable(value))
+ 					return ContainsVariable();
+-				open_parentheses++;
++				closing_brackets += (character == '(' ? ')' : character == '[' ? ']' : '}');
+ 			}
+-			else if (character == ')')
++			else if (!closing_brackets.empty() && character == closing_brackets.back())
+ 			{
+-				open_parentheses--;
+-				if (open_parentheses == 0)
++				closing_brackets.pop_back();
++				if (closing_brackets.empty())
+ 					state = VALUE;
+ 			}
+ 			else if (character == '"' || character == '\'')
+@@ -628,7 +628,7 @@ PropertySpecification::ParsePropertyResult PropertySpecification::ParsePropertyV
+ 		{
+ 			if (character == open_quote_character)
+ 			{
+-				if (open_parentheses == 0)
++				if (closing_brackets.empty())
+ 				{
+ 					state = VALUE;
+ 					if (split_by_comma)
+diff --git a/Source/Core/StyleSheetParser.cpp b/Source/Core/StyleSheetParser.cpp
+index 115f119..17cbec2 100644
+--- a/Source/Core/StyleSheetParser.cpp
++++ b/Source/Core/StyleSheetParser.cpp
+@@ -976,12 +976,14 @@ void StyleSheetParser::ReadProperties(AbstractPropertyParser& property_parser)
+ 	String name;
+ 	String value;
+ 
+-	enum ParseState { NAME, VALUE, QUOTE };
++	enum ParseState { NAME, VALUE, QUOTE, QUOTE_ESCAPE, VALUE_ESCAPE };
+ 	ParseState state = NAME;
++	String closing_brackets;
++	char quote = 0;
++	bool end_of_rule = false;
+ 
+ 	char character;
+-	char previous_character = 0;
+-	while (ReadCharacter(character))
++	while (ReadCharacter(character, state != QUOTE && state != QUOTE_ESCAPE && state != VALUE_ESCAPE))
+ 	{
+ 		parse_buffer_pos++;
+ 
+@@ -1019,7 +1021,7 @@ void StyleSheetParser::ReadProperties(AbstractPropertyParser& property_parser)
+ 
+ 		case VALUE:
+ 		{
+-			if (character == ';')
++			if (character == ';' && closing_brackets.empty())
+ 			{
+ 				value = StringUtilities::StripWhitespace(value);
+ 
+@@ -1031,15 +1033,24 @@ void StyleSheetParser::ReadProperties(AbstractPropertyParser& property_parser)
+ 				value.clear();
+ 				state = NAME;
+ 			}
+-			else if (character == '}')
++			else if (character == '}' && closing_brackets.empty())
+ 			{
+-				break;
++				end_of_rule = true;
+ 			}
+ 			else
+ 			{
+ 				value += character;
+-				if (character == '"')
++				if (character == '"' || character == '\'')
++				{
++					quote = character;
+ 					state = QUOTE;
++				}
++				else if (character == '\\')
++					state = VALUE_ESCAPE;
++				else if (character == '(' || character == '[' || character == '{')
++					closing_brackets += (character == '(' ? ')' : character == '[' ? ']' : '}');
++				else if (!closing_brackets.empty() && character == closing_brackets.back())
++					closing_brackets.pop_back();
+ 			}
+ 		}
+ 		break;
+@@ -1047,18 +1058,24 @@ void StyleSheetParser::ReadProperties(AbstractPropertyParser& property_parser)
+ 		case QUOTE:
+ 		{
+ 			value += character;
+-			if (character == '"' && previous_character != '\\')
++			if (character == '\\')
++				state = QUOTE_ESCAPE;
++			else if (character == quote)
+ 				state = VALUE;
+ 		}
+ 		break;
++		case QUOTE_ESCAPE:
++		case VALUE_ESCAPE:
++			value += character;
++			state = (state == QUOTE_ESCAPE ? QUOTE : VALUE);
++			break;
+ 		}
+ 
+-		if (character == '}')
++		if (end_of_rule)
+ 			break;
+-		previous_character = character;
+ 	}
+ 
+-	if (state == VALUE && !name.empty() && !value.empty())
++	if (state == VALUE && closing_brackets.empty() && !name.empty() && !value.empty())
+ 	{
+ 		value = StringUtilities::StripWhitespace(value);
+ 
+@@ -1218,7 +1235,7 @@ char StyleSheetParser::FindAnyToken(String& buffer, const char* tokens)
+ 	return 0;
+ }
+ 
+-bool StyleSheetParser::ReadCharacter(char& buffer)
++bool StyleSheetParser::ReadCharacter(char& buffer, bool skip_comments)
+ {
+ 	bool comment = false;
+ 
+@@ -1250,7 +1267,7 @@ bool StyleSheetParser::ReadCharacter(char& buffer)
+ 			else
+ 			{
+ 				// Check for an opening comment
+-				if (parse_buffer[parse_buffer_pos] == '/')
++				if (skip_comments && parse_buffer[parse_buffer_pos] == '/')
+ 				{
+ 					parse_buffer_pos++;
+ 					if (parse_buffer_pos >= parse_buffer.size())
+diff --git a/Source/Core/StyleSheetParser.h b/Source/Core/StyleSheetParser.h
+index 0e6c2cd..09875de 100644
+--- a/Source/Core/StyleSheetParser.h
++++ b/Source/Core/StyleSheetParser.h
+@@ -83,8 +83,9 @@ private:
+ 	/// Attempts to find the next character in the active stream.
+ 	/// If it's found, buffer is filled with the character
+ 	/// @param[out] buffer The buffer that receives the character, if read.
++	/// @param[in] skip_comments False inside strings and escaped tokens, where comment markers are literal.
+ 	/// @return True if a character was read, false on end of stream.
+-	bool ReadCharacter(char& buffer);
++	bool ReadCharacter(char& buffer, bool skip_comments = true);
+ 
+ 	/// Fill the internal parse buffer
+ 	bool FillBuffer();

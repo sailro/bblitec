@@ -687,6 +687,27 @@ export class PlatformCalls {
                     element => this.compileUiCall(call, callee, element));
             }
         }
+        const style = this.context.unwrap(callee.expression);
+        if (ts.isPropertyAccessExpression(style) && style.name.text === "style" &&
+            ["setProperty", "getPropertyValue", "removeProperty"].includes(callee.name.text)) {
+            const element = this.ui.uiElementValue(style.expression);
+            if (element) {
+                const setting = callee.name.text === "setProperty";
+                this.context.expectArgumentCount(call, setting ? 2 : 1, setting ? 3 : 1);
+                const name = this.ui.uiStylePropertyName(argumentAt(call, 0));
+                if (setting) {
+                    if (call.arguments[2] && this.context.compileStringLiteral(call.arguments[2]) !== "")
+                        this.context.fail(call.arguments[2], "Native UI setProperty priority requires an empty string; important priority is not represented.");
+                    this.ui.emitUiStyleProperty(element, name, argumentAt(call, 1), call);
+                    return {kind:"void", cpp:""};
+                }
+                if (callee.name.text === "removeProperty")
+                    return this.ui.removeUiStyleProperty(element, name, argumentAt(call, 0));
+                const property = this.ui.nativeUiStyleProperty(name);
+                this.ui.auditUiStylePropertyName(property, argumentAt(call, 0));
+                return {kind:"string", cpp:`bbl::ui_get_style_property(${this.context.requireEngine(element, call)}, ${element.cpp}, ${this.context.cppString(property)})`};
+            }
+        }
         if (this.context.isPrimaryCanvas2DContextCall(call)) {
             if (this.context.defaultEngine() && !this.context.hasPresentationHost()) {
                 this.context.fail(call, "The primary canvas already belongs to a Babylon engine; it cannot also acquire a Canvas2D context.");
