@@ -2764,17 +2764,25 @@ export class StatementLowerer {
             context.emit("}");
             return true;
         }
-        // A span is a borrowed descriptor, so hold that descriptor by value.
-        // Binding the range-for's hidden reference to a returned span makes
-        // GCC 13 incorrectly tie it to temporary arguments of the source call.
-        const span = target.container.dataType?.kind === "span"
-            ? context.allocateTemporaryCppName("range") : undefined;
-        context.emit(
-            `for (${span ? `auto ${span} = std::span{${target.container.cpp}}; ` : ""}auto&& ${item} : ${span ?? target.container.cpp}) {`,
-        );
-        context.increaseIndent();
+        const storedIterator = target.container.dataType?.kind === "iterator";
+        if (storedIterator) {
+            const source = context.allocateTemporaryCppName("iterator_source");
+            const value = context.allocateTemporaryCppName("iterator_value");
+            context.emit(`const auto ${source} = ${target.container.cpp};`);
+            context.emit(`while (auto ${value} = ${source}.next().value) {`);
+            context.increaseIndent();
+            context.emit(`[[maybe_unused]] auto&& ${item} = *${value};`);
+        } else {
+            // A span is a borrowed descriptor, so hold that descriptor by value.
+            // Binding the range-for's hidden reference to a returned span makes
+            // GCC 13 incorrectly tie it to temporary arguments of the source call.
+            const span = target.container.dataType?.kind === "span"
+                ? context.allocateTemporaryCppName("range") : undefined;
+            context.emit(`for (${span ? `auto ${span} = std::span{${target.container.cpp}}; ` : ""}auto&& ${item} : ${span ?? target.container.cpp}) {`);
+            context.increaseIndent();
+        }
         for (const line of lines) context.emit(line);
-        context.emit(`static_cast<void>(${item});`);
+        if (!storedIterator) context.emit(`static_cast<void>(${item});`);
         context.decreaseIndent();
         context.emit("}");
         return true;

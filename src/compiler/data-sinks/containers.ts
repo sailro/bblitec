@@ -179,7 +179,11 @@ function valueProduct(dataType: DataType<"product">, lowerer: DataSinkHost, valu
     return value.dataType && dataTypesEqual(value.dataType, dataType) ? value.cpp : undefined;
 }
 
-export const containersSinks: DataSinkOperations<"optional" | "vector" | "map" | "set" | "span" | "tuple" | "product" | "table"> = {
+export const containersSinks: DataSinkOperations<"optional" | "vector" | "map" | "set" | "iterator" | "span" | "tuple" | "product" | "table"> = {
+    "iterator": {
+        expression: (type, lowerer, _expression, unwrapped) => lowerer.requireDataValue(unwrapped, type).cpp,
+        value: (type, _lowerer, value) => value.dataType && dataTypesEqual(type, value.dataType) ? value.cpp : undefined,
+    },
     "product": {
         expression: (type, lowerer, _expression, unwrapped) =>
             lowerer.compileKnownValueForSink(lowerer.context.compileValue(unwrapped), type, unwrapped),

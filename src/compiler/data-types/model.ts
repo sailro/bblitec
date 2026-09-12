@@ -86,6 +86,10 @@ export interface DataKinds {
         kind: "set";
         element: DataType;
     };
+    "iterator": {
+        kind: "iterator";
+        element: DataType;
+    };
     "span": {
         kind: "span";
         element: DataType;

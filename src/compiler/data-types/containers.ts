@@ -1,7 +1,7 @@
 import type { DataKindOperations } from "./contracts.js";
 
 export const containerKinds: DataKindOperations<
-    "promise" | "optional" | "union" | "vector" | "map" | "set" | "span" | "tuple" | "product" | "enummap" | "table"
+    "promise" | "optional" | "union" | "vector" | "map" | "set" | "iterator" | "span" | "tuple" | "product" | "enummap" | "table"
 > = {
     promise: {
         cpp: (type, context) => `bbl::js::Promise<${type.result ? context.cppType(type.result) : "bbl::js::PromiseVoid"}>`,
@@ -47,6 +47,12 @@ export const containerKinds: DataKindOperations<
         key: (type, key) => `set(${key(type.element)})`,
         equal: (left, right, equal) => equal(left.element, right.element),
         children: type => [type.element], byReference: true,
+    },
+    iterator: {
+        cpp: (type, context) => `bbl::js::Iterator<${context.cppType(type.element)}>`,
+        key: (type, key) => `iterator(${key(type.element)})`,
+        equal: (left, right, equal) => equal(left.element, right.element),
+        children: type => [type.element], byReference: true, opaqueReference: true,
     },
     span: {
         cpp: (type, context) => `bbl::js::Span<const ${context.cppType(type.element)}>`,

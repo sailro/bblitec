@@ -158,8 +158,11 @@ and receives the original collection as its third argument.
 `Set.entries()` yields fresh `[value, value]` pairs in direct `for...of`, spreads
 and `Array.from` (with or without a mapper). Map entries share that path.
 Entry iteration observes deletion, clear and appended members; rebinding a pair
-lane or destructured variable leaves the collection unchanged. Stored Set entry
-iterators and manual `next()` calls remain unsupported.
+lane or destructured variable leaves the collection unchanged. Set `entries`,
+`keys` and `values` also produce stored iterators: aliases share a cursor,
+`next()` reports value/done, and exhaustion stays final after later insertions.
+They retain their collection through helper returns and callbacks, support
+spreads and `Array.from`, and resume after an early `for...of` break.
 
 Strings support string-pattern `replace`/`replaceAll` with string replacements
 and substitution tokens or callbacks receiving the match, UTF-16 offset and original string.
