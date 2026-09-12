@@ -79,6 +79,7 @@ interface PlatformCallContext extends CharacterIntrinsicContext, Pick<LoweringSe
     "compileValue" |
     "cppString" |
     "defaultEngine" |
+    "dataLowerer" |
     "emit" |
     "engineHasStarted" |
     "evaluateBrowserValue" |
@@ -672,7 +673,14 @@ export class PlatformCalls {
         )}u`;
     }
 
-    private compileUiCall(call: ts.CallExpression, callee: ts.PropertyAccessExpression): Value | undefined {
+    private compileUiCall(call: ts.CallExpression, callee: ts.PropertyAccessExpression, preparedElement?: Value): Value | undefined {
+        if (!preparedElement && callee.questionDotToken) {
+            const type = this.context.dataLowerer.dataTypeAt(callee.expression);
+            if (type?.kind === "optional" && type.inner.kind === "handle" && type.inner.handle === "ui-element") {
+                return this.context.dataLowerer.optionalAccess(this.context.compileValue(callee.expression), call,
+                    element => this.compileUiCall(call, callee, element));
+            }
+        }
         if (this.context.isPrimaryCanvas2DContextCall(call)) {
             if (this.context.defaultEngine() && !this.context.hasPresentationHost()) {
                 this.context.fail(call, "The primary canvas already belongs to a Babylon engine; it cannot also acquire a Canvas2D context.");
@@ -739,11 +747,11 @@ export class PlatformCalls {
             (callee.expression.name.text === "body" || callee.expression.name.text === "head") &&
             browserGlobalNamed(this.context, callee.expression.expression)?.text === "document";
         if (rootAppend && callee.name.text === "append" && call.arguments.length === 0) return {kind:"void", cpp:""};
-        const element: Value | undefined = rootAppend
+        const element: Value | undefined = preparedElement ?? (rootAppend
             ? {kind:"ui-element", cpp:"{}", uiRoot:true, engineCpp:this.ui.documentEngine(call)}
             : classListMutation
             ? undefined
-            : this.ui.uiElementValue(callee.expression);
+            : this.ui.uiElementValue(callee.expression));
         if (element?.uiTag === "image-bitmap" &&
             callee.name.text === "close") {
             this.context.expectArgumentCount(call, 0, 0);
