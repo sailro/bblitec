@@ -360,7 +360,7 @@ export class UiProjection {
         if (staticValue !== undefined) {
             return this.context.cppString(staticValue);
         }
-        const value = this.context.compileValue(expression);
+        const value = this.context.dataLowerer.stringReceiver(this.context.compileValue(expression), expression);
         if (
             value.kind === "string" ||
             (value.kind === "data" && value.dataType?.kind === "string")

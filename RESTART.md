@@ -23,7 +23,7 @@ it does not establish that this external application compiles or runs.
 | Branch | `codex/external-project-support` |
 | Remote | `https://github.com/sailro/bblitec.git` |
 | Branch base used in this session | `3474e835` on `main` |
-| Latest completed executable-code/test commit | `1ef18ea1` (2026-09-12), followed by realm RAF in this savepoint |
+| Latest completed executable-code/test commit | `90e85ddf` (2026-09-12), followed by nullable scalar joins in this savepoint |
 | Draft PR | [#247 — Extend generic application compilation and retained UI support](https://github.com/sailro/bblitec/pull/247) |
 | External checkout | `C:/Dev/_prototypes/external-native-app` |
 | External source revision | `d7c477a6d5963680c55249dceb93cb6e4ab9ce56` |
@@ -311,6 +311,18 @@ incomplete. Do not merge or mark it ready merely because the sweep passes.
   at a nullable string-union fallback of the form `id ?? ""`: the fallback was
   incorrectly forced into the narrower source enum. Complete generation remains
   pending. The known document-root erasure gap also remains in scope.
+
+- `90e85ddf` saves realm RAF and is pushed. Nullable scalar `??` now joins wider
+  string/scalar alternatives through shared sinks, preserving optional fallback
+  absence and lazy effects. String results retain live tags changed by helpers
+  after TypeScript narrowing. Sink conversion no longer recompiles the operator;
+  UI string assignments and attributes share the stored-enum string bridge.
+  `focused320` passed 666 compiler/core/media tests. `coalesce322` passed all 119
+  language checks; its separate UI check exposed the attribute string bridge,
+  subsequently fixed. `coalesce323` passed the native scalar and UI regressions
+  (three checks, no skips). `compile322` (exit 1) advanced to `removeAttribute`
+  on a retained image. Complete generation remains pending. Open GitHub issues
+  were rechecked and remain empty; this unit closes no remaining TODO clause.
 
 The refreshed harness explicitly reports `danger-full-access`, networking
 enabled and approval policy `never`. Do not pass `sandbox_permissions` or ask

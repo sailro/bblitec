@@ -1488,12 +1488,9 @@ export class DataLowerer {
      *    a loaded search emits the ternary, and a fallback that can
      *    itself miss composes its flag into the result's;
      *  - an `optional(T)` left evaluates once into a temporary and
-     *    selects natively. The right side compiles for the inner type's
-     *    own sink and stays inside the ternary, so it is evaluated only
-     *    when the left is null — JavaScript's own laziness (its
-     *    materialization prep, like a conditional branch's, is emitted
-     *    unconditionally, which is the established stance for
-     *    effect-free preparation);
+     *    selects natively. Scalar alternatives use the expression's joined
+     *    type. The right side and its preparation stay inside the selection,
+     *    so they are evaluated only when the left is nullish;
      *  - a left the model already proves non-nullish (a number, boolean,
      *    string, or non-optional data value) IS the result, and the dead
      *    right side is discarded exactly as JavaScript never evaluates
@@ -1757,21 +1754,36 @@ export class DataLowerer {
                     dataType: left.dataType,
                 };
             }
-            const fallback = fallbackForSink(inner);
-            // Through `leafValue`, so the select carries the inner
+            // A fallback may widen a scalar's literal union, or introduce a
+            // different scalar alternative. Convert both branches through the
+            // joined type's sinks rather than forcing the fallback into the
+            // left operand's narrower storage.
+            let resultType = inner.kind === "enum" || inner.kind === "string" ||
+                inner.kind === "number" || inner.kind === "boolean" || inner.kind === "union"
+                ? this.dataTypeAt(expression) ?? inner : inner;
+            // Flow narrowing may omit a stored tag changed by a called helper.
+            // Text storage preserves every live tag, including those absent
+            // from the checker's narrower literal union at this read.
+            if (resultType.kind === "enum") resultType = {kind: "string"};
+            else if (resultType.kind === "optional" && resultType.inner.kind === "enum")
+                resultType = {kind: "optional", inner: {kind: "string"}};
+            const present = this.compileKnownValueForSink(
+                this.leafValue(`(*${temp})`, inner), resultType, expression.left);
+            const fallback = fallbackForSink(resultType);
+            // Through `leafValue`, so the select carries the result
             // type's own Value kind — an optional number selects as a
             // number, an optional handle keeps its engine spelling —
             // instead of a bare "data" every consumer would have to
             // special-case.
             const selected = this.leafValue(
-                `(${temp}.has_value() ? (*${temp}) : ${fallback})`,
-                inner,
+                `(${temp}.has_value() ? ${present} : ${fallback})`,
+                resultType,
             );
             // The conditional materializes either branch as a new C++ value.
             // Mark composite results as owned so a local can mutate that
             // materialization before explicitly storing it back (the common
             // Map.get(key) ?? [] / push / Map.set grouping idiom).
-            return passesByReference(this.context.dataTypes, inner)
+            return passesByReference(this.context.dataTypes, resultType)
                 ? { ...selected, freshData: true }
                 : selected;
         }
@@ -5096,8 +5108,8 @@ export class DataLowerer {
             return this.compileConditionalForSink(unwrapped, dataType, condition);
         }
         // `left ?? right` for a sink is a select the operator already
-        // lowers: the general arm yields the selected value at the left's
-        // inner type, and a sink of that same type takes it. One arm here
+        // lowers: convert that selected value through the requested sink.
+        // Recompiling the expression would repeat its operand effects. One arm here
         // closes the string, enum, boolean and container sinks together,
         // instead of the operator reappearing per scalar compiler; the
         // number sink stays with its own compiler below, which owns the
@@ -5120,12 +5132,7 @@ export class DataLowerer {
                 );
             }
             const selected = this.compileNullishCoalesce(unwrapped);
-            if (
-                selected?.dataType &&
-                dataTypesEqual(selected.dataType, dataType)
-            ) {
-                return selected.cpp;
-            }
+            if (selected) return this.compileKnownValueForSink(selected, dataType, unwrapped);
         }
         return compileDataExpressionSink(dataType, this, expression, unwrapped);
     }
