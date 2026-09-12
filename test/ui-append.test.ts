@@ -34,6 +34,16 @@ test("DOM append preserves text, element order and argument evaluation", t => {
         function chooseNext(): HTMLElement { selected = second; destination = other; return second; }
         destination.append(selected, chooseNext());
         document.body.append(ordered, other);
+        type Direction = "east" | "west";
+        const directions: (Direction | null)[] = ["east", null, "west"];
+        for (const direction of directions) {
+            child.dataset.direction = direction ?? "";
+            if (child.dataset.direction !== (direction ?? "")) throw new Error("nullable dataset text");
+            if (direction !== null) {
+                child.setAttribute("data-label", direction);
+                if (child.dataset.label !== direction) throw new Error("stored tag attribute text");
+            }
+        }
         globalThis.close();
     `;
     const result = compileSource(source, {fileName:join(directory, "entry.ts")});

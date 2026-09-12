@@ -1087,18 +1087,9 @@ export class PlatformCalls {
                 };
             }
             const staticValue = this.ui.tryUiStaticString(argumentAt(call, 1));
-            const sourceValue = staticValue === undefined
-                ? this.context.compileValue(argumentAt(call, 1))
-                : undefined;
-            if (sourceValue !== undefined &&
-                sourceValue.kind !== "string" &&
-                !(sourceValue.kind === "data" &&
-                    sourceValue.dataType?.kind === "string")) {
-                this.context.fail(argumentAt(call, 1), `UI setAttribute value requires a string, received ${sourceValue?.kind}.`);
-            }
             const value = staticValue !== undefined
                 ? this.context.cppString(this.ui.lowerUiAttributeLiteral(name, staticValue, argumentAt(call, 1)))
-                : sourceValue!.cpp;
+                : this.ui.uiStringCpp(argumentAt(call, 1), "UI setAttribute value");
             if (name === "class" || name === "id") {
                 this.ui.recordUiStaticAttribute(element, name, argumentAt(call, 1));
             }

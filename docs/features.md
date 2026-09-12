@@ -85,6 +85,8 @@ resolving option records. Availability guards and injected get/set/remove method
 stored `Storage` references preserve the native object's identity through nullable bindings and collections.
 `navigator.language` reads the first operating-system locale preference, or an empty string when unavailable.
 String-valued `||` and `&&` evaluate their left operand once and keep the right operand lazy.
+Nullable scalar `??` results admit wider string and scalar alternatives, including an optional fallback;
+operand effects run once and fallback preparation runs only on absence.
 Parsed JSON values support guarded scalar reads and nullable conditionals. Fresh `map`/`filter` results
 honor wider string-array annotations, and named array callbacks participate in recursion lowering.
 Readonly constant record tuples support runtime searches through a shared typed array, including

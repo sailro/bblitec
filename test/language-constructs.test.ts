@@ -13,6 +13,45 @@ import { nativeFixtureVcpkgRoot, optionalNativeFixtureTools, runNativeFixtureCom
 // them identically.
 const native = optionalNativeFixtureTools(false);
 
+check("nullable-coalesce-widening", `
+    type Tag = "north" | "south";
+    const values: (Tag | null)[] = ["north", null, "south"];
+    let calls = 0;
+    function fallback(): string { calls++; return "fallback"; }
+    let observed = "";
+    for (const value of values) {
+        const tag: Tag | "" = value ?? "";
+        observed += "[" + tag + "]";
+        const text = value ?? fallback();
+        observed += text;
+        const mixed = value ?? 7;
+        if (typeof mixed === "number") observed += mixed + 1;
+        else observed += mixed.toUpperCase();
+    }
+    if (observed !== "[north]northNORTH[]fallback8[south]southSOUTH" || calls !== 1)
+        throw new Error("joined nullish alternatives");
+    let reads = 0;
+    function read(index: number): Tag | null { reads++; return values[index]!; }
+    const selected: string = read(1) ?? "empty";
+    if (selected !== "empty" || reads !== 1) throw new Error("one evaluation across string sink");
+    function optional(value: boolean): string | undefined { calls++; return value ? "later" : undefined; }
+    const states = [true, false];
+    for (const state of states) {
+        const present = read(0) ?? optional(state);
+        const absent = read(1) ?? optional(state);
+        if (present !== "north") throw new Error("present wider fallback");
+        if (state) { if (absent !== "later") throw new Error("present optional fallback"); }
+        else if (absent !== undefined) throw new Error("absent optional fallback");
+    }
+    if (calls !== 3 || reads !== 5) throw new Error("lazy optional fallback");
+    const record: {tag: Tag | null} = {tag: "north"};
+    function turn(): void { record.tag = "south"; }
+    if (record.tag === "north") {
+        turn();
+        if (String(record.tag ?? "") !== "south") throw new Error("live tag after narrowed helper call");
+    }
+`);
+
 check("mixed-tuple-dynamic-reads", `
     let pair: [string, number] = ["value", 7];
     const indices = [0, 1, 2, -1, 0.5, NaN];
