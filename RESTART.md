@@ -157,6 +157,16 @@ incomplete. Do not merge or mark it ready merely because the sweep passes.
   `optional-dom255` passed natively, checking these effects and repeated removal.
   Its fixture closes and rethrows application failures instead of leaving the
   test's event loop waiting after an assertion fails. Inspect `compile256` next.
+- `1cee2be7` saves optional DOM calls and is pushed. `full256` passed 2,567 of
+  2,568 tests with no skips; its only failure expected the old conditional
+  expression spelling for class-field removal. The updated test checks the guard
+  and captured handle. Optional calls now also snapshot class-field handles
+  inside the present branch; `focused257` passed both the class assertion and
+  native DOM fixture, including arguments that clear a nullable class field.
+- `compile256` (exit 1) reached `src/core/companions.ts:218:9`: optional `setItem`
+  on a nullable injected method record. This is a general stored-record method
+  dispatch gap, not missing native localStorage support. The record includes an
+  optional removal callback, so retain both receiver and callback absence checks.
 
 The resumed environment uses a workspace-write sandbox. Git metadata writes and
 network access may need escalation; the requested unit commits/pushes remain

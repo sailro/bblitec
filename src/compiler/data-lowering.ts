@@ -855,6 +855,7 @@ export class DataLowerer {
             owner;
         let present: string;
         let presentOwner: Value;
+        let snapshotPresentOwner = false;
         if (owner.dataType?.kind === "optional") {
             const temporary =
                 this.context.allocateTemporaryCppName(
@@ -895,6 +896,7 @@ export class DataLowerer {
             } else {
                 present = optionalFoundCpp;
                 presentOwner = plainOwner;
+                snapshotPresentOwner = ts.isCallExpression(access);
             }
         } else if (
             owner.dataType?.kind === "struct" &&
@@ -915,6 +917,11 @@ export class DataLowerer {
 
         let selected: Value | undefined;
         const selectedLines = this.context.captureEmittedLines(() => {
+            if (snapshotPresentOwner) {
+                const temporary = this.context.allocateTemporaryCppName("optional_receiver");
+                this.context.emit({kind:"declaration", type:"const auto", name:temporary, initializer:presentOwner.cpp});
+                presentOwner = {...presentOwner, cpp:temporary};
+            }
             this.context.enterRuntimeControlFlow();
             try { selected = read(presentOwner); }
             finally { this.context.leaveRuntimeControlFlow(); }
