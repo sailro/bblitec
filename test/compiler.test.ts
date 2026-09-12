@@ -2947,7 +2947,7 @@ test("guards a missing open Record key before dereferencing its local", () => {
     assert.ok(lookup);
     const local = lookup[1]!;
     const guard = result.cpp.indexOf(`${local}.has_value()`);
-    const dereference = result.cpp.indexOf(`(*${local})`);
+    const dereference = result.cpp.search(new RegExp(`\\(\\*${local}\\)|bbl::js::number_from_optional\\(${local}\\)`));
     assert.ok(guard >= 0, "the undefined guard tests the stored lookup");
     assert.ok(
         dereference > guard,

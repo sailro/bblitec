@@ -13,6 +13,31 @@ import { nativeFixtureVcpkgRoot, optionalNativeFixtureTools, runNativeFixtureCom
 // them identically.
 const native = optionalNativeFixtureTools(false);
 
+check("mixed-tuple-dynamic-reads", `
+    let pair: [string, number] = ["value", 7];
+    const indices = [0, 1, 2, -1, 0.5, NaN];
+    let observed = "";
+    for (const index of indices) {
+        const lookup = pair[index];
+        const value = lookup;
+        if (typeof value === "string") observed += value.toUpperCase();
+        else if (typeof value === "number") observed += value + 1;
+        else if (value === undefined) observed += "?";
+    }
+    if (observed !== "VALUE8????") throw new Error("dynamic tuple values and absence");
+    let calls = 0;
+    function index(): number { calls++; pair = ["new", 10]; return 1; }
+    if (pair[index()] !== 7 || calls !== 1 || pair[1] !== 10) throw new Error("dynamic tuple evaluation order");
+    const item = {score: 3};
+    const recordPair: [string, {score:number} | null] = ["key", item];
+    const recordIndices: number[] = [1, 0, 2];
+    for (const offset of recordIndices) {
+        const value = recordPair[offset];
+        if (typeof value === "object" && value !== null) value.score++;
+    }
+    if (item.score !== 4) throw new Error("dynamic tuple object identity");
+`);
+
 check("set-entry-iteration", `
     const values = new Set<number>([2, 3, 4]);
     let seen = "";
