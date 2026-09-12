@@ -5,7 +5,7 @@ import { doubleLiteral } from "../cpp-literals.js";
 import { parseUiBorderImage, renderUiBorderImage } from "../ui-border-image.js";
 import { supportedUiFilter } from "../ui-filters.js";
 import {findUiCssSyntax, stripUiCssComments, uiCssBlockEnd, uiCssSyntaxIndices} from "../ui-css-syntax.js";
-import {parseUiGeneratedContent, uiGeneratedContentCpp, uiGeneratedPartCpp, type UiGeneratedContent} from "../ui-generated-content.js";
+import {isUiGeneratedPart, parseUiGeneratedContent, uiGeneratedContentCpp, uiGeneratedPartCpp, type UiGeneratedContent, type UiGeneratedPart} from "../ui-generated-content.js";
 import {parseUiSelectorSequence, splitUiSelectorList, uiSelectorSequenceCss, uiSelectorSequenceSpecificity, uiSelectorSequenceCpp, uiSelectorSequenceTests, uiSelectorSequenceNeedsAuthoredTree, type UiSelectorStep} from "../ui-selector.js";
 import { isUiLayoutProperty, supportedUiLayoutValue } from "../ui-layout.js";
 import { nativeHostUiStyleRules, uiStyleSelector, uiStyleSelectorCppKind, uiStyleSelectorDescriptor, uiStyleInteractionStateCount, uiStyleRuleNeedsRuntimeMatch, uiStyleRuleHasMedia, uiMotionPreferenceCpp, isUiScrollbarPart, uiScrollbarPartCpp, type UiStyleSelectorShape, type UiStyleSelectorKind } from "../ui-style-rule.js";
@@ -2288,9 +2288,12 @@ export class UiProjection {
         return false;
     }
 
-    private validateUiGeneratedStyle(style: string, site?: ts.Node): void {
+    private validateUiGeneratedStyle(style: string, part: UiGeneratedPart, site?: ts.Node): void {
         UiProjection.forEachUiStyleDeclaration(style, declaration => {
+            if (!declaration.trim()) return;
             const property = declaration.slice(0,declaration.indexOf(":")).trim();
+            if (part === "placeholder" && property !== "color" && property !== "opacity")
+                this.uiStyleRefusal(site,property,"placeholder styles currently represent color and opacity");
             if (property.startsWith("--bbl-")) this.uiStyleRefusal(site,property,"this layout or decoration adaptation requires an authored retained element");
         });
     }
@@ -2432,7 +2435,7 @@ export class UiProjection {
                 const selectors = splitUiSelectorList(header);
                 for (const selector of selectors) {
                     if (
-                        parseUiSelectorSequence(selector.replace(/::(?:before|after)$/, ""))?.at(-1)?.tests.some(test => test.kind === "tag" && (test.name === "path" || test.name === "rect"))
+                        parseUiSelectorSequence(selector.replace(/::(?:before|after|placeholder)$/, ""))?.at(-1)?.tests.some(test => test.kind === "tag" && (test.name === "path" || test.name === "rect"))
                     ) {
                         const message =
                             `Retained stylesheet selector '${selector}' cannot ` +
@@ -2447,8 +2450,8 @@ export class UiProjection {
                     const rule =
                         UiProjection.parseUiSelector(selector, style) ??
                         refuseSelector(selector);
-                    if (content && !rule.pseudo) this.uiStyleRefusal(site, "content", "text content lists require a before/after pseudo-element");
-                    if (rule.pseudo) this.validateUiGeneratedStyle(style,site);
+                    if (content && rule.pseudo !== "before" && rule.pseudo !== "after") this.uiStyleRefusal(site, "content", "text content lists require a before/after pseudo-element");
+                    if (rule.pseudo) this.validateUiGeneratedStyle(style,rule.pseudo,site);
                     if (content) rule.content = content;
                     if (inheritedMaxWidth !== undefined) {
                         rule.maxWidth = inheritedMaxWidth;
@@ -2558,13 +2561,13 @@ export class UiProjection {
         selector: string,
         style: string,
     ): LoweredUiStyleRule | undefined {
-        const generated = /^(.*)::(before|after)$/.exec(selector);
+        const generated = /^(.*)::(before|after|placeholder)$/s.exec(selector);
         if (generated) {
             const origin = generated[1]!;
             const sequence = parseUiSelectorSequence(!origin || /[\s>+~]$/.test(origin) ? origin + "*" : origin);
             if (!sequence) return undefined;
             return {kind:"sequence", primary:uiSelectorSequenceCss(sequence), sequence, hover:false, style,
-                pseudo:generated[2] === "before" ? "before" : "after", selector};
+                pseudo:generated[2] === "before" ? "before" : generated[2] === "after" ? "after" : "placeholder", selector};
         }
         const scrollbar = selector.match(/^(.*?)::-webkit-scrollbar(?:-(thumb|track|button|corner))?(:hover)?$/);
         if (scrollbar) {
@@ -5083,11 +5086,11 @@ export class UiProjection {
             if (rule.scrollbar !== undefined && !isUiScrollbarPart(rule.scrollbar)) {
                 this.context.failAtFile("Native host UI rule has an unsupported scrollbar part.");
             }
-            if (rule.pseudo !== undefined && (rule.pseudo !== "before" && rule.pseudo !== "after" || rule.scrollbar !== undefined))
+            if (rule.pseudo !== undefined && (!isUiGeneratedPart(rule.pseudo) || rule.scrollbar !== undefined))
                 this.context.failAtFile("Native host UI generated content requires a before/after target without a scrollbar part.");
             const {style: declarations, content} = this.lowerUiRuleDeclarations(rule.style);
-            if (rule.pseudo) this.validateUiGeneratedStyle(declarations);
-            if (content && !rule.pseudo) this.context.failAtFile("Native host UI content lists require a before/after target.");
+            if (rule.pseudo) this.validateUiGeneratedStyle(declarations,rule.pseudo);
+            if (content && rule.pseudo !== "before" && rule.pseudo !== "after") this.context.failAtFile("Native host UI content lists require a before/after target.");
             if (UiProjection.fractionalUiGridTracks(rule.style)) {
                 this.context.failAtFile("Fractional host grids require inline tracks beside their complete child list.");
             }

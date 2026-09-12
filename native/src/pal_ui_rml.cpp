@@ -2034,7 +2034,8 @@ std::string ui_style_rule_selector(const UiStyleRule& rule) {
     }
     const std::string states = std::string(rule.hover ? ":hover" : "") +
         (rule.focus_visible ? ":focus-visible" : "") + (rule.active ? ":active" : "");
-    if (rule.generated != UiGeneratedPart::None) return selector + states + (rule.generated == UiGeneratedPart::Before ? "::before" : "::after");
+    if (rule.generated != UiGeneratedPart::None) return selector + states +
+        (rule.generated == UiGeneratedPart::Before ? "::before" : rule.generated == UiGeneratedPart::After ? "::after" : "::placeholder");
     if (rule.scrollbar == UiScrollbarPart::None) return selector + states;
 
     // Standard non-auto width/color overrides the vendor pseudo-elements.

@@ -1,0 +1,285 @@
+diff --git a/Include/RmlUi/Core/Element.h b/Include/RmlUi/Core/Element.h
+index e8998dd..4acc51f 100644
+--- a/Include/RmlUi/Core/Element.h
++++ b/Include/RmlUi/Core/Element.h
+@@ -58,7 +58,7 @@ public:
+ 
+ 	// Generated boxes participate in layout while retaining their originating
+ 	// element's selector identity. Hosts create them before/after normal children.
+-	enum class PseudoElement { None, Before, After, Internal };
++	enum class PseudoElement { None, Before, After, Internal, Placeholder };
+ 	PseudoElement GetPseudoElement() const { return pseudo_element; }
+ 	void SetPseudoElement(PseudoElement value) {
+ 		if (pseudo_element == value) return;
+diff --git a/Include/RmlUi/Core/StyleSheet.h b/Include/RmlUi/Core/StyleSheet.h
+index 4dc6e32..227f7f6 100644
+--- a/Include/RmlUi/Core/StyleSheet.h
++++ b/Include/RmlUi/Core/StyleSheet.h
+@@ -36,6 +36,7 @@ public:
+ 
+ 	/// Builds the node index for a combined style sheet.
+ 	void BuildNodeIndex();
++	bool HasRelationalSelectors() const { return has_relational_selectors; }
+ 
+ 	/// Returns the named @decorator, or null if it does not exist.
+ 	const NamedDecorator* GetNamedDecorator(const String& name) const;
+@@ -62,6 +63,7 @@ private:
+ 
+ 	// Root level node, attributes from special nodes like "body" get added to this node
+ 	UniquePtr<StyleSheetNode> root;
++	bool has_relational_selectors = false;
+ 
+ 	// The maximum specificity offset used in this style sheet to distinguish between properties in
+ 	// similarly-specific rules, but declared on different lines. When style sheets are merged, the
+diff --git a/Source/Core/Element.cpp b/Source/Core/Element.cpp
+index b267940..711bb88 100644
+--- a/Source/Core/Element.cpp
++++ b/Source/Core/Element.cpp
+@@ -2510,6 +2510,11 @@ Element* Element::ClosestStackingContextContainer()
+ 
+ void Element::DirtyDefinition(DirtyNodes dirty_nodes)
+ {
++	// A relative selector can depend on a changed descendant or following sibling.
++	// Only sheets which reach :has() need the wider definition invalidation.
++	if (auto* document = GetOwnerDocument(); document && document != this)
++		if (const auto* sheet = document->GetStyleSheet(); sheet && sheet->HasRelationalSelectors())
++			document->dirty_definition = true;
+ 	switch (dirty_nodes)
+ 	{
+ 	case DirtyNodes::Self: dirty_definition = true; break;
+diff --git a/Source/Core/Elements/WidgetTextInput.cpp b/Source/Core/Elements/WidgetTextInput.cpp
+index b52a8bb..6a2dce8 100644
+--- a/Source/Core/Elements/WidgetTextInput.cpp
++++ b/Source/Core/Elements/WidgetTextInput.cpp
+@@ -1025,6 +1025,7 @@ void WidgetTextInput::SetValueOrPlaceholder(const String& value, const String& p
+ 	}
+ 
+ 	parent->SetPseudoClass("placeholder-shown", showing_placeholder);
++	text_element->SetPseudoElement(showing_placeholder ? Element::PseudoElement::Placeholder : Element::PseudoElement::None);
+ 	text_element->SetText(showing_placeholder ? placeholder : value);
+ 
+ 	ForceFormattingOnNextLayout();
+diff --git a/Source/Core/StyleSheet.cpp b/Source/Core/StyleSheet.cpp
+index 7539a74..be38689 100644
+--- a/Source/Core/StyleSheet.cpp
++++ b/Source/Core/StyleSheet.cpp
+@@ -67,6 +67,7 @@ void StyleSheet::BuildNodeIndex()
+ 	RMLUI_ZoneScoped;
+ 	styled_node_index = {};
+ 	root->BuildIndex(styled_node_index);
++	has_relational_selectors = root->HasRelationalSelectors();
+ }
+ 
+ const NamedDecorator* StyleSheet::GetNamedDecorator(const String& name) const
+diff --git a/Source/Core/StyleSheetFactory.cpp b/Source/Core/StyleSheetFactory.cpp
+index 7e04fc2..8af6092 100644
+--- a/Source/Core/StyleSheetFactory.cpp
++++ b/Source/Core/StyleSheetFactory.cpp
+@@ -24,6 +24,10 @@ StyleSheetFactory::StyleSheetFactory() :
+ 		{"only-of-type", StructuralSelectorType::Only_Of_Type},
+ 		{"empty", StructuralSelectorType::Empty},
+ 		{"not", StructuralSelectorType::Not},
++		{"is", StructuralSelectorType::Is},
++		{"where", StructuralSelectorType::Where},
++		{"has", StructuralSelectorType::Has},
++		{"bbl-relative-anchor", StructuralSelectorType::Scope},
+ 		{"scope", StructuralSelectorType::Scope},
+ 	}
+ {}
+@@ -89,7 +93,10 @@ StructuralSelector StyleSheetFactory::GetSelector(const String& name)
+ 	case StructuralSelectorType::Nth_Last_Child:
+ 	case StructuralSelectorType::Nth_Of_Type:
+ 	case StructuralSelectorType::Nth_Last_Of_Type:
+-	case StructuralSelectorType::Not: requires_parameter = true; break;
++	case StructuralSelectorType::Not:
++	case StructuralSelectorType::Is:
++	case StructuralSelectorType::Where:
++	case StructuralSelectorType::Has: requires_parameter = true; break;
+ 	default: break;
+ 	}
+ 
+@@ -111,17 +118,31 @@ StructuralSelector StyleSheetFactory::GetSelector(const String& name)
+ 	{
+ 		const String parameters = StringUtilities::StripWhitespace(StringView(name, parameter_start + 1, parameter_end - (parameter_start + 1)));
+ 
+-		if (selector_type == StructuralSelectorType::Not)
++		if (selector_type == StructuralSelectorType::Not || selector_type == StructuralSelectorType::Is ||
++			selector_type == StructuralSelectorType::Where || selector_type == StructuralSelectorType::Has)
+ 		{
+ 			auto list = MakeShared<SelectorTree>();
+ 			list->root = MakeUnique<StyleSheetNode>();
+-			list->leafs = StyleSheetParser::ConstructNodes(*list->root, parameters);
++			bool relative_siblings = false;
++			if (selector_type == StructuralSelectorType::Has) {
++				StringList relatives;
++				StringUtilities::ExpandString(relatives, parameters, ',', '(', ')');
++				for (const auto& relative : relatives) {
++					const auto value = StringUtilities::StripWhitespace(relative);
++					if (value.empty()) return StructuralSelector(StructuralSelectorType::Invalid, 0, 0);
++					relative_siblings = relative_siblings || value.front() == '+' || value.front() == '~';
++					auto leafs = StyleSheetParser::ConstructNodes(*list->root, ":bbl-relative-anchor " + value);
++					list->leafs.insert(list->leafs.end(), leafs.begin(), leafs.end());
++				}
++			} else list->leafs = StyleSheetParser::ConstructNodes(*list->root, parameters);
+ 
+ 			int specificity = 0;
+ 			for (const StyleSheetNode* node : list->leafs)
+ 				specificity = Math::Max(specificity, node->GetSpecificity());
+ 
+-			return StructuralSelector(selector_type, std::move(list), specificity);
++			StructuralSelector result(selector_type, std::move(list), selector_type == StructuralSelectorType::Where ? 0 : specificity);
++			result.relative_siblings = relative_siblings;
++			return result;
+ 		}
+ 
+ 		// Check for 'even' or 'odd' first.
+@@ -176,7 +197,9 @@ StructuralSelector StyleSheetFactory::GetSelector(const String& name)
+ 		}
+ 	}
+ 
+-	return StructuralSelector(selector_type, a, b);
++	StructuralSelector result(selector_type, a, b);
++	if (name == "bbl-relative-anchor") result.specificity = 0;
++	return result;
+ }
+ 
+ UniquePtr<const StyleSheetContainer> StyleSheetFactory::LoadStyleSheetContainer(const String& sheet)
+diff --git a/Source/Core/StyleSheetNode.cpp b/Source/Core/StyleSheetNode.cpp
+index 3acd034..b1f194b 100644
+--- a/Source/Core/StyleSheetNode.cpp
++++ b/Source/Core/StyleSheetNode.cpp
+@@ -18,9 +18,9 @@ static const Element* SelectorOrigin(const CompoundSelector& selector, const Ele
+ {
+ 	auto expected = Element::PseudoElement::None;
+ 	for (const auto& name : selector.pseudo_class_names) {
+-		if (name != ":before" && name != ":after") continue;
++		if (name != ":before" && name != ":after" && name != ":placeholder") continue;
+ 		if (expected != Element::PseudoElement::None) return nullptr;
+-		expected = name == ":before" ? Element::PseudoElement::Before : Element::PseudoElement::After;
++		expected = name == ":before" ? Element::PseudoElement::Before : name == ":after" ? Element::PseudoElement::After : Element::PseudoElement::Placeholder;
+ 	}
+ 	if (element->GetPseudoElement() != expected) return nullptr;
+ 	return expected == Element::PseudoElement::None ? element : element->GetParentNode();
+@@ -108,6 +108,15 @@ UniquePtr<StyleSheetNode> StyleSheetNode::DeepCopy(StyleSheetNode* in_parent) co
+ 	return node;
+ }
+ 
++bool StyleSheetNode::HasRelationalSelectors() const
++{
++	for (const auto& test : selector.structural_selectors)
++		if (test.type == StructuralSelectorType::Has || (test.selector_tree && test.selector_tree->root->HasRelationalSelectors())) return true;
++	for (const auto& child : children)
++		if (child->HasRelationalSelectors()) return true;
++	return false;
++}
++
+ void StyleSheetNode::BuildIndex(StyleSheetIndex& styled_node_index) const
+ {
+ 	// If this has properties defined, then we insert it into the styled node index.
+@@ -179,7 +188,7 @@ bool StyleSheetNode::Match(const Element* element, const Element* scope) const
+ 
+ 	for (auto& name : selector.pseudo_class_names)
+ 	{
+-		if (name == ":before" || name == ":after") continue;
++		if (name == ":before" || name == ":after" || name == ":placeholder") continue;
+ 		if (!element->IsPseudoClassSet(name))
+ 			return false;
+ 	}
+@@ -355,7 +364,7 @@ bool StyleSheetNode::IsApplicable(const Element* element, const Element* scope)
+ 	// particular order for performance reasons.
+ 	for (const String& name : selector.pseudo_class_names)
+ 	{
+-		if (name == ":before" || name == ":after") continue;
++		if (name == ":before" || name == ":after" || name == ":placeholder") continue;
+ 		if (!element->IsPseudoClassSet(name))
+ 			return false;
+ 	}
+@@ -400,7 +409,7 @@ void StyleSheetNode::CalculateAndSetSpecificity()
+ 	specificity += SelectorSpecificity::Class * (int)selector.class_names.size();
+ 	specificity += SelectorSpecificity::Attribute * (int)selector.attributes.size();
+ 	for (const auto& name : selector.pseudo_class_names)
+-		specificity += name == ":before" || name == ":after" ? SelectorSpecificity::Tag : SelectorSpecificity::PseudoClass;
++		specificity += name == ":before" || name == ":after" || name == ":placeholder" ? SelectorSpecificity::Tag : SelectorSpecificity::PseudoClass;
+ 
+ 	for (const StructuralSelector& selector : selector.structural_selectors)
+ 		specificity += selector.specificity;
+diff --git a/Source/Core/StyleSheetNode.h b/Source/Core/StyleSheetNode.h
+index 7baee2f..2372d28 100644
+--- a/Source/Core/StyleSheetNode.h
++++ b/Source/Core/StyleSheetNode.h
+@@ -47,6 +47,7 @@ public:
+ 
+ 	/// Returns the specificity of this node.
+ 	int GetSpecificity() const;
++	bool HasRelationalSelectors() const;
+ 
+ private:
+ 	void CalculateAndSetSpecificity();
+diff --git a/Source/Core/StyleSheetSelector.cpp b/Source/Core/StyleSheetSelector.cpp
+index a9289cb..8ee9f53 100644
+--- a/Source/Core/StyleSheetSelector.cpp
++++ b/Source/Core/StyleSheetSelector.cpp
+@@ -335,6 +335,8 @@ bool IsSelectorApplicable(const Element* element, const StructuralSelector& sele
+ 	}
+ 	break;
+ 	case StructuralSelectorType::Not:
++	case StructuralSelectorType::Is:
++	case StructuralSelectorType::Where:
+ 	{
+ 		if (!selector.selector_tree)
+ 		{
+@@ -353,7 +355,31 @@ bool IsSelectorApplicable(const Element* element, const StructuralSelector& sele
+ 			}
+ 		}
+ 
+-		return !inner_selector_matches;
++		return selector.type == StructuralSelectorType::Not ? !inner_selector_matches : inner_selector_matches;
++	}
++	break;
++	case StructuralSelectorType::Has:
++	{
++		if (!selector.selector_tree) { RMLUI_ERROR; return false; }
++		const auto visit = [&](const auto& self, const Element* candidate) -> bool {
++			if (IsTextElement(candidate)) return false;
++			for (const auto* node : selector.selector_tree->leafs)
++				if (node->IsApplicable(candidate, element)) return true;
++			for (int index = 0; index < candidate->GetNumChildren(); ++index)
++				if (self(self, candidate->GetChild(index))) return true;
++			return false;
++		};
++		for (int index = 0; index < element->GetNumChildren(); ++index)
++			if (visit(visit, element->GetChild(index))) return true;
++		if (selector.relative_siblings) if (const auto* parent = element->GetParentNode()) {
++			bool following = false;
++			for (int index = 0; index < parent->GetNumChildren(); ++index) {
++				const auto* child = parent->GetChild(index);
++				if (child == element) { following = true; continue; }
++				if (following && visit(visit, child)) return true;
++			}
++		}
++		return false;
+ 	}
+ 	break;
+ 	case StructuralSelectorType::Scope:
+diff --git a/Source/Core/StyleSheetSelector.h b/Source/Core/StyleSheetSelector.h
+index 5159379..1345bd2 100644
+--- a/Source/Core/StyleSheetSelector.h
++++ b/Source/Core/StyleSheetSelector.h
+@@ -80,6 +80,9 @@ enum class StructuralSelectorType {
+ 	Only_Of_Type,
+ 	Empty,
+ 	Not,
++	Is,
++	Where,
++	Has,
+ 	Scope,
+ };
+ struct StructuralSelector {
+@@ -99,6 +102,7 @@ struct StructuralSelector {
+ 
+ 	// For selectors that contain internal selectors such as :not().
+ 	SharedPtr<const SelectorTree> selector_tree;
++	bool relative_siblings = false;
+ };
+ bool operator==(const StructuralSelector& a, const StructuralSelector& b);
+ bool operator<(const StructuralSelector& a, const StructuralSelector& b);

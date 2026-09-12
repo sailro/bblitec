@@ -8,6 +8,7 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import type { NativeHostUi, NativeHostUiElement } from "./compiler/types.js";
+import {isUiGeneratedPart} from "./ui-generated-content.js";
 import {
     isUiStyleSelectorKind,
     isUiScrollbarPart,
@@ -183,8 +184,8 @@ export function readNativeHostUi(path: string): NativeHostUi {
         if (item.scrollbar !== undefined && !isUiScrollbarPart(item.scrollbar)) {
             throw new Error(`${location}.scrollbar must name a supported scrollbar part.`);
         }
-        if (item.pseudo !== undefined && item.pseudo !== "before" && item.pseudo !== "after")
-            throw new Error(`${location}.pseudo must be before or after.`);
+        if (item.pseudo !== undefined && !isUiGeneratedPart(item.pseudo))
+            throw new Error(`${location}.pseudo must be before, after or placeholder.`);
         if (item.maxWidth !== undefined && typeof item.maxWidth !== "number") {
             throw new Error(`${location}.maxWidth must be a number.`);
         }

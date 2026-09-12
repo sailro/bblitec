@@ -25,6 +25,8 @@ test("generated content refuses unrepresented functions and originating declarat
         sheet.textContent=${JSON.stringify(css)}; document.head.appendChild(sheet);`);
     for (const css of ['.item{content:"x"}', '.item::before{content:counter(item)}', '.item::before:hover{content:"x"}', '.item::before{content:"";outline:1px solid red}'])
         assert.throws(() => compile(css));
+    for (const css of ['input::placeholder{content:"x"}', 'input::placeholder{font-size:18px}', 'input::placeholder{background:red}'])
+        assert.throws(() => compile(css));
     for (const css of ['::before{content:""}', '.panel ::before{content:"{"}', '.panel > ::after{content:"}"}', '.item:hover::after{color:red}'])
         assert.doesNotThrow(() => compile(css));
 });
@@ -48,6 +50,11 @@ test("generated before and after boxes preserve content, cascade and authored ch
         .item + .tail{padding-left:4px}
         .tail:only-of-type{padding-right:5px}
         .tail::before{content:"/* keep */ @keyframes literal { }"}
+        .hint{color:#334455}
+        .hint::placeholder{color:#123456;opacity:0.6}
+        :where(#hint)::placeholder{color:red}
+        :is(.hint,.unused)::placeholder{opacity:0.8}
+        .hint:focus::placeholder{color:#654321}
         @media (max-width:500px){#item::before{content:"Narrow"}}
     `;
     const result = compileSource(`
@@ -57,7 +64,12 @@ test("generated before and after boxes preserve content, cascade and authored ch
         const panel=document.createElement("div"); panel.id="panel"; panel.className="panel";
         const item=document.createElement("button"); item.id="item"; item.className="item"; item.setAttribute("data-label","Ready");
         const tail=document.createElement("span"); tail.id="tail"; tail.className="tail"; tail.textContent="Tail";
-        panel.append(item,tail); document.body.appendChild(panel); globalThis.close();
+        panel.append(item,tail); document.body.appendChild(panel);
+        const hint=document.createElement("input"); hint.id="hint"; hint.className="hint";
+        hint.setAttribute("placeholder","Type"); document.body.appendChild(hint);
+        const note=document.createElement("textarea"); note.id="note"; note.className="hint";
+        note.setAttribute("placeholder","Notes"); document.body.appendChild(note);
+        globalThis.close();
     `, {fileName:join(directory,"entry.ts")});
     assert.match(result.cpp, /UiGeneratedPart::Before/);
     assert.match(result.cpp, /UiContentPartKind::Attribute/);

@@ -9,7 +9,7 @@ export const UI_SELECTOR_TESTS = {
     ...UI_SELECTOR_STATES,
     "nth-child": "NthChild", "nth-last-child": "NthLastChild",
     "nth-of-type": "NthOfType", "nth-last-of-type": "NthLastOfType",
-    "only-child": "OnlyChild", "only-of-type": "OnlyOfType", empty: "Empty", not: "Not",
+    "only-child": "OnlyChild", "only-of-type": "OnlyOfType", empty: "Empty", not: "Not", is: "Is", where: "Where", has: "Has",
 } as const;
 export type UiSelectorTestKind = keyof typeof UI_SELECTOR_TESTS;
 export interface UiSelectorTest {
@@ -58,18 +58,25 @@ export function parseUiSelectorSequence(source: string, depth = 0): UiSelectorSt
                     const kind = name === "first-child" ? "nth-child" : name === "last-child" ? "nth-last-child" :
                         name === "first-of-type" ? "nth-of-type" : "nth-last-of-type";
                     tests.push({kind, name:"", value:"", a:0, b:1});
-                } else if (name === "not" || isUiNthSelector(name)) {
+                } else if (isUiSelectorList(name) || isUiNthSelector(name)) {
                     const parameter = uiSelectorFunction(rest);
                     if (!parameter) return undefined;
                     rest = parameter.rest;
-                    if (name === "not") {
+                    if (isUiSelectorList(name)) {
                         const alternatives: UiSelectorStep[][] = [];
                         for (const part of splitUiSelectorList(parameter.body)) {
-                            const sequence = parseUiSelectorSequence(part, depth + 1);
+                            const relative = name === "has";
+                            const leadingCombinator = relative && /^[>+~]/.test(part);
+                            const sequence = parseUiSelectorSequence(leadingCombinator ? `* ${part}` : part, depth + 1);
                             if (!sequence) return undefined;
+                            if (relative) {
+                                if ([...uiSelectorSequenceTests(sequence)].some(test => test.kind === "has")) return undefined;
+                                if (leadingCombinator) sequence.shift();
+                                else sequence[0]!.relation = "descendant";
+                            }
                             alternatives.push(sequence);
                         }
-                        tests.push({kind:"not", name:"", value:"", alternatives});
+                        tests.push({kind:name, name:"", value:"", alternatives});
                     } else {
                         const formula = uiNthFormula(parameter.body);
                         if (!formula) return undefined;
@@ -96,6 +103,10 @@ export function parseUiSelectorSequence(source: string, depth = 0): UiSelectorSt
 
 export function isUiSelectorState(value: string): value is keyof typeof UI_SELECTOR_STATES {
     return Object.hasOwn(UI_SELECTOR_STATES, value);
+}
+
+function isUiSelectorList(value: string): value is "not" | "is" | "where" | "has" {
+    return value === "not" || value === "is" || value === "where" || value === "has";
 }
 
 function isUiNthSelector(value: string): value is "nth-child" | "nth-last-child" | "nth-of-type" | "nth-last-of-type" {
@@ -135,7 +146,8 @@ export function uiSelectorSequenceCss(steps: readonly UiSelectorStep[]): string 
                 case "class": return `.${test.name}`;
                 case "attribute": return `[${test.name}]`;
                 case "equals": return `[${test.name}=${test.value.includes('"') ? `'${test.value}'` : `"${test.value}"`}]`;
-                case "not": return `:not(${test.alternatives!.map(uiSelectorSequenceCss).join(", ")})`;
+                case "not": case "is": case "where": case "has":
+                    return `:${test.kind}(${test.alternatives!.map(sequence => uiSelectorSequenceCss(sequence).trim()).join(", ")})`;
                 case "nth-child": case "nth-last-child": case "nth-of-type": case "nth-last-of-type":
                     return `:${test.kind}(${test.a === 0 ? test.b : `${test.a}n${test.b! < 0 ? test.b : `+${test.b}`}`})`;
                 default: return `:${test.kind}`;
@@ -147,7 +159,7 @@ export function uiSelectorSequenceCss(steps: readonly UiSelectorStep[]): string 
 
 export function uiSelectorSequenceSpecificity(steps: readonly UiSelectorStep[]): number {
     return steps.reduce((sum, step) => sum + step.tests.reduce((value, test) =>
-        value + (test.kind === "id" ? 0x10000 : test.kind === "tag" ? 1 : test.kind === "not" ?
+        value + (test.kind === "where" ? 0 : test.kind === "id" ? 0x10000 : test.kind === "tag" ? 1 : isUiSelectorList(test.kind) ?
             Math.max(...test.alternatives!.map(uiSelectorSequenceSpecificity)) : 0x100), 0), 0);
 }
 

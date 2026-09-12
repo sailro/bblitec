@@ -65,18 +65,30 @@ int main() {
         assert(!matches(entry, ".entry:not(:disabled)"));
         assert(matches(label, ".entry > span:only-child"));
         assert(!matches(entry, ".entry:empty"));
+        assert(matches(entry, ":is(.missing, .panel) > .entry"));
+        assert(matches(lead, ".panel:has(> .entry[disabled]) .lead"));
+        assert(matches(lead, ".lead:has(+ .entry)"));
+        assert(matches(panel, ".panel:has(> .entry > span)"));
+        assert(matches(panel, ".panel:not(:has(> .entry:not([disabled])))"));
+        assert(runtime.projected_elements.at(entry.value).element->GetProperty(Rml::PropertyId::MinHeight)->Get<float>() == 41);
+        const auto lead_background = [&] { return runtime.projected_elements.at(lead.value).element->GetProperty(Rml::PropertyId::BackgroundColor)->Get<Rml::Colourb>(); };
+        assert(lead_background().red == 0x12 && lead_background().green == 0x34 && lead_background().blue == 0x56);
         background(0x44, 0x55, 0x66);
         // Reordering invalidates both sibling relationships in the same update.
         ui_append_child(engine, panel, lead);
         update();
         assert(!matches(entry, ".lead + .entry"));
         assert(!matches(entry, ".lead ~ .entry"));
+        assert(!matches(lead, ".lead:has(+ .entry)"));
         assert(matches(entry, ".panel > button:nth-child(1)"));
         assert(matches(entry, ".panel > button:nth-child(2n+1)"));
         assert(!matches(lead, ".panel > button:nth-child(2n+1)"));
         ui_remove_attribute(engine, entry, "disabled");
         update();
         assert(matches(entry, ".entry:not(:disabled)"));
+        assert(!matches(lead, ".panel:has(> .entry[disabled]) .lead"));
+        assert(!matches(panel, ".panel:not(:has(> .entry:not([disabled])))"));
+        assert(lead_background().red == 0x11 && lead_background().green == 0x22 && lead_background().blue == 0x33);
         background(0x11, 0x22, 0x33);
         runtime.context->ProcessMouseMove(30, 30, 0);
         update();
@@ -102,6 +114,7 @@ int main() {
         ui_remove(engine, label);
         update();
         assert(matches(entry, ".entry:empty"));
+        assert(!matches(panel, ".panel:has(> .entry > span)"));
     }
     SDL_DestroyWindow(window);
     SDL_Quit();

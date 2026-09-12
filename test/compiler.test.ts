@@ -8906,8 +8906,8 @@ test("refuses stylesheet selectors outside the reviewed surface by name", () => 
     `;
 
     assert.throws(
-        () => compileSource(sheet(".pill:has(.icon) { color: red; }")),
-        /Retained stylesheet selector '\.pill:has\(\.icon\)' is not lowered/,
+        () => compileSource(sheet(".pill:has(.icon:has(.detail)) { color: red; }")),
+        /Retained stylesheet selector '\.pill:has\(\.icon:has\(\.detail\)\)' is not lowered/,
     );
     for (const selector of ["div p", ".a > .b"])
         assert.match(compileSource(sheet(`${selector} { color: red; }`)).cpp, /UiStyleSelectorKind::Sequence/);

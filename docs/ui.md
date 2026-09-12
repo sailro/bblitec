@@ -191,6 +191,10 @@ share this grammar; quoted attribute values retain commas. Rendered declarations
 and native layout adaptations follow the same live tree and input state.
 Negation lists support nested `:not()` selectors. Positional selectors support
 first/last/only child and of-type forms, integer or An+B nth formulas, and `:empty`.
+`:is()` and `:where()` match selector lists; `:where()` contributes zero specificity.
+`:has()` follows relative descendant, child and sibling chains from the originating
+element and updates ancestor styles when children change. Nested `:has()` and
+pseudo-elements inside relative lists refuse.
 Conditional selectors cannot establish static grid geometry; general child/sibling
 chains beside projected grids still refuse because their internal containers alter
 tree relationships. Other functional selectors remain unsupported. Reparenting retains
@@ -208,6 +212,9 @@ outside authored DOM queries, serialization and positional/empty selector counts
 Replaced elements do not generate these child boxes. Counters, images, typed
 attribute fallbacks, and decorations/layout substitutions requiring an authored
 retained handle refuse; generated content beside projected grids also refuses.
+`::placeholder` styles the existing input/textarea placeholder text with color and
+opacity, preserving the control's own style and restoring normal value text when
+filled. Placeholder font/layout/decorative properties remain unsupported.
 Static selectors/properties are validated; source/sheet order and live max-width rules are retained.
 Reduced-motion media rules support `reduce` and `no-preference` through the same cascade.
 On Windows, they follow the system [client-area animation preference](https://learn.microsoft.com/en-us/windows/win32/winauto/client-area-animation),
@@ -236,6 +243,7 @@ native range painting follows browser geometry and control states.
 | `rmlui-css-declarations.patch` | Preserve quoted/escaped values and nested blocks across declaration boundaries |
 | `rmlui-fragment-root.patch` | Parse inline fragments under a custom document tag without an XML handler |
 | `rmlui-generated-content.patch` | Originating-element styles for generated boxes; preserve authored query, serialization and structural-selector semantics |
+| `rmlui-selector-functions.patch` | Selector-list/relative matching and invalidation; widget-owned placeholder text styles |
 | `rmlui-flex-layout.patch` | Flex shorthand defaults, unordered flow resets and start/end alignment under reversal |
 | `rmlui-solid-background-clip.patch` | Solid border/padding/content-box clipping and invalidation after style changes |
 | `rmlui-textured-borders.patch` | Stretch raster border slices, live widths and CSS overlap reduction |

@@ -8,6 +8,7 @@
 namespace bbl::pal {
 
 inline bool ui_selector_sequence_matches(Rml::Element* element, const std::vector<UiSelectorStep>& steps);
+inline bool ui_relative_selector_matches(Rml::Element& origin, const std::vector<UiSelectorStep>& steps);
 
 inline bool ui_selector_uses_test(const std::vector<UiSelectorStep>& steps, UiSelectorTestKind kind) {
     for (const auto& step : steps) for (const auto& test : step.tests) {
@@ -38,7 +39,8 @@ inline bool ui_selector_position_matches(Rml::Element& element, const UiSelector
 inline std::uint32_t ui_selector_sequence_specificity(const std::vector<UiSelectorStep>& steps) {
     std::uint32_t result = 0;
     for (const auto& step : steps) for (const auto& test : step.tests) {
-        if (test.kind == UiSelectorTestKind::Not) {
+        if (test.kind == UiSelectorTestKind::Where) continue;
+        if (test.kind == UiSelectorTestKind::Not || test.kind == UiSelectorTestKind::Is || test.kind == UiSelectorTestKind::Has) {
             std::uint32_t alternative = 0;
             for (const auto& sequence : test.alternatives) alternative = std::max(alternative, ui_selector_sequence_specificity(sequence));
             result += alternative;
@@ -76,13 +78,56 @@ inline bool ui_selector_test_matches(Rml::Element& element, const UiSelectorTest
     case UiSelectorTestKind::NthOfType: case UiSelectorTestKind::NthLastOfType:
     case UiSelectorTestKind::OnlyChild: case UiSelectorTestKind::OnlyOfType:
         return ui_selector_position_matches(element, test);
-    case UiSelectorTestKind::Not:
-        if (test.alternatives.empty()) throw std::logic_error("A compiled :not selector needs alternatives.");
-        return std::none_of(test.alternatives.begin(), test.alternatives.end(), [&](const auto& sequence) {
-            return ui_selector_sequence_matches(&element, sequence);
+    case UiSelectorTestKind::Not: case UiSelectorTestKind::Is: case UiSelectorTestKind::Where: case UiSelectorTestKind::Has: {
+        if (test.alternatives.empty()) throw std::logic_error("A compiled selector function needs alternatives.");
+        const bool matched = std::any_of(test.alternatives.begin(), test.alternatives.end(), [&](const auto& sequence) {
+            return test.kind == UiSelectorTestKind::Has ? ui_relative_selector_matches(element, sequence) : ui_selector_sequence_matches(&element, sequence);
         });
+        return test.kind == UiSelectorTestKind::Not ? !matched : matched;
+    }
     }
     throw std::logic_error("Invalid compiled UI selector test.");
+}
+
+/** Follow relative combinators forward from :has()'s originating element. */
+inline bool ui_relative_selector_matches(Rml::Element& origin, const std::vector<UiSelectorStep>& steps) {
+    if (steps.empty()) throw std::logic_error("A relative selector needs a compound.");
+    const auto match = [&](const auto& self, Rml::Element& current, std::size_t index) -> bool {
+        const auto& step = steps[index];
+        const auto accept = [&](Rml::Element& candidate) {
+            if (!std::all_of(step.tests.begin(), step.tests.end(), [&](const auto& test) { return ui_selector_test_matches(candidate,test); })) return false;
+            return index + 1 == steps.size() || self(self,candidate,index + 1);
+        };
+        const auto authored = [](const Rml::Element& candidate) {
+            return candidate.GetPseudoElement() == Rml::Element::PseudoElement::None && candidate.GetTagName() != "#text";
+        };
+        if (step.relation == UiSelectorRelation::Child || step.relation == UiSelectorRelation::Descendant) {
+            const auto visit = [&](const auto& recurse, Rml::Element& parent) -> bool {
+                for (int child = 0; child < parent.GetNumChildren(); ++child) {
+                    auto& candidate = *parent.GetChild(child);
+                    if (!authored(candidate)) continue;
+                    if (accept(candidate) || (step.relation == UiSelectorRelation::Descendant && recurse(recurse,candidate))) return true;
+                }
+                return false;
+            };
+            return visit(visit,current);
+        }
+        if (step.relation == UiSelectorRelation::Next || step.relation == UiSelectorRelation::Following) {
+            auto* parent = current.GetParentNode();
+            if (!parent) return false;
+            bool following = false;
+            for (int child = 0; child < parent->GetNumChildren(); ++child) {
+                auto& candidate = *parent->GetChild(child);
+                if (&candidate == &current) { following = true; continue; }
+                if (!following || !authored(candidate)) continue;
+                if (accept(candidate)) return true;
+                if (step.relation == UiSelectorRelation::Next) break;
+            }
+            return false;
+        }
+        throw std::logic_error("A relative selector requires a combinator.");
+    };
+    return match(match,origin,0);
 }
 
 /** Match compiled terms on the same live tree used by RmlUi's public cascade.
