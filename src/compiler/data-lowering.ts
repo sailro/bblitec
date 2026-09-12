@@ -5988,13 +5988,13 @@ export class DataLowerer {
                 "a reassigned local",
             );
         }
-        const referenceRebind = isOpaqueReference(target.dataType) || ["vector", "tuple", "product"].includes(kind);
+        const referenceRebind = isOpaqueReference(target.dataType) || ["vector", "tuple", "product", "iterator"].includes(kind);
         // An array, map or set copies its reference, and a reference
         // struct its handle, so rebinding a nullable local to another one
         // aliases exactly as JavaScript does.
         const referenceInner =
             target.dataType.kind === "optional" &&
-            (isOpaqueReference(target.dataType.inner) || ["vector", "tuple", "product"].includes(target.dataType.inner.kind) ||
+            (isOpaqueReference(target.dataType.inner) || ["vector", "tuple", "product", "iterator"].includes(target.dataType.inner.kind) ||
                 target.dataType.inner.kind === "map" ||
                 target.dataType.inner.kind === "set" ||
                 (target.dataType.inner.kind === "struct" &&
@@ -7167,7 +7167,7 @@ export class DataLowerer {
         if (value.kind === "data" && isOpaqueReference(value.dataType)) {
             return value.truthinessCpp ?? value.optionalFoundCpp ?? `static_cast<bool>(${value.cpp})`;
         }
-        if (value.kind === "data" && value.dataType?.kind === "product") {
+        if (value.kind === "data" && (value.dataType?.kind === "product" || value.dataType?.kind === "iterator")) {
             return value.truthinessCpp ?? value.optionalFoundCpp ?? "true";
         }
         if (value.kind === "data" && value.dataType?.kind === "union") {
@@ -7706,6 +7706,7 @@ export class DataLowerer {
         if (
             value?.kind === "data" && value.dataType !== undefined &&
             (isOpaqueReference(value.dataType) ||
+                value.dataType.kind === "iterator" ||
                 value.dataType?.kind === "enum" ||
                 value.dataType?.kind === "string" ||
                 value.dataType?.kind === "boolean")
