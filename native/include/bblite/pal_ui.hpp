@@ -99,7 +99,9 @@ void ui_add_style_rule(
     bool focus_visible = false,
     bool active = false,
     UiMotionPreference motion = UiMotionPreference::Any,
-    std::vector<UiSelectorStep> sequence = {});
+    std::vector<UiSelectorStep> sequence = {},
+    UiGeneratedPart generated = UiGeneratedPart::None,
+    std::optional<UiGeneratedContent> content = std::nullopt);
 void ui_add_host_style_rule(
     Engine& engine,
     UiStyleSelectorKind selector,
@@ -113,7 +115,9 @@ void ui_add_host_style_rule(
     bool active = false,
     UiScrollbarPart scrollbar = UiScrollbarPart::None,
     UiMotionPreference motion = UiMotionPreference::Any,
-    std::vector<UiSelectorStep> sequence = {});
+    std::vector<UiSelectorStep> sequence = {},
+    UiGeneratedPart generated = UiGeneratedPart::None,
+    std::optional<UiGeneratedContent> content = std::nullopt);
 js::Array<UiElementHandle> ui_query_class(
     Engine& engine,
     UiElementHandle root,

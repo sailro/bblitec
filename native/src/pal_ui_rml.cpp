@@ -722,13 +722,15 @@ void ui_add_style_rule(
     bool focus_visible,
     bool active,
     UiMotionPreference motion,
-    std::vector<UiSelectorStep> sequence) {
+    std::vector<UiSelectorStep> sequence,
+    UiGeneratedPart generated,
+    std::optional<UiGeneratedContent> content) {
     UiElementRecord& owner = ui_element(engine, stylesheet);
     if (owner.tag != "style") {
         throw std::runtime_error(
             "A native UI stylesheet rule must belong to a <style> element.");
     }
-    if (primary.empty() || style.empty()) {
+    if (primary.empty() || (style.empty() && !content)) {
         throw std::runtime_error(
             "A native UI stylesheet rule must have a target and declarations.");
     }
@@ -743,7 +745,7 @@ void ui_add_style_rule(
         focus_visible,
         active,
         scrollbar,
-        motion, std::move(sequence)});
+        motion, std::move(sequence), generated, std::move(content)});
     mark_ui_changed(engine, owner);
 }
 
@@ -760,8 +762,10 @@ void ui_add_host_style_rule(
     bool active,
     UiScrollbarPart scrollbar,
     UiMotionPreference motion,
-    std::vector<UiSelectorStep> sequence) {
-    if (primary.empty() || style.empty()) {
+    std::vector<UiSelectorStep> sequence,
+    UiGeneratedPart generated,
+    std::optional<UiGeneratedContent> content) {
+    if (primary.empty() || (style.empty() && !content)) {
         throw std::runtime_error(
             "A native host UI style rule must have a target and declarations.");
     }
@@ -776,7 +780,7 @@ void ui_add_host_style_rule(
         focus_visible,
         active,
         scrollbar,
-        motion, std::move(sequence)});
+        motion, std::move(sequence), generated, std::move(content)});
     ++engine.ui_style_revision;
     mark_ui_changed(engine);
 }
@@ -2030,6 +2034,7 @@ std::string ui_style_rule_selector(const UiStyleRule& rule) {
     }
     const std::string states = std::string(rule.hover ? ":hover" : "") +
         (rule.focus_visible ? ":focus-visible" : "") + (rule.active ? ":active" : "");
+    if (rule.generated != UiGeneratedPart::None) return selector + states + (rule.generated == UiGeneratedPart::Before ? "::before" : "::after");
     if (rule.scrollbar == UiScrollbarPart::None) return selector + states;
 
     // Standard non-auto width/color overrides the vendor pseudo-elements.
@@ -2061,7 +2066,7 @@ std::uint32_t ui_style_rule_specificity(const UiStyleRule& rule) {
     std::uint32_t tags = 0;
     switch (rule.selector) {
     case UiStyleSelectorKind::Sequence:
-        return ui_selector_sequence_specificity(rule.sequence) + classes * 0x100u;
+        return ui_selector_sequence_specificity(rule.sequence) + classes * 0x100u + (rule.generated != UiGeneratedPart::None ? 1u : 0u);
     case UiStyleSelectorKind::Class:
         ++classes;
         break;
@@ -3457,6 +3462,10 @@ struct UiRmlRuntime {
                 Rml::ScrollFlag::None);
             sync_tree();
             context->Update();
+            if (sync_generated_content()) {
+                context->Update();
+                if (sync_generated_content()) context->Update();
+            }
             if (sync_ui_scrollbar_styles(*document, scrollbar_properties)) context->Update();
             if (refresh_gradient_text()) context->Update();
             if (update_gradient_text()) context->Update();
@@ -3564,25 +3573,28 @@ struct UiRmlRuntime {
 
     static std::string keyframes_from(std::string_view source) {
         std::string keyframes;
-        std::size_t search = 0;
-        while ((search = source.find("@keyframes", search)) !=
-               std::string_view::npos) {
-            const std::size_t opening = source.find('{', search + 10);
-            if (opening == std::string_view::npos) break;
-            int depth = 0;
-            std::size_t cursor = opening;
-            for (; cursor < source.size(); ++cursor) {
-                if (source[cursor] == '{') {
-                    ++depth;
-                } else if (source[cursor] == '}' && --depth == 0) {
-                    ++cursor;
-                    break;
-                }
+        std::optional<std::size_t> start;
+        std::size_t depth = 0;
+        char quote = 0;
+        for (std::size_t index = 0; index < source.size(); ++index) {
+            const char token = source[index];
+            if (token == '\\') { ++index; continue; }
+            if (quote) { if (token == quote) quote = 0; continue; }
+            if (token == '\'' || token == '"') { quote = token; continue; }
+            if (token == '/' && index + 1 < source.size() && source[index + 1] == '*') {
+                const auto end = source.find("*/", index + 2);
+                if (end == std::string_view::npos) break;
+                index = end + 1;
+                continue;
             }
-            if (depth != 0) break;
-            keyframes.append(source.substr(search, cursor - search));
-            keyframes.push_back('\n');
-            search = cursor;
+            if (!depth && token == '@' && js::string_lower(std::string(source.substr(index,10))) == "@keyframes" &&
+                (index + 10 == source.size() || !css_identifier_character(source[index + 10]))) start = index;
+            if (token == '{') ++depth;
+            else if (token == '}' && depth && --depth == 0 && start) {
+                keyframes.append(source.substr(*start,index + 1 - *start));
+                keyframes.push_back('\n');
+                start.reset();
+            }
         }
         return keyframes;
     }
@@ -3645,6 +3657,7 @@ struct UiRmlRuntime {
         std::size_t source_order = 0;
         for_each_active_style_rule([&](const UiStyleRule& rule) {
             const std::size_t rule_order = source_order++;
+            if (rule.generated != UiGeneratedPart::None) return;
             const bool hovered =
                 handle.value < projected_elements.size() &&
                 handle_at(projected_elements, handle).element &&
@@ -3677,11 +3690,13 @@ struct UiRmlRuntime {
             ";font-size:16dp;line-height:1.32;pointer-events:none;}head{display:none;}body{display:block;height:100%;}\n";
         observes_motion_preference = false;
         observes_focus_within = false;
+        observes_generated_content = false;
         focus_within_revision = std::numeric_limits<std::uint64_t>::max();
         const auto append_rule = [&source, this](const UiStyleRule& rule) {
             const bool motion = rule.motion != UiMotionPreference::Any;
             observes_motion_preference = observes_motion_preference || motion;
             observes_focus_within = observes_focus_within || ui_selector_uses_test(rule.sequence, UiSelectorTestKind::FocusWithin);
+            observes_generated_content = observes_generated_content || rule.content.has_value();
             const std::string public_style =
                 filter_private_ui_declarations(rule.style, false);
             if (public_style.empty()) return;
@@ -3914,6 +3929,76 @@ struct UiRmlRuntime {
 
     void append_text_content(Rml::Element& parent, const std::string& text, bool wrapped) {
         parent.AppendChild(create_text_content(text, wrapped));
+    }
+
+    bool sync_generated_content() {
+        if (!observes_generated_content && !has_generated_content) return false;
+        std::vector<const UiStyleRule*> rules;
+        for_each_active_style_rule([&](const UiStyleRule& rule) {
+            if (rule.generated != UiGeneratedPart::None && rule.content && style_rule_media_matches(rule)) rules.push_back(&rule);
+        });
+        bool changed = false;
+        has_generated_content = false;
+        for (const auto& projected : projected_elements) {
+            auto* origin = projected.element;
+            if (!origin || origin->GetTagName() == "#text") continue;
+            const auto& tag = origin->GetTagName();
+            // Replaced content does not expose an authored child formatting context.
+            const bool replaced = tag == "img" || tag == "input" || tag == "textarea" || tag == "canvas" || tag == "video" || tag == "iframe" || tag == "embed" || tag == "object";
+            for (const auto part : {UiGeneratedPart::Before, UiGeneratedPart::After}) {
+                const auto pseudo = part == UiGeneratedPart::Before ? Rml::Element::PseudoElement::Before : Rml::Element::PseudoElement::After;
+                const UiStyleRule* selected = nullptr;
+                std::uint32_t specificity = 0;
+                if (!replaced) for (const auto* rule : rules) {
+                    if (rule->generated != part || !ui_selector_sequence_matches(origin, rule->sequence)) continue;
+                    const auto candidate = ui_style_rule_specificity(*rule);
+                    if (!selected || candidate >= specificity) { selected = rule; specificity = candidate; }
+                }
+                Rml::Element* box = nullptr;
+                for (int index = 0; index < origin->GetNumChildren(); ++index) {
+                    auto* child = origin->GetChild(index);
+                    if (child->GetPseudoElement() == pseudo) { box = child; break; }
+                }
+                if (!selected || !selected->content->enabled) {
+                    if (box) { origin->RemoveChild(box); changed = true; }
+                    continue;
+                }
+                has_generated_content = true;
+                std::string text;
+                for (const auto& item : selected->content->parts) {
+                    if (item.kind == UiContentPartKind::Text) text += item.value;
+                    else if (const auto* value = origin->GetAttribute(item.value)) text += value->Get<Rml::String>();
+                }
+                bool created = false;
+                if (!box) {
+                    auto element = document->CreateElement("bbl-generated-content");
+                    element->SetPseudoElement(pseudo);
+                    box = origin->AppendChild(std::move(element));
+                    created = changed = true;
+                }
+                const auto display = box->GetComputedValues().display();
+                const bool wrapped = display == Rml::Style::Display::Flex || display == Rml::Style::Display::InlineFlex;
+                if (created || box->GetAttribute<Rml::String>("bbl-text", "") != text || box->GetAttribute<bool>("bbl-wrapped", false) != wrapped) {
+                    while (box->GetNumChildren()) box->RemoveChild(box->GetChild(0));
+                    if (!text.empty()) {
+                        auto content = create_text_content(text, wrapped);
+                        if (content->GetTagName() != "#text") content->SetPseudoElement(Rml::Element::PseudoElement::Internal);
+                        box->AppendChild(std::move(content));
+                    }
+                    box->SetAttribute("bbl-text", text);
+                    box->SetAttribute("bbl-wrapped", wrapped);
+                    changed = true;
+                }
+                const int expected = part == UiGeneratedPart::Before ? 0 : origin->GetNumChildren() - 1;
+                if (origin->GetChild(expected) != box) {
+                    auto owned = origin->RemoveChild(box);
+                    if (part == UiGeneratedPart::Before) origin->InsertBefore(std::move(owned), origin->GetChild(0));
+                    else origin->AppendChild(std::move(owned));
+                    changed = true;
+                }
+            }
+        }
+        return changed;
     }
 
     bool text_node_wrapped(const UiElementRecord& record) const {
@@ -5400,6 +5485,8 @@ struct UiRmlRuntime {
     bool (*const motion_preference_reader)();
     bool observes_motion_preference = false;
     bool observes_focus_within = false;
+    bool observes_generated_content = false;
+    bool has_generated_content = false;
     std::uint64_t focus_within_revision = std::numeric_limits<std::uint64_t>::max();
     Rml::Element* focus_within_target = nullptr;
     bool motion_preference_initialized = false;
@@ -5538,10 +5625,20 @@ void update_ui_rml_runtime(
         runtime.sync_tree();
         runtime.context->Update();
     }
+    bool generated_changed = false;
+    if (tree_changed || motion_changed || dimensions_changed || density_changed || focus_changed || hover_changed) {
+        generated_changed = runtime.sync_generated_content();
+        if (generated_changed) {
+            runtime.context->Update();
+            // New boxes receive their computed display in the first update.
+            // A second pass creates anonymous flex text items when required.
+            if (runtime.sync_generated_content()) runtime.context->Update();
+        }
+    }
     if (sync_ui_scrollbar_styles(*runtime.document, runtime.scrollbar_properties)) runtime.context->Update();
     if (
         focus_changed || hover_changed || motion_changed || dimensions_changed ||
-        density_changed) {
+        density_changed || generated_changed) {
         runtime.invalidate_gradient_text();
     }
     if (runtime.sync_svg_current_colors()) {
@@ -5553,6 +5650,7 @@ void update_ui_rml_runtime(
         density_changed ||
         dimensions_changed ||
         motion_changed ||
+        generated_changed ||
         hover_changed;
     if (layout_changed) runtime.update_intrinsic_widths();
     runtime.sync_client_rects(layout_changed);

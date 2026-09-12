@@ -9,6 +9,7 @@
     "rmlui-flex-layout.patch",
     "rmlui-fractional-letter-spacing.patch",
     "rmlui-fragment-root.patch",
+    "rmlui-generated-content.patch",
     "rmlui-line-leading.patch",
     "rmlui-object-fit.patch",
     "rmlui-overflow-wrap.patch",
