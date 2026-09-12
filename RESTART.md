@@ -36,7 +36,7 @@ it does not establish that this external application compiles or runs.
 | Branch | `codex/external-project-support` |
 | Remote | `https://github.com/sailro/bblitec.git` |
 | Branch base used in this session | `3474e835` on `main` |
-| Latest executable-code/test unit | Registry regression fixes, based on root commit `1aac258b` (2026-09-12) |
+| Latest executable-code/test unit | Shared mixed-tuple array storage and ordered array operations (2026-09-12; candidate after `295c2fe0`) |
 | Draft PR | [#247 — Extend generic application compilation and retained UI support](https://github.com/sailro/bblitec/pull/247) |
 | External checkout | `C:/Dev/_prototypes/external-native-app` |
 | External source revision | `d7c477a6d5963680c55249dceb93cb6e4ab9ce56` |
@@ -96,6 +96,36 @@ capture lifetimes and compiler RegExp regressions. `capabilities385.json` record
 dynamic mixed-tuple writes and resizing remain, along with the newly identified
 destructuring-assignment gap. The next batch needs shared mutable tuple storage;
 do not implement each length-changing method as a separate special case.
+
+The mutable tuple candidate uses shared native arrays with nullable union elements,
+including dynamic writes, push/pop/shift/unshift/splice, missing reads and typed
+rest conversions. Length writes keep the dense-array truncation-only contract;
+sparse growth is refused. `tuple406` passes all six mixed-tuple fixtures in native
+execution (12 checks, no skips), including destructuring assignments, empty rests,
+source evaluation order and object identity. Receiver/argument snapshots also fix
+ordinary array push/unshift, spread ordering and self-spread. Simple arguments
+avoid extra temporaries through the shared syntax effect query.
+
+`core403` ran 822 checks: all native execution checks passed; 18 compiler-text
+assertions failed. After limiting unnecessary temporaries and updating assertions
+to verify their selected receiver, `compiler405` passes all 651 compiler checks.
+`tuple-storage-candidate402.json` generated every one of 64 neutral language
+fixtures before the final ordering/empty-tail checks. `capabilities401.json`
+accepts all 13 core probes; 11 event probes refuse. These are probe counts, not
+overall application completion. The five originally inventoried core clauses now
+have implementations and native fixtures. Stored-array destructuring with nested,
+defaulted or member targets remains a separate explicit TODO.
+
+At the batch boundary `population407` generated 286/288 entries; Quake and Doom
+exposed the same `Iterable` protocol incorrectly classified as a concrete record.
+The registry now leaves that abstract protocol to actual-collection specialization.
+`tuple408` passes 14 focused checks, including class/helper Iterable parameters
+over arrays, Sets and stored entry cursors. Both `quake409` and `doom409` generate
+successfully after the correction. A complete population rerun has not followed
+that final correction. `compile407` still stops at the event capture-option error;
+the private checkout remains unchanged. Keep the unused event draft out of the
+tuple commit and continue to events. Full application generation, build and runtime
+remain unpassed.
 
 The branch was clean and synchronized with its remote before adding this
 document. All 14 implementation/test commits listed below were pushed. The PR

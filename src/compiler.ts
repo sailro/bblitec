@@ -768,8 +768,8 @@ class Compiler
             (expression) => this.evaluateBrowserValue(expression),
             (expression) => this.isBrowserOnlyExpression(expression),
             (identifier) => this.isDefaultLibraryIdentifier(identifier),
-            (value, expression, assertedNonNull) =>
-                this.dataLowerer.narrowOptional(value, expression, assertedNonNull),
+            (value, expression, assertedNonNull, expectedType) =>
+                this.dataLowerer.narrowOptional(value, expression, assertedNonNull, expectedType),
             (identifier) => this.lookup(identifier),
             (identifier) => this.lookupOptional(identifier),
             (node, message, reason) => this.fail(node, message, reason),

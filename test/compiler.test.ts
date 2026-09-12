@@ -2408,7 +2408,7 @@ test("materializes runtime-valued static maps as native arrays", () => {
         result.cpp,
         /bbl::js::Array<double> v_mapped = bbl::js::Array<double>\{/,
     );
-    assert.match(result.cpp, /bbl::js::array_index_checked\(v_mapped, /);
+    assert.match(result.cpp, /auto (v_bblite_indexed_array_\d+) = v_mapped;[\s\S]*bbl::js::array_index_checked\(\1, /);
 });
 
 test("hoists module record factories out of hot dynamic lookups", () => {
@@ -2738,7 +2738,7 @@ test("calls a class method on a record returned by a helper", () => {
     assert.ok(selected);
     assert.match(
         result.cpp,
-        new RegExp(`\\(\\*${selected[1]}\\)\\.push_back\\(v_fn\\d+_amount\\)`),
+        new RegExp(`auto (v_bblite_array_receiver_\\d+) = \\(\\*${selected[1]}\\);[\\s\\S]*\\1\\.push_back\\(v_fn\\d+_amount\\)`),
     );
 });
 
@@ -4721,7 +4721,7 @@ test("lowers typed arrays with storage-exact reads and writes", () => {
     assert.match(result.cpp, /bbl::js::f32_array_from\(v_fn\d+_values\)/);
     assert.match(
         result.cpp,
-        /\(v_fn\d+_values\.push_back\(0\.25\), v_fn\d+_values\.push_back\(0\.5\), v_fn\d+_values\.push_back\(0\.75\)\);/,
+        /\((v_fn\d+_values)\.push_back\(0\.25\), \1\.push_back\(0\.5\), \1\.push_back\(0\.75\), static_cast<double>\(\1\.size\(\)\)\)/,
     );
     // `data` comes from a call, so its length is not statically known
     // and even static indices are checked; the literal-constructed
@@ -13292,9 +13292,7 @@ test("swaps mutable numeric locals through destructuring", () => {
         [left, right] = [right, left];
     `);
 
-    assert.equal((result.cpp.match(/const double .*swap/g) ?? []).length, 2);
-    assert.match(result.cpp, /v_left = .*swap/);
-    assert.match(result.cpp, /v_right = .*swap/);
+    assert.match(result.cpp, /const auto (v_bblite_destructure_value_\d+) = v_right;\s+const auto (v_bblite_destructure_value_\d+) = v_left;\s+v_left = \1;\s+v_right = \2;/);
 });
 
 test("assigns a promised resource tuple into definite-assignment locals", () => {

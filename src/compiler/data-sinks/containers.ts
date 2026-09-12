@@ -50,6 +50,17 @@ function valueOptional(dataType: DataType<"optional">, lowerer: DataSinkHost, va
     if (value.kind === "json-null") {
         return "std::nullopt";
     }
+    if (value.dataType?.kind === "optional") {
+        const sourceType = value.dataType.inner;
+        const source = lowerer.context.allocateTemporaryCppName("optional_source");
+        let converted = "";
+        const lines = lowerer.context.captureEmittedLines(() => {
+            converted = lowerer.compileKnownValueForSink(lowerer.leafValue(`(*${source})`, sourceType), dataType.inner, node);
+        });
+        return `([&]() -> ${lowerer.context.dataTypes.cppType(dataType)} { ` +
+            `const auto ${source} = (${value.cpp}).to_optional(); if (!${source}) return std::nullopt; ` +
+            `${lines.join("\n")} return ${converted}; }())`;
+    }
     return lowerer.compileKnownValueForSink(value, dataType.inner, node);
 }
 

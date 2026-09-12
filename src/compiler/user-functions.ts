@@ -1046,7 +1046,7 @@ export class UserFunctionLowerer {
         }
         if (
             value.kind !== "data" ||
-            (value.dataType?.kind !== "tuple" && value.dataType?.kind !== "product")
+            (value.dataType?.kind !== "tuple" && value.dataType?.kind !== "product" && value.dataType?.kind !== "vector")
         ) {
             context.fail(
                 parameter.name,
@@ -1060,7 +1060,9 @@ export class UserFunctionLowerer {
                 context.bindParameterValue(element.name, context.dataLowerer.arrayRestValue(value, index, element.name));
                 return;
             }
-            context.bindParameterValue(element.name, context.dataLowerer.fixedTupleElement(value, index, element)!);
+            context.bindParameterValue(element.name, value.dataType?.kind === "vector"
+                ? context.dataLowerer.readVectorBindingElement(value, index, element)
+                : context.dataLowerer.fixedTupleElement(value, index, element)!);
         });
     }
 
