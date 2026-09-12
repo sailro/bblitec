@@ -4,9 +4,9 @@ import { nativeDataMetadata, withNativeMetadata } from "./types.js";
 // call (invoked through `DataLowerer.compileDataMethodCall`).
 import { EmissionSet, EmissionMap } from "./emission-transaction.js";
 import ts from "typescript";
-import { argumentAt, regularExpressionParts } from "./syntax.js";
+import { argumentAt, expressionMayRunCode, regularExpressionParts } from "./syntax.js";
 import { staticNumberValue } from "./option-helpers.js";
-import { compileArrayValueMethod } from "./array-methods.js";
+import { captureArrayReceiver, compileArrayValueMethod } from "./array-methods.js";
 import { compileStringValueMethod } from "./string-methods.js";
 import { compileDateMethod, compileDateTimeFormatMethod } from "./dates.js";
 import { compileHttpResponseMethod } from "./http.js";
@@ -1316,9 +1316,12 @@ function compileArrayForEach(state: ArrayMethodState): Value {
 function compileArrayPush(state: ArrayMethodState): Value {
     const lowerer: DataLowerer = state.lowerer;
     const { call, narrowed, dataType, dynamicOwner } = state;
-    if (call.arguments.length === 0) {
-        lowerer.context.fail(call, "Array push requires at least one element.");
-    }
+    const captureArguments = call.arguments.some(expressionMayRunCode);
+    const callee = lowerer.context.unwrap(call.expression);
+    const receiver = captureArguments || (ts.isPropertyAccessExpression(callee) && expressionMayRunCode(callee.expression))
+        ? captureArrayReceiver(lowerer, narrowed) : narrowed.cpp;
+    if (call.arguments.length === 0)
+        return lowerer.leafValue(`static_cast<double>(${receiver}.size())`, {kind: "number"});
     lowerer.invalidateAliases(narrowed.cpp);
     const pushedHandleKind = dataType.element.kind === "handle"
         ? dataType.element.handle
@@ -1326,15 +1329,26 @@ function compileArrayPush(state: ArrayMethodState): Value {
     const hasSpread = call.arguments.some((argument) => ts.isSpreadElement(argument));
     const staticElements = narrowed.staticElementsOwner?.staticElements ??
         narrowed.staticElements;
+    const preparedValues: string[] = [];
     const pushedValues = (pushedHandleKind || staticElements) && !hasSpread
         ? call.arguments.map((argument) => {
             const value = lowerer.context.compileValue(argument);
+            lowerer.context.refuseBorrowedPlatformEventEscape(value, argument, "Array.push");
+            const cpp = lowerer.compileKnownValueForSink(value, dataType.element, argument);
+            let prepared = cpp;
+            if (captureArguments) {
+                prepared = lowerer.context.allocateTemporaryCppName("push_argument");
+                lowerer.context.emit({kind: "declaration", type: "const auto", name: prepared, initializer: cpp});
+            }
+            preparedValues.push(prepared);
             // A static snapshot owns the value selected at push, including
             // creation calls and a mutable source handle that is rebound later.
             if (!pushedHandleKind || !staticElements) return value;
-            const snapshot = { ...value };
+            const snapshot = { ...value, ...(captureArguments ? {cpp: prepared} : {}) };
             delete snapshot.nativeBinding;
-            return lowerer.context.pinValueToTemporary(snapshot, "array_handle", argument);
+            const pinned = lowerer.context.pinValueToTemporary(snapshot, "array_handle", argument);
+            preparedValues[preparedValues.length - 1] = pinned.cpp;
+            return pinned;
         })
         : undefined;
     let added: number | undefined = 0;
@@ -1408,8 +1422,9 @@ function compileArrayPush(state: ArrayMethodState): Value {
             if (spread.kind === "tuple" &&
                 spread.tupleElements) {
                 const values = spread.tupleElements.map((value) => lowerer.compileKnownValueForSink(value, dataType.element, argument));
-                return (`${narrowed.cpp}.insert(${narrowed.cpp}.end(), ` +
-                    `{${values.join(", ")}})`);
+                const source = lowerer.context.allocateTemporaryCppName("push_spread");
+                lowerer.context.emit(`${lowerer.context.dataTypes.cppType(dataType)} ${source}{${values.join(", ")}};`);
+                return `${receiver}.insert(${receiver}.end(), ${source}.begin(), ${source}.end())`;
             }
             let source: string;
             if (spread.kind === "handle-collection" &&
@@ -1430,23 +1445,28 @@ function compileArrayPush(state: ArrayMethodState): Value {
             else {
                 lowerer.context.fail(argument, `Array.push spread must contain values of the destination element type ${JSON.stringify(dataType.element)}; received ${spread.kind} ${spread.dataType ? JSON.stringify(spread.dataType) : "without a data type"}.`);
             }
-            return (`${narrowed.cpp}.insert(${narrowed.cpp}.end(), ` +
-                `${source}.begin(), ${source}.end())`);
+            const copy = lowerer.context.allocateTemporaryCppName("push_spread");
+            const selected = lowerer.context.allocateTemporaryCppName("push_iterable");
+            lowerer.context.emit({kind: "declaration", type: "const auto", name: selected, initializer: source});
+            lowerer.context.emit(`${lowerer.context.dataTypes.cppType(dataType)} ${copy}(${selected}.begin(), ${selected}.end());`);
+            return `${receiver}.insert(${receiver}.end(), ${copy}.begin(), ${copy}.end())`;
         }
         if (pushedValues &&
             lowerer.context.dataTypes.carriesBorrowedPlatformEvent(dataType.element)) {
             lowerer.context.refuseBorrowedPlatformEventEscape(pushedValues[index]!, argument, "Array.push");
         }
-        return `${narrowed.cpp}.push_back(${pushedValues
-            ? lowerer.compileKnownValueForSink(pushedValues[index]!, dataType.element, argument)
-            : lowerer.compileForRetainedSink(argument, dataType.element, "Array.push")})`;
+        let value = preparedValues[index];
+        if (value === undefined) {
+            const cpp = lowerer.compileForRetainedSink(argument, dataType.element, "Array.push");
+            value = cpp;
+            if (captureArguments) {
+                value = lowerer.context.allocateTemporaryCppName("push_argument");
+                lowerer.context.emit({kind: "declaration", type: "const auto", name: value, initializer: cpp});
+            }
+        }
+        return `${receiver}.push_back(${value})`;
     });
-    return {
-        kind: "void",
-        cpp: pushes.length === 1
-            ? pushes[0]!
-            : `(${pushes.join(", ")})`,
-    };
+    return lowerer.leafValue(`(${pushes.join(", ")}, static_cast<double>(${receiver}.size()))`, {kind: "number"});
 }
 
 function compileArrayPop(state: ArrayMethodState): Value {
@@ -1480,10 +1500,16 @@ function compileArrayUnshift(state: ArrayMethodState): Value {
         };
     }
     lowerer.invalidateAliases(narrowed.cpp);
-    const values = call.arguments.map((argument) => lowerer.compileForRetainedSink(argument, dataType.element, "Array.unshift"));
+    const receiver = captureArrayReceiver(lowerer, narrowed);
+    const values = call.arguments.map(argument => {
+        const cpp = lowerer.compileForRetainedSink(argument, dataType.element, "Array.unshift");
+        const name = lowerer.context.allocateTemporaryCppName("unshift_argument");
+        lowerer.context.emit({kind: "declaration", type: "const auto", name, initializer: cpp});
+        return name;
+    });
     return {
         kind: "number",
-        cpp: `bbl::js::array_unshift(${narrowed.cpp}, ` +
+        cpp: `bbl::js::array_unshift(${receiver}, ` +
             `{${values.join(", ")}})`,
     };
 }

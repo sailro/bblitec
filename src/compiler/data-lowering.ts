@@ -8,7 +8,7 @@ import { storageValue } from "./web-storage.js";
 import { documentEngine, windowErrorEventValue } from "./window-events.js";
 import { CompilerSymbols } from "./symbols.js";
 import { compileMapInitializer } from "./collection-methods.js";
-import { scalarUnionEquality } from "./data-comparisons.js";
+import { dataUnionEquality } from "./data-comparisons.js";
 import { compileDateNew } from "./dates.js";
 import { httpResponseProperty } from "./http.js";
 import { cppIdentifierPattern } from "../cpp-literals.js";
@@ -49,6 +49,7 @@ import {
 import { isTrsVectorName } from "./assignments.js";
 import {
     isAssignmentExpression,
+    expressionMayRunCode,
     isUpdateExpression,
     iteratorMethodCall,
     rootExpression,
@@ -102,6 +103,8 @@ function resizedSymbols(checker: ts.TypeChecker, file: ts.SourceFile): ReadonlyS
             const left = node.left;
             if (ts.isIdentifier(left)) {
                 addIdentifier(left);
+            } else if (ts.isArrayLiteralExpression(left)) {
+                forEachAnalysisNode(left, addIdentifier);
             } else if (
                 ts.isPropertyAccessExpression(left) &&
                 ts.isIdentifier(left.expression) &&
@@ -1430,6 +1433,7 @@ export class DataLowerer {
         value: Value,
         expression: ts.Expression,
         assertedNonNull = false,
+        expectedType?: DataType,
     ): Value {
         if (value.dataType?.kind === "json") {
             const narrowed = this.dataTypeAt(expression);
@@ -1439,7 +1443,7 @@ export class DataLowerer {
             }
         }
         if (value.kind === "data" && value.dataType?.kind === "union") {
-            const narrowed = this.dataTypeAt(expression);
+            const narrowed = expectedType ?? this.dataTypeAt(expression);
             const index = this.narrowedUnionMemberIndex(value.dataType, narrowed);
             return index < 0 ? value : withNativeMetadata(this.leafValue(
                 `std::get<${index}>(${value.cpp})`, value.dataType.members[index]!,
@@ -1451,7 +1455,7 @@ export class DataLowerer {
         ) {
             return value;
         }
-        const narrowed = this.dataTypeAt(expression);
+        const narrowed = expectedType ?? this.dataTypeAt(expression);
         const inner = value.dataType.inner;
         if (!assertedNonNull && value.preserveUncheckedLookup && inner.kind === "union" && narrowed && dataTypesEqual(narrowed, inner)) return value;
         if (
@@ -1466,7 +1470,7 @@ export class DataLowerer {
             return this.narrowOptional(withNativeMetadata(this.leafValue(
                     `(*${value.cpp})`,
                     inner,
-                ), value), expression);
+                ), value), expression, false, expectedType);
         }
         return value;
     }
@@ -2086,27 +2090,33 @@ export class DataLowerer {
             type.kind === "product" ? type.elements[index]! : { kind: "number" });
     }
 
-    private indexRunsCode(expression: ts.Expression): boolean {
-        return someAnalysisNode(expression, node =>
-            ts.isCallExpression(node) || ts.isNewExpression(node) ||
-            ts.isPropertyAccessExpression(node) || ts.isElementAccessExpression(node) ||
-            isUpdateExpression(node) || isAssignmentExpression(node));
-    }
-
     /** Rest binding creates fresh array storage, retaining the identity of its elements. */
     public arrayRestValue(value: Value, index: number, node: ts.Node): Value {
         const sourceType = value.dataType;
         let type: DataType;
         let initializer: string;
         if (sourceType?.kind === "vector") {
-            type = sourceType;
-            initializer = `${this.context.dataTypes.cppType(type)}(` +
-                `${value.cpp}.begin() + std::min<std::size_t>(${index}, ${value.cpp}.size()), ${value.cpp}.end())`;
+            const declared = this.dataTypeAt(node);
+            type = declared?.kind === "vector" ? declared : sourceType;
+            if (type.kind === "vector" && !dataTypesEqual(type.element, sourceType.element)) {
+                const elementType = type.element;
+                const result = this.context.allocateTemporaryCppName("rest_array");
+                const position = this.context.allocateTemporaryCppName("rest_index");
+                let converted = "";
+                const lines = this.context.captureEmittedLines(() => {
+                    converted = this.compileKnownValueForSink(this.leafValue(`${value.cpp}[${position}]`, sourceType.element), elementType, node);
+                });
+                initializer = `([&]() { ${this.context.dataTypes.cppType(type)} ${result}; ` +
+                    `for (std::size_t ${position} = ${index}; ${position} < ${value.cpp}.size(); ++${position}) { ${lines.join("\n")} ${result}.push_back(${converted}); } return ${result}; }())`;
+            } else {
+                initializer = `${this.context.dataTypes.cppType(type)}(` +
+                    `${value.cpp}.begin() + std::min<std::size_t>(${index}, ${value.cpp}.size()), ${value.cpp}.end())`;
+            }
         } else {
             let elements: Value[];
             if (value.kind === "tuple" && value.tupleElements) {
                 elements = value.tupleElements.slice(index);
-                const declared = elements.length === 0 ? this.context.dataTypes.tupleStorage([]) : this.dataTypeAt(node);
+                const declared = this.dataTypeAt(node) ?? (elements.length === 0 ? this.context.dataTypes.tupleStorage([]) : undefined);
                 if (!declared) this.context.fail(node, "A rest binding requires a concrete array type.");
                 type = declared;
             } else if (sourceType?.kind === "tuple" || sourceType?.kind === "product") {
@@ -2132,13 +2142,18 @@ export class DataLowerer {
         access: ts.ElementAccessExpression,
         mode: "read" | "write" = "read",
     ): Value | undefined {
-        const owner = this.stringReceiver(this.narrowOptional(
+        let owner = this.stringReceiver(this.narrowOptional(
             ownerValue,
             access.expression,
         ), access);
         const dataType = owner.dataType;
         if (!dataType) {
             return undefined;
+        }
+        if ((dataType.kind === "vector" || dataType.kind === "tuple") && expressionMayRunCode(access.argumentExpression)) {
+            const receiver = this.context.allocateTemporaryCppName("indexed_array");
+            this.context.emit(`auto ${receiver} = ${owner.cpp};`);
+            owner = {...owner, cpp: receiver, nativeCaptures: [this.context.registerNativeBinding(receiver)]};
         }
         if (dataType.kind === "product") {
             const receiver = this.context.allocateTemporaryCppName("indexed_tuple");
@@ -2179,7 +2194,7 @@ export class DataLowerer {
         if (dataType.kind === "string") {
             if (mode === "write") this.context.fail(access, "String element writes are not supported.");
             let source = owner.cpp;
-            if (this.indexRunsCode(access.argumentExpression) &&
+            if (expressionMayRunCode(access.argumentExpression) &&
                 (owner.staticString === undefined || source !== this.context.cppString(owner.staticString))) {
                 source = this.context.allocateTemporaryCppName("indexed_string");
                 this.context.emit(`const std::string ${source} = ${owner.cpp};`);
@@ -2328,7 +2343,7 @@ export class DataLowerer {
         // Index calls, getters and mutations can replace the array binding.
         // Scalar arithmetic over locals cannot, so ordinary counted accesses
         // need no extra wrapper copy before their index is evaluated.
-        const typedIndexRunsCode = isTypedArrayType(dataType) && this.indexRunsCode(access.argumentExpression);
+        const typedIndexRunsCode = isTypedArrayType(dataType) && expressionMayRunCode(access.argumentExpression);
         const retainedIndexOwner = ownedRead || typedIndexRunsCode;
         let index = "";
         const compileIndex = (): void => {
@@ -2369,6 +2384,8 @@ export class DataLowerer {
                 ? proven
                     ? `bbl::js::array_index_write(${owner.cpp}, ${nativeIndex})`
                     : `bbl::js::array_index_write_checked(${owner.cpp}, ${index}, ${site()})`
+                : dataType.kind === "vector" && dataType.element.kind === "optional" && mode === "read" && !proven
+                  ? `bbl::js::array_at_or_default(${indexedOwner}, ${index})`
                 : proven
                   ? isTypedArrayType(dataType)
                     ? `bbl::js::typed_array_${mode === "write" ? "slot" : "load"}(${indexedOwner}, ${nativeIndex})`
@@ -3012,6 +3029,9 @@ export class DataLowerer {
             );
         }
         this.context.reachJsData();
+        if (vector.dataType.element.kind === "optional") {
+            return {...this.leafValue(`bbl::js::array_relative_at<${this.context.dataTypes.cppType(vector.dataType.element)}>(${vector.cpp}, ${index}.0)`, vector.dataType.element), preserveUncheckedLookup: true};
+        }
         return this.leafValue(
             `bbl::js::array_index_checked(` +
                 `${vector.cpp}, ${index}.0, ` +
@@ -3053,6 +3073,7 @@ export class DataLowerer {
             this.context.reachJsData();
             return {
                 ...this.leafValue(`bbl::js::array_at_or_default(${owner.cpp}, ${indexTemporary})`, element),
+                preserveUncheckedLookup: true,
                 nativeCaptures: [...(owner.nativeCaptures ?? []), this.context.registerNativeBinding(indexTemporary)],
             };
         }
@@ -5199,6 +5220,18 @@ export class DataLowerer {
         ) {
             return value.cpp;
         }
+        if (dataType.kind !== "optional" && value.dataType?.kind === "optional") {
+            const inner = value.dataType.inner;
+            if (dataTypesEqual(inner, dataType) || (dataType.kind === "enum" && (inner.kind === "string" || inner.kind === "enum")) ||
+                (inner.kind === "union" && (this.narrowedUnionMemberIndex(inner, dataType) >= 0 ||
+                    (dataType.kind === "union" && dataType.members.every(member => this.narrowedUnionMemberIndex(inner, member) >= 0))))) {
+                value = withNativeMetadata(this.leafValue(`(*${value.cpp})`, inner), value);
+            }
+        }
+        if (value.dataType?.kind === "union" && dataType.kind !== "union") {
+            const member = this.narrowedUnionMemberIndex(value.dataType, dataType);
+            if (member >= 0) value = withNativeMetadata(this.leafValue(`std::get<${member}>(${value.cpp})`, value.dataType.members[member]!), value);
+        }
         // A parsed array reaching a fixed or growable numeric sink is the
         // lowering of the source's own assertion over it. Every lane is
         // `Number(element)`, so a lane the document does not carry is NaN
@@ -6502,7 +6535,7 @@ export class DataLowerer {
             ts.isArrayLiteralExpression(left) &&
             operator === "="
         ) {
-            return this.emitSwapAssignment(expression);
+            return this.emitArrayDestructuringAssignment(expression) || this.emitSwapAssignment(expression);
         }
         if (ts.isIdentifier(left) && operator === "=") {
             return this.emitLocalDataAssignment(
@@ -6959,6 +6992,62 @@ export class DataLowerer {
         return false;
     }
 
+    /** Assign typed identifiers from one retained array, with a fresh final rest. */
+    public emitArrayDestructuringAssignment(expression: ts.BinaryExpression): boolean {
+        const left = this.context.unwrap(expression.left);
+        if (!ts.isArrayLiteralExpression(left)) return false;
+        const targets: {name: ts.Identifier; target: Value; type: DataType; index: number; rest: boolean}[] = [];
+        for (const [index, element] of left.elements.entries()) {
+            if (ts.isOmittedExpression(element)) continue;
+            const rest = ts.isSpreadElement(element);
+            const name = rest ? element.expression : element;
+            if (!ts.isIdentifier(name) || (rest && index !== left.elements.length - 1)) return false;
+            const target = this.context.lookupIdentifierValue(name);
+            if (!target || target.optionalStorageCpp) return false;
+            const type = target.dataType ??
+                (target.kind === "number" || target.kind === "string" || target.kind === "boolean" ? {kind: target.kind} : undefined);
+            if (!type) return false;
+            if (type.kind === "struct" && !this.context.dataTypes.isReferenceStruct(type.name))
+                this.context.fail(name, "Destructuring assignment requires reference storage for object targets.");
+            targets.push({name, target, type, index, rest});
+        }
+        let value: Value;
+        const right = this.context.unwrap(expression.right);
+        if (ts.isArrayLiteralExpression(right) && right.elements.every(element => !ts.isSpreadElement(element) && !ts.isOmittedExpression(element))) {
+            const type = this.dataTypeAt(right);
+            value = {kind: "tuple", cpp: "", tupleElements: right.elements.map((element, index) => {
+                const elementType = type?.kind === "vector" ? type.element : type?.kind === "tuple" ? {kind: "number" as const}
+                    : type?.kind === "product" ? type.elements[index] : this.dataTypeAt(element);
+                if (!elementType) this.context.fail(element, "Destructuring source elements require a concrete data type.");
+                const initializer = this.compileForRetainedSink(element, elementType, "a destructuring source");
+                const cpp = this.context.allocateTemporaryCppName("destructure_value");
+                this.context.emit(`const auto ${cpp} = ${initializer};`);
+                return {...this.leafValue(cpp, elementType), nativeCaptures: [this.context.registerNativeBinding(cpp)]};
+            })};
+        } else {
+            value = this.context.compileValue(right);
+            const type = value.dataType ?? this.dataTypeAt(right);
+            if (!type || !["vector", "tuple", "product"].includes(type.kind))
+                this.context.fail(right, "Array destructuring assignment requires represented array storage.");
+            const source = this.context.allocateTemporaryCppName("destructure_source");
+            const initializer = value.kind === "tuple" ? this.compileKnownValueForSink(value, type, right) : value.cpp;
+            this.context.emit(`auto ${source} = ${initializer};`);
+            value = {...this.leafValue(source, type), nativeCaptures: [this.context.registerNativeBinding(source)]};
+        }
+        for (const {name, target, type: targetType, index, rest} of targets) {
+            const item = rest ? this.arrayRestValue(value, index, name)
+                : value.kind === "tuple" ? value.tupleElements?.[index] ?? {kind: "json-null" as const, cpp: "std::nullopt"}
+                : value.dataType?.kind === "vector" ? this.readVectorBindingElement(value, index, name)
+                : this.fixedTupleElement(value, index, name) ?? {kind: "json-null" as const, cpp: "std::nullopt"};
+            this.context.refuseBorrowedPlatformEventEscape(item, name, "a destructuring assignment");
+            const cpp = this.compileKnownValueForSink(item, targetType, name);
+            this.context.emit(`${target.cpp} = ${cpp};`);
+            this.invalidateStaticElements(target);
+            this.context.invalidateRecordProperties(target);
+        }
+        return true;
+    }
+
     private emitSwapAssignment(
         expression: ts.BinaryExpression,
     ): boolean {
@@ -7040,7 +7129,7 @@ export class DataLowerer {
         const operand = this.context.unwrap(
             expression.operand,
         );
-        const target =
+        const rawTarget =
             this.compileDataPath(
                 expression.operand,
                 "write",
@@ -7050,6 +7139,7 @@ export class DataLowerer {
                       operand,
                   )
                 : undefined);
+        const target = rawTarget ? this.narrowOptional(rawTarget, expression.operand) : undefined;
         if (target?.kind !== "number") {
             return false;
         }
@@ -7448,7 +7538,7 @@ export class DataLowerer {
             return undefined;
         }
         if (!loose) {
-            const union = scalarUnionEquality(this, left, right, negated);
+            const union = dataUnionEquality(this, left, right, negated);
             if (union !== undefined) return union;
         }
         // Optional chaining produces `T | undefined`. Strict equality with
@@ -8008,8 +8098,7 @@ export class DataLowerer {
     private materializeIterationPair(item: string, element: Extract<DataIterationElement, {kind: "map-entry" | "set-entry"}>, site: ts.Node, type?: DataType): Value {
         const pair = this.iterationElementValue(item, element);
         const lanes = element.kind === "set-entry" ? [element.element, element.element] : [element.key, element.value];
-        const pairType = type ?? (lanes.every(lane => lane.kind === "number")
-            ? {kind: "tuple", arity: 2} : {kind: "product", elements: lanes});
+        const pairType = type ?? this.context.dataTypes.tupleStorage(lanes);
         const cpp = this.context.allocateTemporaryCppName("entry_pair");
         this.context.emit(`auto ${cpp} = ${this.compileKnownValueForSink(pair, pairType, site)};`);
         this.registerLocal(cpp, "owned");
@@ -8154,7 +8243,7 @@ export class DataLowerer {
                     ? element.arity
                     : element.kind === "product" ? element.elements.length
                     : undefined;
-            if (arity === undefined) {
+            if (arity === undefined && element.kind !== "vector") {
                 this.context.fail(
                     name,
                     "Array destructuring in for...of requires tuple elements.",
@@ -8178,13 +8267,16 @@ export class DataLowerer {
                     define(element_.name, this.arrayRestValue(this.leafValue(itemCpp, element), index, element_.name));
                     return;
                 }
-                if (index >= arity) {
+                if (arity !== undefined && index >= arity) {
                     this.context.fail(
                         element_,
                         `Tuple index ${index} is out of range.`,
                     );
                 }
-                defineItem(element_.name, this.fixedTupleElement(this.leafValue(itemCpp, element), index, element_)!);
+                const source = this.leafValue(itemCpp, element);
+                defineItem(element_.name, element.kind === "vector"
+                    ? this.readVectorBindingElement(source, index, element_)
+                    : this.fixedTupleElement(source, index, element_)!);
             });
             return;
         }
@@ -8424,8 +8516,9 @@ export class DataLowerer {
                     if (mapRange) {
                         return { kind: "data", cpp: this.materializeEntryRange(mapRange, dataType, spread), dataType, freshSpread: true };
                     }
-                    const iterable = projected ?? this.compileDataPath(spread.expression, "read") ??
+                    const rawIterable = projected ?? this.compileDataPath(spread.expression, "read") ??
                         this.context.compileValue(spread.expression);
+                    const iterable = this.narrowOptional(rawIterable, spread.expression, true);
                     if (this.context.dataTypes.carriesBorrowedPlatformEvent(dataType.element)) {
                         this.context.refuseBorrowedPlatformEventEscape(iterable, spread, "Array spread");
                     }
@@ -8475,7 +8568,7 @@ export class DataLowerer {
                     if (iterable.kind !== "data" ||
                         !sourceElement ||
                         !dataTypesEqual(sourceElement, dataType.element)) {
-                        this.context.fail(spread, "Array spread requires a native Set, Array, or readonly array with the same element type.");
+                        this.context.fail(spread, `Array spread requires a native Set, Array, or readonly array with the same element type (source=${JSON.stringify(iterable.dataType)}, element=${JSON.stringify(dataType.element)}).`);
                     }
                     return projected?.freshData ? {...iterable, freshSpread: true} : iterable;
                 };

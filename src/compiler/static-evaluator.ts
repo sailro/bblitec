@@ -38,6 +38,7 @@ import { numberConstant, numberConstantValue } from "./number-intrinsics.js";
 import {
     isDataTuple,
     tupleComponents,
+    type DataType,
 } from "./data-types.js";
 import {
     doubleLiteral as cppDoubleLiteral,
@@ -100,6 +101,7 @@ type NarrowOptional = (
     value: Value,
     expression: ts.Expression,
     assertedNonNull?: boolean,
+    expectedType?: DataType,
 ) => Value;
 /**
  * A plain-data tuple given a native home, as the name of the local it
@@ -489,6 +491,14 @@ export class StaticEvaluator {
         expression: ts.Expression,
         precision: "float" | "double" = "float",
     ): string {
+        const narrowNumeric = (value: Value, node: ts.Expression, assertedNonNull = false): Value => {
+            // A mutable tuple can hold a number where its declared fixed lane was
+            // a string. TypeScript calls the guarded numeric branch never; native
+            // storage still has the number member selected by the runtime guard.
+            const expected = (this.checker.getTypeAtLocation(node).flags & ts.TypeFlags.Never) !== 0
+                ? {kind: "number" as const} : undefined;
+            return this.narrowOptional(value, node, assertedNonNull, expected);
+        };
         const castOptionalNumber = (
             value: Value,
             uncheckedElement = false,
@@ -773,7 +783,7 @@ export class StaticEvaluator {
         if (ts.isPropertyAccessExpression(unwrapped)) {
             const resolved = this.resolveProperty(unwrapped);
             const value = resolved
-                ? this.narrowOptional(resolved, unwrapped)
+                ? narrowNumeric(resolved, unwrapped)
                 : undefined;
             const optionalNumber = value
                 ? castOptionalNumber(value)
@@ -788,7 +798,7 @@ export class StaticEvaluator {
         if (ts.isElementAccessExpression(unwrapped)) {
             const resolved = this.resolveElement(unwrapped);
             const value = resolved
-                ? this.narrowOptional(resolved, unwrapped)
+                ? narrowNumeric(resolved, unwrapped)
                 : undefined;
             const optionalNumber = value
                 ? castOptionalNumber(value, true)
@@ -802,7 +812,7 @@ export class StaticEvaluator {
         }
         if (ts.isCallExpression(unwrapped)) {
             const resolved = this.resolveCall(unwrapped);
-            const value = this.narrowOptional(
+            const value = narrowNumeric(
                 resolved,
                 expression,
                 hasNonNullAssertion(expression),
@@ -833,7 +843,7 @@ export class StaticEvaluator {
             // the number it was narrowed to -- the unwrap, not a refusal.
             // An UNguarded read narrows to nothing and still fails by
             // name below rather than dereferencing an empty optional.
-            const narrowed = this.narrowOptional(value, unwrapped);
+            const narrowed = narrowNumeric(value, unwrapped);
             const optionalNumber = castOptionalNumber(narrowed);
             if (optionalNumber !== undefined) {
                 return optionalNumber;

@@ -818,6 +818,9 @@ export class DataTypeRegistry {
         return this.fromTupleType(reference, node);
       }
       const symbolName = type.symbol?.name;
+      // Iterable describes a protocol, not a record with a callable iterator
+      // field. Reached helpers specialize to their actual collection storage.
+      if (symbolName === "Iterable" && type.symbol && declaredInDefaultLibrary(type.symbol)) return undefined;
       if (symbolName && ["SetIterator", "IterableIterator", "IteratorObject", "Iterator"].includes(symbolName) &&
         type.symbol && declaredInDefaultLibrary(type.symbol)) {
         const [elementType] = this.checker.getTypeArguments(reference);
@@ -1329,17 +1332,22 @@ export class DataTypeRegistry {
         arity: elements.length,
       };
     }
-    // JavaScript tuples are arrays at runtime. A homogeneous object tuple
-    // such as `[FVertex, FVertex]` therefore uses the ordinary native
-    // array representation; it keeps element identity and supports the
-    // same indexed reads while retaining the fixed length in TypeScript.
+    // Tuples share array identity. Heterogeneous lanes use a nullable union
+    // so dynamic writes, resizing and missing elements use ordinary array
+    // operations instead of separate fixed-product mutation paths.
     const first = elements[0]!;
-    return elements.every((element) => dataTypesEqual(element, first))
-      ? {
-          kind: "vector",
-          element: this.markStoredObjectReferences(first),
-        }
-      : { kind: "product", elements: elements.map(element => this.markStoredObjectReferences(element)) };
+    if (elements.every((element) => dataTypesEqual(element, first))) {
+      return {kind: "vector", element: this.markStoredObjectReferences(first)};
+    }
+    const members: DataType[] = [];
+    const append = (type: DataType): void => {
+      if (type.kind === "optional") append(type.inner);
+      else if (type.kind === "union") type.members.forEach(append);
+      else if (type.kind === "enum") append({kind: "string"});
+      else if (!members.some(member => dataTypesEqual(member, type))) members.push(type);
+    };
+    elements.map(element => this.markStoredObjectReferences(element)).forEach(append);
+    return {kind: "vector", element: {kind: "optional", inner: members.length === 1 ? members[0]! : {kind: "union", members}}};
   }
 
   private fromStructType(type: ts.Type, node: ts.Node): DataType | undefined {

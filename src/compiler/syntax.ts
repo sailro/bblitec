@@ -17,6 +17,14 @@ export function regularExpressionParts(expression: ts.RegularExpressionLiteral):
 }
 import { someAnalysisNode } from "./analysis-walk.js";
 
+/** Calls, accessors and writes can change an earlier selected receiver/value. */
+export function expressionMayRunCode(expression: ts.Expression): boolean {
+    return someAnalysisNode(expression, node =>
+        ts.isCallExpression(node) || ts.isNewExpression(node) ||
+        ts.isPropertyAccessExpression(node) || ts.isElementAccessExpression(node) ||
+        isUpdateExpression(node) || isAssignmentExpression(node), {functions: "skip", types: "skip"});
+}
+
 export interface UnwrapOptions {
     /**
      * Strip `await` as well. Only a reader that already knows the awaited

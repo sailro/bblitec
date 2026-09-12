@@ -3,6 +3,13 @@ import type { DataLowerer } from "./data-lowering.js";
 import type { DataType } from "./data-types.js";
 import type { Value } from "./types.js";
 
+/** Keep the selected array alive before arguments can rebind its source. */
+export function captureArrayReceiver(lowerer: DataLowerer, owner: Value): string {
+    const source = lowerer.context.allocateTemporaryCppName("array_receiver");
+    lowerer.context.emit({ kind: "declaration", type: "auto", name: source, initializer: owner.cpp });
+    return source;
+}
+
 /** Methods that return a value independently of the array callback protocol. */
 export function compileArrayValueMethod(
     lowerer: DataLowerer, call: ts.CallExpression, method: string,
@@ -13,8 +20,7 @@ export function compileArrayValueMethod(
         lowerer.context.fail(call, `Array.${method} requires owned mutable array storage.`);
     }
     lowerer.context.reachJsData();
-    const source = lowerer.context.allocateTemporaryCppName("array_receiver");
-    lowerer.context.emit({ kind: "declaration", type: "auto", name: source, initializer: owner.cpp });
+    const source = captureArrayReceiver(lowerer, owner);
     const numericArgument = (index: number, fallback: string): string =>
         lowerer.compileNumberArgument(call.arguments[index], fallback);
     if (method === "at") {

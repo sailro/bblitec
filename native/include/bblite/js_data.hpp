@@ -2756,7 +2756,8 @@ template <typename T, std::size_t N>
 template <typename T>
 inline T array_pop(Array<T>& values) {
     if (values.empty()) [[unlikely]] {
-        throw std::runtime_error("Array pop on an empty array.");
+        if constexpr (std::is_same_v<T, typename MapGetResult<T>::Type>) return {};
+        else throw std::runtime_error("Array pop on an empty array.");
     }
     T last = values.back();
     values.pop_back();
@@ -2767,7 +2768,8 @@ inline T array_pop(Array<T>& values) {
 template <typename T>
 inline T array_shift(Array<T>& values) {
     if (values.empty()) [[unlikely]] {
-        throw std::runtime_error("Array shift on an empty array.");
+        if constexpr (std::is_same_v<T, typename MapGetResult<T>::Type>) return {};
+        else throw std::runtime_error("Array shift on an empty array.");
     }
     T first = values.front();
     values.erase(values.begin());
@@ -2938,9 +2940,11 @@ inline void array_splice_one(Array<T>& values, double index) {
     values.erase(values.begin() + static_cast<std::ptrdiff_t>(position));
 }
 
-// `array.length = count` — the reached subset only shrinks (truncation).
+// Length writes keep the dense-array contract; sparse growth needs slot presence.
 template <typename T>
 inline void array_truncate(Array<T>& values, double count) {
+    if (!std::isfinite(count) || count < 0.0 || count > 4294967295.0 || std::trunc(count) != count)
+        throw std::runtime_error("Invalid array length.");
     const auto size = array_index(count);
     if (size > values.size()) [[unlikely]] {
         throw std::runtime_error(

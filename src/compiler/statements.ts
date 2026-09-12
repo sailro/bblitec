@@ -3021,7 +3021,8 @@ export class StatementLowerer {
                     context.unwrap(unwrapped.right),
                 )
             ) {
-                this.emitTupleResourceAssignment(context, unwrapped);
+                if (!context.dataLowerer.emitArrayDestructuringAssignment(unwrapped))
+                    this.emitTupleResourceAssignment(context, unwrapped);
             } else {
                 context.emitAssignment(unwrapped);
             }

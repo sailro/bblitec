@@ -161,6 +161,122 @@ check("mixed-tuple-rest-bindings", `
     for(const [,,...rest] of entries) if(rest.length !== 0) throw new Error('empty entry rest');
 `);
 
+check("iterable-parameter-storage", `
+    class Collector {
+        items:string[] = [];
+        append(values:Iterable<string>):void {
+            for(const value of values) this.items.push(value);
+        }
+    }
+    const collector = new Collector();
+    const values = new Set(['one','two']);
+    collector.append(values);
+    collector.append(['three']);
+    const iterator = values.entries();
+    function count(pairs:Iterable<[string,string]>):number {
+        let total = 0;
+        for(const [key,value] of pairs) {if(key !== value) throw new Error('entry identity');total++;}
+        return total;
+    }
+    if(collector.items.join(',') !== 'one,two,three' || count(iterator) !== 2 || count(iterator) !== 0)
+        throw new Error('iterable uses its actual collection');
+`);
+
+check("mixed-tuple-mutations", `
+    const pair:[string,number] = ['head',2];
+    const alias = pair;
+    const positions:number[] = [0,1];
+    for(const index of positions) pair[index] = index + 10;
+    for(const index of positions) {
+        const value = alias[index];
+        if(typeof value !== 'number' || value !== index + 10) throw new Error('dynamic writes and shared identity');
+    }
+    if(pair.push('tail') !== 3 || alias.length !== 3) throw new Error('push result and alias');
+    if(pair.pop() !== 'tail' || pair.shift() !== 10) throw new Error('pop and shift values');
+    if(pair.unshift('new') !== 2) throw new Error('unshift length');
+    const removed = pair.splice(1,1,20,30);
+    const indices:number[] = [1,2];
+    if(removed[0] !== 11 || pair.length !== 3) throw new Error('splice result');
+    for(const index of indices) if(pair[index] !== (index + 1) * 10) throw new Error('splice insertion');
+    pair.length = 0 as 2;
+    if(alias.length !== 0 || pair.pop() !== undefined || pair.shift() !== undefined) throw new Error('empty mutation results');
+    for(const index of positions) if(pair[index] !== undefined) throw new Error('out of range after truncation');
+`);
+
+check("mixed-tuple-mutation-boundaries", `
+    const source:[string,number] = ['head',2];
+    const positions:number[] = [0];
+    for(const index of positions) source[index] = 4;
+    const value = source[0];
+    if(typeof value !== 'number' || value !== 4) throw new Error('changed static lane');
+    if(typeof value === 'number' && value + 1 !== 5) throw new Error('guarded numeric operation');
+    function tail(pair:[string,number,boolean]):[number,boolean] {
+        const [,...rest] = pair;
+        return rest;
+    }
+    const row:[string,number,boolean] = ['head',2,true];
+    const rows:[number,boolean][] = [];
+    rows.push(tail(row));
+    if(rows[0][0] !== 2 || rows[0][1] !== true) throw new Error('stored returned rest');
+    let pair:[string,number] = ['head',2];
+    const original = pair;
+    function argument():number {pair=['new',3];return 4;}
+    if(pair.push(argument()) !== 3 || original.length !== 3 || pair.length !== 2) throw new Error('push receiver snapshot');
+    let numbers:number[] = [1];
+    const before = numbers;
+    let current = 2;
+    function replace():number {numbers=[9];current=3;return 4;}
+    if(numbers.push(current, replace()) !== 3 || before[1] !== 2 || before[2] !== 4 || numbers.length !== 1) throw new Error('ordinary push evaluation');
+    if(numbers.push() !== 1) throw new Error('empty push length');
+    const prepend = numbers;
+    if(numbers.unshift(current, replace()) !== 3 || prepend[0] !== 3 || prepend[1] !== 4 || numbers.length !== 1) throw new Error('unshift evaluation');
+    const spread:number[] = [5,6];
+    function editSpread():number {spread[0]=7;return 8;}
+    numbers.push(...spread, editSpread());
+    if(numbers[1] !== 5 || numbers[2] !== 6 || numbers[3] !== 8) throw new Error('spread arguments evaluated before mutation');
+    numbers.push(...numbers);
+    if(numbers.length !== 8 || numbers[5] !== 5) throw new Error('self spread');
+`);
+
+check("mixed-tuple-destructuring-assignments", `
+    const row:[string,number,boolean] = ['head',2,true];
+    let head = '';
+    let tail:(number|boolean)[] = [];
+    [head,...tail] = row;
+    if(head !== 'head' || tail[0] !== 2 || tail[1] !== true) throw new Error('assigned rest');
+    tail[0] = 7;
+    if(row[1] !== 2) throw new Error('rest is fresh');
+    let count = 0;
+    let enabled = false;
+    [head,count,enabled] = row;
+    if(head !== 'head' || count !== 2 || enabled !== true) throw new Error('assigned lanes');
+    [head,count,enabled] = ['next',3,false];
+    if(head !== 'next' || count !== 3 || enabled !== false) throw new Error('literal assignment');
+    [,count] = row;
+    if(count !== 2) throw new Error('omitted assignment');
+    let first = 1, second = 2;
+    [first,second] = [second,first];
+    if(first !== 2 || second !== 1) throw new Error('numeric swap');
+    function mutate():number {second=9;return 7;}
+    [first,second] = [second,mutate()];
+    if(first !== 1 || second !== 7) throw new Error('source values precede assignments');
+    let calls = 0;
+    function source():[string,number,boolean] {calls++;return row;}
+    [head,...tail] = source();
+    if(calls !== 1 || head !== 'head' || tail[0] !== 2) throw new Error('single source evaluation');
+    const object = {value:4};
+    const objects:[string,{value:number}] = ['object',object];
+    let selected = {value:0};
+    [head,selected] = objects;
+    selected.value = 9;
+    if(object.value !== 9) throw new Error('assigned object identity');
+    let empty:(number|boolean)[] = [1];
+    [,,,...empty] = row;
+    if(empty.length !== 0) throw new Error('empty assigned rest');
+    [...tail] = [];
+    if(tail.length !== 0) throw new Error('empty literal rest');
+`);
+
 check("mixed-tuple-dynamic-reads", `
     let pair: [string, number] = ["value", 7];
     const indices = [0, 1, 2, -1, 0.5, NaN];
