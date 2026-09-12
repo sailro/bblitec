@@ -36,7 +36,7 @@ it does not establish that this external application compiles or runs.
 | Branch | `codex/external-project-support` |
 | Remote | `https://github.com/sailro/bblitec.git` |
 | Branch base used in this session | `3474e835` on `main` |
-| Latest executable-code/test unit | Selector functions and placeholder styles; prior savepoints `bf9e1a02` (generated content), `c18e4818` (structural selectors), `6aa3bc40` (selector chains and fresh Window layout), `fadc3ac8` (event targets), `48f5224f` (DOM input bridge) and `58c6fe8c` (mixed tuples) |
+| Latest executable-code/test unit | Ambient declaration/typeof guards; prior savepoints `2d977b31` (selector functions/placeholders), `bf9e1a02` (generated content), `c18e4818` (structural selectors), `6aa3bc40` (selector chains and fresh Window layout), `fadc3ac8` (event targets), `48f5224f` (DOM input bridge) and `58c6fe8c` (mixed tuples) |
 | Draft PR | [#247 — Extend generic application compilation and retained UI support](https://github.com/sailro/bblitec/pull/247) |
 | External checkout | `C:/Dev/_prototypes/external-native-app` |
 | External source revision | `d7c477a6d5963680c55249dceb93cb6e4ab9ce56` |
@@ -44,9 +44,9 @@ it does not establish that this external application compiles or runs.
 | External generated output | `generated/external-app` (ignored; not a successful complete generation) |
 | Session diagnostics | `artifacts/external-integration` (ignored) |
 
-Latest complete-entry diagnostic: `compile476` passed the former descendant-selector
-refusal and stopped at a reached `:is()` selector. The current selector-function unit
-implements that family; no complete-entry attempt after it has run yet.
+Latest complete-entry diagnostic: `compile487` passed the reached stylesheets and
+stopped at a guarded ambient build flag. The current language unit implements
+absent-global `typeof`; no complete-entry attempt after it has run yet.
 
 Current assessment artifacts: `requirements356.json` inventories the unchanged
 entry's static local import graph (1,343 files, 1,002 unassessed API/syntax groups;
@@ -266,6 +266,29 @@ These are syntax/lowering assessments, not full-rule native fidelity or applicat
 completion percentages. Declaration groups include grid geometry, text styles,
 visibility, borders and transform origins. Keep full application retries at batch
 boundaries, and continue through native build/runtime and final validation.
+
+The ambient-global unit erases `declare` statements and lets bare `typeof` observe
+an unprovided ambient/unbound identifier as undefined. Symbol checks exclude imports,
+actual local declarations and default-library globals. Direct reads and property
+receivers retain their explicit refusal. `ambient491` passes five neutral checks,
+including JavaScript/native parity and an imported fallback module. `language492`
+passes all 791 language/compiler checks without skips. These checks also cover the
+shared native language-fixture helper extracted for the imported-module test.
+
+`rmlui485` successfully reconciled the standard development artifact with fourteen
+patches. `rmlui-static493` is rebuilding the static variant with its existing explicit
+FreeType root, so no vcpkg install is needed. The static SVG variant still needs the
+same reconciliation. Historical offscreen/text artifacts should be inspected before
+use rather than mistaken for the current development artifact.
+
+The next complete-entry checkpoint can collect a Node CPU profile in the ignored
+diagnostics directory: generation took several minutes before the ambient refusal.
+Use it to find measured iteration costs. `declaration-batch-notes.md` records the
+next CSS assessment: do not simply allow registered names. Pinned text-transform
+is ASCII-only and has no capitalize implementation; italic needs actual platform
+font discovery/loading. No declaration-family implementation followed those findings.
+All twelve new declaration probes currently refuse (`css-declarations487.json`);
+they are a separate baseline from the original thirteen CSS family probes.
 
 The branch was clean and synchronized with its remote before adding this
 document. All 14 implementation/test commits listed below were pushed. The PR

@@ -2024,6 +2024,7 @@ class Compiler
     }
 
     public emitVariableDeclaration(declaration: ts.VariableDeclaration): void {
+        if ((ts.getCombinedModifierFlags(declaration) & ts.ModifierFlags.Ambient) !== 0) return;
         if (!declaration.initializer && declaration.type && ts.isTypeReferenceNode(declaration.type) &&
             ts.isIdentifier(declaration.type.typeName) && declaration.type.typeName.text === "GPUTexture" &&
             !this.checker.getSymbolAtLocation(declaration.type.typeName)?.declarations?.length &&

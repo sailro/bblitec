@@ -459,6 +459,7 @@ export class StatementLowerer {
         context: StatementLoweringContext,
         statement: ts.Statement,
     ): void {
+        if (ts.canHaveModifiers(statement) && ts.getModifiers(statement)?.some(modifier => modifier.kind === ts.SyntaxKind.DeclareKeyword)) return;
         if (context.isFoldedFlattenLoop(statement)) {
             // The declaration above it already answered with the
             // container's flattened meshes; the loop that filled the list
