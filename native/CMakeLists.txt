@@ -610,18 +610,25 @@ if("ui:rml" IN_LIST BBLITE_RUNTIME_FEATURES)
     # scene reaching inline SVG, the plugin.
     set(BBLITE_RMLUI_BUILD_COMMAND "tools/build-rmlui.ps1")
     if(BBLITE_MINSIZE)
-        string(APPEND BBLITE_RMLUI_BUILD_COMMAND " -StaticRuntime")
+        if(WIN32)
+            string(APPEND BBLITE_RMLUI_BUILD_COMMAND " -StaticRuntime")
+        else()
+            string(APPEND BBLITE_RMLUI_BUILD_COMMAND " -MinSize")
+        endif()
         if("ui:inline-svg" IN_LIST BBLITE_RUNTIME_FEATURES)
             string(APPEND BBLITE_RMLUI_BUILD_COMMAND " -EnableSvg")
         endif()
     endif()
-    if(BBLITE_MINSIZE AND NOT BBLITE_RMLUI_STATIC_RUNTIME)
+    if(BBLITE_MINSIZE AND WIN32 AND NOT BBLITE_RMLUI_STATIC_RUNTIME)
         message(
             FATAL_ERROR
             "A minimal UI build requires the static-CRT RmlUi variant. "
             "Build it with ${BBLITE_RMLUI_BUILD_COMMAND} and point "
             "BBLITE_RMLUI_DIR at that install."
         )
+    endif()
+    if(BBLITE_MINSIZE AND UNIX AND NOT BBLITE_RMLUI_MINSIZE)
+        message(FATAL_ERROR "Minimal UI builds require RmlUi built with -MinSize: ${BBLITE_RMLUI_BUILD_COMMAND}.")
     endif()
     # The artifact records the commit and the patch set (name=sha256, in
     # name order) it was built from; the pin and native/patches say what
@@ -856,7 +863,7 @@ if("audio:engine" IN_LIST BBLITE_RUNTIME_FEATURES)
         include("${BBLITE_LABSOUND_FEATURES}")
     endif()
     if(BBLITE_MINSIZE)
-        if(NOT BBLITE_LABSOUND_STATIC_RUNTIME)
+        if(WIN32 AND NOT BBLITE_LABSOUND_STATIC_RUNTIME)
             message(
                 FATAL_ERROR
                 "A minimal audio build requires the static-CRT LabSound "
@@ -864,6 +871,9 @@ if("audio:engine" IN_LIST BBLITE_RUNTIME_FEATURES)
                 "-StaticRuntime (plus -EnableCodecs for decoded audio) and "
                 "point BBLITE_LABSOUND_DIR at that install."
             )
+        endif()
+        if(UNIX AND NOT BBLITE_LABSOUND_MINSIZE)
+            message(FATAL_ERROR "Minimal audio builds require tools/build-labsound.ps1 -MinSize (plus -EnableCodecs for decoded audio).")
         endif()
     endif()
     if(
@@ -1003,11 +1013,12 @@ if(BBLITE_MINSIZE)
                 PRIVATE /LTCG /OPT:REF /OPT:ICF /INCREMENTAL:NO /MAP
             )
         else()
+            find_program(BBLITE_LLD NAMES ld.lld REQUIRED)
             target_compile_options(bblite_features INTERFACE -Oz -flto -ffunction-sections
                 -fdata-sections
             )
             target_link_options(
-                bblite_native PRIVATE -flto -Wl,--gc-sections
+                bblite_native PRIVATE -flto "-fuse-ld=${BBLITE_LLD}" -Wl,--gc-sections
             )
         endif()
     elseif(MSVC)

@@ -38,6 +38,7 @@ param(
     # static-triplet FreeType headers it compiles against (see below).
     [string]$Vcpkg = $(if ($env:VCPKG_ROOT) { Join-Path $env:VCPKG_ROOT "vcpkg.exe" } else { "" }),
     [switch]$StaticRuntime,
+    [switch]$MinSize,
     [switch]$EnableSvg,
     [ValidateRange(0, 1024)][int]$Jobs = 0,
     [string]$CMake = $env:CMAKE_COMMAND
@@ -47,20 +48,22 @@ $ErrorActionPreference = "Stop"
 Import-Module (Join-Path $PSScriptRoot "bblite-tools.psm1") -Force
 $root = Get-RepositoryRoot
 if ($StaticRuntime -and -not $IsWindows) { throw "-StaticRuntime selects the Windows shipping CRT." }
+if ($MinSize -and -not $IsLinux) { throw "-MinSize selects Linux shipping; use -StaticRuntime on Windows." }
+$minimalBuild = $StaticRuntime -or $MinSize
 # Development keeps one complete artifact. Shipping selects SVG only when
 # the generated scene reaches ui:inline-svg.
-$rmlSvgEnabled = -not $StaticRuntime -or $EnableSvg
+$rmlSvgEnabled = -not $minimalBuild -or $EnableSvg
 $rmlSvgSetting = if ($rmlSvgEnabled) { "ON" } else { "OFF" }
 $staticSuffix = if ($EnableSvg) { "-static-svg" } else { "-static" }
 if (-not $Workspace) {
-    $Workspace = if ($StaticRuntime) {
+    $Workspace = if ($minimalBuild) {
         ".cache\rmlui$staticSuffix"
     } else {
         ".cache\rmlui"
     }
 }
 if (-not $OutputDirectory) {
-    $OutputDirectory = if ($StaticRuntime) {
+    $OutputDirectory = if ($minimalBuild) {
         "artifacts\tools\rmlui$staticSuffix"
     } else {
         "artifacts\tools\rmlui"
@@ -238,6 +241,12 @@ if (Test-Path $cachePath) {
         Remove-Item -Recurse -Force $build
     }
 }
+if ($MinSize -and $IsLinux) {
+    $configureArguments += @(
+        '-DCMAKE_CXX_FLAGS_RELEASE=-Os -DNDEBUG -ffunction-sections -fdata-sections',
+        '-DCMAKE_C_FLAGS_RELEASE=-Os -DNDEBUG -ffunction-sections -fdata-sections'
+    )
+}
 $configureArguments += @(Get-LinuxCompilerArguments)
 & $CMake @configureArguments
 if ($LASTEXITCODE -ne 0) {
@@ -275,6 +284,7 @@ Copy-Item -Force (Join-Path $source "LICENSE.txt") (Join-Path $output "RmlUi-LIC
 # Native configuration reads this record and refuses the artifact when the
 # pin or a patch moved since it was built. The patch set is "name=sha256"
 # per file, in name order, as CMake recomputes it over native/patches.
+$minSizeSetting = if ($minimalBuild) { "ON" } else { "OFF" }
 $staticRuntimeSetting = if ($StaticRuntime) { "ON" } else { "OFF" }
 $patchRecord = @(
     $patches | ForEach-Object {
@@ -284,6 +294,7 @@ $patchRecord = @(
 ) -join ";"
 @(
     "set(BBLITE_RMLUI_STATIC_RUNTIME $staticRuntimeSetting)"
+    "set(BBLITE_RMLUI_MINSIZE $minSizeSetting)"
     "set(BBLITE_RMLUI_COMMIT `"$($pin.commit)`")"
     "set(BBLITE_RMLUI_PATCHES `"$patchRecord`")"
 ) -join "`n" |

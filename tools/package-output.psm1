@@ -4,7 +4,7 @@ function Assert-PackageChild([string]$Root, [string]$Path) {
     $rootPath = [IO.Path]::GetFullPath($Root).TrimEnd('\', '/')
     $child = [IO.Path]::GetFullPath($Path)
     if (-not $child.StartsWith($rootPath + [IO.Path]::DirectorySeparatorChar,
-        [StringComparison]::OrdinalIgnoreCase)) {
+        $(if ($IsWindows) { [StringComparison]::OrdinalIgnoreCase } else { [StringComparison]::Ordinal }))) {
         throw "Package path escapes output root: $Path"
     }
     $cursor = $child
@@ -18,7 +18,7 @@ function Assert-PackageChild([string]$Root, [string]$Path) {
 }
 
 function New-PackageOutput([string]$Root, [string]$Name) {
-    if ($Name -notmatch '^bblitec-[a-z0-9]+(?:-[a-z0-9]+)*-windows-x64$') {
+    if ($Name -notmatch '^bblitec-[a-z0-9]+(?:-[a-z0-9]+)*-(?:windows|linux)-x64$') {
         throw "Invalid package name: $Name"
     }
     $rootPath = [IO.Path]::GetFullPath($Root)

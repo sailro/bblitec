@@ -10,8 +10,8 @@ param(
 # exact, statically linked BBLITE_MINSIZE shape; full development builds and
 # dual-backend differential binaries are deliberately rejected. The payload
 # follows the single backend the build directory was configured with
-# (BBLITE_BACKEND): SDL_GPU ships offline D3D12 DXIL shaders, while DAWN
-# ships WGSL text. Dawn comes from tools/build-dawn-min.ps1. The package
+# (BBLITE_BACKEND): SDL_GPU ships DXIL on Windows and SPIR-V on Linux;
+# Windows DAWN ships WGSL text. Dawn comes from tools/build-dawn-min.ps1. The package
 # ships no runtime or CRT DLLs.
 
 $ErrorActionPreference = "Stop"
@@ -19,6 +19,17 @@ Import-Module (Join-Path $PSScriptRoot "bblite-tools.psm1") -Force
 Import-Module (Join-Path $PSScriptRoot "image-codecs.psm1") -Force
 Import-Module (Join-Path $PSScriptRoot "package-output.psm1") -Force
 $root = Get-RepositoryRoot
+if ((-not $IsWindows -and -not $IsLinux) -or
+    [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture -ne 'X64') {
+    throw "Minimal packaging supports Windows and Linux x64."
+}
+$platformName = if ($IsWindows) { "windows" } else { "linux" }
+$gpuDriver = if ($IsWindows) { "direct3d12" } else { "vulkan" }
+$graphicsApi = if ($IsWindows) { "D3D12" } else { "Vulkan" }
+$exeExtension = if ($IsWindows) { ".exe" } else { "" }
+$expectedTriplet = if ($IsWindows) { "x64-windows-static" } else { "x64-linux" }
+$pathComparison = if ($IsWindows) { [StringComparison]::OrdinalIgnoreCase } else { [StringComparison]::Ordinal }
+$pathComparer = if ($IsWindows) { [StringComparer]::OrdinalIgnoreCase } else { [StringComparer]::Ordinal }
 if ($Scene -notmatch '^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$') {
     throw (
         "Shipping requires a generated scene id made from lowercase letters, " +
@@ -51,16 +62,17 @@ if ($backend -eq "BOTH") {
 if ($ExpectBackend -and $backend -ne $ExpectBackend) {
     throw "Build directory $BuildDirectory was configured with BBLITE_BACKEND=$backend, not $ExpectBackend."
 }
+if ($IsLinux -and $backend -ne "SDL_GPU") { throw "Linux shipping currently requires SDL_GPU with Vulkan." }
 $minSize = $cache["BBLITE_MINSIZE"]
 if ($minSize -ne "ON") {
     throw "Shipping requires BBLITE_MINSIZE=ON; configure the exact mini build before packaging."
 }
 $triplet = $cache["VCPKG_TARGET_TRIPLET"]
-if ($triplet -ne "x64-windows-static") {
-    throw "Shipping requires VCPKG_TARGET_TRIPLET=x64-windows-static; got '$triplet'."
+if ($triplet -ne $expectedTriplet) {
+    throw "Shipping requires VCPKG_TARGET_TRIPLET=$expectedTriplet; got '$triplet'."
 }
 $runtime = $cache["CMAKE_MSVC_RUNTIME_LIBRARY"]
-if ($runtime -notmatch '^MultiThreaded(?:Debug)?(?:\$<.*>)?$') {
+if ($IsWindows -and $runtime -notmatch '^MultiThreaded(?:Debug)?(?:\$<.*>)?$') {
     throw "Shipping requires the static MSVC runtime (CMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded); got '$runtime'."
 }
 # Every per-scene read below (features, deployed-payload comparison) must
@@ -77,7 +89,7 @@ $expectedGenerated = [System.IO.Path]::GetFullPath(
 if (-not [string]::Equals(
     $generatedDirectory,
     $expectedGenerated,
-    [System.StringComparison]::OrdinalIgnoreCase
+    $pathComparison
 )) {
     throw "Build directory $BuildDirectory was configured against $generatedDirectory, not $expectedGenerated. Reconfigure the mini tree for the packaged scene."
 }
@@ -98,8 +110,8 @@ $uiSvgReached = $featuresText -match '"ui:inline-svg"'
 $textLayoutReached = $featuresText -match '"text:layout"'
 
 $executable = @(
-    (Join-Path $buildPath "bblite_native.exe"),
-    (Join-Path $buildPath "Release\bblite_native.exe")
+    (Join-Path $buildPath "bblite_native$exeExtension"),
+    (Join-Path $buildPath "Release/bblite_native$exeExtension")
 ) | Where-Object { Test-Path $_ } | Select-Object -First 1
 if (-not $executable) {
     throw "Required shipping executable not found under: $buildPath"
@@ -131,7 +143,7 @@ foreach ($payload in @(
 )) {
     if (-not (Test-Path $payload.Deployed)) { continue }
     $owned = [System.Collections.Generic.HashSet[string]]::new(
-        [System.StringComparer]::OrdinalIgnoreCase
+        $pathComparer
     )
     if (Test-Path $payload.Source) {
         foreach ($file in Get-ChildItem $payload.Source -File -Recurse) {
@@ -162,11 +174,11 @@ $outputRootPath = if ([System.IO.Path]::IsPathRooted($OutputRoot)) {
 } else {
     [System.IO.Path]::GetFullPath((Join-Path $root $OutputRoot))
 }
-$packageName = "bblitec-$Scene-$backendToken-windows-x64"
+$packageName = "bblitec-$Scene-$backendToken-$platformName-x64"
 $outputPlan = New-PackageOutput $outputRootPath $packageName
 $packageDirectory = Join-Path $outputPlan.Staging $packageName
 $archivePath = Join-Path $outputPlan.Staging "$packageName.zip"
-$exeName = "bblitec-$Scene.exe"
+$exeName = "bblitec-$Scene$exeExtension"
 $previousExe = Join-Path (Join-Path $outputRootPath $packageName) $exeName
 $previousZip = Join-Path $outputRootPath "$packageName.zip"
 $previousExeBytes = if (Test-Path -LiteralPath $previousExe) { (Get-Item -LiteralPath $previousExe).Length } else { $null }
@@ -178,8 +190,16 @@ $licenses = Join-Path $packageDirectory "licenses"
 New-Item -ItemType Directory -Path $assets, $shaders, $licenses -Force | Out-Null
 
 Copy-Item $executable (Join-Path $packageDirectory $exeName)
-# Statically linked builds carry SDL (and Dawn) inside the executable:
-# no runtime DLLs sit beside it and no CRT redistributable is needed.
+if ($IsLinux) {
+    $strip = $cache["CMAKE_STRIP"]
+    if (-not $strip -or -not (Test-Path -LiteralPath $strip)) { throw "CMAKE_STRIP must name the native strip tool." }
+    & $strip --strip-unneeded (Join-Path $packageDirectory $exeName)
+    if ($LASTEXITCODE -ne 0) { throw "Unable to strip the staged executable." }
+    & chmod 755 (Join-Path $packageDirectory $exeName)
+    if ($LASTEXITCODE -ne 0) { throw "Unable to set the executable permission." }
+}
+# Statically linked builds carry SDL (and Windows Dawn) inside the executable.
+# Windows also links the CRT statically; Linux retains host system libraries.
 $sdlShared = Test-Path (Join-Path $runtimeDirectory "SDL3.dll")
 $dawnShared = ($backend -eq "DAWN") -and
     (Test-Path (Join-Path $runtimeDirectory "webgpu_dawn.dll"))
@@ -192,13 +212,13 @@ if (Test-Path $assetSource) {
 }
 
 # The runtime reads only its compiled backend's shader formats: the trimmed
-# SDL carries only the Direct3D 12 driver, so SDL_GPU loads offline .dxil
+# SDL uses the host GPU driver, so SDL_GPU loads offline .dxil/.spv
 # plus the .slots sidecars naming each pinned variant's register order (the
 # PAL binds by that file, never by the WGSL); Dawn compiles the .native.wgsl
 # text in-process. Text intermediates (.hlsl, .msl, reflection dumps, tool
 # manifests) are development artifacts.
 $shaderPatterns = switch ($backend) {
-    "SDL_GPU" { @("*.dxil", "*.slots") }
+    "SDL_GPU" { @($(if ($IsWindows) { "*.dxil" } else { "*.spv" }), "*.slots") }
     "DAWN" { @("*.native.wgsl") }
 }
 $shaderFiles = Get-ChildItem $shaderSource -File |
@@ -317,7 +337,7 @@ if ($backend -eq "DAWN") {
 # fails the suite until its notice entry lands between these markers.
 
 $backendDescription = switch ($backend) {
-    "SDL_GPU" { "SDL_GPU over Direct3D 12 with offline-compiled shaders" }
+    "SDL_GPU" { "SDL_GPU over $graphicsApi with offline-compiled shaders" }
     "DAWN" { "Dawn (Chrome's WebGPU) over Direct3D 12, compiling WGSL at startup" }
 }
 
@@ -333,7 +353,7 @@ foreach ($report in @(
     }
 }
 $fidelitySection = if ($fidelityLines) {
-    "Current D3D12 fidelity baseline (versus the pinned browser reference):`r`n" +
+    "Current development $graphicsApi fidelity baseline (versus the pinned browser reference):`r`n" +
         ($fidelityLines -join "`r`n") + "`r`n`r`n"
 } else {
     ""
@@ -345,14 +365,19 @@ $fxcNote = if ($backend -eq "DAWN") {
     ""
 }
 
+$runInstructions = if ($IsWindows) { "Double-click $exeName. Its console window shows startup errors." } else { "Run ./$exeName from a terminal in this directory." }
+$requirements = if ($IsWindows) { "Windows 10/11 and a Direct3D 12 GPU" } else { "Linux x64 with a Vulkan GPU/driver and an X11 or Wayland session" }
+$linuxNote = if ($IsLinux) {
+    "`n  - Built for the host Linux system ABI; see RUNTIME-LIBRARIES.txt for linked system libraries.`n  - Install Fontconfig and fonts for text/UI. Audio requires a working host audio service."
+} else { "" }
 @"
-bblitec $Scene shipping demo (Windows x64)
+bblitec $Scene shipping demo ($platformName x64)
 ================================================
 
 Backend: $backendDescription
 
 Run:
-  Double-click $exeName. Its console window shows startup errors.
+  $runInstructions
 
 Controls:
   Scene-defined keyboard and pointer input remains available to the demo.
@@ -361,10 +386,10 @@ Controls:
   consume keyboard input.
 
 Troubleshooting:
-  - Requires Windows 10/11 and a Direct3D 12 GPU. bblitec renders only
+  - Requires $requirements. bblitec renders only
     on a GPU; there is no software path, so a device that cannot be
     brought up is an error rather than a slower picture.
-  - Keep the assets and shaders directories beside the executable.$fxcNote
+  - Keep the assets and shaders directories beside the executable.$fxcNote$linuxNote
 
 $($fidelitySection)Compiler source:
   https://github.com/sailro/bblitec
@@ -452,25 +477,50 @@ function Get-ImportedLibraries {
     return $names
 }
 
-$staged = Get-ChildItem $packageDirectory -Filter *.dll -File
-$staged += Get-ChildItem $packageDirectory -Filter *.exe -File
-$stagedNames = [System.Collections.Generic.HashSet[string]]::new(
-    [string[]]($staged | ForEach-Object { $_.Name }),
-    [System.StringComparer]::OrdinalIgnoreCase
-)
-$missing = @{}
-foreach ($binary in $staged) {
-    foreach ($import in (Get-ImportedLibraries -Path $binary.FullName)) {
-        if ($stagedNames.Contains($import)) { continue }
-        # Only the toolchain's own libraries are ours to ship.
-        if (-not (Test-Path (Join-Path $runtimeDirectory $import))) { continue }
-        $missing[$import] = $binary.Name
+if ($IsLinux) {
+    # Project libraries must be static; OS libraries and the Vulkan driver stay
+    # on the host. Resolve without the developer's loader search overrides.
+    $oldLibraryPath = $env:LD_LIBRARY_PATH
+    $oldPreload = $env:LD_PRELOAD
+    $oldLocale = $env:LC_ALL
+    try {
+        $env:LC_ALL = "C"
+        $env:LD_LIBRARY_PATH = $null
+        $env:LD_PRELOAD = $null
+        $dependencies = & ldd (Join-Path $packageDirectory $exeName) 2>&1
+        if ($LASTEXITCODE -ne 0 -or ($dependencies -match 'not found')) { throw "Unresolved Linux dependencies: $dependencies" }
+        foreach ($line in $dependencies) {
+            if ($line -match 'lib(?:SDL3|RmlUi|rmlui|LabSound|webgpu_dawn)' -or $line.Contains($root)) {
+                throw "Shipping requires static project libraries, but the executable imports: $line"
+            }
+        }
+        $dependencies | Set-Content (Join-Path $packageDirectory "RUNTIME-LIBRARIES.txt")
+    } finally {
+        $env:LD_LIBRARY_PATH = $oldLibraryPath
+        $env:LD_PRELOAD = $oldPreload
+        $env:LC_ALL = $oldLocale
     }
-}
-if ($missing.Count -gt 0) {
-    $detail = ($missing.GetEnumerator() |
-        ForEach-Object { "$($_.Key) (imported by $($_.Value))" }) -join ", "
-    throw "Package would not start: missing runtime libraries the toolchain provides: $detail"
+} else {
+    $staged = Get-ChildItem $packageDirectory -Filter *.dll -File
+    $staged += Get-ChildItem $packageDirectory -Filter *.exe -File
+    $stagedNames = [System.Collections.Generic.HashSet[string]]::new(
+        [string[]]($staged | ForEach-Object { $_.Name }),
+        [System.StringComparer]::OrdinalIgnoreCase
+    )
+    $missing = @{}
+    foreach ($binary in $staged) {
+        foreach ($import in (Get-ImportedLibraries -Path $binary.FullName)) {
+            if ($stagedNames.Contains($import)) { continue }
+            # Only the toolchain's own libraries are ours to ship.
+            if (-not (Test-Path (Join-Path $runtimeDirectory $import))) { continue }
+            $missing[$import] = $binary.Name
+        }
+    }
+    if ($missing.Count -gt 0) {
+        $detail = ($missing.GetEnumerator() |
+            ForEach-Object { "$($_.Key) (imported by $($_.Value))" }) -join ", "
+        throw "Package would not start: missing runtime libraries the toolchain provides: $detail"
+    }
 }
 
 # The staged package must start: run it from the package directory for a
@@ -491,7 +541,11 @@ $smokeStart.Environment["BBLITE_MAX_FRAMES"] = "$smokeFrames"
 $smokeStart.Environment["BBLITE_GPU_DEBUG"] = "1"
 $smokeStart.Environment["BBLITE_TEST_PASS"] = "1"
 $smokeStart.Environment["BBLITE_LOCAL_STORAGE_ROOT"] = Join-Path $outputPlan.Staging "smoke-storage"
-$smokeStart.Environment["SDL_GPU_DRIVER"] = "direct3d12"
+$smokeStart.Environment["SDL_GPU_DRIVER"] = $gpuDriver
+if ($IsLinux) {
+    [void]$smokeStart.Environment.Remove("LD_LIBRARY_PATH")
+    [void]$smokeStart.Environment.Remove("LD_PRELOAD")
+}
 $smokeStart.Environment["SDL_ASSERT"] = "abort"
 $smoke = [System.Diagnostics.Process]::Start($smokeStart)
 if (-not $smoke.WaitForExit(120000)) {
@@ -503,9 +557,20 @@ if ($smoke.ExitCode -ne 0) {
 }
 Write-Output "Smoke run: $exeName rendered $smokeFrames frames and exited 0."
 
-Compress-Archive -Path $packageDirectory -DestinationPath $archivePath -CompressionLevel Optimal
+if ($IsLinux) {
+    # libarchive records Unix executable permissions in ZIP metadata; the
+    # PowerShell Compress-Archive implementation does not preserve them.
+    $cmake = Find-CMake
+    Push-Location $outputPlan.Staging
+    try {
+        & $cmake -E tar cf $archivePath --format=zip $packageName
+        if ($LASTEXITCODE -ne 0) { throw "Linux package archive creation failed." }
+    } finally { Pop-Location }
+} else {
+    Compress-Archive -Path $packageDirectory -DestinationPath $archivePath -CompressionLevel Optimal
+}
 $receipt = [ordered]@{
-    scene = $Scene; backend = $backend; buildDirectory = $buildPath
+    scene = $Scene; backend = $backend; platform = $platformName; graphicsApi = $graphicsApi; buildDirectory = $buildPath
     exeBytes = (Get-Item -LiteralPath (Join-Path $packageDirectory $exeName)).Length
     zipBytes = (Get-Item -LiteralPath $archivePath).Length
     unpackedBytes = (Get-ChildItem -LiteralPath $packageDirectory -File -Recurse | Measure-Object Length -Sum).Sum

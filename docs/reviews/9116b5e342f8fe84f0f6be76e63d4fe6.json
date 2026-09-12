@@ -67,6 +67,14 @@
     {
       "summary": "Compact expired image-upload entries once and acquire strong references only for matching image keys.",
       "applied": true
+    },
+    {
+      "summary": "Use hostOfflineShaderTarget in demo shipping so development and shipping share the host shader selection policy.",
+      "applied": true
+    },
+    {
+      "summary": "Compute the shipping triplet once per plan and share it across dependency profiles and scene configuration.",
+      "applied": true
     }
   ],
   "angles": [

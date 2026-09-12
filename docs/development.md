@@ -55,7 +55,7 @@ Run scenes inside a graphical session. SDL selects X11 or Wayland;
 `SDL_VIDEODRIVER=x11|wayland` forces that selection. An SSH session needs display
 access (`DISPLAY`/Xauthority for X11, `XDG_RUNTIME_DIR`/`WAYLAND_DISPLAY` for
 Wayland) and permission to use the GPU's render node. No display is provided by
-SSH alone. Minimal Windows shipping/package commands below remain Windows-only.
+SSH alone. Minimal shipping supports Windows and Linux x64 as described below.
 
 Linux resolves installed fonts through Fontconfig and renders UI text with
 RmlUi's FreeType engine. Windows additionally uses the custom DirectWrite
@@ -259,8 +259,11 @@ npm run demos:release -- --output artifacts/releases
 `--scene <id,id>` selects application demos; `--workers N` and `--jobs N`
 bound concurrent builds and jobs per build. `--plan` reads existing generated
 features and prints the dependency plan without building or packaging.
-The command generates scenes and D3D12 shaders, prepares reached static
-dependencies once, then builds with MSVC and packages serially. Each image-codec
+The command generates scenes and host shaders, prepares reached static
+dependencies once, builds concurrently, and packages each demo in turn.
+Windows uses MSVC, a static CRT and SDL_GPU/D3D12. Linux uses Clang, LLD and
+SDL_GPU/Vulkan; install `lld` alongside the Linux prerequisites above.
+Linux shipping does not build or package Dawn. Each image-codec
 set has its own vcpkg install, so SDL_image cannot pull unused decoders from a
 shared superset. Fresh CMake caches discard old package paths; stale deployed
 payloads are preserved beside their build tree before deployment.
@@ -271,7 +274,32 @@ preserve prior packages under the output's `.replaced/`; `@previous/` is untouch
 `SIZE-COMPARISON.md` reports executable and ZIP sizes and changes. Package JSON
 receipts contain exact bytes, SHA-256 hashes and the startup-check result.
 
-Use `BBLITE_MINSIZE=ON`, one backend, MSVC, static CRT and
+On Linux, run the same command from a graphical session, for example:
+
+```sh
+npm run demos:release -- --scene tetris --workers 1 --jobs 3
+unzip artifacts/releases/bblitec-tetris-sdl-gpu-linux-x64.zip -d /tmp/bblite-demo
+cd /tmp/bblite-demo/bblitec-tetris-sdl-gpu-linux-x64
+./bblitec-tetris
+```
+
+Linux trims unused native sections with `-Oz`, LTO and linker garbage collection,
+then strips the staged ELF executable. Project dependencies link statically;
+glibc, system libraries and the GPU driver remain host dependencies. Packages
+target the build host's Linux ABI, not every distribution. Their
+`RUNTIME-LIBRARIES.txt` records linked system libraries. ZIPs preserve Unix
+executable permissions. UI needs installed Fontconfig/fonts; audio needs access
+to the host audio service, including when running over SSH.
+
+For a manual Linux build, select `BBLITE_MINSIZE=ON`, `BBLITE_BACKEND=SDL_GPU`,
+`VCPKG_TARGET_TRIPLET=x64-linux` and the matching trimmed SDL artifact. Use
+`build-labsound.ps1 -MinSize` and `build-rmlui.ps1 -MinSize` for reached audio/UI,
+adding `-EnableCodecs` or `-EnableSvg` when reached. The minimal SDL script keeps
+Vulkan and X11/Wayland while removing unused audio/gamepad and renderer code.
+The packager includes only SPIR-V and binding sidecars, checks dynamic library
+resolution without development loader overrides, and forces Vulkan for smoke.
+
+For a manual Windows build, use `BBLITE_MINSIZE=ON`, one backend, MSVC, static CRT and
 `VCPKG_TARGET_TRIPLET=x64-windows-static`. Set `BBLITE_GENERATED_DIR` and
 matching `BBLITE_SDL_DIR`/`BBLITE_DAWN_DIR`, `BBLITE_LABSOUND_DIR`,
 `BBLITE_RMLUI_DIR`. Never mix static and dynamic CRT libraries.

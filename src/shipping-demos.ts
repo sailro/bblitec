@@ -5,12 +5,22 @@ import { availableParallelism, totalmem } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { discoverDevelopmentTools, discoverWindowsBuildTools, type WindowsBuildTools } from "./development-tools.js";
+import { hostOfflineShaderTarget } from "./build-options.js";
 import { holdDistLock } from "./dist-lock.js";
 import { applicationScenes, type SceneDefinition } from "./scene-registry.js";
 import { runConcurrently } from "./run-concurrently.js";
 import { flagNumber, isMainModule, parseFlags } from "./tooling/flags.js";
 import { installVcpkgManifest, type VcpkgManifestInstall } from "./vcpkg-install.js";
 import { writeJsonRecord } from "./validation-resume.js";
+
+export type ShippingPlatform = "win32" | "linux";
+
+export function shippingPlatform(platform: NodeJS.Platform = process.platform, arch: string = process.arch): ShippingPlatform {
+    if ((platform !== "win32" && platform !== "linux") || arch !== "x64") {
+        throw new Error("Minimal demo shipping supports Windows and Linux x64.");
+    }
+    return platform;
+}
 
 export interface ShippingFeatures {
     features: string[];
@@ -47,6 +57,8 @@ export function selectShippingScenes(selection: string | undefined): readonly Sc
 
 export interface ShippingScene extends ShippingFeatures {
     id: string;
+    platform: ShippingPlatform;
+    triplet: string;
     name: string;
     output: string;
     buildDirectory: string;
@@ -60,7 +72,9 @@ export function shippingPlan(
     root: string,
     inputs: readonly { scene: SceneDefinition; reached: ShippingFeatures }[],
     installRoot = resolve(root, "artifacts/vcpkg-installed"),
+    platform: ShippingPlatform = shippingPlatform(),
 ): { scenes: ShippingScene[]; profiles: VcpkgManifestInstall[] } {
+    const triplet = platform === "win32" ? "x64-windows-static" : "x64-linux";
     const profiles = new Map<string, VcpkgManifestInstall>();
     const scenes = inputs.map(({ scene, reached }) => {
         if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(scene.id)) throw new Error(`Invalid shipping scene ID '${scene.id}'.`);
@@ -70,13 +84,14 @@ export function shippingPlan(
         const installedDirectory = resolve(installRoot, `shipping-demo-${codecs.join("-") || "core"}`);
         const previous = profiles.get(installedDirectory);
         profiles.set(installedDirectory, {
-            installedDirectory, triplet: "x64-windows-static",
+            installedDirectory, triplet,
             features: [...new Set([...(previous?.features ?? []), ...reached.features])].sort(),
         });
         const has = (feature: string): boolean => reached.runtime.includes(feature);
         const sdl = [has("audio:engine") ? "audio" : "", has("input:gamepad") ? "gamepad" : ""].filter(Boolean);
         return {
-            ...reached, id: scene.id, name: scene.name,
+            ...reached, id: scene.id, name: scene.name, platform,
+            triplet,
             output: resolve(root, scene.output),
             buildDirectory: resolve(root, `native/build-${scene.id}-min-sdl`),
             installedDirectory,
@@ -88,12 +103,13 @@ export function shippingPlan(
     return { scenes, profiles: [...profiles.values()] };
 }
 
-export function shippingConfigureArguments(root: string, scene: ShippingScene, toolchain: WindowsBuildTools, vcpkgToolchain: string): string[] {
+export function shippingConfigureArguments(root: string, scene: ShippingScene, toolchain: Pick<WindowsBuildTools, "compiler" | "ninja">, vcpkgToolchain: string): string[] {
     return [
         "--fresh", "-S", resolve(root, "native"), "-B", scene.buildDirectory, "-G", "Ninja",
         `-DCMAKE_MAKE_PROGRAM=${toolchain.ninja}`, `-DCMAKE_CXX_COMPILER=${toolchain.compiler}`,
-        "-DCMAKE_BUILD_TYPE=Release", "-DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded",
-        `-DCMAKE_TOOLCHAIN_FILE=${vcpkgToolchain}`, "-DVCPKG_TARGET_TRIPLET=x64-windows-static",
+        "-DCMAKE_BUILD_TYPE=Release",
+        ...(scene.platform === "win32" ? ["-DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded"] : ["-DCMAKE_SKIP_RPATH=ON"]),
+        `-DCMAKE_TOOLCHAIN_FILE=${vcpkgToolchain}`, `-DVCPKG_TARGET_TRIPLET=${scene.triplet}`,
         "-DVCPKG_MANIFEST_INSTALL=OFF", `-DVCPKG_INSTALLED_DIR=${scene.installedDirectory}`,
         "-DBBLITE_MINSIZE=ON", "-DBBLITE_BACKEND=SDL_GPU", "-DBBLITE_PCH=OFF",
         "-DBBLITE_VISUAL_CAPTURE=OFF", "-DBBLITE_AUDIO_CAPTURE=OFF",
@@ -131,13 +147,15 @@ interface PackageSize {
     previousZipBytes: number | null;
 }
 
-export function packageSizeReport(receipts: readonly PackageSize[]): string {
+export function packageSizeReport(receipts: readonly PackageSize[], platform: ShippingPlatform = shippingPlatform()): string {
     const mib = (bytes: number): string => (bytes / 2 ** 20).toFixed(2);
     const delta = (current: number, previous: number | null): string => previous === null ? "New" :
         `${current >= previous ? "+" : ""}${mib(current - previous)} MiB${previous > 0 ? ` (${((current / previous - 1) * 100).toFixed(1)}%)` : ""}`;
     return [
         "# Minimal application packages", "",
-        "Windows x64, MSVC, static CRT, SDL_GPU / Direct3D 12, BBLITE_MINSIZE. Capture is disabled.", "",
+        platform === "win32"
+            ? "Windows x64, MSVC, static CRT, SDL_GPU / Direct3D 12, BBLITE_MINSIZE. Capture is disabled."
+            : "Linux x64, SDL_GPU / Vulkan, static project libraries, BBLITE_MINSIZE. Capture is disabled.", "",
         "Each package passed its five-frame GPU-validation startup check. Previous packages are retained under `.replaced/`; exact bytes and SHA-256 hashes are in the package JSON receipts.", "",
         "Changes compare with the packages replaced by this run; any separate `@previous/` comparison baseline remains untouched.", "",
         "| Demo | EXE MiB | EXE change | ZIP MiB | ZIP change |",
@@ -169,7 +187,7 @@ async function main(): Promise<void> {
         console.log("npm run demos:release -- [--scene all|id,id] [--output directory] [--workers N] [--jobs N] [--plan]\n--plan reads existing generated features without building or packaging.");
         return;
     }
-    if (process.platform !== "win32") throw new Error("Minimal demo shipping currently requires Windows x64 and MSVC.");
+    const platform = shippingPlatform();
     const positive = (name: string, fallback: number): number => {
         const value = flagNumber(flags, name, "shipping-demos") ?? fallback;
         if (!Number.isInteger(value) || value < 1) throw new Error(`${name} must be a positive integer.`);
@@ -184,11 +202,13 @@ async function main(): Promise<void> {
     const tools = discoverDevelopmentTools();
     const { cmake, vcpkg, vcpkgToolchain, powershell } = tools;
     if (!cmake || !vcpkg || !vcpkgToolchain || !powershell) throw new Error("Shipping requires CMake, vcpkg and PowerShell; run npm run doctor.");
-    const toolchain = discoverWindowsBuildTools("msvc");
+    const windows = platform === "win32" ? discoverWindowsBuildTools("msvc") : undefined;
+    if (!windows && (!tools.cxx || !tools.ninja)) throw new Error("Linux shipping requires Clang and Ninja; run npm run doctor.");
+    const toolchain = windows ?? { compiler: tools.cxx!, ninja: tools.ninja! };
     holdDistLock("shipping-demos");
-    const environment = { ...process.env, ...toolchain.environment,
+    const environment = { ...process.env, ...windows?.environment,
         CMAKE_COMMAND: cmake, VCPKG_ROOT: tools.vcpkgRoot,
-        VSINSTALLDIR: toolchain.visualStudioRoot, BBLITE_BACKEND: "SDL_GPU" };
+        VSINSTALLDIR: windows?.visualStudioRoot, BBLITE_BACKEND: "SDL_GPU" };
     const logs = resolve(root, "artifacts/shipping", `${new Date().toISOString().replaceAll(/[:.]/g, "-")}-${process.pid}`);
     mkdirSync(logs, { recursive: true });
     const results: { stage: string; id: string; exit: number; log: string }[] = [];
@@ -243,10 +263,10 @@ async function main(): Promise<void> {
             ...(has("audio:engine") ? ["-EnableAudio"] : []), ...(has("input:gamepad") ? ["-EnableGamepad"] : []),
         ]);
         if (has("audio:engine")) await prepare(scene.labSoundDirectory, "build-labsound.ps1", [
-            "-StaticRuntime", ...(has("audio:decoded-buffer") ? ["-EnableCodecs"] : []),
+            platform === "win32" ? "-StaticRuntime" : "-MinSize", ...(has("audio:decoded-buffer") ? ["-EnableCodecs"] : []),
         ]);
         if (has("ui:rml")) await prepare(scene.rmlUiDirectory, "build-rmlui.ps1", [
-            "-StaticRuntime", "-FreetypeRoot", join(scene.installedDirectory, "x64-windows-static"),
+            platform === "win32" ? "-StaticRuntime" : "-MinSize", "-FreetypeRoot", join(scene.installedDirectory, scene.triplet),
             ...(has("ui:inline-svg") ? ["-EnableSvg"] : []),
         ]);
     }
@@ -256,7 +276,7 @@ async function main(): Promise<void> {
         const { compileOfflineShaders, formatShaderCompilation, generatedShaderDirectories } = await import("./compile-shaders.js");
         const summary = formatShaderCompilation(compileOfflineShaders({
             directories: [...new Set(plan.scenes.flatMap(scene => generatedShaderDirectories(root, scene.id)))],
-            target: "d3d12", tools, environment,
+            target: hostOfflineShaderTarget(platform), tools, environment,
         }));
         writeFileSync(shaderLog, summary + "\n");
         console.log(summary);
@@ -277,9 +297,9 @@ async function main(): Promise<void> {
     for (const scene of plan.scenes) {
         await run("package", scene.id, powershell, ["-NoProfile", "-File", resolve("tools/package-demo.ps1"),
             "-Scene", scene.id, "-BuildDirectory", scene.buildDirectory, "-ExpectBackend", "SDL_GPU", "-OutputRoot", output]);
-        receipts.push(readPackageSize(join(output, `bblitec-${scene.id}-sdl-gpu-windows-x64.json`)));
+        receipts.push(readPackageSize(join(output, `bblitec-${scene.id}-sdl-gpu-${platform === "win32" ? "windows" : "linux"}-x64.json`)));
     }
-    const report = packageSizeReport(receipts);
+    const report = packageSizeReport(receipts, platform);
     const reportPath = join(output, "SIZE-COMPARISON.md");
     if (existsSync(reportPath)) {
         const previous = join(output, ".replaced", `sizes-${Date.now()}`);

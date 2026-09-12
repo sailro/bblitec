@@ -249,14 +249,12 @@ test("shipping packages require the trimmed static build", () => {
         script.indexOf("$shaderPatterns ="),
         script.indexOf("$shaderFiles ="),
     );
-    // The package is the executable alone: the trimmed SDL carries only the
-    // Direct3D 12 driver, so no launcher pins one, and the console window
-    // is the log.
+    // The executable runs directly; packaging tests exercise the host shader
+    // payload selection. Windows retains its console for startup errors.
     assert.doesNotMatch(script.slice(0, script.indexOf("$smokeFrames")), /SDL_GPU_DRIVER|run-\$Scene\.cmd|\.log/);
     assert.match(script, /\$smokeStart\.Environment\["SDL_ASSERT"\] = "abort"/);
     assert.match(script, /Double-click \$exeName/);
     assert.match(patterns, /\*\.dxil/);
-    assert.doesNotMatch(patterns, /\*\.spv/);
     assert.match(script, /VCPKG_INSTALLED_DIR/);
     assert.match(script, /BBLITE_MINSIZE/);
     assert.match(script, /x64-windows-static/);
@@ -519,7 +517,7 @@ test("RmlUi is the pinned artifact, patched, with a static-runtime variant", () 
     assert.match(builder, /CMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded/);
     assert.match(builder, /bblite-rmlui-features\.cmake/);
     assert.match(builder, /RMLUI_SVG_PLUGIN=\$rmlSvgSetting/);
-    assert.match(builder, /\$rmlSvgEnabled = -not \$StaticRuntime -or \$EnableSvg/);
+    // The development/shipping SVG matrix is executed in shipping-demos.test.
     assert.match(builder, /\[switch\]\$EnableSvg/);
     assert.match(builder, /lunasvgConfig\.cmake/);
     // The SDL platform pair RmlUi itself never installs, and the license
