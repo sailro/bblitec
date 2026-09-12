@@ -655,6 +655,8 @@ export class ClassLowerer {
                             ? {
                                   recordScopes:
                                       bound.callbackRecordOwner.recordScopes,
+                                  recordTypeArguments:
+                                      bound.callbackRecordOwner.recordTypeArguments,
                               }
                             : {}),
                     };

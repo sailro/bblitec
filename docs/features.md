@@ -63,6 +63,7 @@ Custom environment fields are explicit string inputs (`--env NAME=value`, repeat
 Built-in constants cannot be overridden. Host environment variables and dotenv files are not read implicitly.
 
 Stored class callback fields retain their instance captures and function identity. Locally bound records
+and returned callbacks preserve their enclosing generic instantiation when invoked later. Records
 with reassigned callback fields use shared native function storage, so retained
 callbacks see later replacements, including conditional writes. Structural method views
 such as `Pick<Controller, "dispose">` retain the original receiver. Optional stored calls snapshot the callee

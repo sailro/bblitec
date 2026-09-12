@@ -1399,6 +1399,13 @@ export class DataTypeRegistry {
     }
   }
 
+  /** Snapshot the lexical generic environment for a returned callable. */
+  public captureTypeArguments(): ReadonlyMap<ts.Symbol, ts.Type> | undefined {
+    const frames = this.typeArgumentFrames();
+    if (frames.length === 0) return undefined;
+    return new EmissionMap(frames.flatMap(frame => [...frame]));
+  }
+
   /** Every substitution in force, the receiver's beneath the calls'. */
   private typeArgumentFrames(): readonly ReadonlyMap<ts.Symbol, ts.Type>[] {
     return [

@@ -2374,6 +2374,8 @@ export interface ValueFields {
    * getter of the record runs. This is the closure the source wrote.
    */
   recordScopes?: ReadonlyArray<Map<ts.Symbol, VariableBinding>>;
+  /** Generic substitutions captured alongside a callable's lexical variables. */
+  recordTypeArguments?: ReadonlyMap<ts.Symbol, ts.Type>;
   /** Shared across compiler aliases of one native scene. */
   sceneEnvironmentState?: {
     rotationSet: boolean;
