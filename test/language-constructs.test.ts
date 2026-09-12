@@ -76,6 +76,91 @@ check("nullable-coalesce-widening", `
     }
 `);
 
+check("scalar-union-strict-comparisons", `
+    const values:(string|number|boolean)[] = ['head',2,false,NaN];
+    if(values[0] !== 'head' || values[1] !== 2 || values[2] !== false) throw new Error('matching type and value');
+    if(values[1] === '2' || values[2] === 0 || values[3] === values[3]) throw new Error('strict types and NaN');
+    let calls = '';
+    const state:{value:string|number} = {value:'before'};
+    function left():string|number {calls+='l';return state.value;}
+    function right():string|number {calls+='r';state.value='after';return 'before';}
+    if(left() !== right() || calls !== 'lr' || state.value !== 'after') throw new Error('operand snapshots');
+    const lookup = new Map<string,string|number>([['entry','before']]);
+    function clear():string|number|undefined {lookup.clear();return 'before';}
+    if(lookup.get('entry') !== clear()) throw new Error('borrowed optional snapshot');
+    function absent():string|number|undefined {return undefined;}
+    if(absent() !== lookup.get('missing')) throw new Error('absent union equality');
+    const rows:Record<string,string|number>[]=[{text:'value',amount:3}];
+    for(const row of rows) {
+        if(row.text !== 'value' || row.amount !== 3 || row.missing === 'value' || row.missing === 0)
+            throw new Error('unchecked optional union');
+    }
+    const [head,...tail] = values;
+    if(head !== 'head' || tail[0] !== 2 || tail[1] !== false) throw new Error('union rest values');
+    type Tag = 'north' | 'south';
+    const tagged:(Tag|number)[] = ['north',3];
+    for(const tag of tagged) {
+        if(tag === 'north') continue;
+        if(tag !== 3 || tag === 'outside') throw new Error('tagged scalar equality');
+    }
+`);
+
+check("mixed-tuple-rest-bindings", `
+    const object = {score:4};
+    const source:[string,number,{score:number}|null] = ['head',2,object];
+    const [head,...tail] = source;
+    source[1] = 9;
+    if(head !== 'head' || tail[0] !== 2 || tail.length !== 2) throw new Error('fresh rest storage');
+    if(tail[1]) tail[1].score++;
+    if(object.score !== 5) throw new Error('shallow object identity');
+    tail[0] = 7;
+    if(source[1] !== 9) throw new Error('independent rest writes');
+    const pair:[string,number] = ['key',3];
+    const [,,...empty] = pair;
+    if(empty.length !== 0) throw new Error('empty rest');
+    function copy(value:[string,number,boolean]):[number,boolean] {
+        const [,...rest] = value;
+        return rest;
+    }
+    const result = copy(['value',6,true]);
+    if(result[0] !== 6 || result[1] !== true) throw new Error('returned rest');
+    function parameter([head,...rest]:[string,number,boolean]):[number,boolean] {
+        if(head !== 'value') throw new Error('parameter head');
+        rest[0]++;
+        return rest;
+    }
+    const row:[string,number,boolean] = ['value',8,false];
+    const parameterTail = parameter(row);
+    if(parameterTail[0] !== 9 || parameterTail[1] !== false || row[1] !== 8) throw new Error('parameter rest copy');
+    const retained:(()=>number)[] = [];
+    const rows:[string,number,boolean][] = [['a',3,true],['b',5,false]];
+    for(const [head,...rest] of rows) {
+        rest[0]++;
+        retained.push(() => rest[0] + head.length);
+    }
+    if(retained[0]() !== 5 || retained[1]() !== 7 || rows[0][1] !== 3) throw new Error('loop rest lifetime');
+    const numbers:[number,number,number] = [2,4,6];
+    const [,...numericTail] = numbers;
+    numericTail[0] = 10;
+    if(numericTail[0] !== 10 || numbers[1] !== 4) throw new Error('numeric tuple rest');
+    const entries = new Map<string,number>([['x',11]]);
+    for(const [key,...rest] of entries) {
+        rest[0]++;
+        if(key !== 'x' || rest[0] !== 12 || entries.get(key) !== 11) throw new Error('map entry rest');
+    }
+    const values = new Set<number>([13]);
+    for(const [,...rest] of values.entries()) {
+        rest[0]++;
+        if(rest[0] !== 14 || !values.has(13)) throw new Error('set entry rest');
+    }
+    const list:string[] = ['first','second'];
+    for(const [index,...rest] of list.entries()) {
+        rest[0] = 'changed';
+        if(list[index] === 'changed') throw new Error('array entry rest');
+    }
+    for(const [,,...rest] of entries) if(rest.length !== 0) throw new Error('empty entry rest');
+`);
+
 check("mixed-tuple-dynamic-reads", `
     let pair: [string, number] = ["value", 7];
     const indices = [0, 1, 2, -1, 0.5, NaN];

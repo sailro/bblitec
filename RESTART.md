@@ -72,6 +72,19 @@ RegExp callbacks and mixed-tuple mutation/rest/resizing. The untracked
 `native/include/bblite/pal_dom_events.hpp` remains an unused event design draft;
 do not stage it with the core-library work or claim it is integrated.
 
+The next completed unit adds strict scalar-union comparisons and a shared fresh
+rest-array emitter for tuple declarations, parameters, loops and collection
+entries. `core378` passed 140 language/callback checks with no failures or skips.
+Native assertions cover scalar types, NaN, missing values, operand evaluation
+order, shallow rest copies, empty tails and retained loop callbacks.
+`capabilities378.json` advances the fixed baseline to 5 accepted / 19 refused.
+The original stored-iterator and rest-binding TODO clauses are closed; RegExp
+callbacks, dynamic mixed-tuple writes and resizing remain open. A separately
+probed mixed-tuple destructuring-assignment refusal is now named in TODO.
+Direct missing-property access on an unmaterialized static union dictionary is
+another recorded diagnostic gap; it is not established as a reached app blocker.
+The full application has not been retried during these focused core units.
+
 The branch was clean and synchronized with its remote before adding this
 document. All 14 implementation/test commits listed below were pushed. The PR
 remains a draft because integration and other explicitly pending work are

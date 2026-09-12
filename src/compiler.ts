@@ -3949,12 +3949,7 @@ class Compiler
             const elements = value.tupleElements;
             bindings.forEach((element, index) => {
                 if (index === restIndex && restName) {
-                    // The rest is the tuple of what follows.
-                    this.bindLocalValue(restName, {
-                        kind: "tuple",
-                        cpp: "",
-                        tupleElements: elements.slice(index),
-                    });
+                    this.bindLocalValue(restName, this.dataLowerer.arrayRestValue(value, index, restName));
                     return;
                 }
                 bindElement(element, elements[index]);
@@ -3965,7 +3960,10 @@ class Compiler
             const temporary = this.allocateTemporaryCppName("destructure_tuple");
             this.emit(`const auto ${temporary} = ${value.cpp};`);
             bindings.forEach((element, index) => {
-                if (index === restIndex) this.fail(element, "Mixed tuple rest bindings require explicit lanes.");
+                if (index === restIndex && restName) {
+                    this.bindLocalValue(restName, this.dataLowerer.arrayRestValue({...value, cpp: temporary}, index, restName));
+                    return;
+                }
                 bindElement(element, this.dataLowerer.fixedTupleElement({ ...value, cpp: temporary }, index, element));
             });
             return;
@@ -3978,12 +3976,17 @@ class Compiler
               ? value.dataType.dimensions[0]
               : undefined;
         if (value.kind === "data" && tupleArity !== undefined) {
-            if (bindings.length > tupleArity) {
+            if ((restIndex >= 0 ? restIndex : bindings.length) > tupleArity) {
                 this.fail(declaration.name,
                     `Tuple has ${tupleArity} elements, destructuring expects ${bindings.length}.`);
             }
             const temporary = this.bindDataTuple(value, tupleArity);
             bindings.forEach((element, index) => {
+                if (index === restIndex && restName) {
+                    this.bindLocalValue(restName, this.dataLowerer.arrayRestValue(
+                        {...value, cpp: temporary, dataType: {kind: "tuple", arity: tupleArity}}, index, restName));
+                    return;
+                }
                 bindElement(element, {
                     kind: "number",
                     cpp: `${temporary}[${index}]`,
@@ -4006,16 +4009,7 @@ class Compiler
                     return;
                 }
                 if (index === restIndex && restName) {
-                    // The rest is a fresh array of what follows.
-                    const restType = { kind: "vector", element: elementType } as const;
-                    const restCpp = this.cppIdentifier(restName.text);
-                    this.reachJsData();
-                    this.emit(
-                        `${this.dataTypes.cppType(restType)} ${restCpp}(` +
-                            `${temporary}.begin() + std::min<std::size_t>(${index}, ${temporary}.size()), ${temporary}.end());`,
-                    );
-                    this.defineVariable(restName, this.dataLowerer.leafValue(restCpp, restType));
-                    this.dataLowerer.registerLocal(restCpp, "owned");
+                    this.bindLocalValue(restName, this.dataLowerer.arrayRestValue(storedVector, index, restName));
                     return;
                 }
                 if (element.initializer && ts.isIdentifier(element.name)) {

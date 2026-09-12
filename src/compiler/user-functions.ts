@@ -654,10 +654,10 @@ export function resolveFunctionDeclaration(
         }
         if (ts.isArrayBindingPattern(parameter.name)) {
             for (const element of parameter.name.elements) {
+                if (ts.isOmittedExpression(element)) continue;
                 if (
-                    ts.isOmittedExpression(element) ||
                     !ts.isIdentifier(element.name) ||
-                    element.dotDotDotToken ||
+                    (element.dotDotDotToken && element !== parameter.name.elements[parameter.name.elements.length - 1]) ||
                     element.initializer
                 ) {
                     fail(
@@ -1029,6 +1029,10 @@ export class UserFunctionLowerer {
             parameter.name.elements.forEach((element, index) => {
                 if (ts.isOmittedExpression(element)) return;
                 if (!ts.isIdentifier(element.name)) context.fail(element.name, "Callback tuple bindings require identifiers.");
+                if (element.dotDotDotToken) {
+                    context.bindParameterValue(element.name, context.dataLowerer.arrayRestValue(value, index, element.name));
+                    return;
+                }
                 const lane = value.tupleElements![index];
                 if (!lane) {
                     context.fail(
@@ -1052,6 +1056,10 @@ export class UserFunctionLowerer {
         parameter.name.elements.forEach((element, index) => {
             if (ts.isOmittedExpression(element)) return;
             if (!ts.isIdentifier(element.name)) context.fail(element.name, "Callback tuple bindings require identifiers.");
+            if (element.dotDotDotToken) {
+                context.bindParameterValue(element.name, context.dataLowerer.arrayRestValue(value, index, element.name));
+                return;
+            }
             context.bindParameterValue(element.name, context.dataLowerer.fixedTupleElement(value, index, element)!);
         });
     }

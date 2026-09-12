@@ -8,6 +8,7 @@ import { storageValue } from "./web-storage.js";
 import { documentEngine, windowErrorEventValue } from "./window-events.js";
 import { CompilerSymbols } from "./symbols.js";
 import { compileMapInitializer } from "./collection-methods.js";
+import { scalarUnionEquality } from "./data-comparisons.js";
 import { compileDateNew } from "./dates.js";
 import { httpResponseProperty } from "./http.js";
 import { cppIdentifierPattern } from "../cpp-literals.js";
@@ -2090,6 +2091,40 @@ export class DataLowerer {
             ts.isCallExpression(node) || ts.isNewExpression(node) ||
             ts.isPropertyAccessExpression(node) || ts.isElementAccessExpression(node) ||
             isUpdateExpression(node) || isAssignmentExpression(node));
+    }
+
+    /** Rest binding creates fresh array storage, retaining the identity of its elements. */
+    public arrayRestValue(value: Value, index: number, node: ts.Node): Value {
+        const sourceType = value.dataType;
+        let type: DataType;
+        let initializer: string;
+        if (sourceType?.kind === "vector") {
+            type = sourceType;
+            initializer = `${this.context.dataTypes.cppType(type)}(` +
+                `${value.cpp}.begin() + std::min<std::size_t>(${index}, ${value.cpp}.size()), ${value.cpp}.end())`;
+        } else {
+            let elements: Value[];
+            if (value.kind === "tuple" && value.tupleElements) {
+                elements = value.tupleElements.slice(index);
+                const declared = elements.length === 0 ? this.context.dataTypes.tupleStorage([]) : this.dataTypeAt(node);
+                if (!declared) this.context.fail(node, "A rest binding requires a concrete array type.");
+                type = declared;
+            } else if (sourceType?.kind === "tuple" || sourceType?.kind === "product") {
+                const types: DataType[] = sourceType.kind === "product" ? sourceType.elements :
+                    Array.from({length: sourceType.arity}, () => ({kind: "number"}));
+                const remaining = types.slice(index);
+                type = this.context.dataTypes.tupleStorage(remaining);
+                elements = remaining.map((_type, offset) => this.fixedTupleElement(value, index + offset, node)!);
+            } else {
+                this.context.fail(node, "A rest binding requires an array or tuple value.");
+            }
+            initializer = this.compileKnownValueForSink({kind: "tuple", cpp: "", tupleElements: elements}, type, node);
+        }
+        this.context.reachJsData();
+        const cpp = this.context.allocateTemporaryCppName("binding_rest");
+        this.context.emit(`[[maybe_unused]] auto ${cpp} = ${initializer};`);
+        this.registerLocal(cpp, "owned");
+        return {...this.leafValue(cpp, type), nativeCaptures: [this.context.registerNativeBinding(cpp)]};
     }
 
     private elementRead(
@@ -7412,6 +7447,10 @@ export class DataLowerer {
             }
             return undefined;
         }
+        if (!loose) {
+            const union = scalarUnionEquality(this, left, right, negated);
+            if (union !== undefined) return union;
+        }
         // Optional chaining produces `T | undefined`. Strict equality with
         // a non-null scalar is therefore true only when the chain reached a
         // value and that value compares equal; strict inequality is the
@@ -8012,7 +8051,7 @@ export class DataLowerer {
                     "Array entries iteration requires an [index, value] binding.",
                 );
             }
-            if (name.elements.length > 2) {
+            if (!name.elements.some(binding => !ts.isOmittedExpression(binding) && binding.dotDotDotToken) && name.elements.length > 2) {
                 this.context.fail(
                     name,
                     "Array entry destructuring accepts at most two bindings.",
@@ -8024,13 +8063,18 @@ export class DataLowerer {
                 if (
                     !ts.isIdentifier(binding.name) ||
                     binding.initializer ||
-                    binding.dotDotDotToken
+                    (binding.dotDotDotToken && position !== name.elements.length - 1)
                 ) {
                     this.context.fail(
                         binding,
                         "Array entry destructuring supports plain identifiers.",
                     );
                 }
+                if (binding.dotDotDotToken) {
+                    define(binding.name, this.arrayRestValue(this.iterationElementValue(itemCpp, element), position, binding.name));
+                    return;
+                }
+                if (position >= 2) this.context.fail(binding, "Array entry binding is out of range.");
                 if (position === 0) {
                     define(binding.name, {
                         kind: "number",
@@ -8061,7 +8105,7 @@ export class DataLowerer {
                     "Entry iteration requires a pair or destructured pair binding.",
                 );
             }
-            if (name.elements.length > 2) {
+            if (!name.elements.some(binding => !ts.isOmittedExpression(binding) && binding.dotDotDotToken) && name.elements.length > 2) {
                 this.context.fail(
                     name,
                     "Entry destructuring accepts at most two bindings.",
@@ -8073,14 +8117,19 @@ export class DataLowerer {
                 if (
                     !ts.isIdentifier(binding.name) ||
                     binding.initializer ||
-                    binding.dotDotDotToken
+                    (binding.dotDotDotToken && index !== name.elements.length - 1)
                 ) {
                     this.context.fail(
                         binding,
                         "Entry destructuring supports plain identifiers.",
                     );
                 }
-                const source = pair[index]!;
+                if (binding.dotDotDotToken) {
+                    define(binding.name, this.arrayRestValue({kind: "tuple", cpp: "", tupleElements: pair}, index, binding.name));
+                    return;
+                }
+                const source = pair[index];
+                if (!source) this.context.fail(binding, "Entry binding is out of range.");
                 const cpp = this.context.allocateTemporaryCppName("entry_binding");
                 this.context.emit(`[[maybe_unused]] auto ${cpp} = ${source.cpp};`);
                 const value = {...source, cpp, nativeCaptures: [this.context.registerNativeBinding(cpp)]};
@@ -8118,12 +8167,16 @@ export class DataLowerer {
                 if (
                     !ts.isIdentifier(element_.name) ||
                     element_.initializer ||
-                    element_.dotDotDotToken
+                    (element_.dotDotDotToken && index !== name.elements.length - 1)
                 ) {
                     this.context.fail(
                         element_,
                         "Tuple destructuring supports plain identifiers.",
                     );
+                }
+                if (element_.dotDotDotToken) {
+                    define(element_.name, this.arrayRestValue(this.leafValue(itemCpp, element), index, element_.name));
+                    return;
                 }
                 if (index >= arity) {
                     this.context.fail(

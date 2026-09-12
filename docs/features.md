@@ -124,8 +124,9 @@ buffers. Transfer lists admit OffscreenCanvas only; MessagePort and shared memor
 Classic workers and runtime-selected scripts refuse. Worker options admit `name`, `type: "module"`
 and `credentials: "same-origin"` only. Graphics realms need identical rendering products.
 
-Native `for...of` accepts an identifier, plain tuple/map-entry bindings or plain struct field bindings.
-Nested patterns, defaults, rest bindings and renamed struct fields refuse.
+Native `for...of` accepts an identifier, tuple/entry bindings with an optional final rest
+identifier, or plain struct field bindings. Rest creates fresh array storage and preserves
+element identity. Nested patterns, defaults and renamed struct fields refuse.
 
 ### Core TypeScript library
 
@@ -151,8 +152,9 @@ literal sets widen to strings in that lane. Conditional spreads inherit the dest
 Array and Set spreads can widen string-literal element types into the destination's string storage.
 Fresh mapped records and their spreads also inherit destination field types, including nullable fields.
 Dynamic mixed-tuple reads return the selected lane or undefined, retain object
-identity and preserve receiver/index evaluation order. Dynamic writes, rest
-bindings and length-changing methods refuse.
+identity and preserve receiver/index evaluation order. Tuple rest bindings in declarations,
+destructured parameters and iteration create fresh shallow arrays, including empty tails.
+Dynamic writes, mixed-tuple destructuring assignments and length-changing methods refuse.
 Map/Set `forEach` observes insertion order, deletion and appended entries,
 and receives the original collection as its third argument.
 `Set.entries()` yields fresh `[value, value]` pairs in direct `for...of`, spreads
