@@ -41,7 +41,7 @@ export function documentEngine(context: Pick<LoweringServices, "options" | "defa
 
 function windowIdentity(): Value {
     const cpp = "std::addressof(bbl::pal::window_document_engine())";
-    return { kind: "record", cpp, objectIdentityCpp: cpp, truthinessCpp: "true", recordProperties: {} };
+    return { kind: "record", cpp, objectIdentityCpp: cpp, truthinessCpp: "true", recordProperties: {}, domEventTargetCpp:"bbl::DomEventTarget::window()" };
 }
 
 export function compileWindowIdentity(context: WindowContext, expression: ts.Expression): Value | undefined {
@@ -50,7 +50,7 @@ export function compileWindowIdentity(context: WindowContext, expression: ts.Exp
     if (global === "document") {
         requireWindowHost(context, expression);
         const cpp = "bbl::pal::window_document_identity()";
-        return {kind:"record", cpp, objectIdentityCpp:cpp, truthinessCpp:"true", recordProperties:{}};
+        return {kind:"record", cpp, objectIdentityCpp:cpp, truthinessCpp:"true", recordProperties:{}, domEventTargetCpp:"bbl::DomEventTarget::document()"};
     }
     if (global === "screen") {
         requireWindowHost(context, expression);

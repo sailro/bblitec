@@ -3,6 +3,7 @@ import ts from "typescript";
 import { type DataType } from "../data-types.js";
 import type { Value } from "../types.js";
 import { isJsonValue } from "../json-bridge.js";
+import {eventTargetCpp} from "../dom-targets.js";
 
 import type { DataSinkHost, DataSinkOperations } from "./contracts.js";
 
@@ -100,7 +101,11 @@ function valueString(_dataType: DataType<"string">, lowerer: DataSinkHost, value
     return undefined;
 }
 
-export const scalarsSinks: DataSinkOperations<"http-response" | "promise" | "storage" | "date" | "date-time-format" | "number" | "boolean" | "string" | "json" | "borrowed-platform-event"> = {
+export const scalarsSinks: DataSinkOperations<"event-target" | "http-response" | "promise" | "storage" | "date" | "date-time-format" | "number" | "boolean" | "string" | "json" | "borrowed-platform-event"> = {
+    "event-target": {
+        expression: (type, lowerer, expression) => lowerer.compileKnownValueForSink(lowerer.context.compileValue(expression), type, expression),
+        value: (_type, lowerer, value, node) => eventTargetCpp(lowerer.context, value, node),
+    },
     "http-response": {
         expression: (type, lowerer, _expression, unwrapped) => lowerer.compileKnownValueForSink(lowerer.context.compileValue(unwrapped), type, unwrapped),
         value: (_type, _lowerer, value) => value.dataType?.kind === "http-response" ? value.cpp : undefined,

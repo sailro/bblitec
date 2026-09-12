@@ -717,6 +717,7 @@ export class DataTypeRegistry {
       return { kind: "bufferview" };
     }
     const platformHandle = platformHandleKind(type);
+    if (type.symbol?.name === "EventTarget" && declaredInDomLibrary(type.symbol)) return {kind:"event-target"};
     if (platformHandle) return { kind: "handle", handle: platformHandle };
     const borrowedEvent = borrowedPlatformEventKind(type.symbol);
     if (borrowedEvent) {

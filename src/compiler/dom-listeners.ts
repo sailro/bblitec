@@ -100,6 +100,17 @@ export function emitDomEventListener(context: Context, call: ts.CallExpression, 
         } else if (context.isCanvasElement(callee.expression)) {
             target = "bbl::DomEventTarget::canvas()";
             engine = context.requireDefaultEngine(call);
+        } else {
+            const type = context.dataLowerer.dataTypeAt(callee.expression);
+            if (type?.kind === "event-target") {
+                const value = context.dataLowerer.narrowOptional(context.compileValue(callee.expression), callee.expression);
+                if (value.dataType?.kind !== "event-target") context.fail(callee.expression, "Nullable event targets require a presence guard.");
+                const selected = {...value};
+                delete selected.nativeBinding;
+                const snapshot = context.pinValueToTemporary(selected, "event_target", callee.expression);
+                target = `${snapshot.cpp}.target`;
+                engine = `bbl::dom_target_owner(${snapshot.cpp})`;
+            }
         }
     }
     if (!target || !engine) return false;

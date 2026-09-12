@@ -2,6 +2,7 @@ export type HandleKind = "worker-media-query" | AudioHandleKind | "engine" | "as
 export type AudioHandleKind = "audio-node" | "audio-param" | "media-stream" | "media-stream-track";
 export type TypedArrayKind = "u8array" | "i8array" | "f64array" | "f32array" | "u16array" | "i16array" | "u32array" | "i32array";
 export interface DataKinds {
+    "event-target": {kind:"event-target"};
     "http-response": {kind:"http-response"};
     "promise": { kind: "promise"; result?: DataType; };
     "storage": { kind: "storage"; };

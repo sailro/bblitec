@@ -63,6 +63,8 @@ int main() {
         up.type = SDL_EVENT_MOUSE_BUTTON_UP; up.button.down = false;
         assert(!send(up));
         assert(ui_element(engine, log).text == "DPWC");
+        assert(ui_get_attribute(engine, button, "data-target") == "yes");
+        assert(ui_get_attribute(engine, button, "data-up") == "yes");
         assert(!send(down));
         assert(ui_element(engine, log).text == "DPWCDWM");
         assert(!send(up));
@@ -81,6 +83,10 @@ int main() {
         });
         ui_click(engine, button);
         assert(clicks == 1);
+        SDL_Event leave{};
+        leave.type = SDL_EVENT_WINDOW_MOUSE_LEAVE;
+        assert(!send(leave));
+        assert(ui_get_attribute(engine, button, "data-left") == "true");
         ui_set_boolean_attribute(engine, button, "disabled", true);
         ui_click(engine, button);
         assert(clicks == 1);

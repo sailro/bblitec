@@ -4,9 +4,12 @@
 #include <optional>
 #include <string>
 #include <stdexcept>
+#include <functional>
 #include <vector>
 
 namespace bbl {
+
+struct Engine;
 
 enum class DomEventTargetKind { Window, Document, Canvas, Element };
 
@@ -20,6 +23,16 @@ struct DomEventTarget {
     static DomEventTarget node(std::uint32_t element) { return {DomEventTargetKind::Element, element}; }
     [[nodiscard]] bool operator==(const DomEventTarget&) const = default;
 };
+
+/** Source-visible identity belongs to the owning document. The transport uses
+ * DomEventTarget alone and reconstructs this value on the receiving realm. */
+struct DomEventTargetValue {
+    Engine* engine = nullptr;
+    DomEventTarget target{};
+    [[nodiscard]] bool operator==(const DomEventTargetValue&) const = default;
+};
+
+inline DomEventTargetValue dom_target_value(Engine& engine, DomEventTarget target) { return {&engine, target}; }
 
 struct DomEventState {
     std::string type;
@@ -37,6 +50,8 @@ struct DomEventState {
     bool propagation_stopped = false;
     bool immediate_propagation_stopped = false;
     bool dispatching = false;
+    /** Set only while the owning realm invokes listeners; never transported. */
+    Engine* dispatch_engine = nullptr;
 
     void stop_propagation() noexcept { propagation_stopped = true; }
     void stop_immediate_propagation() noexcept {
@@ -52,4 +67,17 @@ DomEventState& dom_event_state(const Event& event) {
     return *event.dom;
 }
 
+template <typename Event> Engine& dom_event_owner(const Event& event) {
+    const auto* owner = dom_event_state(event).dispatch_engine;
+    if (!owner) throw std::logic_error("The event has no active owning document.");
+    return *dom_event_state(event).dispatch_engine;
+}
+
 } // namespace bbl
+
+template <> struct std::hash<bbl::DomEventTargetValue> {
+    std::size_t operator()(const bbl::DomEventTargetValue& value) const noexcept {
+        return std::hash<bbl::Engine*>{}(value.engine) ^
+            (static_cast<std::size_t>(value.target.kind) << 32) ^ value.target.element;
+    }
+};

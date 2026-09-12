@@ -59,7 +59,7 @@ status. One line per item: the gap, where it is, its size (S < 1 h, M < half day
 - [ ] Transfer lists admit OffscreenCanvas only (workers.ts:119); clone nodes are undefined/null/bool/double/string/array/object/buffer/transfer (pal_structured_clone.hpp:41); ArrayBuffer transfer, MessagePort and Date/Map/Set/typed-array views refuse. L; unreached.
 - [ ] Worker listeners: message/error only, `once` the only option, no worker-scope error or unhandledrejection (workers.ts:133-147, runtime.hpp:180). M; unreached.
 - [ ] Window ResizeObserver entries are missing; drawCallCount is per engine but has no worker transport (pal_window_realm.cpp). M.
-- [ ] DOM input still needs event-target value projection, AbortSignal lifetime, explicit pointer capture and coalesced events; focus/form events retain per-element dispatch (dom-listeners.ts, pal_dom_events.hpp, pal_ui_rml.cpp). L; application interaction controllers.
+- [ ] DOM input still needs AbortSignal lifetime, explicit pointer capture and coalesced events; focus/form events retain per-element dispatch (dom-listeners.ts, pal_dom_events.hpp, pal_ui_rml.cpp). L; application interaction controllers.
 - [ ] SharedArrayBuffer/Atomics fall to the generic constructor refusal (expressions.ts:689); name the contract. S.
 - [ ] DPR follows a 16 ms poll of SDL_GetWindowDisplayScale (pal_window_realm.cpp:477); a pure DPR change leaves the canvas backing store (pal_canvas.hpp:134) and every MediaQueryList stays registered (pal_window_realm.cpp:337-341). M.
 - [ ] File accept/MIME/extension/label tables are spelled four times (browser-file.ts:39, js_file.hpp:280-326, js_voxel_file.hpp:26) with two parsers; one generated descriptor. M, deletes more than it adds.

@@ -14,8 +14,9 @@ function typedArray(kind: TypedArrayKind) {
 
 export const scalarKinds: DataKindOperations<
     "http-response" | "storage" | "date" | "date-time-format" | "number" | "boolean" | "string" | "arraybuffer" | "dataview" | "bufferview" | "numberindex" | "json" |
-    "borrowed-platform-event" | "handle" | TypedArrayKind
+    "event-target" | "borrowed-platform-event" | "handle" | TypedArrayKind
 > = {
+    "event-target": leaf("bbl::DomEventTargetValue", "event-target"),
     "http-response": {...leaf("bbl::pal::HttpResponse", "http-response", true), opaqueReference:true},
     storage: {...leaf("bbl::js::Storage", "storage", true), opaqueReference:true},
     date: { ...leaf("bbl::js::Date", "date", true), opaqueReference: true },

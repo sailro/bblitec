@@ -17,6 +17,9 @@ test("generated DOM listeners receive retained SDL paths and control native defa
         document.body.appendChild(log);
         let order = "";
         function record(value: string): void { order += value; log.textContent = order; }
+        function current(event: Event): EventTarget | null { return event.currentTarget; }
+        function mark(element: HTMLElement): void { element.setAttribute("data-target", "yes"); }
+        const targets: EventTarget[] = [];
         const parent = document.createElement("div");
         parent.style.cssText = "position:absolute;left:20px;top:20px;width:200px;height:80px;pointer-events:auto";
         const button = document.createElement("button");
@@ -26,22 +29,37 @@ test("generated DOM listeners receive retained SDL paths and control native defa
         parent.appendChild(button);
         document.body.appendChild(parent);
         document.addEventListener("pointerdown", event => {
+            if (event.target !== button || event.currentTarget !== document) throw new Error("document event targets");
+            if (current(event) !== document) throw new Error("base event target");
+            if (event.target) targets.push(event.target);
+            if (targets[0] !== button) throw new Error("stored target");
+            mark(event.target as HTMLElement);
             if (event.type !== "pointerdown" || event.eventPhase !== 1 || event.pointerType !== "mouse" || !event.isPrimary)
                 throw new Error("pointer fields");
             record("D");
         }, true);
         const options = {capture: false, once: true, passive: false};
         button.addEventListener("pointerdown", event => {
+            if (event.currentTarget !== button) throw new Error("element current target");
+            const target = event.currentTarget;
+            if (target) target.addEventListener("pointerup", () => { button.setAttribute("data-up", "yes"); }, {once:true});
             record("P");
             event.preventDefault();
             if (!event.defaultPrevented || event.eventPhase !== 2) throw new Error("target cancellation");
         }, options);
         button.addEventListener("mousedown", () => { record("M"); });
-        window.addEventListener("pointerdown", () => { record("W"); });
+        window.addEventListener("pointerdown", event => {
+            if (event.currentTarget !== window) throw new Error("window current target");
+            record("W");
+        });
         const removed = () => { record("X"); };
         button.addEventListener("pointerdown", removed, {capture:true});
         button.removeEventListener("pointerdown", removed, true);
         button.addEventListener("click", () => { record("C"); }, {once:true});
+        button.addEventListener("pointerout", event => {
+            const related: EventTarget | null = event.relatedTarget;
+            button.setAttribute("data-left", String(related === null));
+        });
         window.addEventListener("keydown", event => {
             if (event.code === "Escape") { record("K"); event.preventDefault(); }
         });

@@ -2170,6 +2170,8 @@ export interface ValueFields {
   platformEventBase?: true;
   /** Native pointer token carrying JavaScript identity for a data object. */
   objectIdentityCpp?: string;
+  /** Native DOM target discriminator for a represented global identity. */
+  domEventTargetCpp?: string;
   /**
    * For a `handle-collection` value: where the collection lives and, when
    * it is asset-derived, which materialized asset decides its members.
