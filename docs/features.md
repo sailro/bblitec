@@ -87,6 +87,9 @@ stored `Storage` references preserve the native object's identity through nullab
 String-valued `||` and `&&` evaluate their left operand once and keep the right operand lazy.
 Parsed JSON values support guarded scalar reads and nullable conditionals. Fresh `map`/`filter` results
 honor wider string-array annotations, and named array callbacks participate in recursion lowering.
+Readonly constant record tuples support runtime searches through a shared typed array, including
+nullable fields. Stored string tags compare with arbitrary strings without requiring those strings
+to belong to the tag set; guarded nullable tags can flow into ordinary string callbacks.
 
 Numeric typed arrays include Int8/Uint8, Int16/Uint16, Int32/Uint32 and Float32/Float64. Their buffer-backed
 views retain shared ArrayBuffer bytes, identity, offset and length across aliases,

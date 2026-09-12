@@ -1243,9 +1243,17 @@ export class DataTypeRegistry {
               !candidate || !dataTypesEqual(candidate, first),
           )
         ) {
-          return undefined;
+          // A shared property may vary between arms, for example null in
+          // one record and a string in another. Ask the checker for that
+          // property's union instead of choosing one arm's representation.
+          const sharedProperty = type.getProperty(propertyName);
+          mapped = sharedProperty ? this.fromTsType(
+            this.checker.getTypeOfSymbolAtLocation(sharedProperty, node), node,
+          ) : undefined;
+          if (!mapped) return undefined;
+        } else {
+          mapped = first;
         }
-        mapped = first;
       }
       fields.push({
         sourceName: propertyName,
