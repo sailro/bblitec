@@ -12,6 +12,16 @@ namespace bbl::js {
 struct PromiseVoid {};
 template <typename T> class Promise;
 
+template <typename T, typename Convert> struct PromiseAdoption {
+    Promise<T> source;
+    Convert convert;
+};
+
+template <typename T, typename Convert>
+auto adopt_promise(Promise<T> source, Convert convert) {
+    return PromiseAdoption<T, Convert>{std::move(source), std::move(convert)};
+}
+
 namespace promise_detail {
 template <typename T> struct State {
     using Fulfilled = Callback<void(const T&)>;
@@ -47,6 +57,8 @@ template <typename T> class Promise {
     using Reaction = typename State::Reaction;
   public:
     Promise() : state_(make_gc_shared<State>()) {}
+    const void* get() const noexcept { return state_.get(); }
+    template <typename U> bool operator==(const Promise<U>& other) const noexcept { return get() == other.get(); }
     void gc_trace(const TraceVisitor& visitor) const { visitor(state_); }
     bool pending() const { state_->require_owner(); return std::holds_alternative<std::monostate>(state_->outcome); }
 
@@ -60,12 +72,19 @@ template <typename T> class Promise {
         settle(std::move(value));
     }
     void resolve(const Promise& other) const {
+        adopt(other, [](const T& value) { return value; });
+    }
+    template <typename U, typename Convert> void adopt(const Promise<U>& other, Convert convert) const {
         state_->require_owner();
         if (state_->resolving) return;
         state_->resolving = true;
-        if (state_ == other.state_) { settle(std::make_exception_ptr(std::runtime_error("Promise cannot resolve to itself"))); return; }
+        if (get() == other.get()) { settle(std::make_exception_ptr(std::runtime_error("Promise cannot resolve to itself"))); return; }
         other.observe(
-            make_closure(std::tuple{*this}, [](auto& environment, const T& value) { std::get<0>(environment).settle(value); }),
+            make_closure(std::tuple{*this, std::move(convert)}, [](auto& environment, const U& value) {
+                try { std::get<0>(environment).settle(std::get<1>(environment)(value)); }
+                catch (const pal::WorkerTerminated&) { throw; }
+                catch (...) { std::get<0>(environment).settle(std::current_exception()); }
+            }),
             make_closure(std::tuple{*this}, [](auto& environment, std::exception_ptr error) { std::get<0>(environment).settle(error); }));
     }
     void reject(std::exception_ptr error) const {
@@ -115,6 +134,9 @@ template <typename T> class Promise {
         std::suspend_never final_suspend() const noexcept { return {}; }
         void return_value(T value) { result.resolve(std::move(value)); }
         void return_value(const Promise& value) { result.resolve(value); }
+        template <typename U, typename Convert> void return_value(PromiseAdoption<U, Convert> value) {
+            result.adopt(value.source, std::move(value.convert));
+        }
         void unhandled_exception() {
             try { throw; }
             catch (const pal::WorkerTerminated&) {} // Realm shutdown discards this activation.
@@ -176,6 +198,12 @@ template <typename T> class Promise {
     }
     std::shared_ptr<State> state_;
 };
+
+inline std::string promise_error_message(std::exception_ptr error) {
+    try { std::rethrow_exception(error); }
+    catch (const std::exception& problem) { return problem.what(); }
+    catch (...) { return ""; }
+}
 
 inline std::string promise_error_string(std::exception_ptr error) {
     try { std::rethrow_exception(error); }

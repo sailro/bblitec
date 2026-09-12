@@ -2706,7 +2706,10 @@ export class UserFunctionLowerer {
                 context.decreaseIndent();
                 context.emit("} while (false);");
             }
-            if (terminated || !ir.returnExpression) return { kind: "void", cpp: "" };
+            if (terminated || !ir.returnExpression) return {
+                kind: "void", cpp: "",
+                ...(terminated && !ir.needsWrapper ? {abruptCompletion:true} : {}),
+            };
             if (discardReturn) {
                 context.emitExpressionAsStatement(ir.returnExpression);
                 return { kind: "void", cpp: "" };

@@ -112,8 +112,12 @@ export const scalarsSinks: DataSinkOperations<"event-target" | "http-response" |
     },
     promise: {
         expression: (type, lowerer, _expression, unwrapped) => lowerer.compileKnownValueForSink(lowerer.context.compileValue(unwrapped), type, unwrapped),
-        value: (type, lowerer, value) => value.kind === "promise" && value.promiseType ===
-            (type.result ? lowerer.context.dataTypes.cppType(type.result) : "bbl::js::PromiseVoid") ? value.cpp : undefined,
+        value: (type, lowerer, value, node) => {
+            if (value.kind !== "promise") return undefined;
+            const expected = type.result ? lowerer.context.dataTypes.cppType(type.result) : "bbl::js::PromiseVoid";
+            if (value.promiseType !== expected) lowerer.context.fail(node, `Promise storage requires ${expected}, received ${value.promiseType}.`);
+            return value.cpp;
+        },
     },
     storage: {
         expression: (type, lowerer, _expression, unwrapped) => lowerer.compileKnownValueForSink(lowerer.context.compileValue(unwrapped), type, unwrapped),

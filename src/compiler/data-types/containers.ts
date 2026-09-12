@@ -7,7 +7,7 @@ export const containerKinds: DataKindOperations<
         cpp: (type, context) => `bbl::js::Promise<${type.result ? context.cppType(type.result) : "bbl::js::PromiseVoid"}>`,
         key: (type, key) => `promise(${type.result ? key(type.result) : "void"})`,
         equal: (left, right, equal) => left.result && right.result ? equal(left.result, right.result) : left.result === right.result,
-        children: type => type.result ? [type.result] : [], byReference: false,
+        children: type => type.result ? [type.result] : [], byReference: false, opaqueReference: true,
     },
     product: {
         cpp: (type, context) => `bbl::js::Product<${type.elements.map(element => context.cppType(element)).join(", ")}>`,

@@ -1460,6 +1460,7 @@ export class StatementLowerer {
         }
         if (
             value.staticString === undefined &&
+            value.kind !== "string" &&
             !(
                 value.kind === "data" &&
                 value.dataType?.kind === "string"
@@ -2973,7 +2974,7 @@ export class StatementLowerer {
                     );
                     context.emit(`${target.cpp} = ${value.cpp};`);
                 } else if (
-                    target.kind === "data" &&
+                    (target.kind === "data" || target.kind === "promise") &&
                     operator === "=" &&
                     context.emitDataAssignment(unwrapped)
                 ) {

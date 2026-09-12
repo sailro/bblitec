@@ -84,6 +84,10 @@ Callbacks returning `Promise<T> | void` retain either the promise or an absent r
 Bare returns, fallthrough and void-returning expressions preserve their effects; present promises
 support `typeof` checks of their `then` and `catch` methods.
 Promise reactions and microtasks share mutable outer bindings, including through called helpers.
+Local and nullable promise bindings can be replaced or cached in collections while aliases retain
+promise identity. Async reactions own their suspended arguments; stored callbacks and callback
+properties are read at registration after the receiver. Async returns adopt wider nullable results
+and preserve rejection when their fulfillment value is discarded by a void callback signature.
 Engine contexts
 can be stored in records and collections as references to the entry engine. Empty asserted output records
 retain absent fields until initialized; aliases observe subsequent writes. Loose `== null` and `!= null`

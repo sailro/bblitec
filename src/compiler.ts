@@ -2029,7 +2029,8 @@ class Compiler
             kind === "number" ||
             kind === "boolean" ||
             kind === "string" ||
-            kind === "enum"
+            kind === "enum" ||
+            kind === "promise"
         );
     }
 
@@ -2318,6 +2319,19 @@ class Compiler
             cppName,
         );
         let value = this.compileValue(declaration.initializer);
+        if (value.kind === "promise") {
+            const type = this.dataLowerer.dataTypeAt(declaration.name);
+            if (type?.kind === "promise") {
+                const expected = type.result ? this.dataTypes.cppType(type.result) : "bbl::js::PromiseVoid";
+                const rebound = this.identifierIsRebound(declaration.name);
+                if (expected === value.promiseType) {
+                    const runtime = this.dataValue(value.cpp, type);
+                    value = rebound && runtime.kind === "promise" ? {...value, ...runtime} : {...value, dataType:type};
+                } else if (rebound) {
+                    this.fail(declaration, "Promise rebinding requires the declared result representation.");
+                }
+            }
+        }
         value = this.bindSceneNodeVector(value);
         value = this.bindCameraVector(value);
         if (forwardCallback) {
@@ -2620,6 +2634,8 @@ class Compiler
                     ? "bool"
                     : value.kind === "string"
                       ? "std::string"
+                      : value.kind === "promise"
+                        ? `bbl::js::Promise<${value.promiseType}>`
                       : value.dataType?.kind === "enum"
                         ? this.dataTypes.cppType(value.dataType)
                         : "auto";
@@ -4719,17 +4735,7 @@ class Compiler
     }
 
     public compileAsyncReturn(expression: ts.Expression, type: DataType | undefined): string {
-        const value = this.compileValue(expression);
-        if (value.kind === "promise") {
-            const expected = type ? this.dataTypes.cppType(type) : "bbl::js::PromiseVoid";
-            if (value.promiseType !== expected) this.fail(expression, "Async return adoption requires the declared result representation.");
-            return value.cpp;
-        }
-        if (!type) {
-            this.emitDiscardedValue(value);
-            return "bbl::js::PromiseVoid{}";
-        }
-        return this.dataLowerer.compileKnownValueForSink(value, type, expression);
+        return this.asyncLowerer.compileReturn(expression, type);
     }
 
     public withOwnedCallbackBody<T>(body: () => T): T {

@@ -599,7 +599,7 @@ export class DataLowerer {
                 this.context.lookupIdentifierValue(
                     unwrapped,
                 );
-            if (bound?.kind !== "data") {
+            if (bound?.kind !== "data" && bound?.kind !== "promise") {
                 // A module-level `const Record<Union, T> = { ... }` has no
                 // runtime local binding. Materialize its typed literal at
                 // the use site so a runtime enum index can select a slot;
@@ -6049,7 +6049,7 @@ export class DataLowerer {
         // check below is what keeps aggregates out.
         const target = this.compileDataPath(left, "read");
         if (
-            target?.kind !== "data" ||
+            (target?.kind !== "data" && target?.kind !== "promise") ||
             !target.dataType
         ) {
             return false;

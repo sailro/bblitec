@@ -36,7 +36,7 @@ it does not establish that this external application compiles or runs.
 | Branch | `codex/external-project-support` |
 | Remote | `https://github.com/sailro/bblitec.git` |
 | Branch base used in this session | `3474e835` on `main` |
-| Latest executable-code/test unit | Owned recursive async activation and hardened audio validation; prior savepoints `f5cd2061` (AudioBuffer surface), `310e61dc` (Math and forwarded callbacks), `acfebcc6` (owned packaged fetch) and `29def3e0` (async aggregation/destructuring) |
+| Latest executable-code/test unit | Promise cache bindings, async reactions and typed adoption; prior savepoints `53ba4164` (recursive async and hardened validation), `f5cd2061` (AudioBuffer surface), `310e61dc` (Math and forwarded callbacks) and `acfebcc6` (owned packaged fetch) |
 | Draft PR | [#247 — Extend generic application compilation and retained UI support](https://github.com/sailro/bblitec/pull/247) |
 | External checkout | `C:/Dev/_prototypes/external-native-app` |
 | External source revision | `d7c477a6d5963680c55249dceb93cb6e4ab9ce56` |
@@ -44,9 +44,32 @@ it does not establish that this external application compiles or runs.
 | External generated output | `generated/external-app` (ignored; not a successful complete generation) |
 | Session diagnostics | `artifacts/external-integration` (ignored) |
 
-Latest complete-entry diagnostic: `compile589` passed recursive async activation
-and stopped at rebinding a nullable cached promise read from a map.
+Latest complete-entry diagnostic: `compile605` passed nullable promise-cache
+rebinding and stopped at an inline async array mapper producing a record where
+the result sink expects a promise.
 Generation, native build and application runtime remain incomplete.
+
+The promise-cache baseline (`promise-caches593`) accepted 2/10 generation probes
+and built/ran 1/10; `promise-caches604-native.json` builds and runs all ten.
+Promises share reference identity and mutable binding cells; async reactions
+own their arguments, callback expressions are snapshotted at registration, and
+returns adopt wider/void results without turning adoption into an awaited return.
+The permanent cache fixture tests eviction/retry, reaction getters, error captures,
+rejection before suspension, and rebinding while an activation is suspended.
+Specialized throwing inline paths carry explicit abrupt-completion metadata so
+their async activation retains its declared result instead of becoming void.
+`regressions604` passed 815/816 checks with no skips; its sole failure exposed
+local Promise.all storage using the checker's tuple representation instead of
+the generated tuple. After repairing storage selection, `promises606` passes all
+five aggregate/cache/reaction/optional/native-promise checks. Rebinding across
+different tuple representations still refuses explicitly.
+`population607` generated all 288 registered corpus entries after that repair.
+
+The next batch uses `assess-async-collections.mjs` with twelve independent forms:
+async mappers, named/stored callbacks, tuple mapping, forEach, filter, some/every,
+find, flatMap, reduce and Array.from. It must preserve synchronous iteration and
+promise truthiness while each async callback owns its suspension. Do not merely
+make the returned element type match by inlining awaits into the caller.
 
 The recursive-async baseline (`deferred583`) accepted 3/10 generation probes,
 but only 1/10 built and ran. `deferred588-native.json` builds and runs all ten:
@@ -54,8 +77,8 @@ local/named/mutual recursion, deferred timers, void sinks, concise bodies,
 record results, rejections and invocations outliving their declaration scope.
 They reuse stored-function coroutine bodies with traced recursive cells.
 `regressions592` passes all 665 compiler/callback/worker/loading/fetch checks;
-the dedicated recursive fixture also passes. The next assessment is
-`promise-caches593.json`, covering caches, async reactions and return adoption.
+the dedicated recursive fixture also passes. `population594` generated all 288
+registered entries at that savepoint.
 
 Validation correction: earlier async/audio fixtures closed the realm from an
 error callback whose console output was erased, allowing failures to pass.
