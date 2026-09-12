@@ -8273,7 +8273,7 @@ test("narrows an assigned nullable retained-UI class field", () => {
     `);
 
     assert.match(result.cpp, /ui_append_to_root/);
-    assert.match(result.cpp, /has_value\(\) \? bbl::ui_remove/);
+    assert.match(result.cpp, /if \([^\n]+\.has_value\(\)\) \{\s*const auto (\w+) = [^;]+;\s*bbl::ui_remove\([^,]+, \1\);/);
 });
 
 test("retains stylesheet tags assigned through nullable class fields", () => {

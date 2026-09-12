@@ -35,6 +35,15 @@ test("optional DOM calls snapshot the receiver and skip absent-call arguments", 
         document.getElementById("parent")?.remove();
         document.getElementById("parent")?.remove();
         if (document.getElementById("parent")) throw new Error("remove");
+        class Panel {
+            node: HTMLElement | null = null;
+            build(): void { this.node = document.createElement("div"); }
+            child(): HTMLElement { this.node = null; return document.createElement("span"); }
+            add(): void { this.node?.appendChild(this.child()); }
+        }
+        const panel = new Panel();
+        panel.build();
+        panel.add();
         globalThis.close();
     `, {fileName:join(directory, "entry.ts")});
     writeFileSync(join(directory, "program.hpp"), result.cpp);
