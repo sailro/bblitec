@@ -108,6 +108,10 @@ struct WindowDocument {
     explicit WindowDocument(std::shared_ptr<WindowServices> host, EngineOptions options)
         : host(std::move(host)) {
         engine.options = std::move(options);
+        engine.ui_measure_element = [](Engine& owner, UiElementHandle element) {
+            if (&owner != &window_document_engine()) throw std::logic_error("A Window layout read requires its owning realm.");
+            return window_element_size(element);
+        };
         static_cast<void>(ui_document_root(engine, UiDocumentPart::Html));
     }
     std::shared_ptr<WindowServices> host;

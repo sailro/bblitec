@@ -1,4 +1,5 @@
 #include <bblite/pal_ui.hpp>
+#include <bblite/ui_selector.hpp>
 #include <bblite/pal_dom_events.hpp>
 #if defined(BBLITE_HAS_BROWSER_FILE) && BBLITE_HAS_BROWSER_FILE
 #include <bblite/js_file.hpp>
@@ -318,6 +319,7 @@ UiElementHandle ui_get_element_by_id(Engine& engine, std::string_view id) {
 UiClientRect ui_get_client_rect(
     Engine& engine,
     UiElementHandle element) {
+    if (engine.ui_measure_element) return engine.ui_measure_element(engine, element);
     UiElementRecord& record = ui_element(engine, element);
     record.client_rect_requested = true;
     return record.client_rect;
@@ -719,7 +721,8 @@ void ui_add_style_rule(
     UiScrollbarPart scrollbar,
     bool focus_visible,
     bool active,
-    UiMotionPreference motion) {
+    UiMotionPreference motion,
+    std::vector<UiSelectorStep> sequence) {
     UiElementRecord& owner = ui_element(engine, stylesheet);
     if (owner.tag != "style") {
         throw std::runtime_error(
@@ -740,7 +743,7 @@ void ui_add_style_rule(
         focus_visible,
         active,
         scrollbar,
-        motion});
+        motion, std::move(sequence)});
     mark_ui_changed(engine, owner);
 }
 
@@ -756,7 +759,8 @@ void ui_add_host_style_rule(
     bool focus_visible,
     bool active,
     UiScrollbarPart scrollbar,
-    UiMotionPreference motion) {
+    UiMotionPreference motion,
+    std::vector<UiSelectorStep> sequence) {
     if (primary.empty() || style.empty()) {
         throw std::runtime_error(
             "A native host UI style rule must have a target and declarations.");
@@ -772,7 +776,7 @@ void ui_add_host_style_rule(
         focus_visible,
         active,
         scrollbar,
-        motion});
+        motion, std::move(sequence)});
     ++engine.ui_style_revision;
     mark_ui_changed(engine);
 }
@@ -1942,6 +1946,8 @@ bool ui_style_rule_matches(
     if (handle.value >= engine.ui_elements.size()) return false;
     const UiElementRecord& record = handle_at(engine.ui_elements, handle);
     switch (rule.selector) {
+    case UiStyleSelectorKind::Sequence:
+        throw std::logic_error("A compound selector requires the live selector matcher.");
     case UiStyleSelectorKind::Class:
         return ui_record_has_class(record, rule.primary);
     case UiStyleSelectorKind::Id:
@@ -1994,6 +2000,9 @@ bool ui_style_rule_matches(
 std::string ui_style_rule_selector(const UiStyleRule& rule) {
     std::string selector;
     switch (rule.selector) {
+    case UiStyleSelectorKind::Sequence:
+        selector = rule.primary;
+        break;
     case UiStyleSelectorKind::Class:
         selector = "." + rule.primary;
         break;
@@ -2051,6 +2060,13 @@ std::uint32_t ui_style_rule_specificity(const UiStyleRule& rule) {
     std::uint32_t classes = (rule.hover ? 1u : 0u) + (rule.focus_visible ? 1u : 0u) + (rule.active ? 1u : 0u);
     std::uint32_t tags = 0;
     switch (rule.selector) {
+    case UiStyleSelectorKind::Sequence:
+        for (const auto& step : rule.sequence) for (const auto& test : step.tests) {
+            if (test.kind == UiSelectorTestKind::Id) ++ids;
+            else if (test.kind == UiSelectorTestKind::Tag) ++tags;
+            else ++classes;
+        }
+        break;
     case UiStyleSelectorKind::Class:
         ++classes;
         break;
@@ -2556,7 +2572,7 @@ struct ProjectedUiElement {
     bool inset_outline_positioned_parent = false;
     bool text_wrapped = false;
     bool intrinsic_width_applied = false;
-    bool hovered = false;
+    std::uint8_t interaction_states = 0;
     bool outline_positioned_parent = false;
     bool click_listener_attached = false;
     std::unordered_map<std::string, bool> event_listeners_attached;
@@ -3645,7 +3661,9 @@ struct UiRmlRuntime {
                     handle_at(projected_elements, handle).element->IsPseudoClassSet("active"))) ||
                 (rule.focus_visible && (!engine.ui_focus_visible || engine.ui_focused_element != handle)) ||
                 !style_rule_media_matches(rule) ||
-                !ui_style_rule_matches(engine, handle, rule)) {
+                !(rule.selector == UiStyleSelectorKind::Sequence
+                    ? ui_selector_sequence_matches(handle.value < projected_elements.size() ? projected_elements[handle.value].element : nullptr, rule.sequence)
+                    : ui_style_rule_matches(engine, handle, rule))) {
                 return;
             }
             callback(rule, rule_order);
@@ -4603,6 +4621,14 @@ struct UiRmlRuntime {
         }
         if (!pending_reparents.empty()) throw std::runtime_error("A moved UI element has no projected parent.");
         sync_projected_root_order();
+        // Materialization, source attributes and reparenting finish before compound
+        // private declarations inspect the same completed tree as RmlUi.
+        bool has_sequences = false;
+        for_each_active_style_rule([&](const UiStyleRule& rule) { has_sequences = has_sequences || rule.selector == UiStyleSelectorKind::Sequence; });
+        if (has_sequences) for (const auto handle : engine.ui_root_children) {
+            if (handle.value < projected_elements.size() && projected_elements[handle.value].element &&
+                engine.ui_elements[handle.value].attached_to_root) update_element(handle);
+        }
         refresh_current_color_svg_elements();
         event_targets.clear();
         for (std::uint32_t index = 0; index < projected_elements.size(); ++index)
@@ -4654,10 +4680,13 @@ struct UiRmlRuntime {
         bool changed = false;
         for (ProjectedUiElement& projected : projected_elements) {
             if (!projected.element) continue;
-            const bool hovered =
-                projected.element->IsPseudoClassSet("hover");
-            if (projected.hovered == hovered) continue;
-            projected.hovered = hovered;
+            std::uint8_t states = 0, bit = 1;
+            for (const auto* state : {"hover", "active", "focus", "focus-visible", "disabled", "checked"}) {
+                if (projected.element->IsPseudoClassSet(state)) states |= bit;
+                bit <<= 1;
+            }
+            if (projected.interaction_states == states) continue;
+            projected.interaction_states = states;
             changed = true;
         }
         return changed;

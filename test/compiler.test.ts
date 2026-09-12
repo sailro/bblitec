@@ -8909,14 +8909,8 @@ test("refuses stylesheet selectors outside the reviewed surface by name", () => 
         () => compileSource(sheet(".pill:has(.icon) { color: red; }")),
         /Retained stylesheet selector '\.pill:has\(\.icon\)' is not lowered/,
     );
-    assert.throws(
-        () => compileSource(sheet("div p { color: red; }")),
-        /Retained stylesheet selector 'div p' is not lowered/,
-    );
-    assert.throws(
-        () => compileSource(sheet(".a > .b { color: red; }")),
-        /Retained stylesheet selector '\.a > \.b' is not lowered/,
-    );
+    for (const selector of ["div p", ".a > .b"])
+        assert.match(compileSource(sheet(`${selector} { color: red; }`)).cpp, /UiStyleSelectorKind::Sequence/);
 });
 
 test("keeps scoped and direct class rules distinct in cascade order", () => {
@@ -9138,7 +9132,7 @@ test("retains class-tag descendants and hover without leaking to unrelated tags"
         result.manifest.adaptations.find(
             ({ id }) => id === "substituted-ui-runtime",
         )?.nativeSemantics ?? "",
-        /RmlUi evaluates reached :hover/,
+        /RmlUi evaluates reached input state/,
     );
 });
 
@@ -10462,9 +10456,8 @@ test("refuses unsafe or unbounded retained innerHTML", () => {
     );
 });
 
-test("refuses unproven scoped selectors, queries, and grid substitutions", () => {
-    assert.throws(
-        () =>
+test("admits unused scoped sheets while refusing unproven queries and grid substitutions", () => {
+    assert.match(
             compileSource(`
                 import { createEngine } from "@babylonjs/lite";
                 async function main(): Promise<void> {
@@ -10474,8 +10467,8 @@ test("refuses unproven scoped selectors, queries, and grid substitutions", () =>
                     document.head.appendChild(style);
                 }
                 void main();
-            `),
-        /no statically-known descendant matches/,
+            `).cpp,
+        /UiStyleSelectorKind::ClassDescendantTag/,
     );
     assert.throws(
         () =>
@@ -11238,8 +11231,11 @@ test("lowers retained layout reads and pointer motion coordinates", () => {
         /make_closure\(std::tuple\{v_hit, std::ref\(v_bblite_inline_engine_\d+\)\}, \[\]\(\[\[maybe_unused\]\] decltype\(std::tuple\{[^}\n]*\}\)& \w+, \[\[maybe_unused\]\] const bbl::PlatformMouseEvent&[^\n]*\)/,
     );
     assert.match(result.cpp, /\.client_x/);
-    assert.match(result.cpp, /ui_get_client_rect[^;]*\.left/);
-    assert.match(result.cpp, /ui_get_client_rect[^;]*\.width/);
+    const rect = /const auto (\w+) = bbl::ui_get_client_rect\(/.exec(result.cpp)?.[1];
+    assert.ok(rect);
+    assert.match(result.cpp, new RegExp(`${rect}\\.left`));
+    assert.match(result.cpp, new RegExp(`${rect}\\.width`));
+    assert.equal(result.cpp.match(/bbl::ui_get_client_rect\(/g)?.length, 1);
     assert.doesNotMatch(result.cpp, /hasPointerCapture|getBoundingClientRect/);
 });
 

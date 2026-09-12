@@ -3272,6 +3272,7 @@ struct HierarchyInstancePoolRecord {
 
 #if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
 enum class UiStyleSelectorKind : std::uint8_t {
+    Sequence,
     Class,
     Id,
     CompoundClass,
@@ -3287,6 +3288,11 @@ enum class UiStyleSelectorKind : std::uint8_t {
 
 enum class UiScrollbarPart : std::uint8_t { None, Scrollbar, Thumb, Track, Button, Corner };
 enum class UiMotionPreference : std::uint8_t { Any, Reduce, NoPreference };
+
+enum class UiSelectorTestKind : std::uint8_t { Tag, Id, Class, Attribute, Equals, Hover, Active, Focus, FocusVisible, Disabled, Checked };
+enum class UiSelectorRelation : std::uint8_t { Self, Descendant, Child, Next, Following };
+struct UiSelectorTest { UiSelectorTestKind kind; std::string name; std::string value; };
+struct UiSelectorStep { UiSelectorRelation relation; std::vector<UiSelectorTest> tests; };
 
 /**
  * One compiler-validated stylesheet rule.
@@ -3308,6 +3314,7 @@ struct UiStyleRule {
     bool active = false;
     UiScrollbarPart scrollbar = UiScrollbarPart::None;
     UiMotionPreference motion = UiMotionPreference::Any;
+    std::vector<UiSelectorStep> sequence{};
 };
 
 /**
@@ -3725,6 +3732,8 @@ struct Engine {
     } ui_document_roots;
     /** Audited host-page rules, preceding scene-created sheets in cascade. */
     std::vector<UiStyleRule> ui_host_style_rules;
+    /** A realm host can synchronously publish pending edits before a source layout read. */
+    UiClientRect (*ui_measure_element)(Engine&, UiElementHandle) = nullptr;
     /** Any tree/text/style/listener mutation invalidates the PAL projection. */
     std::uint64_t ui_revision = 0;
     std::uint64_t ui_style_revision = 0;

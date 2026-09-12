@@ -4,8 +4,9 @@ import ts from "typescript";
 import { doubleLiteral } from "../cpp-literals.js";
 import { parseUiBorderImage, renderUiBorderImage } from "../ui-border-image.js";
 import { supportedUiFilter } from "../ui-filters.js";
+import {parseUiSelectorSequence, splitUiSelectorList, uiSelectorSequenceCss, uiSelectorSequenceSpecificity, uiSelectorSequenceCpp, type UiSelectorStep} from "../ui-selector.js";
 import { isUiLayoutProperty, supportedUiLayoutValue } from "../ui-layout.js";
-import { nativeHostUiStyleRules, uiStyleSelectorCppKind, uiStyleSelectorDescriptor, uiStyleInteractionStateCount, uiStyleRuleHasMedia, uiMotionPreferenceCpp, isUiScrollbarPart, uiScrollbarPartCpp, type UiStyleSelectorShape, type UiStyleSelectorKind } from "../ui-style-rule.js";
+import { nativeHostUiStyleRules, uiStyleSelectorCppKind, uiStyleSelectorDescriptor, uiStyleInteractionStateCount, uiStyleRuleNeedsRuntimeMatch, uiStyleRuleHasMedia, uiMotionPreferenceCpp, isUiScrollbarPart, uiScrollbarPartCpp, type UiStyleSelectorShape, type UiStyleSelectorKind } from "../ui-style-rule.js";
 import { validateFileAccept } from "./browser-file.js";
 import { CompileError } from "./compile-error.js";
 import { documentEngine } from "./window-events.js";
@@ -40,6 +41,7 @@ interface LoweredUiStyleRule extends UiStyleSelectorShape {
     site?: ts.Node;
     ownerId?: number;
     grid?: UiGridProjection;
+    sequence?: UiSelectorStep[];
 }
 
 
@@ -2310,9 +2312,8 @@ export class UiProjection {
         const refuseSelector = (selector: string): never => {
             const message =
                 `Retained stylesheet selector '${selector}' is not ` +
-                "lowered: the reviewed sheet surface is exact '.class' and " +
-                "'#id' rules, '.classA.classB', 'tag.class', 'tag > .class', statically-proven " +
-                "'.ancestor tag', '#id .class' (optionally ':hover', ':active', ':focus-visible'), " +
+                "lowered: retained sheets accept tag/id/class compounds, attribute presence/equality, " +
+                "descendant/child/sibling chains and hover/active/focus/focus-visible/disabled/checked states, " +
                 "scrollbar/track/thumb/button/corner pseudo-elements, " +
                 "'@media (max-width:Npx)', '@media (prefers-reduced-motion:reduce|no-preference)', and '@keyframes' blocks.";
             if (site) this.context.fail(site, message);
@@ -2426,14 +2427,10 @@ export class UiProjection {
                         "the structural grid substitution is not accepted inside a media query",
                     );
                 }
-                const selectors = header
-                    .split(",")
-                    .map((selector) => selector.trim());
+                const selectors = splitUiSelectorList(header);
                 for (const selector of selectors) {
                     if (
-                        /^\.([A-Za-z_][A-Za-z0-9_-]*)\s+(?:path|rect)(?::hover)?$/i.test(
-                            selector,
-                        )
+                        parseUiSelectorSequence(selector)?.at(-1)?.tests.some(test => test.kind === "tag" && (test.name === "path" || test.name === "rect"))
                     ) {
                         const message =
                             `Retained stylesheet selector '${selector}' cannot ` +
@@ -2460,7 +2457,7 @@ export class UiProjection {
                     if (ownerId !== undefined) rule.ownerId = ownerId;
                     if (grid) {
                         if (
-                            uiStyleInteractionStateCount(rule) > 0 ||
+                            uiStyleRuleNeedsRuntimeMatch(rule) ||
                             rule.scrollbar ||
                             (rule.kind !== "class" && rule.kind !== "id")
                         ) {
@@ -2530,6 +2527,8 @@ export class UiProjection {
     ): boolean {
         if (rule.scrollbar) return false;
         switch (rule.kind) {
+            case "sequence":
+                return this.uiSequenceMayMatch(rule, element, classes);
             case "class":
                 return classes.has(rule.primary);
             case "id":
@@ -2641,9 +2640,21 @@ export class UiProjection {
             const match = selector.match(pattern);
             if (match) return build(match);
         }
-        return undefined;
+        const sequence = parseUiSelectorSequence(selector);
+        return sequence ? {kind:"sequence", primary:uiSelectorSequenceCss(sequence), sequence, hover:false, style, selector} : undefined;
     }
 
+
+    /** Deliberately a possible-match query: relationships and attributes need
+     * runtime evaluation and cannot establish fixed-grid geometry. */
+    private uiSequenceMayMatch(rule: LoweredUiStyleRule, element: UiStaticElement, classes: ReadonlySet<string>): boolean {
+        return rule.sequence!.at(-1)!.tests.every(test => {
+            if (test.kind === "tag") return element.tag === test.name;
+            if (test.kind === "id") return element.ids.has(test.name);
+            if (test.kind === "class") return classes.has(test.name);
+            return true;
+        });
+    }
 
     private uiRuleMatchesDirect(
         rule: LoweredUiStyleRule,
@@ -2669,6 +2680,8 @@ export class UiProjection {
     private uiRuleSpecificity(rule: LoweredUiStyleRule): number {
         const states = uiStyleInteractionStateCount(rule);
         switch (rule.kind) {
+            case "sequence":
+                return uiSelectorSequenceSpecificity(rule.sequence!) + (Number(rule.hover) + Number(rule.active) + Number(rule.focusVisible === true)) * 0x100;
             case "class":
                 return (1 + states) * 0x100;
             case "id":
@@ -2799,6 +2812,9 @@ export class UiProjection {
         element: UiStaticElement,
     ): boolean {
         switch (rule.kind) {
+            case "sequence":
+                return rule.sequence!.some(step => step.tests.some(test => test.kind === "class" &&
+                    [...this.uiStaticElements.values()].some(candidate => candidate.mutableClasses.has(test.name))));
             case "class":
                 return element.mutableClasses.has(rule.primary);
             case "id":
@@ -2829,6 +2845,8 @@ export class UiProjection {
         className: string,
     ): boolean {
         switch (rule.kind) {
+            case "sequence":
+                return rule.sequence!.some(step => step.tests.some(test => test.kind === "class" && test.name === className));
             case "class":
             case "class-descendant-tag":
             case "tag-class":
@@ -2853,6 +2871,8 @@ export class UiProjection {
         child: UiStaticElement,
     ): boolean {
         switch (rule.kind) {
+            case "sequence":
+                return this.uiRuleMentionsClass(rule, className);
             case "tag-child-class":
                 return this.uiStaticParentHasTag(childId, rule.tag!) && child.classAlternatives.some(classes =>
                     (rule.primary === className && (!rule.secondary || classes.has(rule.secondary))) ||
@@ -2892,6 +2912,7 @@ export class UiProjection {
         elementId: number,
         element: UiStaticElement,
     ): boolean {
+        if (rule.kind === "sequence") return rule.sequence!.some(step => step.tests.some(test => test.kind === mutation.attribute));
         const sameTarget =
             mutation.targetId === undefined || mutation.targetId === elementId;
         const target =
@@ -2990,7 +3011,7 @@ export class UiProjection {
         for (let index = 0; index < activeRules.length; index++) {
             const rule = activeRules[index]!;
             if (
-                uiStyleInteractionStateCount(rule) > 0 ||
+                uiStyleRuleNeedsRuntimeMatch(rule) ||
                 uiStyleRuleHasMedia(rule) ||
                 !this.uiRuleMatchesStaticElementWithClasses(
                     rule,
@@ -3174,7 +3195,7 @@ export class UiProjection {
         for (let index = 0; index < activeRules.length; index++) {
             const rule = activeRules[index]!;
             if (
-                uiStyleInteractionStateCount(rule) > 0 ||
+                uiStyleRuleNeedsRuntimeMatch(rule) ||
                 uiStyleRuleHasMedia(rule) ||
                 !this.uiRuleMatchesStaticElementWithClasses(
                     rule,
@@ -3450,7 +3471,7 @@ export class UiProjection {
                 if (
                     !this.uiRuleMatchesStaticElement(rule, childId, child) ||
                     (!uiStyleRuleHasMedia(rule) &&
-                        uiStyleInteractionStateCount(rule) === 0 &&
+                        !uiStyleRuleNeedsRuntimeMatch(rule) &&
                         !this.uiRuleDependsOnMutableClass(rule, childId, child))
                 ) {
                     continue;
@@ -3460,7 +3481,7 @@ export class UiProjection {
                     const trigger =
                         uiStyleRuleHasMedia(rule)
                             ? `${rule.maxWidth !== undefined ? "max-width" : "motion preference"} rule '${rule.selector}'`
-                            : uiStyleInteractionStateCount(rule) > 0
+                            : uiStyleRuleNeedsRuntimeMatch(rule)
                               ? `${rule.hover ? "hover" : "interaction"} rule '${rule.selector}'`
                               : `runtime class rule '${rule.selector}'`;
                     fail(`${trigger} can change direct-child ${property}`);
@@ -3659,6 +3680,15 @@ export class UiProjection {
                             this.uiGridFromLoweredStyle(style) !== undefined,
                     ),
                 );
+            if (anyGrid) {
+                const structural = activeRules.find(rule => rule.sequence?.some(step =>
+                    step.relation === "child" || step.relation === "next" || step.relation === "following" || step.tests.length === 0));
+                if (structural) {
+                    const message = `Retained selector '${structural.selector}' requires authored tree relationships that cannot be proven across projected grid containers.`;
+                    if (structural.site) this.context.fail(structural.site, message);
+                    this.context.failAtFile(message);
+                }
+            }
             if (!this.uiStaticStyleCascadeKnown && anyGrid) {
                 const gridRule = this.uiStyleRules.find(
                     (rule) => rule.grid !== undefined,
@@ -3684,79 +3714,6 @@ export class UiProjection {
                     );
                 }
             }
-            const scopedMatches = (
-                rule: LoweredUiStyleRule,
-            ): {
-                retained: number;
-                markup: number;
-                complete: boolean;
-            } => {
-                let retained = 0;
-                let markup = 0;
-                let complete = true;
-                const ancestors = [...this.uiStaticElements.entries()].filter(
-                    ([_id, element]) =>
-                        rule.kind === "class-descendant-tag"
-                            ? element.classAlternatives.some((classes) =>
-                                  classes.has(rule.primary),
-                              )
-                            : element.ids.has(rule.primary),
-                );
-                for (const [id] of ancestors) {
-                    const descendants = this.uiStaticDescendants(id);
-                    complete = complete && descendants.complete;
-                    if (rule.kind === "class-descendant-tag") {
-                        retained += [...descendants.elements].filter(
-                            (childId) =>
-                                this.uiStaticElements.get(childId)?.tag ===
-                                rule.tag,
-                        ).length;
-                        markup += descendants.markup.filter(
-                            (node) => node.tag === rule.tag,
-                        ).length;
-                    } else {
-                        retained += [...descendants.elements].filter(
-                            (childId) =>
-                                this.uiStaticElements
-                                    .get(childId)
-                                    ?.classAlternatives.some((classes) =>
-                                        classes.has(rule.secondary!),
-                                    ),
-                        ).length;
-                        markup += descendants.markup.filter((node) =>
-                            node.classes.has(rule.secondary!),
-                        ).length;
-                    }
-                }
-                return { retained, markup, complete };
-            };
-
-            for (const rule of activeRules) {
-                if (
-                    rule.kind === "class-descendant-tag" ||
-                    rule.kind === "id-descendant-class"
-                ) {
-                    const matches = scopedMatches(rule);
-                    if (
-                        !matches.complete ||
-                        matches.retained + matches.markup === 0
-                    ) {
-                        const reason = !matches.complete
-                            ? "the ancestor has a dynamically-shaped retained subtree"
-                            : "no statically-known descendant matches it";
-                        if (rule.site) {
-                            this.context.fail(
-                                rule.site,
-                                `Retained stylesheet selector '${rule.selector}' cannot be projected: ${reason}.`,
-                            );
-                        }
-                        this.context.failAtFile(
-                            `Retained stylesheet selector '${rule.selector}' cannot be projected: ${reason}.`,
-                        );
-                    }
-                }
-            }
-
             const activeGridRules = activeRules.filter(
                 (rule) => rule.grid !== undefined,
             );
@@ -4791,7 +4748,7 @@ export class UiProjection {
                     )) {
                         if (
                             (rule.kind === "class" || rule.kind === "id") &&
-                            uiStyleInteractionStateCount(rule) === 0 &&
+                            !uiStyleRuleNeedsRuntimeMatch(rule) &&
                             !rule.scrollbar &&
                             !uiStyleRuleHasMedia(rule)
                         ) {
@@ -4813,7 +4770,8 @@ export class UiProjection {
                                     `${this.context.cppString(rule.style)}` +
                                     `, bbl::UiScrollbarPart::${uiScrollbarPartCpp(rule.scrollbar)}, ` +
                                     `${rule.focusVisible ? "true" : "false"}, ${rule.active ? "true" : "false"}, ` +
-                                    `bbl::UiMotionPreference::${uiMotionPreferenceCpp(rule.reducedMotion)});`,
+                                    `bbl::UiMotionPreference::${uiMotionPreferenceCpp(rule.reducedMotion)}` +
+                                    `${rule.sequence ? `, ${uiSelectorSequenceCpp(rule.sequence, value => this.context.cppString(value))}` : ""});`,
                             );
                         }
                     }
@@ -5117,7 +5075,8 @@ export class UiProjection {
                 this.context.failAtFile("Fractional host grids require inline tracks beside their complete child list.");
             }
             const identifier = /^[A-Za-z_][A-Za-z0-9_-]*$/;
-            if (!identifier.test(rule.primary)) {
+            const sequence = rule.kind === "sequence" ? parseUiSelectorSequence(rule.primary) : undefined;
+            if (rule.kind === "sequence" ? !sequence : !identifier.test(rule.primary)) {
                 this.context.failAtFile(
                     `Native host UI style target '${rule.primary}' is not valid.`,
                 );
@@ -5160,7 +5119,8 @@ export class UiProjection {
                     `${this.context.cppString(this.lowerUiAttributeLiteral("style", rule.style))}` +
                     `, ${rule.focusVisible ? "true" : "false"}, ${rule.active ? "true" : "false"}, ` +
                     `bbl::UiScrollbarPart::${uiScrollbarPartCpp(rule.scrollbar)}, ` +
-                    `bbl::UiMotionPreference::${uiMotionPreferenceCpp(rule.reducedMotion)});`,
+                    `bbl::UiMotionPreference::${uiMotionPreferenceCpp(rule.reducedMotion)}` +
+                    `${sequence ? `, ${uiSelectorSequenceCpp(sequence, value => this.context.cppString(value))}` : ""});`,
             );
         }
 
