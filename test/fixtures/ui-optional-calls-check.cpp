@@ -27,9 +27,10 @@ int main() {
     assert(generated_main() == 0);
     const auto& engine = bbl::pal::window_document_engine();
     assert(engine.ui_root_children.empty());
-    assert(engine.ui_elements.size() == 4);
+    assert(engine.ui_elements.size() == 6);
     assert(engine.ui_elements.at(0).children.size() == 1);
     assert(engine.ui_elements.at(1).text == "child");
     assert(engine.ui_elements.at(2).children.size() == 1);
     assert(engine.ui_elements.at(2).children.at(0).value == 3);
+    assert(engine.ui_elements.at(5).attributes.at("class") == "swatch active");
 }

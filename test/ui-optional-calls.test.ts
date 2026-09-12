@@ -44,6 +44,28 @@ test("optional DOM calls snapshot the receiver and skip absent-call arguments", 
         const panel = new Panel();
         panel.build();
         panel.add();
+        let visits = 0;
+        function visitor(element: Element, index: number): void {
+            visits++;
+            element.classList.toggle("active", index === 0);
+        }
+        class QueryPanel {
+            node: HTMLElement | null = null;
+            build(): void {
+                this.node = document.createElement("div");
+                const swatch = document.createElement("button");
+                swatch.className = "swatch";
+                this.node.appendChild(swatch);
+            }
+            visit(): void { this.node?.querySelectorAll(".swatch").forEach(visitor); }
+        }
+        const query = new QueryPanel();
+        query.build();
+        query.visit();
+        if (visits !== 1) throw new Error("query continuation");
+        query.node = null;
+        query.visit();
+        if (visits !== 1) throw new Error("absent query continuation");
         globalThis.close();
     `, {fileName:join(directory, "entry.ts")});
     writeFileSync(join(directory, "program.hpp"), result.cpp);

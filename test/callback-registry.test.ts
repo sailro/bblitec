@@ -139,17 +139,16 @@ test("lowers Map.get optional Set.delete for found and missing entries", () => {
     assert.equal(
         (
             result.cpp.match(
-                /bbl::js::Nullable<bbl::js::Set<double>> v_bblite_optional_set_\d+;/g,
+                /auto v_bblite_optional_chain_\d+ =/g,
             ) ?? []
         ).length,
         3,
     );
-    assert.equal((result.cpp.match(/\.has_value\(\)\) \{/g) ?? []).length, 6);
     assert.equal((result.cpp.match(/\)\.erase\(4\.0\)/g) ?? []).length, 3);
-    assert.match(result.cpp, /bbl::js::Nullable<bool> v_bblite_optional_delete_/);
+    assert.match(result.cpp, /bbl::js::Nullable<bool>/);
     assert.match(
         result.cpp,
-        /v_presentFalse\.has_value\(\) && \*v_presentFalse/,
+        /nullable_truthy\(v_presentFalse\)/,
     );
 
     const runtime = readFileSync("native/include/bblite/js_data.hpp", "utf8");
@@ -158,13 +157,12 @@ test("lowers Map.get optional Set.delete for found and missing entries", () => {
         /!std::is_same_v<std::remove_cvref_t<U>, Nullable>/,
     );
 
-    assert.throws(
+    assert.doesNotThrow(
         () =>
             compileSource(`
                 const groups = new Map<string, Set<number>>();
                 groups.get("missing")?.clear();
             `),
-        /may be null|Optional data-method chaining supports only|Unsupported call target/,
     );
 });
 
@@ -211,15 +209,7 @@ test("owns an optional Map Set before delete-argument side effects", () => {
     assert.equal(
         (
             result.cpp.match(
-                /const auto v_bblite_optional_set_lookup_\d+ =/g,
-            ) ?? []
-        ).length,
-        3,
-    );
-    assert.equal(
-        (
-            result.cpp.match(
-                /v_bblite_optional_set_\d+ = \*v_bblite_optional_set_lookup_\d+;/g,
+                /auto v_bblite_optional_chain_\d+ =/g,
             ) ?? []
         ).length,
         3,
@@ -232,7 +222,7 @@ test("owns an optional Map Set before delete-argument side effects", () => {
         const match = effect.exec(result.cpp);
         assert.ok(match);
         const owned = result.cpp.lastIndexOf(
-            " = *v_bblite_optional_set_lookup_",
+            "auto v_bblite_optional_chain_",
             match.index,
         );
         const deleted = result.cpp.indexOf(

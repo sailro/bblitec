@@ -142,7 +142,7 @@ std::unique_ptr<DocumentSnapshot> snapshot_document(const Engine& engine) {
         native.click_callbacks.clear();
         native.event_callbacks.clear();
 #if defined(BBLITE_HAS_BROWSER_FILE) && BBLITE_HAS_BROWSER_FILE
-        if (!native.file_change_callbacks.empty() || native.file_input || native.download_url.value != invalid_handle) {
+        if (!native.file_change_callbacks.empty() || native.file_input || native.download_url.slot != invalid_handle) {
             throw std::runtime_error("Window realm file actions are not admitted.");
         }
 #endif

@@ -28,7 +28,7 @@ it does not establish that this external application compiles or runs.
 | Branch | `codex/external-project-support` |
 | Remote | `https://github.com/sailro/bblitec.git` |
 | Branch base used in this session | `3474e835` on `main` |
-| Latest executable-code/test unit | Retained document roots, based on `095eda03` (2026-09-12) |
+| Latest executable-code/test unit | Registry regression fixes, based on root commit `1aac258b` (2026-09-12) |
 | Draft PR | [#247 — Extend generic application compilation and retained UI support](https://github.com/sailro/bblitec/pull/247) |
 | External checkout | `C:/Dev/_prototypes/external-native-app` |
 | External source revision | `d7c477a6d5963680c55249dceb93cb6e4ab9ce56` |
@@ -403,6 +403,58 @@ incomplete. Do not merge or mark it ready merely because the sweep passes.
   mailbox independently. Window/document mouse registration also currently uses
   the scene engine callback channels. These ownership/order constraints must be
   addressed when implementing the event unit.
+
+- `1aac258b` saves the document-root unit and is pushed. `population347` generated
+  286 of 287 registered entries; `sandblox` stopped on an optional DOM query
+  followed by `forEach`. The following regression unit uses `optionalAccess`
+  for container-method continuations, including calls without another `?.` in
+  the same chain. It replaces the separate optional array-search and Set-delete
+  guards. Call receivers are owned mutable snapshots, preserving Set mutations
+  when argument effects clear or replace the original map entry.
+- `chain351` passed the new JavaScript/native assertions for container chains
+  and Set deletion, without skips. The original extended UI fixture also
+  exposed a silently erased write to a nullable DOM field through a named
+  class instance; that write now uses `emitOptionalResourceAssignment` before
+  browser erasure, as assignments inside class methods already did.
+- After the query fix, `sandblox348` reached dynamic removal of a known style
+  sheet. Fixed-grid validation now checks the cascades with each such sheet
+  present and absent, keeping rules from one sheet together. It continues to
+  refuse unknown sheet ordering/contents and fractional-grid removal. Neutral
+  fixtures prove native grid-wrapper removal preserves child identities and
+  refuse removal of a geometry override that exposes an invalid grid.
+- `sandblox351` generated successfully. Its first native build exposed an old
+  attribute-removal typo: object-URL presence must test `slot`, not `value`.
+  Both the retained attribute code and Window snapshot guard are corrected.
+  `sandblox-build354` built the registered demo with both renderers.
+  `regression352` passed 665/666 checks; its sole fixture-member typo and a
+  subsequently exposed named-instance write were corrected. `regression354`
+  passed all 15 selected checks with no skips. `file354` passed 10/11: the
+  remaining source assertion searched only 300 characters into UI removal,
+  before the new root checks. It now inspects the complete function with the
+  existing shared fixture helper. `regression355` passed all 52 selected checks
+  with no skips, including the corrected file assertion and root-aware native
+  style-revision fixture. `population354` generated 287/288 entries: `quake`
+  exposed a nullable string predicate requiring JavaScript truthiness even when
+  the checker reports boolean. Shared array predicates now inspect the lowered
+  result kind. `chain355` passed the expanded JavaScript/native checks and
+  `quake355` generated successfully. `full354` exited without complete totals
+  while competing with population generation; it is not completed validation.
+  Run the next full suite separately with `--test-concurrency=4`. The sweep
+  remains pending. No first-TODO clause closed.
+- Event support is still pending: no event implementation edits were made in
+  this resume. The inspected pin's Rml `Context::UpdateHoverChain` emits
+  mouseover/out on changed ancestor sets, without DOM relatedTarget data; it
+  cannot be forwarded naively as one browser pointer boundary event. A proposed
+  next unit is a document-owned pointer dispatcher with target paths and
+  capture/type-aware listener identity, transporting one complete event packet
+  to the Window application thread. Preserve the existing event-loop callback
+  cleanup checkpoints and callback ownership. Window mouse listeners must not
+  require a scene engine. Separate source pointer and mouse event types, and
+  use actual hit transitions for pointerout with null when leaving the window.
+  `pointerType`, `relatedTarget` and Window blur remain required by reached code.
+  Existing retained pointer-capture calls are no-ops and need care if this new
+  dispatcher changes their current Rml routing. Do not claim the event unit
+  implemented or complete based on this design note.
 
 The refreshed harness explicitly reports `danger-full-access`, networking
 enabled and approval policy `never`. Do not pass `sandbox_permissions` or ask

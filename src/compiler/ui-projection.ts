@@ -866,7 +866,7 @@ export class UiProjection {
         }
         if (dynamic) {
             if (staticElement.tag === "style") {
-                this.uiStaticStyleCascadeKnown = false;
+                this.uiConditionallyRemovedStyles.add(id);
             }
             return;
         }
@@ -1341,6 +1341,7 @@ export class UiProjection {
     /** Final direct-document order for statically sequenced root mutations. */
     private readonly uiStaticRootOrder: number[] = emissionArray([]);
     private readonly uiDocumentRootIds = new EmissionMap<string, number>();
+    private readonly uiConditionallyRemovedStyles = new EmissionSet<number>();
 
     private uiValidation: UiValidationState | undefined;
 
@@ -3595,6 +3596,23 @@ export class UiProjection {
 
     public validateUiStaticProjection(): void {
         const activeRules = this.uiActiveStyleRulesInCascade();
+        // Removing a known sheet preserves the order of every remaining
+        // sheet. Prove each reachable cascade instead of treating removal as
+        // an unknown reorder. Rules belonging to one sheet disappear together.
+        const owners = [...this.uiConditionallyRemovedStyles].filter(owner =>
+            activeRules.some(rule => rule.ownerId === owner));
+        const validate = (index: number, rules: readonly LoweredUiStyleRule[]): void => {
+            if (index === owners.length) {
+                this.validateUiStyleCascade(rules);
+                return;
+            }
+            validate(index + 1, rules);
+            validate(index + 1, rules.filter(rule => rule.ownerId !== owners[index]));
+        };
+        validate(0, activeRules);
+    }
+
+    private validateUiStyleCascade(activeRules: readonly LoweredUiStyleRule[]): void {
         const parentsByChild = new EmissionMap<number, number[]>();
         for (const [parentId, parent] of this.uiStaticElements) {
             for (const childId of parent.children) {
@@ -3611,7 +3629,8 @@ export class UiProjection {
         try {
             for (const [id, element] of this.uiStaticElements) {
                 const tracks = this.uiStaticElementStylePropertyValues(id, "--bbl-fr-grid-tracks");
-                if ([...tracks].some(value => value !== undefined) && (tracks.size !== 1 || !this.uiStaticStyleCascadeKnown)) {
+                if ([...tracks].some(value => value !== undefined) &&
+                    (tracks.size !== 1 || !this.uiStaticStyleCascadeKnown || this.uiConditionallyRemovedStyles.size > 0)) {
                     this.context.failAtFile("A fractional UI grid requires one stable track list in a statically known style cascade.");
                 }
                 for (const value of tracks) {

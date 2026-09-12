@@ -865,7 +865,7 @@ export class DataLowerer {
             // Reads borrow container storage. Calls snapshot the receiver:
             // evaluating an argument can clear the original nullable slot.
             this.context.emit(
-                { kind: "declaration", type: ts.isCallExpression(access) ? "const auto" : "const auto&", name: temporary, initializer: owner.cpp, attributes: "[[maybe_unused]] " },
+                { kind: "declaration", type: ts.isCallExpression(access) ? "auto" : "const auto&", name: temporary, initializer: owner.cpp, attributes: "[[maybe_unused]] " },
             );
             present = `${temporary}.has_value()`;
             presentOwner = withNativeMetadata(this.leafValue(`(*${temporary})`, owner.dataType.inner), plainOwner);
@@ -4097,14 +4097,14 @@ export class DataLowerer {
                         nativeCaptures: [sourceCapture],
                     },
                 ];
-                const predicate = [
+                const predicateMethod = [
                     "find",
                     "findIndex",
                     "filter",
                     "some",
                     "every",
-                ].includes(method) &&
-                    !this.callbackReturnsBoolean(callback);
+                ].includes(method);
+                const predicate = predicateMethod && !this.callbackReturnsBoolean(callback);
                 let result = storedCallback ? this.compileFunctionValueCall(storedCallback, callbackArguments, call) : booleanConstructor
                     ? dataType.element.kind === "boolean"
                         ? {
@@ -4140,7 +4140,7 @@ export class DataLowerer {
                             call,
                             method === "forEach",
                         );
-                if (storedCallback && predicate) result = {kind: "boolean",
+                if (predicateMethod && result.kind !== "boolean") result = {kind: "boolean",
                     cpp: this.conditionFromValue(result) ?? this.context.fail(call, "Array predicate result has no native truthiness."),
                     dataType: {kind: "boolean"}};
                 emitBody(result, callback, source, index);
