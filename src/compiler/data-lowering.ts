@@ -1101,11 +1101,17 @@ export class DataLowerer {
             return undefined;
         }
         const container = this.dataTypeAt(expression);
+        const sourceType = this.context.checker.getTypeAtLocation(expression);
+        const tupleElement = this.context.checker.isTupleType(sourceType)
+            ? this.context.checker.getIndexTypeOfType(sourceType, ts.IndexKind.Number)
+            : undefined;
         const declaredElement =
             container?.kind === "vector" ||
             container?.kind === "span"
                 ? container.element
-                : undefined;
+                : tupleElement
+                  ? this.context.dataTypes.fromTsType(tupleElement, expression)
+                  : undefined;
         const inferred = (known.tupleElements ?? []).map(
             (entry): DataType | undefined => {
                 if (entry.dataType) return entry.dataType;
@@ -1451,7 +1457,7 @@ export class DataLowerer {
                 narrowed.kind !== "optional" &&
                 (dataTypesEqual(narrowed, inner) ||
                     this.spanCompatible(inner, narrowed) ||
-                    (inner.kind === "string" && narrowed.kind === "enum") ||
+                    (["string", "enum"].includes(inner.kind) && ["string", "enum"].includes(narrowed.kind)) ||
                     (inner.kind === "union" && this.narrowedUnionMemberIndex(inner, narrowed) >= 0)))
         ) {
             return this.narrowOptional(withNativeMetadata(this.leafValue(
@@ -7422,6 +7428,10 @@ export class DataLowerer {
             leftOptional?.dataType ?? this.dataTypeAt(left);
         const rightType =
             rightOptional?.dataType ?? this.dataTypeAt(right);
+        const widenTag = (value: {cpp: string; dataType: DataType}, node: ts.Node): {cpp: string; dataType: DataType} =>
+            value.dataType.kind === "enum"
+                ? {cpp: this.context.dataTypes.enumToStringCpp(value.dataType, value.cpp, node), dataType: {kind: "string"}}
+                : value;
         const bindOptional = (
             operand: ts.Expression,
             expected: Extract<DataType, { kind: "optional" }>,
@@ -7537,13 +7547,11 @@ export class DataLowerer {
                 leftType,
                 leftOptional,
             );
-            const rightCpp = this.compileForSink(
-                right,
-                leftType.inner,
-            );
+            const present = widenTag({cpp: `(*${leftCpp})`, dataType: leftType.inner}, left);
+            const rightCpp = this.compileForSink(right, present.dataType);
             const equal =
                 `(${leftCpp}.has_value() && ` +
-                `(*${leftCpp}) == ${rightCpp})`;
+                `${present.cpp} == ${rightCpp})`;
             return negated ? `!${equal}` : equal;
         }
         if (optionalComparable(rightType)) {
@@ -7552,18 +7560,24 @@ export class DataLowerer {
                 rightType,
                 rightOptional,
             );
-            const leftCpp = this.compileForSink(
-                left,
-                rightType.inner,
-            );
+            const present = widenTag({cpp: `(*${rightCpp})`, dataType: rightType.inner}, right);
+            const leftCpp = this.compileForSink(left, present.dataType);
             const equal =
                 `(${rightCpp}.has_value() && ` +
-                `${leftCpp} == (*${rightCpp}))`;
+                `${leftCpp} == ${present.cpp})`;
             return negated ? `!${equal}` : equal;
         }
         const leftValue = this.comparableOperand(left);
         if (leftValue) {
             const rightValue = this.comparableOperand(right);
+            if (rightValue && !dataTypesEqual(leftValue.dataType, rightValue.dataType) &&
+                [leftValue.dataType, rightValue.dataType].every(type => type.kind === "string" || type.kind === "enum") &&
+                !(leftValue.dataType.kind === "enum" && rightValue.staticString !== undefined &&
+                    this.context.dataTypes.enumMembers(leftValue.dataType.name).includes(rightValue.staticString))) {
+                // A string outside a closed tag set simply does not match;
+                // converting that string into the tag enum would throw.
+                return `std::string(${widenTag(leftValue, left).cpp}) ${negated ? "!=" : "=="} std::string(${widenTag(rightValue, right).cpp})`;
+            }
             const rightCpp = rightValue &&
                 dataTypesEqual(rightValue.dataType, leftValue.dataType)
                 ? rightValue.cpp

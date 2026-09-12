@@ -23,7 +23,7 @@ it does not establish that this external application compiles or runs.
 | Branch | `codex/external-project-support` |
 | Remote | `https://github.com/sailro/bblitec.git` |
 | Branch base used in this session | `3474e835` on `main` |
-| Latest completed executable-code/test commit | `9594ebb8` (2026-09-12) |
+| Latest completed executable-code/test commit | `c6482350` (2026-09-12) |
 | Draft PR | [#247 — Extend generic application compilation and retained UI support](https://github.com/sailro/bblitec/pull/247) |
 | External checkout | `C:/Dev/_prototypes/external-native-app` |
 | External source revision | `d7c477a6d5963680c55249dceb93cb6e4ab9ce56` |
@@ -189,6 +189,21 @@ incomplete. Do not merge or mark it ready merely because the sweep passes.
   string-enum and number/string instantiations. No listed TODO is closed by this
   unit. `compile264` is the next external attempt; inspect its exit before making
   claims about progression. Complete external generation remains pending.
+- `c6482350` saves lexical generic capture and is pushed. `full265` is green:
+  2,570 tests passed, zero failed or skipped. This includes the corrected stored
+  call assertion and generic capture, but precedes readonly-table changes.
+- `compile264` advanced to a runtime `find` on a readonly record tuple. The
+  tuple unit materializes its checker-provided element type and preserves shared
+  record fields that differ between null and strings. `readonly266` passed the
+  native reproduction, and `focused266` passed 129 array/union/worker checks.
+- `compile266` progressed to passing a guarded nullable table field into a
+  string callback. The unit now preserves the stored string-tag representation
+  while honoring that narrowing. Comparing a tag against an unknown string
+  returns false instead of trying a throwing string-to-enum conversion.
+  `readonly267` passed with native no-match, nullable-tag comparison and callback
+  checks. `focused267` passed 679 compiler checks with no skips. `compile267`
+  is the next attempt; inspect its exit file before reporting the outcome.
+  No TODO item is fully closed by this unit.
 
 The refreshed harness explicitly reports `danger-full-access`, networking
 enabled and approval policy `never`. Do not pass `sandbox_permissions` or ask
