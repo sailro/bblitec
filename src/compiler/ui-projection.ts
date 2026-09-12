@@ -4,7 +4,7 @@ import ts from "typescript";
 import { doubleLiteral } from "../cpp-literals.js";
 import { parseUiBorderImage, renderUiBorderImage } from "../ui-border-image.js";
 import { supportedUiFilter } from "../ui-filters.js";
-import {parseUiSelectorSequence, splitUiSelectorList, uiSelectorSequenceCss, uiSelectorSequenceSpecificity, uiSelectorSequenceCpp, type UiSelectorStep} from "../ui-selector.js";
+import {parseUiSelectorSequence, splitUiSelectorList, uiSelectorSequenceCss, uiSelectorSequenceSpecificity, uiSelectorSequenceCpp, uiSelectorSequenceTests, uiSelectorSequenceNeedsAuthoredTree, type UiSelectorStep} from "../ui-selector.js";
 import { isUiLayoutProperty, supportedUiLayoutValue } from "../ui-layout.js";
 import { nativeHostUiStyleRules, uiStyleSelectorCppKind, uiStyleSelectorDescriptor, uiStyleInteractionStateCount, uiStyleRuleNeedsRuntimeMatch, uiStyleRuleHasMedia, uiMotionPreferenceCpp, isUiScrollbarPart, uiScrollbarPartCpp, type UiStyleSelectorShape, type UiStyleSelectorKind } from "../ui-style-rule.js";
 import { validateFileAccept } from "./browser-file.js";
@@ -2564,7 +2564,7 @@ export class UiProjection {
             return { ...owner, scrollbar: part, hover: scrollbar[3] !== undefined, selector };
         }
         const state = /:(hover|active|focus-visible)$/i.exec(selector);
-        if (state) {
+        if (state && selector.length > state[0].length && !/[\s>+~]$/.test(selector.slice(0, -state[0].length))) {
             const owner = UiProjection.parseUiSelector(selector.slice(0, -state[0].length), style);
             const property = state[1]!.toLowerCase() === "focus-visible" ? "focusVisible" :
                 state[1]!.toLowerCase() === "active" ? "active" : "hover";
@@ -2813,8 +2813,8 @@ export class UiProjection {
     ): boolean {
         switch (rule.kind) {
             case "sequence":
-                return rule.sequence!.some(step => step.tests.some(test => test.kind === "class" &&
-                    [...this.uiStaticElements.values()].some(candidate => candidate.mutableClasses.has(test.name))));
+                return [...uiSelectorSequenceTests(rule.sequence!)].some(test => test.kind === "class" &&
+                    [...this.uiStaticElements.values()].some(candidate => candidate.mutableClasses.has(test.name)));
             case "class":
                 return element.mutableClasses.has(rule.primary);
             case "id":
@@ -2846,7 +2846,7 @@ export class UiProjection {
     ): boolean {
         switch (rule.kind) {
             case "sequence":
-                return rule.sequence!.some(step => step.tests.some(test => test.kind === "class" && test.name === className));
+                return [...uiSelectorSequenceTests(rule.sequence!)].some(test => test.kind === "class" && test.name === className);
             case "class":
             case "class-descendant-tag":
             case "tag-class":
@@ -2912,7 +2912,7 @@ export class UiProjection {
         elementId: number,
         element: UiStaticElement,
     ): boolean {
-        if (rule.kind === "sequence") return rule.sequence!.some(step => step.tests.some(test => test.kind === mutation.attribute));
+        if (rule.kind === "sequence") return [...uiSelectorSequenceTests(rule.sequence!)].some(test => test.kind === mutation.attribute);
         const sameTarget =
             mutation.targetId === undefined || mutation.targetId === elementId;
         const target =
@@ -3681,8 +3681,7 @@ export class UiProjection {
                     ),
                 );
             if (anyGrid) {
-                const structural = activeRules.find(rule => rule.sequence?.some(step =>
-                    step.relation === "child" || step.relation === "next" || step.relation === "following" || step.tests.length === 0));
+                const structural = activeRules.find(rule => rule.sequence && uiSelectorSequenceNeedsAuthoredTree(rule.sequence));
                 if (structural) {
                     const message = `Retained selector '${structural.selector}' requires authored tree relationships that cannot be proven across projected grid containers.`;
                     if (structural.site) this.context.fail(structural.site, message);

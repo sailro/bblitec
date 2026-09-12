@@ -185,13 +185,15 @@ This follows [CSS object sizing](https://www.w3.org/TR/css-images-3/#the-object-
 `object-position` remains unsupported; retained Canvas2D currently accepts `fill` only.
 
 Selectors compose tags, IDs, classes, attribute presence/equality and
-hover/active/focus/focus-visible/disabled/checked states with descendant, child,
+hover/active/focus/focus-visible/focus-within/disabled/checked states with descendant, child,
 adjacent-sibling and following-sibling relationships. CSS text and host UI rules
 share this grammar; quoted attribute values retain commas. Rendered declarations
 and native layout adaptations follow the same live tree and input state.
+Negation lists support nested `:not()` selectors. Positional selectors support
+first/last/only child and of-type forms, integer or An+B nth formulas, and `:empty`.
 Conditional selectors cannot establish static grid geometry; general child/sibling
 chains beside projected grids still refuse because their internal containers alter
-tree relationships. Generated-content pseudo-elements and functional selectors
+tree relationships. Generated-content pseudo-elements and other functional selectors
 remain unsupported. Reparenting retains
 the rendered element, its listeners and state. `document.documentElement`, `head`
 and `body` expose distinct retained roots with ordinary attributes, styles and

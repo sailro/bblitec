@@ -1,4 +1,4 @@
-import {parseUiSelectorSequence, uiSelectorSequenceIsConditional, type UiSelectorStep} from "./ui-selector.js";
+import {parseUiSelectorSequence, uiSelectorSequenceIsConditional, uiSelectorSequenceTests, isUiSelectorState, type UiSelectorStep} from "./ui-selector.js";
 
 /** The bounded selector forms shared by host-UI validation and projection. */
 const UI_STYLE_SELECTOR_DESCRIPTORS = {
@@ -97,8 +97,8 @@ export interface UiStyleSelectorShape {
 /** Interaction pseudo-classes contribute class specificity and depend on live input state. */
 export function uiStyleInteractionStateCount(rule: UiStyleSelectorShape): number {
     return Number(rule.hover === true) + Number(rule.focusVisible === true) + Number(rule.active === true) +
-        (rule.kind === "sequence" ? (rule.sequence ?? parseUiSelectorSequence(rule.primary) ?? [])
-            .reduce((count, step) => count + step.tests.filter(test => !["tag", "id", "class", "attribute", "equals"].includes(test.kind)).length, 0) : 0);
+        (rule.kind === "sequence" ? [...uiSelectorSequenceTests(rule.sequence ?? parseUiSelectorSequence(rule.primary) ?? [])]
+            .filter(test => isUiSelectorState(test.kind)).length : 0);
 }
 
 export function uiStyleRuleNeedsRuntimeMatch(rule: UiStyleSelectorShape): boolean {

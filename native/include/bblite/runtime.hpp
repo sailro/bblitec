@@ -3289,9 +3289,17 @@ enum class UiStyleSelectorKind : std::uint8_t {
 enum class UiScrollbarPart : std::uint8_t { None, Scrollbar, Thumb, Track, Button, Corner };
 enum class UiMotionPreference : std::uint8_t { Any, Reduce, NoPreference };
 
-enum class UiSelectorTestKind : std::uint8_t { Tag, Id, Class, Attribute, Equals, Hover, Active, Focus, FocusVisible, Disabled, Checked };
+enum class UiSelectorTestKind : std::uint8_t {
+    Tag, Id, Class, Attribute, Equals, Hover, Active, Focus, FocusVisible, FocusWithin, Disabled, Checked,
+    NthChild, NthLastChild, NthOfType, NthLastOfType, OnlyChild, OnlyOfType, Empty, Not,
+};
 enum class UiSelectorRelation : std::uint8_t { Self, Descendant, Child, Next, Following };
-struct UiSelectorTest { UiSelectorTestKind kind; std::string name; std::string value; };
+struct UiSelectorStep;
+struct UiSelectorTest {
+    UiSelectorTestKind kind; std::string name; std::string value;
+    std::vector<std::vector<UiSelectorStep>> alternatives{};
+    std::int32_t a = 0, b = 0;
+};
 struct UiSelectorStep { UiSelectorRelation relation; std::vector<UiSelectorTest> tests; };
 
 /**

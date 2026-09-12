@@ -13,10 +13,22 @@ test("compound selector parsing preserves relations, quoted values and specifici
     assert.equal(uiSelectorSequenceCss(sequence), 'section.panel.selected > button[data-mode="a,b"] + .entry:focus');
     assert.equal(uiSelectorSequenceSpecificity(sequence), 5 * 0x100 + 2);
     assert.deepEqual(splitUiSelectorList(`${selector}, .entry:not(.a,.b),[title="a,b"]`), [selector, ".entry:not(.a,.b)", '[title="a,b"]']);
-    for (const source of ["", "a >", "a ++ b", ".a:unknown", ".a::before", "a[name^=value]", "a:not(.b)", "bbl-grid-children", ".a:hover:hover"])
+    for (const source of ["", "a >", "a ++ b", ".a:unknown", ".a::before", "a[name^=value]", "a:has(.b)", "bbl-grid-children", ".a:hover:hover"])
         assert.equal(parseUiSelectorSequence(source), undefined, source);
     for (const source of ['[title=\'a"b\']', '[data-mode="a,b"]', "button img", ".a.b.c .d > .e ~ .f"])
         assert.deepEqual(parseUiSelectorSequence(uiSelectorSequenceCss(parseUiSelectorSequence(source)!)), parseUiSelectorSequence(source));
+});
+
+test("structural and negated selector terms normalize formulas and retain specificity", () => {
+    const parse = (source: string) => parseUiSelectorSequence(source)!;
+    assert.equal(uiSelectorSequenceCss(parse('.item:first-child')), '.item:nth-child(1)');
+    assert.equal(uiSelectorSequenceCss(parse('.item:nth-child(+n - 2)')), '.item:nth-child(1n-2)');
+    assert.equal(uiSelectorSequenceCss(parse('.item:nth-last-of-type(odd)')), '.item:nth-last-of-type(2n+1)');
+    assert.equal(uiSelectorSequenceSpecificity(parse('.item:not(.muted, #blocked)')), 0x10100);
+    for (const source of ['.item:not(:not(.muted))', '.item:not([title="a)b"], .panel > .entry)', '.item:nth-child(-2n + 5)'])
+        assert.deepEqual(parse(uiSelectorSequenceCss(parse(source))), parse(source));
+    for (const source of ['.item:not()', '.item:not(.a,)', '.item:not(.a', '.item:nth-child(2n of .entry)', '.item:nth-child(2 n)', '.item:nth-child(2147483648)', '.item:empty()'])
+        assert.equal(parseUiSelectorSequence(source), undefined, source);
 });
 
 test("generated selector chains share the rendered and private native cascades", t => {
@@ -36,8 +48,18 @@ test("generated selector chains share the rendered and private native cascades",
             .panel .entry span{color:#223344}
             .entry[data-mode="a,b"]{width:90px}
             .panel:hover .entry{background-color:#778899}
+            .panel :hover{opacity:0.9}
             .entry:focus-visible span{color:#aabbcc}
             .entry[disabled]:active{opacity:0.5}
+            .panel > button:first-child{padding:3px}
+            .panel > button:last-child{padding:4px}
+            .panel > button:nth-child(2n + 1){margin-left:1px}
+            .panel > button:nth-last-of-type(2){margin-right:1px}
+            .entry:not(.muted, #blocked){color:#987654}
+            .entry:not(:disabled){border:1px solid blue}
+            .panel:focus-within .lead{color:#abcdef}
+            .entry > span:only-child{font-size:13px}
+            .entry:empty{background-color:red}
         \`;
         document.head.appendChild(sheet);
         const panel = document.createElement("section");
