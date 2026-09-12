@@ -85,29 +85,21 @@ template <typename T> class Promise {
         using Returned = std::invoke_result_t<F&, const T&>;
         using U = promise_detail::ResultType<Returned>;
         Promise<U> next;
-        observe(make_closure(std::tuple{std::move(callback), next}, [](auto& environment, const T& value) {
-            auto& [callback, next] = environment;
-            try {
-                if constexpr (std::is_void_v<Returned>) { callback(value); next.resolve(PromiseVoid{}); }
-                else next.resolve(callback(value));
-            } catch (const pal::WorkerTerminated&) { throw; }
-            catch (...) { next.reject(std::current_exception()); }
-        }), make_closure(std::tuple{next}, [](auto& environment, std::exception_ptr error) { std::get<0>(environment).reject(error); }));
+        observe(settling_reaction<const T&>(std::move(callback), next),
+            make_closure(std::tuple{next}, [](auto& environment, std::exception_ptr error) { std::get<0>(environment).reject(error); }));
+        return next;
+    }
+    template <typename F, typename G> auto then(F fulfilled, G rejected) const {
+        using U = promise_detail::ResultType<std::invoke_result_t<F&, const T&>>;
+        Promise<U> next;
+        observe(settling_reaction<const T&>(std::move(fulfilled), next),
+            settling_reaction<std::exception_ptr>(std::move(rejected), next));
         return next;
     }
     template <typename F> Promise catch_error(F callback) const {
         Promise next;
         observe(make_closure(std::tuple{next}, [](auto& environment, const T& value) { std::get<0>(environment).resolve(value); }),
-            make_closure(std::tuple{std::move(callback), next}, [](auto& environment, std::exception_ptr error) {
-                auto& [callback, next] = environment;
-                try {
-                    if constexpr (std::is_void_v<std::invoke_result_t<F&, std::exception_ptr>>) {
-                        static_assert(std::is_same_v<T, PromiseVoid>, "A value promise needs a recovery value.");
-                        callback(error); next.resolve(PromiseVoid{});
-                    } else next.resolve(callback(error));
-                } catch (const pal::WorkerTerminated&) { throw; }
-                catch (...) { next.reject(std::current_exception()); }
-            }));
+            settling_reaction<std::exception_ptr>(std::move(callback), next));
         return next;
     }
 
@@ -147,6 +139,20 @@ template <typename T> class Promise {
     Awaiter operator co_await() const { state_->require_owner(); return Awaiter{state_}; }
 
   private:
+    template <typename Argument, typename F, typename U>
+    static auto settling_reaction(F callback, Promise<U> next) {
+        return make_closure(std::tuple{std::move(callback), next}, [](auto& environment, Argument value) {
+            auto& [callback, next] = environment;
+            try {
+                if constexpr (std::is_void_v<std::invoke_result_t<F&, Argument>>) {
+                    static_assert(std::is_same_v<U, PromiseVoid>, "A value promise needs a settlement value.");
+                    callback(value); next.resolve(PromiseVoid{});
+                } else next.resolve(callback(value));
+            } catch (const pal::WorkerTerminated&) { throw; }
+            catch (...) { next.reject(std::current_exception()); }
+        });
+    }
+
     explicit Promise(std::shared_ptr<State> state) : state_(std::move(state)) {}
     template <typename Outcome> void settle(Outcome value) const {
         if (!std::holds_alternative<std::monostate>(state_->outcome)) return;

@@ -1,6 +1,6 @@
 import type { LoweringServices } from "./lowering-services.js";
 import ts from "typescript";
-import { renderClosure, renderCoroutineInvocation } from "./closure-captures.js";
+import { renderClosure, renderCoroutineInvocation, type CapturedClosure } from "./closure-captures.js";
 import { browserGlobalNamed } from "./browser-erasure.js";
 import { tryResolveFunctionDeclaration } from "./user-functions.js";
 import { unwrapExpression, argumentAt } from "./syntax.js";
@@ -30,11 +30,16 @@ interface AsyncContext
 /** Async activation and reaction lowering share the compiler's managed captures. */
 export class AsyncLowerer {
     private depth = 0;
+    private terminalThrow: ts.Statement | undefined;
     constructor(private readonly context: AsyncContext) {}
 
     withActivation<T>(work: () => T): T {
         this.depth++;
         try { return work(); } finally { this.depth--; }
+    }
+
+    isTerminalThrow(node: ts.Node | undefined): boolean {
+        return node !== undefined && node === this.terminalThrow;
     }
 
     compile(expression: ts.Expression): Value | undefined {
@@ -59,31 +64,28 @@ export class AsyncLowerer {
             return this.asPromise(node.arguments[0] ? context.compileValue(node.arguments[0]) : { kind: "void", cpp: "" }, node);
         }
         if (ts.isPropertyAccessExpression(callee) && ["then", "catch"].includes(callee.name.text) && this.isPromiseType(callee.expression)) {
-            if (node.arguments.length !== 1) return context.fail(node, "This promise reaction requires one callback.");
-            const promise = this.asPromise(context.compileValue(callee.expression), node);
-            const callback = context.unwrap(argumentAt(node, 0));
-            if (!ts.isArrowFunction(callback) && !ts.isFunctionExpression(callback) && !ts.isIdentifier(callback)) {
-                return context.fail(callback, "Promise reactions require a compiled function value.");
-            }
-            const name = context.allocateTemporaryCppName("promise_argument");
             const rejection = callee.name.text === "catch";
-            const parameterType = rejection ? "std::exception_ptr" : `const ${promise.promiseType}&`;
-            const result: { value: Value } = { value: { kind: "void", cpp: "" } };
-            const compiled = context.withOwnedCallbackBody(() => context.captureManagedClosureLines(() => {
-                context.registerNativeBinding(name);
-                const input: Value = rejection ? { kind: "string", cpp: `bbl::js::promise_error_string(${name})` }
-                    : this.resultAt(promise.promiseResult!, name);
-                result.value = context.compileCallbackWithValues(callback, [input], node);
-                if (result.value.kind === "void") { if (result.value.cpp) context.emit(`${result.value.cpp};`); }
-                else context.emit(`return ${result.value.cpp};`);
-            }));
-            if (rejection && promise.promiseResult!.kind !== "void" && result.value.kind === "void") {
-                return context.fail(callback, "A value promise's recovery must preserve its admitted result type.");
+            if (node.arguments.length < 1 || node.arguments.length > (rejection ? 1 : 2)) {
+                return context.fail(node, rejection ? "Promise.catch requires one callback." : "Promise.then requires one or two callbacks.");
             }
-            const reaction = renderClosure(compiled, `[[maybe_unused]] ${parameterType} ${name}`);
-            const output = rejection ? promise.promiseResult! : result.value.kind === "promise" ? result.value.promiseResult! : result.value;
-            const cppType = rejection ? promise.promiseType! : result.value.kind === "promise" ? result.value.promiseType! : this.cppType(output, node);
-            return { kind: "promise", cpp: `${promise.cpp}.${rejection ? "catch_error" : "then"}(${reaction})`, promiseResult: output, promiseType: cppType };
+            const promise = this.asPromise(context.compileValue(callee.expression), node);
+            const first = this.compileReaction(argumentAt(node, 0), promise, rejection, node);
+            if (rejection && promise.promiseResult!.kind !== "void" && first.result.kind === "void") {
+                return context.fail(argumentAt(node, 0), "A value promise's recovery must preserve its admitted result type.");
+            }
+            let output = rejection ? promise.promiseResult! : first.output;
+            const cppType = rejection ? promise.promiseType! : first.cppType;
+            const reactions = [first.cpp];
+            if (node.arguments.length === 2) {
+                const second = this.compileReaction(argumentAt(node, 1), promise, true, node);
+                if (second.cppType !== cppType) return context.fail(argumentAt(node, 1), "Promise.then callbacks must settle to the same admitted result type.");
+                reactions.push(second.cpp);
+                // Either branch can settle the result; neither branch's scalar
+                // constant is a fact about the resulting promise.
+                const {staticString, staticNumber, staticBoolean, ...runtimeOutput} = output;
+                output = runtimeOutput;
+            }
+            return { kind: "promise", cpp: `${promise.cpp}.${rejection ? "catch_error" : "then"}(${reactions.join(", ")})`, promiseResult: output, promiseType: cppType };
         }
         if (!ts.isIdentifier(callee)) return undefined;
         const declaration = tryResolveFunctionDeclaration(context.checker, callee);
@@ -100,24 +102,52 @@ export class AsyncLowerer {
         const result: { value: Value } = { value: { kind: "void", cpp: "" } };
         const body = declaration.body;
         const finalStatement = body && ts.isBlock(body) ? body.statements.at(-1) : undefined;
-        const throwsOnly = finalStatement && ts.isThrowStatement(finalStatement) &&
-            !someAnalysisNode(body!, node => ts.isReturnStatement(node) || ts.isAwaitExpression(node));
-        const compiled = this.withActivation(() =>
-            context.withOwnedCallbackBody(() => context.captureManagedClosureLines(() => {
-                result.value = context.compileCallbackWithValues(callee, values, node);
-                if (result.value.kind === "void" && result.value.cpp) context.emit(`${result.value.cpp};`);
-                if (!throwsOnly) context.emit(`co_return ${result.value.kind === "void" ? "bbl::js::PromiseVoid{}" : result.value.ownedEngineCpp ?? result.value.cpp};`);
-            })));
+        const rejectsOnly = finalStatement && ts.isThrowStatement(finalStatement) &&
+            !someAnalysisNode(body!, ts.isReturnStatement, {functions:"skip"});
+        const previousThrow = this.terminalThrow;
+        this.terminalThrow = rejectsOnly ? finalStatement : undefined;
+        let compiled: CapturedClosure;
+        try {
+            compiled = this.withActivation(() =>
+                context.withOwnedCallbackBody(() => context.captureManagedClosureLines(() => {
+                    result.value = context.compileCallbackWithValues(callee, values, node);
+                    if (result.value.kind === "void" && result.value.cpp) context.emit(`${result.value.cpp};`);
+                    if (!rejectsOnly) context.emit(`co_return ${result.value.kind === "void" ? "bbl::js::PromiseVoid{}" : result.value.ownedEngineCpp ?? result.value.cpp};`);
+                })));
+        } finally {
+            this.terminalThrow = previousThrow;
+        }
         const output = result.value.kind === "promise" ? result.value.promiseResult! : result.value;
         const cppType = result.value.kind === "promise" ? result.value.promiseType! : this.cppType(output, node);
         // The coroutine takes its environment by value; a temporary closure's
         // this pointer or a borrowed environment must never enter its frame.
-        // A synchronous body that always throws is evaluated inside the return
-        // operand. This keeps coroutine exception handling and avoids MSVC's
-        // unreachable epilogue warning after a direct throw.
-        const lines = compiled.lines.join("\n");
-        const cpp = renderCoroutineInvocation({...compiled, lines: throwsOnly ? [`co_return [&]() -> ${cppType} {\n${lines}\n}();`] : compiled.lines}, `bbl::js::Promise<${cppType}>`);
+        // Terminal throws share the native coroutine completion path, including
+        // when earlier statements suspend. No unreachable epilogue is emitted.
+        const cpp = renderCoroutineInvocation(compiled, `bbl::js::Promise<${cppType}>`);
         return { kind: "promise", cpp, promiseResult: output, promiseType: cppType };
+    }
+
+    private compileReaction(callback: ts.Expression, promise: Value, rejection: boolean, node: ts.CallExpression):
+        {cpp: string; result: Value; output: Value; cppType: string} {
+        const context = this.context;
+        callback = context.unwrap(callback);
+        if (!ts.isArrowFunction(callback) && !ts.isFunctionExpression(callback) && !ts.isIdentifier(callback)) {
+            return context.fail(callback, "Promise reactions require a compiled function value.");
+        }
+        const name = context.allocateTemporaryCppName("promise_argument");
+        const parameterType = rejection ? "std::exception_ptr" : `const ${promise.promiseType}&`;
+        const result: {value: Value} = {value:{kind:"void", cpp:""}};
+        const compiled = context.withOwnedCallbackBody(() => context.captureManagedClosureLines(() => {
+            context.registerNativeBinding(name);
+            const input: Value = rejection ? {kind:"string", cpp:`bbl::js::promise_error_string(${name})`}
+                : this.resultAt(promise.promiseResult!, name);
+            result.value = context.compileCallbackWithValues(callback, [input], node);
+            if (result.value.kind === "void") { if (result.value.cpp) context.emit(`${result.value.cpp};`); }
+            else context.emit(`return ${result.value.cpp};`);
+        }));
+        const output = result.value.kind === "promise" ? result.value.promiseResult! : result.value;
+        const cppType = result.value.kind === "promise" ? result.value.promiseType! : this.cppType(output, node);
+        return {cpp:renderClosure(compiled, `[[maybe_unused]] ${parameterType} ${name}`), result:result.value, output, cppType};
     }
 
     private isPromiseType(expression: ts.Expression): boolean {

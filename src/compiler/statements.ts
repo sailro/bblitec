@@ -1473,6 +1473,7 @@ export class StatementLowerer {
                     ? context.cppString(value.staticString)
                     : value.cpp
             })`,
+            statement,
         );
     }
 
