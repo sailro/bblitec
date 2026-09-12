@@ -580,7 +580,7 @@ inline MeshHandle bind_scene_mesh_profile(Engine&, MeshHandle mesh, std::uint32_
     const seedRandom = jsRandomReached
         ? "        bbl::js::seed_random(1u);\n"
         : "";
-    const workerInclude = projection.workers ? "#include <bblite/pal_worker.hpp>\n#include <bblite/js_promise.hpp>\n#include <bblite/pal_canvas.hpp>\n" +
+    const workerInclude = projection.workers ? "#include <bblite/pal_worker.hpp>\n#include <bblite/js_promise_all.hpp>\n#include <bblite/pal_canvas.hpp>\n" +
         (features.includes("platform:window") ? "#include <bblite/pal_window_realm.hpp>\n" : "") +
         (features.includes("backend:sdl") ? "#include <bblite/pal_async_engine.hpp>\n" : "") : "";
     const workerNamespace = projection.workers?.namespace;

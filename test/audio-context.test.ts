@@ -29,6 +29,15 @@ test("direct audio contexts preserve owned aliases and lifecycle promises", t =>
             function inspect(): AudioContext { inspected++; return context; }
             if (typeof inspect().createMediaStreamDestination === "function") throw new Error("recording capability");
             if (inspected !== 1) throw new Error("capability receiver evaluation");
+            async function load(frames:number):Promise<AudioBuffer> {
+                await Promise.resolve();
+                return context.createBuffer(1,frames,rate);
+            }
+            let first:AudioBuffer|null=null;
+            const destination:{buffer:AudioBuffer|null}={buffer:null};
+            [first,destination.buffer]=await Promise.all([load(4),load(8)]);
+            if(!first||!destination.buffer||first.getChannelData(0).length!==4||destination.buffer.getChannelData(0).length!==8)
+                throw new Error("owned buffer aggregation");
             let order = "";
             const resumed = context.resume().then(() => { order += "r"; });
             order += "s";
@@ -53,7 +62,7 @@ test("direct audio contexts preserve owned aliases and lifecycle promises", t =>
             if (rejected !== 3 || context.currentTime !== closedTime) throw new Error("closed transitions");
             globalThis.close();
         }
-        void exercise();
+        void exercise().catch(error=>{console.log(error);globalThis.close();});
     `, {fileName:join(output, "entry.ts")});
     writeFileSync(join(output, "program.hpp"), result.cpp);
     const tools = optionalNativeFixtureTools();

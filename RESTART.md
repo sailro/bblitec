@@ -44,8 +44,8 @@ it does not establish that this external application compiles or runs.
 | External generated output | `generated/external-app` (ignored; not a successful complete generation) |
 | Session diagnostics | `artifacts/external-integration` (ignored) |
 
-Latest complete-entry diagnostic: `compile535` passed the recording capability guard
-and stopped at an await inside an async IIFE loading audio buffers with Promise.all.
+Latest complete-entry diagnostic: `compile556` passed async IIFE activation and
+stopped while adopting a packaged fetch response into an owned promise for audio decoding.
 Generation, native build and application runtime remain incomplete.
 
 Current assessment artifacts: `requirements356.json` inventories the unchanged
@@ -1217,13 +1217,25 @@ support. `audio534` passes the native receiver-evaluation guard check. The new
 static `typeof535.json` inventory records 217 groups/456 checks in external source,
 including scalar checks and unused bodies; it is not a support denominator.
 
-The next async-loading batch must cover async IIFEs/arrow callbacks, Promise.all
-with owned ordered results, and destructuring assignments into existing variables
-and record fields (matching the member-target TODO). AsyncLowerer currently only
-starts activations for named async function declarations; Promise.all falls through
-to the synchronous immediate-promise path. Do not let that path silently unwrap
-unsettled asynchronous results. Full application generation/build/runtime remain
-unpassed. No current tool processes need to survive a restart.
+The async-loading candidate covers direct async IIFEs, owned Promise.all tuples and
+stored promise arrays, and awaited assignments into nullable locals, stored fields,
+dictionaries and indexed arrays. Shared assignment-target analysis now recognizes
+destructuring writes when selecting module, array and closure storage. Direct async
+activations and both Promise.then callbacks share mutable outer bindings. A function
+that only throws keeps its declared promise result type. Different recovery result
+representations refuse instead of producing invalid C++.
+
+Native fixtures cover start/effect order, ordered/mixed/empty results, rejection and
+recovery, outer reads after completion, dictionary rebinding during key evaluation,
+typed-array conversion and AudioBuffer ownership. `regressions556` ran 825 checks:
+824 passed and one legacy promised-asset assignment regressed. That pre-render path
+carries composition metadata and has been restored; `regressions557` passes all 657
+compiler and focused async/audio/promise checks without skips.
+`async559` passes all five focused checks after explicit tuple/string result ownership.
+`compile556` reaches packaged fetch response ownership next. The original ten
+async probes are generation-only; one recovery probe previously accepted invalid
+C++ and now explicitly refuses. Do not report acceptance as native proof.
+The full application has never completed generation, native build or execution.
 
 ## Artifact guide and pitfalls
 

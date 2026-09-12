@@ -6,6 +6,7 @@ import { forEachAnalysisNode } from "./analysis-walk.js";
 import { writeReceiverMethods } from "./data-methods.js";
 import type { CompilerSymbols } from "./symbols.js";
 import {
+    assignmentTargets,
     isAssignmentExpression,
     isUpdateExpression,
     mutatingCallTarget,
@@ -52,7 +53,7 @@ export function collectReboundSymbols(
     };
     forEachAnalysisNode(sourceFile, (node) => {
         if (isAssignmentExpression(node)) {
-            record(node.left);
+            assignmentTargets(node.left).forEach(record);
         } else if (countUpdateOperators && isUpdateExpression(node)) {
             record(node.operand);
         }
@@ -131,7 +132,7 @@ function collectMutatedContainerSymbols(
     };
     forEachAnalysisNode(sourceFile, (node) => {
         if (isAssignmentExpression(node)) {
-            recordThrough(node.left);
+            assignmentTargets(node.left).forEach(recordThrough);
         } else if (isUpdateExpression(node)) {
             recordThrough(node.operand);
         } else if (ts.isDeleteExpression(node)) {
@@ -667,7 +668,7 @@ class ModuleInitializerPlanner {
                 }
             }
             if (isAssignmentExpression(current)) {
-                record(current.left);
+                assignmentTargets(current.left).forEach(target => record(target));
             }
             if (ts.isPostfixUnaryExpression(current) || ts.isPrefixUnaryExpression(current)) {
                 record(current.operand);

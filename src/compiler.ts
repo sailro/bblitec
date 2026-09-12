@@ -158,6 +158,7 @@ import {
 } from "./compiler/user-functions.js";
 import {
     argumentAt,
+    assignmentTargets,
     identifierText,
     isAssignmentExpression,
     isUpdateExpression,
@@ -1753,17 +1754,18 @@ class Compiler
      * registration its second, a browser timer or RAF its first.
      * Frame registrations also retain callbacks past a helper/block's end.
      */
-    private retainedArgumentIndex(
+    private retainsCallbackArgument(
         call: ts.CallExpression,
+        index: number,
         includeFrameRegistrations: boolean,
-    ): number | undefined {
+    ): boolean {
         const callee = this.unwrap(call.expression);
         if (ts.isIdentifier(callee)) {
             switch (this.symbols.importedName(callee)) {
-                case "withNodeParticleEmitterProvider": return 0;
+                case "withNodeParticleEmitterProvider": return index === 0;
                 case "onBeforeRender":
                 case "onPhysicsAfterStep":
-                case "onCsmReceiverUpdate": return includeFrameRegistrations ? 1 : undefined;
+                case "onCsmReceiverUpdate": return includeFrameRegistrations && index === 1;
             }
         }
         if (
@@ -1771,16 +1773,14 @@ class Compiler
             callee.name.text === "addEventListener" &&
             call.arguments.length >= 2
         ) {
-            return 1;
+            return index === 1;
         }
         const global = browserGlobalNamed(this, call.expression)?.text;
         if (ts.isPropertyAccessExpression(callee) && ["then", "catch", "finally"].includes(callee.name.text) &&
-            this.checker.getTypeAtLocation(callee.expression).symbol?.name === "Promise") return 0;
+            this.checker.getTypeAtLocation(callee.expression).symbol?.name === "Promise") return index === 0 || (callee.name.text === "then" && index === 1);
         return (global === "setTimeout" || global === "setInterval" || global === "queueMicrotask" ||
             (includeFrameRegistrations && global === "requestAnimationFrame")) &&
-            call.arguments.length >= 1
-            ? 0
-            : undefined;
+            index === 0 && call.arguments.length >= 1;
     }
 
     /**
@@ -1796,7 +1796,7 @@ class Compiler
         index: number,
         includeFrameRegistrations: boolean,
     ): boolean {
-        if (this.retainedArgumentIndex(call, includeFrameRegistrations) === index) return true;
+        if (this.retainsCallbackArgument(call, index, includeFrameRegistrations)) return true;
         const callee = this.unwrap(call.expression);
         if (!ts.isIdentifier(callee)) return false;
         const target = tryResolveFunctionDeclaration(this.checker, callee);
@@ -1929,6 +1929,13 @@ class Compiler
         // enclosing callback arguments: below one, every callback argument
         // is a root.
         findAnalysisNodeWithState(owner, 0, (node, callbackDepth) => {
+            // A realm activation owns its environment even for a direct call
+            // or IIFE: it can suspend past the caller's return. Its mutable
+            // outer bindings must therefore use the same cells as callbacks.
+            if (this.options.workers && isSupportedFunction(node) &&
+                ts.getModifiers(node)?.some(modifier => modifier.kind === ts.SyntaxKind.AsyncKeyword)) {
+                addRoot(node);
+            }
             const name = localFunctionName(node);
             if (name) {
                 localFunctionNames.add(name.text);
@@ -3668,13 +3675,13 @@ class Compiler
                     }
                     return (
                         isAssignmentExpression(node) &&
-                        (((ts.isPropertyAccessExpression(node.left) || ts.isElementAccessExpression(node.left)) &&
+                        assignmentTargets(node.left).some(target => ((ts.isPropertyAccessExpression(target) || ts.isElementAccessExpression(target)) &&
                             scan.containsAlias(node.right)) ||
-                          (ts.isElementAccessExpression(node.left) &&
+                          (ts.isElementAccessExpression(target) &&
                             scan.namesAlias(
-                                this.unwrap(node.left.expression),
+                                this.unwrap(target.expression),
                             )) ||
-                            scan.namesAlias(this.unwrap(node.left)))
+                            scan.namesAlias(this.unwrap(target)))
                     );
                 },
             },
@@ -3693,7 +3700,7 @@ class Compiler
             if (mutated) return "skip";
             if (
                 isAssignmentExpression(node) &&
-                directlyIndexes(node.left)
+                assignmentTargets(node.left).some(directlyIndexes)
             ) {
                 mutated = true;
                 return "skip";
@@ -3756,11 +3763,20 @@ class Compiler
         const isAlias = (
             scan: AliasedMutationScan,
             expression: ts.Expression,
+            active = new Set<ts.Node>(),
         ): boolean => {
-            const root = rootIdentifier(expression, (inner) =>
-                this.unwrap(inner),
-            );
-            return root !== undefined && scan.namesAlias(root);
+            const node = this.unwrap(expression);
+            if (ts.isIdentifier(node)) return scan.namesAlias(node);
+            if (ts.isPropertyAccessExpression(node) || ts.isElementAccessExpression(node)) return isAlias(scan, node.expression, active);
+            if (!ts.isCallExpression(node)) return false;
+            const called = this.checker.getResolvedSignature(node)?.declaration;
+            if (!isSupportedFunction(called) || !called.body || active.has(called)) return false;
+            active.add(called);
+            try {
+                return ts.isBlock(called.body) ? someAnalysisNode(called.body, statement =>
+                    ts.isReturnStatement(statement) && !!statement.expression && isAlias(scan, statement.expression, active), {functions:"skip"})
+                    : isAlias(scan, called.body, active);
+            } finally { active.delete(called); }
         };
         return aliasedMutationScan(
             identifier,
@@ -3789,9 +3805,7 @@ class Compiler
                     }
                     if (
                         isAssignmentExpression(node) &&
-                        (ts.isPropertyAccessExpression(node.left) ||
-                            ts.isElementAccessExpression(node.left)) &&
-                        isAlias(scan, node.left)
+                        assignmentTargets(node.left).some(target => isAlias(scan, target))
                     ) {
                         return true;
                     }
@@ -9675,7 +9689,7 @@ class Compiler
         const frame = this.returnFrames.at(-1);
         const type = frame?.kind === "native" && frame.coroutine
             ? frame.type === "void" ? "bbl::js::PromiseVoid" : this.dataTypes.cppType(frame.type)
-            : this.asyncLowerer.isTerminalThrow(node) ? "bbl::js::PromiseVoid" : undefined;
+            : this.asyncLowerer.terminalThrowType(node);
         if (type) {
             this.emit(`co_return [&]() -> ${type} { throw ${errorCpp}; }();`);
         } else this.emit(`throw ${errorCpp};`);

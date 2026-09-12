@@ -23,6 +23,7 @@ import { nativeReturnTsType } from "./native-return-type.js";
 import { staticNumberValue, type PositiveIntegerContext } from "./option-helpers.js";
 import { CompilerSymbols, isDefaultLibraryIdentifier } from "./symbols.js";
 import {
+    assignmentTargets,
     isAssignmentExpression,
     isUpdateExpression,
     mutatingCallTarget,
@@ -138,7 +139,7 @@ function writesThroughRoot(
         !readOnlyDataMethods.has(method),
 ): boolean {
     if (isAssignmentExpression(node)) {
-        return isTarget(node.left);
+        return assignmentTargets(node.left).some(isTarget);
     }
     if (isUpdateExpression(node)) {
         return isTarget(node.operand);

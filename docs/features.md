@@ -123,6 +123,11 @@ microtasks and reported in a subsequent task; application listeners are describe
 `then` accepts fulfillment and rejection callbacks that settle to the same admitted result type,
 including returned promises. The rejection callback handles the original outcome; exceptions from
 either callback reject the returned promise. Mixed callback result types remain unsupported.
+Direct async function expressions and IIFEs own their suspended captures; mutable outer bindings
+remain shared. `Promise.all` observes every input, preserves result order and rejects on the first
+failure. It accepts represented literal tuples of promises/values and stored arrays of value promises,
+including owned resource results and empty tuples. Literal spreads, other iterables and stored
+void/value-only arrays refuse. Recovery must preserve the admitted result representation.
 Timers and microtasks use the realm event loop through bare globals or `window`/`globalThis`
 qualification; they do not require a scene engine. Worker realms reject the Window global.
 Worker codecs support typed plain data, cycles, repeated references and copied
@@ -162,8 +167,10 @@ the selected lane or undefined, writes retain object identity, and receiver/inde
 order is preserved. `push`, `pop`, `shift`, `unshift` and `splice` share ordinary array operations;
 empty mixed-tuple `pop`/`shift` return undefined. Length writes truncate; sparse length growth refuses.
 Tuple rest bindings in declarations, destructured parameters and iteration create fresh shallow
-arrays, including empty tails. Destructuring assignments support typed identifier targets,
-omitted lanes and a final rest identifier, evaluating the source before assignments.
+arrays, including empty tails. Destructuring assignments support typed identifiers, stored fields,
+dictionary entries, array/typed-array elements, omitted lanes and a final rest target. They finish
+the source (including an await) before evaluating references and storing values from left to right.
+Nested/defaulted patterns and accessor targets remain unsupported.
 Map/Set `forEach` observes insertion order, deletion and appended entries,
 and receives the original collection as its third argument.
 `Set.entries()` yields fresh `[value, value]` pairs in direct `for...of`, spreads

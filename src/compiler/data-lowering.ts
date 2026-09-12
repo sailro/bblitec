@@ -26,6 +26,7 @@ import {
     doubleLiteral,
     isTypedArrayType,
     isOpaqueReference,
+    isHandleKind,
     passesByReference,
     pinnedHandleKind,
     TYPED_ARRAY_KINDS,
@@ -742,6 +743,12 @@ export class DataLowerer {
                     : undefined);
             if (!owner) {
                 return undefined;
+            }
+            if (mode === "write" && owner.kind === "record") {
+                if (owner.recordGetters?.[unwrapped.name.text] || owner.recordSetters?.[unwrapped.name.text])
+                    this.context.fail(unwrapped, "This data assignment requires a stored field rather than an accessor.");
+                const member = owner.recordProperties?.[unwrapped.name.text];
+                return member?.sharedStorageCpp || member?.nativeLvalue ? member : undefined;
             }
             // A resource read can use both the value and its presence or
             // owning-engine expression. Preserve one evaluation of computed
@@ -6057,7 +6064,7 @@ export class DataLowerer {
                 "a reassigned local",
             );
         }
-        const referenceRebind = isOpaqueReference(target.dataType) || ["vector", "tuple", "product", "iterator"].includes(kind);
+        const referenceRebind = isOpaqueReference(target.dataType) || ["vector", "tuple", "product", "iterator", "map", "set"].includes(kind);
         // An array, map or set copies its reference, and a reference
         // struct its handle, so rebinding a nullable local to another one
         // aliases exactly as JavaScript does.
@@ -6298,7 +6305,7 @@ export class DataLowerer {
         ) {
             return undefined;
         }
-        const owner = this.context.probeEmission(() => {
+        let owner = this.context.probeEmission(() => {
             const path = this.compileDataPath(left.expression, "read");
             const candidate = path?.kind === "data" ? this.narrowOptional(path, left.expression) : undefined;
             return candidate?.dataType?.kind === "map" ? candidate : undefined;
@@ -6310,6 +6317,11 @@ export class DataLowerer {
         if (ts.isPropertyAccessExpression(left)) {
             if (dataType.key.kind !== "string") return undefined;
             return { owner, dataType, keyCpp: this.context.cppString(left.name.text) };
+        }
+        if (expressionMayRunCode(left.argumentExpression)) {
+            const cpp = this.context.allocateTemporaryCppName("entry_owner");
+            this.context.emit(`auto ${cpp} = ${owner.cpp};`);
+            owner = {...owner, cpp, nativeCaptures:[this.context.registerNativeBinding(cpp)]};
         }
         const key = this.context.compileValue(left.argumentExpression);
         return {
@@ -6993,27 +7005,29 @@ export class DataLowerer {
         return false;
     }
 
-    /** Assign typed identifiers from one retained array, with a fresh final rest. */
+    /** Assign stored targets from one retained array, with a fresh final rest. */
     public emitArrayDestructuringAssignment(expression: ts.BinaryExpression): boolean {
         const left = this.context.unwrap(expression.left);
         if (!ts.isArrayLiteralExpression(left)) return false;
-        const targets: {name: ts.Identifier; target: Value; type: DataType; index: number; rest: boolean}[] = [];
+        const targets: {name: ts.Expression; index: number; rest: boolean}[] = [];
         for (const [index, element] of left.elements.entries()) {
             if (ts.isOmittedExpression(element)) continue;
             const rest = ts.isSpreadElement(element);
             const name = rest ? element.expression : element;
-            if (!ts.isIdentifier(name) || (rest && index !== left.elements.length - 1)) return false;
-            const target = this.context.lookupIdentifierValue(name);
-            if (!target || target.optionalStorageCpp) return false;
-            const type = target.dataType ??
-                (target.kind === "number" || target.kind === "string" || target.kind === "boolean" ? {kind: target.kind} : undefined);
-            if (!type) return false;
-            if (type.kind === "struct" && !this.context.dataTypes.isReferenceStruct(type.name))
-                this.context.fail(name, "Destructuring assignment requires reference storage for object targets.");
-            targets.push({name, target, type, index, rest});
+            if ((!ts.isIdentifier(name) && !ts.isPropertyAccessExpression(name) && !ts.isElementAccessExpression(name)) ||
+                (rest && index !== left.elements.length - 1)) return false;
+            const symbol = ts.isPropertyAccessExpression(name) ? this.context.checker.getSymbolAtLocation(name.name)
+                : ts.isElementAccessExpression(name) ? this.context.checker.getSymbolAtLocation(name) : undefined;
+            if (symbol?.declarations?.some(declaration => ts.isGetAccessorDeclaration(declaration) || ts.isSetAccessorDeclaration(declaration)))
+                this.context.fail(name, "Destructuring accessor targets are not represented.");
+            targets.push({name, index, rest});
         }
+        // Pre-render resource tuples also transfer generation-time composition
+        // metadata. Keep those on the existing resource assignment path.
+        if (!this.context.options.workers && targets.some(({name}) => ts.isIdentifier(name) &&
+            this.context.lookupIdentifierValue(name)?.optionalStorageCpp)) return false;
         let value: Value;
-        const right = this.context.unwrap(expression.right);
+        const right = unwrapExpression(expression.right);
         if (ts.isArrayLiteralExpression(right) && right.elements.every(element => !ts.isSpreadElement(element) && !ts.isOmittedExpression(element))) {
             const type = this.dataTypeAt(right);
             value = {kind: "tuple", cpp: "", tupleElements: right.elements.map((element, index) => {
@@ -7026,7 +7040,7 @@ export class DataLowerer {
                 return {...this.leafValue(cpp, elementType), nativeCaptures: [this.context.registerNativeBinding(cpp)]};
             })};
         } else {
-            value = this.context.compileValue(right);
+            value = this.context.compileValue(expression.right);
             const type = value.dataType ?? this.dataTypeAt(right);
             if (!type || !["vector", "tuple", "product"].includes(type.kind))
                 this.context.fail(right, "Array destructuring assignment requires represented array storage.");
@@ -7035,16 +7049,43 @@ export class DataLowerer {
             this.context.emit(`auto ${source} = ${initializer};`);
             value = {...this.leafValue(source, type), nativeCaptures: [this.context.registerNativeBinding(source)]};
         }
-        for (const {name, target, type: targetType, index, rest} of targets) {
+        for (const {name, index, rest} of targets) {
+            // Evaluate each reference after the RHS completes, immediately
+            // before consuming that element. Earlier stores can change later
+            // computed targets. Pin the slot before source reads/conversions.
+            const entry = this.dictionaryEntryTarget(name);
+            const target = entry?.owner ?? (ts.isIdentifier(name) ? this.context.lookupIdentifierValue(name) : this.compileDataPath(name, "write"));
+            if (!target || target.freshData) this.context.fail(name, "Destructuring assignment requires a represented writable target.");
+            let targetType = entry?.dataType.value ?? target.dataType ??
+                (target.kind === "number" || target.kind === "string" || target.kind === "boolean" ? {kind: target.kind}
+                    : isHandleKind(target.kind) ? {kind:"handle", handle:target.kind} : undefined);
+            if (!targetType) this.context.fail(name, "Destructuring targets require a concrete storage type.");
+            if (!entry && target.optionalStorageCpp && targetType.kind !== "optional") targetType = {kind:"optional", inner:targetType};
+            if (targetType.kind === "struct" && !this.context.dataTypes.isReferenceStruct(targetType.name))
+                this.context.fail(name, "Destructuring assignment requires reference storage for object targets.");
+            let slot = target.optionalStorageCpp ?? target.cpp;
+            let key: string | undefined;
+            if (!ts.isIdentifier(name)) {
+                const temporary = this.context.allocateTemporaryCppName("destructure_target");
+                this.context.emit(`${entry ? "auto" : "auto&&"} ${temporary} = ${slot};`);
+                slot = temporary;
+            }
+            if (entry) {
+                key = this.context.allocateTemporaryCppName("destructure_key");
+                this.context.emit(`const auto ${key} = ${entry.keyCpp};`);
+            }
             const item = rest ? this.arrayRestValue(value, index, name)
                 : value.kind === "tuple" ? value.tupleElements?.[index] ?? {kind: "json-null" as const, cpp: "std::nullopt"}
                 : value.dataType?.kind === "vector" ? this.readVectorBindingElement(value, index, name)
                 : this.fixedTupleElement(value, index, name) ?? {kind: "json-null" as const, cpp: "std::nullopt"};
             this.context.refuseBorrowedPlatformEventEscape(item, name, "a destructuring assignment");
             const cpp = this.compileKnownValueForSink(item, targetType, name);
-            this.context.emit(`${target.cpp} = ${cpp};`);
+            this.context.emit(entry ? `${slot}.set(${key}, ${cpp});` : `${slot} = ${target.dataStore ? typedArrayStoreExpression(target.dataStore, cpp) : cpp};`);
             this.invalidateStaticElements(target);
             this.context.invalidateRecordProperties(target);
+            const root = rootIdentifier(name, node => this.context.unwrap(node));
+            const owner = root && this.context.lookupIdentifierValue(root);
+            if (owner) this.context.invalidateRecordProperties(owner);
         }
         return true;
     }

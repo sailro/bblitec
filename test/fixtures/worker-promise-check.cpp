@@ -1,4 +1,5 @@
 #include <bblite/js_promise.hpp>
+#include <bblite/js_promise_all.hpp>
 #include <bblite/js_realm_state.hpp>
 #include <bblite/pal_frame_driver.hpp>
 
@@ -36,6 +37,42 @@ void ordering_and_recovery() {
         order.push_back(2);
     });
     require(order == std::vector<int>{1, 2, 3, 4, 5} && result == 9, "Promise reactions ran in the wrong order");
+}
+
+void aggregate_promises() {
+    const js::RealmScope realm;
+    pal::EventLoop loop;
+    int completed = 0;
+    int unhandled = 0;
+    bool synchronous = true;
+    loop.on_unhandled_rejection([&](std::exception_ptr) { ++unhandled; });
+    loop.run([&] {
+        auto done = [&] {
+            require(!synchronous, "Aggregate reaction ran synchronously");
+            if (++completed == 4) loop.close();
+        };
+        js::Promise<double> first, second;
+        js::promise_all_tuple(std::tuple{first, second, js::Promise<std::string>::resolved("tail")}).then([&, done](const auto& values) {
+            require(std::get<0>(values) == 1 && std::get<1>(values) == 2 && std::get<2>(values) == "tail", "Tuple aggregation lost input order");
+            done();
+        });
+        js::promise_all(js::Array<js::Promise<double>>{first, second}).then([&, done](const auto& values) {
+            require(values.size() == 2 && values[0] == 1 && values[1] == 2, "Array aggregation lost input order");
+            done();
+        });
+        js::promise_all_tuple(std::tuple{}).then([done](const auto&) { done(); });
+        js::Promise<double> rejected, later;
+        js::promise_all_tuple(std::tuple{rejected, later}).observe(
+            [](const auto&) { require(false, "Rejected aggregate fulfilled"); },
+            [done](std::exception_ptr error) { require(js::promise_error_string(error) == "Error: first", "Aggregate rejection changed"); done(); });
+        rejected.reject(std::make_exception_ptr(std::runtime_error("first")));
+        later.reject(std::make_exception_ptr(std::runtime_error("later")));
+        second.resolve(2);
+        loop.post([first] { first.resolve(1); });
+        require(completed == 0, "Aggregate result ran before microtasks");
+        synchronous = false;
+    });
+    require(completed == 4 && unhandled == 0, "Aggregate left an input rejection unhandled");
 }
 
 struct Owned {
@@ -107,6 +144,7 @@ void renderer_tasks_yield_and_retire() {
 int main() {
     try {
         ordering_and_recovery();
+        aggregate_promises();
         shutdown_releases_suspended_activations();
         renderer_tasks_yield_and_retire();
     } catch (const std::exception& error) {

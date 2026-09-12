@@ -254,6 +254,21 @@ export function isAssignmentExpression(
     );
 }
 
+/** Writable leaves of a destructuring pattern; keys and defaults are reads. */
+export function assignmentTargets(expression: ts.Expression): readonly ts.Expression[] {
+    const target = unwrapExpression(expression);
+    if (ts.isOmittedExpression(target)) return [];
+    if (ts.isSpreadElement(target)) return assignmentTargets(target.expression);
+    if (ts.isArrayLiteralExpression(target)) return target.elements.flatMap(assignmentTargets);
+    if (ts.isObjectLiteralExpression(target)) return target.properties.flatMap(property =>
+        ts.isPropertyAssignment(property) ? assignmentTargets(property.initializer)
+            : ts.isShorthandPropertyAssignment(property) ? [property.name]
+            : ts.isSpreadAssignment(property) ? assignmentTargets(property.expression) : []);
+    if (ts.isBinaryExpression(target) && target.operatorToken.kind === ts.SyntaxKind.EqualsToken)
+        return assignmentTargets(target.left);
+    return [target];
+}
+
 /** A prefix or postfix `++`/`--`. */
 export type UpdateExpression = (
     | ts.PrefixUnaryExpression
