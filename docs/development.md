@@ -57,6 +57,22 @@ Compile the unchanged source first. Identify reached APIs and asset forms;
 the first compiler error is only the first blocker. Keep probes separate
 from corpus inputs; fix compiler/lowerer/PAL sources.
 
+For a large external project, build a requirements baseline before repeatedly
+retrying its entry point. After building `dist`, run
+`node tools/project-requirements.mjs <entry.ts> <report.json>` to inventory the
+compiler's static import graph, library members, event argument shapes and
+language forms. The report includes source hashes and locations. Keep private
+reports in an ignored directory. This scan includes potentially unused bodies;
+every group starts unassessed, and its counts are not compilation coverage.
+
+Probe uncertain forms independently through `compileSource`, grouping them by
+the shared capability they need. Record generation, native build and execution
+separately, along with the source/compiler revision. Track closed probes against
+a saved baseline and list new discoveries separately; neither a passing probe
+nor a file without a reported error establishes whole-application support.
+Implement capability batches with focused checks, then retry the unchanged
+entry. Use full-corpus validation at the completed batch boundaries below.
+
 | File | Required scene data |
 | --- | --- |
 | `src/scene-registry.ts` | Source, title, pose, thresholds, attribution |

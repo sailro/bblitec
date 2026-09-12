@@ -5,9 +5,18 @@
   "license": "MIT",
   "patches": [
     "rmlui-css-box-model.patch",
+    "rmlui-css-declarations.patch",
+    "rmlui-flex-layout.patch",
     "rmlui-fractional-letter-spacing.patch",
+    "rmlui-fragment-root.patch",
+    "rmlui-generated-content.patch",
     "rmlui-line-leading.patch",
+    "rmlui-object-fit.patch",
+    "rmlui-overflow-wrap.patch",
     "rmlui-premultiplied-rounding.patch",
+    "rmlui-selector-functions.patch",
+    "rmlui-solid-background-clip.patch",
+    "rmlui-textured-borders.patch",
     "rmlui-transform-key-ownership.patch"
   ]
 }

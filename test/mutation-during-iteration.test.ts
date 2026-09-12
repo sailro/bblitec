@@ -50,10 +50,9 @@ test("keeps a Map delete on the container being iterated", () => {
     const item = /for \(auto&& (v_bblite_item_\d+) : v_jobs\) \{/.exec(
         result.cpp,
     )![1];
-    assert.match(
-        result.cpp,
-        new RegExp(`v_jobs\\.erase\\(${item}\\.first\\)`),
-    );
+    const key = new RegExp(`auto (\\w+) = ${item}\\.first;`).exec(result.cpp)?.[1];
+    assert.ok(key, "The destructured key snapshots the current entry.");
+    assert.match(result.cpp, new RegExp(`v_jobs\\.erase\\(${key}\\)`));
     assert.match(result.cpp, /v_jobs\.size\(\)/);
 });
 

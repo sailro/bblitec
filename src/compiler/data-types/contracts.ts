@@ -20,5 +20,7 @@ export type DataKindOperations<K extends DataKind = DataKind> = {
         equal(left: DataType<P>, right: DataType<P>, equal: DataTypeEquality): boolean;
         children(type: DataType<P>, fields: StructFieldTypes, signatures: boolean): readonly DataType[];
         readonly byReference: boolean;
+        /** Opaque Ref<T> leaf: copies retain identity, assignment reseats it, and get() exposes it. */
+        readonly opaqueReference?: true;
     };
 };

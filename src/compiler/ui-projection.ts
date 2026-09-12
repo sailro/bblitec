@@ -2,9 +2,17 @@ import { valueForKind } from "./types.js";
 import { emissionArray, EmissionSet, EmissionMap, EmissionWeakMap } from "./emission-transaction.js";
 import ts from "typescript";
 import { doubleLiteral } from "../cpp-literals.js";
-import { nativeHostUiStyleRules, uiStyleSelectorCppKind, uiStyleSelectorDescriptor, type UiStyleSelectorKind } from "../ui-style-rule.js";
+import { parseUiBorderImage, renderUiBorderImage } from "../ui-border-image.js";
+import { supportedUiFilter } from "../ui-filters.js";
+import {findUiCssSyntax, stripUiCssComments, uiCssBlockEnd, uiCssSyntaxIndices} from "../ui-css-syntax.js";
+import {isUiGeneratedPart, parseUiGeneratedContent, uiGeneratedContentCpp, uiGeneratedPartCpp, type UiGeneratedContent, type UiGeneratedPart} from "../ui-generated-content.js";
+import {parseUiSelectorSequence, splitUiSelectorList, uiSelectorSequenceCss, uiSelectorSequenceSpecificity, uiSelectorSequenceCpp, uiSelectorSequenceTests, uiSelectorSequenceNeedsAuthoredTree, type UiSelectorStep} from "../ui-selector.js";
+import { isUiLayoutProperty, supportedUiLayoutValue } from "../ui-layout.js";
+import { nativeHostUiStyleRules, uiStyleSelector, uiStyleSelectorCppKind, uiStyleSelectorDescriptor, uiStyleInteractionStateCount, uiStyleRuleNeedsRuntimeMatch, uiStyleRuleHasMedia, uiMotionPreferenceCpp, isUiScrollbarPart, uiScrollbarPartCpp, type UiStyleSelectorShape, type UiStyleSelectorKind } from "../ui-style-rule.js";
 import { validateFileAccept } from "./browser-file.js";
 import { CompileError } from "./compile-error.js";
+import { documentEngine } from "./window-events.js";
+import { browserGlobalNamed } from "./browser-erasure.js";
 import type { LoweringServices } from "./lowering-services.js";
 import { argumentAt } from "./syntax.js";
 import type { NativeHostUiElement, Value } from "./types.js";
@@ -23,20 +31,20 @@ interface UiGridProjection {
 }
 
 
-interface LoweredUiStyleRule {
+interface LoweredUiStyleRule extends UiStyleSelectorShape {
     // Source-created sheets participate in static grid proofs. Attribute
     // selectors are currently admitted only in audited host companions.
     kind: Exclude<UiStyleSelectorKind, "tag-attribute">;
-    primary: string;
-    secondary?: string;
-    tag?: string;
     hover: boolean;
     maxWidth?: number;
+    reducedMotion?: boolean;
     style: string;
     selector: string;
     site?: ts.Node;
     ownerId?: number;
     grid?: UiGridProjection;
+    sequence?: UiSelectorStep[];
+    content?: UiGeneratedContent;
 }
 
 
@@ -124,7 +132,9 @@ interface UiProjectionContext extends Pick<LoweringServices,
     "isInRuntimeControlFlow" |
     "lookupOptional" |
     "options" |
+    "pinValueToTemporary" |
     "reachFeature" |
+    "registerAsset" |
     "reachJsData" |
     "requireDefaultEngine" |
     "requireEngine" |
@@ -138,8 +148,50 @@ interface UiProjectionContext extends Pick<LoweringServices,
 export class UiProjection {
     public constructor(private readonly context: UiProjectionContext) {}
 
+    public documentEngine(node: ts.Node): string {
+        return documentEngine(this.context, node) ?? this.context.requireDefaultEngine(node);
+    }
+
+    private documentRootTag(expression: ts.Expression): string | undefined {
+        const owner = this.context.unwrap(expression);
+        if (!ts.isPropertyAccessExpression(owner) ||
+            !["documentElement", "head", "body"].includes(owner.name.text) ||
+            browserGlobalNamed(this.context, owner.expression)?.text !== "document") return undefined;
+        return owner.name.text === "documentElement" ? "html" : owner.name.text;
+    }
+
+    public documentRootValue(expression: ts.Expression): Value | undefined {
+        const tag = this.documentRootTag(expression);
+        if (!tag) return undefined;
+        const owner = this.context.unwrap(expression);
+        const engine = this.documentEngine(owner);
+        this.context.reachFeature("ui:rml", owner);
+        if (!this.uiDocumentRootIds.has("html")) {
+            for (const tag of ["html", "head", "body"]) this.uiDocumentRootIds.set(tag, this.createUiStaticElement(tag));
+            const html = this.uiDocumentRootIds.get("html")!;
+            const body = this.uiStaticElements.get(this.uiDocumentRootIds.get("body")!)!;
+            for (const child of this.uiStaticRootOrder) body.children.add(child);
+            this.uiStaticElements.get(html)!.children.add(this.uiDocumentRootIds.get("head")!);
+            this.uiStaticElements.get(html)!.children.add(this.uiDocumentRootIds.get("body")!);
+            this.uiStaticRootOrder.splice(0, this.uiStaticRootOrder.length, html);
+        }
+        const part = tag === "html" ? "Html" : tag === "head" ? "Head" : "Body";
+        return {kind:"ui-element", cpp:`bbl::ui_document_root(${engine}, bbl::UiDocumentPart::${part})`,
+            engineCpp:engine, uiTag:tag, uiStaticId:this.uiDocumentRootIds.get(tag)!, truthinessCpp:"true"};
+    }
+
+    public booleanAttribute(element: Value, property: string, site: ts.Node): string | undefined {
+        if (property !== "hidden" && property !== "disabled") return undefined;
+        if (property === "disabled" && element.uiTag && !["button", "input", "textarea"].includes(element.uiTag)) {
+            this.context.fail(site, "UI disabled requires a supported form control.");
+        }
+        return property;
+    }
+
 
     public uiElementValue(expression: ts.Expression): Value | undefined {
+        const root = this.documentRootValue(expression);
+        if (root) return root;
         const owner = this.context.unwrap(expression);
         const asElement = (value: Value | undefined): Value | undefined => {
             if (this.context.hasPresentationHost() &&
@@ -183,6 +235,15 @@ export class UiProjection {
                 return undefined;
             }
             const narrowed = this.context.dataLowerer.narrowOptional(value, owner);
+            if (narrowed.kind === "data" && narrowed.dataType?.kind === "event-target") {
+                const requested = this.context.dataLowerer.dataTypeAt(expression);
+                if (requested?.kind !== "handle" || requested.handle !== "ui-element") return undefined;
+                const selected = {...narrowed};
+                delete selected.nativeBinding;
+                const snapshot = this.context.pinValueToTemporary(selected, "event_target", expression);
+                return valueForKind("ui-element", {cpp:`bbl::dom_target_element(${snapshot.cpp})`,
+                    dataType:{kind:"handle", handle:"ui-element"}, engineCpp:`bbl::dom_target_owner(${snapshot.cpp})`});
+            }
             if (narrowed.kind === "ui-element") {
                 return withTrackedTag(narrowed);
             }
@@ -200,11 +261,7 @@ export class UiProjection {
                 dataType: value.dataType.inner,
                 optionalFoundCpp:
                     value.optionalFoundCpp ?? `${value.cpp}.has_value()`,
-                ...((value.engineCpp ?? this.context.defaultEngine())
-                    ? {
-                          engineCpp: value.engineCpp ?? this.context.defaultEngine()!,
-                      }
-                    : {}),
+                engineCpp: value.engineCpp ?? this.documentEngine(owner),
             }));
         };
         if (ts.isIdentifier(owner)) {
@@ -247,7 +304,7 @@ export class UiProjection {
             }
             if (
                 ts.isPropertyAccessExpression(callee) &&
-                callee.name.text === "querySelector"
+                (callee.name.text === "querySelector" || this.isNativeHostUiLookup(owner))
             ) {
                 return asElement(this.context.compilePlatformCall(owner));
             }
@@ -298,6 +355,7 @@ export class UiProjection {
 
     /** Whether an expression is already known to produce retained UI state. */
     public isNativeUiValueExpression(expression: ts.Expression): boolean {
+        if (this.documentRootTag(expression)) return true;
         if (this.primaryCanvasDataset(expression)) return true;
         const value = this.context.unwrap(expression);
         if (
@@ -320,6 +378,9 @@ export class UiProjection {
             return this.uiElementValue(value)?.kind === "ui-element";
         }
         if (!ts.isCallExpression(value)) return false;
+        // Classifying a lookup must not evaluate its ID argument. The normal
+        // call lowerer owns those effects when the expression is reached.
+        if (this.isNativeHostUiLookup(value)) return true;
         if (this.uiElementValue(value)?.kind === "ui-element") {
             return true;
         }
@@ -346,7 +407,7 @@ export class UiProjection {
         if (staticValue !== undefined) {
             return this.context.cppString(staticValue);
         }
-        const value = this.context.compileValue(expression);
+        const value = this.context.dataLowerer.stringReceiver(this.context.compileValue(expression), expression);
         if (
             value.kind === "string" ||
             (value.kind === "data" && value.dataType?.kind === "string")
@@ -357,6 +418,22 @@ export class UiProjection {
             expression,
             `${purpose} requires a string, received ${value.kind}.`,
         );
+    }
+
+    public uiAttributeName(expression: ts.Expression): string {
+        return this.context.compileStringLiteral(expression).replace(/[A-Z]/g, letter => letter.toLowerCase());
+    }
+
+    public uiStylePropertyName(expression: ts.Expression): string {
+        return UiProjection.cssPropertyName(this.context.compileStringLiteral(expression));
+    }
+
+    private static cssPropertyName(name: string): string {
+        return name.startsWith("--") ? name : name.replace(/[A-Z]/g, letter => letter.toLowerCase());
+    }
+
+    private static isCustomStyleProperty(name: string): boolean {
+        return /^--[A-Za-z0-9_-]+$/.test(name) && !name.startsWith("--bbl-");
     }
 
 
@@ -545,9 +622,10 @@ export class UiProjection {
         value: Value,
         name: string,
         expression: ts.Expression,
+        knownValue?: string,
     ): void {
         const element = this.uiStaticElement(value);
-        const candidates = this.uiStringCandidates(expression);
+        const candidates = knownValue === undefined ? this.uiStringCandidates(expression) : [knownValue];
         if (!element || !candidates) {
             this.uiUnknownAttributeMutations.push({
                 attribute: name as "class" | "id",
@@ -678,7 +756,7 @@ export class UiProjection {
             const colon = declaration.indexOf(":");
             if (
                 colon < 0 ||
-                declaration.slice(0, colon).trim().toLowerCase() !== name
+                UiProjection.cssPropertyName(declaration.slice(0, colon).trim()) !== name
             ) {
                 if (declaration.trim()) declarations.push(declaration);
             }
@@ -692,10 +770,11 @@ export class UiProjection {
         value: Value,
         name: string,
         expression: ts.Expression,
+        knownValue?: string,
     ): void {
         const element = this.uiStaticElement(value);
         if (!element) return;
-        const staticValue = this.tryUiStaticString(expression);
+        const staticValue = knownValue ?? this.tryUiStaticString(expression);
         const updated = element.styles.map((style) =>
             UiProjection.uiStyleWithProperty(
                 style,
@@ -716,6 +795,10 @@ export class UiProjection {
 
     public recordUiStaticAppend(parent: Value, child: Value): void {
         const parentElement = this.uiStaticElement(parent);
+        if (!parentElement || this.uiStaticMutationIsDynamic()) {
+            const childElement = this.uiStaticElement(child);
+            if (!childElement || childElement.tag === "style") this.uiStaticStyleCascadeKnown = false;
+        }
         if (!parentElement) return;
         if (child.uiStaticId === undefined) {
             parentElement.childCardinalityKnown = false;
@@ -735,6 +818,8 @@ export class UiProjection {
         for (const element of this.uiStaticElements.values()) {
             element.children.delete(child.uiStaticId);
         }
+        const rootIndex = this.uiStaticRootOrder.indexOf(child.uiStaticId);
+        if (rootIndex >= 0) this.uiStaticRootOrder.splice(rootIndex, 1);
         parentElement.children.add(child.uiStaticId);
     }
 
@@ -767,6 +852,13 @@ export class UiProjection {
         }
         const previous = this.uiStaticRootOrder.indexOf(id);
         if (previous >= 0) this.uiStaticRootOrder.splice(previous, 1);
+        const body = this.uiDocumentRootIds.get("body");
+        if (body !== undefined) {
+            const children = this.uiStaticElements.get(body)!.children;
+            children.delete(id);
+            children.add(id);
+            return;
+        }
         this.uiStaticRootOrder.push(id);
     }
 
@@ -788,7 +880,7 @@ export class UiProjection {
         }
         if (dynamic) {
             if (staticElement.tag === "style") {
-                this.uiStaticStyleCascadeKnown = false;
+                this.uiConditionallyRemovedStyles.add(id);
             }
             return;
         }
@@ -816,19 +908,31 @@ export class UiProjection {
      * unreviewed declaration can never silently drop into the projection.
      */
     private static readonly PROJECTED_UI_STYLE_PROPERTIES = new EmissionSet<string>([
+        "align-content",
         "align-items",
+        "align-self",
         "animation",
         "background",
         "background-color",
+        "background-clip",
         "border",
         "border-color",
+        "border-image",
         "border-radius",
         "box-sizing",
         "bottom",
         "color",
+        "column-gap",
         "cursor",
         "display",
+        "flex",
+        "flex-basis",
         "flex-direction",
+        "flex-flow",
+        "flex-grow",
+        "flex-shrink",
+        "flex-wrap",
+        "filter",
         "font",
         "font-family",
         "font-size",
@@ -842,24 +946,39 @@ export class UiProjection {
         "line-height",
         "margin",
         "margin-bottom",
+        "margin-left",
+        "margin-right",
         "margin-top",
         "max-height",
         "max-width",
         "min-height",
         "min-width",
+        "object-fit",
         "opacity",
         "overflow",
+        "overflow-x",
+        "overflow-y",
+        "overflow-wrap",
         "padding",
+        "padding-bottom",
+        "padding-left",
+        "padding-right",
+        "padding-top",
         "pointer-events",
         "position",
         "right",
+        "row-gap",
         "resize",
+        "scrollbar-width",
+        "scrollbar-color",
         "text-align",
         "text-shadow",
         "top",
         "transform",
         "transition",
         "white-space",
+        "word-break",
+        "word-wrap",
         "width",
         "z-index",
     ]);
@@ -883,10 +1002,9 @@ export class UiProjection {
 
     /**
      * Reached properties the projection accepts WITHOUT a native rendering:
-     * box shadows need render layers the backend-neutral recorder does not
-     * expose (`pal_ui_rml.cpp` filters the dynamic writes for the same
-     * reason), backdrop filters would sample the composited scene, and RmlUi
-     * has no numeral variants. Each acceptance is recorded per scene in the
+     * box shadows need saved layer textures and inverse masks, unsupported
+     * backdrop functions have no projection, and RmlUi has no numeral
+     * variants. Each acceptance is recorded per scene in the
      * `substituted-ui-runtime` fidelity adaptation.
      */
     private static readonly DEGRADED_UI_STYLE_PROPERTIES = new EmissionSet<string>([
@@ -1151,7 +1269,7 @@ export class UiProjection {
     /**
      * Walks one inline declaration list, calling `visit` for each
      * declaration split at top-level semicolons only — a `;` inside
-     * parentheses (`url(...)`, a gradient argument) does not end a
+     * strings or nested blocks (`url(...)`, a gradient argument) does not end a
      * declaration. The one segmentation authority for the audit and the
      * projection.
      */
@@ -1159,17 +1277,24 @@ export class UiProjection {
         value: string,
         visit: (declaration: string) => void,
     ): void {
-        let depth = 0;
+        const closingBrackets: string[] = [];
+        let quote = "";
         let start = 0;
         for (let index = 0; index <= value.length; index++) {
             const character = value[index];
-            if (character === "(") depth++;
-            if (character === ")") depth--;
-            if (index !== value.length && (character !== ";" || depth > 0)) {
-                continue;
-            }
-            visit(value.slice(start, index));
-            start = index + 1;
+            if (index === value.length || (!quote && closingBrackets.length === 0 && character === ";")) {
+                visit(value.slice(start, index));
+                start = index + 1;
+            } else if (character === "\\") index++;
+            else if (quote) {
+                if (character === quote) quote = "";
+            } else if (character === "/" && value[index + 1] === "*") {
+                const end = value.indexOf("*/", index + 2);
+                index = end < 0 ? value.length - 1 : end + 1;
+            } else if (character === "'" || character === '"') quote = character;
+            else if (character === "(" || character === "[" || character === "{")
+                closingBrackets.push(character === "(" ? ")" : character === "[" ? "]" : "}");
+            else if (character === closingBrackets.at(-1)) closingBrackets.pop();
         }
     }
 
@@ -1178,24 +1303,6 @@ export class UiProjection {
      *  declaration-scoped rewrites run; restored on the way out. Never
      *  appears in authored CSS. */
     private static readonly UI_MASKED_SEMICOLON = "\u0001";
-
-
-    /**
-     * The projection's rewrites are declaration-scoped regexes whose
-     * `[^;]*` classes must stop exactly where the audited splitter
-     * stops. Masking every parenthesized `;` makes both parsers segment
-     * by the same walk; on a list with none — every reached sheet — the
-     * text is rebuilt unchanged, byte for byte.
-     */
-    private static maskUiParenthesizedSemicolons(value: string): string {
-        const declarations: string[] = [];
-        UiProjection.forEachUiStyleDeclaration(value, (declaration) =>
-            declarations.push(
-                declaration.replaceAll(";", UiProjection.UI_MASKED_SEMICOLON),
-            ),
-        );
-        return declarations.join(";");
-    }
 
 
     /**
@@ -1247,6 +1354,8 @@ export class UiProjection {
 
     /** Final direct-document order for statically sequenced root mutations. */
     private readonly uiStaticRootOrder: number[] = emissionArray([]);
+    private readonly uiDocumentRootIds = new EmissionMap<string, number>();
+    private readonly uiConditionallyRemovedStyles = new EmissionSet<number>();
 
     private uiValidation: UiValidationState | undefined;
 
@@ -1396,12 +1505,40 @@ export class UiProjection {
                 // a declaration once it names a property.
                 return;
             }
-            const property = declaration.slice(0, colon).trim().toLowerCase();
+            const property = UiProjection.cssPropertyName(declaration.slice(0, colon).trim());
             const literalValue = declaration
                 .slice(colon + 1)
                 .trim()
                 .toLowerCase();
             if (property.length === 0) return;
+            if (UiProjection.isCustomStyleProperty(property)) return;
+            if (property === "object-fit" && !/^(?:fill|contain|cover|none|scale-down)$/.test(literalValue)) {
+                this.uiStyleRefusal(site, property, "only fill, contain, cover, none and scale-down are represented");
+            }
+            if (supportedUiLayoutValue(property, literalValue) === false) {
+                this.uiStyleRefusal(site, property, "the value requires layout outside the supported literal flex and box forms");
+            }
+            if ((property === "overflow-wrap" || property === "word-wrap") && !/^(?:normal|break-word|anywhere)$/.test(literalValue)) {
+                this.uiStyleRefusal(site, property, "only normal, break-word and anywhere wrapping are represented");
+            }
+            if (property === "word-break" && !/^(?:normal|break-word|break-all)$/.test(literalValue)) {
+                this.uiStyleRefusal(site, property, "only normal, break-word and break-all are represented");
+            }
+            if (property === "scrollbar-width" && !/^(?:auto|thin|none)$/.test(literalValue)) {
+                this.uiStyleRefusal(site, property, "only auto, thin and none are represented");
+            }
+            if (property === "scrollbar-color" && literalValue !== "auto") {
+                const color = "(?:#[0-9a-f]{3,8}|rgba?\\([^()]+\\)|[a-z]+)";
+                if (!new RegExp(`^${color}\\s+${color}$`).test(literalValue) || /\b(?:currentcolor|inherit|initial|unset|revert)\b/.test(literalValue)) {
+                    this.uiStyleRefusal(site, property, "only auto or two literal RGB, hex or named colors are represented");
+                }
+            }
+            if (property === "background-clip" && /^(?:border-box|padding-box|content-box)$/.test(literalValue)) {
+                if (/gradient\(/i.test(value) || /(?:^|;)\s*background(?:-image)?\s*:[^;]*url\(/i.test(value)) {
+                    this.uiStyleRefusal(site, property, "box clipping currently applies to solid backgrounds");
+                }
+                return;
+            }
             if (property === "box-sizing" && !/^(?:content-box|border-box)$/.test(literalValue)) {
                 this.uiStyleRefusal(site, property, "only content-box and border-box are represented");
             }
@@ -1445,6 +1582,12 @@ export class UiProjection {
             }
             if (property === "outline-offset" && /^\d+(?:\.\d+)?px$/.test(literalValue)) return;
             if (UiProjection.INERT_UI_STYLE_PROPERTIES.has(property)) return;
+            if (property === "filter" && !clipsGradientToText) {
+                if (!supportedUiFilter(declaration.slice(colon + 1))) {
+                    this.uiStyleRefusal(site, property, "only color adjustments, pixel blur and drop shadows with literal colors are represented");
+                }
+                return;
+            }
             if (UiProjection.GRADIENT_TEXT_UI_STYLE_PROPERTIES.has(property)) {
                 if (!clipsGradientToText) {
                     this.uiStyleRefusal(
@@ -1560,6 +1703,7 @@ export class UiProjection {
      * runtime string.
      */
     public auditUiStylePropertyName(cssName: string, site: ts.Node): void {
+        if (UiProjection.isCustomStyleProperty(cssName)) return;
         if (UiProjection.DEGRADED_UI_STYLE_PROPERTIES.has(cssName)) {
             this.uiDegradedStyleProperties.add(cssName);
             return;
@@ -1724,10 +1868,21 @@ export class UiProjection {
 
     /** CSSStyleDeclaration camelCase to the CSS spelling consumed by RmlUi. */
     public nativeUiStyleProperty(property: string): string {
+        if (property.startsWith("--")) return property;
         const cssName = property
             .replace(/([a-z0-9])([A-Z])/g, "$1-$2")
             .toLowerCase();
-        return cssName === "background" ? "background-color" : cssName;
+        return cssName === "background" ? "background-color" : cssName === "word-wrap" ? "overflow-wrap" : cssName;
+    }
+
+    private static readonly UI_SHORTHAND_RESETS: ReadonlyMap<string, readonly (readonly [string, string])[]> = new Map([
+        ["background", [["background-clip", "border-box"]]],
+        ["border", [["border-image", "none"]]],
+    ]);
+
+    private static uiShorthandResetStyle(property: string): string {
+        return (UiProjection.UI_SHORTHAND_RESETS.get(property) ?? [])
+            .map(([name, value]) => `${name}:${value};`).join("");
     }
 
 
@@ -1770,18 +1925,52 @@ export class UiProjection {
     }
 
 
+    private lowerUiBorderImage(value: string, site?: ts.Node): string {
+        const image = /__BBLITE_UI_STYLE_\d+__/.test(value) ? undefined : parseUiBorderImage(value);
+        if (image === undefined) {
+            return this.uiStyleRefusal(site, "border-image", "only a static raster URL with non-negative slices and widths, zero outset, stretch and no center fill is represented");
+        }
+        if (image === "none") return image;
+        return renderUiBorderImage(image, this.context.registerAsset(image.source, "texture").output);
+    }
+
     public lowerUiAttributeLiteral(
         name: string,
         value: string,
         site?: ts.Node,
     ): string {
+        if (name === "hidden" && value.toLowerCase() === "until-found") {
+            this.context.fail(site ?? this.context.sourceFile, "UI hidden='until-found' requires find-in-page support.");
+        }
         if (name !== "style") return value;
+        const customDeclarations: string[] = [];
+        const authoredDeclarations: string[] = [];
+        UiProjection.forEachUiStyleDeclaration(value, declaration => {
+            const colon = declaration.indexOf(":");
+            authoredDeclarations.push(colon >= 0 && UiProjection.isCustomStyleProperty(declaration.slice(0, colon).trim())
+                ? `\u0002${customDeclarations.push(declaration) - 1}\u0002` : declaration);
+        });
+        value = authoredDeclarations.join(";");
         this.auditUiStyleDeclarations(value, site);
+        {
+            const declarations: string[] = [];
+            UiProjection.forEachUiStyleDeclaration(value, declaration => {
+                const colon = declaration.indexOf(":");
+                const property = declaration.slice(0, colon).trim().toLowerCase();
+                let lowered = declaration;
+                if (colon >= 0 && property === "border-image") {
+                    lowered = `border-image:${this.lowerUiBorderImage(declaration.slice(colon + 1), site)}`;
+                } else if (colon >= 0 && isUiLayoutProperty(property)) {
+                    lowered = `${property}:${declaration.slice(colon + 1).trim().toLowerCase()}`;
+                }
+                declarations.push(lowered.replaceAll(";", UiProjection.UI_MASKED_SEMICOLON));
+            });
+            value = declarations.join(";");
+        }
         // From here every read and rewrite is declaration-scoped by
-        // regex; masking parenthesized semicolons makes those regexes
+        // regex; masking nested semicolons and custom declarations makes those regexes
         // segment exactly where the audit's splitter did. The mask is
         // restored on the single return below.
-        value = UiProjection.maskUiParenthesizedSemicolons(value);
         const clipsGradientToText =
             UiProjection.GRADIENT_TEXT_CLIP_PATTERN.test(value);
         const gradientTextColors = clipsGradientToText
@@ -1899,7 +2088,7 @@ export class UiProjection {
             )
             // RmlUi exposes the colour property explicitly rather than the
             // browser background shorthand used by the reached HUDs.
-            .replace(/\bbackground\s*:/gi, "background-color:")
+            .replace(/\bbackground\s*:/gi, `${UiProjection.uiShorthandResetStyle("background")}background-color:`)
             .replace(/(?:-webkit-)?backdrop-filter\s*:\s*([^;]+)\s*;?/gi, (_match, filter) =>
                 UiProjection.supportedBackdropFilter(String(filter))
                     ? `backdrop-filter:${String(filter).trim()};` : "")
@@ -1921,13 +2110,15 @@ export class UiProjection {
                 "border:$1 $2;",
             )
             .replace(/\bborder\s*:\s*none\s*;?/gi, "border:0 transparent;")
+            .replace(/\bborder\s*:/gi, `${UiProjection.uiShorthandResetStyle("border")}border:`)
             .replace(/\bbackground-size\s*:[^;]*;?/gi, "")
             .replace(
-                /(^|;)\s*(?:-webkit-)?background-clip\s*:[^;]*(?=;|$)/gi,
+                /(^|;)\s*(?:-webkit-)?background-clip\s*:\s*text\s*(?=;|$)/gi,
                 "$1",
             )
             .replace(/-webkit-text-stroke\s*:[^;]*;?/gi, "")
-            .replace(/(^|;)\s*filter\s*:[^;]*/gi, "$1")
+            .replace(/(^|;)\s*filter\s*:[^;]*/gi, (declaration, separator) => clipsGradientToText ? String(separator) : declaration.toLowerCase())
+            .replace(/(^|;)\s*word-wrap\s*:/gi, "$1overflow-wrap:")
             .replace(/\btext-shadow\s*:\s*([^;]+)\s*;?/gi, (_match, shadow) => {
                 const effect = this.lowerUiTextShadow(String(shadow));
                 if (effect === undefined) {
@@ -2054,7 +2245,8 @@ export class UiProjection {
                 lowered += `;line-height:${height};text-align:center;`;
             }
         }
-        return lowered.replaceAll(UiProjection.UI_MASKED_SEMICOLON, ";");
+        return lowered.replaceAll(UiProjection.UI_MASKED_SEMICOLON, ";")
+            .replace(/\u0002(\d+)\u0002/g, (_match, index: string) => customDeclarations[Number(index)]!);
     }
 
 
@@ -2068,29 +2260,20 @@ export class UiProjection {
     private static stripUiKeyframesBlocks(source: string): string {
         let result = "";
         let cursor = 0;
-        for (;;) {
-            const at = source.indexOf("@keyframes", cursor);
-            if (at < 0) {
-                result += source.slice(cursor);
-                break;
-            }
-            result += source.slice(cursor, at);
-            const opening = source.indexOf("{", at);
-            if (opening < 0) break;
-            let depth = 0;
-            let end = opening;
-            for (; end < source.length; end++) {
-                if (source[end] === "{") {
-                    depth++;
-                } else if (source[end] === "}" && --depth === 0) {
-                    end++;
-                    break;
-                }
-            }
-            cursor = end;
-            if (depth !== 0) break;
+        let depth = 0;
+        for (const index of uiCssSyntaxIndices(source)) {
+            if (index < cursor) continue;
+            if (depth === 0 && source[index] === "@" && /^@keyframes\b/i.test(source.slice(index))) {
+                const opening = findUiCssSyntax(source,"{",index);
+                if (opening === undefined) break;
+                const end = uiCssBlockEnd(source,opening);
+                if (end === undefined) break;
+                result += source.slice(cursor,index);
+                cursor = end;
+            } else if (source[index] === "{") depth++;
+            else if (source[index] === "}") depth--;
         }
-        return result;
+        return result + source.slice(cursor);
     }
 
 
@@ -2100,6 +2283,36 @@ export class UiProjection {
      * evaluates hover and max-width state without making arbitrary browser CSS
      * part of the generated runtime.
      */
+    private static uiStyleContainsBlock(source: string): boolean {
+        for (const index of uiCssSyntaxIndices(source)) if (source[index] === "{" || source[index] === "}") return true;
+        return false;
+    }
+
+    private validateUiGeneratedStyle(style: string, part: UiGeneratedPart, site?: ts.Node): void {
+        UiProjection.forEachUiStyleDeclaration(style, declaration => {
+            if (!declaration.trim()) return;
+            const property = declaration.slice(0,declaration.indexOf(":")).trim();
+            if (part === "placeholder" && property !== "color" && property !== "opacity")
+                this.uiStyleRefusal(site,property,"placeholder styles currently represent color and opacity");
+            if (property.startsWith("--bbl-")) this.uiStyleRefusal(site,property,"this layout or decoration adaptation requires an authored retained element");
+        });
+    }
+
+    private lowerUiRuleDeclarations(source: string, site?: ts.Node): {style:string; content?:UiGeneratedContent} {
+        let content: UiGeneratedContent | undefined;
+        const declarations: string[] = [];
+        UiProjection.forEachUiStyleDeclaration(source, declaration => {
+            const colon = declaration.indexOf(":");
+            if (colon < 0 || declaration.slice(0,colon).trim().toLowerCase() !== "content") {
+                declarations.push(declaration);
+                return;
+            }
+            content = parseUiGeneratedContent(declaration.slice(colon+1));
+            if (!content) this.uiStyleRefusal(site, "content", "only none/normal and lists of CSS strings or attr(name) are represented");
+        });
+        return {style:this.lowerUiAttributeLiteral("style", content ? declarations.join(";") : source,site), ...(content ? {content} : {})};
+    }
+
     private lowerUiStyleSheetLiteral(
         value: string,
         site?: ts.Node,
@@ -2123,20 +2336,21 @@ export class UiProjection {
         const refuseSelector = (selector: string): never => {
             const message =
                 `Retained stylesheet selector '${selector}' is not ` +
-                "lowered: the reviewed sheet surface is exact '.class' and " +
-                "'#id' rules, '.classA.classB', 'tag.class', statically-proven " +
-                "'.ancestor tag' (optionally ':hover'), '#id .class', " +
-                "'@media (max-width:Npx)', and '@keyframes' blocks.";
+                "lowered: retained sheets accept tag/id/class compounds, attribute presence/equality, " +
+                "descendant/child/sibling chains and hover/active/focus/focus-visible/disabled/checked states, " +
+                "scrollbar/track/thumb/button/corner pseudo-elements, " +
+                "'@media (max-width:Npx)', '@media (prefers-reduced-motion:reduce|no-preference)', and '@keyframes' blocks.";
             if (site) this.context.fail(site, message);
             this.context.failAtFile(message);
         };
         const source = UiProjection.stripUiKeyframesBlocks(
-            value.replace(/\/\*[\s\S]*?\*\//g, ""),
+            stripUiCssComments(value),
         );
 
         const parseBlocks = (
             text: string,
             inheritedMaxWidth?: number,
+            inheritedReducedMotion?: boolean,
         ): void => {
             let cursor = 0;
             while (cursor < text.length) {
@@ -2144,35 +2358,20 @@ export class UiProjection {
                     cursor++;
                 }
                 if (cursor >= text.length) break;
-                const opening = text.indexOf("{", cursor);
-                if (opening < 0) {
-                    refuseSelector(text.slice(cursor).trim());
-                }
+                const opening = findUiCssSyntax(text,"{",cursor) ?? refuseSelector(text.slice(cursor).trim());
                 const header = text.slice(cursor, opening).trim();
-                let quote = "";
-                let depth = 1;
-                let end = opening + 1;
-                for (; end < text.length && depth > 0; end++) {
-                    const character = text[end]!;
-                    if (quote) {
-                        if (character === quote && text[end - 1] !== "\\") {
-                            quote = "";
-                        }
-                    } else if (character === "'" || character === '"') {
-                        quote = character;
-                    } else if (character === "{") {
-                        depth++;
-                    } else if (character === "}") {
-                        depth--;
-                    }
-                }
-                if (depth !== 0) refuseSelector(header);
+                const end = uiCssBlockEnd(text, opening) ?? refuseSelector(header);
                 const body = text.slice(opening + 1, end - 1);
                 cursor = end;
 
                 if (/^@media\b/i.test(header)) {
-                    if (inheritedMaxWidth !== undefined) {
+                    if (inheritedMaxWidth !== undefined || inheritedReducedMotion !== undefined) {
                         refuseSelector(header);
+                    }
+                    const motion = /^@media\s*\(\s*prefers-reduced-motion\s*:\s*(reduce|no-preference)\s*\)$/i.exec(header);
+                    if (motion) {
+                        parseBlocks(body, undefined, motion[1]!.toLowerCase() === "reduce");
+                        continue;
                     }
                     const media = header.match(
                         /^@media\s*\(\s*max-width\s*:\s*([0-9]+(?:\.[0-9]*)?)px\s*\)$/i,
@@ -2185,7 +2384,7 @@ export class UiProjection {
                     continue;
                 }
                 if (header.startsWith("@")) refuseSelector(header);
-                if (body.includes("{") || body.includes("}")) {
+                if (UiProjection.uiStyleContainsBlock(body)) {
                     refuseSelector(header);
                 }
 
@@ -2193,6 +2392,7 @@ export class UiProjection {
                 if (inheritedMaxWidth !== undefined) {
                     const mediaProperties = new EmissionSet([
                         "bottom",
+                        "content",
                         "font-size",
                         "height",
                         "left",
@@ -2224,21 +2424,18 @@ export class UiProjection {
                     );
                 }
                 const grid = UiProjection.uiGridProjection(sourceStyle);
-                if (grid && inheritedMaxWidth !== undefined) {
+                if ((grid || UiProjection.fractionalUiGridTracks(sourceStyle)) &&
+                    (inheritedMaxWidth !== undefined || inheritedReducedMotion !== undefined)) {
                     this.uiStyleRefusal(
                         site,
                         "display",
-                        "the structural fixed-grid substitution is not accepted inside a media query",
+                        "the structural grid substitution is not accepted inside a media query",
                     );
                 }
-                const selectors = header
-                    .split(",")
-                    .map((selector) => selector.trim());
+                const selectors = splitUiSelectorList(header);
                 for (const selector of selectors) {
                     if (
-                        /^\.([A-Za-z_][A-Za-z0-9_-]*)\s+(?:path|rect)(?::hover)?$/i.test(
-                            selector,
-                        )
+                        parseUiSelectorSequence(selector.replace(/::(?:before|after|placeholder)$/, ""))?.at(-1)?.tests.some(test => test.kind === "tag" && (test.name === "path" || test.name === "rect"))
                     ) {
                         const message =
                             `Retained stylesheet selector '${selector}' cannot ` +
@@ -2248,23 +2445,25 @@ export class UiProjection {
                         this.context.failAtFile(message);
                     }
                 }
-                const style = this.lowerUiAttributeLiteral(
-                    "style",
-                    sourceStyle,
-                    site,
-                );
+                const {style, content} = this.lowerUiRuleDeclarations(sourceStyle, site);
                 for (const selector of selectors) {
                     const rule =
                         UiProjection.parseUiSelector(selector, style) ??
                         refuseSelector(selector);
+                    if (content && rule.pseudo !== "before" && rule.pseudo !== "after") this.uiStyleRefusal(site, "content", "text content lists require a before/after pseudo-element");
+                    if (rule.pseudo) this.validateUiGeneratedStyle(style,rule.pseudo,site);
+                    if (content) rule.content = content;
                     if (inheritedMaxWidth !== undefined) {
                         rule.maxWidth = inheritedMaxWidth;
                     }
+                    if (inheritedReducedMotion !== undefined) rule.reducedMotion = inheritedReducedMotion;
                     if (site) rule.site = site;
                     if (ownerId !== undefined) rule.ownerId = ownerId;
                     if (grid) {
                         if (
-                            rule.hover ||
+                            uiStyleRuleNeedsRuntimeMatch(rule) ||
+                            rule.scrollbar ||
+                            rule.pseudo ||
                             (rule.kind !== "class" && rule.kind !== "id")
                         ) {
                             this.uiStyleRefusal(
@@ -2276,14 +2475,17 @@ export class UiProjection {
                         rule.grid = grid;
                     }
                     if (
+                        !rule.scrollbar && (
                         rule.kind === "class-descendant-tag" ||
-                        rule.kind === "id-descendant-class"
+                        rule.kind === "id-descendant-class")
                     ) {
                         this.uiScopedSheetSelectors.add(selector);
                     }
-                    if (!style) continue;
+                    if (!style && !content) continue;
                     rules.push(rule);
-                    this.uiStyleRules.push(rule);
+                    // Anonymous scrollbar controls cannot affect static proofs
+                    // over the authored element tree.
+                    if (!rule.scrollbar) this.uiStyleRules.push(rule);
                 }
             }
         };
@@ -2328,7 +2530,10 @@ export class UiProjection {
         element: UiStaticElement,
         classes: ReadonlySet<string>,
     ): boolean {
+        if (rule.scrollbar || rule.pseudo) return false;
         switch (rule.kind) {
+            case "sequence":
+                return this.uiSequenceMayMatch(rule, element, classes);
             case "class":
                 return classes.has(rule.primary);
             case "id":
@@ -2341,6 +2546,7 @@ export class UiProjection {
                 return element.tag === rule.tag && classes.has(rule.primary);
             case "class-descendant-tag":
             case "id-descendant-class":
+            case "tag-child-class":
                 return false;
         }
     }
@@ -2355,12 +2561,39 @@ export class UiProjection {
         selector: string,
         style: string,
     ): LoweredUiStyleRule | undefined {
+        const generated = /^(.*)::(before|after|placeholder)$/s.exec(selector);
+        if (generated) {
+            const origin = generated[1]!;
+            const sequence = parseUiSelectorSequence(!origin || /[\s>+~]$/.test(origin) ? origin + "*" : origin);
+            if (!sequence) return undefined;
+            return {kind:"sequence", primary:uiSelectorSequenceCss(sequence), sequence, hover:false, style,
+                pseudo:generated[2] === "before" ? "before" : generated[2] === "after" ? "after" : "placeholder", selector};
+        }
+        const scrollbar = selector.match(/^(.*?)::-webkit-scrollbar(?:-(thumb|track|button|corner))?(:hover)?$/);
+        if (scrollbar) {
+            const owner = UiProjection.parseUiSelector(scrollbar[1]!, style);
+            const part = scrollbar[2] ?? "scrollbar";
+            if (!owner || owner.pseudo || owner.scrollbar || uiStyleInteractionStateCount(owner) > 0 || !isUiScrollbarPart(part)) return undefined;
+            return { ...owner, scrollbar: part, hover: scrollbar[3] !== undefined, selector };
+        }
+        const state = /:(hover|active|focus-visible)$/i.exec(selector);
+        if (state && selector.length > state[0].length && !/[\s>+~]$/.test(selector.slice(0, -state[0].length))) {
+            const owner = UiProjection.parseUiSelector(selector.slice(0, -state[0].length), style);
+            const property = state[1]!.toLowerCase() === "focus-visible" ? "focusVisible" :
+                state[1]!.toLowerCase() === "active" ? "active" : "hover";
+            if (!owner || owner[property] || owner.scrollbar || owner.pseudo) return undefined;
+            return { ...owner, [property]: true, selector };
+        }
         const identifier = "[A-Za-z_][A-Za-z0-9_-]*";
         const tag = "[a-z][a-z0-9-]*";
         const forms: readonly (readonly [
             RegExp,
             (match: RegExpMatchArray) => LoweredUiStyleRule,
         ])[] = [
+            [
+                new RegExp(`^(${tag})\\s*>\\s*\\.(${identifier})(?:\\.(${identifier}))?$`, "i"),
+                (match) => ({kind: "tag-child-class", tag: match[1]!.toLowerCase(), primary: match[2]!, ...(match[3] ? {secondary: match[3]} : {}), hover: false, style, selector}),
+            ],
             [
                 new RegExp(`^#(${identifier})\\s+\\.(${identifier})$`),
                 (match) => ({
@@ -2373,12 +2606,12 @@ export class UiProjection {
                 }),
             ],
             [
-                new RegExp(`^\\.(${identifier})\\s+(${tag})(:hover)?$`, "i"),
+                new RegExp(`^\\.(${identifier})\\s+(${tag})$`, "i"),
                 (match) => ({
                     kind: "class-descendant-tag",
                     primary: match[1]!,
                     tag: match[2]!.toLowerCase(),
-                    hover: match[3] !== undefined,
+                    hover: false,
                     style,
                     selector,
                 }),
@@ -2420,9 +2653,21 @@ export class UiProjection {
             const match = selector.match(pattern);
             if (match) return build(match);
         }
-        return undefined;
+        const sequence = parseUiSelectorSequence(selector);
+        return sequence ? {kind:"sequence", primary:uiSelectorSequenceCss(sequence), sequence, hover:false, style, selector} : undefined;
     }
 
+
+    /** Deliberately a possible-match query: relationships and attributes need
+     * runtime evaluation and cannot establish fixed-grid geometry. */
+    private uiSequenceMayMatch(rule: LoweredUiStyleRule, element: UiStaticElement, classes: ReadonlySet<string>): boolean {
+        return rule.sequence!.at(-1)!.tests.every(test => {
+            if (test.kind === "tag") return element.tag === test.name;
+            if (test.kind === "id") return element.ids.has(test.name);
+            if (test.kind === "class") return classes.has(test.name);
+            return true;
+        });
+    }
 
     private uiRuleMatchesDirect(
         rule: LoweredUiStyleRule,
@@ -2446,19 +2691,23 @@ export class UiProjection {
 
 
     private uiRuleSpecificity(rule: LoweredUiStyleRule): number {
-        const hover = rule.hover ? 1 : 0;
+        const states = uiStyleInteractionStateCount(rule);
         switch (rule.kind) {
+            case "sequence":
+                return uiSelectorSequenceSpecificity(rule.sequence!) + (Number(rule.hover) + Number(rule.active) + Number(rule.focusVisible === true)) * 0x100;
             case "class":
-                return (1 + hover) * 0x100;
+                return (1 + states) * 0x100;
             case "id":
-                return 0x10000 + hover * 0x100;
+                return 0x10000 + states * 0x100;
             case "compound-class":
-                return (2 + hover) * 0x100;
+                return (2 + states) * 0x100;
             case "class-descendant-tag":
             case "tag-class":
-                return (1 + hover) * 0x100 + 1;
+                return (1 + states) * 0x100 + 1;
+            case "tag-child-class":
+                return (1 + Number(rule.secondary !== undefined) + states) * 0x100 + 1;
             case "id-descendant-class":
-                return 0x10000 + (1 + hover) * 0x100;
+                return 0x10000 + (1 + states) * 0x100;
         }
     }
 
@@ -2479,9 +2728,13 @@ export class UiProjection {
             owned.push(rule);
             rulesByOwner.set(rule.ownerId, owned);
         }
-        return this.uiStaticRootOrder.flatMap(
-            (ownerId) => rulesByOwner.get(ownerId) ?? [],
-        );
+        const active: LoweredUiStyleRule[] = [];
+        const visit = (id: number): void => {
+            active.push(...(rulesByOwner.get(id) ?? []));
+            for (const child of this.uiStaticElements.get(id)?.children ?? []) visit(child);
+        };
+        this.uiStaticRootOrder.forEach(visit);
+        return active;
     }
 
 
@@ -2533,12 +2786,21 @@ export class UiProjection {
     }
 
 
+    private uiStaticParentHasTag(id: number, tag: string): boolean {
+        if (!this.uiDocumentRootIds.has("html") && tag === "body" && this.uiStaticRootOrder.includes(id)) return true;
+        const parents = this.uiValidation?.parentsByChild.get(id);
+        return parents ? parents.some(parent => this.uiStaticElements.get(parent)?.tag === tag)
+            : [...this.uiStaticElements.values()].some(parent => parent.tag === tag && parent.children.has(id));
+    }
+
     private uiRuleMatchesStaticElementWithClasses(
         rule: LoweredUiStyleRule,
         id: number,
         element: UiStaticElement,
         classes: ReadonlySet<string>,
     ): boolean {
+        if (rule.pseudo) return false;
+        if (rule.kind === "tag-child-class") return classes.has(rule.primary) && (!rule.secondary || classes.has(rule.secondary)) && this.uiStaticParentHasTag(id, rule.tag!);
         if (
             rule.kind !== "class-descendant-tag" &&
             rule.kind !== "id-descendant-class"
@@ -2564,14 +2826,18 @@ export class UiProjection {
         element: UiStaticElement,
     ): boolean {
         switch (rule.kind) {
+            case "sequence":
+                return [...uiSelectorSequenceTests(rule.sequence!)].some(test => test.kind === "class" &&
+                    [...this.uiStaticElements.values()].some(candidate => candidate.mutableClasses.has(test.name)));
             case "class":
                 return element.mutableClasses.has(rule.primary);
             case "id":
                 return false;
             case "compound-class":
+            case "tag-child-class":
                 return (
                     element.mutableClasses.has(rule.primary) ||
-                    element.mutableClasses.has(rule.secondary!)
+                    (rule.secondary !== undefined && element.mutableClasses.has(rule.secondary))
                 );
             case "tag-class":
                 return (
@@ -2593,11 +2859,14 @@ export class UiProjection {
         className: string,
     ): boolean {
         switch (rule.kind) {
+            case "sequence":
+                return [...uiSelectorSequenceTests(rule.sequence!)].some(test => test.kind === "class" && test.name === className);
             case "class":
             case "class-descendant-tag":
             case "tag-class":
                 return rule.primary === className;
             case "compound-class":
+            case "tag-child-class":
                 return (
                     rule.primary === className || rule.secondary === className
                 );
@@ -2616,6 +2885,12 @@ export class UiProjection {
         child: UiStaticElement,
     ): boolean {
         switch (rule.kind) {
+            case "sequence":
+                return this.uiRuleMentionsClass(rule, className);
+            case "tag-child-class":
+                return this.uiStaticParentHasTag(childId, rule.tag!) && child.classAlternatives.some(classes =>
+                    (rule.primary === className && (!rule.secondary || classes.has(rule.secondary))) ||
+                    (rule.secondary === className && classes.has(rule.primary)));
             case "class":
                 return rule.primary === className;
             case "id":
@@ -2651,6 +2926,7 @@ export class UiProjection {
         elementId: number,
         element: UiStaticElement,
     ): boolean {
+        if (rule.kind === "sequence") return [...uiSelectorSequenceTests(rule.sequence!)].some(test => test.kind === mutation.attribute);
         const sameTarget =
             mutation.targetId === undefined || mutation.targetId === elementId;
         const target =
@@ -2663,6 +2939,8 @@ export class UiProjection {
                 this.uiStaticAncestors(elementId).includes(target));
         if (mutation.attribute === "class") {
             switch (rule.kind) {
+                case "tag-child-class":
+                    return sameTarget && this.uiStaticParentHasTag(elementId, rule.tag!);
                 case "class":
                 case "compound-class":
                     return sameTarget;
@@ -2695,6 +2973,7 @@ export class UiProjection {
             case "compound-class":
             case "class-descendant-tag":
             case "tag-class":
+            case "tag-child-class":
                 return false;
         }
     }
@@ -2746,8 +3025,8 @@ export class UiProjection {
         for (let index = 0; index < activeRules.length; index++) {
             const rule = activeRules[index]!;
             if (
-                rule.hover ||
-                rule.maxWidth !== undefined ||
+                uiStyleRuleNeedsRuntimeMatch(rule) ||
+                uiStyleRuleHasMedia(rule) ||
                 !this.uiRuleMatchesStaticElementWithClasses(
                     rule,
                     id,
@@ -2930,8 +3209,8 @@ export class UiProjection {
         for (let index = 0; index < activeRules.length; index++) {
             const rule = activeRules[index]!;
             if (
-                rule.hover ||
-                rule.maxWidth !== undefined ||
+                uiStyleRuleNeedsRuntimeMatch(rule) ||
+                uiStyleRuleHasMedia(rule) ||
                 !this.uiRuleMatchesStaticElementWithClasses(
                     rule,
                     id,
@@ -3205,8 +3484,8 @@ export class UiProjection {
             for (const rule of activeRules) {
                 if (
                     !this.uiRuleMatchesStaticElement(rule, childId, child) ||
-                    (rule.maxWidth === undefined &&
-                        !rule.hover &&
+                    (!uiStyleRuleHasMedia(rule) &&
+                        !uiStyleRuleNeedsRuntimeMatch(rule) &&
                         !this.uiRuleDependsOnMutableClass(rule, childId, child))
                 ) {
                     continue;
@@ -3214,10 +3493,10 @@ export class UiProjection {
                 const property = changedGeometryProperty(rule);
                 if (property) {
                     const trigger =
-                        rule.maxWidth !== undefined
-                            ? `max-width rule '${rule.selector}'`
-                            : rule.hover
-                              ? `hover rule '${rule.selector}'`
+                        uiStyleRuleHasMedia(rule)
+                            ? `${rule.maxWidth !== undefined ? "max-width" : "motion preference"} rule '${rule.selector}'`
+                            : uiStyleRuleNeedsRuntimeMatch(rule)
+                              ? `${rule.hover ? "hover" : "interaction"} rule '${rule.selector}'`
                               : `runtime class rule '${rule.selector}'`;
                     fail(`${trigger} can change direct-child ${property}`);
                 }
@@ -3361,6 +3640,23 @@ export class UiProjection {
 
     public validateUiStaticProjection(): void {
         const activeRules = this.uiActiveStyleRulesInCascade();
+        // Removing a known sheet preserves the order of every remaining
+        // sheet. Prove each reachable cascade instead of treating removal as
+        // an unknown reorder. Rules belonging to one sheet disappear together.
+        const owners = [...this.uiConditionallyRemovedStyles].filter(owner =>
+            activeRules.some(rule => rule.ownerId === owner));
+        const validate = (index: number, rules: readonly LoweredUiStyleRule[]): void => {
+            if (index === owners.length) {
+                this.validateUiStyleCascade(rules);
+                return;
+            }
+            validate(index + 1, rules);
+            validate(index + 1, rules.filter(rule => rule.ownerId !== owners[index]));
+        };
+        validate(0, activeRules);
+    }
+
+    private validateUiStyleCascade(activeRules: readonly LoweredUiStyleRule[]): void {
         const parentsByChild = new EmissionMap<number, number[]>();
         for (const [parentId, parent] of this.uiStaticElements) {
             for (const childId of parent.children) {
@@ -3377,7 +3673,8 @@ export class UiProjection {
         try {
             for (const [id, element] of this.uiStaticElements) {
                 const tracks = this.uiStaticElementStylePropertyValues(id, "--bbl-fr-grid-tracks");
-                if ([...tracks].some(value => value !== undefined) && (tracks.size !== 1 || !this.uiStaticStyleCascadeKnown)) {
+                if ([...tracks].some(value => value !== undefined) &&
+                    (tracks.size !== 1 || !this.uiStaticStyleCascadeKnown || this.uiConditionallyRemovedStyles.size > 0)) {
                     this.context.failAtFile("A fractional UI grid requires one stable track list in a statically known style cascade.");
                 }
                 for (const value of tracks) {
@@ -3397,6 +3694,14 @@ export class UiProjection {
                             this.uiGridFromLoweredStyle(style) !== undefined,
                     ),
                 );
+            if (anyGrid) {
+                const structural = activeRules.find(rule => rule.pseudo || (rule.sequence && uiSelectorSequenceNeedsAuthoredTree(rule.sequence)));
+                if (structural) {
+                    const message = `Retained selector '${structural.selector}' requires authored tree relationships that cannot be proven across projected grid containers.`;
+                    if (structural.site) this.context.fail(structural.site, message);
+                    this.context.failAtFile(message);
+                }
+            }
             if (!this.uiStaticStyleCascadeKnown && anyGrid) {
                 const gridRule = this.uiStyleRules.find(
                     (rule) => rule.grid !== undefined,
@@ -3422,79 +3727,6 @@ export class UiProjection {
                     );
                 }
             }
-            const scopedMatches = (
-                rule: LoweredUiStyleRule,
-            ): {
-                retained: number;
-                markup: number;
-                complete: boolean;
-            } => {
-                let retained = 0;
-                let markup = 0;
-                let complete = true;
-                const ancestors = [...this.uiStaticElements.entries()].filter(
-                    ([_id, element]) =>
-                        rule.kind === "class-descendant-tag"
-                            ? element.classAlternatives.some((classes) =>
-                                  classes.has(rule.primary),
-                              )
-                            : element.ids.has(rule.primary),
-                );
-                for (const [id] of ancestors) {
-                    const descendants = this.uiStaticDescendants(id);
-                    complete = complete && descendants.complete;
-                    if (rule.kind === "class-descendant-tag") {
-                        retained += [...descendants.elements].filter(
-                            (childId) =>
-                                this.uiStaticElements.get(childId)?.tag ===
-                                rule.tag,
-                        ).length;
-                        markup += descendants.markup.filter(
-                            (node) => node.tag === rule.tag,
-                        ).length;
-                    } else {
-                        retained += [...descendants.elements].filter(
-                            (childId) =>
-                                this.uiStaticElements
-                                    .get(childId)
-                                    ?.classAlternatives.some((classes) =>
-                                        classes.has(rule.secondary!),
-                                    ),
-                        ).length;
-                        markup += descendants.markup.filter((node) =>
-                            node.classes.has(rule.secondary!),
-                        ).length;
-                    }
-                }
-                return { retained, markup, complete };
-            };
-
-            for (const rule of activeRules) {
-                if (
-                    rule.kind === "class-descendant-tag" ||
-                    rule.kind === "id-descendant-class"
-                ) {
-                    const matches = scopedMatches(rule);
-                    if (
-                        !matches.complete ||
-                        matches.retained + matches.markup === 0
-                    ) {
-                        const reason = !matches.complete
-                            ? "the ancestor has a dynamically-shaped retained subtree"
-                            : "no statically-known descendant matches it";
-                        if (rule.site) {
-                            this.context.fail(
-                                rule.site,
-                                `Retained stylesheet selector '${rule.selector}' cannot be projected: ${reason}.`,
-                            );
-                        }
-                        this.context.failAtFile(
-                            `Retained stylesheet selector '${rule.selector}' cannot be projected: ${reason}.`,
-                        );
-                    }
-                }
-            }
-
             const activeGridRules = activeRules.filter(
                 (rule) => rule.grid !== undefined,
             );
@@ -4357,6 +4589,10 @@ export class UiProjection {
 
     public emitUiPropertyAssignment(expression: ts.BinaryExpression): boolean {
         const globalLeft = this.context.unwrap(expression.left);
+        if (expression.operatorToken.kind !== ts.SyntaxKind.EqualsToken && ts.isPropertyAccessExpression(globalLeft) &&
+            (globalLeft.name.text === "textContent" || globalLeft.name.text === "innerText") &&
+            this.uiElementValue(globalLeft.expression))
+            this.context.fail(expression, "Compound retained text assignments require a represented text getter.");
         if (this.context.hasFeature("engine:device-recovery") && ts.isPropertyAccessExpression(globalLeft) &&
             ts.isIdentifier(this.context.unwrap(globalLeft.expression)) && this.context.unwrap(globalLeft.expression).getText() === "globalThis" &&
             expression.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
@@ -4389,6 +4625,11 @@ export class UiProjection {
         const directElement = this.uiElementValue(expression.left.expression);
         if (directElement) {
             const engine = this.context.requireEngine(directElement, expression.left);
+            const booleanAttribute = this.booleanAttribute(directElement, property, expression.left);
+            if (booleanAttribute) {
+                this.context.emit(`bbl::ui_set_boolean_attribute(${engine}, ${directElement.cpp}, ${this.context.cppString(booleanAttribute)}, ${this.context.compileBoolean(expression.right)});`);
+                return true;
+            }
             if (property === "value" && (directElement.uiTag === "textarea" || directElement.uiTag === "input") && !directElement.uiFileInput) {
                 this.context.emit(`bbl::ui_set_form_value(${engine}, ${directElement.cpp}, ${this.uiStringCpp(expression.right, "Form value")});`);
                 return true;
@@ -4502,11 +4743,14 @@ export class UiProjection {
                 }
             }
             if (property === "textContent" || property === "innerText") {
+                this.recordUiStaticReplaceChildren(directElement);
+                let textCpp: string;
                 if (
                     this.uiCreatedElementTag(expression.left.expression) ===
                     "style"
                 ) {
                     const sheet = this.context.compileStringLiteral(expression.right);
+                    textCpp = this.context.cppString(sheet);
                     this.context.emit(
                         `bbl::ui_clear_style_rules(${engine}, ${directElement.cpp});`,
                     );
@@ -4517,8 +4761,10 @@ export class UiProjection {
                     )) {
                         if (
                             (rule.kind === "class" || rule.kind === "id") &&
-                            !rule.hover &&
-                            rule.maxWidth === undefined
+                            !uiStyleRuleNeedsRuntimeMatch(rule) &&
+                            !rule.scrollbar &&
+                            !rule.pseudo &&
+                            !uiStyleRuleHasMedia(rule)
                         ) {
                             this.context.emit(
                                 `bbl::ui_add_${rule.kind}_style(${engine}, ` +
@@ -4535,18 +4781,26 @@ export class UiProjection {
                                     `${this.context.cppString(rule.tag ?? "")}, ` +
                                     `${rule.hover ? "true" : "false"}, ` +
                                     `${doubleLiteral(rule.maxWidth ?? -1)}, ` +
-                                    `${this.context.cppString(rule.style)});`,
+                                    `${this.context.cppString(rule.style)}` +
+                                    `, bbl::UiScrollbarPart::${uiScrollbarPartCpp(rule.scrollbar)}, ` +
+                                    `${rule.focusVisible ? "true" : "false"}, ${rule.active ? "true" : "false"}, ` +
+                                    `bbl::UiMotionPreference::${uiMotionPreferenceCpp(rule.reducedMotion)}` +
+                                    `${rule.sequence || rule.pseudo ? `, ${uiSelectorSequenceCpp(rule.sequence ?? [], value => this.context.cppString(value))}` : ""}` +
+                                    `${rule.pseudo ? `, bbl::UiGeneratedPart::${uiGeneratedPartCpp(rule.pseudo)}, ${uiGeneratedContentCpp(rule.content, value => this.context.cppString(value))}` : ""});`,
                             );
                         }
                     }
+                } else {
+                    textCpp = this.uiStringCpp(expression.right, `UI ${property}`);
                 }
                 this.context.emit(
                     `bbl::ui_set_text(${engine}, ${directElement.cpp}, ` +
-                        `${this.uiStringCpp(expression.right, `UI ${property}`)});`,
+                        `${textCpp});`,
                 );
                 return true;
             }
             if (property === "innerHTML") {
+                this.recordUiStaticReplaceChildren(directElement);
                 this.context.emit(
                     `bbl::ui_set_inner_rml(${engine}, ${directElement.cpp}, ` +
                         `${this.compileUiMarkupString(
@@ -4559,7 +4813,7 @@ export class UiProjection {
             const attribute =
                 property === "className"
                     ? "class"
-                    : property === "id" || property === "type"
+                    : property === "id" || property === "type" || property === "lang"
                       ? property
                       : undefined;
             if (attribute) {
@@ -4605,19 +4859,45 @@ export class UiProjection {
             );
             return true;
         }
+        this.emitUiStyleProperty(styleElement, property, expression.right, expression.left.name);
+        return true;
+    }
+
+    public emitUiStyleProperty(element: Value, property: string, valueExpression: ts.Expression, site: ts.Node): void {
         const nativeProperty = this.nativeUiStyleProperty(property);
-        this.auditUiStylePropertyName(nativeProperty, expression.left.name);
+        this.auditUiStylePropertyName(nativeProperty, site);
+        const {nativeBinding, ...receiver} = element;
+        const styleElement = this.context.pinValueToTemporary(receiver, "style_receiver");
+        const engine = this.context.requireEngine(styleElement, site);
+        if (["filter", "overflow-wrap", "word-break"].includes(nativeProperty) || isUiLayoutProperty(nativeProperty)) {
+            const value = this.tryUiStaticString(valueExpression);
+            if (value !== undefined && value !== "") this.auditUiStyleDeclarations(`${nativeProperty}:${value}`, valueExpression);
+        }
         this.recordUiStaticStyleProperty(
             styleElement,
             nativeProperty,
-            expression.right,
+            valueExpression,
         );
+        const styleValue = nativeProperty === "border-image"
+            ? this.context.cppString(this.lowerUiBorderImage(
+                this.context.compileStringLiteral(valueExpression), valueExpression))
+            : this.uiStringCpp(valueExpression, `UI style.${property}`);
         this.context.emit(
             `bbl::ui_set_style_property(${engine}, ${styleElement.cpp}, ` +
                 `${this.context.cppString(nativeProperty)}, ` +
-                `${this.uiStringCpp(expression.right, `UI style.${property}`)});`,
+                `${styleValue});`,
         );
-        return true;
+        for (const [name, value] of UiProjection.UI_SHORTHAND_RESETS.get(property) ?? []) {
+            this.context.emit(`bbl::ui_set_style_property(${engine}, ${styleElement.cpp}, ${this.context.cppString(name)}, ${this.context.cppString(value)});`);
+        }
+    }
+
+    public removeUiStyleProperty(element: Value, property: string, site: ts.Expression): Value {
+        const nativeProperty = this.nativeUiStyleProperty(property);
+        this.auditUiStylePropertyName(nativeProperty, site);
+        this.recordUiStaticStyleProperty(element, nativeProperty, site, "");
+        const engine = this.context.requireEngine(element, site);
+        return {kind:"string", cpp:`bbl::ui_remove_style_property(${engine}, ${element.cpp}, ${this.context.cppString(nativeProperty)})`};
     }
 
 
@@ -4702,8 +4982,8 @@ export class UiProjection {
 
 
     /**
-     * A host lookup becomes native only when its literal id is present in the
-     * audited companion, including explicitly represented canvas elements.
+     * A Window realm owns the whole retained document. Other entries require
+     * an id declared by their host companion, including represented canvases.
      */
     public isNativeHostUiLookup(call: ts.CallExpression): boolean {
         const callee = this.context.unwrap(call.expression);
@@ -4717,6 +4997,7 @@ export class UiProjection {
         ) {
             return false;
         }
+        if (this.context.options.workers) return true;
         const id = this.context.unwrap(argumentAt(call, 0));
         // A literal, or an inlined helper's parameter bound to one: a
         // demo's `bindToggle(buttonId, ...)` looks its button up by the
@@ -4802,11 +5083,20 @@ export class UiProjection {
         const emitted: string[] = [];
         const ids = new EmissionSet<string>();
         for (const rule of nativeHostUiStyleRules(hostUi)) {
+            if (rule.scrollbar !== undefined && !isUiScrollbarPart(rule.scrollbar)) {
+                this.context.failAtFile("Native host UI rule has an unsupported scrollbar part.");
+            }
+            if (rule.pseudo !== undefined && (!isUiGeneratedPart(rule.pseudo) || rule.scrollbar !== undefined))
+                this.context.failAtFile("Native host UI generated content requires a before/after target without a scrollbar part.");
+            const {style: declarations, content} = this.lowerUiRuleDeclarations(rule.style);
+            if (rule.pseudo) this.validateUiGeneratedStyle(declarations,rule.pseudo);
+            if (content && rule.pseudo !== "before" && rule.pseudo !== "after") this.context.failAtFile("Native host UI content lists require a before/after target.");
             if (UiProjection.fractionalUiGridTracks(rule.style)) {
                 this.context.failAtFile("Fractional host grids require inline tracks beside their complete child list.");
             }
             const identifier = /^[A-Za-z_][A-Za-z0-9_-]*$/;
-            if (!identifier.test(rule.primary)) {
+            const sequence = rule.kind === "sequence" ? parseUiSelectorSequence(rule.primary) : undefined;
+            if (rule.kind === "sequence" ? !sequence : !identifier.test(rule.primary)) {
                 this.context.failAtFile(
                     `Native host UI style target '${rule.primary}' is not valid.`,
                 );
@@ -4838,16 +5128,23 @@ export class UiProjection {
                     "Native host UI style maxWidth must be a positive finite number.",
                 );
             }
+            const selected = rule.pseudo ? UiProjection.parseUiSelector(uiStyleSelector(rule), declarations) : rule;
+            if (!selected) this.context.failAtFile("Native host UI pseudo-element has an unsupported originating selector.");
+            const selectedSequence = selected.sequence ?? sequence;
             emitted.push(
                 `${indent}bbl::ui_add_host_style_rule(${engine}, ` +
-                    `bbl::UiStyleSelectorKind::${descriptor.cpp}, ` +
-                    `${this.context.cppString(rule.primary)}, ` +
-                    `${this.context.cppString(rule.secondary ?? "")}, ` +
-                    `${this.context.cppString(rule.tag ?? "")}, ` +
-                    `${rule.hover ? "true" : "false"}, ` +
+                    `bbl::UiStyleSelectorKind::${uiStyleSelectorCppKind(selected.kind)}, ` +
+                    `${this.context.cppString(selected.primary)}, ` +
+                    `${this.context.cppString(selected.secondary ?? "")}, ` +
+                    `${this.context.cppString(selected.tag ?? "")}, ` +
+                    `${selected.hover ? "true" : "false"}, ` +
                     `${doubleLiteral(rule.maxWidth ?? -1)}, ` +
-                    `${this.context.cppString(this.lowerUiAttributeLiteral("style", rule.style))}` +
-                    `${rule.active ? `, ${rule.focusVisible ? "true" : "false"}, true` : rule.focusVisible ? ", true" : ""});`,
+                    `${this.context.cppString(declarations)}` +
+                    `, ${selected.focusVisible ? "true" : "false"}, ${selected.active ? "true" : "false"}, ` +
+                    `bbl::UiScrollbarPart::${uiScrollbarPartCpp(rule.scrollbar)}, ` +
+                    `bbl::UiMotionPreference::${uiMotionPreferenceCpp(rule.reducedMotion)}` +
+                    `${selectedSequence || rule.pseudo ? `, ${uiSelectorSequenceCpp(selectedSequence ?? [], value => this.context.cppString(value))}` : ""}` +
+                    `${rule.pseudo ? `, bbl::UiGeneratedPart::${uiGeneratedPartCpp(rule.pseudo)}, ${uiGeneratedContentCpp(content, value => this.context.cppString(value))}` : ""});`,
             );
         }
 

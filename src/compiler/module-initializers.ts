@@ -1,6 +1,8 @@
 import { EmissionSet, EmissionMap } from "./emission-transaction.js";
 import ts from "typescript";
-import { forEachAnalysisNode, someAnalysisNode } from "./analysis-walk.js";
+import { typeCanCarryReference } from "./type-facts.js";
+import { moduleImportKind } from "../module-imports.js";
+import { forEachAnalysisNode } from "./analysis-walk.js";
 import { writeReceiverMethods } from "./data-methods.js";
 import type { CompilerSymbols } from "./symbols.js";
 import {
@@ -199,16 +201,7 @@ class ModuleInitializerPlanner {
     ) {}
 
     public plan(): ts.SourceFile[] {
-        const projectModules = this.program
-            .getSourceFiles()
-            .filter(
-                (file) =>
-                    file !== this.sourceFile &&
-                    !file.isDeclarationFile &&
-                    !this.program.isSourceFileFromExternalLibrary(
-                        file,
-                    ),
-            );
+        const projectModules = this.runtimeModules().filter(file => file !== this.sourceFile);
         const stateByModule = new EmissionMap(
             projectModules.map((file) => [
                 file,
@@ -251,16 +244,9 @@ class ModuleInitializerPlanner {
         // dependencies. Materialize both the work and the owner of every
         // state symbol that work can mutate.
         const mutatedState = new EmissionSet<ts.Symbol>();
-        for (const symbol of observedState) {
-            if (
-                [...mutatingModules].some((file) =>
-                    this.moduleHasObservableInitializer(
-                        file,
-                        new EmissionSet([symbol]),
-                    ),
-                )
-            ) {
-                mutatedState.add(symbol);
+        for (const file of mutatingModules) {
+            for (const symbol of this.moduleInitializerMutations(file)) {
+                if (observedState.has(symbol)) mutatedState.add(symbol);
             }
         }
         return projectModules.filter(
@@ -271,6 +257,29 @@ class ModuleInitializerPlanner {
                     (symbol) => mutatedState.has(symbol),
                 ),
         );
+    }
+
+    private runtimeModuleCache: ts.SourceFile[] | undefined;
+
+    /** JavaScript evaluation order follows runtime edges, including re-exports. */
+    private runtimeModules(): ts.SourceFile[] {
+        if (this.runtimeModuleCache) return this.runtimeModuleCache;
+        const ordered: ts.SourceFile[] = [];
+        const visited = new Set<ts.SourceFile>();
+        const visit = (file: ts.SourceFile): void => {
+            if (visited.has(file) || file.isDeclarationFile || this.program.isSourceFileFromExternalLibrary(file)) return;
+            visited.add(file);
+            for (const statement of file.statements) {
+                if ((!ts.isImportDeclaration(statement) && !ts.isExportDeclaration(statement)) ||
+                    !statement.moduleSpecifier || moduleImportKind(statement) === "type") continue;
+                const symbol = this.checker.getSymbolAtLocation(statement.moduleSpecifier);
+                const dependency = symbol?.declarations?.find(ts.isSourceFile);
+                if (dependency) visit(dependency);
+            }
+            ordered.push(file);
+        };
+        visit(this.sourceFile);
+        return this.runtimeModuleCache = ordered;
     }
 
     /**
@@ -397,13 +406,7 @@ class ModuleInitializerPlanner {
     private mutatedContainerSymbols(): Set<ts.Symbol> {
         if (!this.mutatedContainerCache) {
             const mutated = new EmissionSet<ts.Symbol>();
-            for (const file of this.program.getSourceFiles()) {
-                if (
-                    file.isDeclarationFile ||
-                    this.program.isSourceFileFromExternalLibrary(file)
-                ) {
-                    continue;
-                }
+            for (const file of this.runtimeModules()) {
                 for (const symbol of collectMutatedContainerSymbols(
                     file,
                     this.symbols,
@@ -421,11 +424,23 @@ class ModuleInitializerPlanner {
         moduleState: ReadonlySet<ts.Symbol>,
     ): Set<ts.Symbol> {
         const observed = new EmissionSet<ts.Symbol>();
+        const projectFiles = new Set([this.sourceFile, ...projectModules]);
+        const visitedFunctions = new Set<ts.Node>();
         const visit = (root: ts.Node): void => forEachAnalysisNode(root, node => {
+            if (ts.isFunctionLike(node)) {
+                if (visitedFunctions.has(node)) return "skip";
+                visitedFunctions.add(node);
+            }
             if (ts.isIdentifier(node)) {
                 const symbol = this.symbols.valueSymbol(node);
                 if (symbol && moduleState.has(symbol)) {
                     observed.add(symbol);
+                }
+            }
+            if (ts.isCallExpression(node)) {
+                const called = this.calledFunction(node.expression);
+                if (called?.body && projectFiles.has(called.getSourceFile())) {
+                    visit(called);
                 }
             }
         });
@@ -464,7 +479,7 @@ class ModuleInitializerPlanner {
                     statement.body &&
                     isExported(statement.name)
                 ) {
-                    visit(statement.body);
+                    visit(statement);
                     continue;
                 }
                 if (
@@ -569,14 +584,11 @@ class ModuleInitializerPlanner {
         file: ts.SourceFile,
         moduleState: ReadonlySet<ts.Symbol>,
     ): boolean {
-        return (
-            moduleState.size > 0 &&
-            this.nodeMayMutateSymbols(
-                file,
-                moduleState,
-                new EmissionSet(),
-            )
-        );
+        if (moduleState.size === 0) return false;
+        for (const symbol of this.moduleInitializerMutations(file)) {
+            if (moduleState.has(symbol)) return true;
+        }
+        return false;
     }
 
     private calledFunction(
@@ -598,11 +610,13 @@ class ModuleInitializerPlanner {
         ) {
             return current;
         }
-        if (!ts.isIdentifier(current)) {
+        if (!ts.isIdentifier(current) && !ts.isPropertyAccessExpression(current)) {
             return undefined;
         }
+        const name = ts.isPropertyAccessExpression(current) ? current.name : current;
+        if (!ts.isIdentifier(name)) return undefined;
         const declaration = this.symbols
-            .valueSymbol(current)
+            .valueSymbol(name)
             ?.valueDeclaration;
         if (declaration && ts.isFunctionLike(declaration)) {
             return declaration as ts.FunctionLikeDeclaration;
@@ -615,110 +629,67 @@ class ModuleInitializerPlanner {
             : undefined;
     }
 
-    private nodeMayMutateSymbols(
-        node: ts.Node,
-        targets: ReadonlySet<ts.Symbol>,
-        activeFunctions: Set<ts.FunctionLikeDeclaration>,
-        aliases = new EmissionSet(targets),
-    ): boolean {
-        const targetsSymbol = (
-            expression: ts.Expression,
-        ): boolean => {
-            let current = expression;
-            while (true) {
-                if (ts.isIdentifier(current)) {
-                    const symbol = this.symbols.valueSymbol(
-                        current,
-                    );
-                    return (
-                        symbol !== undefined &&
-                        aliases.has(symbol)
-                    );
-                }
-                if (
-                    ts.isPropertyAccessExpression(current) ||
-                    ts.isElementAccessExpression(current)
-                ) {
-                    current = current.expression;
-                    continue;
-                }
-                if (
-                    ts.isParenthesizedExpression(current) ||
-                    ts.isAsExpression(current) ||
-                    ts.isTypeAssertionExpression(current) ||
-                    ts.isNonNullExpression(current) ||
-                    ts.isSatisfiesExpression(current)
-                ) {
-                    current = current.expression;
-                    continue;
-                }
-                return false;
-            }
+    private readonly initializerMutationCache = new Map<ts.SourceFile, ReadonlySet<ts.Symbol>>();
+
+    /** One target-independent walk, reused as the observed-state set grows.
+     * Alias origins are copied at the declaration, in the same preorder as
+     * the eager call walk. Function bodies are entered only through calls.
+     */
+    private moduleInitializerMutations(file: ts.SourceFile): ReadonlySet<ts.Symbol> {
+        const cached = this.initializerMutationCache.get(file);
+        if (cached) return cached;
+        const mutations = new Set<ts.Symbol>();
+        const aliases = new Map<ts.Symbol, Set<ts.Symbol>>();
+        const activeFunctions = new Set<ts.FunctionLikeDeclaration>();
+        const expressionSymbol = (expression: ts.Expression): ts.Symbol | undefined => {
+            const identifier = rootIdentifier(expression);
+            return identifier && this.symbols.valueSymbol(identifier);
         };
-        return someAnalysisNode(node, (current) => {
+        const record = (expression: ts.Expression, through = false): void => {
+            const symbol = expressionSymbol(expression);
+            if (!symbol || (through && !typeCanCarryReference(this.checker.getTypeAtLocation(expression)))) return;
+            mutations.add(symbol);
+            for (const origin of aliases.get(symbol) ?? []) mutations.add(origin);
+        };
+        const visit = (node: ts.Node): void => forEachAnalysisNode(node, (current) => {
             if (
                 ts.isVariableDeclaration(current) &&
                 ts.isIdentifier(current.name) &&
-                current.initializer &&
-                targetsSymbol(current.initializer)
+                current.initializer
             ) {
-                const alias = this.symbols.valueSymbol(
-                    current.name,
-                );
-                if (alias) {
-                    aliases.add(alias);
+                const origin = expressionSymbol(current.initializer);
+                const alias = this.symbols.valueSymbol(current.name);
+                if (origin && alias) {
+                    const origins = aliases.get(alias) ?? new Set<ts.Symbol>();
+                    origins.add(origin);
+                    for (const source of aliases.get(origin) ?? []) origins.add(source);
+                    aliases.set(alias, origins);
                 }
             }
-            if (
-                isAssignmentExpression(current) &&
-                targetsSymbol(current.left)
-            ) {
-                return true;
+            if (isAssignmentExpression(current)) {
+                record(current.left);
             }
-            if (
-                (ts.isPostfixUnaryExpression(current) ||
-                    ts.isPrefixUnaryExpression(current)) &&
-                targetsSymbol(current.operand)
-            ) {
-                return true;
+            if (ts.isPostfixUnaryExpression(current) || ts.isPrefixUnaryExpression(current)) {
+                record(current.operand);
             }
-            if (
-                ts.isDeleteExpression(current) &&
-                targetsSymbol(current.expression)
-            ) {
-                return true;
+            if (ts.isDeleteExpression(current)) {
+                record(current.expression);
             }
             if (ts.isCallExpression(current)) {
                 const callee = current.expression;
-                if (
-                    (ts.isPropertyAccessExpression(callee) ||
-                        ts.isElementAccessExpression(callee)) &&
-                    targetsSymbol(callee.expression)
-                ) {
-                    return true;
+                if (ts.isPropertyAccessExpression(callee) || ts.isElementAccessExpression(callee)) {
+                    record(callee.expression, true);
                 }
-                if (current.arguments.some(targetsSymbol)) {
-                    return true;
-                }
+                for (const argument of current.arguments) record(argument, true);
                 const called = this.calledFunction(callee);
-                if (
-                    called?.body &&
-                    !activeFunctions.has(called)
-                ) {
+                if (called?.body && !activeFunctions.has(called)) {
                     activeFunctions.add(called);
-                    if (
-                        this.nodeMayMutateSymbols(
-                            called.body,
-                            targets,
-                            activeFunctions,
-                            aliases,
-                        )
-                    ) {
-                        return true;
-                    }
+                    visit(called.body);
                 }
             }
-            return false;
         }, { functions: "skip" });
+        visit(file);
+        this.initializerMutationCache.set(file, mutations);
+        return mutations;
     }
 }

@@ -128,12 +128,15 @@ interface CliOptions {
     width?: number;
     height?: number;
     search?: string;
+    publicDir?: string;
+    siteUrl?: string;
+    environment: Record<string, string>;
     hostUi?: string;
     idDiagnostics: boolean;
 }
 
 function usage(): never {
-    console.error("Usage: bblitec <entry.ts> --out <directory> [--title <text>] [--width <pixels>] [--height <pixels>] [--search <query>] [--host-ui <json>] [--id-diagnostics]");
+    console.error("Usage: bblitec <entry.ts> --out <directory> [--title <text>] [--width <pixels>] [--height <pixels>] [--search <query>] [--public-dir <directory>] [--site-url <url>] [--env <NAME=value>] [--host-ui <json>] [--id-diagnostics]");
     process.exit(2);
 }
 
@@ -156,6 +159,9 @@ function parseArguments(arguments_: string[]): CliOptions {
     let width: number | undefined;
     let height: number | undefined;
     let search: string | undefined;
+    let publicDir: string | undefined;
+    let siteUrl: string | undefined;
+    const environment = new Map<string, string>();
     let hostUi: string | undefined;
     let idDiagnostics = false;
 
@@ -191,6 +197,23 @@ function parseArguments(arguments_: string[]): CliOptions {
                 hostUi = value;
                 index += 1;
                 break;
+            case "--public-dir":
+                if (!value) usage();
+                publicDir = value;
+                index += 1;
+                break;
+            case "--site-url":
+                if (!value) usage();
+                siteUrl = value;
+                index += 1;
+                break;
+            case "--env": {
+                const equals = value?.indexOf("=") ?? -1;
+                if (!value || equals <= 0) throw new Error("--env expects NAME=value.");
+                environment.set(value.slice(0, equals), value.slice(equals + 1));
+                index += 1;
+                break;
+            }
             case "--id-diagnostics":
                 idDiagnostics = true;
                 break;
@@ -207,10 +230,13 @@ function parseArguments(arguments_: string[]): CliOptions {
         input,
         output,
         idDiagnostics,
+        environment: Object.fromEntries(environment),
         ...(title ? { title } : {}),
         ...(width ? { width } : {}),
         ...(height ? { height } : {}),
         ...(search ? { search } : {}),
+        ...(publicDir ? { publicDir } : {}),
+        ...(siteUrl ? { siteUrl } : {}),
         ...(hostUi ? { hostUi } : {}),
     };
 }
@@ -603,10 +629,13 @@ async function main(): Promise<void> {
     const source = readFileSync(inputPath, "utf8");
     const result = compileSource(source, {
         fileName: inputPath,
+        environment: options.environment,
         ...(options.title ? { title: options.title } : {}),
         ...(options.width ? { width: options.width } : {}),
         ...(options.height ? { height: options.height } : {}),
         ...(options.search ? { search: options.search } : {}),
+        ...(options.publicDir ? { publicDir: options.publicDir } : {}),
+        ...(options.siteUrl ? { siteUrl: options.siteUrl } : {}),
         ...(options.hostUi
             ? { nativeHostUi: readNativeHostUi(options.hostUi) }
             : {}),

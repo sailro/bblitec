@@ -11,6 +11,7 @@ const nodeParticleMetadataFields = [
 
 /** Metadata admitted by each value family; native data retains transported fields. */
 const resourceMetadataFields = {
+    "regexp": ["regexpCaptureCount"],
     "static-fetch-response": ["packagedSources", "staticJson"],
     "environment-textures": ["environmentAsset"],
     "pbr-local-probe-set": ["localCubemap"],
@@ -29,6 +30,8 @@ const resourceMetadataFields = {
         "msaaSamples",
     ],
     "callback": [
+        "intrinsicName",
+        "hostFunction",
         "callbackDeclaration",
         "nativeCallbackParameterTypes",
         "nativeCallbackStaticArguments",
@@ -51,6 +54,8 @@ const resourceMetadataFields = {
         "sharedRecordContainer",
         "retainedNativeRecord",
         "recordProperties",
+        "recordOwnKeys",
+        "moduleNamespace",
         "staticJson",
     ],
     "axis-drag-gizmo": ["recordProperties"],

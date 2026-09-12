@@ -140,8 +140,8 @@ $CMake = Find-CMake $CMake
 
 # The maintained patches are the files under native/patches, and the pin
 # names the same set: a patch added to one place and not the other is a
-# refusal here, not a silently different library. They touch disjoint
-# files, so name order is application order.
+# refusal here, not a silently different library. Name order is application
+# order; background clipping extends the earlier box-model patch.
 $patchDirectory = Join-Path $root "native\patches"
 $patches = @(Get-ChildItem $patchDirectory -Filter "rmlui-*.patch" -File | Sort-Object Name)
 if ($patches.Count -eq 0) {

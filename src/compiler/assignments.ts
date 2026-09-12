@@ -478,6 +478,7 @@ export interface AssignmentContext
         | "isRuntimeResourceConstruction"
         | "checker"
         | "dataTypes"
+        | "dataLowerer"
         | "recordSceneMeshMaterial"
         | "recordUnknownSceneMeshMaterial"
         | "recordUnknownStandardMeshMaterial"
@@ -1128,7 +1129,7 @@ export function emitPropertyAssignment(
       );
     }
     context.emit(
-      `${regexpOwner.cpp}.last_index = ${context.compileNumber(expression.right, "double")};`,
+      `${regexpOwner.cpp}.last_index() = ${context.compileNumber(expression.right, "double")};`,
     );
     return;
   }
@@ -1150,10 +1151,14 @@ export function emitPropertyAssignment(
   }
   // The same distinction applies to a nullable Web Audio handle stored in
   // a lowered class. Its declaration already created optional native
-  // storage, so an assignment to `this.context` or `this.node` must fill
+  // storage, so an assignment through this or a named instance must fill
   // that storage before browser erasure considers the field's DOM type.
-  if (operator === "=" && left.expression.kind === ts.SyntaxKind.ThisKeyword) {
-    const existing = context.resolveThisField(left.name.text);
+  if (operator === "=") {
+    const existing = left.expression.kind === ts.SyntaxKind.ThisKeyword
+      ? context.resolveThisField(left.name.text)
+      : ts.isIdentifier(left.expression)
+        ? context.lookupOptional(left.expression)?.recordProperties?.[left.name.text]
+        : undefined;
     if (
       existing &&
       context.emitOptionalResourceAssignment(expression, existing)
@@ -1167,7 +1172,8 @@ export function emitPropertyAssignment(
     // would have to change a field no instance stores, and every reader
     // would keep naming the proven value. It falls through to the rebind
     // refusal instead of disappearing.
-    const hoisted = existing?.classHoistedAssignment;
+    const hoisted = left.expression.kind === ts.SyntaxKind.ThisKeyword
+      ? existing?.classHoistedAssignment : undefined;
     if (hoisted) {
       if (hoisted === expression) {
         return;
@@ -1220,6 +1226,7 @@ export function emitPropertyAssignment(
   if (operator === "=") {
     const owner = context.resolveRecordValue(left.expression);
     if (owner) {
+      if (owner.moduleNamespace) context.fail(expression, "Module namespace properties are read-only.");
       const setter = owner.recordSetters?.[left.name.text];
       if (setter) {
         context.compileRecordSetter(owner, setter, expression.right);
@@ -1231,6 +1238,11 @@ export function emitPropertyAssignment(
       // it again in the actual assignment path.
       const right = context.unwrap(expression.right);
       const existing = owner.recordProperties?.[left.name.text];
+      if (existing?.nativeLvalue && existing.dataType?.kind === "function") {
+        context.emit(`${existing.cpp} = ${context.dataLowerer.compileForSink(expression.right, existing.dataType)};`);
+        return;
+      }
+      const existingMethod = owner.recordMethods?.[left.name.text];
       let assigned = ts.isObjectLiteralExpression(right)
         ? context.compileValue(right)
         : context.resolveRecordValue(right);
@@ -1276,7 +1288,7 @@ export function emitPropertyAssignment(
       }
       if (
         !assigned &&
-        existing?.kind === "json-null" &&
+        (existing?.kind === "json-null" || existing?.kind === "callback" || existingMethod) &&
         (          ts.isCallExpression(right) ||
           ts.isArrowFunction(right) ||
           ts.isFunctionExpression(right) ||
@@ -1301,9 +1313,11 @@ export function emitPropertyAssignment(
             (assigned.dataType?.kind === "optional" &&
               assigned.dataType.inner.kind === "function")))
       ) {
-        owner.recordProperties ??= {};
-        owner.recordProperties[left.name.text] = assigned;
-        return;
+        if (existingMethod || existing?.kind === "callback") context.fail(left,
+          "Replacing a record callback requires a native function slot on a locally bound record.");
+          owner.recordProperties ??= {};
+          owner.recordProperties[left.name.text] = assigned;
+          return;
       }
     }
   }

@@ -11,6 +11,7 @@ import test from "node:test";
 
 import { CompileError, compileSource } from "../src/compiler.js";
 import {
+    cppFunction,
     nativeFixtureVcpkgRoot,
     optionalNativeFixtureTools,
     runNativeFixtureCompiler,
@@ -270,10 +271,11 @@ test("lowers the complete map export/import browser source shape", () => {
         "input_files",
         "file_text",
         "json_parse",
-        "array_from_iterable",
+        "serializeWorld",
     ]) {
         assert.match(result.cpp, new RegExp(symbol));
     }
+    assert.match(result.cpp, /World\{1\.0, v_\w*parts\}/);
 });
 
 test("refuses multiple, directories, and unsupported accept syntax", () => {
@@ -413,13 +415,13 @@ test("browser file ownership stays generic and PAL-isolated", () => {
         "programmatic and projected clicks dispatch listeners before the default action",
     );
     assert.match(
-        ui,
-        /void ui_remove\([\s\S]{0,300}release_browser_file_subtree\(engine, element\)/,
+        cppFunction(ui, "void ui_remove("),
+        /release_browser_file_subtree\(engine, element\)/,
         "element removal releases its browser-file ownership",
     );
     assert.match(
-        ui,
-        /void ui_replace_children\([\s\S]{0,300}release_browser_file_subtree\(engine, child\)/,
+        cppFunction(ui, "void ui_replace_children("),
+        /release_browser_file_subtree\(engine, child\)/,
         "subtree removal releases descendant browser-file ownership",
     );
     assert.match(ui, /event_type == "click"[\s\S]{0,80}ui_click\(engine, element\)/);

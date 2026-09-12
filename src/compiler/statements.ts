@@ -75,6 +75,7 @@ export interface StatementLoweringContext
         | "trackResourceLoopEarlyReturn"
         | "isRuntimeResourceConstruction"
         | "emitNativeReturn"
+        | "emitNativeThrow"
         | "meshTransformDirtyEntry"
         | "captureEmittedLines"
         | "canShareFunctionBody"
@@ -458,6 +459,7 @@ export class StatementLowerer {
         context: StatementLoweringContext,
         statement: ts.Statement,
     ): void {
+        if (ts.canHaveModifiers(statement) && ts.getModifiers(statement)?.some(modifier => modifier.kind === ts.SyntaxKind.DeclareKeyword)) return;
         if (context.isFoldedFlattenLoop(statement)) {
             // The declaration above it already answered with the
             // container's flattened meshes; the loop that filled the list
@@ -1466,12 +1468,13 @@ export class StatementLowerer {
             context.fail(thrown, "A thrown Error message must be a string.");
         }
         context.reachThrow();
-        context.emit(
-            `throw std::runtime_error(${
+        context.emitNativeThrow(
+            `std::runtime_error(${
                 value.staticString !== undefined
                     ? context.cppString(value.staticString)
                     : value.cpp
-            });`,
+            })`,
+            statement,
         );
     }
 
@@ -2434,6 +2437,7 @@ export class StatementLowerer {
         if (!elements) {
             return false;
         }
+        if (elements.length === 0) return true;
         if (this.preferNativeDataIteration(context, statement, elements.length) &&
             elements.every((value) => this.plainIterationData(context, value)) &&
             context.emitNativeDataIteration(statement, () =>
@@ -2760,12 +2764,20 @@ export class StatementLowerer {
             context.emit("}");
             return true;
         }
-        context.emit(
-            `for (auto&& ${item} : ${target.container.cpp}) {`,
-        );
-        context.increaseIndent();
+        const storedIterator = target.container.dataType?.kind === "iterator";
+        if (storedIterator) {
+            const source = context.allocateTemporaryCppName("iterator_source");
+            const value = context.allocateTemporaryCppName("iterator_value");
+            context.emit(`const auto ${source} = ${target.container.cpp};`);
+            context.emit(`while (auto ${value} = ${source}.next().value) {`);
+            context.increaseIndent();
+            context.emit(`[[maybe_unused]] auto&& ${item} = *${value};`);
+        } else {
+            context.emit(`for (auto&& ${item} : ${target.container.cpp}) {`);
+            context.increaseIndent();
+        }
         for (const line of lines) context.emit(line);
-        context.emit(`static_cast<void>(${item});`);
+        if (!storedIterator) context.emit(`static_cast<void>(${item});`);
         context.decreaseIndent();
         context.emit("}");
         return true;
@@ -3010,7 +3022,8 @@ export class StatementLowerer {
                     context.unwrap(unwrapped.right),
                 )
             ) {
-                this.emitTupleResourceAssignment(context, unwrapped);
+                if (!context.dataLowerer.emitArrayDestructuringAssignment(unwrapped))
+                    this.emitTupleResourceAssignment(context, unwrapped);
             } else {
                 context.emitAssignment(unwrapped);
             }
@@ -3190,10 +3203,9 @@ export class StatementLowerer {
                 return;
             }
         }
-        context.fail(
-            unwrapped,
-            `Unsupported expression statement: ${ts.SyntaxKind[unwrapped.kind]}.`,
-        );
+        // Any supported value expression can be evaluated for effects alone,
+        // including the value of a return in a contextually void function.
+        context.emitDiscardedValue(context.compileValue(unwrapped));
     }
 
     /** Assigns a tuple result to definite-assignment resource bindings. */

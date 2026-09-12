@@ -694,11 +694,11 @@ test("stylesheet revisions track rules, text and attachment order independently 
         "UiElementRecord& ui_element(", "void mark_ui_changed(Engine& engine)",
         "void mark_ui_changed(Engine& engine,", "void ui_set_text(", "void ui_set_inner_rml(",
         "void ui_clear_style_rules(", "void ui_add_style_rule(", "void ui_add_host_style_rule(",
-        "UiElementHandle ui_append_to_root(", "void ui_replace_children(", "void ui_remove(",
+        "UiElementHandle ui_append_child(", "UiElementHandle ui_append_to_root(", "void ui_replace_children(", "void ui_remove(",
     ].map((signature) => cppFunction(source, signature)).join("\n");
     runCpp("style-revision", `
         #define BBLITE_HAS_UI 1
-        #include <bblite/runtime.hpp>
+        #include <bblite/pal_ui.hpp>
         #include <cassert>
         namespace bbl { ${functions} }
         int main() {
@@ -723,19 +723,22 @@ test("stylesheet revisions track rules, text and attachment order independently 
             assert(engine.ui_style_revision == 5);
             ui_append_to_root(engine, first);
             assert(engine.ui_style_revision == 5);
-            ui_add_style_rule(engine, first, UiStyleSelectorKind::Class, "item", "", "", false, -1, "color:red;");
+            ui_add_style_rule(engine, first, UiStyleSelectorKind::Class, "item", "", "", false, -1, "color:red;", UiScrollbarPart::None);
             assert(engine.ui_style_revision == 6);
             ui_clear_style_rules(engine, first);
             ui_clear_style_rules(engine, first);
             assert(engine.ui_style_revision == 7);
             ui_set_text(engine, first, "@keyframes pulse{}");
+            const auto before_replace = engine.ui_style_revision;
             ui_replace_children(engine, first);
-            assert(engine.ui_style_revision == 9);
+            assert(engine.ui_style_revision > before_replace);
             ui_remove(engine, first);
+            const auto after_remove = engine.ui_style_revision;
+            assert(after_remove > before_replace);
             ui_remove(engine, first);
-            assert(engine.ui_style_revision == 10);
-            ui_add_host_style_rule(engine, UiStyleSelectorKind::Class, "item", "", "", false, -1, "color:blue;", false, false);
-            assert(engine.ui_style_revision == 11);
+            assert(engine.ui_style_revision == after_remove);
+            ui_add_host_style_rule(engine, UiStyleSelectorKind::Class, "item", "", "", false, -1, "color:blue;", false, false, UiScrollbarPart::None);
+            assert(engine.ui_style_revision == after_remove + 1);
         }
     `);
 });

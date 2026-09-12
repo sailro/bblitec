@@ -5,8 +5,8 @@ import type { Value } from "../types.js";
 
 import type { DataSinkHost, DataSinkOperations } from "./contracts.js";
 
-function expressionOptional(dataType: DataType<"optional">, lowerer: DataSinkHost, _expression: ts.Expression, unwrapped: ts.Expression): string {
-    return lowerer.compileOptionalSink(unwrapped, dataType);
+function expressionOptional(dataType: DataType<"optional">, lowerer: DataSinkHost, expression: ts.Expression, _unwrapped: ts.Expression): string {
+    return lowerer.compileOptionalSink(expression, dataType);
 }
 
 function expressionVector(dataType: DataType<"vector">, lowerer: DataSinkHost, _expression: ts.Expression, unwrapped: ts.Expression): string {
@@ -43,8 +43,23 @@ function expressionSpanOrTupleOrTable(dataType: DataType<"span" | "tuple" | "tab
 }
 
 function valueOptional(dataType: DataType<"optional">, lowerer: DataSinkHost, value: Value, node: ts.Node): string | undefined {
+    if (value.kind === "void") {
+        lowerer.context.emitDiscardedValue(value);
+        return "std::nullopt";
+    }
     if (value.kind === "json-null") {
         return "std::nullopt";
+    }
+    if (value.dataType?.kind === "optional") {
+        const sourceType = value.dataType.inner;
+        const source = lowerer.context.allocateTemporaryCppName("optional_source");
+        let converted = "";
+        const lines = lowerer.context.captureEmittedLines(() => {
+            converted = lowerer.compileKnownValueForSink(lowerer.leafValue(`(*${source})`, sourceType), dataType.inner, node);
+        });
+        return `([&]() -> ${lowerer.context.dataTypes.cppType(dataType)} { ` +
+            `const auto ${source} = (${value.cpp}).to_optional(); if (!${source}) return std::nullopt; ` +
+            `${lines.join("\n")} return ${converted}; }())`;
     }
     return lowerer.compileKnownValueForSink(value, dataType.inner, node);
 }
@@ -166,7 +181,25 @@ function valueTuple(dataType: DataType<"tuple">, lowerer: DataSinkHost, value: V
     return undefined;
 }
 
-export const containersSinks: DataSinkOperations<"optional" | "vector" | "map" | "set" | "span" | "tuple" | "table"> = {
+function valueProduct(dataType: DataType<"product">, lowerer: DataSinkHost, value: Value, node: ts.Node): string | undefined {
+    if (value.kind === "tuple" && value.tupleElements?.length === dataType.elements.length) {
+        lowerer.context.reachJsData();
+        return `${lowerer.context.dataTypes.cppType(dataType)}{${value.tupleElements.map((entry, index) =>
+            lowerer.compileKnownValueForSink(entry, dataType.elements[index]!, node)).join(", ")}}`;
+    }
+    return value.dataType && dataTypesEqual(value.dataType, dataType) ? value.cpp : undefined;
+}
+
+export const containersSinks: DataSinkOperations<"optional" | "vector" | "map" | "set" | "iterator" | "span" | "tuple" | "product" | "table"> = {
+    "iterator": {
+        expression: (type, lowerer, _expression, unwrapped) => lowerer.requireDataValue(unwrapped, type).cpp,
+        value: (type, _lowerer, value) => value.dataType && dataTypesEqual(type, value.dataType) ? value.cpp : undefined,
+    },
+    "product": {
+        expression: (type, lowerer, _expression, unwrapped) =>
+            lowerer.compileKnownValueForSink(lowerer.context.compileValue(unwrapped), type, unwrapped),
+        value: valueProduct,
+    },
     "optional": { expression: expressionOptional, value: valueOptional },
     "vector": { expression: expressionVector, value: valueVector },
     "map": { expression: expressionMapOrSet, value: valueMap },

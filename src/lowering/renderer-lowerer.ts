@@ -1662,7 +1662,7 @@ RenderItem bind_render_item(
         if (standard_color_alpha_features(
                 material.no_color || material.esm_shadow,
                 mesh.has_vertex_alpha, has_vertex_color,
-                !mesh.instance_colors.empty()) != 0u) {
+                has_instance_colors(mesh)) != 0u) {
             item.bucket = RenderBucket::alpha_blend;
         }
     }` : ""}

@@ -1,0 +1,161 @@
+diff --git a/Include/RmlUi/Core/PropertySpecification.h b/Include/RmlUi/Core/PropertySpecification.h
+index f15d2f80..4ca3a06f 100644
+--- a/Include/RmlUi/Core/PropertySpecification.h
++++ b/Include/RmlUi/Core/PropertySpecification.h
+@@ -27,7 +27,9 @@ enum class ShorthandType {
+ 	// Comma-separated list of properties or shorthands, the number of declared values must match the specified.
+ 	RecursiveCommaSeparated,
+ 	// The 'flex' shorthand has some special behavior but otherwise acts like 'FallThrough'.
+-	Flex
++	Flex,
++	// Unordered longhands, resetting omitted components to their defaults.
++	Unordered
+ };
+ 
+ /**
+diff --git a/Include/RmlUi/Core/StyleTypes.h b/Include/RmlUi/Core/StyleTypes.h
+index fca46604..fd22f6bb 100644
+--- a/Include/RmlUi/Core/StyleTypes.h
++++ b/Include/RmlUi/Core/StyleTypes.h
+@@ -124,13 +124,13 @@ namespace Style {
+ 	enum class OriginX : uint8_t { Left, Center, Right };
+ 	enum class OriginY : uint8_t { Top, Center, Bottom };
+ 
+-	enum class AlignContent : uint8_t { FlexStart, FlexEnd, Center, SpaceBetween, SpaceAround, SpaceEvenly, Stretch };
+-	enum class AlignItems : uint8_t { FlexStart, FlexEnd, Center, Baseline, Stretch };
+-	enum class AlignSelf : uint8_t { Auto, FlexStart, FlexEnd, Center, Baseline, Stretch };
++	enum class AlignContent : uint8_t { FlexStart, FlexEnd, Center, SpaceBetween, SpaceAround, SpaceEvenly, Stretch, Start, End };
++	enum class AlignItems : uint8_t { FlexStart, FlexEnd, Center, Baseline, Stretch, Start, End };
++	enum class AlignSelf : uint8_t { Auto, FlexStart, FlexEnd, Center, Baseline, Stretch, Start, End };
+ 	using FlexBasis = LengthPercentageAuto;
+ 	enum class FlexDirection : uint8_t { Row, RowReverse, Column, ColumnReverse };
+ 	enum class FlexWrap : uint8_t { Nowrap, Wrap, WrapReverse };
+-	enum class JustifyContent : uint8_t { FlexStart, FlexEnd, Center, SpaceBetween, SpaceAround, SpaceEvenly };
++	enum class JustifyContent : uint8_t { FlexStart, FlexEnd, Center, SpaceBetween, SpaceAround, SpaceEvenly, Start, End };
+ 
+ 	enum class Nav : uint8_t { None, Auto, Horizontal, Vertical, TreeOrder };
+ 
+diff --git a/Source/Core/Layout/FlexFormattingContext.cpp b/Source/Core/Layout/FlexFormattingContext.cpp
+index 68ec692a..fef4eda9 100644
+--- a/Source/Core/Layout/FlexFormattingContext.cpp
++++ b/Source/Core/Layout/FlexFormattingContext.cpp
+@@ -595,6 +595,13 @@ void FlexFormattingContext::Format(Vector2f& flex_resulting_content_size, Vector
+ 					//-fallthrough
+ 				case JustifyContent::FlexStart: line.items.back().main_auto_margin_size_b = remaining_free_space; break;
+ 				case JustifyContent::FlexEnd: line.items.front().main_auto_margin_size_a = remaining_free_space; break;
++				case JustifyContent::Start:
++				case JustifyContent::End:
++					if ((computed_flex.justify_content() == JustifyContent::Start) == direction_reverse)
++						line.items.front().main_auto_margin_size_a = remaining_free_space;
++					else
++						line.items.back().main_auto_margin_size_b = remaining_free_space;
++					break;
+ 				case JustifyContent::Center:
+ 					line.items.front().main_auto_margin_size_a = 0.5f * remaining_free_space;
+ 					line.items.back().main_auto_margin_size_b = 0.5f * remaining_free_space;
+@@ -805,6 +812,8 @@ void FlexFormattingContext::Format(Vector2f& flex_resulting_content_size, Vector
+ 					// Do nothing, cross offset set above with this behavior.
+ 					break;
+ 				case AlignSelf::FlexEnd: item.cross_offset = item.cross.margin_a + remaining_space; break;
++				case AlignSelf::Start: item.cross_offset = item.cross.margin_a + (wrap_reverse ? remaining_space : 0.f); break;
++				case AlignSelf::End: item.cross_offset = item.cross.margin_a + (wrap_reverse ? 0.f : remaining_space); break;
+ 				case AlignSelf::Center: item.cross_offset = item.cross.margin_a + 0.5f * remaining_space; break;
+ 				case AlignSelf::Baseline:
+ 				{
+@@ -888,6 +897,13 @@ void FlexFormattingContext::Format(Vector2f& flex_resulting_content_size, Vector
+ 				//-fallthrough
+ 			case AlignContent::FlexStart: container.lines.back().cross_spacing_b = remaining_free_space; break;
+ 			case AlignContent::FlexEnd: container.lines.front().cross_spacing_a = remaining_free_space; break;
++			case AlignContent::Start:
++			case AlignContent::End:
++				if ((computed_flex.align_content() == AlignContent::Start) == wrap_reverse)
++					container.lines.front().cross_spacing_a = remaining_free_space;
++				else
++					container.lines.back().cross_spacing_b = remaining_free_space;
++				break;
+ 			case AlignContent::Center:
+ 				container.lines.front().cross_spacing_a = 0.5f * remaining_free_space;
+ 				container.lines.back().cross_spacing_b = 0.5f * remaining_free_space;
+diff --git a/Source/Core/PropertySpecification.cpp b/Source/Core/PropertySpecification.cpp
+index c0f8bbe1..8340213a 100644
+--- a/Source/Core/PropertySpecification.cpp
++++ b/Source/Core/PropertySpecification.cpp
+@@ -307,19 +307,45 @@ bool PropertySpecification::ParseShorthandDeclaration(PropertyDictionary& dictio
+ 	}
+ 	RMLUI_ASSERT(!property_values.empty());
+ 
++	if (shorthand_definition->type == ShorthandType::Unordered)
++	{
++		const auto& items = shorthand_definition->items;
++		Vector<Property> parsed(items.size());
++		for (const String& token : property_values)
++		{
++			bool accepted = false;
++			for (size_t i = 0; i < items.size(); i++)
++			{
++				if (parsed[i].unit == Unit::UNKNOWN && items[i].property_definition->ParseValue(parsed[i], token))
++				{
++					accepted = true;
++					break;
++				}
++			}
++			if (!accepted) return false;
++		}
++		for (size_t i = 0; i < items.size(); i++)
++		{
++			const auto& item = items[i];
++			dictionary.SetProperty(item.property_id, parsed[i].unit != Unit::UNKNOWN ? parsed[i] : *item.property_definition->GetDefaultValue());
++		}
++		return true;
++	}
++
+ 	// Handle the special behavior of the flex shorthand first, otherwise it acts like 'FallThrough'.
+ 	if (shorthand_definition->type == ShorthandType::Flex && !property_values.empty())
+ 	{
+ 		RMLUI_ASSERT(shorthand_definition->items.size() == 3);
+-		if (property_values[0] == "none")
++		if (property_values[0] == "none" || property_values[0] == "initial")
+ 		{
+-			property_values = {"0", "0", "auto"};
++			if (property_values.size() != 1) return false;
++			property_values = {"0", property_values[0] == "none" ? "0" : "1", "auto"};
+ 		}
+ 		else
+ 		{
+ 			// Default values when omitted from the 'flex' shorthand is specified here. These defaults are special
+ 			// for this shorthand only, otherwise each underlying property has a different default value.
+-			const char* default_omitted_values[] = {"1", "1", "0"}; // flex-grow, flex-shrink, flex-basis
++			const char* default_omitted_values[] = {"1", "1", "0%"}; // Browser-compatible omitted basis.
+ 			Property new_property;
+ 			bool result = true;
+ 			for (int i = 0; i < 3; i++)
+diff --git a/Source/Core/StyleSheetSpecification.cpp b/Source/Core/StyleSheetSpecification.cpp
+index e17b3116..508b50bf 100644
+--- a/Source/Core/StyleSheetSpecification.cpp
++++ b/Source/Core/StyleSheetSpecification.cpp
+@@ -418,9 +418,9 @@ void StyleSheetSpecification::RegisterDefaultProperties()
+ 	RegisterProperty(PropertyId::FillImage, "fill-image", "", false, false).AddParser("string");
+ 
+ 	// Flexbox
+-	RegisterProperty(PropertyId::AlignContent, "align-content", "stretch", false, true).AddParser("keyword", "flex-start, flex-end, center, space-between, space-around, space-evenly, stretch");
+-	RegisterProperty(PropertyId::AlignItems, "align-items", "stretch", false, true).AddParser("keyword", "flex-start, flex-end, center, baseline, stretch");
+-	RegisterProperty(PropertyId::AlignSelf, "align-self", "auto", false, true).AddParser("keyword", "auto, flex-start, flex-end, center, baseline, stretch");
++	RegisterProperty(PropertyId::AlignContent, "align-content", "stretch", false, true).AddParser("keyword", "flex-start, flex-end, center, space-between, space-around, space-evenly, stretch, start, end");
++	RegisterProperty(PropertyId::AlignItems, "align-items", "stretch", false, true).AddParser("keyword", "flex-start, flex-end, center, baseline, stretch, start, end");
++	RegisterProperty(PropertyId::AlignSelf, "align-self", "auto", false, true).AddParser("keyword", "auto, flex-start, flex-end, center, baseline, stretch, start, end");
+ 
+ 	RegisterProperty(PropertyId::FlexBasis, "flex-basis", "auto", false, true).AddParser("keyword", "auto").AddParser("length_percent");
+ 	RegisterProperty(PropertyId::FlexDirection, "flex-direction", "row", false, true).AddParser("keyword", "row, row-reverse, column, column-reverse");
+@@ -428,10 +428,10 @@ void StyleSheetSpecification::RegisterDefaultProperties()
+ 	RegisterProperty(PropertyId::FlexGrow, "flex-grow", "0", false, true).AddParser("number");
+ 	RegisterProperty(PropertyId::FlexShrink, "flex-shrink", "1", false, true).AddParser("number");
+ 	RegisterProperty(PropertyId::FlexWrap, "flex-wrap", "nowrap", false, true).AddParser("keyword", "nowrap, wrap, wrap-reverse");
+-	RegisterProperty(PropertyId::JustifyContent, "justify-content", "flex-start", false, true).AddParser("keyword", "flex-start, flex-end, center, space-between, space-around, space-evenly");
++	RegisterProperty(PropertyId::JustifyContent, "justify-content", "flex-start", false, true).AddParser("keyword", "flex-start, flex-end, center, space-between, space-around, space-evenly, start, end");
+ 
+ 	RegisterShorthand(ShorthandId::Flex, "flex", "flex-grow, flex-shrink, flex-basis", ShorthandType::Flex);
+-	RegisterShorthand(ShorthandId::FlexFlow, "flex-flow", "flex-direction, flex-wrap", ShorthandType::FallThrough);
++	RegisterShorthand(ShorthandId::FlexFlow, "flex-flow", "flex-direction, flex-wrap", ShorthandType::Unordered);
+ 
+ 	// Internationalization properties (internal)
+ 	RegisterProperty(PropertyId::RmlUi_Language, "-rmlui-language", "", true, true).AddParser("string");

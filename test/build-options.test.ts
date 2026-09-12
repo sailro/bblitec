@@ -63,7 +63,7 @@ test("the repository manifest automatically feeds the full dev set", () => {
         developmentVcpkgFeatures(
             readFileSync("native/vcpkg.json", "utf8"),
         ),
-        ["jpeg", "navigation", "navigation-crowd", "navigation-tile-cache", "physics", "png", "text-layout", "ui", "ui-svg", "webp"],
+        ["http", "jpeg", "locale", "navigation", "navigation-crowd", "navigation-tile-cache", "physics", "png", "text-layout", "ui", "ui-svg", "webp"],
     );
 });
 
@@ -143,7 +143,7 @@ test("normalizes retained CSS cascade keywords and measures width resets", () =>
         projection.indexOf("std::string take_css_declaration"),
         projection.indexOf("bool is_private_ui_declaration"),
     );
-    assert.match(declarations, /ascii_iequals/);
+    assert.match(declarations, /css_property_name_equals/);
     assert.match(
         declarations,
         /result = std::string\(\s*trim_css_token/,

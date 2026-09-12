@@ -1,6 +1,7 @@
 #pragma once
 
 #include <bblite/js_callback.hpp>
+#include <bblite/dom_event_state.hpp>
 
 // Plain-data JavaScript runtime support for compiled scene logic: dynamic
 // arrays, nullable objects, readonly views, all-number tuples, JavaScript
@@ -32,15 +33,38 @@
 #include <string>
 #include <string_view>
 #include <type_traits>
+#include <tuple>
 #include <unordered_map>
 #include <utility>
+#include <variant>
 #include <vector>
 
 namespace bbl::js {
 
+[[nodiscard]] inline bool number_truthy(double value);
+
+template <typename... T>
+[[nodiscard]] bool union_truthy(const std::variant<T...>& value) {
+    return std::visit([](const auto& member) {
+        using Member = std::decay_t<decltype(member)>;
+        if constexpr (std::is_same_v<Member, double>) return number_truthy(member);
+        else if constexpr (std::is_same_v<Member, bool>) return member;
+        else if constexpr (std::is_same_v<Member, std::string>) return !member.empty();
+        else return true;
+    }, value);
+}
+
 template <typename T> class TypedArray;
 template <typename Values> class TypedArraySlot;
 template <typename T> [[nodiscard]] T numeric_store_value(double value);
+
+/** Integer-indexed typed-array stores ignore absent indices, as JavaScript does. */
+template <typename Values>
+void typed_array_write(Values& values, double index, double value) {
+    if (!std::isfinite(index) || index < 0 || std::trunc(index) != index ||
+        index >= static_cast<double>(values.size())) return;
+    values.store(static_cast<std::size_t>(index), numeric_store_value<typename Values::value_type>(value));
+}
 
 /** Runs a JavaScript finally block on every exit from its native scope. */
 template <typename F>
@@ -202,6 +226,9 @@ class TypedArray {
     [[nodiscard]] const void* identity() const {
         return view_ ? static_cast<const void*>(view_.get()) : static_cast<const void*>(values_.get());
     }
+    [[nodiscard]] std::shared_ptr<void> shared_identity() const {
+        return view_ ? std::shared_ptr<void>(view_) : std::shared_ptr<void>(values_);
+    }
     [[nodiscard]] friend bool operator==(const TypedArray& left, const TypedArray& right) {
         return left.identity() == right.identity();
     }
@@ -219,6 +246,15 @@ class TypedArray {
         std::memcpy(view_->buffer.data() + view_->offset + index * sizeof(T), &value, sizeof(T));
     }
     [[nodiscard]] TypedArraySlot<TypedArray> slot(std::size_t index);
+
+    /** Copy a validated element range, preserving raw numeric bits in views. */
+    [[nodiscard]] TypedArray copy_range(std::size_t begin, std::size_t end) const {
+        if (!view_) return TypedArray(values_->begin() + begin, values_->begin() + end);
+        TypedArray result(end - begin);
+        if (end != begin) std::memcpy(result.data(),
+            view_->buffer.data() + view_->offset + begin * sizeof(T), (end - begin) * sizeof(T));
+        return result;
+    }
 
     [[nodiscard]] T* data() { return owned().data(); }
     [[nodiscard]] const T* data() const { return owned().data(); }
@@ -420,7 +456,8 @@ class Borrowed {
 };
 
 /**
- * The common DOM Event view: only preventDefault survives on the base type.
+ * The common DOM Event view borrows dispatch state and cancellation from its
+ * payload, including when it crosses a helper typed as Event.
  *
  * MouseEvent and KeyboardEvent retain their typed Borrowed<T> wrappers. This
  * erased facade accepts either without introducing a third platform-event
@@ -435,10 +472,17 @@ class BorrowedEvent {
           type_(&type_tag<T>),
           prevent_default_([](const void* borrowed) noexcept {
               static_cast<const T*>(borrowed)->prevent_default();
-          }) {}
+          }),
+          default_prevented_([](const void* borrowed) noexcept { return static_cast<const T*>(borrowed)->default_prevented; }) {
+        dom = value.dom.get();
+    }
 
     [[nodiscard]] const BorrowedEvent& get() const noexcept { return *this; }
     void prevent_default() const noexcept { prevent_default_(value_); }
+    [[nodiscard]] bool is_default_prevented() const noexcept { return default_prevented_(value_); }
+    void stop_propagation() const { bbl::dom_event_state(*this).stop_propagation(); }
+    void stop_immediate_propagation() const { bbl::dom_event_state(*this).stop_immediate_propagation(); }
+    bbl::DomEventState* dom = nullptr;
 
     template <typename T>
     [[nodiscard]] const T& as() const {
@@ -454,6 +498,7 @@ class BorrowedEvent {
     const void* value_;
     const void* type_;
     void (*prevent_default_)(const void*) noexcept;
+    bool (*default_prevented_)(const void*) noexcept;
 };
 
 /** A Uint8Array view. Subarrays share storage; slices own a copy. */
@@ -502,6 +547,7 @@ class U8Array {
     void store(std::size_t index, std::uint8_t value) { data()[index] = value; }
     [[nodiscard]] TypedArraySlot<U8Array> slot(std::size_t index);
     [[nodiscard]] const void* identity() const { return identity_.get(); }
+    [[nodiscard]] std::shared_ptr<void> shared_identity() const { return identity_; }
     [[nodiscard]] friend bool operator==(const U8Array& left, const U8Array& right) {
         return left.identity() == right.identity();
     }
@@ -552,7 +598,14 @@ class DataView {
         }
     }
 
+    [[nodiscard]] ArrayBuffer buffer() const { return buffer_; }
+    [[nodiscard]] std::size_t byte_offset() const { return offset_; }
     [[nodiscard]] std::size_t byte_length() const { return length_; }
+    [[nodiscard]] const void* identity() const { return identity_.get(); }
+    [[nodiscard]] std::shared_ptr<void> shared_identity() const { return identity_; }
+    [[nodiscard]] friend bool operator==(const DataView& left, const DataView& right) {
+        return left.identity() == right.identity();
+    }
     [[nodiscard]] std::uint8_t get_uint8(std::size_t offset) const {
         require(offset, 1);
         return buffer_.data()[offset_ + offset];
@@ -656,6 +709,35 @@ class DataView {
     ArrayBuffer buffer_;
     std::size_t offset_ = 0;
     std::size_t length_ = 0;
+    std::shared_ptr<char> identity_ = std::make_shared<char>();
+};
+
+/** The byte-level ArrayBufferView interface retains the original view's identity and storage. */
+class ArrayBufferView {
+  public:
+    ArrayBufferView() = default;
+    template <typename View>
+        requires requires(const View& view) {
+            view.buffer(); view.byte_offset(); view.byte_length(); view.shared_identity();
+        }
+    explicit ArrayBufferView(const View& view)
+        : buffer_(view.buffer()), offset_(view.byte_offset()), length_(view.byte_length()),
+          identity_(view.shared_identity()) {}
+
+    [[nodiscard]] ArrayBuffer buffer() const { return buffer_; }
+    [[nodiscard]] std::size_t byte_offset() const { return offset_; }
+    [[nodiscard]] std::size_t byte_length() const { return length_; }
+    [[nodiscard]] const void* identity() const { return identity_.get(); }
+    [[nodiscard]] std::shared_ptr<void> shared_identity() const { return identity_; }
+    [[nodiscard]] friend bool operator==(const ArrayBufferView& left, const ArrayBufferView& right) {
+        return left.identity() == right.identity();
+    }
+
+  private:
+    ArrayBuffer buffer_;
+    std::size_t offset_ = 0;
+    std::size_t length_ = 0;
+    std::shared_ptr<void> identity_;
 };
 
 /**
@@ -764,12 +846,31 @@ class Array {
 template <typename T, typename Iterable>
 [[nodiscard]] inline Array<T> array_from_iterable(
     const Iterable& values) {
-    return Array<T>(values.begin(), values.end());
+    if constexpr (std::is_same_v<decltype(values.begin()), decltype(values.end())>) {
+        return Array<T>(values.begin(), values.end());
+    } else {
+        Array<T> result;
+        for (const auto& value : values) result.push_back(value);
+        return result;
+    }
+}
+
+template <typename T, typename Iterable, typename Transform>
+[[nodiscard]] inline Array<T> array_from_iterable(
+    const Iterable& values, Transform transform) {
+    Array<T> result;
+    if constexpr (requires { values.size(); }) result.reserve(values.size());
+    for (const auto& value : values) result.push_back(transform(value));
+    return result;
 }
 
 template <typename T, typename Iterable>
 inline void array_append(Array<T>& target, const Iterable& values) {
-    target.insert(target.end(), values.begin(), values.end());
+    if constexpr (std::is_same_v<decltype(values.begin()), decltype(values.end())>) {
+        target.insert(target.end(), values.begin(), values.end());
+    } else {
+        for (const auto& value : values) target.push_back(value);
+    }
 }
 
 /** Materialize JavaScript array storage at a native std::vector sink. */
@@ -869,40 +970,62 @@ class Nullable {
     std::optional<T> owned_;
 };
 
-/** The reached JavaScript RegExp surface: mutable global exec state. */
+[[nodiscard]] inline std::u16string string_code_units(const std::string& value);
+[[nodiscard]] inline std::string string_from_code_units(const std::u16string& units);
+
+/** A replacement receives owned captures; unmatched groups remain undefined. */
+struct RegExpReplacement {
+    std::vector<Nullable<std::string>> groups;
+    double offset = 0;
+    const std::string& input;
+
+    template <typename T>
+    [[nodiscard]] Nullable<T> argument(std::size_t index) const {
+        const auto convert = []<typename V>(const V& value) -> Nullable<T> {
+            if constexpr (std::is_constructible_v<T, V>) return T(value);
+            else throw std::runtime_error("RegExp callback argument does not match its declared type.");
+        };
+        if (index < groups.size()) {
+            if (!groups[index]) return std::nullopt;
+            return convert(*groups[index]);
+        } else if (index == groups.size()) {
+            return convert(offset);
+        } else if (index == groups.size() + 1) {
+            return convert(input);
+        } else return std::nullopt;
+    }
+};
+
+/** RegExp aliases share their expression and lastIndex, measured in UTF-16 units. */
 class RegExp {
   public:
     RegExp(std::string source, bool global, bool ignore_case)
-        : expression_(
-              std::move(source),
-              std::regex_constants::ECMAScript |
-                  (ignore_case ? std::regex_constants::icase
-                               : std::regex_constants::syntax_option_type{})),
-          global_(global) {}
+        : state_(std::make_shared<State>(source, global, ignore_case)) {}
+
+    [[nodiscard]] double& last_index() const { return state_->last_index; }
 
     [[nodiscard]] Nullable<Array<std::string>> exec(
         const std::string& input) {
-        const auto requested = global_ && std::isfinite(last_index)
-            ? std::max(0.0, std::trunc(last_index))
-            : 0.0;
-        const auto start = static_cast<std::size_t>(requested);
-        if (start > input.size()) {
-            if (global_) last_index = 0.0;
+        const auto units = wide(input);
+        const auto requested = state_->global && !std::isnan(last_index())
+            ? std::max(0.0, std::trunc(last_index())) : 0.0;
+        if (requested > static_cast<double>(units.size())) {
+            if (state_->global) last_index() = 0.0;
             return std::nullopt;
         }
-        std::match_results<std::string::const_iterator> match;
-        const auto first = input.cbegin() + static_cast<std::ptrdiff_t>(start);
-        if (!std::regex_search(first, input.cend(), match, expression_)) {
-            if (global_) last_index = 0.0;
+        const auto start = static_cast<std::size_t>(requested);
+        std::wsmatch match;
+        if (!search(units, start, match)) {
+            if (state_->global) last_index() = 0.0;
             return std::nullopt;
         }
         Array<std::string> groups;
         groups.reserve(match.size());
         for (const auto& group : match) {
-            groups.push_back(group.matched ? group.str() : std::string{});
+            groups.push_back(group.matched ? narrow(group.str()) : std::string{});
         }
-        if (global_) {
-            last_index = static_cast<double>(
+        if (state_->global) {
+            last_index() = static_cast<double>(
                 start + static_cast<std::size_t>(match.position()) + match.length());
         }
         return groups;
@@ -911,30 +1034,20 @@ class RegExp {
     [[nodiscard]] Array<std::string> split(
         const std::string& input) const {
         Array<std::string> result;
-        std::sregex_token_iterator part(input.begin(), input.end(), expression_, -1);
-        const std::sregex_token_iterator end;
-        for (; part != end; ++part) result.push_back(part->str());
+        const auto units = wide(input);
+        std::wsregex_token_iterator part(units.begin(), units.end(), state_->expression, -1);
+        const std::wsregex_token_iterator end;
+        for (; part != end; ++part) result.push_back(narrow(part->str()));
         return result;
     }
 
     [[nodiscard]] Nullable<Array<std::string>> match(
         const std::string& input) const {
         Array<std::string> result;
-        if (global_) {
-            const std::sregex_iterator end;
-            for (std::sregex_iterator found(input.begin(), input.end(), expression_);
-                 found != end;
-                 ++found) {
-                result.push_back(found->str());
-            }
-        } else {
-            std::smatch found;
-            if (std::regex_search(input, found, expression_)) {
-                result.reserve(found.size());
-                for (const auto& group : found) {
-                    result.push_back(
-                        group.matched ? group.str() : std::string{});
-                }
+        for (const auto& found : replacements(input)) {
+            if (state_->global) result.push_back(*found.groups[0]);
+            else {
+                for (const auto& group : found.groups) result.push_back(group ? *group : std::string{});
             }
         }
         return result.empty()
@@ -944,21 +1057,25 @@ class RegExp {
 
     [[nodiscard]] Array<Array<std::string>> match_all(
         const std::string& input) const {
-        if (!global_) {
+        if (!state_->global) {
             throw std::runtime_error("String.matchAll requires a global RegExp.");
         }
         Array<Array<std::string>> result;
-        const std::sregex_iterator end;
-        for (std::sregex_iterator found(input.begin(), input.end(), expression_);
-             found != end;
-             ++found) {
+        const auto units = wide(input);
+        const auto requested = std::isnan(last_index()) ? 0.0 : std::max(0.0, std::trunc(last_index()));
+        if (requested > static_cast<double>(units.size())) return result;
+        std::size_t start = static_cast<std::size_t>(requested);
+        std::wsmatch found;
+        while (start <= units.size() && search(units, start, found)) {
             Array<std::string> groups;
-            groups.reserve(found->size());
-            for (const auto& group : *found) {
+            groups.reserve(found.size());
+            for (const auto& group : found) {
                 groups.push_back(
-                    group.matched ? group.str() : std::string{});
+                    group.matched ? narrow(group.str()) : std::string{});
             }
             result.push_back(std::move(groups));
+            start += static_cast<std::size_t>(found.position() + found.length());
+            if (found.length() == 0) ++start;
         }
         return result;
     }
@@ -966,24 +1083,80 @@ class RegExp {
     [[nodiscard]] std::string replace(
         const std::string& input,
         const std::string& replacement) const {
-        return std::regex_replace(
-            input,
-            expression_,
-            replacement,
-            global_
+        const auto units = wide(input);
+        if (state_->global) last_index() = 0.0;
+        return narrow(std::regex_replace(
+            units,
+            state_->expression,
+            wide(replacement),
+            state_->global
                 ? std::regex_constants::format_default
-                : std::regex_constants::format_first_only);
+                : std::regex_constants::format_first_only));
+    }
+
+    template <typename Callback>
+    [[nodiscard]] std::string replace_with(const std::string& input, Callback&& callback, bool require_global = false) const {
+        if (require_global && !state_->global) throw std::runtime_error("String.replaceAll requires a global RegExp.");
+        // Collect before invoking any callback: callback effects cannot change the match list.
+        const auto matches = replacements(input);
+        const auto units = string_code_units(input);
+        std::u16string output;
+        std::size_t end = 0;
+        for (const auto& match : matches) {
+            const auto position = static_cast<std::size_t>(match.offset);
+            output.append(units, end, position - end);
+            output += string_code_units(callback(match));
+            end = position + string_code_units(*match.groups[0]).size();
+        }
+        output.append(units, end, units.size() - end);
+        return string_from_code_units(output);
     }
 
     [[nodiscard]] bool test(const std::string& input) {
         return exec(input).has_value();
     }
 
-    double last_index = 0.0;
-
   private:
-    std::regex expression_;
-    bool global_ = false;
+    static std::wstring wide(const std::string& input) {
+        const auto units = string_code_units(input);
+        return {units.begin(), units.end()};
+    }
+    static std::string narrow(const std::wstring& input) {
+        return string_from_code_units({input.begin(), input.end()});
+    }
+    struct State {
+        std::wregex expression;
+        bool global;
+        double last_index = 0;
+        State(const std::string& source, bool global_, bool ignore_case)
+            : expression(wide(source), std::regex_constants::ECMAScript |
+                (ignore_case ? std::regex_constants::icase : std::regex_constants::syntax_option_type{})), global(global_) {}
+    };
+    std::shared_ptr<State> state_;
+
+    bool search(const std::wstring& input, std::size_t start, std::wsmatch& match) const {
+        const auto flags = start == 0 ? std::regex_constants::match_default : std::regex_constants::match_prev_avail;
+        return std::regex_search(input.cbegin() + static_cast<std::ptrdiff_t>(start), input.cend(), match, state_->expression, flags);
+    }
+
+    std::vector<RegExpReplacement> replacements(const std::string& input) const {
+        std::vector<RegExpReplacement> results;
+        const auto units = wide(input);
+        if (state_->global) last_index() = 0.0;
+        std::size_t start = 0;
+        std::wsmatch match;
+        while (start <= units.size() && search(units, start, match)) {
+            const auto position = start + static_cast<std::size_t>(match.position());
+            RegExpReplacement result{{}, static_cast<double>(position), input};
+            result.groups.reserve(match.size());
+            for (const auto& group : match) result.groups.push_back(group.matched ? Nullable<std::string>(narrow(group.str())) : std::nullopt);
+            results.push_back(std::move(result));
+            if (!state_->global) break;
+            start = position + static_cast<std::size_t>(match.length());
+            if (match.length() == 0) ++start;
+        }
+        return results;
+    }
 };
 
 /**
@@ -1199,6 +1372,8 @@ struct ValueHash {
         } else if constexpr (is_ref_v<T>) {
             // An object keys a Set or Map by identity.
             return std::hash<const void*>{}(value.get());
+        } else if constexpr (requires { value.identity(); }) {
+            return std::hash<decltype(value.identity())>{}(value.identity());
         } else {
             return std::hash<T>{}(value);
         }
@@ -1211,6 +1386,15 @@ struct ValueHash<Callback<Sig>> {
     [[nodiscard]] std::size_t operator()(
         const Callback<Sig>& value) const noexcept {
         return std::hash<std::size_t>{}(value.identity());
+    }
+};
+
+template <typename... T>
+struct ValueHash<std::variant<T...>> {
+    [[nodiscard]] std::size_t operator()(const std::variant<T...>& value) const noexcept {
+        return std::visit([](const auto& member) {
+            return ValueHash<std::decay_t<decltype(member)>>{}(member);
+        }, value);
     }
 };
 
@@ -1422,6 +1606,57 @@ template <typename K, typename V>
         std::chrono::duration_cast<std::chrono::milliseconds>(now).count());
 }
 
+using Date = Ref<double>;
+struct StorageTag {};
+using Storage = Ref<StorageTag>;
+[[nodiscard]] inline Storage local_storage_object() {
+    static const auto instance = make_ref<StorageTag>();
+    return instance;
+}
+using DateTimeFormat = Ref<std::string>;
+
+[[nodiscard]] inline DateTimeFormat make_date_time_format() {
+    return make_ref<std::string>(std::chrono::current_zone()->name());
+}
+
+/** ECMAScript TimeClip: finite milliseconds within 100 million days. */
+[[nodiscard]] inline double date_time_clip(double value) {
+    if (!std::isfinite(value) || std::abs(value) > 8640000000000000.0)
+        return std::numeric_limits<double>::quiet_NaN();
+    return value == 0.0 ? 0.0 : std::trunc(value) + 0.0;
+}
+
+[[nodiscard]] inline Date make_date(double milliseconds) {
+    return make_ref<double>(date_time_clip(milliseconds));
+}
+
+[[nodiscard]] inline std::string date_iso_string(const Date& date) {
+    if (!std::isfinite(*date)) throw std::runtime_error("Invalid time value");
+    using namespace std::chrono;
+    const auto time = sys_time<milliseconds>{milliseconds{static_cast<std::int64_t>(*date)}};
+    const auto day = floor<days>(time);
+    // Gregorian calendars repeat every 400 years. Reduce into 2000..2399
+    // before using chrono::year, whose range is smaller than JavaScript's.
+    constexpr auto base = sys_days{year{2000}/January/1};
+    const auto offset = (day - base).count();
+    constexpr std::int64_t cycle_days = 146097;
+    const auto cycles = offset >= 0 ? offset / cycle_days : (offset - cycle_days + 1) / cycle_days;
+    const year_month_day calendar{base + days{offset - cycles * cycle_days}};
+    const auto full_year = static_cast<int>(calendar.year()) + cycles * 400;
+    const hh_mm_ss clock{time - day};
+    const auto digits = [](std::int64_t value, std::size_t width) {
+        auto text = std::to_string(value);
+        if (text.size() < width) text.insert(0, width - text.size(), '0');
+        return text;
+    };
+    const auto year_text = full_year >= 0 && full_year <= 9999 ? digits(full_year, 4) :
+        std::string(full_year < 0 ? "-" : "+") + digits(full_year < 0 ? -full_year : full_year, 6);
+    return year_text + "-" + digits(static_cast<unsigned>(calendar.month()), 2) + "-" +
+        digits(static_cast<unsigned>(calendar.day()), 2) + "T" + digits(clock.hours().count(), 2) + ":" +
+        digits(clock.minutes().count(), 2) + ":" + digits(clock.seconds().count(), 2) + "." +
+        digits(clock.subseconds().count(), 3) + "Z";
+}
+
 /** JavaScript SameValue over numbers: NaN equals NaN and the signed zeros differ. */
 [[nodiscard]] inline bool same_value(double left, double right) {
     if (std::isnan(left) || std::isnan(right)) return std::isnan(left) && std::isnan(right);
@@ -1476,6 +1711,71 @@ class Set : public IndexedInsertionOrdered<T, T> {
     }
 };
 
+/** A stored JavaScript iterator: aliases share one advancing cursor. */
+template <typename T>
+class Iterator {
+  public:
+    struct Result {
+        bool done;
+        Nullable<T> value;
+        void gc_trace(const TraceVisitor& visitor) const { visitor(value); }
+    };
+    Iterator() = default;
+    template <typename Pull>
+        requires (!std::is_same_v<std::remove_cvref_t<Pull>, Iterator>)
+    explicit Iterator(Pull&& pull) : pull_(std::forward<Pull>(pull)) {}
+    [[nodiscard]] Result next() const {
+        auto value = pull_();
+        return {!value.has_value(), std::move(value)};
+    }
+    class Cursor {
+      public:
+        explicit Cursor(Callback<Nullable<T>()> pull) : pull_(std::move(pull)), value_(pull_()) {}
+        T& operator*() { return *value_; }
+        const T& operator*() const { return *value_; }
+        Cursor& operator++() { value_ = pull_(); return *this; }
+        bool operator!=(std::default_sentinel_t) const { return value_.has_value(); }
+      private:
+        Callback<Nullable<T>()> pull_;
+        Nullable<T> value_;
+    };
+    [[nodiscard]] Cursor begin() const { return Cursor(pull_); }
+    [[nodiscard]] std::default_sentinel_t end() const { return {}; }
+    [[nodiscard]] std::size_t identity() const { return pull_.identity(); }
+    friend bool operator==(const Iterator& left, const Iterator& right) { return left.pull_ == right.pull_; }
+    void gc_trace(const TraceVisitor& visitor) const { visitor(pull_); }
+  private:
+    Callback<Nullable<T>()> pull_;
+};
+
+/** Keep the last yielded slot pinned until the next pull. Deleting it or
+ * clearing the Set can then append entries before iteration resumes. */
+template <typename Yield, typename T, bool Entries>
+struct SetCursor {
+    std::optional<Set<T>> values;
+    std::optional<InsertionOrderedIterator<T, true>> cursor;
+    Nullable<Yield> operator()() {
+        if (!values) return {};
+        const Set<T>& source = *values;
+        if (cursor) ++*cursor;
+        else cursor.emplace(source.begin());
+        if (*cursor == source.end()) {
+            cursor.reset();
+            values.reset();
+            return {};
+        }
+        const T value = **cursor;
+        if constexpr (Entries) return Yield{value, value};
+        else return value;
+    }
+    void gc_trace(const TraceVisitor& visitor) const { visitor(values); visitor(cursor); }
+};
+
+template <typename Yield, bool Entries, typename T>
+[[nodiscard]] Iterator<Yield> set_iterator(const Set<T>& values) {
+    return Iterator<Yield>(SetCursor<Yield, T, Entries>{values, {}});
+}
+
 template <typename T>
 using Span = std::span<T>;
 
@@ -1512,6 +1812,7 @@ class Tuple {
         return (*values_)[index];
     }
     [[nodiscard]] constexpr std::size_t size() const { return N; }
+    [[nodiscard]] const void* identity() const { return values_.get(); }
     [[nodiscard]] double* data() { return values_->data(); }
     [[nodiscard]] const double* data() const { return values_->data(); }
     [[nodiscard]] iterator begin() { return values_->begin(); }
@@ -1523,6 +1824,23 @@ class Tuple {
         return Tuple{*values_};
     }
 
+  private:
+    std::shared_ptr<Storage> values_;
+};
+
+/** Fixed heterogeneous tuple lanes retain the identity of the JS array. */
+template <typename... T>
+class Product {
+  public:
+    using Storage = std::tuple<T...>;
+    Product() : values_(make_gc_shared<Storage>()) {}
+    Product(T... values) : values_(make_gc_shared<Storage>(std::move(values)...)) {}
+    template <std::size_t I>
+    [[nodiscard]] auto& get() const { return std::get<I>(*values_); }
+    [[nodiscard]] constexpr std::size_t size() const { return sizeof...(T); }
+    [[nodiscard]] const void* identity() const { return values_.get(); }
+    [[nodiscard]] bool operator==(const Product& other) const { return values_ == other.values_; }
+    void gc_trace(const TraceVisitor& visitor) const { visitor(values_); }
   private:
     std::shared_ptr<Storage> values_;
 };
@@ -1627,6 +1945,12 @@ using NumberTextBuffer = std::array<char, 64>;
 [[nodiscard]] inline std::string number_to_string(double value) {
     NumberTextBuffer buffer;
     return std::string(format_number(value, buffer));
+}
+
+[[nodiscard]] inline std::string error_to_string(const std::string& name, const std::string& message) {
+    if (name.empty()) return message;
+    if (message.empty()) return name;
+    return name + ": " + message;
 }
 
 /**
@@ -1971,23 +2295,6 @@ relative_slice_bounds(
     return value.ends_with(suffix);
 }
 
-[[nodiscard]] inline double string_char_code_at(
-    const std::string& value,
-    double index_value) {
-    const auto index = static_cast<std::size_t>(std::max(0.0, std::trunc(index_value)));
-    return index < value.size()
-        ? static_cast<unsigned char>(value[index])
-        : std::numeric_limits<double>::quiet_NaN();
-}
-
-[[nodiscard]] inline std::string string_at(
-    const std::string& value,
-    std::size_t index) {
-    return index < value.size()
-        ? std::string(1, value[index])
-        : std::string{};
-}
-
 // UTF-16 indexing over native UTF-8 strings. Lone surrogates use WTF-8 so
 // slicing through a surrogate pair retains the JavaScript code unit.
 class StringCodeUnitCursor {
@@ -2024,6 +2331,18 @@ class StringCodeUnitCursor {
     std::size_t index_ = 0;
     std::optional<char16_t> trailing_;
 };
+
+[[nodiscard]] inline double string_char_code_at(const std::string& value, double index_value) {
+    const double index = std::isnan(index_value) ? 0.0 : std::trunc(index_value);
+    if (index >= 0 && std::isfinite(index)) {
+        StringCodeUnitCursor cursor(value);
+        std::size_t position = 0;
+        while (const auto unit = cursor.next()) {
+            if (static_cast<double>(position++) == index) return static_cast<double>(*unit);
+        }
+    }
+    return std::numeric_limits<double>::quiet_NaN();
+}
 
 [[nodiscard]] inline std::u16string string_code_units(const std::string& value) {
     std::u16string units;
@@ -2093,6 +2412,12 @@ class StringCodeUnitCursor {
     return {};
 }
 
+/** Numeric string properties index UTF-16 code units without truncating or wrapping. */
+[[nodiscard]] inline Nullable<std::string> string_index(const std::string& value, double index) {
+    if (!std::isfinite(index) || index < 0.0 || std::trunc(index) != index) return {};
+    return string_relative_at(value, index);
+}
+
 [[nodiscard]] inline Nullable<double> string_code_point_at(const std::string& value, double index) {
     index = std::isnan(index) ? 0.0 : std::trunc(index);
     if (!std::isfinite(index) || index < 0.0) return {};
@@ -2110,15 +2435,29 @@ class StringCodeUnitCursor {
     return {};
 }
 
-[[nodiscard]] inline std::string string_replace(const std::string& value, const std::string& search,
-    const std::string& replacement, bool all) {
+template <typename Replacement>
+[[nodiscard]] std::string string_replace_matches(const std::string& value, const std::string& search,
+    Replacement&& replacement, bool all) {
     const auto input = string_code_units(value);
     const auto pattern = string_code_units(search);
-    const auto substitute = string_code_units(replacement);
     std::u16string result;
     std::size_t consumed = 0, position = input.find(pattern);
     while (position != std::u16string::npos) {
         result.append(input, consumed, position - consumed);
+        result += replacement(input, pattern, position);
+        consumed = position + pattern.size();
+        if (!all || (pattern.empty() && position == input.size())) break;
+        position = input.find(pattern, position + std::max<std::size_t>(1, pattern.size()));
+    }
+    result.append(input, consumed);
+    return string_from_code_units(result);
+}
+
+[[nodiscard]] inline std::string string_replace(const std::string& value, const std::string& search,
+    const std::string& replacement, bool all) {
+    const auto substitute = string_code_units(replacement);
+    return string_replace_matches(value, search, [&](const auto& input, const auto& pattern, std::size_t position) {
+        std::u16string result;
         for (std::size_t index = 0; index < substitute.size(); ++index) {
             if (substitute[index] == u'$' && index + 1 < substitute.size()) {
                 const auto token = substitute[index + 1];
@@ -2130,12 +2469,16 @@ class StringCodeUnitCursor {
                 ++index;
             } else result += substitute[index];
         }
-        consumed = position + pattern.size();
-        if (!all || (pattern.empty() && position == input.size())) break;
-        position = input.find(pattern, position + std::max<std::size_t>(1, pattern.size()));
-    }
-    result.append(input, consumed);
-    return string_from_code_units(result);
+        return result;
+    }, all);
+}
+
+template <typename Replacement>
+[[nodiscard]] std::string string_replace_with(const std::string& value, const std::string& search,
+    Replacement&& replacement, bool all) {
+    return string_replace_matches(value, search, [&](const auto&, const auto& pattern, std::size_t position) {
+        return string_code_units(replacement(string_from_code_units(pattern), static_cast<double>(position), value));
+    }, all);
 }
 
 [[nodiscard]] inline double number_from_string(
@@ -2364,7 +2707,8 @@ template <typename Values>
         values.size(),
         begin_value,
         end_value);
-    return Values(values.begin() + begin, values.begin() + end);
+    if constexpr (requires { values.copy_range(begin, end); }) return values.copy_range(begin, end);
+    else return Values(values.begin() + begin, values.begin() + end);
 }
 
 // `array.indexOf(value)` — the first strictly-equal element, or -1.
@@ -2422,7 +2766,8 @@ template <typename T, std::size_t N>
 template <typename T>
 inline T array_pop(Array<T>& values) {
     if (values.empty()) [[unlikely]] {
-        throw std::runtime_error("Array pop on an empty array.");
+        if constexpr (std::is_same_v<T, typename MapGetResult<T>::Type>) return {};
+        else throw std::runtime_error("Array pop on an empty array.");
     }
     T last = values.back();
     values.pop_back();
@@ -2433,7 +2778,8 @@ inline T array_pop(Array<T>& values) {
 template <typename T>
 inline T array_shift(Array<T>& values) {
     if (values.empty()) [[unlikely]] {
-        throw std::runtime_error("Array shift on an empty array.");
+        if constexpr (std::is_same_v<T, typename MapGetResult<T>::Type>) return {};
+        else throw std::runtime_error("Array shift on an empty array.");
     }
     T first = values.front();
     values.erase(values.begin());
@@ -2457,14 +2803,6 @@ inline Array<T>& array_reverse(Array<T>& values) {
     return values;
 }
 
-// `array.fill(value)` shares one range assignment across native vectors,
-// JavaScript arrays, and typed-array views (including Uint8Array).
-template <typename Values, typename T>
-inline Values& array_fill(Values& values, const T& value) {
-    std::fill(values.begin(), values.end(), value);
-    return values;
-}
-
 /**
  * `fill(value, start, end)` — the ranged form, over any container the
  * lowerer serves. Both endpoints are relative indices, so a negative one
@@ -2481,11 +2819,18 @@ inline Values& array_fill_range(
         values.size(),
         start,
         end);
-    std::fill(
+    if constexpr (requires { values.store(0, value); }) {
+        for (std::size_t index = from; index < to; ++index) values.store(index, value);
+    } else std::fill(
         values.begin() + static_cast<std::ptrdiff_t>(from),
-        values.begin() + static_cast<std::ptrdiff_t>(to),
-        value);
+        values.begin() + static_cast<std::ptrdiff_t>(to), value);
     return values;
+}
+
+// Full-array fill shares the range implementation across all storage forms.
+template <typename Values, typename T>
+inline Values& array_fill(Values& values, const T& value) {
+    return array_fill_range(values, value, 0.0, std::numeric_limits<double>::infinity());
 }
 
 /**
@@ -2511,21 +2856,28 @@ inline Values& array_copy_within(
         end);
     const auto count = std::min(final - from, values.size() - to);
     if (count == 0 || from == to) return values;
-    const auto begin = values.begin();
-    const auto offset = [](std::size_t index) {
-        return static_cast<std::ptrdiff_t>(index);
-    };
-    if (to < from) {
-        std::copy(
+    if constexpr (requires { values.byte_offset(); values.load(0); }) {
+        auto bytes = values.buffer();
+        using Element = typename Values::value_type;
+        std::memmove(bytes.data() + values.byte_offset() + to * sizeof(Element),
+            bytes.data() + values.byte_offset() + from * sizeof(Element), count * sizeof(Element));
+    } else {
+        const auto begin = values.begin();
+        const auto offset = [](std::size_t index) {
+            return static_cast<std::ptrdiff_t>(index);
+        };
+        if (to < from) {
+            std::copy(
+                begin + offset(from),
+                begin + offset(from + count),
+                begin + offset(to));
+            return values;
+        }
+        std::copy_backward(
             begin + offset(from),
             begin + offset(from + count),
-            begin + offset(to));
-        return values;
+            begin + offset(to + count));
     }
-    std::copy_backward(
-        begin + offset(from),
-        begin + offset(from + count),
-        begin + offset(to + count));
     return values;
 }
 
@@ -2598,9 +2950,11 @@ inline void array_splice_one(Array<T>& values, double index) {
     values.erase(values.begin() + static_cast<std::ptrdiff_t>(position));
 }
 
-// `array.length = count` — the reached subset only shrinks (truncation).
+// Length writes keep the dense-array contract; sparse growth needs slot presence.
 template <typename T>
 inline void array_truncate(Array<T>& values, double count) {
+    if (!std::isfinite(count) || count < 0.0 || count > 4294967295.0 || std::trunc(count) != count)
+        throw std::runtime_error("Invalid array length.");
     const auto size = array_index(count);
     if (size > values.size()) [[unlikely]] {
         throw std::runtime_error(
@@ -2798,8 +3152,66 @@ using F64Array = TypedArray<double>;
 using F32Array = TypedArray<float>;
 using U16Array = TypedArray<std::uint16_t>;
 using I16Array = TypedArray<std::int16_t>;
+using I8Array = TypedArray<std::int8_t>;
 using U32Array = TypedArray<std::uint32_t>;
 using I32Array = TypedArray<std::int32_t>;
+
+/** A numeric index signature can write through arrays with different element storage. */
+class NumericArrayView {
+  public:
+    using value_type = double;
+    NumericArrayView() = default;
+    template <typename Values>
+        requires requires(const Values& values) { values.size(); values.identity(); }
+    explicit NumericArrayView(Values values) : owner_(std::make_shared<Model<Values>>(std::move(values))) {}
+
+    [[nodiscard]] std::size_t size() const { return owner_ ? owner_->size() : 0; }
+    [[nodiscard]] const void* identity() const { return owner_ ? owner_->identity() : nullptr; }
+    [[nodiscard]] double load(std::size_t index) const { return owner_->load(index); }
+    void store(std::size_t index, double value) { owner_->store(index, value); }
+    [[nodiscard]] double read(double index, const char* site) const {
+        if (!array_has_index(*this, index)) throw_index_error(site, "read", index, size());
+        return load(static_cast<std::size_t>(index));
+    }
+    [[nodiscard]] TypedArraySlot<NumericArrayView> slot(double index, const char* site) const {
+        if (!(index >= 0.0 && std::floor(index) == index && index < 4294967295.0)) {
+            throw_index_error(site, "write", index, size());
+        }
+        return {*this, static_cast<std::size_t>(index)};
+    }
+    [[nodiscard]] friend bool operator==(const NumericArrayView& left, const NumericArrayView& right) {
+        return left.identity() == right.identity();
+    }
+
+  private:
+    struct Owner {
+        virtual ~Owner() = default;
+        virtual std::size_t size() const = 0;
+        virtual const void* identity() const = 0;
+        virtual double load(std::size_t index) const = 0;
+        virtual void store(std::size_t index, double value) = 0;
+    };
+    template <typename Values> struct Model final : Owner {
+        explicit Model(Values source) : values(std::move(source)) {}
+        std::size_t size() const override { return values.size(); }
+        const void* identity() const override { return values.identity(); }
+        double load(std::size_t index) const override { return static_cast<double>(typed_array_load(values, index)); }
+        void store(std::size_t index, double value) override {
+            if constexpr (requires { array_index_write(values, index); }) {
+                array_index_write(values, index) = value;
+            } else {
+                if (index >= size()) throw std::runtime_error("Numeric index write exceeds fixed array storage.");
+                if constexpr (requires { values.store(index, value); }) {
+                    values.store(index, numeric_store_value<typename Values::value_type>(value));
+                } else {
+                    values[index] = value;
+                }
+            }
+        }
+        Values values;
+    };
+    std::shared_ptr<Owner> owner_;
+};
 
 // src/math/mat4-compose.ts + mat4-compose-into.ts: JavaScript evaluates the
 // quaternion products in double precision, then each Float32Array store
@@ -2979,10 +3391,15 @@ template <typename Left, typename Right>
 [[nodiscard]] inline std::uint8_t to_uint8(double value) {
     return static_cast<std::uint8_t>(to_uint32(value));
 }
+
+[[nodiscard]] inline std::int8_t to_int8(double value) {
+    return std::bit_cast<std::int8_t>(to_uint8(value));
+}
 template <typename T>
 [[nodiscard]] T numeric_store_value(double value) {
     if constexpr (std::is_floating_point_v<T>) return static_cast<T>(value);
     else if constexpr (std::is_same_v<T, std::uint8_t>) return to_uint8(value);
+    else if constexpr (std::is_same_v<T, std::int8_t>) return to_int8(value);
     else if constexpr (std::is_same_v<T, std::uint16_t>) return to_uint16(value);
     else if constexpr (std::is_same_v<T, std::int16_t>) return to_int16(value);
     else if constexpr (std::is_same_v<T, std::uint32_t>) return to_uint32(value);
@@ -3018,6 +3435,10 @@ template <typename Values>
     return I16Array(static_cast<std::size_t>(count), 0);
 }
 
+[[nodiscard]] inline I8Array i8_array_sized(double count) {
+    return I8Array(static_cast<std::size_t>(count), 0);
+}
+
 [[nodiscard]] inline U32Array u32_array_sized(double count) {
     return U32Array(static_cast<std::size_t>(count), 0u);
 }
@@ -3032,8 +3453,8 @@ template <typename Output, typename Values, typename Convert>
     Convert convert) {
     Output result;
     result.reserve(values.size());
-    for (const double value : values) {
-        result.push_back(convert(value));
+    for (std::size_t index = 0; index < values.size(); ++index) {
+        result.push_back(convert(static_cast<double>(typed_array_load(values, index))));
     }
     return result;
 }
@@ -3046,6 +3467,11 @@ template <typename Values>
 template <typename Values>
 [[nodiscard]] inline I16Array i16_array_from(const Values& values) {
     return typed_array_from_values<I16Array>(values, to_int16);
+}
+
+template <typename Values>
+[[nodiscard]] inline I8Array i8_array_from(const Values& values) {
+    return typed_array_from_values<I8Array>(values, to_int8);
 }
 
 template <typename Values>
@@ -3095,7 +3521,11 @@ inline void typed_array_set(
         throw std::runtime_error(
             "TypedArray set does not fit the target array.");
     }
-    std::copy(source.begin(), source.end(), target.begin() + static_cast<std::ptrdiff_t>(start));
+    if (source.empty()) return;
+    auto target_bytes = target.buffer();
+    const auto source_bytes = source.buffer();
+    std::memmove(target_bytes.data() + target.byte_offset() + start * sizeof(T),
+        source_bytes.data() + source.byte_offset(), source.size() * sizeof(T));
 }
 
 /**

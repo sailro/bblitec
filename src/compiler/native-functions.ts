@@ -2,6 +2,9 @@ import { someAnalysisNode, findAnalysisNodeWithState } from "./analysis-walk.js"
 import { EmissionSet, EmissionMap } from "./emission-transaction.js";
 import type { LoweringServices } from "./lowering-services.js";
 import ts from "typescript";
+import { CompileError } from "./compile-error.js";
+import { unwrapExpression } from "./syntax.js";
+import { emitReachableStatements } from "./loop-control.js";
 import { arrayReturnStorage } from "./array-return-storage.js";
 import {
     cppIdentifier,
@@ -17,6 +20,7 @@ import type { Value } from "./types.js";
 import {
     isSupportedFunction,
     parameterIsReadOnly,
+    requiresDefaultParameterBinding,
     resolveFunctionDeclaration,
     type SupportedFunction,
 } from "./user-functions.js";
@@ -30,8 +34,8 @@ export interface NativeFunctionContext
         | "sourceFiles"
         | "lookupIdentifierValue"
         | "compileValue"
+        | "probeEmission"
         | "useNativeValue"
-        | "invalidateStaticElements"
         | "compileNumber"
         | "compileCondition"
         | "emitStatement"
@@ -268,11 +272,17 @@ export class NativeFunctionLowerer {
         if (!declaration) {
             return undefined;
         }
+        if (requiresDefaultParameterBinding(this.context.checker, declaration, call)) return undefined;
         const signature = this.resolveSignature(
             declaration,
             callee,
         );
         if (!signature) {
+            return undefined;
+        }
+        if (signature.parameters.some((parameter, index) => parameter.type.kind === "union" &&
+            call.arguments[index] && (this.context.checker.getTypeAtLocation(call.arguments[index]!).flags &
+                (ts.TypeFlags.StringLiteral | ts.TypeFlags.NumberLiteral | ts.TypeFlags.BooleanLiteral)) !== 0)) {
             return undefined;
         }
         if (
@@ -287,27 +297,26 @@ export class NativeFunctionLowerer {
             // entry engine binding nor JavaScript closure lifetime.
             return undefined;
         }
-        if (
-            signature.returnType?.kind === "string" &&
-            signature.parameters.every(
-                (parameter) => parameter.type.kind === "string",
-            ) &&
+        if (signature.returnType?.kind === "string" &&
+            signature.parameters.every(parameter => parameter.type.kind === "string") &&
             signature.parameters.every((parameter, index) => {
                 const argument =
                     call.arguments[index] ??
                     (ts.isParameter(parameter.name.parent)
                         ? parameter.name.parent.initializer
                         : undefined);
-                return argument
-                    ? this.context.compileValue(argument).staticString !==
-                          undefined
-                    : false;
+                if (!argument) return false;
+                if (ts.isStringLiteralLike(argument)) return true;
+                if (ts.isIdentifier(argument)) {
+                    const bound = this.context.lookupIdentifierValue(argument);
+                    if (bound) return bound.staticString !== undefined;
+                }
+                return this.context.probeEmission(() =>
+                    this.context.compileValue(argument).staticString !== undefined, () => false);
             })
         ) {
-            // Generation-known string transforms remain specialized at the
-            // call site. Hoisting them would erase the carried string fact
-            // before a computed Record key or another AOT-only sink reads
-            // the result (a regex-based name sanitizer is one example).
+            // Closed string transforms retain their facts at the call site.
+            // Inspect without emitting argument effects twice.
             return undefined;
         }
         if (call.arguments.some(ts.isSpreadElement)) {
@@ -382,9 +391,30 @@ export class NativeFunctionLowerer {
             // the method arm; the inline path aliases by construction.
             return undefined;
         }
-        this.ensureEmitted(signature.declaration, () =>
-            this.emitDefinition(signature),
-        );
+        const canSpecialize = signature.parameters.some((parameter, index) => {
+            const argument = call.arguments[index] ??
+                (ts.isParameter(parameter.name.parent) ? parameter.name.parent.initializer : undefined);
+            if (!argument) return false;
+            const expression = unwrapExpression(argument);
+            const value = ts.isIdentifier(expression) ? this.context.lookupIdentifierValue(expression) : undefined;
+            return !value || value.kind === "record" || value.kind === "tuple" ||
+                value.staticString !== undefined || value.staticNumber !== undefined || value.staticBoolean !== undefined;
+        });
+        if (!this.emitted.has(signature.declaration) && canSpecialize) {
+            try {
+                this.context.probeEmission(() => {
+                    this.ensureEmitted(signature.declaration, () => this.emitDefinition(signature));
+                    return true;
+                });
+            } catch (error) {
+                if (!(error instanceof CompileError) || error.reason !== "static-value-required") throw error;
+                // A body may need facts unavailable to generic parameters.
+                // Let specialization bind actual arguments before diagnosing it.
+                return undefined;
+            }
+        } else {
+            this.ensureEmitted(signature.declaration, () => this.emitDefinition(signature));
+        }
         const argumentsCpp = signature.parameters.map(
             (parameter, index) => {
                 const argument = call.arguments[index];
@@ -438,6 +468,7 @@ export class NativeFunctionLowerer {
         classDeclaration: ts.ClassDeclaration,
         instance: Value,
     ): Value | undefined {
+        if (requiresDefaultParameterBinding(this.context.checker, method, call)) return undefined;
         const signature = this.resolveMethodSignature(
             method,
             classDeclaration,
@@ -567,15 +598,8 @@ export class NativeFunctionLowerer {
             this.context.useNativeValue(bound);
             fieldValues.push(bound);
         }
-        for (const value of fieldValues) this.invalidateMutableCollection(value);
+        for (const value of fieldValues) this.context.dataLowerer.invalidateEscapingCollection(value);
         return fieldValues.map((value) => value.cpp);
-    }
-
-    private invalidateMutableCollection(value: Value): void {
-        const cardinality = value.collectionCardinality ?? value.staticElementsOwner?.collectionCardinality;
-        if (!cardinality && !value.staticElements && !value.staticElementsOwner) return;
-        if (cardinality) cardinality.untrackedAliases = true;
-        this.context.invalidateStaticElements(value);
     }
 
     /**
@@ -684,7 +708,7 @@ export class NativeFunctionLowerer {
                     dataTypesEqual(path.dataType, dataType)
                 ) {
                     // A readonly parameter may return or retain the tuple.
-                    if (dataType.kind === "tuple") this.invalidateMutableCollection(path);
+                    if (dataType.kind === "tuple") this.context.dataLowerer.invalidateEscapingCollection(path);
                     return path.cpp;
                 }
                 return this.context.dataLowerer.compileForSink(
@@ -717,7 +741,7 @@ export class NativeFunctionLowerer {
                     `By-reference data arguments require a matching addressable local or path; received ${value?.kind ?? "no value"} ${value?.dataType ? JSON.stringify(value.dataType) : "without a data type"}, expected ${JSON.stringify(dataType)}.`,
                 );
             }
-            this.invalidateMutableCollection(value);
+            this.context.dataLowerer.invalidateEscapingCollection(value);
             return value.cpp;
         }
         // The sink materializes when the argument's type is not exactly
@@ -1481,20 +1505,7 @@ export class NativeFunctionLowerer {
                 signature.parameters,
                 signature.returnType,
                 () => {
-                    let terminated = false;
-                    for (const statement of body.statements) {
-                        this.context.emitStatement(
-                            statement,
-                        );
-                        if (
-                            this.context.statementTerminatesAfterLowering(
-                                statement,
-                            )
-                        ) {
-                            terminated = true;
-                            break;
-                        }
-                    }
+                    const terminated = emitReachableStatements(this.context, body.statements);
                     if (
                         signature.returnType &&
                         !terminated
@@ -1906,8 +1917,7 @@ export class NativeFunctionLowerer {
                             bound &&
                             bound.kind !== "tuple" &&
                             bound.kind !== "record" &&
-                            bound.kind !== "string" &&
-                            bound.kind !== "browser" &&
+                            (bound.kind !== "string" || bound.staticString === undefined) &&
                             bound.kind !== "callback"
                         ) {
                             return true;
@@ -2002,16 +2012,7 @@ export class NativeFunctionLowerer {
                 signature.parameters,
                 signature.returnType,
                 () => {
-                    for (const statement of body.statements) {
-                        this.context.emitStatement(statement);
-                        if (
-                            this.context.statementTerminatesAfterLowering(
-                                statement,
-                            )
-                        ) {
-                            break;
-                        }
-                    }
+                    emitReachableStatements(this.context, body.statements);
                 },
             ),
         );

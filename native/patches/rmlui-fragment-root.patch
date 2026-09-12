@@ -1,0 +1,14 @@
+diff --git a/Source/Core/Factory.cpp b/Source/Core/Factory.cpp
+--- a/Source/Core/Factory.cpp
++++ b/Source/Core/Factory.cpp
+@@ -371,6 +371,10 @@ bool Factory::InstanceElementText(Element* parent, const String& in_text)
+ 		auto stream = MakeUnique<StreamMemory>(text.size() + 32);
+ 		Context* context = parent->GetContext();
+ 		String tag = context ? context->GetDocumentsBaseTag() : "body";
++		// A custom document tag need not register an XML handler. Fragments
++		// still need the body handler to attach their contents to the parent.
++		if (!XMLParser::GetNodeHandler(tag))
++			tag = "body";
+ 		String open_tag = "<" + tag + ">";
+ 		String close_tag = "</" + tag + ">";
+ 		stream->Write(open_tag.c_str(), open_tag.size());

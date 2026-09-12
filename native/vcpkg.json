@@ -7,6 +7,14 @@
     "sdl3"
   ],
   "features": {
+    "http": {
+      "description": "HTTP transport where WinHTTP is unavailable.",
+      "dependencies": [{"name":"curl", "platform":"!windows"}]
+    },
+    "locale": {
+      "description": "ICU Unicode normalization and collation where the operating system does not supply ICU.",
+      "dependencies": [{"name":"icu", "platform":"!windows"}]
+    },
     "text-layout": {
       "description": "Native HarfBuzz shaping for runtime default text layouts.",
       "dependencies": [{ "name": "harfbuzz", "default-features": false }]

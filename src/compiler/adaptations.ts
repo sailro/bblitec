@@ -204,6 +204,14 @@ export function compileAdaptations(
             ],
         });
     }
+    if (features.includes("platform:http")) adaptations.push({
+        id:"native-http-transport",
+        category:"browser-erasure",
+        sourceSemantics:"Browser fetch returns a promise when headers arrive, enforces browser origin policies and exposes a consumable response stream.",
+        nativeSemantics:"Native HTTP(S) requests run outside the realm thread and settle on it after buffering the response. Request and response bodies are limited to 32 MiB; transport timeouts reject. The native client validates TLS but has no browser cookies or CORS policy. Realm shutdown cancels and joins pending transport work.",
+        risk:"medium",
+        validation:["native loopback HTTP request, response, redirect, body-consumption and rejection checks"],
+    });
     if (context.jsDataReached) {
         adaptations.push({
             id: "plain-data-value-model",
@@ -793,17 +801,16 @@ if (features.includes("ui:rml")) {
             "scene's own GPU backend. The projection is reviewed but " +
             "not the browser: platform fonts (DirectWrite, CoreText, " +
             "fontconfig) rasterize glyphs differently from the " +
-            "browser's font stack; `element.animate()` and retained-UI " +
-            "`element.removeEventListener()` lower to no-ops (CSS @keyframes " +
+            "browser's font stack; `element.animate()` and listener removal " +
+            "outside shared mouse/keyboard dispatch lower to no-ops (CSS @keyframes " +
             "animation is projected, and retained records share the " +
             "engine lifetime); CSS `steps()`/`step-start`/`step-end` " +
             "easings play as `linear-in-out` and the `ease*` family " +
             "as `sine*`; canvas overlays composite below the DOM " +
             "chrome regardless of z-index; typed author rules retain " +
             "source order and specificity, and RmlUi evaluates reached " +
-            ":hover and max-width state against the live viewport; " +
-            "retained focus identity and host focus-visible outlines are " +
-            "projected without a general DOM activeElement object; color " +
+            "input state and max-width queries against the live viewport; " +
+            "retained focus identity and focus-visible outlines are projected; color " +
             "emoji use the platform face with explicit VS16 font runs, " +
             "not general ZWJ/emoji-sequence shaping" +
             (features.includes("renderer:canvas")
@@ -814,7 +821,7 @@ if (features.includes("ui:rml")) {
                     "quantization differences"
                 : "") +
             (scoped.length > 0
-                ? `; the statically-proven descendant rule(s) ${scoped
+                ? `; the bounded descendant rule(s) ${scoped
                     .map((selector) => `'${selector}'`)
                     .join(", ")} remain scoped in the retained rule IR`
                 : "") +

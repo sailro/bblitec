@@ -2,9 +2,12 @@ import type ts from "typescript";
 import type { DataLowerer } from "./data-lowering.js";
 import type { DataType } from "./data-types.js";
 import type { Value } from "./types.js";
+import { compileLocaleStringMethod } from "./locale.js";
 
 /** String operations over the runtime's UTF-8 storage, indexed as UTF-16. */
 export function compileStringValueMethod(lowerer: DataLowerer, call: ts.CallExpression, method: string, owner: Value): Value | undefined {
+    const locale = compileLocaleStringMethod(lowerer, call, method, owner);
+    if (locale) return locale;
     if (!["substring", "repeat", "concat", "at", "codePointAt"].includes(method)) return undefined;
     const source = lowerer.context.allocateTemporaryCppName("string_receiver");
     lowerer.context.emit({ kind: "declaration", type: "const std::string", name: source, initializer: owner.cpp });

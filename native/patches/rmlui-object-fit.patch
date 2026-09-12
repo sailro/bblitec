@@ -1,0 +1,76 @@
+diff --git a/Include/RmlUi/Core/ID.h b/Include/RmlUi/Core/ID.h
+index 56e0e896..5024bb17 100644
+--- a/Include/RmlUi/Core/ID.h
++++ b/Include/RmlUi/Core/ID.h
+@@ -96,4 +96,5 @@ enum class PropertyId : uint8_t {
+ 	CaretColor,
+ 	ImageColor,
++	ObjectFit,
+ 	FontFamily,
+ 	FontStyle,
+diff --git a/Source/Core/ElementStyle.cpp b/Source/Core/ElementStyle.cpp
+index 25d16fec..9003cb9c 100644
+--- a/Source/Core/ElementStyle.cpp
++++ b/Source/Core/ElementStyle.cpp
+@@ -1209,4 +1209,6 @@ void ElementStyle::ComputeValue(Style::ComputedValues& values, float dp_ratio, V
+ 		values.image_color(p->Get<Colourb>());
+ 		break;
++	case PropertyId::ObjectFit:
++		break; // Retrieved by ElementImage when painting.
+ 	case PropertyId::Opacity:
+ 		values.opacity(p->Get<float>());
+diff --git a/Source/Core/Elements/ElementImage.cpp b/Source/Core/Elements/ElementImage.cpp
+index 90b754f9..490940c5 100644
+--- a/Source/Core/Elements/ElementImage.cpp
++++ b/Source/Core/Elements/ElementImage.cpp
+@@ -125,5 +125,6 @@ void ElementImage::OnPropertyChange(const PropertyIdSet& changed_properties)
+ 	Element::OnPropertyChange(changed_properties);
+ 
+-	if (changed_properties.Contains(PropertyId::ImageColor) || changed_properties.Contains(PropertyId::Opacity))
++	if (changed_properties.Contains(PropertyId::ImageColor) || changed_properties.Contains(PropertyId::Opacity) ||
++		changed_properties.Contains(PropertyId::ObjectFit))
+ 		geometry_dirty = true;
+ }
+@@ -181,5 +182,31 @@ void ElementImage::GenerateGeometry()
+ 	const RenderBox render_box = GetRenderBox(BoxArea::Content);
+ 
+-	MeshUtilities::GenerateQuad(mesh, render_box.GetFillOffset(), render_box.GetFillSize(), quad_colour, texcoords[0], texcoords[1]);
++	// Object fitting changes the painted image, never its CSS layout box.
++	// Keyword order is shared with the object-fit property specification.
++	enum class ObjectFit { Fill, Contain, Cover, None, ScaleDown };
++	const auto fit = static_cast<ObjectFit>(GetProperty(PropertyId::ObjectFit)->Get<int>());
++	const Vector2f box_size = render_box.GetFillSize();
++	const Vector2f natural_size = (rect_source == RectSource::None ? Vector2f(texture.GetDimensions()) : rect.Size()) * dimensions_scale;
++	Vector2f fitted_size = box_size;
++	if (fit != ObjectFit::Fill && natural_size.x > 0 && natural_size.y > 0)
++	{
++		const float contain_scale = Math::Min(box_size.x / natural_size.x, box_size.y / natural_size.y);
++		float scale = 1.0f;
++		if (fit == ObjectFit::Contain) scale = contain_scale;
++		else if (fit == ObjectFit::Cover) scale = Math::Max(box_size.x / natural_size.x, box_size.y / natural_size.y);
++		else if (fit == ObjectFit::ScaleDown) scale = Math::Min(1.0f, contain_scale);
++		fitted_size = natural_size * scale;
++	}
++	if (box_size.x > 0 && box_size.y > 0 && fitted_size.x > 0 && fitted_size.y > 0)
++	{
++		// Center the image and clip its geometry and UVs to the content box.
++		const Vector2f origin = (box_size - fitted_size) * 0.5f;
++		const Vector2f clipped_start = Math::Max(origin, Vector2f(0));
++		const Vector2f clipped_end = Math::Min(origin + fitted_size, box_size);
++		const Vector2f uv_size = texcoords[1] - texcoords[0];
++		const Vector2f uv_start = texcoords[0] + (clipped_start - origin) / fitted_size * uv_size;
++		const Vector2f uv_end = texcoords[0] + (clipped_end - origin) / fitted_size * uv_size;
++		MeshUtilities::GenerateQuad(mesh, render_box.GetFillOffset() + clipped_start, clipped_end - clipped_start, quad_colour, uv_start, uv_end);
++	}
+ 
+ 	if (RenderManager* render_manager = GetRenderManager())
+diff --git a/Source/Core/StyleSheetSpecification.cpp b/Source/Core/StyleSheetSpecification.cpp
+index 508b50bf..851b5e88 100644
+--- a/Source/Core/StyleSheetSpecification.cpp
++++ b/Source/Core/StyleSheetSpecification.cpp
+@@ -353,4 +353,5 @@ void StyleSheetSpecification::RegisterDefaultProperties()
+ 
+ 	RegisterProperty(PropertyId::ImageColor, "image-color", "white", false, false).AddParser("color");
++	RegisterProperty(PropertyId::ObjectFit, "object-fit", "fill", false, false).AddParser("keyword", "fill, contain, cover, none, scale-down");
+ 	RegisterProperty(PropertyId::Opacity, "opacity", "1", true, false).AddParser("number");
+ 

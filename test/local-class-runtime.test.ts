@@ -300,7 +300,7 @@ test("keeps object identity and null on stored instances", () => {
 
     // `includes`, `indexOf` and `===` are all the Ref's own identity.
     assert.match(result.cpp, /bbl::js::array_index_of\(/);
-    assert.match(result.cpp, /\.get\(\) == /);
+    assert.match(result.cpp, /(?:\.get\(\)|v_\w+) == /);
     // A null instance is the empty reference, not a second state beside it.
     assert.match(
         result.cpp,
@@ -505,30 +505,47 @@ test("refuses a stored class that would need dynamic dispatch", () => {
     );
 });
 
-test("refuses a per-instance callback of a class instances are stored by", () => {
-    assert.throws(
-        () =>
-            compileSource(`
-                interface Entry { readonly locked: boolean; }
-
+test("stored class callbacks retain per-instance identity, captures and nullable replacement", { skip: !nativeTools }, () => {
+    const result = compileSource(`
                 class Alarm {
-                    readonly locked = false;
                     private _fired = 0;
-                    private readonly _ring = (): void => { this._fired += 1; };
-                    private readonly _handlers = new Set<() => void>();
-
-                    arm(): void { this._handlers.add(this._ring); }
-                    disarm(): void { this._handlers.delete(this._ring); }
+                    readonly ring = (): void => { this._fired += 1; };
+                    cancel: (() => void) | null = null;
+                    constructor(readonly changed: (value: number) => void) {}
+                    arm(handlers: Set<() => void>): void {
+                        handlers.add(this.ring);
+                        this.cancel = () => { handlers.delete(this.ring); this.changed(this._fired); };
+                    }
+                    disarm(): void { this.cancel?.(); this.cancel = null; }
                     get fired(): number { return this._fired; }
                 }
-
+                let changes = 0;
+                const handlers = new Set<() => void>();
                 const alarms: Alarm[] = [];
-                for (let i = 0; i < 2; i++) { alarms.push(new Alarm()); }
-                for (const alarm of alarms) { alarm.arm(); }
-                const unused = alarms.length;
-            `),
-        /identity a container could compare/,
-    );
+                for (let i = 0; i < 2; i++) { alarms.push(new Alarm(value => { changes += value; })); }
+                for (const alarm of alarms) { alarm.arm(handlers); alarm.arm(handlers); }
+                if (handlers.size !== 2 || alarms[0]!.ring === alarms[1]!.ring)
+                    throw new Error("per-instance callback identity");
+                const first = alarms[0]!.ring;
+                if (first !== alarms[0]!.ring) throw new Error("callback read identity");
+                for (const handler of handlers) handler();
+                alarms[0]!.disarm();
+                for (const handler of handlers) handler();
+                if (alarms[0]!.fired !== 1 || alarms[1]!.fired !== 2 || handlers.size !== 1 || changes !== 1)
+                    throw new Error("callback captures and removal");
+                alarms[0]!.disarm();
+                alarms[1]!.disarm();
+                if (changes !== 3 || handlers.size !== 0) throw new Error("nullable callback replacement");
+                alarms.splice(0, 2);
+                first();
+    `);
+    const output = resolve("artifacts/stored-class-callbacks");
+    mkdirSync(output, { recursive: true });
+    const source = join(output, "check.cpp"), executable = join(output, "check.exe");
+    writeFileSync(source, result.cpp);
+    runNativeFixtureCompiler(nativeTools!, ["/nologo", "/std:c++20", "/W4", "/WX", "/permissive-", "/EHsc",
+        `/Fo:${output}\\`, `/Fe:${executable}`, "/I", "native/include", source]);
+    execFileSync(executable, { stdio: "pipe" });
 });
 
 test("keeps a compile-time instance out of a container that shares objects", () => {

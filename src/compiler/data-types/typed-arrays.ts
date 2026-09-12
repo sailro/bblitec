@@ -9,6 +9,12 @@ interface TypedArrayRecord {
 }
 
 const TYPED_ARRAYS: Readonly<Record<TypedArrayKind, TypedArrayRecord>> = {
+  i8array: {
+    constructor: "Int8Array",
+    stem: "i8",
+    cppType: "bbl::js::I8Array",
+    store: (value) => `bbl::js::to_int8(${value})`,
+  },
   u8array: {
     constructor: "Uint8Array",
     stem: "u8",
@@ -83,8 +89,8 @@ export function typedArrayCppType(kind: TypedArrayKind): string {
 }
 
 export function typedArrayStoreExpression(
-  kind: TypedArrayKind,
+  kind: TypedArrayKind | "numberindex",
   value: string,
 ): string {
-  return TYPED_ARRAYS[kind].store(value);
+  return kind === "numberindex" ? value : TYPED_ARRAYS[kind].store(value);
 }

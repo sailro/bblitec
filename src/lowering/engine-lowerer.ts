@@ -7,7 +7,7 @@ import { canvasDatasetSource } from "./canvas-dataset.js";
 export class EngineLowerer {
     public constructor(private readonly context: LoweringContext) {}
 
-    public lowerCore(workers = false): LoweredSource {
+    public lowerCore(workers = false, frameConductor = true): LoweredSource {
         const modulePath = "src/engine/engine.ts";
         const create =
             this.context.functionDeclaration(
@@ -84,9 +84,9 @@ Engine create_engine(EngineOptions options) {
     return pal::create_engine(std::move(options));
 }
 
-void start_engine(Engine& engine) {
+${frameConductor ? `void start_engine(Engine& engine) {
     pal::run_engine(engine);
-}
+}` : ""}
 
 void stop_engine(Engine& engine) {
     engine.stopped = true;

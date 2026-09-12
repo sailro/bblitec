@@ -6,6 +6,9 @@ import type { LoweringServices } from "./lowering-services.js";
 import { argumentAt } from "./syntax.js";
 import type { Value } from "./types.js";
 import { UiProjection } from "./ui-projection.js";
+import { requireWindowHost, windowErrorEventValue } from "./window-events.js";
+import { browserGlobalNamed } from "./browser-erasure.js";
+import { emitDomEventListener } from "./dom-listeners.js";
 
 
 
@@ -77,6 +80,8 @@ interface PlatformCallContext extends CharacterIntrinsicContext, Pick<LoweringSe
     "compileValue" |
     "cppString" |
     "defaultEngine" |
+    "dataLowerer" |
+    "dataTypes" |
     "emit" |
     "engineHasStarted" |
     "evaluateBrowserValue" |
@@ -87,6 +92,7 @@ interface PlatformCallContext extends CharacterIntrinsicContext, Pick<LoweringSe
     "fail" |
     "hasPresentationHost" |
     "hoistForwardCallbackBindings" |
+    "probeEmission" |
     "isBrowserOnlyExpression" |
     "isCanvasElement" |
     "isDefaultLibraryIdentifier" |
@@ -96,6 +102,7 @@ interface PlatformCallContext extends CharacterIntrinsicContext, Pick<LoweringSe
     "lookupOptional" |
     "objectProperty" |
     "options" |
+    "pinValueToTemporary" |
     "reachFeature" |
     "reachJsData" |
     "registerAsset" |
@@ -248,8 +255,7 @@ export class PlatformCalls {
             };
         }
         if (
-            callee.name.text === "preventDefault" &&
-            call.arguments.length === 0
+            callee.name.text === "preventDefault" || callee.name.text === "stopPropagation" || callee.name.text === "stopImmediatePropagation"
         ) {
             const platformEvent = ts.isIdentifier(receiver)
                 ? this.context.lookupOptional(receiver)
@@ -259,11 +265,16 @@ export class PlatformCalls {
                   : undefined;
             if (
                 platformEvent?.kind === "platform-keyboard-event" ||
-                platformEvent?.kind === "platform-mouse-event"
+                platformEvent?.kind === "platform-mouse-event" || platformEvent?.nativeErrorEvent
             ) {
+                if (call.arguments.length) this.context.fail(call, `Event.${callee.name.text} accepts no arguments.`);
+                if (platformEvent.nativeErrorEvent && callee.name.text !== "preventDefault")
+                    this.context.fail(call, "Application error propagation methods are not represented.");
+                const method = callee.name.text === "preventDefault" ? "prevent_default"
+                    : callee.name.text === "stopPropagation" ? "stop_propagation" : "stop_immediate_propagation";
                 return {
                     kind: "void",
-                    cpp: `${platformEvent.cpp}.prevent_default()`,
+                    cpp: `${platformEvent.cpp}.${method}()`,
                 };
             }
         }
@@ -430,6 +441,8 @@ export class PlatformCalls {
         }
         const removing = callee.name.text === "removeEventListener";
         const uiElement = this.ui.uiElementValue(callee.expression);
+        if (this.context.probeEmission(() => emitDomEventListener(this.context, call, uiElement,
+            (value, node) => this.platformEventCallbackIdentity(value, node)) ? true : undefined)) return true;
         if (uiElement) {
             if (removing) return false;
             this.context.expectArgumentCount(call, 2, 2);
@@ -559,6 +572,20 @@ export class PlatformCalls {
                 once = compiled === "true";
             }
         }
+        if (target === "window" && this.context.options.workers && (event === "error" || event === "unhandledrejection")) {
+            requireWindowHost(this.context, call);
+            const rejection = event === "unhandledrejection";
+            if (removing) {
+                const identity = this.platformEventCallbackIdentity(this.context.compileValue(callback), callback);
+                this.context.emit(`bbl::pal::window_off_application_error(${rejection}, ${identity});`);
+            } else {
+                const name = this.context.allocateTemporaryCppName("application_error");
+                const listener = this.context.compilePlatformCallback(callback,
+                    {cppType:"bbl::pal::ApplicationErrorEvent&", name}, [windowErrorEventValue(this.context, name, rejection)]);
+                this.context.emit(`bbl::pal::window_on_application_error(${rejection}, ${listener.identity}, ${listener.cpp}, ${once});`);
+            }
+            return true;
+        }
         const engine = this.context.requireDefaultEngine(call);
         const descriptor = this.platformEventDescriptor(target, event);
         if (!descriptor) return false;
@@ -569,7 +596,7 @@ export class PlatformCalls {
                 callback,
             );
             this.context.emit(
-                `bbl::off_${descriptor.channel}(${engine}, ${identity}u);`,
+                `bbl::off_${descriptor.channel}(${engine}, ${identity});`,
             );
             return true;
         }
@@ -615,7 +642,7 @@ export class PlatformCalls {
         );
         this.context.emit(
             `bbl::on_${descriptor.channel}(` +
-                `${engine}, ${listener.identity}u, ${listener.cpp}` +
+                `${engine}, ${listener.identity}, ${listener.cpp}` +
                 `${once ? ", true" : ""});`,
         );
         return true;
@@ -635,12 +662,13 @@ export class PlatformCalls {
     public platformEventCallbackIdentity(
         callback: Value,
         node: ts.Node,
-    ): number {
+    ): string {
+        if (callback.kind === "data" && callback.dataType?.kind === "function") return `(${callback.cpp}).identity()`;
         if (callback.kind !== "callback") {
             this.context.fail(node, "Platform event listener is not a callback.");
         }
         if (callback.platformCallbackIdentity !== undefined) {
-            return callback.platformCallbackIdentity;
+            return `${callback.platformCallbackIdentity}u`;
         }
         if (!callback.callbackDeclaration) {
             this.context.fail(
@@ -648,13 +676,46 @@ export class PlatformCalls {
                 "Platform event listener has no stable callback identity.",
             );
         }
-        return this.context.callbackIdentity(
+        return `${this.context.callbackIdentity(
             callback.callbackDeclaration,
             callback.callbackRecordOwner,
-        );
+        )}u`;
     }
 
-    private compileUiCall(call: ts.CallExpression, callee: ts.PropertyAccessExpression): Value | undefined {
+    private compileUiCall(call: ts.CallExpression, callee: ts.PropertyAccessExpression, preparedElement?: Value): Value | undefined {
+        if (!preparedElement && callee.questionDotToken) {
+            const stored = this.context.probeEmission(() => {
+                const value = this.context.dataLowerer.compileDataPath(callee.expression, "read");
+                return value?.dataType?.kind === "optional" && value.dataType.inner.kind === "handle" &&
+                    value.dataType.inner.handle === "ui-element" ? value : undefined;
+            });
+            const type = stored?.dataType ?? this.context.dataLowerer.dataTypeAt(callee.expression);
+            if (type?.kind === "optional" && type.inner.kind === "handle" && type.inner.handle === "ui-element") {
+                return this.context.dataLowerer.optionalAccess(stored ?? this.context.compileValue(callee.expression), call,
+                    element => this.compileUiCall(call, callee, element));
+            }
+        }
+        const style = this.context.unwrap(callee.expression);
+        if (ts.isPropertyAccessExpression(style) && style.name.text === "style" &&
+            ["setProperty", "getPropertyValue", "removeProperty"].includes(callee.name.text)) {
+            const element = this.ui.uiElementValue(style.expression);
+            if (element) {
+                const setting = callee.name.text === "setProperty";
+                this.context.expectArgumentCount(call, setting ? 2 : 1, setting ? 3 : 1);
+                const name = this.ui.uiStylePropertyName(argumentAt(call, 0));
+                if (setting) {
+                    if (call.arguments[2] && this.context.compileStringLiteral(call.arguments[2]) !== "")
+                        this.context.fail(call.arguments[2], "Native UI setProperty priority requires an empty string; important priority is not represented.");
+                    this.ui.emitUiStyleProperty(element, name, argumentAt(call, 1), call);
+                    return {kind:"void", cpp:""};
+                }
+                if (callee.name.text === "removeProperty")
+                    return this.ui.removeUiStyleProperty(element, name, argumentAt(call, 0));
+                const property = this.ui.nativeUiStyleProperty(name);
+                this.ui.auditUiStylePropertyName(property, argumentAt(call, 0));
+                return {kind:"string", cpp:`bbl::ui_get_style_property(${this.context.requireEngine(element, call)}, ${element.cpp}, ${this.context.cppString(property)})`};
+            }
+        }
         if (this.context.isPrimaryCanvas2DContextCall(call)) {
             if (this.context.defaultEngine() && !this.context.hasPresentationHost()) {
                 this.context.fail(call, "The primary canvas already belongs to a Babylon engine; it cannot also acquire a Canvas2D context.");
@@ -662,16 +723,21 @@ export class PlatformCalls {
             this.context.requirePresentationHost(call);
         }
         if (this.context.isNativeHostUiLookup(call)) {
-            const id = this.context.compileStringLiteral(argumentAt(call, 0));
-            const engine = this.context.options.workers ? "bbl::pal::window_document_engine()" : this.context.requireDefaultEngine(call);
+            const id = this.context.evaluator.staticTextValue(argumentAt(call, 0));
+            const engine = this.ui.documentEngine(call);
             this.context.reachFeature("ui:rml", call);
+            const tag = id !== undefined ? this.ui.nativeHostUiTags().get(id) : undefined;
+            if (!tag) return {
+                kind:"data", cpp:`bbl::ui_find_element_by_id(${engine}, ${this.ui.uiStringCpp(argumentAt(call, 0), "element id")})`,
+                dataType:{kind:"optional", inner:{kind:"handle", handle:"ui-element"}}, engineCpp:engine,
+            };
             return {
                 kind: "ui-element",
                 cpp: `bbl::ui_get_element_by_id(${engine}, ` +
-                    `${this.context.cppString(id)})`,
+                    `${this.context.cppString(id!)})`,
                 engineCpp: engine,
-                uiHostId: id,
-                uiTag: this.ui.nativeHostUiTags().get(id)!,
+                uiHostId: id!,
+                uiTag: tag,
                 truthinessCpp: "true",
             };
         }
@@ -688,7 +754,7 @@ export class PlatformCalls {
             if (UiProjection.UI_IMPLEMENTATION_TAGS.has(normalizedTag)) {
                 this.context.fail(argumentAt(call, 0), `Native UI element tag '${tag}' is reserved for the retained projection.`);
             }
-            const engine = this.context.requireDefaultEngine(call);
+            const engine = this.ui.documentEngine(call);
             this.context.reachFeature("ui:rml", call);
             const uiStaticId = this.ui.createUiStaticElement(normalizedTag);
             this.ui.uiStaticIdsByCreation.set(call, uiStaticId);
@@ -711,9 +777,16 @@ export class PlatformCalls {
             (callee.name.text === "add" ||
                 callee.name.text === "remove" ||
                 callee.name.text === "toggle");
-        const element = classListMutation
+        const rootAppend = (callee.name.text === "append" || callee.name.text === "appendChild") &&
+            ts.isPropertyAccessExpression(callee.expression) &&
+            callee.expression.name.text === "body" &&
+            browserGlobalNamed(this.context, callee.expression.expression)?.text === "document";
+        if (rootAppend && callee.name.text === "append" && call.arguments.length === 0) return {kind:"void", cpp:""};
+        const element: Value | undefined = preparedElement ?? (rootAppend
+            ? {kind:"ui-element", cpp:"{}", uiRoot:true, engineCpp:this.ui.documentEngine(call)}
+            : classListMutation
             ? undefined
-            : this.ui.uiElementValue(callee.expression);
+            : this.ui.uiElementValue(callee.expression));
         if (element?.uiTag === "image-bitmap" &&
             callee.name.text === "close") {
             this.context.expectArgumentCount(call, 0, 0);
@@ -1037,9 +1110,18 @@ export class PlatformCalls {
                 },
             };
         }
+        if (element && callee.name.text === "removeAttribute") {
+            this.context.expectArgumentCount(call, 1, 1);
+            const name = this.ui.uiAttributeName(argumentAt(call, 0));
+            const engine = this.context.requireEngine(element, call);
+            if (name === "class" || name === "id")
+                this.ui.recordUiStaticAttribute(element, name, argumentAt(call, 0), "");
+            else if (name === "style") this.ui.recordUiStaticStyle(element, "");
+            return {kind: "void", cpp: `bbl::ui_remove_attribute(${engine}, ${element.cpp}, ${this.context.cppString(name)})`};
+        }
         if (element && callee.name.text === "setAttribute") {
             this.context.expectArgumentCount(call, 2, 2);
-            const name = this.context.compileStringLiteral(argumentAt(call, 0));
+            const name = this.ui.uiAttributeName(argumentAt(call, 0));
             const engine = this.context.requireEngine(element, call);
             const browserFile = this.ui.compileUiBrowserFileAttribute(element, engine, name, argumentAt(call, 1), call, "attribute");
             if (browserFile) {
@@ -1049,18 +1131,9 @@ export class PlatformCalls {
                 };
             }
             const staticValue = this.ui.tryUiStaticString(argumentAt(call, 1));
-            const sourceValue = staticValue === undefined
-                ? this.context.compileValue(argumentAt(call, 1))
-                : undefined;
-            if (sourceValue !== undefined &&
-                sourceValue.kind !== "string" &&
-                !(sourceValue.kind === "data" &&
-                    sourceValue.dataType?.kind === "string")) {
-                this.context.fail(argumentAt(call, 1), `UI setAttribute value requires a string, received ${sourceValue?.kind}.`);
-            }
             const value = staticValue !== undefined
                 ? this.context.cppString(this.ui.lowerUiAttributeLiteral(name, staticValue, argumentAt(call, 1)))
-                : sourceValue!.cpp;
+                : this.ui.uiStringCpp(argumentAt(call, 1), "UI setAttribute value");
             if (name === "class" || name === "id") {
                 this.ui.recordUiStaticAttribute(element, name, argumentAt(call, 1));
             }
@@ -1100,24 +1173,37 @@ export class PlatformCalls {
             };
         }
         if (element && callee.name.text === "append") {
+            // Even named handles need a snapshot: later arguments may rebind
+            // the receiver or an earlier argument before insertion begins.
+            const snapshot = (value: Value, label: string, node: ts.Expression): Value => {
+                const {nativeBinding, ...expression} = value;
+                return this.context.pinValueToTemporary(expression, label, node);
+            };
+            const receiver = element.uiRoot ? element : snapshot(element, "append_receiver", callee.expression);
             const children = call.arguments.map((argument) => {
                 const child = this.context.compileValue(argument);
-                this.context.expectKind(child, "ui-element", argument);
-                return child;
+                if (child.kind !== "string") this.context.expectKind(child, "ui-element", argument);
+                return snapshot(child, "append_argument", argument);
             });
             if (children.length === 0) {
                 return { kind: "void", cpp: "" };
             }
-            const engine = this.context.requireEngine(element.uiRoot ? children[0]! : element, call);
-            const appends = children.map((child) => {
-                if (element.uiRoot) {
-                    this.context.expectSameEngine(children[0]!, child, call);
+            const engine = receiver.uiRoot ? this.ui.documentEngine(call) : this.context.requireEngine(receiver, call);
+            const appends = children.map((value) => {
+                const child: Value = value.kind === "string" ? {
+                    kind:"ui-element", cpp:"", engineCpp:engine,
+                    uiTag:"#text", uiStaticId:this.ui.createUiStaticElement("#text"),
+                } : value;
+                if (receiver.uiRoot) {
+                    this.context.expectSameEngine({kind:"engine", cpp:engine, engineCpp:engine}, child, call);
                     this.ui.recordUiStaticRootAppend(child);
+                    if (value.kind === "string") return `bbl::ui_append_text(${engine}, {}, ${value.cpp})`;
                     return `bbl::ui_append_to_root(${engine}, ${child.cpp})`;
                 }
-                this.context.expectSameEngine(element, child, call);
-                this.ui.recordUiStaticAppend(element, child);
-                return `bbl::ui_append_child(${engine}, ${element.cpp}, ${child.cpp})`;
+                this.context.expectSameEngine(receiver, child, call);
+                this.ui.recordUiStaticAppend(receiver, child);
+                if (value.kind === "string") return `bbl::ui_append_text(${engine}, ${receiver.cpp}, ${value.cpp})`;
+                return `bbl::ui_append_child(${engine}, ${receiver.cpp}, ${child.cpp})`;
             });
             return { kind: "void", cpp: appends.join(", ") };
         }
@@ -1146,7 +1232,8 @@ export class PlatformCalls {
         if (element && callee.name.text === "getBoundingClientRect") {
             this.context.expectArgumentCount(call, 0, 0);
             const engine = this.context.requireEngine(element, call);
-            const rect = `bbl::ui_get_client_rect(${engine}, ${element.cpp})`;
+            const rect = this.context.allocateTemporaryCppName("ui_rect");
+            this.context.emit(`const auto ${rect} = bbl::ui_get_client_rect(${engine}, ${element.cpp});`);
             const component = (name: string): Value => ({
                 kind: "number",
                 cpp: `${rect}.${name}`,
@@ -1230,24 +1317,6 @@ export class PlatformCalls {
                         : mutation,
                 };
             }
-        }
-        if (callee.name.text === "appendChild" &&
-            ts.isPropertyAccessExpression(callee.expression) &&
-            (callee.expression.name.text === "body" ||
-                callee.expression.name.text === "head") &&
-            ts.isIdentifier(callee.expression.expression) &&
-            callee.expression.expression.text === "document" &&
-            this.context.isDefaultLibraryIdentifier(callee.expression.expression)) {
-            this.context.expectArgumentCount(call, 1, 1);
-            const child = this.context.compileValue(argumentAt(call, 0));
-            this.context.expectKind(child, "ui-element", argumentAt(call, 0));
-            const engine = this.context.requireEngine(child, call);
-            this.ui.recordUiStaticRootAppend(child);
-            return {
-                ...child,
-                cpp: `bbl::ui_append_to_root(${engine}, ${child.cpp})`,
-                engineCpp: engine,
-            };
         }
         return undefined;
     }

@@ -269,6 +269,10 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
         provenance: "src/engine/device-lost-recovery.ts + src/engine/device-lost-scene-recovery.ts; native device and scene-resource reconstruction",
         consumers: CMAKE,
     },
+    "input:dom": {
+        provenance: "DOM event target/phase dispatch; native-architecture: owned input packets and realm-local listeners",
+        consumers: CMAKE,
+    },
     "input:gamepad": {
         provenance:
             "browser navigator.getGamepads + Gamepad standard mapping; " +
@@ -1238,6 +1242,10 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
         provenance: "the HTML dedicated Worker, module graph, event loop and structured-clone host services",
         consumers: CMAKE,
     },
+    "platform:http": {
+        provenance: "runtime HTTP(S) requests and response data through native platform transport",
+        consumers: CMAKE,
+    },
     "platform:window": {
         provenance: "the Window document, layout observers and native presentation host, independent of application and worker execution",
         consumers: CMAKE,
@@ -1250,6 +1258,10 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
     "ui:inline-svg": {
         provenance:
             "generation-validated inline svg/path/rect markup projected through the pinned RmlUi SVG plugin",
+        consumers: CMAKE,
+    },
+    "data:locale": {
+        provenance: "ECMAScript string normalization and locale collation through the platform ICU C API",
         consumers: CMAKE,
     },
     "data:json": {

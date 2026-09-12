@@ -96,12 +96,14 @@ test("provider option aliases retain static options and source-ordered native ca
 });
 
 test("an own random assignment cannot install the engine's global override", () => {
-    assert.throws(() => compileSource(scene(`${provider}
+    const result = compileSource(scene(`${provider}
         {
             const Math = { random: (): number => 0.25 };
             Math.random = (): number => 0.5;
+            if (Math.random() !== 0.5) throw new Error("local random assignment");
         }
-    `)), /Unsupported property assignment 'Math.random'/);
+    `));
+    assert.doesNotMatch(result.cpp, /set_random_override/);
 });
 
 test("provider-backed systems refuse bridges and composition that would freeze native state", () => {

@@ -6,7 +6,8 @@ status. One line per item: the gap, where it is, its size (S < 1 h, M < half day
 
 ## Compiler
 
-- [ ] Remaining core-library forms in data-methods.ts: reverse callbacks, Unicode normalization and locale collation (`normalize`, `localeCompare`), `Array<[K, V]>` pair elements (a mixed tuple has no native element type, so `[...map.entries()]` and pair arrays refuse), `Set.entries()`. M; real applications reach `localeCompare` (26 sites in one).
+- [ ] Stored-array destructuring assignments still refuse nested, defaulted and member targets (data-lowering.ts); identifier targets and a final rest are represented. S/M; collection transforms use destructuring.
+- [ ] Retained `textContent`/`innerText` compound assignments need a text getter preserving descendant/markup text; they refuse in ui-projection.ts. M; event-driven UI updates.
 - [ ] Class inheritance, `#private` members, static blocks and mutable static fields written from static methods refuse (classes.ts); a caught error's `name` is always `Error` and its `cause` is dropped (error-values.ts), pending an error value kind over a native exception carrying both. M; real applications reach each a few times.
 - [ ] `Object.assign(engineHandle, {...})` still erases silently (object-statics.ts, the shape the browser-instrumentation path always erased); lower it as the property writes it stands for, or refuse. S; camera-mutations and node-geometry tests pin the current shape.
 - [ ] Lowerings that restate a neighbour instead of reaching one mechanism: the logical-assignment store repeats the scalar and data-path stores rather than running the plain assignment under its guard, and `dictionary.name` keeps a member arm per operation rather than canonicalizing to the element access (data-lowering.ts); `Array.from`'s mapper walk shares no scaffold with the array-callback loops; library globals are recognized per site with three alias tests (expressions.ts, static-evaluator.ts, module-initializers.ts); `DataTypeRegistry` names anonymous structs while classifying, so callers pre-gate on checker facts (`declaredAsDictionary`, `mentionsTypeParameter`), the module-state planner reads container-ness off initializer syntax, and the receiver's type arguments sit beside the call-frame stack (data-types.ts). M.
@@ -57,7 +58,8 @@ status. One line per item: the gap, where it is, its size (S < 1 h, M < half day
 - [ ] Worker realms must share one rendering product (worker-modules.ts:82-85). L; unreached beyond offscreen.
 - [ ] Transfer lists admit OffscreenCanvas only (workers.ts:119); clone nodes are undefined/null/bool/double/string/array/object/buffer/transfer (pal_structured_clone.hpp:41); ArrayBuffer transfer, MessagePort and Date/Map/Set/typed-array views refuse. L; unreached.
 - [ ] Worker listeners: message/error only, `once` the only option, no worker-scope error or unhandledrejection (workers.ts:133-147, runtime.hpp:180). M; unreached.
-- [ ] The Window realm forwards mouse events only (pal_window_realm.cpp:431-435); keyboard, cross-realm preventDefault and ResizeObserver entries are missing; drawCallCount is per engine but has no worker transport. L.
+- [ ] Window ResizeObserver entries are missing; drawCallCount is per engine but has no worker transport (pal_window_realm.cpp). M.
+- [ ] DOM input still needs AbortSignal lifetime, explicit pointer capture and coalesced events; focus/form events retain per-element dispatch (dom-listeners.ts, pal_dom_events.hpp, pal_ui_rml.cpp). L; application interaction controllers.
 - [ ] SharedArrayBuffer/Atomics fall to the generic constructor refusal (expressions.ts:689); name the contract. S.
 - [ ] DPR follows a 16 ms poll of SDL_GetWindowDisplayScale (pal_window_realm.cpp:477); a pure DPR change leaves the canvas backing store (pal_canvas.hpp:134) and every MediaQueryList stays registered (pal_window_realm.cpp:337-341). M.
 - [ ] File accept/MIME/extension/label tables are spelled four times (browser-file.ts:39, js_file.hpp:280-326, js_voxel_file.hpp:26) with two parsers; one generated descriptor. M, deletes more than it adds.
@@ -70,7 +72,8 @@ status. One line per item: the gap, where it is, its size (S < 1 h, M < half day
 - [ ] No test compares .slots sidecars with PAL binding tables (test/ checks survival and bytes only); SDL keeps four PinnedStageSlots pairs (pal_sdl_gpu.cpp:941-1084) and Dawn its own node layout caches (pal_dawn.cpp:7158, :7307). M.
 - [ ] Morph-shadow is emitted in 19 trees and reached in 2; light/camera gizmos 7/1. Gate at reach. M, deletes generated code.
 - [ ] Shadow generator maps/buffers are released only at teardown (pal_sdl_gpu.cpp:3891, :6022) and handles index the vector; reclaim retired generators without compacting. M.
-- [ ] The crosshair is a private property (pal_ui_rml.cpp:1929), there is no bare tag selector kind (:1729-1749), line height is hardcoded 1.32 (:3155). M.
+- [ ] The crosshair is a private property (pal_ui_rml.cpp), and line height is hardcoded 1.32. M.
+- [ ] Retained selectors need additional attribute operators, nth-child(... of selector) and general structural chains across projected grid containers. Generated content still needs counters/images, typed attribute fallbacks and decorations/layout substitutions requiring authored handles; placeholder styles only represent color/opacity (ui-selector.ts, ui-projection.ts, pal_ui_rml.cpp). L.
 - [ ] Dawn builds and deploys on Windows only (build-dawn.ps1:60-65, :105) and no SPIR-V ships. L; validate Linux/macOS against browser references before claiming either.
 - [ ] Drop sdl-multisample-read.patch (SDL#15838) and d3d12-multisample-lines.patch (SDL#16182) when an SDL release passes their controls; png-grey-ramp-last-index.patch self-retires. S per release.
 - [ ] A floating-origin transform-only version bump rebakes and re-uploads whole vertex buffers, twice with pinned_vertices (pal_dawn.cpp:13137-13181). M; 9 trees.

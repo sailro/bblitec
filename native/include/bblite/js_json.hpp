@@ -493,6 +493,9 @@ class JsonValue {
     [[nodiscard]] bool strict_equals(std::string_view other) const {
         return kind_ == Kind::string && string_ == other;
     }
+    [[nodiscard]] bool strict_equals(const char* other) const {
+        return strict_equals(std::string_view(other));
+    }
 
     [[nodiscard]] bool strict_equals(bool other) const {
         return kind_ == Kind::boolean && boolean_ == other;

@@ -4,14 +4,16 @@ import { dataTypeCppType, dataTypeKey, dataTypesEqual, passesByReferenceKind, co
 export type { DataType, TypedArrayKind } from "./data-types/model.js";
 export { isHandleKind, handleCppType } from "./data-types/handles.js";
 export { TYPED_ARRAY_KINDS, BUFFER_VIEW_KINDS, isTypedArrayType, typedArrayStem, typedArrayCppType, typedArrayStoreExpression } from "./data-types/typed-arrays.js";
-export { dataTypesEqual, passesByReferenceKind } from "./data-types/operations.js";
+export { dataTypesEqual, passesByReferenceKind, isOpaqueReference } from "./data-types/operations.js";
 import { EmissionMap, EmissionSet } from "./emission-transaction.js";
 import ts from "typescript";
 import { createHash } from "node:crypto";
 import { cppIdentifier, doubleLiteral } from "../cpp-literals.js";
-import { isDefaultLibraryIdentifier } from "./symbols.js";
+import { declaredInDefaultLibrary, isDefaultLibraryIdentifier } from "./symbols.js";
 import { nativeReturnTsType } from "./native-return-type.js";
 import { classInstanceProperties } from "./class-properties.js";
+import { forEachAnalysisNode } from "./analysis-walk.js";
+import { unwrapExpression } from "./syntax.js";
 
 type Fail = (node: ts.Node, message: string) => never;
 
@@ -33,6 +35,7 @@ function literalTagValue(checker: ts.TypeChecker, type: ts.Type): string | undef
 
 /** The pinned type name each handle kind is declared as. */
 const pinnedHandleTypes: Record<string, HandleKind> = {
+  EngineContext: "engine",
   DeviceLostRecoveryHandle: "device-recovery",
   EnvironmentTextures: "gpu-environment",
   NodeInputHandle: "node-input",
@@ -182,6 +185,7 @@ export function opaqueEngineValue(
 export type DataIterationElement =
   | DataType
   | { kind: "map-entry"; key: DataType; value: DataType }
+  | { kind: "set-entry"; element: DataType }
   | { kind: "array-entry"; element: DataType; indexCpp: string }
   | { kind: "array-index"; indexCpp: string };
 
@@ -196,7 +200,7 @@ export interface DataStructField {
   /** A discriminated-union field absent from at least one inactive arm. */
   defaultWhenMissing?: boolean;
   /** Which union tags actually own this field (wire serialization observes absence). */
-  presentForTags?: { discriminant: string; values: string[] };
+  presentForTags?: Array<Array<{ discriminant: string; value: string }>>;
   /**
    * The source declared the property with `?`, so JavaScript can observe it
    * as absent rather than as null. `JSON.stringify` is the observer: it
@@ -205,6 +209,8 @@ export interface DataStructField {
    * `sh: number | null` once both are a `Nullable` field here.
    */
   optionalProperty?: boolean;
+  /** An asserted empty object can lack this otherwise required property. */
+  uncheckedProperty?: boolean;
 }
 
 function propertyIsReadOnly(property: ts.Symbol): boolean {
@@ -301,7 +307,26 @@ export function declaredInDomLibrary(symbol: ts.Symbol): boolean {
   );
 }
 
-export function platformHandleKind(type: ts.Type): "gamepad" | "gamepad-button" | undefined {
+/** Web Audio and media identities are recognized from the DOM declarations. */
+export function domAudioHandleKind(type: ts.Type): HandleKind | undefined {
+  if (!type.symbol || !declaredInDomLibrary(type.symbol)) return undefined;
+  switch (type.symbol.name) {
+    case "MediaStream": return "media-stream";
+    case "MediaStreamTrack": return "media-stream-track";
+    case "AudioParam": return "audio-param";
+    case "AudioBuffer": return "audio-buffer";
+    case "AudioContext": case "BaseAudioContext": case "OfflineAudioContext": return "audio-context";
+    case "AudioNode": return "audio-node";
+  }
+  return (type.getBaseTypes() ?? []).some(base => domAudioHandleKind(base) === "audio-node") ? "audio-node" : undefined;
+}
+
+export function platformHandleKind(type: ts.Type): "gamepad" | "gamepad-button" | "gpu-device" | "gpu-texture" | undefined {
+  if (type.symbol && (declaredInDomLibrary(type.symbol) || type.symbol.declarations?.some(declaration =>
+      declaration.getSourceFile().fileName.replace(/\\/g, "/").includes("/@webgpu/types/")))) {
+    if (type.symbol.name === "GPUDevice") return "gpu-device";
+    if (type.symbol.name === "GPUTexture") return "gpu-texture";
+  }
   if (!type.symbol || !declaredInDomLibrary(type.symbol)) return undefined;
   if (type.symbol.name === "Gamepad") return "gamepad";
   if (type.symbol.name === "GamepadButton") return "gamepad-button";
@@ -310,11 +335,13 @@ export function platformHandleKind(type: ts.Type): "gamepad" | "gamepad-button" 
 
 function borrowedPlatformEventKind(
   symbol: ts.Symbol | undefined,
-): "event" | "mouse" | "keyboard" | undefined {
+): DataType<"borrowed-platform-event">["event"] | undefined {
   if (!symbol || !declaredInDomLibrary(symbol)) return undefined;
   if (symbol.name === "Event") return "event";
   if (symbol.name === "MouseEvent") return "mouse";
   if (symbol.name === "KeyboardEvent") return "keyboard";
+  if (symbol.name === "ErrorEvent") return "error";
+  if (symbol.name === "PromiseRejectionEvent") return "rejection";
   return undefined;
 }
 
@@ -394,6 +421,10 @@ export function tupleComponents(
  */
 function markIdentityFunctions(dataType: DataType): DataType {
   switch (dataType.kind) {
+    case "product":
+      return { kind: "product", elements: dataType.elements.map(markIdentityFunctions) };
+    case "union":
+      return { kind: "union", members: dataType.members.map(markIdentityFunctions) };
     case "function":
       return { ...dataType, identity: true };
     case "optional":
@@ -494,11 +525,36 @@ export class DataTypeRegistry {
    * record does not carry a writer for every other record it declares.
    */
   private readonly jsonSerializedStructs = new EmissionSet<string>();
+  private readonly jsonSerializedEnums = new EmissionSet<string>();
+  private readonly partialRecords = new EmissionSet<ts.Symbol | ts.Type | string>();
 
   public constructor(
     private readonly checker: ts.TypeChecker,
     private readonly fail: Fail,
+    private readonly asynchronous = false,
   ) {}
+
+  /** Asserted object literals can omit fields their declared view later fills. */
+  public registerPartialRecords(files: readonly ts.SourceFile[]): void {
+    for (const file of files) {
+      if (file.isDeclarationFile) continue;
+      forEachAnalysisNode(file, node => {
+        if (!ts.isAsExpression(node) && !ts.isTypeAssertionExpression(node)) return;
+        const literal = unwrapExpression(node.expression);
+        if (!ts.isObjectLiteralExpression(literal) || literal.properties.length !== 0) return;
+        const type = this.checker.getTypeAtLocation(node);
+        if (type.getCallSignatures().length || type.getConstructSignatures().length ||
+            type.symbol?.declarations?.some(ts.isClassDeclaration)) return;
+        const fields = this.checker.getPropertiesOfType(type);
+        if (!fields.length) return;
+        this.partialRecords.add(this.structIdentity(type));
+      });
+    }
+  }
+
+  public isPartialRecord(type: ts.Type): boolean {
+    return this.partialRecords.has(this.structIdentity(type));
+  }
 
   /**
    * Marks object values stored behind another JavaScript object/container
@@ -507,6 +563,10 @@ export class DataTypeRegistry {
    */
   public markStoredObjectReferences(dataType: DataType): DataType {
     switch (dataType.kind) {
+      case "product":
+        return { kind: "product", elements: dataType.elements.map(element => this.markStoredObjectReferences(element)) };
+      case "union":
+        return { kind: "union", members: dataType.members.map(member => this.markStoredObjectReferences(member)) };
       case "struct":
         this.referenceStructNames.add(dataType.name);
         return dataType;
@@ -529,9 +589,10 @@ export class DataTypeRegistry {
           ...dataType,
           element: this.markStoredObjectReferences(dataType.element),
         };
+      case "iterator":
       case "set":
         return {
-          kind: "set",
+          kind: dataType.kind,
           element: this.markStoredObjectReferences(dataType.element),
         };
       case "map":
@@ -550,6 +611,12 @@ export class DataTypeRegistry {
    * representation is opaque here (promises, functions, DOM objects, ...).
    */
   public fromTsType(type: ts.Type, node: ts.Node): DataType | undefined {
+    if (type.isUnion() && type.types.some(member => (member.flags & ts.TypeFlags.Void) !== 0)) {
+      const present = type.types.filter(member =>
+        (member.flags & (ts.TypeFlags.Void | ts.TypeFlags.Null | ts.TypeFlags.Undefined)) === 0);
+      const inner = present.length === 1 ? this.fromTsType(present[0]!, node) : undefined;
+      return inner ? this.nullableType(inner) : undefined;
+    }
     if (
       (type.flags & ts.TypeFlags.Union) !== 0 &&
       (type.flags & ts.TypeFlags.Boolean) === 0 &&
@@ -565,21 +632,16 @@ export class DataTypeRegistry {
       if (!inner) {
         return undefined;
       }
-      // std::function already has the nullable state JavaScript callbacks
-      // need: an empty function represents null/undefined and converts to
-      // false in a presence guard. Avoid wrapping it in Nullable so calls,
-      // assignments and truthiness all use that single native state.
-      if (inner.kind === "function") {
-        return inner;
-      }
-      if (inner.kind === "struct" && this.isReferenceStruct(inner.name)) {
-        // Shared object handles carry null directly; wrapping one
-        // in Nullable would add a second, non-JavaScript state.
-        return inner;
-      }
-      return { kind: "optional", inner };
+      return this.nullableType(inner);
     }
     return this.fromNonNullableType(type, node);
+  }
+
+  /** Callbacks and shared objects already carry their own absent state. */
+  public nullableType(inner: DataType): DataType {
+    return inner.kind === "optional" || inner.kind === "function" ||
+      (inner.kind === "struct" && this.isReferenceStruct(inner.name))
+      ? inner : { kind: "optional", inner };
   }
 
   public requireFromTsType(
@@ -635,13 +697,27 @@ export class DataTypeRegistry {
     if ((type.flags & ts.TypeFlags.Object) === 0) {
       return undefined;
     }
+    if (type.symbol?.name === "Storage" && declaredInDomLibrary(type.symbol)) return {kind:"storage"};
+    if (type.symbol?.name === "Response" && declaredInDomLibrary(type.symbol)) return {kind:"http-response"};
+    if (type.symbol?.name === "Date" && type.symbol.declarations?.some(
+      declaration => ts.isInterfaceDeclaration(declaration) && isDefaultLibraryIdentifier(this.checker, declaration.name),
+    )) return {kind:"date"};
+    if (type.symbol?.name === "DateTimeFormat" && type.symbol.declarations?.some(
+      declaration => ts.isInterfaceDeclaration(declaration) && isDefaultLibraryIdentifier(this.checker, declaration.name),
+    )) return {kind:"date-time-format"};
     if (type.symbol?.name === "ArrayBuffer") {
       return { kind: "arraybuffer" };
     }
     if (type.symbol?.name === "DataView") {
       return { kind: "dataview" };
     }
+    if (type.symbol?.name === "ArrayBufferView" && type.symbol.declarations?.some(
+      declaration => ts.isInterfaceDeclaration(declaration) && isDefaultLibraryIdentifier(this.checker, declaration.name),
+    )) {
+      return { kind: "bufferview" };
+    }
     const platformHandle = platformHandleKind(type);
+    if (type.symbol?.name === "EventTarget" && declaredInDomLibrary(type.symbol)) return {kind:"event-target"};
     if (platformHandle) return { kind: "handle", handle: platformHandle };
     const borrowedEvent = borrowedPlatformEventKind(type.symbol);
     if (borrowedEvent) {
@@ -662,19 +738,11 @@ export class DataTypeRegistry {
     // Web Audio buffers are opaque context-owned resources. They are safe
     // to retain in ordinary JS containers (sound caches are the common
     // case), but their PCM storage stays behind the audio PAL.
-    if (type.symbol?.name === "AudioBuffer") {
-      return { kind: "handle", handle: "audio-buffer" };
-    }
-    if (
-      type.symbol?.name === "AudioContext" ||
-      type.symbol?.name === "BaseAudioContext" ||
-      type.symbol?.name === "OfflineAudioContext"
-    ) {
-      return { kind: "handle", handle: "audio-context" };
-    }
-    if (isPinnedType(type, ["AudioEngine", "CsgSolid", "Csg2Solid", "Font"])) {
+    const audioHandle = domAudioHandleKind(type);
+    if (audioHandle) return { kind: "handle", handle: audioHandle };
+    if (isPinnedType(type, ["AudioEngine", "CsgSolid", "Csg2Solid", "Font", "AnimationManager", "NodeParticleSet", "RenderTask", "MaterialPlugin", "SpriteRenderer"])) {
       // These interfaces carry compiler-owned identity, not plain-data
-      // storage: audio context/buses, a geometry plan, or a parsed font.
+      // storage: audio context/buses, geometry, font, animation or particle plans.
       return undefined;
     }
     if (type.symbol && isDomElementType(type.symbol)) {
@@ -682,6 +750,9 @@ export class DataTypeRegistry {
     }
     if (type.symbol?.name === "OffscreenCanvas" && declaredInDomLibrary(type.symbol)) {
       return { kind: "handle", handle: "offscreen-canvas" };
+    }
+    if (type.symbol?.name === "MediaQueryList" && declaredInDomLibrary(type.symbol)) {
+      return { kind: "handle", handle: "worker-media-query" };
     }
     if (
       type.symbol &&
@@ -731,6 +802,11 @@ export class DataTypeRegistry {
       if (type.symbol?.name === "Promise") {
         const [resolvedType] = this.checker.getTypeArguments(reference);
         if (!resolvedType) return undefined;
+        if (this.asynchronous) {
+          if ((resolvedType.flags & ts.TypeFlags.Void) !== 0) return {kind:"promise"};
+          const result = this.fromStoredTsType(resolvedType, node);
+          return result ? {kind:"promise", result} : undefined;
+        }
         // Reached async work executes synchronously in the native lowering.
         // A promise retained in a data container therefore stores its
         // resolved value, preserving cache/get/set behavior without adding a
@@ -743,6 +819,15 @@ export class DataTypeRegistry {
         return this.fromTupleType(reference, node);
       }
       const symbolName = type.symbol?.name;
+      // Iterable describes a protocol, not a record with a callable iterator
+      // field. Reached helpers specialize to their actual collection storage.
+      if (symbolName === "Iterable" && type.symbol && declaredInDefaultLibrary(type.symbol)) return undefined;
+      if (symbolName && ["SetIterator", "IterableIterator", "IteratorObject", "Iterator"].includes(symbolName) &&
+        type.symbol && declaredInDefaultLibrary(type.symbol)) {
+        const [elementType] = this.checker.getTypeArguments(reference);
+        const element = elementType ? this.fromStoredTsType(elementType, node) : undefined;
+        return element ? {kind: "iterator", element} : undefined;
+      }
       if (symbolName === "ArrayLike") {
         const [elementType] = this.checker.getTypeArguments(reference);
         if (!elementType) return undefined;
@@ -814,7 +899,7 @@ export class DataTypeRegistry {
   }
 
   /** A stored JavaScript function with a fully native data signature. */
-  private fromFunctionType(type: ts.Type, node: ts.Node): DataType | undefined {
+  private fromFunctionType(type: ts.Type, node: ts.Node, storedClassField = false): DataType | undefined {
     const signatures = type.getCallSignatures();
     if (signatures.length !== 1) return undefined;
     const signature = signatures[0]!;
@@ -822,7 +907,7 @@ export class DataTypeRegistry {
       let owner: ts.Node | undefined = origin;
       while (owner && !ts.isSourceFile(owner)) {
         if (
-          ts.isPropertyDeclaration(owner) &&
+          !storedClassField && ts.isPropertyDeclaration(owner) &&
           ts.isClassLike(owner.parent) &&
           this.checker.getTypeAtLocation(owner).getCallSignatures().length > 0
         ) {
@@ -859,9 +944,10 @@ export class DataTypeRegistry {
     if (parameters.some((parameter) => parameter === undefined)) {
       return undefined;
     }
-    const resultType = nativeReturnTsType(
+    const signatureResult = this.checker.getReturnTypeOfSignature(signature);
+    const resultType = this.asynchronous && (signatureResult.flags & ts.TypeFlags.Void) === 0 ? signatureResult : nativeReturnTsType(
       this.checker,
-      this.checker.getReturnTypeOfSignature(signature),
+      signatureResult,
       signature.declaration,
     );
     const mappedResult = resultType
@@ -916,9 +1002,54 @@ export class DataTypeRegistry {
       );
     }
     return (
+      this.fromTupleUnion(type, node) ??
       this.fromDiscriminatedObjectUnion(type, node) ??
-      this.fromCommonObjectUnion(type, node)
+      this.fromCommonObjectUnion(type, node) ??
+      this.fromMixedUnion(type, node)
     );
+  }
+
+  /** Fixed tuple alternatives share lanes where their stored representations agree. */
+  private fromTupleUnion(type: ts.UnionType, node: ts.Node): DataType | undefined {
+    if (!type.types.every(member => this.checker.isTupleType(member))) return undefined;
+    const tuples = type.types.map(member => member as ts.TypeReference);
+    if (tuples.some(tuple => (tuple.target as ts.TupleType).elementFlags.some(flag =>
+      (flag & (ts.ElementFlags.Optional | ts.ElementFlags.Rest | ts.ElementFlags.Variadic)) !== 0))) return undefined;
+    const lanes = tuples.map(tuple => this.checker.getTypeArguments(tuple));
+    if (!lanes[0]?.length || lanes.some(lane => lane.length !== lanes[0]!.length)) return undefined;
+    const elements: DataType[] = [];
+    for (let index = 0; index < lanes[0].length; index++) {
+      const candidates = lanes.map(lane => this.fromStoredTsType(lane[index]!, node));
+      const first = candidates[0];
+      if (!first) return undefined;
+      if (candidates.every(candidate => candidate && dataTypesEqual(candidate, first))) elements.push(first);
+      else if (candidates.every(candidate => candidate?.kind === "string" || candidate?.kind === "enum")) elements.push({ kind: "string" });
+      else return undefined;
+    }
+    return this.tupleStorage(elements);
+  }
+
+  /** Mixed scalar/object alternatives retain their own representation and identity. */
+  private readonly mixedUnionsInProgress = new EmissionSet<ts.Type>();
+
+  private fromMixedUnion(type: ts.UnionType, node: ts.Node): DataType | undefined {
+    if (!type.types.some(member => (member.flags & (ts.TypeFlags.StringLike | ts.TypeFlags.NumberLike | ts.TypeFlags.BooleanLike)) !== 0)) return undefined;
+    if (this.mixedUnionsInProgress.has(type)) return undefined;
+    this.mixedUnionsInProgress.add(type);
+    try {
+      const members: DataType[] = [];
+      for (const source of type.types) {
+        const mapped = (source.flags & ts.TypeFlags.StringLike) !== 0
+          ? { kind: "string" as const } : this.fromTsType(source, node);
+        if (!mapped) return undefined;
+        const retained = this.markStoredObjectReferences(mapped);
+        if (!members.some(member => dataTypesEqual(member, retained))) members.push(retained);
+      }
+      members.sort((left, right) => this.typeKey(left).localeCompare(this.typeKey(right)));
+      return members.length === 1 ? members[0] : { kind: "union", members };
+    } finally {
+      this.mixedUnionsInProgress.delete(type);
+    }
   }
 
   /**
@@ -943,7 +1074,6 @@ export class DataTypeRegistry {
     const identity = this.structIdentity(type);
     const completed = this.structTypesByIdentity.get(identity);
     if (completed) return completed;
-
     const propertiesByMember = type.types.map((member) =>
       this.checker.getPropertiesOfType(member),
     );
@@ -1035,32 +1165,36 @@ export class DataTypeRegistry {
     ) {
       return undefined;
     }
-    const propertiesByMember = type.types.map((member) =>
-      this.checker.getPropertiesOfType(member));
-    const discriminant = propertiesByMember[0]!.find((property) => {
-      const values = propertiesByMember.map((properties) => {
-        const candidate = properties.find(
-          ({ name }) => name === property.name,
-        );
-        if (!candidate) return undefined;
-        const declaration =
-          candidate.valueDeclaration ?? candidate.declarations?.[0];
-        const value = this.checker.getTypeOfSymbolAtLocation(
-          candidate,
-          declaration ?? node,
-        );
-        return literalTagValue(this.checker, value);
-      });
-      return (
-        values.every((value) => value !== undefined) &&
-        new EmissionSet(values).size === type.types.length
-      );
-    });
-    if (!discriminant) return undefined;
-
     const identity = this.structIdentity(type);
     const completed = this.structTypesByIdentity.get(identity);
     if (completed) return completed;
+    const propertiesByMember = type.types.map((member) =>
+      this.checker.getPropertiesOfType(member));
+    const tags = propertiesByMember.map(properties => new Map(properties.flatMap(property => {
+      const declaration = property.valueDeclaration ?? property.declarations?.[0] ?? node;
+      const value = literalTagValue(this.checker, this.checker.getTypeOfSymbolAtLocation(property, declaration));
+      return value === undefined ? [] : [[property.name, value] as const];
+    })));
+    // Several tags may distinguish an arm: a boolean success flag can group
+    // multiple failures, whose reason then selects the remaining payload.
+    const distinguish = (index: number, others: number[], exclude?: string) => {
+      const conditions: Array<{ discriminant: string; value: string }> = [];
+      let remaining = others;
+      while (remaining.length > 0) {
+        const candidates = [...tags[index]!].filter(([name]) => name !== exclude).map(([name, value]) => ({
+          discriminant: name, value,
+          covered: remaining.filter(other => tags[other]!.has(name) && tags[other]!.get(name) !== value),
+        })).sort((left, right) => right.covered.length - left.covered.length);
+        const selected = candidates[0];
+        if (!selected?.covered.length) return undefined;
+        conditions.push({ discriminant: selected.discriminant, value: selected.value });
+        remaining = remaining.filter(other => !selected.covered.includes(other));
+      }
+      return conditions;
+    };
+    const indices = type.types.map((_member, index) => index);
+    if (indices.some(index => !distinguish(index, indices.filter(other => other !== index)))) return undefined;
+
     const preferredName = type.aliasSymbol?.name;
     const name = this.uniqueName(
       preferredName
@@ -1099,16 +1233,16 @@ export class DataTypeRegistry {
         ];
       });
       let mapped: DataType | undefined;
+      const literalStrings = propertyTypes.flatMap(propertyType => propertyType.isUnion() ? propertyType.types : [propertyType]);
       if (
-        propertyTypes.length === type.types.length &&
-        propertyTypes.every(
+        literalStrings.every(
           (propertyType) =>
             (propertyType.flags & ts.TypeFlags.StringLiteral) !== 0,
         )
       ) {
         mapped = this.registerEnum(
           type,
-          propertyTypes.map(
+          literalStrings.map(
             (propertyType) =>
               (propertyType as ts.StringLiteralType).value,
           ),
@@ -1124,9 +1258,17 @@ export class DataTypeRegistry {
               !candidate || !dataTypesEqual(candidate, first),
           )
         ) {
-          return undefined;
+          // A shared property may vary between arms, for example null in
+          // one record and a string in another. Ask the checker for that
+          // property's union instead of choosing one arm's representation.
+          const sharedProperty = type.getProperty(propertyName);
+          mapped = sharedProperty ? this.fromTsType(
+            this.checker.getTypeOfSymbolAtLocation(sharedProperty, node), node,
+          ) : undefined;
+          if (!mapped) return undefined;
+        } else {
+          mapped = first;
         }
-        mapped = first;
       }
       fields.push({
         sourceName: propertyName,
@@ -1137,16 +1279,13 @@ export class DataTypeRegistry {
           ? { readOnly: true }
           : {}),
         ...(propertyTypes.length < type.types.length
-          ? { defaultWhenMissing: true, presentForTags: {
-              discriminant: discriminant.name,
-              values: propertiesByMember.flatMap(properties => {
-                if (!properties.some(property => property.name === propertyName)) return [];
-                const tag = properties.find(property => property.name === discriminant.name)!;
-                const tagType = this.checker.getTypeOfSymbolAtLocation(tag, tag.valueDeclaration ?? tag.declarations?.[0] ?? node);
-                const tagValue = literalTagValue(this.checker, tagType);
-                return tagValue === undefined ? [] : [tagValue];
-              }),
-            } }
+          ? { defaultWhenMissing: true, presentForTags: indices.flatMap(index => {
+              if (!propertiesByMember[index]!.some(property => property.name === propertyName)) return [];
+              const absent = indices.filter(other => !propertiesByMember[other]!.some(property => property.name === propertyName));
+              const conditions = distinguish(index, absent, propertyName);
+              if (!conditions) throw new Error("A union field must be distinguished by another tag.");
+              return [conditions];
+            }) }
           : {}),
       });
     }
@@ -1172,6 +1311,8 @@ export class DataTypeRegistry {
     reference: ts.TypeReference,
     node: ts.Node,
   ): DataType | undefined {
+    if ((reference.target as ts.TupleType).elementFlags.some(flag =>
+      (flag & (ts.ElementFlags.Rest | ts.ElementFlags.Variadic)) !== 0)) return undefined;
     const elements = this.checker.getTypeArguments(reference);
     if (elements.length === 0) {
       return undefined;
@@ -1182,23 +1323,32 @@ export class DataTypeRegistry {
       return undefined;
     }
     const complete = mapped as DataType[];
-    if (complete.every((element) => element.kind === "number")) {
+    return this.tupleStorage(complete);
+  }
+
+  public tupleStorage(elements: DataType[]): DataType {
+    if (elements.every((element) => element.kind === "number")) {
       return {
         kind: "tuple",
         arity: elements.length,
       };
     }
-    // JavaScript tuples are arrays at runtime. A homogeneous object tuple
-    // such as `[FVertex, FVertex]` therefore uses the ordinary native
-    // array representation; it keeps element identity and supports the
-    // same indexed reads while retaining the fixed length in TypeScript.
-    const first = complete[0]!;
-    return complete.every((element) => dataTypesEqual(element, first))
-      ? {
-          kind: "vector",
-          element: this.markStoredObjectReferences(first),
-        }
-      : undefined;
+    // Tuples share array identity. Heterogeneous lanes use a nullable union
+    // so dynamic writes, resizing and missing elements use ordinary array
+    // operations instead of separate fixed-product mutation paths.
+    const first = elements[0]!;
+    if (elements.every((element) => dataTypesEqual(element, first))) {
+      return {kind: "vector", element: this.markStoredObjectReferences(first)};
+    }
+    const members: DataType[] = [];
+    const append = (type: DataType): void => {
+      if (type.kind === "optional") append(type.inner);
+      else if (type.kind === "union") type.members.forEach(append);
+      else if (type.kind === "enum") append({kind: "string"});
+      else if (!members.some(member => dataTypesEqual(member, type))) members.push(type);
+    };
+    elements.map(element => this.markStoredObjectReferences(element)).forEach(append);
+    return {kind: "vector", element: {kind: "optional", inner: members.length === 1 ? members[0]! : {kind: "union", members}}};
   }
 
   private fromStructType(type: ts.Type, node: ts.Node): DataType | undefined {
@@ -1275,6 +1425,13 @@ export class DataTypeRegistry {
       this.callTypeArgumentKeys.pop();
       this.refreshTypeArgumentKey();
     }
+  }
+
+  /** Snapshot the lexical generic environment for a returned callable. */
+  public captureTypeArguments(): ReadonlyMap<ts.Symbol, ts.Type> | undefined {
+    const frames = this.typeArgumentFrames();
+    if (frames.length === 0) return undefined;
+    return new EmissionMap(frames.flatMap(frame => [...frame]));
   }
 
   /** Every substitution in force, the receiver's beneath the calls'. */
@@ -1470,6 +1627,7 @@ export class DataTypeRegistry {
       return undefined;
     }
     const fields: DataStructField[] = [];
+    const partial = this.isPartialRecord(type);
     for (const property of properties) {
       const declaration =
         property.valueDeclaration ?? property.declarations?.[0];
@@ -1484,9 +1642,9 @@ export class DataTypeRegistry {
         ? allowStoredFunctions &&
           declaration !== undefined &&
           (ts.isPropertySignature(declaration) ||
-            ts.isMethodSignature(declaration)) &&
-          (property.flags & ts.SymbolFlags.Optional) === 0
-          ? this.fromFunctionType(propertyType, declaration ?? node)
+            ts.isMethodSignature(declaration) ||
+            ts.isMethodDeclaration(declaration))
+          ? this.fromFunctionType(callableType, declaration ?? node)
           : undefined
         // A record's own field inherits the position the record is in
         // rather than demanding one: an interface written to carry a
@@ -1498,12 +1656,9 @@ export class DataTypeRegistry {
       if (!mappedValue) {
         return undefined;
       }
-      const optional = (property.flags & ts.SymbolFlags.Optional) !== 0;
+      const optional = partial || (property.flags & ts.SymbolFlags.Optional) !== 0;
       const mapped: DataType = this.markStoredObjectReferences(
-        optional &&
-          mappedValue.kind !== "optional"
-          ? { kind: "optional", inner: mappedValue }
-          : mappedValue,
+        optional ? this.nullableType(mappedValue) : mappedValue,
       );
       fields.push({
         sourceName: property.name,
@@ -1511,10 +1666,14 @@ export class DataTypeRegistry {
         type: mapped,
         ...(propertyIsReadOnly(property) ? { readOnly: true } : {}),
         ...(optional ? { optionalProperty: true } : {}),
+        ...(partial ? { uncheckedProperty: true } : {}),
         ...(optional && mapped.kind !== "optional"
           ? { defaultWhenMissing: true }
           : {}),
       });
+    }
+    if (partial) {
+      this.referenceStructNames.add(provisionalName);
     }
     if (
       fields.some((field) => this.carriesBorrowedPlatformEvent(field.type))
@@ -1628,24 +1787,19 @@ export class DataTypeRegistry {
       const propertyType = property
         ? this.checker.getTypeOfSymbolAtLocation(property, member.name)
         : this.checker.getTypeAtLocation(member.name);
-      const mapped = this.fromClassFieldType(propertyType, member.name);
+      const mapped = this.fromFunctionType(
+        this.checker.getNonNullableType(propertyType), member.name, true,
+      ) ?? this.fromClassFieldType(propertyType, member.name);
       if (
         !mapped &&
         this.checker
           .getNonNullableType(propertyType)
           .getCallSignatures().length > 0
       ) {
-        // A handler written as a field of a class instances are stored by
-        // would be a different function object per instance, and the only
-        // identity a materialized callback can carry is its declaration's.
-        // `off(this._handler)` would then remove every instance's handler,
-        // so the shape is refused rather than conflated.
         this.fail(
           member,
           `Field '${member.name.text}' of shared class ` +
-            `'${declaration.name?.text ?? "?"}' declares a callback per ` +
-            "instance; a stored instance has no identity a container could " +
-            "compare it by.",
+            `'${declaration.name?.text ?? "?"}' requires a callback with a native data signature.`,
         );
       }
       if (!mapped) {
@@ -1654,7 +1808,7 @@ export class DataTypeRegistry {
       fields.push({
         sourceName: member.name.text,
         name: sanitizeIdentifier(member.name.text),
-        type: this.markStoredObjectReferences(mapped),
+        type: this.markStoredObjectReferences(markIdentityFunctions(mapped)),
         ...(member.modifiers?.some(
           (modifier) => modifier.kind === ts.SyntaxKind.ReadonlyKeyword,
         )
@@ -1879,9 +2033,12 @@ export class DataTypeRegistry {
     if ((type.flags & ts.TypeFlags.Object) === 0) {
       return undefined;
     }
-    const index = this.checker.getIndexInfoOfType(type, ts.IndexKind.String);
-    if (!index) {
-      return undefined;
+    const stringIndex = this.checker.getIndexInfoOfType(type, ts.IndexKind.String);
+    const index = stringIndex ?? this.checker.getIndexInfoOfType(type, ts.IndexKind.Number);
+    if (!index) return undefined;
+    if (!stringIndex && (index.type.flags & ts.TypeFlags.Number) !== 0 &&
+        this.checker.getPropertiesOfType(type).length === 0) {
+      return { kind: "numberindex" };
     }
     const uniform = this.checker
       .getPropertiesOfType(type)
@@ -1898,7 +2055,7 @@ export class DataTypeRegistry {
     return value
       ? {
           kind: "map",
-          key: { kind: "string" },
+          key: { kind: stringIndex ? "string" : "number" },
           value: this.markStoredObjectReferences(value),
         }
       : undefined;
@@ -2353,6 +2510,10 @@ export class DataTypeRegistry {
     const path: string[] = [];
     const visit = (current: DataType): void => {
       switch (current.kind) {
+        case "enum":
+          this.enumToStringCpp(current, "value", node);
+          this.jsonSerializedEnums.add(current.name);
+          return;
         case "struct": {
           if (path.includes(current.name)) {
             this.fail(
@@ -2516,6 +2677,12 @@ export class DataTypeRegistry {
           "",
         );
       }
+      if (this.jsonSerializedEnums.has(definition.name)) {
+        lines.push(
+          `inline void json_write(bbl::js::JsonWriter& writer, ${definition.name} value) { bbl::js::json_write(writer, ${definition.name}_to_string(value)); }`,
+          "",
+        );
+      }
       if (structuredClone) {
         lines.push(
           `inline std::string clone_enum_value(${definition.name} value) { return ${definition.name}_to_string(value); }`,
@@ -2553,11 +2720,18 @@ export class DataTypeRegistry {
           }
         }
       }
-      const cloneTags = new EmissionSet(structuredClone
-        ? definition.fields.flatMap(field => field.presentForTags ? [field.presentForTags.discriminant] : [])
-        : []);
-      const cloneFields = structuredClone ? [...definition.fields].sort((left, right) =>
-        Number(cloneTags.has(right.sourceName)) - Number(cloneTags.has(left.sourceName))) : [];
+      const cloneFields: DataStructField[] = [];
+      const clonePending = new Set<DataStructField>();
+      const visitCloneField = (field: DataStructField): void => {
+        if (cloneFields.includes(field)) return;
+        if (clonePending.has(field)) throw new Error("Cyclic union field presence is not supported by structured clone.");
+        clonePending.add(field);
+        for (const condition of field.presentForTags?.flat() ?? [])
+          visitCloneField(definition.fields.find(candidate => candidate.sourceName === condition.discriminant)!);
+        cloneFields.push(field);
+        clonePending.delete(field);
+      };
+      if (structuredClone) definition.fields.forEach(visitCloneField);
       lines.push(
         `struct ${definition.name}${this.isReferenceStruct(definition.name) ? "Data" : ""} {`,
         ...definition.fields.map(
@@ -2570,12 +2744,16 @@ export class DataTypeRegistry {
           `    template <typename Visitor> friend void clone_fields(${qualifier}${definition.name}${this.isReferenceStruct(definition.name) ? "Data" : ""}& record, Visitor&& visitor) {`,
           ...cloneFields.map(field => {
             if (field.presentForTags) {
-              const tag = definition.fields.find(candidate => candidate.sourceName === field.presentForTags!.discriminant)!;
-              if (tag.type.kind !== "enum") throw new Error("Union clone discriminator is not an enum.");
-              const enumType = tag.type;
-              const enumDefinition = [...this.enumsByKey.values()].find(candidate => candidate.name === enumType.name)!;
-              const condition = field.presentForTags.values.map(value =>
-                `record.${tag.name} == ${enumType.name}::${this.enumMemberIdentifier(enumDefinition, value)}`).join(" || ");
+              const condition = field.presentForTags.map(alternative => `(${alternative.map(({discriminant, value}) => {
+                const tag = definition.fields.find(candidate => candidate.sourceName === discriminant)!;
+                let literal = tag.type.kind === "string" ? JSON.stringify(value) : value;
+                if (tag.type.kind === "enum") {
+                  const enumType = tag.type;
+                  const definition = [...this.enumsByKey.values()].find(candidate => candidate.name === enumType.name)!;
+                  literal = `${enumType.name}::${this.enumMemberIdentifier(definition, value)}`;
+                }
+                return `record.${tag.name} == ${literal}`;
+              }).join(" && ")})`).join(" || ");
               return `        visitor.when(${JSON.stringify(field.sourceName)}, record.${field.name}, ${condition});`;
             }
             return `        visitor(${JSON.stringify(field.sourceName)}, record.${field.name}${field.defaultWhenMissing ? ", true" : ""});`;
@@ -2614,6 +2792,12 @@ export class DataTypeRegistry {
     const enums = new EmissionSet<string>();
     const visit = (dataType: DataType): void => {
       switch (dataType.kind) {
+        case "union":
+          dataType.members.forEach(visit);
+          return;
+        case "product":
+          dataType.elements.forEach(visit);
+          return;
         case "struct": {
           if (structs.has(dataType.name)) {
             return;
@@ -2635,6 +2819,7 @@ export class DataTypeRegistry {
           return;
         case "vector":
         case "set":
+        case "iterator":
         case "span":
           visit(dataType.element);
           return;
@@ -2675,6 +2860,10 @@ export class DataTypeRegistry {
 
   private structDependencies(dataType: DataType): string[] {
     switch (dataType.kind) {
+      case "union":
+        return dataType.members.flatMap(member => this.structDependencies(member));
+      case "product":
+        return dataType.elements.flatMap(element => this.structDependencies(element));
       case "struct":
         return this.isReferenceStruct(dataType.name) ? [] : [dataType.name];
       case "optional":

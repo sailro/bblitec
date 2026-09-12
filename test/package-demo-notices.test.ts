@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 
 // Ports that install no code into the shipped executable — build-system
-// helpers only. Everything else the manifest names is linkable, so the
+// helpers and operating-system libraries. Everything else the manifest names is linkable, so the
 // packager must carry a notice entry for it; exclusions live here, by
 // name, where a review can see them.
 const NOTICE_EXEMPT: ReadonlySet<string> = new Set([
@@ -16,7 +16,7 @@ function dependencyNames(value: unknown, location: string): string[] {
     if (!Array.isArray(value)) {
         assert.fail(`${location} must be an array.`);
     }
-    return value.map((entry: unknown, index) => {
+    return value.flatMap((entry: unknown, index) => {
         if (typeof entry === "string") return entry;
         if (
             entry === null ||
@@ -30,6 +30,8 @@ function dependencyNames(value: unknown, location: string): string[] {
         if (typeof name !== "string") {
             assert.fail(`${location}[${index}].name must be a string.`);
         }
+        // This packager targets Windows; these ports are replaced by OS services.
+        if ("platform" in entry && entry.platform === "!windows") return [];
         return name;
     });
 }

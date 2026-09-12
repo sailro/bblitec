@@ -1,8 +1,10 @@
 #pragma once
 #include <bblite/checked_handles.hpp>
+#include <bblite/pal_audio_types.hpp>
 
 #include <bblite/js_callback.hpp>
 #include <bblite/snapshot_list.hpp>
+#include <bblite/dom_event_state.hpp>
 
 #include <algorithm>
 #include <array>
@@ -30,6 +32,13 @@
 namespace bbl {
 
 struct Engine;
+struct DomInput;
+/** The first OS language preference, with a hyphenated region when available. */
+[[nodiscard]] std::string preferred_language();
+[[nodiscard]] std::string native_platform();
+[[nodiscard]] double logical_processor_count();
+[[nodiscard]] const void* native_navigator_identity();
+[[nodiscard]] const void* native_performance_identity();
 struct ShadowGeneratorRecord;
 struct PropertyAnimationManagerRecord;
 
@@ -142,10 +151,14 @@ struct PlatformKeyboardEvent {
     bool alt_key = false;
     bool meta_key = false;
     mutable bool default_prevented = false;
+    std::shared_ptr<DomEventState> dom{};
 
     void prevent_default() const noexcept {
+        if (dom && !dom->can_prevent_default()) return;
         default_prevented = true;
     }
+    void stop_propagation() const { dom_event_state(*this).stop_propagation(); }
+    void stop_immediate_propagation() const { dom_event_state(*this).stop_immediate_propagation(); }
 };
 
 /** Browser-neutral mouse data delivered by the platform event loop. */
@@ -158,10 +171,21 @@ struct PlatformMouseEvent {
     double movement_y = 0.0;
     double delta_y = 0.0;
     mutable bool default_prevented = false;
+    std::shared_ptr<DomEventState> dom{};
+    std::string pointer_type = "mouse";
+    double pointer_id = 1;
+    bool is_primary = true;
+    bool shift_key = false;
+    bool ctrl_key = false;
+    bool alt_key = false;
+    bool meta_key = false;
 
     void prevent_default() const noexcept {
+        if (dom && !dom->can_prevent_default()) return;
         default_prevented = true;
     }
+    void stop_propagation() const { dom_event_state(*this).stop_propagation(); }
+    void stop_immediate_propagation() const { dom_event_state(*this).stop_immediate_propagation(); }
 };
 
 /**
@@ -237,12 +261,19 @@ class PlatformEventListeners<void(Args...)> {
       /** The owning event loop supplies exception reporting and callback cleanup. */
       template <typename Invoke>
       void dispatch_with(Invoke&& invoke, Args... args) {
+        dispatch_while([] { return true; }, std::forward<Invoke>(invoke), args...);
+      }
+
+      /** A stopped dispatch must not consume a later once-listener. */
+      template <typename Continue, typename Invoke>
+      void dispatch_while(Continue&& proceed, Invoke&& invoke, Args... args) {
         const std::size_t boundary = next_sequence_;
         ++dispatch_depth_;
         try {
             for (Entry& entry : entries_) {
                 if (entry.sequence >= boundary) break;
                 if (!entry.active) continue;
+                if (!proceed()) break;
                 if (entry.once) {
                     entry.active = false;
                     needs_compaction_ = true;
@@ -2202,6 +2233,8 @@ struct MeshRecord {
     // The per-instance RGBA stream `setThinInstanceColors` bound, as the
     // pin's own tightly-packed float4 rows. Empty where the mesh has none.
     std::vector<float> instance_colors;
+    std::shared_ptr<js::F32Array> instance_color_source;
+    double thin_instance_cull_bounds_pad = 0;
     // `Mesh._linePointCounts`: the polyline sizes a line system was built
     // from, kept because `updateLineSystem` refuses a changed connectivity
     // rather than rewriting a mesh whose segments moved. The flag beside it
@@ -2215,6 +2248,10 @@ struct MeshRecord {
     std::vector<float> morph_storage_weights;
     std::uint64_t morph_weights_version = 0;
 };
+
+inline bool has_instance_colors(const MeshRecord& mesh) {
+    return mesh.instance_color_source || !mesh.instance_colors.empty();
+}
 
 inline ModelVertex detached_imported_vertex(const MeshRecord& mesh, const ModelGeometry& geometry, std::size_t index) {
     ModelVertex vertex = geometry.bind_vertices.at(index);
@@ -3235,6 +3272,7 @@ struct HierarchyInstancePoolRecord {
 
 #if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
 enum class UiStyleSelectorKind : std::uint8_t {
+    Sequence,
     Class,
     Id,
     CompoundClass,
@@ -3244,7 +3282,29 @@ enum class UiStyleSelectorKind : std::uint8_t {
     TagClass,
     /** `tag[attribute="identifier"]`, with a statically validated value. */
     TagAttribute,
+    /** `tag > .class`, an immediate parent tag and child class. */
+    TagChildClass,
 };
+
+enum class UiScrollbarPart : std::uint8_t { None, Scrollbar, Thumb, Track, Button, Corner };
+enum class UiMotionPreference : std::uint8_t { Any, Reduce, NoPreference };
+
+enum class UiSelectorTestKind : std::uint8_t {
+    Tag, Id, Class, Attribute, Equals, Hover, Active, Focus, FocusVisible, FocusWithin, Disabled, Checked,
+    NthChild, NthLastChild, NthOfType, NthLastOfType, OnlyChild, OnlyOfType, Empty, Not, Is, Where, Has,
+};
+enum class UiSelectorRelation : std::uint8_t { Self, Descendant, Child, Next, Following };
+struct UiSelectorStep;
+struct UiSelectorTest {
+    UiSelectorTestKind kind; std::string name; std::string value;
+    std::vector<std::vector<UiSelectorStep>> alternatives{};
+    std::int32_t a = 0, b = 0;
+};
+struct UiSelectorStep { UiSelectorRelation relation; std::vector<UiSelectorTest> tests; };
+enum class UiGeneratedPart : std::uint8_t { None, Before, After, Placeholder };
+enum class UiContentPartKind : std::uint8_t { Text, Attribute };
+struct UiContentPart { UiContentPartKind kind; std::string value; };
+struct UiGeneratedContent { bool enabled = false; std::vector<UiContentPart> parts{}; };
 
 /**
  * One compiler-validated stylesheet rule.
@@ -3264,6 +3324,11 @@ struct UiStyleRule {
     bool hover = false;
     bool focus_visible = false;
     bool active = false;
+    UiScrollbarPart scrollbar = UiScrollbarPart::None;
+    UiMotionPreference motion = UiMotionPreference::Any;
+    std::vector<UiSelectorStep> sequence{};
+    UiGeneratedPart generated = UiGeneratedPart::None;
+    std::optional<UiGeneratedContent> content{};
 };
 
 /**
@@ -3327,6 +3392,8 @@ struct UiElementRecord {
     std::string inner_rml;
     std::unordered_map<std::string, std::string> attributes;
     std::unordered_map<std::string, std::string> style_properties;
+    /** Latest write order, one entry per property; empty values remove declarations. */
+    std::vector<std::string> style_property_order;
     /** Rules owned by this retained <style> element, in source order. */
     std::vector<UiStyleRule> style_rules;
     UiElementHandle parent{};
@@ -3627,6 +3694,7 @@ struct Engine {
     std::vector<IntervalCallback> interval_callbacks;
     std::uint64_t next_interval_id = 1;
     /** Platform callbacks with DOM listener identity and removal semantics. */
+    std::shared_ptr<DomInput> dom_input;
     PlatformEventListeners<void(const PlatformKeyboardEvent&)>
         key_down_callbacks;
     PlatformEventListeners<void(const PlatformKeyboardEvent&)>
@@ -3672,8 +3740,14 @@ struct Engine {
     bool ui_focus_visible = true;
     /** Direct document children in live DOM attachment order. */
     std::vector<UiElementHandle> ui_root_children;
+    struct DocumentRoots {
+        UiElementHandle html, head, body;
+        [[nodiscard]] bool active() const noexcept { return html.value != invalid_handle; }
+    } ui_document_roots;
     /** Audited host-page rules, preceding scene-created sheets in cascade. */
     std::vector<UiStyleRule> ui_host_style_rules;
+    /** A realm host can synchronously publish pending edits before a source layout read. */
+    UiClientRect (*ui_measure_element)(Engine&, UiElementHandle) = nullptr;
     /** Any tree/text/style/listener mutation invalidates the PAL projection. */
     std::uint64_t ui_revision = 0;
     std::uint64_t ui_style_revision = 0;
@@ -5085,7 +5159,10 @@ void upload_thin_instance_matrices(
 void set_thin_instance_colors(
     Engine& engine,
     MeshHandle mesh,
-    const std::vector<float>& colors);
+    const js::F32Array& colors);
+void set_thin_instance_color(Engine& engine, MeshHandle mesh, double index,
+    double r, double g, double b, double a);
+void set_thin_instance_cull_bounds_pad(Engine& engine, MeshHandle mesh, double pad);
 /** Restore a baked imported mesh's local pivot before replacing its rotation. */
 void prepare_imported_mesh_quaternion_write(
     Engine& engine,

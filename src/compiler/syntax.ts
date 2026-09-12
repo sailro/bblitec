@@ -8,7 +8,22 @@
  * values belongs beside its consumer, not here.
  */
 import ts from "typescript";
+
+/** Literal delimiters are syntax; the native regex consumes only its pattern and flags. */
+export function regularExpressionParts(expression: ts.RegularExpressionLiteral): {pattern:string; flags:string} | undefined {
+    const delimiter = expression.text.lastIndexOf("/");
+    if (delimiter <= 0) return undefined;
+    return {pattern:expression.text.slice(1, delimiter).replaceAll("\\/", "/"), flags:expression.text.slice(delimiter + 1)};
+}
 import { someAnalysisNode } from "./analysis-walk.js";
+
+/** Calls, accessors and writes can change an earlier selected receiver/value. */
+export function expressionMayRunCode(expression: ts.Expression): boolean {
+    return someAnalysisNode(expression, node =>
+        ts.isCallExpression(node) || ts.isNewExpression(node) ||
+        ts.isPropertyAccessExpression(node) || ts.isElementAccessExpression(node) ||
+        isUpdateExpression(node) || isAssignmentExpression(node), {functions: "skip", types: "skip"});
+}
 
 export interface UnwrapOptions {
     /**

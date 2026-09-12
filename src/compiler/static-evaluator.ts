@@ -33,10 +33,12 @@ function objectIdentityCallArgument(
 import { EmissionMap, EmissionSet } from "./emission-transaction.js";
 import ts from "typescript";
 import type { Value } from "./types.js";
+import type { CompileError } from "./compile-error.js";
 import { numberConstant, numberConstantValue } from "./number-intrinsics.js";
 import {
     isDataTuple,
     tupleComponents,
+    type DataType,
 } from "./data-types.js";
 import {
     doubleLiteral as cppDoubleLiteral,
@@ -51,6 +53,7 @@ import {
     isAssignmentExpression,
     isUpdateExpression,
     objectProperty,
+    hasNonNullAssertion,
     unwrapExpression,
     argumentAt,
 } from "./syntax.js";
@@ -62,7 +65,7 @@ import {
     mathMemberCall,
 } from "./math-intrinsics.js";
 
-type Fail = (node: ts.Node, message: string) => never;
+type Fail = (node: ts.Node, message: string, reason?: CompileError["reason"]) => never;
 type Lookup = (identifier: ts.Identifier) => Value;
 type LookupOptional = (
     identifier: ts.Identifier,
@@ -97,6 +100,8 @@ type IsBrowserOnlyExpression = (
 type NarrowOptional = (
     value: Value,
     expression: ts.Expression,
+    assertedNonNull?: boolean,
+    expectedType?: DataType,
 ) => Value;
 /**
  * A plain-data tuple given a native home, as the name of the local it
@@ -486,6 +491,14 @@ export class StaticEvaluator {
         expression: ts.Expression,
         precision: "float" | "double" = "float",
     ): string {
+        const narrowNumeric = (value: Value, node: ts.Expression, assertedNonNull = false): Value => {
+            // A mutable tuple can hold a number where its declared fixed lane was
+            // a string. TypeScript calls the guarded numeric branch never; native
+            // storage still has the number member selected by the runtime guard.
+            const expected = (this.checker.getTypeAtLocation(node).flags & ts.TypeFlags.Never) !== 0
+                ? {kind: "number" as const} : undefined;
+            return this.narrowOptional(value, node, assertedNonNull, expected);
+        };
         const castOptionalNumber = (
             value: Value,
             uncheckedElement = false,
@@ -770,7 +783,7 @@ export class StaticEvaluator {
         if (ts.isPropertyAccessExpression(unwrapped)) {
             const resolved = this.resolveProperty(unwrapped);
             const value = resolved
-                ? this.narrowOptional(resolved, unwrapped)
+                ? narrowNumeric(resolved, unwrapped)
                 : undefined;
             const optionalNumber = value
                 ? castOptionalNumber(value)
@@ -785,7 +798,7 @@ export class StaticEvaluator {
         if (ts.isElementAccessExpression(unwrapped)) {
             const resolved = this.resolveElement(unwrapped);
             const value = resolved
-                ? this.narrowOptional(resolved, unwrapped)
+                ? narrowNumeric(resolved, unwrapped)
                 : undefined;
             const optionalNumber = value
                 ? castOptionalNumber(value, true)
@@ -799,9 +812,10 @@ export class StaticEvaluator {
         }
         if (ts.isCallExpression(unwrapped)) {
             const resolved = this.resolveCall(unwrapped);
-            const value = this.narrowOptional(
+            const value = narrowNumeric(
                 resolved,
-                unwrapped,
+                expression,
+                hasNonNullAssertion(expression),
             );
             const optionalNumber = castOptionalNumber(value);
             if (optionalNumber !== undefined) {
@@ -829,7 +843,7 @@ export class StaticEvaluator {
             // the number it was narrowed to -- the unwrap, not a refusal.
             // An UNguarded read narrows to nothing and still fails by
             // name below rather than dereferencing an empty optional.
-            const narrowed = this.narrowOptional(value, unwrapped);
+            const narrowed = narrowNumeric(value, unwrapped);
             const optionalNumber = castOptionalNumber(narrowed);
             if (optionalNumber !== undefined) {
                 return optionalNumber;
@@ -897,6 +911,10 @@ export class StaticEvaluator {
             !value.parameterBinding &&
             !value.nativeBinding
         ) {
+            if (!Number.isFinite(value.staticNumber)) {
+                const cpp = numberConstantValue(value.staticNumber).cpp;
+                return precision === "float" ? `static_cast<float>(${cpp})` : cpp;
+            }
             return precision === "float"
                 ? cppFloatLiteral(value.staticNumber)
                 : cppDoubleLiteral(value.staticNumber);
@@ -1079,6 +1097,7 @@ export class StaticEvaluator {
             this.fail(
                 unwrapped,
                 `Expected a string literal; '${unwrapped.text}' is bound as ${value.kind} without a static string.`,
+                "static-value-required",
             );
         }
         if (ts.isPropertyAccessExpression(unwrapped)) {
@@ -1135,7 +1154,7 @@ export class StaticEvaluator {
                     .join(separator);
             }
         }
-        this.fail(unwrapped, "Expected a string literal.");
+        this.fail(unwrapped, "Expected a string literal.", "static-value-required");
     }
 
     /**
@@ -1189,6 +1208,9 @@ export class StaticEvaluator {
                 return undefined;
             }
             const owner = this.resolveValue(left.expression);
+            // Initializer metadata does not settle the current contents of a
+            // materialized field; writes may have happened through a helper.
+            if (owner.kind === "data") return undefined;
             const name = left.name.text;
             const property = owner.recordProperties?.[name];
             if (property) {
@@ -1534,6 +1556,8 @@ export class StaticEvaluator {
     ): string | undefined {
         const unwrapped =
             this.resolveStaticExpression(expression);
+        if (unwrapped.kind === ts.SyntaxKind.NullKeyword) return "null";
+        if (ts.isIdentifier(unwrapped) && unwrapped.text === "undefined" && !this.lookupOptional(unwrapped)) return "undefined";
         if (
             ts.isStringLiteral(unwrapped) ||
             ts.isNoSubstitutionTemplateLiteral(unwrapped)
@@ -1635,6 +1659,7 @@ export class StaticEvaluator {
         this.fail(
             expression,
             "Template substitutions must be static strings or numbers.",
+            "static-value-required",
         );
     }
 

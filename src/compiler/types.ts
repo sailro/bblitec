@@ -28,6 +28,7 @@ import type { SceneNodeTransformDescriptor } from "../scene-node-transform-descr
 import type { CompiledTextData } from "../pinned-text-data.js";
 import type { CompiledMeshWalk } from "../gltf-mesh-walks.js";
 import type { LocalCubemapPlan } from "../pinned-local-cubemap.js";
+import type { DeploymentOptions } from "./deployment.js";
 
 /** A static host-page element projected beside scene-created retained UI. */
 export interface NativeHostUiElement {
@@ -51,7 +52,7 @@ export interface NativeHostUi extends NativeHostUiStyleSource {
   elements: NativeHostUiElement[];
 }
 
-export interface CompileOptions {
+export interface CompileOptions extends DeploymentOptions {
   fileName?: string;
   title?: string;
   width?: number;
@@ -71,7 +72,7 @@ export interface CompileOptions {
 export interface CompileManifest {
   source: string;
   /**
-   * Every repository file this generation read, as sorted forward-slash
+   * Every local file this generation read, as sorted forward-slash
    * paths relative to the repository root: the entry and the modules it
    * imports (the compiler's half), plus the host-UI companion and any
    * local asset the CLI materialized. `scene -- compile` hashes exactly
@@ -1422,6 +1423,8 @@ export type ValueKind =
   | "audio-context"
   | "audio-node"
   | "audio-param"
+  | "media-stream"
+  | "media-stream-track"
   | "render-target"
   | "render-target-texture"
   | "render-texture"
@@ -1875,7 +1878,7 @@ export interface ValueFields {
   nativeVectorData?: true;
   /** The expression creates an owning data container at this read. */
   freshData?: true;
-  dataStore?: TypedArrayKind;
+  dataStore?: TypedArrayKind | "numberindex";
   /**
    * Set on a value read out of a container of const elements (a span,
    * including a materialized constant table). It cannot be bound by
@@ -1883,6 +1886,11 @@ export interface ValueFields {
    * through either.
    */
   readOnly?: boolean;
+  /** A pinned function retained as a compile-time alias of its intrinsic. */
+  intrinsicName?: string;
+  hostFunction?: "fetch" | "clipboard-write";
+  /** Known RegExp grammar determines the positional replacement callback arguments. */
+  regexpCaptureCount?: number;
   callbackDeclaration?:
     | ts.Identifier
     | ts.FunctionDeclaration
@@ -2162,6 +2170,8 @@ export interface ValueFields {
   platformEventBase?: true;
   /** Native pointer token carrying JavaScript identity for a data object. */
   objectIdentityCpp?: string;
+  /** Native DOM target discriminator for a represented global identity. */
+  domEventTargetCpp?: string;
   /**
    * For a `handle-collection` value: where the collection lives and, when
    * it is asset-derived, which materialized asset decides its members.
@@ -2323,6 +2333,10 @@ export interface ValueFields {
   staticJson?: unknown;
   tupleElements?: Value[];
   recordProperties?: Record<string, Value>;
+    /** Complete own-key order proven for a native record whose key set cannot change. */
+  recordOwnKeys?: readonly string[];
+  /** Module namespace exports are live bindings and cannot be written through this record. */
+  moduleNamespace?: true;
   /** Fields alias an already-retained native object; escaping must preserve those field references. */
   retainedNativeRecord?: true;
   /**
@@ -2364,6 +2378,8 @@ export interface ValueFields {
    * getter of the record runs. This is the closure the source wrote.
    */
   recordScopes?: ReadonlyArray<Map<ts.Symbol, VariableBinding>>;
+  /** Generic substitutions captured alongside a callable's lexical variables. */
+  recordTypeArguments?: ReadonlyMap<ts.Symbol, ts.Type>;
   /** Shared across compiler aliases of one native scene. */
   sceneEnvironmentState?: {
     rotationSet: boolean;
@@ -2385,6 +2401,10 @@ export interface ValueFields {
   /** The layer an `addSprite2D` handle lives in, which its animation
    *  target names beside the sprite's own id. */
   spriteLayerCpp?: string;
+  /** A synchronous application error event; its native payload cannot escape dispatch. */
+  nativeErrorEvent?: true;
+  /** A known absent receiver stopped this optional chain before member evaluation. */
+  optionalChainShortCircuited?: true;
   browserValue?:
     | { kind: "boolean"; value: boolean }
     | { kind: "number"; value: number }
@@ -2406,6 +2426,7 @@ export interface ValueFields {
 }
 
 export type Feature =
+  | "platform:http"
   | "text:data"
   | "text:layout"
   | "text:weight"
@@ -2428,6 +2449,7 @@ export type Feature =
   | "backend:sdl"
   | "engine:device-recovery"
   | "input:gamepad"
+  | "input:dom"
   | "camera:arc-rotate"
   | "camera:default"
   | "camera:free"
@@ -2693,6 +2715,7 @@ export type Feature =
    * never writes or reads a document links nothing for it.
    */
   | "data:json"
+  | "data:locale"
   /** Web Storage: the durable per-user key/value store behind `localStorage`. */
   | "storage:local"
   | "platform:workers"
@@ -2704,7 +2727,7 @@ export interface WorkerCompilation {
   declarations(): string;
 }
 
-export interface ResolvedCompileOptions {
+export interface ResolvedCompileOptions extends DeploymentOptions {
   workers?: WorkerCompilation;
   fileName: string;
   title: string;

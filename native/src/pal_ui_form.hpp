@@ -1,5 +1,6 @@
 #pragma once
 #include <bblite/pal_system_fonts.hpp>
+#include <RmlUi/Core/Elements/ElementFormControl.h>
 #include <ft2build.h>
 #include FT_FREETYPE_H
 #include <cmath>
@@ -11,6 +12,15 @@
 #include <vector>
 
 namespace bbl::pal {
+// RmlUi otherwise treats HTML buttons as generic elements. Reuse its form
+// control behavior for disabled focus, input activation and pseudo-classes.
+class UiButtonElement : public Rml::ElementFormControl {
+public:
+    explicit UiButtonElement(const Rml::String& tag) : ElementFormControl(tag) {}
+    Rml::String GetValue() const override { return GetAttribute<Rml::String>("value", ""); }
+    void SetValue(const Rml::String& value) override { SetAttribute("value", value); }
+};
+
 // Browser text controls retain fractional advances even when their glyph masks
 // are grid fitted. RmlUi's default font engine stores integer glyph advances.
 // For a fixed-pitch face the difference is one uniform spacing adjustment.

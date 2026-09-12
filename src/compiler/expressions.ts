@@ -26,6 +26,7 @@ import ts from "typescript";
 import { isHandleKind } from "./data-types.js";
 
 import { doubleLiteral } from "../cpp-literals.js";
+import {isAbsentTypeofIdentifier} from "./symbols.js";
 import { compileNumberPredicate, numberConstant, numberConstantValue } from "./number-intrinsics.js";
 import {
     compileAudioMethodCall,
@@ -38,10 +39,16 @@ import {
     compileBrowserFileElementAccess,
 } from "./browser-file.js";
 import { isNumberParserCallee, isParseFloatCallee } from "./browser-erasure.js";
-import { hasNonNullAssertion, argumentAt, isLogicalAssignmentOperator } from "./syntax.js";
+import { hasNonNullAssertion, argumentAt, isLogicalAssignmentOperator, isAssignmentExpression, isUpdateExpression, regularExpressionParts } from "./syntax.js";
 import { compileErrorConstruction, errorConstructor } from "./error-values.js";
-import { OBJECT_STATIC_HANDLERS } from "./object-statics.js";
+import { OBJECT_STATIC_HANDLERS, compileObjectPrototypeCall, ownObjectEntries } from "./object-statics.js";
+import { compileWindowIdentity } from "./window-events.js";
+import { compileDateTimeFormat } from "./dates.js";
+import { compileHttpFunction, compileHttpCall } from "./http.js";
+import { compileWindowServiceCall } from "./window-events.js";
+import { CompileError } from "./compile-error.js";
 import { firstReturn } from "./loop-control.js";
+import { regexpCaptureCount } from "./string-replacement.js";
 import {
     FORMATTED_MATH_FOLDS,
     mathMemberAccess,
@@ -58,7 +65,8 @@ import {
     compileJsonRead,
     compileJsonTypeOf,
 } from "./json-bridge.js";
-import { compileWebStorageCall } from "./web-storage.js";
+import { compileWebStorageCall, compileWebStorageValue } from "./web-storage.js";
+import { browserEnvironmentValue } from "./browser-erasure.js";
 import {
     compileImmediatePromise,
     type PromiseLoweringContext,
@@ -109,7 +117,7 @@ function containsEvaluatedCall(node: ts.Node): boolean {
         // The receiver may still hold one -- `advance().toFixed(1)`.
         return containsEvaluatedCall(node.expression.expression);
     }
-    if (ts.isCallExpression(node) || ts.isNewExpression(node)) {
+    if (ts.isCallExpression(node) || ts.isNewExpression(node) || isAssignmentExpression(node) || isUpdateExpression(node)) {
         return true;
     }
     return ts.forEachChild(node, containsEvaluatedCall) ?? false;
@@ -150,6 +158,7 @@ export interface ExpressionContext
         | "registerClassInstance"
         | "classOf"
         | "withRecordScopes"
+        | "captureRecordScopes"
         | "probeEmission"
         | "recordAccessor"
         | "requireEngine"
@@ -191,6 +200,7 @@ export interface ExpressionContext
         | "compileAnimationFrameCall"
         | "compileBrowserGeneratedString"
         | "reachFeature"
+        | "resolveRecordMember"
         | "reachJsData"
         | "noteMaterialColorRead"
         | "enterRuntimeControlFlow"
@@ -207,16 +217,23 @@ export interface ExpressionContext
  * for a runtime number, the two spellings of a boolean, an enum's name,
  * and `null`.
  */
+function staticStringCoercion(value: Value): string | undefined {
+    if (value.staticString !== undefined) return value.staticString;
+    if (value.staticNumber !== undefined) return String(value.staticNumber);
+    if (value.staticBoolean !== undefined) return String(value.staticBoolean);
+    if (value.kind === "json-null") return value.cpp === "std::nullopt" ? "undefined" : "null";
+    return undefined;
+}
+
 export function stringConcatPart(
     context: Pick<LoweringServices, "cppString" | "dataTypes" | "fail">,
     value: Value,
     node: ts.Node,
 ): string {
-    if (value.staticString !== undefined) {
-        return context.cppString(value.staticString);
-    }
-    if (value.staticNumber !== undefined) {
-        return context.cppString(String(value.staticNumber));
+    const constant = staticStringCoercion(value);
+    if (constant !== undefined) return context.cppString(constant);
+    if (value.nativeError && value.recordProperties?.name && value.recordProperties.message) {
+        return `bbl::js::error_to_string(bbl::js::concat(${stringConcatPart(context, value.recordProperties.name, node)}), bbl::js::concat(${stringConcatPart(context, value.recordProperties.message, node)}))`;
     }
     if (value.kind === "string") {
         return value.cpp;
@@ -233,8 +250,16 @@ export function stringConcatPart(
     if (value.kind === "data" && value.dataType?.kind === "string") {
         return value.cpp;
     }
-    if (value.kind === "json-null") {
-        return context.cppString("null");
+    if (value.dataType?.kind === "optional" && value.dataType.inner.kind === "string" && value.preserveUncheckedLookup) {
+        return `([&]() -> std::string { const auto character = ${value.cpp}; return character.has_value() ? *character : std::string("undefined"); }())`;
+    }
+    if (value.dataType?.kind === "union" && value.dataType.members.every(member =>
+        member.kind === "number" || member.kind === "boolean" || member.kind === "string")) {
+        return `std::visit([](const auto& member) -> std::string { ` +
+            `using T = std::decay_t<decltype(member)>; ` +
+            `if constexpr (std::is_same_v<T, double>) return bbl::js::number_to_string(member); ` +
+            `else if constexpr (std::is_same_v<T, bool>) return member ? "true" : "false"; ` +
+            `else return member; }, ${value.cpp})`;
     }
     return context.fail(
         node,
@@ -307,6 +332,25 @@ export class ExpressionLowerer {
             hasNonNullAssertion(expression);
         const unwrapped = this.context.unwrap(expression);
 
+        if (ts.isCallExpression(unwrapped) || ts.isNewExpression(unwrapped)) {
+            const formatter = compileDateTimeFormat(this.context.dataLowerer, unwrapped);
+            if (formatter) return formatter;
+        }
+        const storage = compileWebStorageValue(this.context, unwrapped);
+        if (storage) return storage;
+        const environment = browserEnvironmentValue(this.context, unwrapped);
+        if (environment) return environment;
+        const http = compileHttpFunction(this.context, unwrapped);
+        if (http) return http;
+        const window = compileWindowIdentity(this.context, unwrapped);
+        if (window) return window;
+
+        if (ts.isPropertyAccessExpression(unwrapped) || ts.isElementAccessExpression(unwrapped)) {
+            const imported = this.context.symbols.importedName(unwrapped);
+            if (imported) return this.context.compileRegisteredConstant(imported) ??
+                { kind: "callback", cpp: "", intrinsicName: imported };
+        }
+
         if (unwrapped.kind === ts.SyntaxKind.NullKeyword) {
             return { kind: "json-null", cpp: "" };
         }
@@ -337,9 +381,7 @@ export class ExpressionLowerer {
                         kind: "record" as const,
                         cpp: "",
                     }),
-                    recordScopes: [
-                        ...this.context.variableScopes,
-                    ],
+                    ...this.context.captureRecordScopes(),
                     ...(this.context.isInRuntimeIteration() ||
                     this.context.isInNativeFunctionBody()
                         ? { repeatedCallbackEvaluation: true }
@@ -477,6 +519,7 @@ export class ExpressionLowerer {
             if (constant) {
                 return constant;
             }
+            if (importedName) return { kind: "callback", cpp: "", intrinsicName: importedName };
             const callback = tryResolveFunctionDeclaration(
                 this.context.checker,
                 unwrapped,
@@ -489,9 +532,7 @@ export class ExpressionLowerer {
                     callbackRecordOwner: {
                         kind: "record",
                         cpp: "",
-                        recordScopes: [
-                            ...this.context.variableScopes,
-                        ],
+                        ...this.context.captureRecordScopes(),
                         ...(this.context.isLocalCallbackEvaluationRepeated(
                             callback,
                         )
@@ -503,9 +544,17 @@ export class ExpressionLowerer {
                     },
                 };
             }
+            const namespace = this.compileModuleNamespace(unwrapped);
+            if (namespace) return namespace;
             return this.context.lookup(unwrapped);
         }
         if (ts.isPropertyAccessExpression(unwrapped)) {
+            const member = this.context.checker.getSymbolAtLocation(unwrapped.name)?.valueDeclaration;
+            const constant = member && ts.isEnumMember(member)
+                ? this.context.checker.getConstantValue(member)
+                : this.context.checker.getConstantValue(unwrapped);
+            if (typeof constant === "string") return staticStringValue(constant, text => this.context.cppString(text));
+            if (typeof constant === "number") return numberConstantValue(constant);
             const numericConstant = numberConstant(unwrapped, identifier => this.context.isDefaultLibraryIdentifier(identifier));
             if (numericConstant !== undefined) return numberConstantValue(numericConstant);
             // A read that descends into a parsed document has no static
@@ -546,7 +595,7 @@ export class ExpressionLowerer {
             );
             const property = data ?? this.context.compilePropertyAccess(unwrapped);
             if (assertedNonNull && property.kind === "data" &&
-                property.dataType?.kind === "optional" && property.dataType.inner.kind === "handle" && property.dataType.inner.handle === "node-input") {
+                property.dataType?.kind === "optional") {
                 return this.context.dataLowerer.narrowOptional(property, expression, true);
             }
             if (data) {
@@ -581,11 +630,8 @@ export class ExpressionLowerer {
                         "RegExp expects a pattern and optional flags.",
                     );
                 }
-                const pattern =
-                    this.context.dataLowerer.compileForSink(
-                        arguments_[0]!,
-                        { kind: "string" },
-                    );
+                const patternValue = this.compileValue(arguments_[0]!);
+                const pattern = this.context.dataLowerer.compileKnownValueForSink(patternValue, {kind: "string"}, arguments_[0]!);
                 const flags = arguments_[1]
                     ? this.compileValue(arguments_[1]!).staticString
                     : "";
@@ -606,6 +652,7 @@ export class ExpressionLowerer {
                 this.context.reachJsData();
                 return {
                     kind: "regexp",
+                    ...(patternValue.staticString !== undefined ? {regexpCaptureCount: regexpCaptureCount(patternValue.staticString)} : {}),
                     cpp:
                         `bbl::js::RegExp(${pattern}, ` +
                         `${flags.includes("g") ? "true" : "false"}, ` +
@@ -638,6 +685,9 @@ export class ExpressionLowerer {
                     classDeclaration,
                 );
                 return instance;
+            }
+            if (this.context.isBrowserOnlyExpression(unwrapped)) {
+                return this.compileBrowserValue(unwrapped);
             }
             this.context.fail(
                 unwrapped,
@@ -693,7 +743,8 @@ export class ExpressionLowerer {
             }
         }
         if (ts.isCallExpression(unwrapped)) {
-            return this.compileCall(unwrapped);
+            const value = this.compileCall(unwrapped);
+            return assertedNonNull ? this.context.dataLowerer.narrowOptional(value, expression, true) : value;
         }
         if (ts.isConditionalExpression(unwrapped)) {
             const value = this.compileConditionalValue(unwrapped);
@@ -705,10 +756,11 @@ export class ExpressionLowerer {
                     ts.isSpreadElement,
                 )
             ) {
-                const dataType =
-                    this.context.dataLowerer.dataTypeAt(
-                        unwrapped,
-                    );
+                const expected = this.context.checker.getContextualType(unwrapped);
+                const destination = expected ? this.context.dataTypes.fromTsType(expected, unwrapped) : undefined;
+                const dataType = destination?.kind === "span" || destination?.kind === "vector"
+                    ? { kind: "vector" as const, element: destination.element }
+                    : this.context.dataLowerer.dataTypeAt(unwrapped);
                 if (
                     dataType?.kind !== "vector" &&
                     dataType?.kind !== "tuple"
@@ -752,12 +804,18 @@ export class ExpressionLowerer {
                     dataType,
                 };
             }
+            let lastEffect = -1;
+            for (let index = unwrapped.elements.length - 1; index >= 0; --index) {
+                if (containsEvaluatedCall(unwrapped.elements[index]!)) { lastEffect = index; break; }
+            }
             return {
                 kind: "tuple",
                 cpp: "",
-                tupleElements: unwrapped.elements.map(
-                    (element) => this.laneValue(element),
-                ),
+                tupleElements: unwrapped.elements.map((element, index) => {
+                    const value = this.laneValue(element);
+                    return index < lastEffect
+                        ? this.context.pinValueToTemporary(value, "array_member", element) : value;
+                }),
             };
         }
         if (ts.isObjectLiteralExpression(unwrapped)) {
@@ -786,12 +844,8 @@ export class ExpressionLowerer {
             return this.compileTemplate(unwrapped);
         }
         if (ts.isRegularExpressionLiteral(unwrapped)) {
-            const literal = unwrapped.text;
-            const delimiter = literal.lastIndexOf("/");
-            if (delimiter <= 0) {
+            const {pattern, flags} = regularExpressionParts(unwrapped) ??
                 this.context.fail(unwrapped, "Malformed regular expression literal.");
-            }
-            const flags = literal.slice(delimiter + 1);
             for (const flag of flags) {
                 if (flag !== "g" && flag !== "i") {
                     this.context.fail(
@@ -800,14 +854,10 @@ export class ExpressionLowerer {
                     );
                 }
             }
-            // Slash delimits a JavaScript literal but has no syntactic role
-            // once the pattern is handed to std::regex as a string.
-            const pattern = literal
-                .slice(1, delimiter)
-                .replaceAll("\\/", "/");
             this.context.reachJsData();
             return {
                 kind: "regexp",
+                regexpCaptureCount: regexpCaptureCount(pattern),
                 cpp:
                     `bbl::js::RegExp(${this.context.cppString(pattern)}, ` +
                     `${flags.includes("g") ? "true" : "false"}, ` +
@@ -836,18 +886,31 @@ export class ExpressionLowerer {
         ) {
             const operands: ts.Expression[] = [];
             this.collectStringPlusOperands(unwrapped, operands);
-            const parts = operands.map((operand) =>
-                stringConcatPart(this.context,
-                    this.compileValue(operand),
-                    operand,
-                ),
-            );
+            const values = operands.map(operand => this.compileValue(operand));
+            const parts = values.map((value, index) => stringConcatPart(this.context, value, operands[index]!));
+            const constants = values.map(staticStringCoercion);
+            const known = constants.every(value => value !== undefined);
             this.context.reachJsData();
             return {
-                kind: "data",
+                kind: known ? "string" : "data",
                 cpp: `bbl::js::concat(${parts.join(", ")})`,
                 dataType: { kind: "string" },
+                ...(known ? { staticString: constants.join("") } : {}),
             };
+        }
+        if (ts.isBinaryExpression(unwrapped) && unwrapped.operatorToken.kind === ts.SyntaxKind.PlusToken &&
+            (this.context.checker.getTypeAtLocation(unwrapped).flags & ts.TypeFlags.Any) !== 0) {
+            // Library callback rest arguments can be inferred as any even when their
+            // supplied native values are concrete strings. Preserve ordinary + semantics.
+            const concatenated = this.context.probeEmission(() => {
+                const left = this.context.pinValueToTemporary(this.compileValue(unwrapped.left), "plus_left", unwrapped.left);
+                const right = this.context.pinValueToTemporary(this.compileValue(unwrapped.right), "plus_right", unwrapped.right);
+                const string = (value: Value): boolean => value.kind === "string" || value.dataType?.kind === "string" || value.dataType?.kind === "enum";
+                if (!string(left) && !string(right)) return undefined;
+                this.context.reachJsData();
+                return this.context.dataLowerer.leafValue(`bbl::js::concat(${stringConcatPart(this.context, left, unwrapped.left)}, ${stringConcatPart(this.context, right, unwrapped.right)})`, {kind: "string"});
+            });
+            if (concatenated) return concatenated;
         }
         if (
             ts.isBinaryExpression(unwrapped) &&
@@ -880,6 +943,12 @@ export class ExpressionLowerer {
                     : leftValue!;
             }
         }
+        if (ts.isBinaryExpression(unwrapped) &&
+            (unwrapped.operatorToken.kind === ts.SyntaxKind.BarBarToken ||
+                unwrapped.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken) &&
+            (this.context.checker.getTypeAtLocation(unwrapped).flags & ts.TypeFlags.StringLike) !== 0) {
+            return this.context.dataLowerer.compileStringLogicalValue(unwrapped);
+        }
         if (this.context.isNumberExpression(unwrapped)) {
             const staticNumber =
                 ts.isNumericLiteral(unwrapped)
@@ -896,6 +965,10 @@ export class ExpressionLowerer {
             };
         }
         if (ts.isTypeOfExpression(unwrapped)) {
+            const browser = this.context.evaluateBrowserValue(unwrapped);
+            if (browser?.kind === "string") {
+                return staticStringValue(browser.value, text => this.context.cppString(text));
+            }
             const expression = this.context.unwrap(
                 unwrapped.expression,
             );
@@ -922,7 +995,7 @@ export class ExpressionLowerer {
             }
             if (
                 ts.isIdentifier(expression) &&
-                expression.text === "undefined" &&
+                (expression.text === "undefined" || isAbsentTypeofIdentifier(this.context.checker, expression)) &&
                 !this.context.lookupOptional(expression)
             ) {
                 return {
@@ -931,9 +1004,26 @@ export class ExpressionLowerer {
                     staticString: "undefined",
                 };
             }
-            const operand = this.context.compileValue(
-                expression,
-            );
+            const compiledOperand = this.context.compileValue(expression);
+            // An unchecked tuple lookup can be absent even when TypeScript's
+            // flow type lists only its declared lanes. typeof observes the
+            // stored value before narrowing it to one of those lanes.
+            const storedOperand = ts.isIdentifier(expression) ? this.context.lookupOptional(expression) : undefined;
+            const operand = storedOperand?.preserveUncheckedLookup ? storedOperand : compiledOperand;
+            if (operand.kind === "json-null") {
+                return staticStringValue(operand.cpp === "std::nullopt" ? "undefined" : "object", text => this.context.cppString(text));
+            }
+            const unionType = operand.dataType?.kind === "optional" ? operand.dataType.inner : operand.dataType;
+            if (unionType?.kind === "union") {
+                const names = unionType.members.map(member => this.context.cppString(
+                    member.kind === "number" || member.kind === "boolean" ? member.kind :
+                        member.kind === "string" || member.kind === "enum" ? "string" :
+                            member.kind === "function" ? "function" : "object"));
+                const table = `std::array<const char*, ${names.length}>{${names.join(", ")}}`;
+                return { kind: "string", cpp: operand.dataType?.kind === "optional"
+                    ? `([](const auto& value) -> std::string { return value.has_value() ? ${table}[(*value).index()] : "undefined"; }(${operand.cpp}))`
+                    : `std::string(${table}[(${operand.cpp}).index()])` };
+            }
             const documentType = compileJsonTypeOf(operand);
             if (documentType) {
                 return documentType;
@@ -1181,13 +1271,7 @@ export class ExpressionLowerer {
             const value = this.compileValue(
                 span.expression,
             );
-            const staticText =
-                value.staticString ??
-                (value.staticNumber !== undefined
-                    ? String(value.staticNumber)
-                    : value.kind === "json-null"
-                      ? "null"
-                      : undefined);
+            const staticText = staticStringCoercion(value);
             if (staticText === undefined) {
                 allCompiledValuesAreStatic = false;
             } else {
@@ -1241,13 +1325,37 @@ export class ExpressionLowerer {
         operands.push(node);
     }
 
-    /** One operand of `bbl::js::concat`: text, or a number spelled by it. */
-    /**
-     * `Object.keys` and `Object.values` over a compile-time record: the
-     * projection is the only difference, so one arm serves both. A
-     * tuple-typed result stays compile-time; a vector-typed one
-     * materializes the projected entries in source order.
-     */
+    private readonly namespacesInProgress = new EmissionSet<ts.Symbol>();
+
+    /** A local module namespace exposes value exports in lexical key order. */
+    private compileModuleNamespace(identifier: ts.Identifier): Value | undefined {
+        const symbol = this.context.symbols.valueSymbol(identifier);
+        const file = symbol?.declarations?.find(ts.isSourceFile);
+        if (!symbol || !file || file.isDeclarationFile) return undefined;
+        if (this.namespacesInProgress.has(symbol))
+            this.context.fail(identifier, "Cyclic module namespace values cannot be materialized as records.");
+        this.namespacesInProgress.add(symbol);
+        try {
+            const properties: Record<string, Value> = Object.create(null);
+            const exports = this.context.checker.getExportsOfModule(symbol).sort((a, b) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0);
+            for (const exported of exports) {
+                const value = exported.flags & ts.SymbolFlags.Alias ? this.context.checker.getAliasedSymbol(exported) : exported;
+                if ((value.flags & ts.SymbolFlags.Value) === 0) continue;
+                const declaration = value.valueDeclaration ?? value.declarations?.[0];
+                if (declaration && (ts.isVariableDeclaration(declaration) || ts.isFunctionDeclaration(declaration) ||
+                    ts.isClassDeclaration(declaration) || ts.isEnumDeclaration(declaration)) && declaration.name && ts.isIdentifier(declaration.name)) {
+                    properties[exported.name] = this.compileValue(declaration.name);
+                } else {
+                    this.context.fail(identifier, `Module namespace export '${exported.name}' has no supported value declaration.`);
+                }
+            }
+            return { kind: "record", cpp: "", recordProperties: properties, moduleNamespace: true };
+        } finally {
+            this.namespacesInProgress.delete(symbol);
+        }
+    }
+
+    /** Project own keys or values, materializing vector results in source order. */
     private compileObjectProjection(
         call: ts.CallExpression,
         projection: "keys" | "values",
@@ -1255,10 +1363,13 @@ export class ExpressionLowerer {
         this.context.expectArgumentCount(call, 1, 1);
         const object = this.compileValue(argumentAt(call, 0));
         const resultType = this.context.dataLowerer.dataTypeAt(call);
+        const enumOrder = object.dataType?.kind === "enummap"
+            ? this.context.dataTypes.enumMembers(object.dataType.enumName) : undefined;
         if (
             projection === "values" &&
             object.kind === "data" &&
             object.dataType?.kind === "enummap" &&
+            (!object.recordOwnKeys || object.recordOwnKeys.every((key, index) => key === enumOrder![index])) &&
             resultType?.kind === "vector"
         ) {
             this.context.reachJsData();
@@ -1282,10 +1393,8 @@ export class ExpressionLowerer {
                 freshData: true,
             };
         }
-        const completeDataRecord = object.kind === "data" && object.dataType?.kind === "struct" &&
-            object.recordProperties && this.context.dataTypes.structFields(object.dataType.name, call)
-                .every(field => Object.hasOwn(object.recordProperties!, field.sourceName));
-        if (object.kind !== "record" && !completeDataRecord) {
+        const pairs = ownObjectEntries(this.context, object, call);
+        if (!pairs) {
             this.context.fail(
                 argumentAt(call, 0),
                 `Object.${projection} currently expects a compile-time record.`,
@@ -1293,12 +1402,12 @@ export class ExpressionLowerer {
         }
         const entries: Value[] =
             projection === "keys"
-                ? Object.keys(object.recordProperties ?? {}).map((key) => ({
+                ? pairs.map(([key]) => ({
                       kind: "string" as const,
                       cpp: this.context.cppString(key),
                       staticString: key,
                   }))
-                : Object.values(object.recordProperties ?? {});
+                : pairs.map(([, value]) => value);
         if (resultType?.kind === "vector") {
             this.context.reachJsData();
             return {
@@ -1386,6 +1495,7 @@ export class ExpressionLowerer {
                     staticString: value.browserValue.value,
                 };
             case "null":
+                return { kind: "json-null", cpp: "" };
             case "dom-rect":
             case "object":
             case "search-params":
@@ -1948,6 +2058,28 @@ export class ExpressionLowerer {
     }
 
     private compileCall(call: ts.CallExpression): Value {
+        const target = this.context.unwrap(call.expression);
+        const hostFunction = ts.isIdentifier(target) ? this.context.lookupOptional(target)?.hostFunction :
+            ts.isPropertyAccessExpression(target) ? this.context.probeEmission(() => {
+            try {
+                return this.context.resolveRecordMember(target)?.hostFunction;
+            } catch (error) {
+                if (error instanceof CompileError) return undefined;
+                throw error;
+            }
+        }) : undefined;
+        const http = compileHttpCall(this.context.dataLowerer, call, hostFunction);
+        if (http) return http;
+        const windowService = compileWindowServiceCall(this.context.dataLowerer, call, hostFunction);
+        if (windowService) return windowService;
+        const imported = this.context.symbols.importedName(call.expression);
+        const boundIntrinsic = ts.isIdentifier(target) ? this.context.lookupOptional(target)?.intrinsicName : undefined;
+        if (imported || boundIntrinsic) {
+            const name = boundIntrinsic ?? imported!;
+            const registered = this.context.compileRegisteredIntrinsic(name, call);
+            if (registered) return registered;
+            this.context.fail(call.expression, `Babylon Lite intrinsic '${name}' is not supported by this prototype. Supported scene APIs are documented in docs/features.md.`);
+        }
         const numberPredicate = compileNumberPredicate(this.context, call);
         if (numberPredicate) return numberPredicate;
         const worker = this.context.compileWorkerValue(call);
@@ -2299,7 +2431,14 @@ export class ExpressionLowerer {
             }
             const value = this.compileValue(argumentAt(call, 0));
             this.context.reachJsData();
-            if (value.kind === "number" || value.kind === "boolean") {
+            if (value.kind === "json-null") {
+                return staticStringValue(value.cpp === "std::nullopt" ? "undefined" : "null", text => this.context.cppString(text));
+            }
+            if (value.dataType?.kind === "union" && value.dataType.members.every(member =>
+                member.kind === "number" || member.kind === "boolean" || member.kind === "string")) {
+                return { kind: "string", cpp: stringConcatPart(this.context, value, argumentAt(call, 0)) };
+            }
+            if (value.nativeError || value.kind === "number" || value.kind === "boolean" || value.dataType?.kind === "enum") {
                 return {
                     kind: "data",
                     cpp: `bbl::js::concat(${stringConcatPart(this.context,value, argumentAt(call, 0))})`,
@@ -2396,16 +2535,7 @@ export class ExpressionLowerer {
             bound?.kind === "data" &&
             bound.dataType?.kind === "function"
         ) {
-            const functionType = bound.dataType;
-            const argumentsCpp =
-                this.context.dataLowerer.compileFunctionArguments(
-                    call,
-                    functionType,
-                );
-            const cpp = `${bound.cpp}(${argumentsCpp.join(", ")})`;
-            return functionType.result
-                ? this.context.dataLowerer.leafValue(cpp, functionType.result)
-                : { kind: "void", cpp };
+            return this.context.dataLowerer.compileStoredCall(call, bound.cpp, bound.dataType);
         }
 
         // `await HavokPhysics({ locateFile: ... })` -- the browser's own
@@ -2422,21 +2552,6 @@ export class ExpressionLowerer {
             };
         }
 
-        const importedName =
-            this.context.symbols.importedName(callee);
-        if (importedName) {
-            const registered = this.context.compileRegisteredIntrinsic(
-                importedName,
-                call,
-            );
-            if (registered) {
-                return registered;
-            }
-            this.context.fail(
-                callee,
-                `Babylon Lite intrinsic '${importedName}' is not supported by this prototype. Supported scene APIs are documented in docs/features.md.`,
-            );
-        }
         const compressedJson = compileCompressedJsonCall(
             this.context,
             call,
@@ -2452,6 +2567,8 @@ export class ExpressionLowerer {
         if (voxelFile) {
             return voxelFile;
         }
+        const staticResult = this.context.userFunctions.tryCompileStaticResult(this.context, call, callee);
+        if (staticResult) return staticResult;
         const nativeFunction =
             this.context.nativeFunctions.tryCompileCall(
                 call,
@@ -2928,6 +3045,18 @@ export class ExpressionLowerer {
         }
     }
 
+    private readIndexedProperty(owner: Value, key: Value, access: ts.ElementAccessExpression): Value | undefined {
+        if (key.staticString === undefined) return undefined;
+        const property = ts.factory.createPropertyAccessExpression(access.expression, key.staticString);
+        ts.setTextRange(property, access);
+        ts.setOriginalNode(property, access);
+        ts.setTextRange(property.name, access.argumentExpression);
+        ts.setOriginalNode(property.name, access.argumentExpression);
+        const value = this.context.readResolvedProperty(owner, property);
+        if (value) this.context.emitDiscardedValue(key);
+        return value;
+    }
+
     private compileIndexedValue(unwrapped: ts.ElementAccessExpression, expression: ts.Expression, assertedNonNull: boolean): Value | undefined {
         // `baked.clips[<name>]`: one row of the bake's own map, read
         // natively because the bake decided the layout.
@@ -2949,6 +3078,17 @@ export class ExpressionLowerer {
         const json = compileJsonRead(this.context, unwrapped);
         if (json) {
             return json;
+        }
+        if (this.context.dataLowerer.dataTypeAt(unwrapped.expression)?.kind === "enummap") {
+            const constant = this.context.probeEmission(() => {
+                const owner = this.compileValue(unwrapped.expression);
+                if (owner.kind !== "record") return undefined;
+                const key = this.compileValue(unwrapped.argumentExpression);
+                // Select a known field before materializing a runtime enum
+                // table would discard the field's constant facts.
+                return this.readIndexedProperty(owner, key, unwrapped);
+            });
+            if (constant) return constant;
         }
         if (!assertedNonNull) {
             // Determining whether an unchecked element read can carry an
@@ -3002,16 +3142,8 @@ export class ExpressionLowerer {
                 : dataElement;
         }
         const key = this.compileValue(unwrapped.argumentExpression);
-        if (key.staticString !== undefined) {
-            const property = ts.factory.createPropertyAccessExpression(unwrapped.expression, key.staticString);
-            ts.setTextRange(property, unwrapped);
-            ts.setOriginalNode(property, unwrapped);
-            ts.setTextRange(property.name, unwrapped.argumentExpression);
-            ts.setOriginalNode(property.name, unwrapped.argumentExpression);
-            const resolved = this.context.readResolvedProperty(owner, property);
-            if (resolved)
-                return resolved;
-        }
+        const resolved = this.readIndexedProperty(owner, key, unwrapped);
+        if (resolved) return resolved;
         if (owner.kind === "camera-world-matrix") {
             const index = this.compileValue(unwrapped.argumentExpression);
             if (index.kind !== "number" ||
@@ -3285,7 +3417,10 @@ export class ExpressionLowerer {
         // for a static record's optional field: the selected value is a
         // string, not native optional storage merely because the checker
         // still exposes the unselected `undefined` branch.
-        const foldedCondition = !containsEvaluatedCall(unwrapped.condition)
+        const browserCondition = this.context.evaluateBrowserValue(unwrapped.condition);
+        const foldedCondition = browserCondition?.kind === "boolean"
+            ? browserCondition.value ? "true" : "false"
+            : !containsEvaluatedCall(unwrapped.condition)
             ? this.context.probeEmission(() => this.context.compileCondition(unwrapped.condition), (condition) => condition === "true" ||
                 condition === "false")
             : undefined;
@@ -3330,8 +3465,19 @@ export class ExpressionLowerer {
             }
             return selected;
         }
-        const conditionalType = this.context.dataLowerer.dataTypeAt(unwrapped);
-        if (conditionalType?.kind === "number" ||
+        const contextual = this.context.checker.getContextualType(unwrapped);
+        const contextualType = contextual ? this.context.dataTypes.fromTsType(contextual, unwrapped) : undefined;
+        const inferred = this.context.dataLowerer.dataTypeAt(unwrapped) ??
+            (contextualType && ["number", "boolean", "string", "enum", "vector", "span", "product", "tuple"].includes(contextualType.kind)
+                ? contextualType : undefined);
+        // A selected fresh readonly array must outlive its branch's temporaries.
+        const conditionalType = inferred?.kind === "span"
+            ? this.context.dataTypes.markStoredObjectReferences(inferred)
+            : inferred?.kind === "enum" ? {kind:"string" as const} : inferred;
+        if (conditionalType?.kind === "string" ||
+            conditionalType?.kind === "number" ||
+            conditionalType?.kind === "union" ||
+            conditionalType?.kind === "product" ||
             conditionalType?.kind === "vector" ||
             (conditionalType?.kind === "struct" &&
                 this.context.dataTypes.isReferenceStruct(conditionalType.name))) {
@@ -3346,7 +3492,9 @@ export class ExpressionLowerer {
             // The common sink keeps all branch preparation inside the
             // selected arm, including optional Map.get temporaries and
             // array literals that need runtime storage of different sizes.
-            return this.context.dataValue(this.inRuntimeControlFlow(() => this.context.dataLowerer.compileConditionalForSink(unwrapped, conditionalType, condition)), conditionalType);
+            const cpp = this.inRuntimeControlFlow(() => this.context.dataLowerer.compileConditionalForSink(unwrapped, conditionalType, condition));
+            return conditionalType.kind === "string" ? {kind:"string", cpp, dataType:conditionalType}
+                : this.context.dataValue(cpp, conditionalType);
         }
         if (conditionalType?.kind === "optional") {
             const objectIdentity = conditionalType.inner.kind === "struct"
@@ -3371,8 +3519,42 @@ export class ExpressionLowerer {
                 ? unwrapped.whenTrue
                 : unwrapped.whenFalse);
         }
-        const whenTrue = this.inRuntimeControlFlow(() => this.compileValue(unwrapped.whenTrue));
-        const whenFalse = this.inRuntimeControlFlow(() => this.compileValue(unwrapped.whenFalse));
+        const jsonConditional = this.context.probeEmission(() => {
+            let whenTrue!: Value, whenFalse!: Value;
+            const trueLines = this.context.captureEmittedLines(() => {
+                whenTrue = this.inRuntimeControlFlow(() => this.compileValue(unwrapped.whenTrue));
+            });
+            const falseLines = this.context.captureEmittedLines(() => {
+                whenFalse = this.inRuntimeControlFlow(() => this.compileValue(unwrapped.whenFalse));
+            });
+            if (whenTrue.dataType?.kind !== "json" && whenFalse.dataType?.kind !== "json") return undefined;
+            const type = { kind: "json" as const };
+            if (![whenTrue, whenFalse].every(value =>
+                this.context.dataLowerer.knownValueFitsSink(value, type, unwrapped))) return undefined;
+            return this.context.dataValue(this.context.dataLowerer.compileConditionalForSink(unwrapped, type, condition, {
+                whenTrue: { value: whenTrue, lines: trueLines },
+                whenFalse: { value: whenFalse, lines: falseLines },
+            }), type);
+        });
+        if (jsonConditional) return jsonConditional;
+        const branch = (expression: ts.Expression, truth: boolean): Value => {
+            const value = this.inRuntimeControlFlow(() => this.compileValue(expression));
+            const guard = this.context.unwrap(unwrapped.condition);
+            const selected = this.context.unwrap(expression);
+            if (value.dataType?.kind !== "optional" || !ts.isIdentifier(selected) || !ts.isBinaryExpression(guard)) return value;
+            const equal = guard.operatorToken.kind === ts.SyntaxKind.EqualsEqualsEqualsToken || guard.operatorToken.kind === ts.SyntaxKind.EqualsEqualsToken;
+            const unequal = guard.operatorToken.kind === ts.SyntaxKind.ExclamationEqualsEqualsToken || guard.operatorToken.kind === ts.SyntaxKind.ExclamationEqualsToken;
+            if ((!equal && !unequal) || truth === equal) return value;
+            const absent = (node: ts.Expression): boolean => {
+                const operand = this.context.unwrap(node);
+                return operand.kind === ts.SyntaxKind.NullKeyword || (ts.isIdentifier(operand) && operand.text === "undefined" && !this.context.lookupOptional(operand));
+            };
+            const tested = absent(guard.left) ? this.context.unwrap(guard.right) : absent(guard.right) ? this.context.unwrap(guard.left) : undefined;
+            return tested && ts.isIdentifier(tested) && this.context.checker.getSymbolAtLocation(tested) === this.context.checker.getSymbolAtLocation(selected)
+                ? this.context.dataLowerer.narrowOptional(value, expression, true) : value;
+        };
+        const whenTrue = branch(unwrapped.whenTrue, true);
+        const whenFalse = branch(unwrapped.whenFalse, false);
         // A tuple value is a compile-time list of element values with
         // no native expression of its own, so selecting between two
         // tuples is selecting element by element. Same arity is the
@@ -3395,6 +3577,22 @@ export class ExpressionLowerer {
     }
 
     private compileObjectValue(unwrapped: ts.ObjectLiteralExpression): Value | undefined {
+        if (unwrapped.properties.some(property => ts.isSpreadAssignment(property) &&
+            this.context.dataLowerer.dataTypeAt(property.expression)?.kind === "map")) {
+            const contextual = this.context.checker.getContextualType(unwrapped);
+            const type = (contextual && this.context.dataTypes.fromTsType(contextual, unwrapped)) ??
+                this.context.dataLowerer.dataTypeAt(unwrapped);
+            if (type?.kind === "map") {
+                const record = this.context.probeEmission(() => this.compileStaticObjectValue(unwrapped, true));
+                if (record) return record;
+                return this.context.dataLowerer.leafValue(
+                    this.context.dataLowerer.compileForSink(unwrapped, type), type);
+            }
+        }
+        return this.compileStaticObjectValue(unwrapped);
+    }
+
+    private compileStaticObjectValue(unwrapped: ts.ObjectLiteralExpression, allowDictionarySpread = false): Value | undefined {
         const properties: Record<string, Value> = {};
         const methods: Record<string, ts.Identifier | ts.ArrowFunction | ts.FunctionExpression | ts.MethodDeclaration> = {};
         const getters: Record<string, ts.GetAccessorDeclaration> = {};
@@ -3404,6 +3602,7 @@ export class ExpressionLowerer {
                 const spread = this.compileValue(property.expression);
                 if (spread.kind !== "record" &&
                     spread.recordProperties === undefined) {
+                    if (allowDictionarySpread && spread.dataType?.kind === "map") return undefined;
                     this.context.fail(property, "Compile-time object spread requires a plain record value or a data record with a complete static property snapshot " +
                         `(received ${spread.kind}${spread.dataType ? ` ${JSON.stringify(spread.dataType)}` : ""}).`);
                 }
@@ -3486,9 +3685,7 @@ export class ExpressionLowerer {
             // plain property already holds a resolved value.
             ...(closes
                 ? {
-                    recordScopes: [
-                        ...this.context.variableScopes,
-                    ],
+                    ...this.context.captureRecordScopes(),
                     ...(this.context.isInRuntimeIteration() ||
                         this.context.isInNativeFunctionBody()
                         ? {
@@ -3531,6 +3728,8 @@ export class ExpressionLowerer {
             };
         }
         if (callee.name.text === "call") {
+            const objectCall = compileObjectPrototypeCall(this.context, call);
+            if (objectCall) return objectCall;
             const callable = this.compileValue(callee.expression);
             if (callable.kind === "data" &&
                 callable.dataType?.kind === "function") {
@@ -3652,8 +3851,9 @@ export class ExpressionLowerer {
                 staticString: text,
             };
         }
-        const staticOwner = this.compileStaticOwner(callee.expression);
-        if (staticOwner) {
+        const staticContainerMethod = this.context.probeEmission((): Value | undefined => {
+            const staticOwner = this.compileStaticOwner(callee.expression);
+            if (!staticOwner) return undefined;
             if (staticOwner.kind === "tuple" && callee.name.text === "flat") {
                 this.context.expectArgumentCount(call, 0, 1);
                 const depth = call.arguments[0] ? staticNumberValue(this.context, call.arguments[0]) : 1;
@@ -3681,7 +3881,9 @@ export class ExpressionLowerer {
             const mapped = this.compileStaticTupleMap(call, staticOwner, callee.name.text);
             if (mapped)
                 return mapped;
-        }
+            return undefined;
+        });
+        if (staticContainerMethod) return staticContainerMethod;
         const regexpExpression = this.context.unwrap(callee.expression);
         const regexpType = this.context.checker.getTypeAtLocation(regexpExpression);
         const boundRegexp = ts.isIdentifier(regexpExpression)
@@ -3700,9 +3902,18 @@ export class ExpressionLowerer {
                 this.context.fail(callee.name, `RegExp method '${callee.name.text}' is not supported.`);
             }
             this.context.expectArgumentCount(call, 1, 1);
-            const input = this.context.dataLowerer.compileForSink(argumentAt(call, 0), { kind: "string" });
+            const inputValue = this.compileValue(argumentAt(call, 0));
+            const input = this.context.dataLowerer.compileKnownValueForSink(inputValue, { kind: "string" }, argumentAt(call, 0));
             this.context.reachJsData();
             if (callee.name.text === "test") {
+                // A literal creates a fresh RegExp on each evaluation, so folding
+                // it cannot lose a stored expression's lastIndex mutation.
+                if (ts.isRegularExpressionLiteral(regexpExpression) && inputValue.staticString !== undefined) {
+                    const {pattern, flags} = regularExpressionParts(regexpExpression)!;
+                    const matched = new RegExp(pattern, flags).test(inputValue.staticString);
+                    this.context.emitDiscardedValue(inputValue);
+                    return booleanValue(String(matched));
+                }
                 return {
                     kind: "boolean",
                     cpp: `${regexpOwner.cpp}.test(${input})`,
@@ -3789,7 +4000,7 @@ export class ExpressionLowerer {
             // `new C().method()`: the temporary instance is the receiver.
             ts.isNewExpression(receiver)) {
             const receiverValue = ts.isIdentifier(receiver)
-                ? this.context.lookupOptional(receiver)
+                ? this.context.lookupOptional(receiver) ?? this.compileModuleNamespace(receiver)
                 : receiver.kind === ts.SyntaxKind.ThisKeyword
                     ? this.context.activeThis()
                     : this.compileValue(receiver);
@@ -3800,7 +4011,7 @@ export class ExpressionLowerer {
             const optionalCall = call.questionDotToken !== undefined ||
                 callee.questionDotToken !== undefined;
             if (instance?.kind === "json-null" && optionalCall) {
-                return { kind: "void", cpp: "" };
+                return { kind: "json-null", cpp: "std::nullopt" };
             }
             if (instance?.kind === "splat-mesh" && callee.name.text === "updateData") {
                 this.context.expectArgumentCount(call, 1, 1);
@@ -3832,7 +4043,7 @@ export class ExpressionLowerer {
                 call.questionDotToken &&
                 !recordMethod &&
                 !recordCallback) {
-                return { kind: "void", cpp: "" };
+                return { kind: "json-null", cpp: "std::nullopt" };
             }
             if (instance && recordMethod) {
                 // A literal written in the record has no identifier
@@ -3861,10 +4072,12 @@ export class ExpressionLowerer {
                     : this.context.userFunctions.compileCallbackCall(this.context, call, recordCallback.callbackDeclaration, inRecordScope);
             }
             if (recordCallback?.kind === "data" &&
-                recordCallback.dataType?.kind === "function" &&
-                !call.questionDotToken &&
-                !callee.questionDotToken) {
+                recordCallback.dataType?.kind === "function") {
                 const functionType = recordCallback.dataType;
+                if (optionalCall) {
+                    return this.context.dataLowerer.compileOptionalStoredCall(call, recordCallback.cpp, functionType,
+                        callee.questionDotToken ? instance?.cpp : undefined);
+                }
                 const argumentsCpp = this.context.dataLowerer.compileFunctionArguments(call, functionType, `Stored callback field '${callee.name.text}'`);
                 const cpp = `${recordCallback.cpp}(${argumentsCpp.join(", ")})`;
                 return functionType.result

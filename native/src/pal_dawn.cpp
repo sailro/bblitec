@@ -39,6 +39,7 @@
 #endif
 #if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI && !(defined(BBLITE_WORKERS) && BBLITE_WORKERS)
 #include "pal_ui_backdrop_dawn.hpp"
+#include "pal_ui_filter_dawn.hpp"
 #endif
 #if BBLITE_HAS_BILLBOARDS
 #include "pal_dawn_billboard.hpp"
@@ -664,6 +665,7 @@ using DawnUiTexture = UiDawnTexture;
 /** Dawn-owned realization of the backend-neutral RmlUi frame. */
 struct DawnUiResources {
     UiBackdropDawnResources backdrop;
+    UiFilterDawnResources filters;
     WGPUBindGroupLayout screen_layout = nullptr;
     WGPUBindGroupLayout texture_layout = nullptr;
     WGPUPipelineLayout pipeline_layout = nullptr;
@@ -689,6 +691,7 @@ struct DawnUiResources {
 
     void release() {
         backdrop.release();
+        filters.release();
         for (auto& [id, source] : textures) {
             static_cast<void>(id);
             source.release();
@@ -2509,7 +2512,7 @@ void render_ui_dawn_frame(
     WGPUTexture target_texture,
     WGPUTextureView target,
     const UiRenderFrame& frame) {
-    if (frame.draws.empty() || frame.width == 0 || frame.height == 0) return;
+    if ((frame.draws.empty() && frame.operations.empty()) || frame.width == 0 || frame.height == 0) return;
     create_ui_dawn_resources(state);
     if (!frame.backdrops.empty()) ensure_ui_dawn_backdrop_pipeline(state);
     ensure_ui_dawn_layers(state, frame.width, frame.height);
@@ -2577,119 +2580,126 @@ void render_ui_dawn_frame(
         ui.textures.emplace(source.id, texture);
     }
 
-    std::size_t draw_begin = 0;
-    for (std::size_t segment = 0; segment <= frame.backdrops.size(); ++segment) {
-    const std::size_t draw_end = segment < frame.backdrops.size()
-        ? frame.backdrops[segment].before_draw : frame.draws.size();
-    WGPURenderPassColorAttachment layer_attachment =
-        WGPU_RENDER_PASS_COLOR_ATTACHMENT_INIT;
-    layer_attachment.view = ui.multisample_layer_view
-        ? ui.multisample_layer_view
-        : ui.layer_view;
-    layer_attachment.resolveTarget = ui.multisample_layer_view
-        ? ui.layer_view
-        : nullptr;
-    layer_attachment.loadOp = WGPULoadOp_Clear;
-    layer_attachment.storeOp = ui.multisample_layer_view
-        ? WGPUStoreOp_Discard
-        : WGPUStoreOp_Store;
-    layer_attachment.clearValue = WGPUColor{0, 0, 0, 0};
-    WGPURenderPassDescriptor layer_descriptor =
-        WGPU_RENDER_PASS_DESCRIPTOR_INIT;
-    layer_descriptor.colorAttachmentCount = 1;
-    layer_descriptor.colorAttachments = &layer_attachment;
-    DawnRenderPass layer_pass{wgpuCommandEncoderBeginRenderPass(encoder, &layer_descriptor)};
-    wgpuRenderPassEncoderSetBindGroup(
-        layer_pass, 0, ui.screen_group, 0, nullptr);
-    wgpuRenderPassEncoderSetVertexBuffer(
-        layer_pass, 0, ui.vertices, 0, WGPU_WHOLE_SIZE);
-    wgpuRenderPassEncoderSetIndexBuffer(
-        layer_pass,
-        ui.indices,
-        WGPUIndexFormat_Uint32,
-        0,
-        WGPU_WHOLE_SIZE);
-    for (std::size_t draw_index = draw_begin; draw_index < draw_end; ++draw_index) {
-        const UiRenderDraw& draw = frame.draws[draw_index];
-        const std::optional<UiScissorRect> scissor =
-            clamped_ui_scissor(draw, frame.width, frame.height);
-        if (!scissor) continue;
-        wgpuRenderPassEncoderSetScissorRect(
+    const UiDawnTexture root_target{target_texture, target, nullptr, nullptr};
+    ui.filters.begin_frame();
+    for_each_ui_segment(frame, [&](std::size_t draw_begin, std::size_t draw_end, std::uint32_t layer) {
+        const auto draw_target = ui.filters.target(state.device, encoder, root_target, state.surface_format,
+            ui.texture_layout, ui.sampler, frame, layer);
+        WGPURenderPassColorAttachment layer_attachment =
+            WGPU_RENDER_PASS_COLOR_ATTACHMENT_INIT;
+        layer_attachment.view = ui.multisample_layer_view
+            ? ui.multisample_layer_view
+            : ui.layer_view;
+        layer_attachment.resolveTarget = ui.multisample_layer_view
+            ? ui.layer_view
+            : nullptr;
+        layer_attachment.loadOp = WGPULoadOp_Clear;
+        layer_attachment.storeOp = ui.multisample_layer_view
+            ? WGPUStoreOp_Discard
+            : WGPUStoreOp_Store;
+        layer_attachment.clearValue = WGPUColor{0, 0, 0, 0};
+        WGPURenderPassDescriptor layer_descriptor =
+            WGPU_RENDER_PASS_DESCRIPTOR_INIT;
+        layer_descriptor.colorAttachmentCount = 1;
+        layer_descriptor.colorAttachments = &layer_attachment;
+        DawnRenderPass layer_pass{wgpuCommandEncoderBeginRenderPass(encoder, &layer_descriptor)};
+        wgpuRenderPassEncoderSetBindGroup(
+            layer_pass, 0, ui.screen_group, 0, nullptr);
+        wgpuRenderPassEncoderSetVertexBuffer(
+            layer_pass, 0, ui.vertices, 0, WGPU_WHOLE_SIZE);
+        wgpuRenderPassEncoderSetIndexBuffer(
             layer_pass,
-            static_cast<std::uint32_t>(scissor->left),
-            static_cast<std::uint32_t>(scissor->top),
-            static_cast<std::uint32_t>(scissor->width),
-            static_cast<std::uint32_t>(scissor->height));
-        if (draw.texture_id) {
-            const auto texture = ui.textures.find(draw.texture_id);
-            if (texture == ui.textures.end()) continue;
-            wgpuRenderPassEncoderSetPipeline(
-                layer_pass, ui.texture_pipeline);
-            wgpuRenderPassEncoderSetBindGroup(
+            ui.indices,
+            WGPUIndexFormat_Uint32,
+            0,
+            WGPU_WHOLE_SIZE);
+        for (std::size_t draw_index = draw_begin; draw_index < draw_end; ++draw_index) {
+            const UiRenderDraw& draw = frame.draws[draw_index];
+            const std::optional<UiScissorRect> scissor =
+                clamped_ui_scissor(draw, frame.width, frame.height);
+            if (!scissor) continue;
+            wgpuRenderPassEncoderSetScissorRect(
                 layer_pass,
+                static_cast<std::uint32_t>(scissor->left),
+                static_cast<std::uint32_t>(scissor->top),
+                static_cast<std::uint32_t>(scissor->width),
+                static_cast<std::uint32_t>(scissor->height));
+            if (draw.texture_id) {
+                const auto texture = ui.textures.find(draw.texture_id);
+                if (texture == ui.textures.end()) continue;
+                wgpuRenderPassEncoderSetPipeline(
+                    layer_pass, ui.texture_pipeline);
+                wgpuRenderPassEncoderSetBindGroup(
+                    layer_pass,
+                    1,
+                    draw.nearest_sampling
+                        ? texture->second.nearest_group
+                        : texture->second.group,
+                    0,
+                    nullptr);
+            } else {
+                wgpuRenderPassEncoderSetPipeline(layer_pass, ui.color_pipeline);
+            }
+            count_gpu_draw(wgpuRenderPassEncoderDrawIndexed,
+                layer_pass,
+                draw.index_count,
                 1,
-                draw.nearest_sampling
-                    ? texture->second.nearest_group
-                    : texture->second.group,
+                draw.first_index,
                 0,
-                nullptr);
-        } else {
-            wgpuRenderPassEncoderSetPipeline(layer_pass, ui.color_pipeline);
+                0);
         }
+        wgpuRenderPassEncoderEnd(layer_pass);
+        layer_pass.reset();
+
+        WGPURenderPassColorAttachment composite_attachment =
+            WGPU_RENDER_PASS_COLOR_ATTACHMENT_INIT;
+        composite_attachment.view = draw_target.view;
+        composite_attachment.loadOp = WGPULoadOp_Load;
+        composite_attachment.storeOp = WGPUStoreOp_Store;
+        WGPURenderPassDescriptor composite_descriptor =
+            WGPU_RENDER_PASS_DESCRIPTOR_INIT;
+        composite_descriptor.colorAttachmentCount = 1;
+        composite_descriptor.colorAttachments = &composite_attachment;
+        DawnRenderPass composite_pass{wgpuCommandEncoderBeginRenderPass(encoder, &composite_descriptor)};
+        wgpuRenderPassEncoderSetPipeline(
+            composite_pass, ui.composite_pipeline);
+        wgpuRenderPassEncoderSetBindGroup(
+            composite_pass, 0, ui.screen_group, 0, nullptr);
+        wgpuRenderPassEncoderSetBindGroup(
+            composite_pass, 1, ui.layer_group, 0, nullptr);
+        wgpuRenderPassEncoderSetVertexBuffer(
+            composite_pass, 0, ui.vertices, 0, WGPU_WHOLE_SIZE);
+        wgpuRenderPassEncoderSetIndexBuffer(
+            composite_pass,
+            ui.indices,
+            WGPUIndexFormat_Uint32,
+            0,
+            WGPU_WHOLE_SIZE);
+        wgpuRenderPassEncoderSetScissorRect(
+            composite_pass, 0, 0, frame.width, frame.height);
         count_gpu_draw(wgpuRenderPassEncoderDrawIndexed,
-            layer_pass,
-            draw.index_count,
+            composite_pass,
+            6,
             1,
-            draw.first_index,
+            frame.composite_first_index,
             0,
             0);
-    }
-    wgpuRenderPassEncoderEnd(layer_pass);
-    layer_pass.reset();
-
-    WGPURenderPassColorAttachment composite_attachment =
-        WGPU_RENDER_PASS_COLOR_ATTACHMENT_INIT;
-    composite_attachment.view = target;
-    composite_attachment.loadOp = WGPULoadOp_Load;
-    composite_attachment.storeOp = WGPUStoreOp_Store;
-    WGPURenderPassDescriptor composite_descriptor =
-        WGPU_RENDER_PASS_DESCRIPTOR_INIT;
-    composite_descriptor.colorAttachmentCount = 1;
-    composite_descriptor.colorAttachments = &composite_attachment;
-    DawnRenderPass composite_pass{wgpuCommandEncoderBeginRenderPass(encoder, &composite_descriptor)};
-    wgpuRenderPassEncoderSetPipeline(
-        composite_pass, ui.composite_pipeline);
-    wgpuRenderPassEncoderSetBindGroup(
-        composite_pass, 0, ui.screen_group, 0, nullptr);
-    wgpuRenderPassEncoderSetBindGroup(
-        composite_pass, 1, ui.layer_group, 0, nullptr);
-    wgpuRenderPassEncoderSetVertexBuffer(
-        composite_pass, 0, ui.vertices, 0, WGPU_WHOLE_SIZE);
-    wgpuRenderPassEncoderSetIndexBuffer(
-        composite_pass,
-        ui.indices,
-        WGPUIndexFormat_Uint32,
-        0,
-        WGPU_WHOLE_SIZE);
-    wgpuRenderPassEncoderSetScissorRect(
-        composite_pass, 0, 0, frame.width, frame.height);
-    count_gpu_draw(wgpuRenderPassEncoderDrawIndexed,
-        composite_pass,
-        6,
-        1,
-        frame.composite_first_index,
-        0,
-        0);
-    wgpuRenderPassEncoderEnd(composite_pass);
-    composite_pass.reset();
-    if (segment < frame.backdrops.size()) {
-        render_ui_backdrop_dawn(state.device, encoder, target_texture, target,
-            state.surface_format, ui.vertices, ui.indices, ui.sampler,
-            ui.screen_group, ui.texture_layout, ui.composite_pipeline,
-            ui.backdrop, frame, segment);
-    }
-    draw_begin = draw_end;
-    }
+        wgpuRenderPassEncoderEnd(composite_pass);
+        composite_pass.reset();
+    }, [&](const UiRenderOperation& operation) {
+        if (operation.kind == UiRenderOperation::Kind::ResetLayer) {
+            ui.filters.reset_layer(operation.index);
+        } else if (operation.kind == UiRenderOperation::Kind::Backdrop) {
+            render_ui_backdrop_dawn(state.device, encoder, target_texture, target,
+                state.surface_format, ui.vertices, ui.indices, ui.sampler, ui.screen_group, ui.texture_layout,
+                ui.composite_pipeline, ui.backdrop, frame, operation.index);
+        } else {
+            render_ui_composite_dawn(state.device, state.queue, encoder, root_target, state.surface_format,
+                ui.vertices, ui.indices, ui.sampler, ui.screen_group, ui.texture_layout,
+                ui.composite_pipeline, ui.filters, frame, operation.index);
+        }
+    });
+    ui.filters.finish_frame(frame.composites.size());
 }
 #endif
 
@@ -10859,7 +10869,7 @@ DawnMesh upload_dawn_scene_mesh(
             // fallback must reserve the established capacity, not one
             // row, before the versioned upload fills it.
             std::vector<float> instance_colors =
-                mesh_record.instance_colors;
+                instance_colors_for_upload(mesh_record);
             instance_colors.resize(
                 std::max(
                     instance_colors.size(),
@@ -13228,7 +13238,7 @@ public:
                         // may still be the shorter one; pad to the pool
                         // the way registration does.
                         std::vector<float> instance_colors =
-                            mesh.instance_colors;
+                            instance_colors_for_upload(mesh);
                         instance_colors.resize(rows * 4, 1.0f);
                         wgpuBufferRelease(dawn_mesh.instance_colors);
                         dawn_mesh.instance_colors = create_buffer(
@@ -13271,16 +13281,16 @@ public:
                     }
 #endif
 #if BBLITE_GPU_INSTANCE_COLORS
-                    if (
-                        dawn_mesh.instance_colors &&
-                        mesh.instance_colors.size() >=
-                            active_count * 4) {
-                        wgpuQueueWriteBuffer(
-                            state.queue,
-                            dawn_mesh.instance_colors,
-                            0,
-                            mesh.instance_colors.data(),
-                            active_count * 4 * sizeof(float));
+                    if (dawn_mesh.instance_colors) {
+                        const auto colors = instance_colors_for_upload(mesh);
+                        if (colors.size() >= active_count * 4) {
+                            wgpuQueueWriteBuffer(
+                                state.queue,
+                                dawn_mesh.instance_colors,
+                                0,
+                                colors.data(),
+                                active_count * 4 * sizeof(float));
+                        }
                     }
 #endif
                 }

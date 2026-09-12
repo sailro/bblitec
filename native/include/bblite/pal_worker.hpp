@@ -7,6 +7,7 @@
 #include <bblite/js_structured_clone.hpp>
 #include <bblite/pal_event_loop.hpp>
 #include <bblite/pal_host_services.hpp>
+#include <bblite/pal_animation_frame.hpp>
 #include <bblite/runtime.hpp>
 
 #include <iostream>
@@ -15,15 +16,6 @@ namespace bbl::pal {
 
 class WorkerRealm;
 using WorkerEntry = void (*)(WorkerRealm&);
-
-template <typename Listeners, typename Event>
-void dispatch_worker_event(EventLoop& loop, Listeners& listeners, Event& event) {
-    listeners.dispatch_with([&](auto& listener, auto& value) {
-        // Snapshot before calling source code: it can replace or remove itself.
-        const auto callback = listener;
-        loop.dispatch_callback([&] { callback(value); });
-    }, event);
-}
 
 /** One event and one deserialization memo, shared by all recipient listeners. */
 class WorkerMessageEvent {
@@ -98,10 +90,10 @@ class Worker {
     }
     void message(EventLoop& loop, SerializedMessage value) {
         auto event = std::make_shared<WorkerMessageEvent>(std::move(value));
-        dispatch_worker_event(loop, message_listeners_, event);
+        dispatch_platform_event(loop, message_listeners_, event);
     }
     bool error(EventLoop& loop, WorkerErrorEvent& event) {
-        dispatch_worker_event(loop, error_listeners_, event);
+        dispatch_platform_event(loop, error_listeners_, event);
         return event.default_prevented;
     }
     std::shared_ptr<EventLoop::Inbox> inbox_;
@@ -135,6 +127,17 @@ class WorkerRealm {
     EventLoop& loop() { return loop_; }
     const std::string& name() const { return name_; }
     const std::shared_ptr<HostServices>& host_services() const { return host_services_; }
+
+    EventLoop::AnimationFrameId request_animation_frame(EventLoop::AnimationCallback callback) {
+        require_owner();
+        if (!animation_subscribed_) {
+            const auto frames = host_services_ ? host_services_->animation_frame_source() : nullptr;
+            if (!frames) throw std::runtime_error("Animation frames require an owner Window's repaint source.");
+            frames->subscribe(loop_.inbox());
+            animation_subscribed_ = true;
+        }
+        return loop_.request_animation_frame(std::move(callback));
+    }
 
 
     std::shared_ptr<Worker> create_worker(WorkerEntry entry, std::string name = {}) {
@@ -216,7 +219,7 @@ class WorkerRealm {
             auto* message = std::get_if<SerializedMessage>(&packet->contents);
             if (!message) throw std::logic_error("Invalid parent-to-worker packet.");
             auto event = std::make_shared<WorkerMessageEvent>(std::move(*message));
-            dispatch_worker_event(loop_, messages_, event);
+            dispatch_platform_event(loop_, messages_, event);
             return;
         }
         const auto found = workers_.find(packet->target);
@@ -244,6 +247,7 @@ class WorkerRealm {
     std::optional<worker_detail::Address> parent_;
     std::thread::id owner_;
     std::shared_ptr<HostServices> host_services_;
+    bool animation_subscribed_ = false;
     std::uint64_t next_worker_ = 1;
     std::map<std::uint64_t, std::shared_ptr<Worker>> workers_;
     PlatformEventListeners<void(const WorkerMessage&)> messages_;
