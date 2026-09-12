@@ -52,7 +52,7 @@ export const containerKinds: DataKindOperations<
         cpp: (type, context) => `bbl::js::Iterator<${context.cppType(type.element)}>`,
         key: (type, key) => `iterator(${key(type.element)})`,
         equal: (left, right, equal) => equal(left.element, right.element),
-        children: type => [type.element], byReference: true, opaqueReference: true,
+        children: type => [type.element], byReference: true,
     },
     span: {
         cpp: (type, context) => `bbl::js::Span<const ${context.cppType(type.element)}>`,

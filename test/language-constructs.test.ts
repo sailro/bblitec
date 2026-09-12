@@ -151,6 +151,7 @@ check("stored-set-entry-iterators", `
     const values = new Set<number>([2,3]);
     const entries = values.entries();
     const alias = entries;
+    if(!entries || entries !== alias) throw new Error('iterator identity and truthiness');
     values.add(4);
     const first = entries.next();
     if(first.done || first.value[0] !== 2 || first.value[1] !== 2) throw new Error('first');
@@ -167,6 +168,7 @@ check("stored-set-entry-iterators", `
     if(seen !== '47') throw new Error('live cursor');
     values.add(8);
     const exhausted = entries.next();
+    if(!entries) throw new Error('exhausted iterator is still an object');
     if(!exhausted.done || exhausted.value !== undefined) throw new Error('sticky exhaustion');
     const delayedValues = new Set<string>();
     const delayed = delayedValues.entries();
