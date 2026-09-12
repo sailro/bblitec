@@ -151,6 +151,10 @@ This follows [CSS object sizing](https://www.w3.org/TR/css-images-3/#the-object-
 
 Selectors are bounded class/id/compound and proven ancestor forms, with optional
 hover, active and focus-visible states, shared by CSS text and host UI rules.
+Direct-child forms `tag > .class` and `tag > .class.other` match the immediate
+retained parent and follow live class changes and reparenting. Reparenting retains
+the rendered element, its listeners and state. The current virtual document root
+has the `body` tag; distinct HTML/head/body root identities remain unmodeled.
 [Tag-only projection](../src/compiler/ui-projection.ts) is unsupported. Static selectors/properties are
 validated; source/sheet order and live max-width rules are retained.
 Reduced-motion media rules support `reduce` and `no-preference` through the same cascade.

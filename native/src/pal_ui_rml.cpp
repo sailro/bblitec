@@ -1873,6 +1873,11 @@ bool ui_style_rule_matches(
         return
             record.tag == rule.tag &&
             ui_record_has_class(record, rule.primary);
+    case UiStyleSelectorKind::TagChildClass:
+        return ui_record_has_class(record, rule.primary) &&
+            (rule.secondary.empty() || ui_record_has_class(record, rule.secondary)) &&
+            (record.parent.value == invalid_handle ? record.attached_to_root && rule.tag == "body"
+                : handle_at(engine.ui_elements, record.parent).tag == rule.tag);
     case UiStyleSelectorKind::TagAttribute: {
         const auto attribute = record.attributes.find(rule.primary);
         return record.tag == rule.tag && attribute != record.attributes.end() && attribute->second == rule.secondary;
@@ -1922,6 +1927,9 @@ std::string ui_style_rule_selector(const UiStyleRule& rule) {
         break;
     case UiStyleSelectorKind::TagClass:
         selector = rule.tag + "." + rule.primary;
+        break;
+    case UiStyleSelectorKind::TagChildClass:
+        selector = rule.tag + " > ." + rule.primary + (rule.secondary.empty() ? "" : "." + rule.secondary);
         break;
     case UiStyleSelectorKind::TagAttribute:
         selector = rule.tag + "[" + rule.primary + "=\"" + rule.secondary + "\"]";
@@ -1975,6 +1983,10 @@ std::uint32_t ui_style_rule_specificity(const UiStyleRule& rule) {
     case UiStyleSelectorKind::TagClass:
     case UiStyleSelectorKind::TagAttribute:
         ++classes;
+        ++tags;
+        break;
+    case UiStyleSelectorKind::TagChildClass:
+        classes += rule.secondary.empty() ? 1u : 2u;
         ++tags;
         break;
     case UiStyleSelectorKind::IdDescendantClass:
@@ -4121,6 +4133,18 @@ struct UiRmlRuntime {
         }
     }
 
+    void sync_element(Rml::Element& parent, UiElementHandle handle) {
+        if (!handle_at(projected_elements, handle).element) {
+            append_element(parent, handle);
+            return;
+        }
+        if (const auto moved = pending_reparents.find(handle.value); moved != pending_reparents.end()) {
+            parent.AppendChild(std::move(moved->second));
+            pending_reparents.erase(moved);
+        }
+        update_element(handle);
+    }
+
     void clear_projected_subtree(UiElementHandle handle) {
         if (handle.value >= projected_elements.size()) return;
         if (handle_at(projected_elements, handle).element) {
@@ -4367,11 +4391,7 @@ struct UiRmlRuntime {
             : raw;
         for (const UiElementHandle child : record.children) {
             if (ui_element(engine, child).tag == "style") continue;
-            if (!handle_at(projected_elements, child).element) {
-                append_element(children_parent, child);
-            } else {
-                update_element(child);
-            }
+            sync_element(children_parent, child);
         }
         for (const UiElementHandle child : record.markup_children) {
             if (
@@ -4393,6 +4413,26 @@ struct UiRmlRuntime {
                 handle_at(engine.ui_elements, handle).attached_to_root) {
                 mark_reachable(handle, reachable);
             }
+        }
+
+        // Detach moved nodes before pruning their former ancestors. The
+        // retained handles keep the same Rml elements, listeners and state.
+        std::unordered_map<Rml::Element*, std::uint32_t> authored;
+        for (std::uint32_t index = 0; index < projected_elements.size(); ++index)
+            if (auto* element = projected_elements[index].element) authored.emplace(element, index);
+        for (std::uint32_t index = 0; index < projected_elements.size(); ++index) {
+            auto* element = projected_elements[index].element;
+            if (!element || !reachable[index]) continue;
+            auto* parent = element->GetParentNode();
+            std::uint32_t previous = invalid_handle;
+            for (auto* ancestor = parent; ancestor && ancestor != document; ancestor = ancestor->GetParentNode()) {
+                if (const auto found = authored.find(ancestor); found != authored.end()) {
+                    previous = found->second;
+                    break;
+                }
+            }
+            if (previous != engine.ui_elements[index].parent.value && parent)
+                pending_reparents.emplace(index, parent->RemoveChild(element));
         }
 
         for (
@@ -4425,12 +4465,9 @@ struct UiRmlRuntime {
             const std::uint32_t index = handle.value;
             if (!engine.ui_elements[index].attached_to_root) continue;
             if (engine.ui_elements[index].tag == "style") continue;
-            if (!projected_elements[index].element) {
-                append_element(*document, handle);
-            } else {
-                update_element(handle);
-            }
+            sync_element(*document, handle);
         }
+        if (!pending_reparents.empty()) throw std::runtime_error("A moved UI element has no projected parent.");
         sync_projected_root_order();
         refresh_current_color_svg_elements();
         projected_revision = engine.ui_revision;
@@ -5149,6 +5186,7 @@ struct UiRmlRuntime {
     Rml::ElementInstancerGeneric<UiButtonElement> button_instancer;
     Rml::Context* context = nullptr;
     Rml::ElementDocument* document = nullptr;
+    std::unordered_map<std::uint32_t, Rml::ElementPtr> pending_reparents;
     std::vector<std::unique_ptr<UiEventListener>> listeners;
     std::vector<ProjectedUiElement> projected_elements;
     std::vector<ProjectedGradientText> gradient_text;

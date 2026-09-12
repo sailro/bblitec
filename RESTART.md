@@ -23,7 +23,7 @@ it does not establish that this external application compiles or runs.
 | Branch | `codex/external-project-support` |
 | Remote | `https://github.com/sailro/bblitec.git` |
 | Branch base used in this session | `3474e835` on `main` |
-| Latest completed executable-code/test commit | `ec4f3fa9` (2026-09-12), followed by dynamic tuple reads in this savepoint |
+| Latest completed executable-code/test commit | `ca1d1cdc` (2026-09-12), followed by direct-child selectors in this savepoint |
 | Draft PR | [#247 — Extend generic application compilation and retained UI support](https://github.com/sailro/bblitec/pull/247) |
 | External checkout | `C:/Dev/_prototypes/external-native-app` |
 | External source revision | `d7c477a6d5963680c55249dceb93cb6e4ab9ce56` |
@@ -267,6 +267,19 @@ incomplete. Do not merge or mark it ready merely because the sweep passes.
   corrected assertions and the final native tuple fixture passed `tuple299`.
   Dynamic tuple writes and resizing remain open; fixed-lane storage cannot
   implement those operations by pretending its layout is mutable.
+
+- `ca1d1cdc` saves dynamic tuple reads and is pushed. `language300` passed all
+  117 language checks without skips. Direct-child selectors now support
+  `tag > .class` and `tag > .class.other`, with the existing interaction states.
+  Their native fixture exposed a stale rendered parent after retained reparenting;
+  moved nodes now detach before old ancestors are pruned and retain their identity.
+  `child306` passed five focused checks and `ui307` passed all 48 UI tests with
+  no skips. No whole TODO item is closed by this unit.
+- `compile306` advanced beyond the child selectors to nullish coalescing over a
+  reduced-motion `matchMedia` result. Full external generation remains pending.
+  The existing virtual document root combines head/body, and `documentElement`
+  needs a real root identity before HTML-child rules can work at runtime. Do not
+  silently map HTML-child selectors to body or claim root modeling is complete.
 
 The refreshed harness explicitly reports `danger-full-access`, networking
 enabled and approval policy `never`. Do not pass `sandbox_permissions` or ask
