@@ -1,5 +1,11 @@
+import {parseUiSelectorSequence, uiSelectorSequenceIsConditional, type UiSelectorStep} from "./ui-selector.js";
+
 /** The bounded selector forms shared by host-UI validation and projection. */
 const UI_STYLE_SELECTOR_DESCRIPTORS = {
+    sequence: {
+        cpp: "Sequence", needsSecondary: false, needsTag: false,
+        css: (rule: UiStyleSelectorShape) => rule.primary,
+    },
     class: {
         cpp: "Class",
         needsSecondary: false,
@@ -84,11 +90,20 @@ export interface UiStyleSelectorShape {
     focusVisible?: boolean;
     active?: boolean;
     scrollbar?: UiScrollbarPart;
+    /** Parsed compiler metadata; external host inputs supply the selector text. */
+    sequence?: readonly UiSelectorStep[];
 }
 
 /** Interaction pseudo-classes contribute class specificity and depend on live input state. */
 export function uiStyleInteractionStateCount(rule: UiStyleSelectorShape): number {
-    return Number(rule.hover === true) + Number(rule.focusVisible === true) + Number(rule.active === true);
+    return Number(rule.hover === true) + Number(rule.focusVisible === true) + Number(rule.active === true) +
+        (rule.kind === "sequence" ? (rule.sequence ?? parseUiSelectorSequence(rule.primary) ?? [])
+            .reduce((count, step) => count + step.tests.filter(test => !["tag", "id", "class", "attribute", "equals"].includes(test.kind)).length, 0) : 0);
+}
+
+export function uiStyleRuleNeedsRuntimeMatch(rule: UiStyleSelectorShape): boolean {
+    return uiStyleInteractionStateCount(rule) > 0 || (rule.kind === "sequence" &&
+        uiSelectorSequenceIsConditional(rule.sequence ?? parseUiSelectorSequence(rule.primary) ?? []));
 }
 
 /** A bounded structural selector imported from the browser host page. */

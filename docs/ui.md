@@ -184,24 +184,30 @@ source changes, live styles, resizing and display scaling update the painted ima
 This follows [CSS object sizing](https://www.w3.org/TR/css-images-3/#the-object-fit).
 `object-position` remains unsupported; retained Canvas2D currently accepts `fill` only.
 
-Selectors are bounded class/id/compound and proven ancestor forms, with optional
-hover, active and focus-visible states, shared by CSS text and host UI rules.
-Direct-child forms `tag > .class` and `tag > .class.other` match the immediate
-retained parent and follow live class changes and reparenting. Reparenting retains
+Selectors compose tags, IDs, classes, attribute presence/equality and
+hover/active/focus/focus-visible/disabled/checked states with descendant, child,
+adjacent-sibling and following-sibling relationships. CSS text and host UI rules
+share this grammar; quoted attribute values retain commas. Rendered declarations
+and native layout adaptations follow the same live tree and input state.
+Conditional selectors cannot establish static grid geometry; general child/sibling
+chains beside projected grids still refuse because their internal containers alter
+tree relationships. Generated-content pseudo-elements and functional selectors
+remain unsupported. Reparenting retains
 the rendered element, its listeners and state. `document.documentElement`, `head`
 and `body` expose distinct retained roots with ordinary attributes, styles and
 child attachment. Root handles pass through helpers; `lang` reflects its stored
 attribute. Stylesheets participate in attached tree order, including under head
 and body. Removing or reparenting the three roots, or replacing HTML's root
 children, remains unsupported.
-[Tag-only projection](../src/compiler/ui-projection.ts) is unsupported. Static selectors/properties are
-validated; source/sheet order and live max-width rules are retained.
+Static selectors/properties are validated; source/sheet order and live max-width rules are retained.
 Reduced-motion media rules support `reduce` and `no-preference` through the same cascade.
 On Windows, they follow the system [client-area animation preference](https://learn.microsoft.com/en-us/windows/win32/winauto/client-area-animation),
 checked about once per second while the UI runs.
 Other platforms currently refuse when this preference is reached.
 Stylesheet strings can be assembled by closed helpers over literal scalars and option records;
 argument effects execute once. Runtime-generated stylesheet text remains unsupported.
+Window `getBoundingClientRect()` publishes pending document edits and waits for their
+layout; the returned fields retain the snapshot taken by that call.
 Only fixed grids with proven equivalent wrapping-flex geometry lower; unknown
 track/class/id changes refuse. Conditional removal of known stylesheets checks
 each remaining cascade against the same grid proof. Dynamic sheet reordering,

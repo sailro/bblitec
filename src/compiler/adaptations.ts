@@ -801,17 +801,16 @@ if (features.includes("ui:rml")) {
             "scene's own GPU backend. The projection is reviewed but " +
             "not the browser: platform fonts (DirectWrite, CoreText, " +
             "fontconfig) rasterize glyphs differently from the " +
-            "browser's font stack; `element.animate()` and retained-UI " +
-            "`element.removeEventListener()` lower to no-ops (CSS @keyframes " +
+            "browser's font stack; `element.animate()` and listener removal " +
+            "outside shared mouse/keyboard dispatch lower to no-ops (CSS @keyframes " +
             "animation is projected, and retained records share the " +
             "engine lifetime); CSS `steps()`/`step-start`/`step-end` " +
             "easings play as `linear-in-out` and the `ease*` family " +
             "as `sine*`; canvas overlays composite below the DOM " +
             "chrome regardless of z-index; typed author rules retain " +
             "source order and specificity, and RmlUi evaluates reached " +
-            ":hover and max-width state against the live viewport; " +
-            "retained focus identity and host focus-visible outlines are " +
-            "projected without a general DOM activeElement object; color " +
+            "input state and max-width queries against the live viewport; " +
+            "retained focus identity and focus-visible outlines are projected; color " +
             "emoji use the platform face with explicit VS16 font runs, " +
             "not general ZWJ/emoji-sequence shaping" +
             (features.includes("renderer:canvas")
@@ -822,7 +821,7 @@ if (features.includes("ui:rml")) {
                     "quantization differences"
                 : "") +
             (scoped.length > 0
-                ? `; the statically-proven descendant rule(s) ${scoped
+                ? `; the bounded descendant rule(s) ${scoped
                     .map((selector) => `'${selector}'`)
                     .join(", ")} remain scoped in the retained rule IR`
                 : "") +

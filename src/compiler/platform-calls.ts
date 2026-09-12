@@ -1232,7 +1232,8 @@ export class PlatformCalls {
         if (element && callee.name.text === "getBoundingClientRect") {
             this.context.expectArgumentCount(call, 0, 0);
             const engine = this.context.requireEngine(element, call);
-            const rect = `bbl::ui_get_client_rect(${engine}, ${element.cpp})`;
+            const rect = this.context.allocateTemporaryCppName("ui_rect");
+            this.context.emit(`const auto ${rect} = bbl::ui_get_client_rect(${engine}, ${element.cpp});`);
             const component = (name: string): Value => ({
                 kind: "number",
                 cpp: `${rect}.${name}`,

@@ -166,6 +166,35 @@ Compound retained text writes were found to erase silently and now refuse explic
 the corresponding getter/lowering is recorded in TODO. The event-batch working notes
 predate the connected bridge; prefer these current notes and actual source.
 
+Selector sequence unit: `ui-selector.ts` parses shared typed compounds and descendant,
+child and sibling chains, attributes and input states. RmlUi renders the selector while
+`ui_selector.hpp` matches compiled terms on its live tree for private cascade metadata,
+without reparsing CSS per element. A second projection pass after tree synchronization
+observes final reparenting/attributes. Static grid proofs treat conditional matches as
+uncertain; unsupported chains across inserted grid containers refuse. Legacy descendant
+rules no longer require a currently known matching element. `selectors449` passes 661
+focused compiler/native UI checks without skips; final grid-refusal checks follow.
+`selectors446.json` narrows the literal inventory to CSS-like strings: 1,122 recognized
+selector spellings, 87 unrecognized and 33 dynamic/unassessed. These are syntax counts,
+include unused strings and some dynamic shader fragments, and do not prove complete
+lowering/native semantics. The next selector families are generated content and
+functional/structural pseudo-classes. Do not retry the application between their small
+edits. `compile438` remains the latest application attempt.
+
+`selectors450` passed 653/654 checks; its only failure was adaptation wording, corrected
+and passed in `selector-assertion451`. The Window selector probe then exposed a real
+stale-layout read: retained getBoundingClientRect used the cached rectangle. The shared
+Engine measurement hook now lets the Window owner publish edits and wait for layout,
+and compiler calls capture one rectangle rather than rereading fields lazily.
+`selectors454` passes all four focused checks. `selector-window454` builds and runs on
+SDL_GPU and Dawn, changes an attribute-selected width inside the input callback and
+checks the fresh 100px result before allowing defaults. This is stronger evidence than
+the earlier positive-width check. The retained native fixture also checks snapshot
+values and exactly one host measurement per source call.
+`css452.json` starts a separate fixed 13-case CSS-family baseline: four chain cases
+generate, nine state/structural/functional/generated-content cases refuse. Continue those
+families together; do not treat this new baseline as the original 24-case probe set.
+
 The branch was clean and synchronized with its remote before adding this
 document. All 14 implementation/test commits listed below were pushed. The PR
 remains a draft because integration and other explicitly pending work are
