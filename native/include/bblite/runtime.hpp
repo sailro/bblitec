@@ -4,6 +4,7 @@
 
 #include <bblite/js_callback.hpp>
 #include <bblite/snapshot_list.hpp>
+#include <bblite/dom_event_state.hpp>
 
 #include <algorithm>
 #include <array>
@@ -149,10 +150,14 @@ struct PlatformKeyboardEvent {
     bool alt_key = false;
     bool meta_key = false;
     mutable bool default_prevented = false;
+    std::shared_ptr<DomEventState> dom;
 
     void prevent_default() const noexcept {
+        if (dom && !dom->can_prevent_default()) return;
         default_prevented = true;
     }
+    void stop_propagation() const noexcept { if (dom) dom->stop_propagation(); }
+    void stop_immediate_propagation() const noexcept { if (dom) dom->stop_immediate_propagation(); }
 };
 
 /** Browser-neutral mouse data delivered by the platform event loop. */
@@ -165,10 +170,21 @@ struct PlatformMouseEvent {
     double movement_y = 0.0;
     double delta_y = 0.0;
     mutable bool default_prevented = false;
+    std::shared_ptr<DomEventState> dom;
+    std::string pointer_type = "mouse";
+    double pointer_id = 1;
+    bool is_primary = true;
+    bool shift_key = false;
+    bool ctrl_key = false;
+    bool alt_key = false;
+    bool meta_key = false;
 
     void prevent_default() const noexcept {
+        if (dom && !dom->can_prevent_default()) return;
         default_prevented = true;
     }
+    void stop_propagation() const noexcept { if (dom) dom->stop_propagation(); }
+    void stop_immediate_propagation() const noexcept { if (dom) dom->stop_immediate_propagation(); }
 };
 
 /**
@@ -244,12 +260,19 @@ class PlatformEventListeners<void(Args...)> {
       /** The owning event loop supplies exception reporting and callback cleanup. */
       template <typename Invoke>
       void dispatch_with(Invoke&& invoke, Args... args) {
+        dispatch_while([] { return true; }, std::forward<Invoke>(invoke), args...);
+      }
+
+      /** A stopped dispatch must not consume a later once-listener. */
+      template <typename Continue, typename Invoke>
+      void dispatch_while(Continue&& proceed, Invoke&& invoke, Args... args) {
         const std::size_t boundary = next_sequence_;
         ++dispatch_depth_;
         try {
             for (Entry& entry : entries_) {
                 if (entry.sequence >= boundary) break;
                 if (!entry.active) continue;
+                if (!proceed()) break;
                 if (entry.once) {
                     entry.active = false;
                     needs_compaction_ = true;
