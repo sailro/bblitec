@@ -3301,6 +3301,10 @@ struct UiSelectorTest {
     std::int32_t a = 0, b = 0;
 };
 struct UiSelectorStep { UiSelectorRelation relation; std::vector<UiSelectorTest> tests; };
+enum class UiGeneratedPart : std::uint8_t { None, Before, After };
+enum class UiContentPartKind : std::uint8_t { Text, Attribute };
+struct UiContentPart { UiContentPartKind kind; std::string value; };
+struct UiGeneratedContent { bool enabled = false; std::vector<UiContentPart> parts{}; };
 
 /**
  * One compiler-validated stylesheet rule.
@@ -3323,6 +3327,8 @@ struct UiStyleRule {
     UiScrollbarPart scrollbar = UiScrollbarPart::None;
     UiMotionPreference motion = UiMotionPreference::Any;
     std::vector<UiSelectorStep> sequence{};
+    UiGeneratedPart generated = UiGeneratedPart::None;
+    std::optional<UiGeneratedContent> content{};
 };
 
 /**

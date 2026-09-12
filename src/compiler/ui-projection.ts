@@ -4,9 +4,11 @@ import ts from "typescript";
 import { doubleLiteral } from "../cpp-literals.js";
 import { parseUiBorderImage, renderUiBorderImage } from "../ui-border-image.js";
 import { supportedUiFilter } from "../ui-filters.js";
+import {findUiCssSyntax, stripUiCssComments, uiCssBlockEnd, uiCssSyntaxIndices} from "../ui-css-syntax.js";
+import {parseUiGeneratedContent, uiGeneratedContentCpp, uiGeneratedPartCpp, type UiGeneratedContent} from "../ui-generated-content.js";
 import {parseUiSelectorSequence, splitUiSelectorList, uiSelectorSequenceCss, uiSelectorSequenceSpecificity, uiSelectorSequenceCpp, uiSelectorSequenceTests, uiSelectorSequenceNeedsAuthoredTree, type UiSelectorStep} from "../ui-selector.js";
 import { isUiLayoutProperty, supportedUiLayoutValue } from "../ui-layout.js";
-import { nativeHostUiStyleRules, uiStyleSelectorCppKind, uiStyleSelectorDescriptor, uiStyleInteractionStateCount, uiStyleRuleNeedsRuntimeMatch, uiStyleRuleHasMedia, uiMotionPreferenceCpp, isUiScrollbarPart, uiScrollbarPartCpp, type UiStyleSelectorShape, type UiStyleSelectorKind } from "../ui-style-rule.js";
+import { nativeHostUiStyleRules, uiStyleSelector, uiStyleSelectorCppKind, uiStyleSelectorDescriptor, uiStyleInteractionStateCount, uiStyleRuleNeedsRuntimeMatch, uiStyleRuleHasMedia, uiMotionPreferenceCpp, isUiScrollbarPart, uiScrollbarPartCpp, type UiStyleSelectorShape, type UiStyleSelectorKind } from "../ui-style-rule.js";
 import { validateFileAccept } from "./browser-file.js";
 import { CompileError } from "./compile-error.js";
 import { documentEngine } from "./window-events.js";
@@ -42,6 +44,7 @@ interface LoweredUiStyleRule extends UiStyleSelectorShape {
     ownerId?: number;
     grid?: UiGridProjection;
     sequence?: UiSelectorStep[];
+    content?: UiGeneratedContent;
 }
 
 
@@ -2257,29 +2260,20 @@ export class UiProjection {
     private static stripUiKeyframesBlocks(source: string): string {
         let result = "";
         let cursor = 0;
-        for (;;) {
-            const at = source.indexOf("@keyframes", cursor);
-            if (at < 0) {
-                result += source.slice(cursor);
-                break;
-            }
-            result += source.slice(cursor, at);
-            const opening = source.indexOf("{", at);
-            if (opening < 0) break;
-            let depth = 0;
-            let end = opening;
-            for (; end < source.length; end++) {
-                if (source[end] === "{") {
-                    depth++;
-                } else if (source[end] === "}" && --depth === 0) {
-                    end++;
-                    break;
-                }
-            }
-            cursor = end;
-            if (depth !== 0) break;
+        let depth = 0;
+        for (const index of uiCssSyntaxIndices(source)) {
+            if (index < cursor) continue;
+            if (depth === 0 && source[index] === "@" && /^@keyframes\b/i.test(source.slice(index))) {
+                const opening = findUiCssSyntax(source,"{",index);
+                if (opening === undefined) break;
+                const end = uiCssBlockEnd(source,opening);
+                if (end === undefined) break;
+                result += source.slice(cursor,index);
+                cursor = end;
+            } else if (source[index] === "{") depth++;
+            else if (source[index] === "}") depth--;
         }
-        return result;
+        return result + source.slice(cursor);
     }
 
 
@@ -2289,6 +2283,33 @@ export class UiProjection {
      * evaluates hover and max-width state without making arbitrary browser CSS
      * part of the generated runtime.
      */
+    private static uiStyleContainsBlock(source: string): boolean {
+        for (const index of uiCssSyntaxIndices(source)) if (source[index] === "{" || source[index] === "}") return true;
+        return false;
+    }
+
+    private validateUiGeneratedStyle(style: string, site?: ts.Node): void {
+        UiProjection.forEachUiStyleDeclaration(style, declaration => {
+            const property = declaration.slice(0,declaration.indexOf(":")).trim();
+            if (property.startsWith("--bbl-")) this.uiStyleRefusal(site,property,"this layout or decoration adaptation requires an authored retained element");
+        });
+    }
+
+    private lowerUiRuleDeclarations(source: string, site?: ts.Node): {style:string; content?:UiGeneratedContent} {
+        let content: UiGeneratedContent | undefined;
+        const declarations: string[] = [];
+        UiProjection.forEachUiStyleDeclaration(source, declaration => {
+            const colon = declaration.indexOf(":");
+            if (colon < 0 || declaration.slice(0,colon).trim().toLowerCase() !== "content") {
+                declarations.push(declaration);
+                return;
+            }
+            content = parseUiGeneratedContent(declaration.slice(colon+1));
+            if (!content) this.uiStyleRefusal(site, "content", "only none/normal and lists of CSS strings or attr(name) are represented");
+        });
+        return {style:this.lowerUiAttributeLiteral("style", content ? declarations.join(";") : source,site), ...(content ? {content} : {})};
+    }
+
     private lowerUiStyleSheetLiteral(
         value: string,
         site?: ts.Node,
@@ -2320,7 +2341,7 @@ export class UiProjection {
             this.context.failAtFile(message);
         };
         const source = UiProjection.stripUiKeyframesBlocks(
-            value.replace(/\/\*[\s\S]*?\*\//g, ""),
+            stripUiCssComments(value),
         );
 
         const parseBlocks = (
@@ -2334,29 +2355,9 @@ export class UiProjection {
                     cursor++;
                 }
                 if (cursor >= text.length) break;
-                const opening = text.indexOf("{", cursor);
-                if (opening < 0) {
-                    refuseSelector(text.slice(cursor).trim());
-                }
+                const opening = findUiCssSyntax(text,"{",cursor) ?? refuseSelector(text.slice(cursor).trim());
                 const header = text.slice(cursor, opening).trim();
-                let quote = "";
-                let depth = 1;
-                let end = opening + 1;
-                for (; end < text.length && depth > 0; end++) {
-                    const character = text[end]!;
-                    if (quote) {
-                        if (character === quote && text[end - 1] !== "\\") {
-                            quote = "";
-                        }
-                    } else if (character === "'" || character === '"') {
-                        quote = character;
-                    } else if (character === "{") {
-                        depth++;
-                    } else if (character === "}") {
-                        depth--;
-                    }
-                }
-                if (depth !== 0) refuseSelector(header);
+                const end = uiCssBlockEnd(text, opening) ?? refuseSelector(header);
                 const body = text.slice(opening + 1, end - 1);
                 cursor = end;
 
@@ -2380,7 +2381,7 @@ export class UiProjection {
                     continue;
                 }
                 if (header.startsWith("@")) refuseSelector(header);
-                if (body.includes("{") || body.includes("}")) {
+                if (UiProjection.uiStyleContainsBlock(body)) {
                     refuseSelector(header);
                 }
 
@@ -2388,6 +2389,7 @@ export class UiProjection {
                 if (inheritedMaxWidth !== undefined) {
                     const mediaProperties = new EmissionSet([
                         "bottom",
+                        "content",
                         "font-size",
                         "height",
                         "left",
@@ -2430,7 +2432,7 @@ export class UiProjection {
                 const selectors = splitUiSelectorList(header);
                 for (const selector of selectors) {
                     if (
-                        parseUiSelectorSequence(selector)?.at(-1)?.tests.some(test => test.kind === "tag" && (test.name === "path" || test.name === "rect"))
+                        parseUiSelectorSequence(selector.replace(/::(?:before|after)$/, ""))?.at(-1)?.tests.some(test => test.kind === "tag" && (test.name === "path" || test.name === "rect"))
                     ) {
                         const message =
                             `Retained stylesheet selector '${selector}' cannot ` +
@@ -2440,15 +2442,14 @@ export class UiProjection {
                         this.context.failAtFile(message);
                     }
                 }
-                const style = this.lowerUiAttributeLiteral(
-                    "style",
-                    sourceStyle,
-                    site,
-                );
+                const {style, content} = this.lowerUiRuleDeclarations(sourceStyle, site);
                 for (const selector of selectors) {
                     const rule =
                         UiProjection.parseUiSelector(selector, style) ??
                         refuseSelector(selector);
+                    if (content && !rule.pseudo) this.uiStyleRefusal(site, "content", "text content lists require a before/after pseudo-element");
+                    if (rule.pseudo) this.validateUiGeneratedStyle(style,site);
+                    if (content) rule.content = content;
                     if (inheritedMaxWidth !== undefined) {
                         rule.maxWidth = inheritedMaxWidth;
                     }
@@ -2459,6 +2460,7 @@ export class UiProjection {
                         if (
                             uiStyleRuleNeedsRuntimeMatch(rule) ||
                             rule.scrollbar ||
+                            rule.pseudo ||
                             (rule.kind !== "class" && rule.kind !== "id")
                         ) {
                             this.uiStyleRefusal(
@@ -2476,7 +2478,7 @@ export class UiProjection {
                     ) {
                         this.uiScopedSheetSelectors.add(selector);
                     }
-                    if (!style) continue;
+                    if (!style && !content) continue;
                     rules.push(rule);
                     // Anonymous scrollbar controls cannot affect static proofs
                     // over the authored element tree.
@@ -2525,7 +2527,7 @@ export class UiProjection {
         element: UiStaticElement,
         classes: ReadonlySet<string>,
     ): boolean {
-        if (rule.scrollbar) return false;
+        if (rule.scrollbar || rule.pseudo) return false;
         switch (rule.kind) {
             case "sequence":
                 return this.uiSequenceMayMatch(rule, element, classes);
@@ -2556,11 +2558,19 @@ export class UiProjection {
         selector: string,
         style: string,
     ): LoweredUiStyleRule | undefined {
+        const generated = /^(.*)::(before|after)$/.exec(selector);
+        if (generated) {
+            const origin = generated[1]!;
+            const sequence = parseUiSelectorSequence(!origin || /[\s>+~]$/.test(origin) ? origin + "*" : origin);
+            if (!sequence) return undefined;
+            return {kind:"sequence", primary:uiSelectorSequenceCss(sequence), sequence, hover:false, style,
+                pseudo:generated[2] === "before" ? "before" : "after", selector};
+        }
         const scrollbar = selector.match(/^(.*?)::-webkit-scrollbar(?:-(thumb|track|button|corner))?(:hover)?$/);
         if (scrollbar) {
             const owner = UiProjection.parseUiSelector(scrollbar[1]!, style);
             const part = scrollbar[2] ?? "scrollbar";
-            if (!owner || owner.scrollbar || uiStyleInteractionStateCount(owner) > 0 || !isUiScrollbarPart(part)) return undefined;
+            if (!owner || owner.pseudo || owner.scrollbar || uiStyleInteractionStateCount(owner) > 0 || !isUiScrollbarPart(part)) return undefined;
             return { ...owner, scrollbar: part, hover: scrollbar[3] !== undefined, selector };
         }
         const state = /:(hover|active|focus-visible)$/i.exec(selector);
@@ -2568,7 +2578,7 @@ export class UiProjection {
             const owner = UiProjection.parseUiSelector(selector.slice(0, -state[0].length), style);
             const property = state[1]!.toLowerCase() === "focus-visible" ? "focusVisible" :
                 state[1]!.toLowerCase() === "active" ? "active" : "hover";
-            if (!owner || owner[property] || owner.scrollbar) return undefined;
+            if (!owner || owner[property] || owner.scrollbar || owner.pseudo) return undefined;
             return { ...owner, [property]: true, selector };
         }
         const identifier = "[A-Za-z_][A-Za-z0-9_-]*";
@@ -2786,6 +2796,7 @@ export class UiProjection {
         element: UiStaticElement,
         classes: ReadonlySet<string>,
     ): boolean {
+        if (rule.pseudo) return false;
         if (rule.kind === "tag-child-class") return classes.has(rule.primary) && (!rule.secondary || classes.has(rule.secondary)) && this.uiStaticParentHasTag(id, rule.tag!);
         if (
             rule.kind !== "class-descendant-tag" &&
@@ -3681,7 +3692,7 @@ export class UiProjection {
                     ),
                 );
             if (anyGrid) {
-                const structural = activeRules.find(rule => rule.sequence && uiSelectorSequenceNeedsAuthoredTree(rule.sequence));
+                const structural = activeRules.find(rule => rule.pseudo || (rule.sequence && uiSelectorSequenceNeedsAuthoredTree(rule.sequence)));
                 if (structural) {
                     const message = `Retained selector '${structural.selector}' requires authored tree relationships that cannot be proven across projected grid containers.`;
                     if (structural.site) this.context.fail(structural.site, message);
@@ -4749,6 +4760,7 @@ export class UiProjection {
                             (rule.kind === "class" || rule.kind === "id") &&
                             !uiStyleRuleNeedsRuntimeMatch(rule) &&
                             !rule.scrollbar &&
+                            !rule.pseudo &&
                             !uiStyleRuleHasMedia(rule)
                         ) {
                             this.context.emit(
@@ -4770,7 +4782,8 @@ export class UiProjection {
                                     `, bbl::UiScrollbarPart::${uiScrollbarPartCpp(rule.scrollbar)}, ` +
                                     `${rule.focusVisible ? "true" : "false"}, ${rule.active ? "true" : "false"}, ` +
                                     `bbl::UiMotionPreference::${uiMotionPreferenceCpp(rule.reducedMotion)}` +
-                                    `${rule.sequence ? `, ${uiSelectorSequenceCpp(rule.sequence, value => this.context.cppString(value))}` : ""});`,
+                                    `${rule.sequence || rule.pseudo ? `, ${uiSelectorSequenceCpp(rule.sequence ?? [], value => this.context.cppString(value))}` : ""}` +
+                                    `${rule.pseudo ? `, bbl::UiGeneratedPart::${uiGeneratedPartCpp(rule.pseudo)}, ${uiGeneratedContentCpp(rule.content, value => this.context.cppString(value))}` : ""});`,
                             );
                         }
                     }
@@ -5070,6 +5083,11 @@ export class UiProjection {
             if (rule.scrollbar !== undefined && !isUiScrollbarPart(rule.scrollbar)) {
                 this.context.failAtFile("Native host UI rule has an unsupported scrollbar part.");
             }
+            if (rule.pseudo !== undefined && (rule.pseudo !== "before" && rule.pseudo !== "after" || rule.scrollbar !== undefined))
+                this.context.failAtFile("Native host UI generated content requires a before/after target without a scrollbar part.");
+            const {style: declarations, content} = this.lowerUiRuleDeclarations(rule.style);
+            if (rule.pseudo) this.validateUiGeneratedStyle(declarations);
+            if (content && !rule.pseudo) this.context.failAtFile("Native host UI content lists require a before/after target.");
             if (UiProjection.fractionalUiGridTracks(rule.style)) {
                 this.context.failAtFile("Fractional host grids require inline tracks beside their complete child list.");
             }
@@ -5107,19 +5125,23 @@ export class UiProjection {
                     "Native host UI style maxWidth must be a positive finite number.",
                 );
             }
+            const selected = rule.pseudo ? UiProjection.parseUiSelector(uiStyleSelector(rule), declarations) : rule;
+            if (!selected) this.context.failAtFile("Native host UI pseudo-element has an unsupported originating selector.");
+            const selectedSequence = selected.sequence ?? sequence;
             emitted.push(
                 `${indent}bbl::ui_add_host_style_rule(${engine}, ` +
-                    `bbl::UiStyleSelectorKind::${descriptor.cpp}, ` +
-                    `${this.context.cppString(rule.primary)}, ` +
-                    `${this.context.cppString(rule.secondary ?? "")}, ` +
-                    `${this.context.cppString(rule.tag ?? "")}, ` +
-                    `${rule.hover ? "true" : "false"}, ` +
+                    `bbl::UiStyleSelectorKind::${uiStyleSelectorCppKind(selected.kind)}, ` +
+                    `${this.context.cppString(selected.primary)}, ` +
+                    `${this.context.cppString(selected.secondary ?? "")}, ` +
+                    `${this.context.cppString(selected.tag ?? "")}, ` +
+                    `${selected.hover ? "true" : "false"}, ` +
                     `${doubleLiteral(rule.maxWidth ?? -1)}, ` +
-                    `${this.context.cppString(this.lowerUiAttributeLiteral("style", rule.style))}` +
-                    `, ${rule.focusVisible ? "true" : "false"}, ${rule.active ? "true" : "false"}, ` +
+                    `${this.context.cppString(declarations)}` +
+                    `, ${selected.focusVisible ? "true" : "false"}, ${selected.active ? "true" : "false"}, ` +
                     `bbl::UiScrollbarPart::${uiScrollbarPartCpp(rule.scrollbar)}, ` +
                     `bbl::UiMotionPreference::${uiMotionPreferenceCpp(rule.reducedMotion)}` +
-                    `${sequence ? `, ${uiSelectorSequenceCpp(sequence, value => this.context.cppString(value))}` : ""});`,
+                    `${selectedSequence || rule.pseudo ? `, ${uiSelectorSequenceCpp(selectedSequence ?? [], value => this.context.cppString(value))}` : ""}` +
+                    `${rule.pseudo ? `, bbl::UiGeneratedPart::${uiGeneratedPartCpp(rule.pseudo)}, ${uiGeneratedContentCpp(content, value => this.context.cppString(value))}` : ""});`,
             );
         }
 

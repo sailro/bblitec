@@ -12,6 +12,7 @@ import {
     isUiStyleSelectorKind,
     isUiScrollbarPart,
     nativeHostUiStyleRules,
+    type NativeHostUiStyleRule,
 } from "./ui-style-rule.js";
 
 export function refuseUnknownKeys(
@@ -128,7 +129,7 @@ export function readNativeHostUi(path: string): NativeHostUi {
     ) {
         throw new Error(`Native host UI '${path}' styleRules must be an array.`);
     }
-    const styleRules = (record.styleRules ?? []).map((rule, index) => {
+    const styleRules = (record.styleRules ?? []).map((rule, index): NativeHostUiStyleRule => {
         const location = `Native host UI '${path}' styleRules[${index}]`;
         if (!rule || typeof rule !== "object" || Array.isArray(rule)) {
             throw new Error(`${location} must be an object.`);
@@ -145,6 +146,7 @@ export function readNativeHostUi(path: string): NativeHostUi {
                 "focusVisible",
                 "active",
                 "scrollbar",
+                "pseudo",
                 "maxWidth",
                 "reducedMotion",
                 "style",
@@ -181,6 +183,8 @@ export function readNativeHostUi(path: string): NativeHostUi {
         if (item.scrollbar !== undefined && !isUiScrollbarPart(item.scrollbar)) {
             throw new Error(`${location}.scrollbar must name a supported scrollbar part.`);
         }
+        if (item.pseudo !== undefined && item.pseudo !== "before" && item.pseudo !== "after")
+            throw new Error(`${location}.pseudo must be before or after.`);
         if (item.maxWidth !== undefined && typeof item.maxWidth !== "number") {
             throw new Error(`${location}.maxWidth must be a number.`);
         }
@@ -200,6 +204,7 @@ export function readNativeHostUi(path: string): NativeHostUi {
             ...(item.active !== undefined ? { active: item.active } : {}),
             ...(item.reducedMotion !== undefined ? { reducedMotion: item.reducedMotion } : {}),
             ...(item.scrollbar !== undefined ? { scrollbar: item.scrollbar } : {}),
+            ...(item.pseudo !== undefined ? { pseudo: item.pseudo } : {}),
             ...(item.maxWidth !== undefined
                 ? { maxWidth: item.maxWidth }
                 : {}),

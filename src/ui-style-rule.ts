@@ -1,4 +1,5 @@
 import {parseUiSelectorSequence, uiSelectorSequenceIsConditional, uiSelectorSequenceTests, isUiSelectorState, type UiSelectorStep} from "./ui-selector.js";
+import type {UiGeneratedPart} from "./ui-generated-content.js";
 
 /** The bounded selector forms shared by host-UI validation and projection. */
 const UI_STYLE_SELECTOR_DESCRIPTORS = {
@@ -90,6 +91,7 @@ export interface UiStyleSelectorShape {
     focusVisible?: boolean;
     active?: boolean;
     scrollbar?: UiScrollbarPart;
+    pseudo?: UiGeneratedPart;
     /** Parsed compiler metadata; external host inputs supply the selector text. */
     sequence?: readonly UiSelectorStep[];
 }
@@ -156,7 +158,8 @@ export function uiStyleSelector(rule: UiStyleSelectorShape): string {
         base +
         (rule.hover ? ":hover" : "") +
         (rule.focusVisible ? ":focus-visible" : "") +
-        (rule.active ? ":active" : "")
+        (rule.active ? ":active" : "") +
+        (rule.pseudo ? `::${rule.pseudo}` : "")
     );
 }
 

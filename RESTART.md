@@ -36,7 +36,7 @@ it does not establish that this external application compiles or runs.
 | Branch | `codex/external-project-support` |
 | Remote | `https://github.com/sailro/bblitec.git` |
 | Branch base used in this session | `3474e835` on `main` |
-| Latest executable-code/test unit | Structural/negated selectors and focus-within; prior savepoints `6aa3bc40` (selector chains and fresh Window layout), `fadc3ac8` (event targets), `48f5224f` (DOM input bridge) and `58c6fe8c` (mixed tuples) |
+| Latest executable-code/test unit | Generated before/after content; prior savepoints `c18e4818` (structural selectors), `6aa3bc40` (selector chains and fresh Window layout), `fadc3ac8` (event targets), `48f5224f` (DOM input bridge) and `58c6fe8c` (mixed tuples) |
 | Draft PR | [#247 — Extend generic application compilation and retained UI support](https://github.com/sailro/bblitec/pull/247) |
 | External checkout | `C:/Dev/_prototypes/external-native-app` |
 | External source revision | `d7c477a6d5963680c55249dceb93cb6e4ab9ce56` |
@@ -211,11 +211,30 @@ builds/runs on both renderers and transports nested negation terms while validat
 fresh layout during callbacks. `css458` accepts 10/13 generation probes; generated
 content is the remaining family. No further full-application attempt has run.
 
-The ignored `generated-content-plan.md` records the next design direction and dependency
-coordination concern: another task is building in a separate worktree, so use isolated
-RmlUi candidate artifacts while any shared standard libraries are in use. No new RmlUi
-patch or generated-content implementation has been made yet; canonical artifacts still
-record twelve patches at the unchanged pin. Read and verify the plan against source.
+Generated before/after content is implemented with a thirteenth maintained RmlUi patch
+at the unchanged pin. Typed content lists contain literal strings and current attribute
+reads; the PAL resolves their cascade independently from public box styles. Boxes retain
+normal layout participation while selectors, queries and serialization exclude them.
+Anonymous generated flex text uses the same text construction helpers, with internal
+selector identity. Authored-node-only decoration/grid substitutions refuse explicitly.
+CSS block/comment walks now preserve quoted braces, escapes and keyframe-looking text.
+
+`css467` accepts all 13 fixed CSS family generation probes. `content472` passes 662
+compiler/UI checks without skips, including native content/state/media/removal semantics.
+`window473` builds and runs on both renderers and verifies a generated box's height change
+through a layout request inside a pointer callback. The earlier Window probe failure was
+an ignored-runner replacement targeting injected CSS instead of the button's inline
+style; the runner now replaces the exact statement. No complete-entry retry since
+`compile438` has followed this CSS batch yet.
+
+The candidate library is `artifacts/tools/rmlui-generated-content`, built in
+`.cache/rmlui-generated-content`; its 13-patch build is validated. `rmlui474` rebuilds
+the standard development artifact with the same patches. Static and specialized artifact
+variants still need reconciliation before their consumers run. The other task's worktree
+has a separate ordinary RmlUi directory; do not modify that task's libraries or processes.
+The ignored `generated-content-plan.md` is historical design context. Further patch edits
+can use `save-rml-content-patch.mjs` and its saved base index; ordinary build scripts reset
+candidate Git indexes while applying the maintained patches.
 
 The branch was clean and synchronized with its remote before adding this
 document. All 14 implementation/test commits listed below were pushed. The PR

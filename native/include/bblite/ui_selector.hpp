@@ -2,6 +2,7 @@
 
 #include <bblite/runtime.hpp>
 #include <RmlUi/Core/Element.h>
+#include <RmlUi/Core/ElementText.h>
 #include <algorithm>
 
 namespace bbl::pal {
@@ -23,7 +24,7 @@ inline bool ui_selector_position_matches(Rml::Element& element, const UiSelector
     std::int64_t position = 0, count = 0;
     for (int index = 0; index < parent->GetNumChildren(); ++index) {
         auto* child = parent->GetChild(index);
-        if (child->GetTagName() == "#text" || (of_type && child->GetTagName() != element.GetTagName())) continue;
+        if (child->GetPseudoElement() != Rml::Element::PseudoElement::None || child->GetTagName() == "#text" || (of_type && child->GetTagName() != element.GetTagName())) continue;
         ++count;
         if (child == &element) position = count;
     }
@@ -63,7 +64,14 @@ inline bool ui_selector_test_matches(Rml::Element& element, const UiSelectorTest
     case UiSelectorTestKind::FocusWithin: return element.IsPseudoClassSet("focus-within");
     case UiSelectorTestKind::Disabled: return element.IsPseudoClassSet("disabled");
     case UiSelectorTestKind::Checked: return element.IsPseudoClassSet("checked");
-    case UiSelectorTestKind::Empty: return element.GetNumChildren() == 0;
+    case UiSelectorTestKind::Empty:
+        for (int index = 0; index < element.GetNumChildren(); ++index) {
+            auto* child = element.GetChild(index);
+            if (child->GetPseudoElement() != Rml::Element::PseudoElement::None) continue;
+            const auto* text = rmlui_dynamic_cast<Rml::ElementText*>(child);
+            if (!text || !text->GetText().empty()) return false;
+        }
+        return true;
     case UiSelectorTestKind::NthChild: case UiSelectorTestKind::NthLastChild:
     case UiSelectorTestKind::NthOfType: case UiSelectorTestKind::NthLastOfType:
     case UiSelectorTestKind::OnlyChild: case UiSelectorTestKind::OnlyOfType:
@@ -82,7 +90,7 @@ inline bool ui_selector_test_matches(Rml::Element& element, const UiSelectorTest
 inline bool ui_selector_sequence_matches(Rml::Element* element, const std::vector<UiSelectorStep>& steps) {
     if (steps.empty()) throw std::logic_error("A selector sequence must contain a compound.");
     const auto match = [&](const auto& self, Rml::Element* current, std::size_t index) -> bool {
-        if (!current || current->GetTagName() == "#text") return false;
+        if (!current || current->GetPseudoElement() != Rml::Element::PseudoElement::None || current->GetTagName() == "#text") return false;
         const auto& step = steps[index];
         for (const auto& test : step.tests) if (!ui_selector_test_matches(*current, test)) return false;
         if (index == 0) return true;
@@ -98,7 +106,7 @@ inline bool ui_selector_sequence_matches(Rml::Element* element, const std::vecto
             for (int sibling = 0; sibling < parent->GetNumChildren(); ++sibling) {
                 auto* candidate = parent->GetChild(sibling);
                 if (candidate == current) break;
-                if (candidate->GetTagName() == "#text") continue;
+                if (candidate->GetPseudoElement() != Rml::Element::PseudoElement::None || candidate->GetTagName() == "#text") continue;
                 if (step.relation == UiSelectorRelation::Following && self(self, candidate, index - 1)) return true;
                 previous = candidate;
             }

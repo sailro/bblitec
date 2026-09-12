@@ -1,0 +1,268 @@
+diff --git a/Include/RmlUi/Core/Element.h b/Include/RmlUi/Core/Element.h
+index 4fbbbed..e8998dd 100644
+--- a/Include/RmlUi/Core/Element.h
++++ b/Include/RmlUi/Core/Element.h
+@@ -56,6 +56,16 @@ public:
+ 	/// Clones this element, returning a new, unparented element.
+ 	ElementPtr Clone() const;
+ 
++	// Generated boxes participate in layout while retaining their originating
++	// element's selector identity. Hosts create them before/after normal children.
++	enum class PseudoElement { None, Before, After, Internal };
++	PseudoElement GetPseudoElement() const { return pseudo_element; }
++	void SetPseudoElement(PseudoElement value) {
++		if (pseudo_element == value) return;
++		pseudo_element = value;
++		DirtyDefinition(DirtyNodes::Self);
++	}
++
+ 	/** @name Classes
+ 	 */
+ 	//@{
+@@ -733,6 +743,7 @@ private:
+ 
+ 	// Original tag this element came from.
+ 	String tag;
++	PseudoElement pseudo_element = PseudoElement::None;
+ 
+ 	// The optional, unique ID of this object.
+ 	String id;
+diff --git a/Source/Core/Element.cpp b/Source/Core/Element.cpp
+index d2b6ba4..b267940 100644
+--- a/Source/Core/Element.cpp
++++ b/Source/Core/Element.cpp
+@@ -1155,7 +1155,8 @@ void Element::GetInnerRML(String& content) const
+ {
+ 	for (int i = 0; i < GetNumChildren(); i++)
+ 	{
+-		children[i]->GetRML(content);
++		if (children[i]->GetPseudoElement() == PseudoElement::None)
++			children[i]->GetRML(content);
+ 	}
+ }
+ 
+@@ -1546,7 +1547,7 @@ static Element* QuerySelectorMatchRecursive(const StyleSheetNodeListRaw& nodes,
+ 	for (int i = 0; i < num_children; i++)
+ 	{
+ 		Element* child = element->GetChild(i);
+-		if (child->GetTagName() == "#text")
++		if (child->GetTagName() == "#text" || child->GetPseudoElement() != Element::PseudoElement::None)
+ 			continue;
+ 
+ 		for (const StyleSheetNode* node : nodes)
+@@ -1570,7 +1571,7 @@ static void QuerySelectorAllMatchRecursive(ElementList& matching_elements, const
+ 	for (int i = 0; i < num_children; i++)
+ 	{
+ 		Element* child = element->GetChild(i);
+-		if (child->GetTagName() == "#text")
++		if (child->GetTagName() == "#text" || child->GetPseudoElement() != Element::PseudoElement::None)
+ 			continue;
+ 
+ 		for (const StyleSheetNode* node : nodes)
+diff --git a/Source/Core/ElementUtilities.cpp b/Source/Core/ElementUtilities.cpp
+index c146399..ea4ed30 100644
+--- a/Source/Core/ElementUtilities.cpp
++++ b/Source/Core/ElementUtilities.cpp
+@@ -41,7 +41,8 @@ Element* ElementUtilities::GetElementById(Element* root_element, const String& i
+ 
+ 		// Add all children to search
+ 		for (int i = 0; i < element->GetNumChildren(); i++)
+-			search_queue.push(element->GetChild(i));
++			if (element->GetChild(i)->GetPseudoElement() == Element::PseudoElement::None)
++				search_queue.push(element->GetChild(i));
+ 	}
+ 
+ 	return nullptr;
+@@ -60,6 +61,7 @@ void ElementUtilities::GetElementsByTagName(ElementList& elements, Element* root
+ 		Element* element = search_queue.front();
+ 		search_queue.pop();
+ 
++		if (element->GetPseudoElement() != Element::PseudoElement::None) continue;
+ 		if (element->GetTagName() == tag)
+ 			elements.push_back(element);
+ 
+@@ -85,6 +87,7 @@ void ElementUtilities::GetElementsByClassName(ElementList& elements, Element* ro
+ 		Element* element = search_queue.front();
+ 		search_queue.pop();
+ 
++		if (element->GetPseudoElement() != Element::PseudoElement::None) continue;
+ 		if (element->IsClassSet(class_name))
+ 			elements.push_back(element);
+ 
+diff --git a/Source/Core/StyleSheet.cpp b/Source/Core/StyleSheet.cpp
+index 95249ca..7539a74 100644
+--- a/Source/Core/StyleSheet.cpp
++++ b/Source/Core/StyleSheet.cpp
+@@ -188,9 +188,11 @@ SharedPtr<const ElementDefinition> StyleSheet::GetElementDefinition(const Elemen
+ 	};
+ 
+ 	// See if there are any styles defined for this element.
+-	const String& tag = element->GetTagName();
+-	const String& id = element->GetId();
+-	const StringList& class_names = element->GetStyle()->GetClassNameList();
++	const Element* origin = element->GetPseudoElement() == Element::PseudoElement::None ? element : element->GetParentNode();
++	if (!origin) return nullptr;
++	const String& tag = origin->GetTagName();
++	const String& id = origin->GetId();
++	const StringList& class_names = origin->GetStyle()->GetClassNameList();
+ 
+ 	// Text elements are never matched.
+ 	if (tag == "#text")
+diff --git a/Source/Core/StyleSheetNode.cpp b/Source/Core/StyleSheetNode.cpp
+index 41da7cb..3acd034 100644
+--- a/Source/Core/StyleSheetNode.cpp
++++ b/Source/Core/StyleSheetNode.cpp
+@@ -11,7 +11,19 @@ namespace Rml {
+ 
+ static inline bool IsTextElement(const Element* element)
+ {
+-	return element->GetTagName() == "#text";
++	return element->GetTagName() == "#text" || element->GetPseudoElement() != Element::PseudoElement::None;
++}
++
++static const Element* SelectorOrigin(const CompoundSelector& selector, const Element* element)
++{
++	auto expected = Element::PseudoElement::None;
++	for (const auto& name : selector.pseudo_class_names) {
++		if (name != ":before" && name != ":after") continue;
++		if (expected != Element::PseudoElement::None) return nullptr;
++		expected = name == ":before" ? Element::PseudoElement::Before : Element::PseudoElement::After;
++	}
++	if (element->GetPseudoElement() != expected) return nullptr;
++	return expected == Element::PseudoElement::None ? element : element->GetParentNode();
+ }
+ 
+ StyleSheetNode::StyleSheetNode()
+@@ -151,6 +163,8 @@ const PropertyDictionary& StyleSheetNode::GetProperties() const
+ 
+ bool StyleSheetNode::Match(const Element* element, const Element* scope) const
+ {
++	element = SelectorOrigin(selector, element);
++	if (!element) return false;
+ 	if (!selector.tag.empty() && selector.tag != element->GetTagName())
+ 		return false;
+ 
+@@ -165,6 +179,7 @@ bool StyleSheetNode::Match(const Element* element, const Element* scope) const
+ 
+ 	for (auto& name : selector.pseudo_class_names)
+ 	{
++		if (name == ":before" || name == ":after") continue;
+ 		if (!element->IsPseudoClassSet(name))
+ 			return false;
+ 	}
+@@ -266,6 +281,8 @@ bool StyleSheetNode::MatchAttributes(const Element* element) const
+ 
+ bool StyleSheetNode::TraverseMatch(const Element* element, const Element* scope) const
+ {
++	if (element->GetPseudoElement() != Element::PseudoElement::None) element = element->GetParentNode();
++	if (!element) return false;
+ 	RMLUI_ASSERT(parent);
+ 	if (!parent->parent)
+ 		return true;
+@@ -329,6 +346,8 @@ bool StyleSheetNode::TraverseMatch(const Element* element, const Element* scope)
+ 
+ bool StyleSheetNode::IsApplicable(const Element* element, const Element* scope) const
+ {
++	element = SelectorOrigin(selector, element);
++	if (!element) return false;
+ 	// Determine whether the element matches the current node and its entire lineage. The entire hierarchy of the element's document will be
+ 	// considered during the match as necessary.
+ 
+@@ -336,6 +355,7 @@ bool StyleSheetNode::IsApplicable(const Element* element, const Element* scope)
+ 	// particular order for performance reasons.
+ 	for (const String& name : selector.pseudo_class_names)
+ 	{
++		if (name == ":before" || name == ":after") continue;
+ 		if (!element->IsPseudoClassSet(name))
+ 			return false;
+ 	}
+@@ -379,7 +399,8 @@ void StyleSheetNode::CalculateAndSetSpecificity()
+ 
+ 	specificity += SelectorSpecificity::Class * (int)selector.class_names.size();
+ 	specificity += SelectorSpecificity::Attribute * (int)selector.attributes.size();
+-	specificity += SelectorSpecificity::PseudoClass * (int)selector.pseudo_class_names.size();
++	for (const auto& name : selector.pseudo_class_names)
++		specificity += name == ":before" || name == ":after" ? SelectorSpecificity::Tag : SelectorSpecificity::PseudoClass;
+ 
+ 	for (const StructuralSelector& selector : selector.structural_selectors)
+ 		specificity += selector.specificity;
+diff --git a/Source/Core/StyleSheetSelector.cpp b/Source/Core/StyleSheetSelector.cpp
+index 01663f4..a9289cb 100644
+--- a/Source/Core/StyleSheetSelector.cpp
++++ b/Source/Core/StyleSheetSelector.cpp
+@@ -1,5 +1,6 @@
+ #include "StyleSheetSelector.h"
+ #include "../../Include/RmlUi/Core/Element.h"
++#include "../../Include/RmlUi/Core/ElementText.h"
+ #include "StyleSheetNode.h"
+ #include <tuple>
+ 
+@@ -7,7 +8,7 @@ namespace Rml {
+ 
+ static inline bool IsTextElement(const Element* element)
+ {
+-	return element->GetTagName() == "#text";
++	return element->GetTagName() == "#text" || element->GetPseudoElement() != Element::PseudoElement::None;
+ }
+ 
+ // Returns true if a positive integer can be found for n in the equation an + b = count.
+@@ -138,7 +139,7 @@ bool IsSelectorApplicable(const Element* element, const StructuralSelector& sele
+ 				break;
+ 
+ 			// Skip nodes that don't share our tag.
+-			if (child->GetTagName() != element->GetTagName())
++			if (child->GetPseudoElement() != Element::PseudoElement::None || child->GetTagName() != element->GetTagName())
+ 				continue;
+ 
+ 			element_index++;
+@@ -164,7 +165,7 @@ bool IsSelectorApplicable(const Element* element, const StructuralSelector& sele
+ 				break;
+ 
+ 			// Skip nodes that don't share our tag.
+-			if (child->GetTagName() != element->GetTagName())
++			if (child->GetPseudoElement() != Element::PseudoElement::None || child->GetTagName() != element->GetTagName())
+ 				continue;
+ 
+ 			element_index++;
+@@ -238,7 +239,7 @@ bool IsSelectorApplicable(const Element* element, const StructuralSelector& sele
+ 				return true;
+ 
+ 			// Otherwise, if this child shares our element's tag, then our element is not the first tagged child; the selector fails.
+-			if (child->GetTagName() == element->GetTagName())
++			if (child->GetPseudoElement() == Element::PseudoElement::None && child->GetTagName() == element->GetTagName())
+ 				return false;
+ 
+ 			child_index++;
+@@ -262,7 +263,7 @@ bool IsSelectorApplicable(const Element* element, const StructuralSelector& sele
+ 				return true;
+ 
+ 			// Otherwise, if this child shares our element's tag, then our element is not the first tagged child; the selector fails.
+-			if (child->GetTagName() == element->GetTagName())
++			if (child->GetPseudoElement() == Element::PseudoElement::None && child->GetTagName() == element->GetTagName())
+ 				return false;
+ 
+ 			child_index--;
+@@ -312,7 +313,7 @@ bool IsSelectorApplicable(const Element* element, const StructuralSelector& sele
+ 				continue;
+ 
+ 			// Skip the child if it does not share our tag.
+-			if (child->GetTagName() != element->GetTagName())
++			if (child->GetPseudoElement() != Element::PseudoElement::None || child->GetTagName() != element->GetTagName())
+ 				continue;
+ 
+ 			// We've found a similarly-tagged child to our element; selector fails.
+@@ -324,7 +325,13 @@ bool IsSelectorApplicable(const Element* element, const StructuralSelector& sele
+ 	break;
+ 	case StructuralSelectorType::Empty:
+ 	{
+-		return element->GetNumChildren() == 0;
++		for (int index = 0; index < element->GetNumChildren(); ++index) {
++			const auto* child = element->GetChild(index);
++			if (child->GetPseudoElement() != Element::PseudoElement::None) continue;
++			if (child->GetTagName() == "#text" && static_cast<const ElementText*>(child)->GetText().empty()) continue;
++			return false;
++		}
++		return true;
+ 	}
+ 	break;
+ 	case StructuralSelectorType::Not:
