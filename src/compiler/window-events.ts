@@ -31,6 +31,14 @@ export function requireWindowHost(context: Pick<LoweringServices, "options" | "r
     context.reachFeature("ui:rml", node);
 }
 
+/** DOM handles belong to the Window document in application realms, even when
+ * that realm also owns a rendering engine. Synchronous scenes use their engine. */
+export function documentEngine(context: Pick<LoweringServices, "options" | "defaultEngine" | "reachFeature" | "fail">, node: ts.Node): string | undefined {
+    if (!context.options.workers) return context.defaultEngine();
+    requireWindowHost(context, node);
+    return "bbl::pal::window_document_engine()";
+}
+
 function windowIdentity(): Value {
     const cpp = "std::addressof(bbl::pal::window_document_engine())";
     return { kind: "record", cpp, objectIdentityCpp: cpp, truthinessCpp: "true", recordProperties: {} };
