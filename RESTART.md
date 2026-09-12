@@ -23,7 +23,7 @@ it does not establish that this external application compiles or runs.
 | Branch | `codex/external-project-support` |
 | Remote | `https://github.com/sailro/bblitec.git` |
 | Branch base used in this session | `3474e835` on `main` |
-| Latest completed executable-code/test commit | `20349d32` (2026-09-12), followed by direct entry iteration in this savepoint |
+| Latest completed executable-code/test commit | `99d565b4` (2026-09-12), followed by locale lists/options in this savepoint |
 | Draft PR | [#247 — Extend generic application compilation and retained UI support](https://github.com/sailro/bblitec/pull/247) |
 | External checkout | `C:/Dev/_prototypes/external-native-app` |
 | External source revision | `d7c477a6d5963680c55249dceb93cb6e4ab9ce56` |
@@ -245,6 +245,14 @@ incomplete. Do not merge or mark it ready merely because the sweep passes.
   receiver/value snapshots. Stored Set entry iterators are still unrepresented.
   Separate probes found existing refusals for immediate `[...set].join()` and
   rebinding a plain Set local; neither was changed by this unit.
+- `99d565b4` saves direct entry iteration and is pushed. Locale comparison now
+  accepts string arrays and all seven standard collation options through ICU.
+  Locale matching validates every tag, preserves priority and admits only the
+  relevant Unicode keys. Explicit options override extensions; invalid options
+  throw and unsupported valid collations use the locale default. `locale290`
+  passed native differential checks against JavaScript, including locale lists,
+  optional lists, record options, punctuation/symbol distinction, option effects
+  and malformed values. The first TODO no longer lists locale lists/options.
 
 The refreshed harness explicitly reports `danger-full-access`, networking
 enabled and approval policy `never`. Do not pass `sandbox_permissions` or ask
@@ -558,7 +566,7 @@ that does not make the source compiler or JS API support automatic.
 
 The foundation narrowed the first compiler TODO: normalization, bounded locale
 comparison and mixed Map entry tuples are supported. Remaining work still
-includes RegExp replacement callbacks, locale lists/options beyond numeric/sensitivity,
+includes RegExp replacement callbacks,
 stored `Set.entries()` iterators, dynamic mixed-tuple indexing, rest bindings and length-changing
 methods. Later UI units and the sweep fixes did not fully close another listed
 TODO. Open GitHub issues were queried earlier and returned an empty list; that

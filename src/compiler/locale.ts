@@ -3,6 +3,8 @@ import type { DataLowerer } from "./data-lowering.js";
 import type { DataType } from "./data-types.js";
 import type { Value } from "./types.js";
 
+const collationOptionNames = ["numeric", "sensitivity", "usage", "localeMatcher", "collation", "caseFirst", "ignorePunctuation"] as const;
+
 /** Unicode operations use the platform's ICU implementation. */
 export function compileLocaleStringMethod(lowerer: DataLowerer, call: ts.CallExpression, method: string, owner: Value): Value | undefined {
     if (method !== "normalize" && method !== "localeCompare") return undefined;
@@ -28,10 +30,15 @@ export function compileLocaleStringMethod(lowerer: DataLowerer, call: ts.CallExp
         const cpp = snapshot(value, {kind:"optional", inner}, site, name);
         return `${cpp}.to_optional()`;
     };
-    const locale = optional(call.arguments[1] ? context.compileValue(call.arguments[1]) : undefined,
-        {kind:"string"}, call.arguments[1] ?? call, "collation_locale");
+    const localeValue = call.arguments[1] ? context.compileValue(call.arguments[1]) : undefined;
+    const localeType = localeValue?.dataType?.kind === "optional" ? localeValue.dataType.inner : localeValue?.dataType;
+    const list = localeValue?.kind === "tuple" || localeType?.kind === "vector" || localeType?.kind === "span";
+    const locale = optional(localeValue, list ? {kind:"vector", element:{kind:"string"}} : {kind:"string"},
+        call.arguments[1] ?? call, "collation_locale");
+    const locales = context.allocateTemporaryCppName("collation_locales");
     const optionsNode = call.arguments[2];
     const options = optionsNode ? context.compileValue(optionsNode) : undefined;
+    context.emit(`const auto ${locales} = bbl::pal::collation_locales(${locale});`);
     let fields: Readonly<Record<string, Value>> = {};
     if (options && !(options.kind === "json-null" && options.cpp === "std::nullopt")) {
         if (options.kind === "record" && !Object.keys(options.recordGetters ?? {}).length && !Object.keys(options.recordMethods ?? {}).length) {
@@ -42,11 +49,11 @@ export function compileLocaleStringMethod(lowerer: DataLowerer, call: ts.CallExp
             const access = context.dataTypes.isReferenceStruct(type.name) ? "->" : ".";
             fields = Object.fromEntries(context.dataTypes.structFields(type.name, optionsNode!).map(field =>
                 [field.sourceName, lowerer.leafValue(`${cpp}${access}${field.name}`, field.type)]));
-        } else context.fail(optionsNode!, "String.localeCompare options require a record with numeric and/or sensitivity fields.");
-        for (const key of Object.keys(fields)) if (key !== "numeric" && key !== "sensitivity")
+        } else context.fail(optionsNode!, "String.localeCompare options require a record of collation options.");
+        for (const key of Object.keys(fields)) if (!collationOptionNames.some(name => name === key))
             context.fail(optionsNode!, `String.localeCompare option '${key}' is not lowered.`);
     }
-    const numeric = optional(fields.numeric, {kind:"boolean"}, optionsNode ?? call, "collation_numeric");
-    const sensitivity = optional(fields.sensitivity, {kind:"string"}, optionsNode ?? call, "collation_sensitivity");
-    return lowerer.leafValue(`bbl::pal::compare_strings(${source}, ${other}, ${locale}, bbl::pal::CollationOptions{${numeric}, ${sensitivity}})`, {kind:"number"});
+    const optionsCpp = collationOptionNames.map(key =>
+        optional(fields[key], {kind: key === "numeric" || key === "ignorePunctuation" ? "boolean" : "string"}, optionsNode ?? call, `collation_${key}`));
+    return lowerer.leafValue(`bbl::pal::compare_strings(${source}, ${other}, ${locales}, bbl::pal::CollationOptions{${optionsCpp.join(", ")}})`, {kind:"number"});
 }
