@@ -23,7 +23,7 @@ it does not establish that this external application compiles or runs.
 | Branch | `codex/external-project-support` |
 | Remote | `https://github.com/sailro/bblitec.git` |
 | Branch base used in this session | `3474e835` on `main` |
-| Last completed executable-code/test commit before the disabled unit | `e30a522a` (2026-09-12) |
+| Last completed executable-code/test commit before the optional DOM unit | `a6a9d124` (2026-09-12) |
 | Draft PR | [#247 — Extend generic application compilation and retained UI support](https://github.com/sailro/bblitec/pull/247) |
 | External checkout | `C:/Dev/_prototypes/external-native-app` |
 | External source revision | `d7c477a6d5963680c55249dceb93cb6e4ab9ce56` |
@@ -145,6 +145,18 @@ incomplete. Do not merge or mark it ready merely because the sweep passes.
 - `compile251` (exit 1) progressed to `src/ui/crash-reporter.ts:543:3`, a direct
   `document.getElementById(...)? .remove()` call (without the space in source).
   DOM optional-call dispatch is the next unit. Full generation remains incomplete.
+- `a6a9d124` saves optional promise results and is pushed. `full253` completed
+  with 2,565 passes, one failure and zero skips. The failed nullable-string enum
+  assertion needed its original asserted expression at the known-value sink;
+  `focused254` passed that native case and the optional-promise fixture after
+  the fix. The same run's new DOM fixture failed and was fixed separately.
+- Optional DOM calls reuse `DataLowerer.optionalAccess` for absent guards,
+  returned optionals and lazy argument preparation. Calls copy nullable receiver
+  storage so argument effects cannot clear the receiver. The classification
+  predicate recognizes ID lookups without lowering their effectful ID arguments.
+  `optional-dom255` passed natively, checking these effects and repeated removal.
+  Its fixture closes and rethrows application failures instead of leaving the
+  test's event loop waiting after an assertion fails. Inspect `compile256` next.
 
 The resumed environment uses a workspace-write sandbox. Git metadata writes and
 network access may need escalation; the requested unit commits/pushes remain

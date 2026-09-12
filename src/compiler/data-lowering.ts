@@ -846,9 +846,9 @@ export class DataLowerer {
      * retaining that predicate here gives `rows[i]?.field` JavaScript's
      * missing-index behavior without touching invalid storage.
      */
-    private optionalAccess(
+    public optionalAccess(
         owner: Value,
-        access: ts.PropertyAccessExpression | ts.ElementAccessExpression,
+        access: ts.PropertyAccessExpression | ts.ElementAccessExpression | ts.CallExpression,
         read: (presentOwner: Value) => Value | undefined,
     ): Value | undefined {
         const { optionalFoundCpp, optionalStorageCpp, ...plainOwner } =
@@ -860,12 +860,10 @@ export class DataLowerer {
                 this.context.allocateTemporaryCppName(
                     "optional_chain",
                 );
-            // A reference: the chain reads through the owner and drops it,
-            // so a lookup that answers with a reference into its container
-            // (a Map of objects) costs no copy, and a temporary lives to the
-            // end of the chain either way.
+            // Reads borrow container storage. Calls snapshot the receiver:
+            // evaluating an argument can clear the original nullable slot.
             this.context.emit(
-                { kind: "declaration", type: "const auto&", name: temporary, initializer: owner.cpp, attributes: "[[maybe_unused]] " },
+                { kind: "declaration", type: ts.isCallExpression(access) ? "const auto" : "const auto&", name: temporary, initializer: owner.cpp, attributes: "[[maybe_unused]] " },
             );
             present = `${temporary}.has_value()`;
             presentOwner = withNativeMetadata(this.leafValue(`(*${temporary})`, owner.dataType.inner), plainOwner);
@@ -917,13 +915,18 @@ export class DataLowerer {
 
         let selected: Value | undefined;
         const selectedLines = this.context.captureEmittedLines(() => {
-            selected = read(presentOwner);
+            this.context.enterRuntimeControlFlow();
+            try { selected = read(presentOwner); }
+            finally { this.context.leaveRuntimeControlFlow(); }
         });
         if (!selected) {
             // The owner can also be an optional engine handle. Its declared
             // property surface, rather than the plain-data model, owns that
             // read and will retain the same presence predicate.
             return undefined;
+        }
+        if (selected.kind === "void") {
+            return {kind:"void", cpp:`([&]() {\nif (${present}) {\n${selectedLines.join("\n")}\n${selected.cpp ? `${selected.cpp};` : ""}\n}\n}())`};
         }
         const checkerType = this.dataTypeAt(access);
         const checkedSelectedType =
@@ -932,6 +935,8 @@ export class DataLowerer {
                 : checkerType;
         const selectedType =
             selected.dataType ??
+            (checkedSelectedType?.kind === "handle" && selected.kind === checkedSelectedType.handle
+                ? checkedSelectedType : undefined) ??
             (selected.kind === "number" &&
             checkedSelectedType?.kind === "number"
                 ? checkedSelectedType

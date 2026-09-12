@@ -258,7 +258,7 @@ export class UiProjection {
             }
             if (
                 ts.isPropertyAccessExpression(callee) &&
-                callee.name.text === "querySelector"
+                (callee.name.text === "querySelector" || this.isNativeHostUiLookup(owner))
             ) {
                 return asElement(this.context.compilePlatformCall(owner));
             }
@@ -331,6 +331,9 @@ export class UiProjection {
             return this.uiElementValue(value)?.kind === "ui-element";
         }
         if (!ts.isCallExpression(value)) return false;
+        // Classifying a lookup must not evaluate its ID argument. The normal
+        // call lowerer owns those effects when the expression is reached.
+        if (this.isNativeHostUiLookup(value)) return true;
         if (this.uiElementValue(value)?.kind === "ui-element") {
             return true;
         }

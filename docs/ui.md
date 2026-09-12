@@ -70,6 +70,10 @@ suppresses those actions and camera propagation. Retained elements preserve
 focus/hover/capture identity. Borrowed events cannot escape dispatch; copy
 owned scalar fields.
 
+Optional calls on nullable retained elements evaluate the receiver once, skip
+arguments when it is absent, and keep its original handle through argument effects.
+ID lookup classification does not execute the source ID expression.
+
 Canvas `width/height` are drawable pixels; `clientWidth/clientHeight` are CSS
 pixels. Pointer conversion uses pixel density/display scale. Density changes
 refresh metrics even without a drawable resize.
