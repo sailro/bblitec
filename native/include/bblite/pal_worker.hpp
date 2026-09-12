@@ -7,6 +7,7 @@
 #include <bblite/js_structured_clone.hpp>
 #include <bblite/pal_event_loop.hpp>
 #include <bblite/pal_host_services.hpp>
+#include <bblite/pal_animation_frame.hpp>
 #include <bblite/runtime.hpp>
 
 #include <iostream>
@@ -127,6 +128,17 @@ class WorkerRealm {
     const std::string& name() const { return name_; }
     const std::shared_ptr<HostServices>& host_services() const { return host_services_; }
 
+    EventLoop::AnimationFrameId request_animation_frame(EventLoop::AnimationCallback callback) {
+        require_owner();
+        if (!animation_subscribed_) {
+            const auto frames = host_services_ ? host_services_->animation_frame_source() : nullptr;
+            if (!frames) throw std::runtime_error("Animation frames require an owner Window's repaint source.");
+            frames->subscribe(loop_.inbox());
+            animation_subscribed_ = true;
+        }
+        return loop_.request_animation_frame(std::move(callback));
+    }
+
 
     std::shared_ptr<Worker> create_worker(WorkerEntry entry, std::string name = {}) {
         require_owner();
@@ -235,6 +247,7 @@ class WorkerRealm {
     std::optional<worker_detail::Address> parent_;
     std::thread::id owner_;
     std::shared_ptr<HostServices> host_services_;
+    bool animation_subscribed_ = false;
     std::uint64_t next_worker_ = 1;
     std::map<std::uint64_t, std::shared_ptr<Worker>> workers_;
     PlatformEventListeners<void(const WorkerMessage&)> messages_;
