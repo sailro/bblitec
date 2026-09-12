@@ -1834,6 +1834,9 @@ export class UiProjection {
         value: string,
         site?: ts.Node,
     ): string {
+        if (name === "hidden" && value.toLowerCase() === "until-found") {
+            this.context.fail(site ?? this.context.sourceFile, "UI hidden='until-found' requires find-in-page support.");
+        }
         if (name !== "style") return value;
         this.auditUiStyleDeclarations(value, site);
         {
@@ -4493,6 +4496,10 @@ export class UiProjection {
         const directElement = this.uiElementValue(expression.left.expression);
         if (directElement) {
             const engine = this.context.requireEngine(directElement, expression.left);
+            if (property === "hidden") {
+                this.context.emit(`bbl::ui_set_boolean_attribute(${engine}, ${directElement.cpp}, "hidden", ${this.context.compileBoolean(expression.right)});`);
+                return true;
+            }
             if (property === "value" && (directElement.uiTag === "textarea" || directElement.uiTag === "input") && !directElement.uiFileInput) {
                 this.context.emit(`bbl::ui_set_form_value(${engine}, ${directElement.cpp}, ${this.uiStringCpp(expression.right, "Form value")});`);
                 return true;

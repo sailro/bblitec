@@ -415,6 +415,9 @@ void ui_set_attribute(
     if (name.empty()) {
         throw std::runtime_error("Native UI attribute name cannot be empty.");
     }
+    if (name == "hidden" && ascii_iequals(value, "until-found")) {
+        throw std::runtime_error("Native UI hidden='until-found' requires find-in-page support.");
+    }
     UiElementRecord& record = ui_element(engine, element);
     const auto existing = record.attributes.find(name);
     const bool replaces_style =
@@ -431,6 +434,18 @@ void ui_set_attribute(
     }
     record.attributes.insert_or_assign(std::move(name), std::move(value));
     mark_ui_changed(engine);
+}
+
+bool ui_has_attribute(Engine& engine, UiElementHandle element, std::string_view name) {
+    return ui_element(engine, element).attributes.contains(std::string(name));
+}
+
+void ui_set_boolean_attribute(Engine& engine, UiElementHandle element, std::string name, bool present) {
+    if (present) {
+        ui_set_attribute(engine, element, std::move(name), "");
+    } else if (ui_element(engine, element).attributes.erase(name)) {
+        mark_ui_changed(engine);
+    }
 }
 
 void ui_set_style_property(

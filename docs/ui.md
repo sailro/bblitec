@@ -51,6 +51,11 @@ retain every canvas at its page position, so labels cannot conceal a rendering r
 | Range forms | Retained value/input callbacks and native range widgets |
 | Files | Object-URL download anchors and static single-file inputs |
 
+Boolean `hidden` reads and writes reflect attribute presence; clearing it restores the authored
+display rules. Author CSS can override its default `display:none`, following the
+[HTML hidden contract](https://html.spec.whatwg.org/multipage/interaction.html#the-hidden-attribute).
+The `until-found` state requires find-in-page behavior and is refused.
+
 UI receives pointer input before cameras. Consumed events do not move cameras;
 Window keyboard listeners run before default UI actions. `preventDefault`
 suppresses those actions and camera propagation. Retained elements preserve
