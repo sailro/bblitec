@@ -36,11 +36,13 @@
 #include <memory>
 #include <stdexcept>
 #include <string>
+#include <tuple>
 #include <unordered_map>
 #include <vector>
 
 #include "pal_camera_controls.hpp"
 #include "pal_gpu_shared.hpp"
+#include "pal_texture_upload_cache.hpp"
 #include "pal_frame_session.hpp"
 #if defined(BBLITE_HAS_TEXT) && BBLITE_HAS_TEXT
 #include "pal_sdl_gpu_text.hpp"
@@ -733,6 +735,65 @@ struct GpuSolidSkybox {
 };
 #endif
 
+struct ShaderTaskTarget {
+    SDL_GPUTextureFormat color;
+    SDL_GPUTextureFormat depth;
+    SDL_GPUSampleCount samples;
+};
+
+/** Custom-material pipelines follow the render task's attachment layout. */
+struct ShaderTaskPipeline {
+    OwnedSdlShader vertex;
+    OwnedSdlShader fragment;
+    SDL_GPUGraphicsPipelineCreateInfo base{};
+    SDL_GPUColorTargetDescription color{};
+    std::vector<SDL_GPUVertexBufferDescription> buffers;
+    std::vector<SDL_GPUVertexAttribute> attributes;
+    std::map<std::tuple<SDL_GPUTextureFormat, SDL_GPUTextureFormat, SDL_GPUSampleCount, bool>, OwnedSdlPipeline> pipelines;
+
+    ShaderTaskPipeline() = default;
+    ShaderTaskPipeline(OwnedSdlShader vertex_shader, OwnedSdlShader fragment_shader,
+        const SDL_GPUGraphicsPipelineCreateInfo& info)
+        : vertex(std::move(vertex_shader)), fragment(std::move(fragment_shader)),
+          base(info), color(*info.target_info.color_target_descriptions) {
+        const auto& input = info.vertex_input_state;
+        if (input.num_vertex_buffers) buffers.assign(input.vertex_buffer_descriptions,
+            input.vertex_buffer_descriptions + input.num_vertex_buffers);
+        if (input.num_vertex_attributes) attributes.assign(input.vertex_attributes,
+            input.vertex_attributes + input.num_vertex_attributes);
+    }
+
+    SDL_GPUGraphicsPipeline* get(SDL_GPUDevice* device, const ShaderTaskTarget& target, bool cutout,
+        SDL_GPUGraphicsPipeline* ordinary, SDL_GPUGraphicsPipeline* alpha_to_coverage) {
+        const bool coverage = alpha_to_coverage_enabled(cutout, gpu_sample_count_value(target.samples));
+        const auto base_depth = base.target_info.has_depth_stencil_target
+            ? base.target_info.depth_stencil_format : SDL_GPU_TEXTUREFORMAT_INVALID;
+        if (target.color == color.format && target.depth == base_depth &&
+            target.samples == base.multisample_state.sample_count) {
+            return coverage ? alpha_to_coverage : ordinary;
+        }
+        const auto key = std::make_tuple(target.color, target.depth, target.samples, coverage);
+        if (const auto found = pipelines.find(key); found != pipelines.end()) return found->second.get();
+        auto info = base;
+        auto attachment = color;
+        attachment.format = target.color;
+        info.vertex_shader = vertex.get();
+        info.fragment_shader = fragment.get();
+        info.vertex_input_state.vertex_buffer_descriptions = buffers.data();
+        info.vertex_input_state.vertex_attributes = attributes.data();
+        info.target_info.color_target_descriptions = &attachment;
+        info.target_info.depth_stencil_format = target.depth;
+        info.target_info.has_depth_stencil_target = target.depth != SDL_GPU_TEXTUREFORMAT_INVALID;
+        info.depth_stencil_state.enable_depth_test &= info.target_info.has_depth_stencil_target;
+        info.depth_stencil_state.enable_depth_write &= info.target_info.has_depth_stencil_target;
+        info.multisample_state.sample_count = target.samples;
+        info.multisample_state.enable_alpha_to_coverage = coverage;
+        OwnedSdlPipeline pipeline{SDL_CreateGPUGraphicsPipeline(device, &info), {device}};
+        if (!pipeline) gpu_error("SDL_CreateGPUGraphicsPipeline shader render task");
+        return pipelines.emplace(key, std::move(pipeline)).first->second.get();
+    }
+};
+
 struct GpuRenderTarget {
     SDL_GPUTexture* color = nullptr;
     SDL_GPUTexture* sampled_color = nullptr;
@@ -848,6 +909,7 @@ struct GpuGeometryTask {
 /** SDL_GPU-owned realization of the backend-neutral RmlUi frame. */
 struct UiSdlGpuResources {
     UiBackdropSdlResources backdrop;
+    UiSdlReadableSurface readable_surface;
     SDL_GPUGraphicsPipeline* color_pipeline = nullptr;
     SDL_GPUGraphicsPipeline* texture_pipeline = nullptr;
     SDL_GPUGraphicsPipeline* composite_pipeline = nullptr;
@@ -938,6 +1000,7 @@ struct GpuState : SdlGpuDevice {
         shader_a2c_pipelines;
     /** Vertex-only custom-material pipelines for depth shadow targets. */
     std::vector<SDL_GPUGraphicsPipeline*> shader_shadow_pipelines;
+    std::vector<ShaderTaskPipeline> shader_task_pipelines;
     // What the compaction pass assigned each shader-material stage, by the
     // caller's own block and sampler names. The stage's contents depend on
     // scene code, so this sidecar -- not the WGSL, and not the reflection
@@ -1209,6 +1272,7 @@ struct GpuState : SdlGpuDevice {
     // buffers once per distinct shape, not once per short-lived mesh.
     std::vector<std::unique_ptr<SharedShaderGeometry>>
         shared_shader_geometries;
+    TextureUploadCache<OwnedSdlTexture> shared_material_images;
     std::vector<std::unique_ptr<SharedShaderMaterialTextures>>
         shared_shader_material_textures;
     std::vector<std::unique_ptr<SharedComposedMaterialTextures>>
@@ -1664,6 +1728,7 @@ OwnedSdlTransfer upload_ui_sdl_buffer(
 void release_ui_sdl_resources(GpuState& state) {
     UiSdlGpuResources& ui = state.ui;
     ui.backdrop.release(state.device);
+    ui.readable_surface.release(state.device);
     for (const auto& [id, texture] : ui.textures) {
         static_cast<void>(id);
         SDL_ReleaseGPUTexture(state.device, texture);
@@ -5710,20 +5775,13 @@ void prune_shared_shader_geometries(GpuState& state) {
 void prune_shared_shader_material_textures(GpuState& state) {
     prune_unused_shared(
         state.shared_shader_material_textures,
-        [&](SharedShaderMaterialTextures& textures) {
-            release_sprite_fragment_textures(
-                state.device,
-                textures.bindings);
-        });
+        [](SharedShaderMaterialTextures& textures) { textures.clear(); });
 #if BBLITE_HAS_MATERIAL_PLUGIN_TEXTURES
     prune_unused_shared(
         state.shared_plugin_material_textures,
-        [&](SharedPluginMaterialTextures& textures) {
-            release_sprite_fragment_textures(
-                state.device,
-                textures.bindings);
-        });
+        [](SharedPluginMaterialTextures& textures) { textures.clear(); });
 #endif
+    state.shared_material_images.prune();
 }
 
 void prune_shared_composed_material_textures(GpuState& state) {
@@ -5825,19 +5883,11 @@ void release(GpuState& state) {
         });
     release_all_shared(
         state.shared_shader_material_textures,
-        [&](SharedShaderMaterialTextures& textures) {
-            release_sprite_fragment_textures(
-                state.device,
-                textures.bindings);
-        });
+        [](SharedShaderMaterialTextures& textures) { textures.clear(); });
 #if BBLITE_HAS_MATERIAL_PLUGIN_TEXTURES
     release_all_shared(
         state.shared_plugin_material_textures,
-        [&](SharedPluginMaterialTextures& textures) {
-            release_sprite_fragment_textures(
-                state.device,
-                textures.bindings);
-        });
+        [](SharedPluginMaterialTextures& textures) { textures.clear(); });
 #endif
     release_all_shared(
         state.shared_composed_material_textures,
@@ -6097,6 +6147,7 @@ void release(GpuState& state) {
             SDL_ReleaseGPUGraphicsPipeline(state.device, pipeline);
         }
     }
+    state.shader_task_pipelines.clear();
 #if BBLITE_LOCAL_CUBEMAP
     state.local_cubemaps.clear();
 #endif
@@ -7445,10 +7496,13 @@ GpuMesh upload_sdl_scene_mesh(
     // upload the same way: the image's own bytes, the material's own
     // sampler, and the white fallback every slot takes.
     const auto upload_material_slot_texture =
-        [&](std::vector<SDL_GPUTextureSamplerBinding>& bindings, const auto& texture) {
-            auto& binding = bindings.emplace_back();
-            binding.texture = upload_texture(state.device, texture.data,
-                texture.srgb, {255, 255, 255, 255});
+        [&](SharedMaterialTextures& textures, const auto& texture) {
+            auto image = state.shared_material_images.acquire(texture.data,
+                texture.srgb, {255, 255, 255, 255}, [&] {
+                    return OwnedSdlTexture{upload_texture(state.device, texture.data,
+                        texture.srgb, {255, 255, 255, 255}), {state.device}};
+                });
+            auto& binding = textures.append_shared_texture(std::move(image));
             binding.sampler = create_texture_sampler(state.device, texture.data.sampler);
         };
     // The caller-owned texture families share one per-MATERIAL
@@ -7479,7 +7533,7 @@ GpuMesh upload_sdl_scene_mesh(
                 for (
                     const FileTexture& texture :
                     material->shader_textures) {
-                    upload_material_slot_texture(created->bindings, texture);
+                    upload_material_slot_texture(*created, texture);
                 }
             } else {
                 const upstream::ShaderVariantInfo& shader_info =
@@ -7524,7 +7578,7 @@ GpuMesh upload_sdl_scene_mesh(
                     constexpr bool csm_texture = false;
 #endif
                     if (csm_texture) created->bindings.emplace_back();
-                    else upload_material_slot_texture(created->bindings, material->shader_textures[slot]);
+                    else upload_material_slot_texture(*created, material->shader_textures[slot]);
                 }
             }
             state.shared_shader_material_textures.push_back(std::move(created));
@@ -7550,7 +7604,7 @@ GpuMesh upload_sdl_scene_mesh(
             for (
                 const MaterialPluginTexture& texture :
                 material->plugin_textures) {
-                upload_material_slot_texture(created->bindings, texture);
+                upload_material_slot_texture(*created, texture);
             }
             state.shared_plugin_material_textures.push_back(std::move(created));
             gpu_mesh.shared_plugin_textures = state.shared_plugin_material_textures.back().get();
@@ -8153,7 +8207,13 @@ class SdlSceneRun {
     } data_;
 
     struct Frame {
+        // Keep construction explicit while optional inspects this nested type.
+        Frame() {}
         bool yield_when_skipped = false, graph = false;
+#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI && !(defined(BBLITE_WORKERS) && BBLITE_WORKERS)
+        const UiRenderFrame* ui_frame = nullptr;
+        SDL_GPUTexture* present_swapchain = nullptr;
+#endif
 #if BBLITE_OFFSCREEN_SURFACES
         SDL_GPUTexture* offscreen_texture = nullptr;
 #endif
@@ -8874,6 +8934,7 @@ public:
             state.shader_shadow_pipelines.resize(
                 shader_variant_total,
                 nullptr);
+            state.shader_task_pipelines.resize(shader_variant_total);
             for (
                 std::uint32_t variant = 0;
                 variant < shader_variant_total;
@@ -9036,6 +9097,11 @@ public:
                 if (!state.shader_a2c_pipelines[variant]) {
                     gpu_error(
                         "SDL_CreateGPUGraphicsPipeline alpha to coverage");
+                }
+                if (!scene.tasks.empty()) {
+                    state.shader_task_pipelines[variant] = ShaderTaskPipeline{
+                        std::move(shader_vertex_shaders[variant]),
+                        std::move(shader_fragment_shaders[variant]), shader_pipeline_info};
                 }
             }
         }
@@ -10614,6 +10680,13 @@ public:
         [[maybe_unused]] auto& capture_texture = frame_->capture_texture;
         [[maybe_unused]] auto& visible_color = frame_->visible_color;
         frame_->graph = !scene.tasks.empty();
+#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI && !(defined(BBLITE_WORKERS) && BBLITE_WORKERS)
+        frame_->ui_frame = &record_ui_rml_frame(*data_.resources.ui_runtime, width, height);
+        frame_->present_swapchain = swapchain;
+        swapchain = state.ui.readable_surface.target(state.device, swapchain,
+            swapchain_format, width, height, !frame_->ui_frame->backdrops.empty() &&
+                !(capture_frame && data_.frame_options.capture_ui));
+#endif
         if (frame_->graph) {
 #if defined(BBLITE_HAS_TAA) && BBLITE_HAS_TAA
             if (!engine.stopped)
@@ -11208,6 +11281,7 @@ public:
                                       const std::shared_ptr<PersistentSceneUniforms>& deferred_scene = {},
                                       std::optional<SDL_GPUSampleCount> deferred_samples = {}
 #endif
+                                      , std::optional<ShaderTaskTarget> shader_target = {}
                                       ) {
                 bool scene_matrix_bound = true;
                 // One dispatch for both passes; only the sources
@@ -11224,6 +11298,11 @@ public:
                     [&](
                         upstream::RenderPipelineKind kind,
                         std::uint32_t shader_variant) {
+                    if (shader_target && pipeline_kind_traits(kind).family == upstream::RenderMaterialKind::shader) {
+                        return state.shader_task_pipelines.at(shader_variant).get(
+                            state.device, *shader_target, pipeline_kind_wants_a2c(kind),
+                            state.shader_pipelines.at(shader_variant), state.shader_a2c_pipelines.at(shader_variant));
+                    }
                     return secondary_pipeline_for(
                         secondary,
                         kind,
@@ -12182,7 +12261,13 @@ public:
                         nullptr,
                         nullptr,
                         nullptr,
-                        task.render.scene_stages);
+                        task.render.scene_stages
+#if defined(BBLITE_HAS_TAA) && BBLITE_HAS_TAA
+                        , nullptr, {}, {}
+#endif
+                        , ShaderTaskTarget{target.color_format,
+                            task_depth_pointer ? state.depth_format : SDL_GPU_TEXTUREFORMAT_INVALID,
+                            task_sample_count(state, target_record.samples)});
                     if (task.render.scene_stages) {
                         draw_task_ground(
                             task_pass,
@@ -13971,6 +14056,13 @@ public:
         }
     }
 
+    void present_readable_surface() {
+#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI && !(defined(BBLITE_WORKERS) && BBLITE_WORKERS)
+        UiSdlReadableSurface::present(frame_->command, frame_->swapchain,
+            frame_->present_swapchain, frame_->width, frame_->height);
+#endif
+    }
+
     void present() {
         [[maybe_unused]] auto& engine = data_.engine;
         [[maybe_unused]] auto& captures = data_.captures;
@@ -13979,9 +14071,6 @@ public:
         [[maybe_unused]] auto& swapchain_format = data_.swapchain_format;
         [[maybe_unused]] auto& transmission_enabled = data_.transmission_enabled;
         [[maybe_unused]] auto& state = data_.resources.state;
-#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI && !(defined(BBLITE_WORKERS) && BBLITE_WORKERS)
-        [[maybe_unused]] auto& ui_runtime = data_.resources.ui_runtime;
-#endif
         [[maybe_unused]] auto& screenshot_path = data_.frame_options.screenshot_path;
         [[maybe_unused]] auto& id_buffer_path = data_.frame_options.id_buffer_path;
         [[maybe_unused]] auto& cluster_buffer_path = data_.frame_options.cluster_buffer_path;
@@ -14027,7 +14116,7 @@ public:
                 command,
                 ui_target,
                 swapchain_format,
-                record_ui_rml_frame(*ui_runtime, width, height));
+                *frame_->ui_frame);
             if (ui_target != swapchain) {
                 // The graph presented before the overlay was recorded.
                 // Present the same composite that the explicit UI
@@ -14055,6 +14144,7 @@ public:
                 SDL_BlitGPUTexture(command, &ui_blit);
             }
 #endif
+            present_readable_surface();
             if (capture_frame) {
                 if (!capture_texture) {
                     throw std::runtime_error(
@@ -14088,7 +14178,7 @@ public:
                 command,
                 visible_color,
                 swapchain_format,
-                record_ui_rml_frame(*ui_runtime, width, height));
+                *frame_->ui_frame);
         }
 #endif
         if (capture_frame || transmission_enabled) {
@@ -14117,9 +14207,10 @@ public:
                 command,
                 swapchain,
                 swapchain_format,
-                record_ui_rml_frame(*ui_runtime, width, height));
+                *frame_->ui_frame);
         }
 #endif
+        present_readable_surface();
         if (capture_frame) {
             save_texture_png(
                 state.device,

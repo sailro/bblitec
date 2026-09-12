@@ -328,7 +328,7 @@ export function compileAdaptations(
             sourceSemantics:
                 "loadBasisTexture2D fetches the Binomial transcoder from a CDN at run time, transcodes the .basis file to the first compressed format the device reports, and uploads the mip chain it produced.",
             nativeSemantics:
-                "Generation runs the pinned loader in headless Chromium and packages its GPU blocks with the pinned parser's mip list. Native upload views that shared payload. Both validated backends select BC7 on D3D12; the captured bytes depend on the Chrome build used for generation.",
+                "Generation runs the pinned loader in Chromium with compression features limited to native uploadable families and packages its GPU blocks with the pinned parser's mip list. Native upload views that shared payload. Both validated backends select BC7 on D3D12; the captured bytes depend on the browser and GPU used for generation.",
             risk: "medium",
             validation: [
                 "scene 36 parity against the browser golden, which transcodes the same file at load",

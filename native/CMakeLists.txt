@@ -537,9 +537,14 @@ if(BBLITE_BACKEND_DAWN)
         list(
             APPEND BBLITE_RUNTIME_LIBRARIES
             "$<TARGET_FILE:dawn::webgpu_dawn>"
-            "$<TARGET_FILE_DIR:dawn::webgpu_dawn>/dxcompiler.dll"
-            "$<TARGET_FILE_DIR:dawn::webgpu_dawn>/dxil.dll"
         )
+        if(WIN32)
+            list(APPEND BBLITE_RUNTIME_LIBRARIES
+                "$<TARGET_FILE_DIR:dawn::webgpu_dawn>/dxcompiler.dll"
+                "$<TARGET_FILE_DIR:dawn::webgpu_dawn>/dxil.dll")
+        elseif(UNIX AND NOT APPLE)
+            set_property(TARGET bblite_native APPEND PROPERTY BUILD_RPATH "$ORIGIN")
+        endif()
     endif()
     # Whether the installed Dawn carries its built DXC
     # (tools/build-dawn.ps1 deploys dxcompiler.dll and dxil.dll into
@@ -832,7 +837,9 @@ if("audio:engine" IN_LIST BBLITE_RUNTIME_FEATURES)
     else()
         set(BBLITE_AUDIO_DECODE_FILE OFF)
     endif()
-    if(NOT EXISTS "${BBLITE_LABSOUND_DIR}/lib/LabSound.lib")
+    find_library(BBLITE_LABSOUND_LIBRARY NAMES LabSound
+        PATHS "${BBLITE_LABSOUND_DIR}/lib" NO_DEFAULT_PATH NO_CACHE)
+    if(NOT BBLITE_LABSOUND_LIBRARY)
         message(
             FATAL_ERROR
             "This scene reaches audio:engine but no LabSound install was "
@@ -876,18 +883,20 @@ if("audio:engine" IN_LIST BBLITE_RUNTIME_FEATURES)
     target_include_directories(bblite_features SYSTEM INTERFACE "${BBLITE_LABSOUND_DIR}/include"
     )
     target_link_libraries(bblite_features INTERFACE
-            "${BBLITE_LABSOUND_DIR}/lib/LabSound.lib"
+            "${BBLITE_LABSOUND_LIBRARY}"
     )
     if(BBLITE_AUDIO_CAPTURE OR BBLITE_AUDIO_DECODE_FILE)
-        if(NOT EXISTS "${BBLITE_LABSOUND_DIR}/lib/libnyquist.lib")
+        find_library(BBLITE_NYQUIST_LIBRARY NAMES libnyquist
+            PATHS "${BBLITE_LABSOUND_DIR}/lib" NO_DEFAULT_PATH NO_CACHE)
+        if(NOT BBLITE_NYQUIST_LIBRARY)
             message(
                 FATAL_ERROR
                 "Audio capture or decoded-file support requires libnyquist at "
-                "${BBLITE_LABSOUND_DIR}/lib/libnyquist.lib."
+                "${BBLITE_LABSOUND_DIR}/lib."
             )
         endif()
         target_link_libraries(bblite_features INTERFACE
-            "${BBLITE_LABSOUND_DIR}/lib/libnyquist.lib"
+            "${BBLITE_NYQUIST_LIBRARY}"
         )
     endif()
     if(BBLITE_AUDIO_DECODE_FILE AND NOT EXISTS "${BBLITE_LABSOUND_DIR}/include/libnyquist/Decoders.h")
@@ -954,7 +963,7 @@ set(
 set_property(CACHE BBLITE_MAIN_OPT PROPERTY STRINGS "configuration" "O1")
 if(BBLITE_MAIN_OPT STREQUAL "O1")
     if(NOT BBLITE_MINSIZE)
-        if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+        if(MSVC AND CMAKE_CXX_COMPILER_ID MATCHES "Clang")
             set(BBLITE_MAIN_OPT_FLAGS /clang:-O1)
         elseif(MSVC)
             set(BBLITE_MAIN_OPT_FLAGS /O1)

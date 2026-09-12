@@ -172,7 +172,8 @@ if (-not $rejected) { throw 'escaping path accepted' }
 $outside = Join-Path $root 'external'
 New-Item -ItemType Directory -Path $outside | Out-Null
 $link = Join-Path $root '.staging/link'
-New-Item -ItemType Junction -Path $link -Target $outside | Out-Null
+$linkType = if ($IsWindows) { 'Junction' } else { 'SymbolicLink' }
+New-Item -ItemType $linkType -Path $link -Target $outside | Out-Null
 $rejected = $false
 try { Assert-PackageChild $root (Join-Path $link 'payload') } catch { $rejected = $true }
 if (-not $rejected) { throw 'junction accepted' }

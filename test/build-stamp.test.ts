@@ -17,6 +17,7 @@ import {
     generatorWouldReconfigure,
     incompatibleCacheEntries,
     readCacheConfiguration,
+    sameCachePath,
 } from "../src/build-stamp.js";
 
 function scratchRepository(): string {
@@ -125,6 +126,20 @@ test("identifies sticky CMake cache changes that require a fresh tree", () => {
             requested,
         ),
         [],
+    );
+});
+
+test("cache paths follow the host's case and separator rules", () => {
+    const windows = process.platform === "win32";
+    assert.equal(sameCachePath("tools/Clang", "tools/clang"), windows);
+    assert.equal(sameCachePath("tools\\clang", "tools/clang"), windows);
+    assert.equal(sameCachePath("tools/../tools/clang", "tools/clang"), true);
+    assert.deepEqual(
+        incompatibleCacheEntries(
+            { CMAKE_CXX_COMPILER: resolve("tools/Clang") },
+            [`-DCMAKE_CXX_COMPILER=${resolve("tools/clang")}`],
+        ).map(entry => entry.name),
+        windows ? [] : ["CMAKE_CXX_COMPILER"],
     );
 });
 

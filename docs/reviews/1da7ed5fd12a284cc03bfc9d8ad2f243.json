@@ -1,0 +1,78 @@
+{
+  "findings": [
+    {
+      "summary": "Reuse the shared CMake cache path comparison and apply host case and separator rules, preserving case-sensitive Linux compiler paths.",
+      "applied": true
+    },
+    {
+      "summary": "Reuse setupEnvironment when constructing the Linux scene-build environment so dependency setup and scene builds share the selected compiler pair.",
+      "applied": true
+    },
+    {
+      "summary": "Share readable SDL composition targets across scene, sprite, and window presenters so backdrop filters never read a swapchain image.",
+      "applied": true
+    },
+    {
+      "summary": "Reuse the existing capture texture when UI capture already provides a readable composition target, avoiding an extra full-frame allocation and blit.",
+      "applied": true
+    },
+    {
+      "summary": "Remove the unused presentation UI-runtime alias after moving UI recording to encode.",
+      "applied": true
+    },
+    {
+      "summary": "Only remove temporary adapted HLSL for SPIR-V builds; DXIL builds create no adapted source.",
+      "applied": true
+    },
+    {
+      "summary": "Update browser harness comments to describe Linux Vulkan and visible capture behavior.",
+      "applied": true
+    },
+    {
+      "summary": "Classify multisampled storage textures once for register ordering, sidecar slots, and SPIR-V descriptors.",
+      "applied": true
+    },
+    {
+      "summary": "Reuse canonicalLocalAssetSource for filesystem discoveries in audio directory fetches and Canvas2D image packaging.",
+      "applied": true
+    },
+    {
+      "summary": "Derive transcode compression capabilities from the existing native uploadable format table, preserving the pinned loader selection.",
+      "applied": true
+    },
+    {
+      "summary": "Capture only the physics body identity in record lookups, avoiding copies of ownership fields.",
+      "applied": true
+    },
+    {
+      "summary": "Rewrite SPIR-V sampler uses in two shared scans with texture lookups instead of rescanning each shader per texture.",
+      "applied": true
+    },
+    {
+      "summary": "Retain custom-material shader recipes only in scenes with render tasks, avoiding shader and vertex-description storage in ordinary scenes.",
+      "applied": true
+    },
+    {
+      "summary": "Reuse existing custom-material pipelines when render-task attachments match, creating cached variants only for different formats or sample counts.",
+      "applied": true
+    },
+    {
+      "summary": "Share the SPIR-V instruction walker between descriptor and sparse-location binary regressions, including bounded instruction-length validation.",
+      "applied": true
+    },
+    {
+      "summary": "Centralize Dawn material image-lease and sampled-resource cleanup in its shared owner, removing repeated cleanup pairs.",
+      "applied": true
+    },
+    {
+      "summary": "Compact expired image-upload entries once and acquire strong references only for matching image keys.",
+      "applied": true
+    }
+  ],
+  "angles": [
+    "reuse",
+    "simplification",
+    "efficiency",
+    "altitude"
+  ]
+}

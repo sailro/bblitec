@@ -7,7 +7,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import test from "node:test";
 import { compileOfflineShaders, offlineShaderFormats } from "../src/compile-shaders.js";
 import { assertUniformBufferCap, demotableUniformBlocks, demoteUniformBlocks, normalizeTintHlslBindings,
-    prepareSdlUniformAdaptation, remapPinnedVariantRegisters, sdlUniformSource, shaderStageSlots } from "../src/shader-bindings.js";
+    prepareSdlUniformAdaptation, remapPinnedVariantRegisters, sdlSpirvSource, sdlUniformSource, shaderStageSlots } from "../src/shader-bindings.js";
 import { readShaderComposition, shaderStageConstants } from "../src/shader-composition.js";
 import { discoverDevelopmentTools } from "../src/development-tools.js";
 import { repositoryModuleClosure } from "../src/bake-cache.js";
@@ -54,22 +54,25 @@ discard;`;
     ]);
 });
 
-test("integer texture loads occupy SDL storage texture slots between sampled textures and buffers", () => {
+test("integer and multisampled loads occupy SDL storage texture slots between sampled textures and buffers", () => {
     const source = `ByteAddressBuffer morph : register(t0, space2);
 Texture2D<uint4> cells : register(t1, space2);
 Texture2D<float4> color : register(t8, space2);
 Texture2D<int4> signs : register(t5, space2);
+Texture2DMS<float4> samples : register(t6, space2);
 SamplerState colorSampler : register(s8, space2);
 uint4 value = cells.Load(int3(0, 0, 0));`;
     for (const actual of [normalizeTintHlslBindings(source), remapPinnedVariantRegisters(source, true), remapPinnedVariantRegisters(source, false)]) {
         assert.deepEqual(shaderStageSlots(actual), [
             { kind: "i", index: 0, name: "cells" }, { kind: "i", index: 1, name: "signs" },
+            { kind: "i", index: 2, name: "samples" },
             { kind: "r", index: 0, name: "morph" },
             { kind: "s", index: 0, name: "colorSampler" }, { kind: "t", index: 0, name: "color" },
         ]);
         assert.match(actual, /cells : register\(t1,/);
         assert.match(actual, /signs : register\(t2,/);
-        assert.match(actual, /morph : register\(t3,/);
+        assert.match(actual, /samples : register\(t3,/);
+        assert.match(actual, /morph : register\(t4,/);
         assert.ok(actual.includes("uint4 value = cells.Load(int3(0, 0, 0));"));
     }
 });
@@ -104,6 +107,21 @@ test("offline targets select only their executable format", () => {
     }
 });
 
+test("SDL Vulkan combines sampled texture pairs while retaining integer and buffer slots", () => {
+    const source = `Texture2D<float4> color : register(t0, space2);
+SamplerState colorSampler : register(s0, space2);
+Texture2D<uint4> values : register(t1, space2);
+ByteAddressBuffer data : register(t2, space2);`;
+    const adapted = sdlSpirvSource(source, false);
+    assert.match(adapted, /\[\[vk::combinedImageSampler\]\] Texture2D<float4> color/);
+    assert.match(adapted, /\[\[vk::combinedImageSampler\]\] SamplerState \w+ : register\(s0, space2\)/);
+    assert.doesNotMatch(adapted, /combinedImageSampler\]\] (?:Texture2D<uint4>|ByteAddressBuffer)/);
+    assert.deepEqual(shaderStageSlots(adapted).filter(slot => slot.kind !== "s"), shaderStageSlots(source).filter(slot => slot.kind !== "s"));
+    const implicit = sdlSpirvSource("Texture2D<float4> color : register(t0);\nSamplerState s : register(s1);", false);
+    assert.match(implicit, /color : register\(t0, space2\)/);
+    assert.match(implicit, /SamplerState \w+ : register\(s0, space2\)/);
+});
+
 const fragment = `@fragment fn main() -> @location(0) vec4f { return vec4f(0.25, 0.5, 0.75, 1.0); }\n`;
 function shaderDirectory(root: string, scene: string, shader = fragment): string {
     const directory = join(root, "generated", scene, "upstream/shaders");
@@ -113,6 +131,16 @@ function shaderDirectory(root: string, scene: string, shader = fragment): string
         output: "upstream/shaders/simple.frag.native.wgsl", entryPoint: "main", pinnedBindings: false,
     }] }));
     return directory;
+}
+
+function* spirvInstructions(bytes: Buffer): Generator<{ opcode: number; offset: number; words: number }> {
+    for (let offset = 20; offset < bytes.length;) {
+        const instruction = bytes.readUInt32LE(offset);
+        const words = instruction >>> 16;
+        assert.ok(words > 0 && offset + words * 4 <= bytes.length);
+        yield { opcode: instruction & 0xffff, offset, words };
+        offset += words * 4;
+    }
 }
 
 function fixtureRoot(t: { after: (cleanup: () => void) => void }): string {
@@ -173,7 +201,7 @@ test("shader checkpoints include DXC codegen DLL contents only for DXC targets",
     // An empty shader directory records tools without executing these identity fixtures.
     assert.equal(compile("d3d12").directoriesCompiled, 1);
     assert.equal(compile("d3d12").directoriesReused, 1);
-    for (const name of ["dxcompiler.dll", "dxil.dll"]) {
+    for (const name of ["dxcompiler.dll", "dxil.dll", "libdxcompiler.so", "libdxil.so"]) {
         const path = join(root, name);
         writeFileSync(path, "installed");
         assert.equal(compile("d3d12").directoriesCompiled, 1);
@@ -184,6 +212,110 @@ test("shader checkpoints include DXC codegen DLL contents only for DXC targets",
         writeFileSync(path, "ignored by Metal");
         assert.equal(compile("metal").directoriesReused, 1);
     }
+});
+
+test("Vulkan shader binaries match SDL sampled and storage image descriptors", { skip: !tools.tint || !tools.dxc }, t => {
+    const root = fixtureRoot(t);
+    for (const [name, combined, shader] of [["sampled", true, `
+@group(2) @binding(0) var color: texture_2d<f32>;
+@group(2) @binding(1) var colorSampler: sampler;
+@fragment fn main() -> @location(0) vec4f {
+    return textureSample(color, colorSampler, vec2f(0.5));
+}`], ["shared-sampler", true, `
+@group(2) @binding(0) var first: texture_2d<f32>;
+@group(2) @binding(1) var second: texture_2d<f32>;
+@group(2) @binding(2) var sharedSampler: sampler;
+@fragment fn main() -> @location(0) vec4f {
+    return textureSample(first, sharedSampler, vec2f(0.5)) +
+        textureSample(second, sharedSampler, vec2f(0.5));
+}`], ["sampler-helper", true, `
+@group(2) @binding(0) var first: texture_2d<f32>;
+@group(2) @binding(1) var second: texture_2d<f32>;
+@group(2) @binding(2) var sharedSampler: sampler;
+fn sampleColor(tex: texture_2d<f32>, smp: sampler) -> vec4f {
+    return textureSampleLevel(tex, smp, vec2f(0.5), 0.0);
+}
+@fragment fn main() -> @location(0) vec4f {
+    return sampleColor(first, sharedSampler) + sampleColor(second, sharedSampler);
+}`], ["comparison", true, `
+@group(2) @binding(0) var shadow: texture_depth_2d;
+@group(2) @binding(1) var comparison: sampler_comparison;
+@fragment fn main() -> @location(0) vec4f {
+    return vec4f(textureSampleCompare(shadow, comparison, vec2f(0.5), 0.5));
+}`], ["loaded", true, `
+@group(2) @binding(0) var color: texture_2d<f32>;
+@fragment fn main() -> @location(0) vec4f {
+    return textureLoad(color, vec2i(0), 0);
+}`], ["multisampled", false, `
+@group(2) @binding(0) var color: texture_multisampled_2d<f32>;
+@fragment fn main() -> @location(0) vec4f {
+    return textureLoad(color, vec2i(0), 0);
+}`], ["integer", false, `
+@group(2) @binding(0) var color: texture_2d<u32>;
+@fragment fn main() -> @location(0) vec4f {
+    return vec4f(textureLoad(color, vec2i(0), 0));
+}`]] as const) {
+        const directory = shaderDirectory(root, name, shader);
+        compileOfflineShaders({ directories: [directory], tools, target: "vulkan" });
+        const bytes = readFileSync(join(directory, "simple.frag.spv"));
+        const opcodes = new Set<number>();
+        for (const { opcode } of spirvInstructions(bytes)) opcodes.add(opcode);
+        assert.equal(opcodes.has(27), combined, `${name}: OpTypeSampledImage must match SDL's descriptor`);
+        assert.ok(!opcodes.has(26), "a separate OpTypeSampler cannot use SDL's descriptor layout");
+    }
+});
+
+test("Vulkan binaries preserve sparse vertex and interstage locations", { skip: !tools.tint || !tools.dxc }, t => {
+    const root = fixtureRoot(t);
+    const directory = join(root, "shaders");
+    mkdirSync(directory);
+    const shader = `
+struct Input {
+    @location(6) color: vec4f,
+    @location(0) position: vec3f,
+    @location(3) uv: vec2f,
+    @location(16) instance: vec4f,
+};
+struct Output {
+    @location(7) color: vec4f,
+    @builtin(position) position: vec4f,
+    @location(2) uv: vec2f,
+};
+@vertex fn vertexMain(input: Input) -> Output {
+    return Output(input.color, vec4f(input.position, 1.0) + input.instance, input.uv);
+}
+@fragment fn fragmentMain(@location(2) uv: vec2f, @location(7) color: vec4f) -> @location(0) vec4f {
+    return color + vec4f(uv, 0.0, 0.0);
+}`;
+    const modules = ["vert", "frag"].map(stage => {
+        const output = `sparse.${stage}.native.wgsl`;
+        writeFileSync(join(directory, output), shader);
+        return { output, entryPoint: stage === "vert" ? "vertexMain" : "fragmentMain", pinnedBindings: false };
+    });
+    writeFileSync(join(directory, "composition.json"), JSON.stringify({ modules }));
+    compileOfflineShaders({ repositoryRoot: root, directories: [directory], tools, target: "vulkan" });
+    const locations = (stage: string): Map<string, number> => {
+        const bytes = readFileSync(join(directory, `sparse.${stage}.spv`));
+        const names = new Map<number, string>();
+        const decorated = new Map<number, number>();
+        for (const { opcode, offset, words } of spirvInstructions(bytes)) {
+            if (opcode === 5) { // OpName
+                names.set(bytes.readUInt32LE(offset + 4), bytes.subarray(offset + 8, offset + words * 4).toString("utf8").split("\0")[0]!);
+            } else if (opcode === 71 && bytes.readUInt32LE(offset + 8) === 30) { // OpDecorate Location
+                decorated.set(bytes.readUInt32LE(offset + 4), bytes.readUInt32LE(offset + 12));
+            }
+        }
+        return new Map([...decorated].map(([id, location]) => [names.get(id)!, location]));
+    };
+    const vertex = locations("vert"), fragment = locations("frag");
+    for (const location of [0, 3, 6, 16]) {
+        assert.equal(vertex.get(`in.var.TEXCOORD${location}`), location, `vertex input ${location}`);
+    }
+    for (const location of [2, 7]) {
+        assert.equal(vertex.get(`out.var.TEXCOORD${location}`), location, `vertex output ${location}`);
+        assert.equal(fragment.get(`in.var.TEXCOORD${location}`), location, `fragment input ${location}`);
+    }
+    assert.equal(fragment.get("out.var.SV_Target0"), 0);
 });
 
 test("binding adapter changes invalidate cached sidecars and reordered shader binaries", { skip: !tools.tint || !tools.dxc }, t => {
@@ -206,7 +338,7 @@ test("binding adapter changes invalidate cached sidecars and reordered shader bi
     }
     const bindingPath = join(compilerRoot, "shader-bindings.js");
     const current = readFileSync(bindingPath, "utf8");
-    const marker = "function integerTextureRegisters(source) {";
+    const marker = "function storageTextureRegisters(source) {";
     assert.ok(current.includes(marker));
     // Reproduce the old classification in an isolated compiler copy.
     writeFileSync(bindingPath, current.replace(marker, `${marker}\nsource = "";`));

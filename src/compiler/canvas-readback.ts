@@ -7,7 +7,7 @@ import { imageCodecForFileName } from "../image-codec-manifest.js";
 import { findRepositoryRoot } from "../upstream-source.js";
 import { transpileCommonJs } from "../typescript-transpile.js";
 import { forEachAnalysisNode } from "./analysis-walk.js";
-import { resolveBundledAsset } from "./assets.js";
+import { canonicalLocalAssetSource, resolveBundledAsset } from "./assets.js";
 import { closureModules, ownsCanvas, sameFileClosure } from "./browser-texture-function.js";
 import { runGenerationChild } from "./generation-child.js";
 import type { LoweringServices } from "./lowering-services.js";
@@ -111,7 +111,10 @@ export function bakeCanvasReadback(context: CanvasReadbackContext, call: ts.Call
                     if (!item.isFile()) continue;
                     const suffix = relative(directory, source).replaceAll("\\", "/");
                     files[prefix + suffix] = readFileSync(source).toString("base64");
-                    if (imageCodecForFileName(source)) images.push({ source, logicalPath: `${logical}/${suffix}` });
+                    if (imageCodecForFileName(source)) images.push({
+                        source: canonicalLocalAssetSource(source, context.options.fileName),
+                        logicalPath: `${logical}/${suffix}`,
+                    });
                 }
             };
             visit(directory);

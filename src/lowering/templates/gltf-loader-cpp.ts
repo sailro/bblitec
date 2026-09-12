@@ -157,6 +157,7 @@ ${compressedImages ? "#include <bblite/upstream/compressed_texture.hpp>\n" : ""}
 #include <set>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <unordered_map>
 #include <vector>
@@ -167,9 +168,9 @@ namespace {
 using JsonArray = ts::JsonValue::Array;
 using JsonObject = ts::JsonValue::Object;
 
-const ts::JsonValue& required(const JsonObject& object, const std::string& key) {
-    const auto found = object.find(key);
-    if (found == object.end()) throw std::runtime_error("glTF is missing '" + key + "'.");
+const ts::JsonValue& required(const JsonObject& object, std::string_view key) {
+    const auto found = object.find(std::string(key));
+    if (found == object.end()) throw std::runtime_error("glTF is missing '" + std::string(key) + "'.");
     return found->second;
 }
 
@@ -180,9 +181,9 @@ const ts::JsonValue* optional(const JsonObject& object, const std::string& key) 
 
 ${lowered.parserJson}
 
-const JsonArray& array_or_empty(const JsonObject& object, const std::string& key) {
+const JsonArray& array_or_empty(const JsonObject& object, std::string_view key) {
     static const JsonArray empty;
-    const ts::JsonValue* value = optional(object, key);
+    const ts::JsonValue* value = optional(object, std::string(key));
     return value ? value->as_array() : empty;
 }
 

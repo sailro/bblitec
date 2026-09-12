@@ -78,6 +78,7 @@ import {
     incompatibleCacheEntries,
     payloadOrphans,
     readCacheConfiguration,
+    sameCachePath,
 } from "./build-stamp.js";
 import {
     generationIsCurrent,
@@ -118,6 +119,7 @@ import {
     defaultDevelopmentBackend,
     DEVELOPMENT_VCPKG_INSTALL,
     developmentVcpkgFeatures,
+    developmentTriplet,
     hostOfflineShaderTarget,
     needsOfflineShaders,
     selectedCompiledBackend,
@@ -410,14 +412,15 @@ async function specializePhysicsDebugGeometry(scene: SceneDefinition): Promise<v
     const manifestPath = join(scene.output, "manifest.json");
     const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as { inputs: string[] };
     const setup = buildSetup();
+    const compiler = setup.windows?.compiler ?? setup.tools.cxx;
     // Unlike ordinary scene generation this producer executes native shaping
     // inputs; those sources therefore participate in generation invalidation.
-    manifest.inputs = [...new Set([...manifest.inputs, setup.cmake, ...(setup.windows ? [setup.windows.compiler] : []),
+    manifest.inputs = [...new Set([...manifest.inputs, setup.cmake, ...(compiler ? [compiler] : []),
         ...construction.inputs.filter(input => input.path.startsWith("native/")).map(input => input.path)])].sort();
     writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
     const sourceAndAssets = contentFingerprint([...manifest.inputs, join(scene.output, "assets"), "dist/.build-stamp", "package-lock.json", "upstream"]);
     const nativeTools = { cmake: toolIdentity(setup.cmake),
-        compiler: setup.windows ? toolIdentity(setup.windows.compiler) : setup.generator,
+        compiler: compiler ? toolIdentity(compiler) : setup.generator,
         generator: setup.generator, backend: setup.backend };
     writeFileSync(join(scene.output, physicsDebugCatalogPath), renderPhysicsDebugCatalog(entries));
     writeFileSync(join(scene.output, "physics-debug-geometry.json"), `${JSON.stringify({
@@ -629,7 +632,7 @@ function developmentVcpkgInstall(): VcpkgManifestInstall {
                 join("artifacts", "vcpkg-installed"),
             DEVELOPMENT_VCPKG_INSTALL,
         ),
-        triplet: "x64-windows",
+        triplet: developmentTriplet(),
         features: developmentVcpkgFeatures(
             readFileSync(resolve("native", "vcpkg.json"), "utf8"),
         ),
@@ -773,11 +776,7 @@ function cacheMatchesConfiguration(
         if (cached === undefined) {
             return false;
         }
-        if (
-            resolve(cached).toLowerCase() !==
-                resolve(value).toLowerCase() &&
-            cached !== value
-        ) {
+        if (!sameCachePath(cached, value)) {
             return false;
         }
     }
@@ -920,7 +919,7 @@ function buildSetup(): SharedBuildSetup {
     const tools = currentDevelopmentTools();
     if (!tools.cmake) {
         throw new Error(
-            "CMake was not found. Install the Visual Studio CMake component or set CMAKE_COMMAND.",
+            "CMake was not found. Install CMake or set CMAKE_COMMAND (see docs/development.md#setup).",
         );
     }
     // Backend selection: BOTH (the dual-backend differential binary) for
@@ -952,7 +951,7 @@ function buildSetup(): SharedBuildSetup {
                   install: developmentVcpkgInstall(),
               };
     const environment: NodeJS.ProcessEnv = {
-        ...(windows?.environment ?? process.env),
+        ...(windows?.environment ?? setupEnvironment(tools)),
         CMAKE_COMMAND: tools.cmake,
         ...(vcpkg ? { VCPKG_ROOT: vcpkg.root } : {}),
         ...(tools.tint ? { TINT_PATH: tools.tint } : {}),
@@ -991,7 +990,7 @@ function developmentChecks(scope: PreflightScope): DevelopmentCheck[] {
             label: "CMake",
             ...(tools.cmake
                 ? { path: tools.cmake }
-                : { problem: "not found (install the Visual Studio CMake component or set CMAKE_COMMAND)" }),
+                : { problem: "not found (install CMake or set CMAKE_COMMAND)" }),
         },
     ];
     const generator = process.env.BBLITE_CMAKE_GENERATOR ?? "Ninja";
@@ -1007,6 +1006,13 @@ function developmentChecks(scope: PreflightScope): DevelopmentCheck[] {
                 label: "Visual Studio C++/Ninja",
                 problem: (error as Error).message,
             });
+        }
+    } else if (process.platform !== "win32") {
+        checks.push({ label: "C++ compiler", ...(tools.cxx
+            ? { path: tools.cxx } : { problem: "C++ compiler was not found; install Clang on Linux or set CXX" }) });
+        if (generator === "Ninja") {
+            checks.push({ label: "Ninja", ...(tools.ninja
+                ? { path: tools.ninja } : { problem: "ninja was not found" }) });
         }
     }
     if (!process.env.BBLITE_SDL_DIR) {
@@ -1036,12 +1042,6 @@ function developmentChecks(scope: PreflightScope): DevelopmentCheck[] {
         });
     }
     if (scope.shaders && needsOfflineShaders(backend, process.env.BBLITE_SHADER_TARGET)) {
-        checks.push({
-            label: "PowerShell",
-            ...(tools.powershell
-                ? { path: tools.powershell }
-                : { problem: "pwsh was not found" }),
-        });
         const target = shaderTarget();
         if (target !== "metal") {
             checks.push({
@@ -1130,13 +1130,15 @@ function setupEnvironment(tools: DevelopmentTools): NodeJS.ProcessEnv {
         ...process.env,
         ...(tools.cmake ? { CMAKE_COMMAND: tools.cmake } : {}),
         ...(tools.vcpkgRoot ? { VCPKG_ROOT: tools.vcpkgRoot } : {}),
+        ...(tools.cc ? { CC: tools.cc } : {}),
+        ...(tools.cxx ? { CXX: tools.cxx } : {}),
     };
 }
 
 function runDevelopmentSetup(): void {
-    if (process.platform !== "win32") {
+    if (process.platform !== "win32" && process.platform !== "linux") {
         throw new Error(
-            "dev:setup currently provisions the pinned Windows development toolchain; install the documented host tools manually on this platform and run 'npm run doctor'.",
+            "dev:setup supports Windows and Linux; install host tools manually on this platform and run 'npm run doctor'.",
         );
     }
     const tools = discoverDevelopmentTools();
@@ -1145,10 +1147,11 @@ function runDevelopmentSetup(): void {
         ["vcpkg", tools.vcpkg],
         ["PowerShell", tools.powershell],
         ["git", tools.git],
+        ...(process.platform === "linux" ? [["Clang (or CC)", tools.cc], ["Clang++ (or CXX)", tools.cxx]] : []),
     ].filter((entry) => !entry[1]);
     if (bootstrapMissing.length > 0) {
         throw new Error(
-            `dev:setup needs ${bootstrapMissing.map(([label]) => label).join(", ")}. Install the Visual Studio C++/CMake/vcpkg components and PowerShell first.`,
+            `dev:setup needs ${bootstrapMissing.map(([label]) => label).join(", ")}. See docs/development.md#setup for host prerequisites.`,
         );
     }
     const environment = setupEnvironment(tools);
@@ -1157,10 +1160,10 @@ function runDevelopmentSetup(): void {
         "tools",
         "shader-compiler",
         "vcpkg_installed",
-        "x64-windows",
+        developmentTriplet(),
         "tools",
         "directx-dxc",
-        "dxc.exe",
+        process.platform === "win32" ? "dxc.exe" : "dxc",
     );
     if (!existsSync(pinnedDxc)) {
         run(
@@ -1173,7 +1176,7 @@ function runDevelopmentSetup(): void {
                     "shader-compiler",
                     "vcpkg_installed",
                 )}`,
-                "--triplet=x64-windows",
+                `--triplet=${developmentTriplet()}`,
             ],
             environment,
         );
@@ -1191,7 +1194,7 @@ function runDevelopmentSetup(): void {
     buildPinned(!!tools.tint, "tools/build-tint.ps1");
     buildPinned(tools.labSoundInstalled, "tools/build-labsound.ps1");
     buildPinned(tools.rmlUiInstalled, "tools/build-rmlui.ps1");
-    if (!tools.ccache) {
+    if (!tools.ccache && process.platform === "win32") {
         run(tools.powershell!, ["-File", "tools/install-ccache.ps1"], environment);
     }
     sharedBuildSetup = undefined;
@@ -1301,11 +1304,14 @@ async function runSceneBuild(
             `-DCMAKE_MAKE_PROGRAM=${windows.ninja}`,
             `-DCMAKE_CXX_COMPILER=${windows.compiler}`,
         );
+    } else if (tools.cxx) {
+        configureArguments.push(`-DCMAKE_CXX_COMPILER=${tools.cxx}`);
     }
     if (vcpkg) {
         configureArguments.push(
             `-DCMAKE_TOOLCHAIN_FILE=${vcpkg.toolchain}`,
             `-DVCPKG_INSTALLED_DIR=${vcpkg.install.installedDirectory}`,
+            `-DVCPKG_TARGET_TRIPLET=${vcpkg.install.triplet}`,
             `-DVCPKG_MANIFEST_FEATURES=${vcpkg.install.features.join(";")}`,
             // The shared install is made current once per population run
             // (`ensureDevelopmentVcpkgInstall`); a configure runs no vcpkg.

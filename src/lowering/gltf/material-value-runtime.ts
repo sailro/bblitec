@@ -36,7 +36,7 @@ public:
     static GltfPbrValue object();
     static GltfPbrValue array(std::initializer_list<GltfPbrValue> values);
     /** Borrowed only for the duration of a source writer call. */
-    static GltfPbrValue float32(const std::vector<float>& values);
+    [[maybe_unused]] static GltfPbrValue float32(const std::vector<float>& values);
     bool undefined() const { return std::holds_alternative<std::monostate>(value_); }
     bool nullish() const { return undefined() || std::holds_alternative<std::nullptr_t>(value_); }
     bool is_number() const { return std::holds_alternative<double>(value_); }
@@ -54,7 +54,7 @@ public:
     GltfPbrValue get(const std::string& key, bool optional = false) const;
     GltfPbrValue at(double index, bool optional = false) const;
     GltfPbrValue set(const std::string& key, GltfPbrValue value) const;
-    GltfPbrValue set_at(double index, GltfPbrValue value) const;
+    [[maybe_unused]] GltfPbrValue set_at(double index, GltfPbrValue value) const;
     void erase(const std::string& key) const;
     void merge(const GltfPbrValue& other) const;
     GltfPbrValue clone() const;

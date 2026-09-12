@@ -33,6 +33,7 @@ param(
 $ErrorActionPreference = "Stop"
 Import-Module (Join-Path $PSScriptRoot "bblite-tools.psm1") -Force
 $root = Get-RepositoryRoot
+if ($StaticRuntime -and -not $IsWindows) { throw "-StaticRuntime selects the Windows shipping CRT." }
 if (-not $Workspace) {
     $Workspace = if ($StaticRuntime) {
         if ($EnableCodecs) {
@@ -112,8 +113,13 @@ if ($StaticRuntime) {
     )
 }
 if ($coreOnlyBuild -and -not $StaticRuntime) {
-    $configureArguments += '-DCMAKE_CXX_FLAGS_RELEASE=/O2 /DNDEBUG /DLABSOUND_CORE_ONLY'
+    $configureArguments += if ($IsWindows) {
+        '-DCMAKE_CXX_FLAGS_RELEASE=/O2 /DNDEBUG /DLABSOUND_CORE_ONLY'
+    } else {
+        '-DCMAKE_CXX_FLAGS_RELEASE=-O2 -DNDEBUG -DLABSOUND_CORE_ONLY'
+    }
 }
+$configureArguments += @(Get-LinuxCompilerArguments)
 & $CMake @configureArguments
 if ($LASTEXITCODE -ne 0) {
     throw "LabSound CMake configuration failed."
@@ -121,7 +127,8 @@ if ($LASTEXITCODE -ne 0) {
 
 # The core target alone: the bundled backends are replaced by the SDL3
 # device in this project's own PAL.
-& $CMake --build $build --target LabSound --config Release --parallel
+$parallelArguments = Get-BuildParallelArguments
+& $CMake --build $build --target LabSound --config Release @parallelArguments
 if ($LASTEXITCODE -ne 0) {
     throw "LabSound build failed."
 }
@@ -137,15 +144,17 @@ function Resolve-BuiltLibrary([string[]]$candidates, [string]$label) {
     return $found
 }
 
+$labSoundName = if ($IsWindows) { "LabSound.lib" } else { "libLabSound.a" }
+$nyquistName = if ($IsWindows) { "libnyquist.lib" } else { "liblibnyquist.a" }
 $labSoundLib = Resolve-BuiltLibrary @(
-    (Join-Path $build "bin\LabSound.lib"),
-    (Join-Path $build "bin\Release\LabSound.lib")
+    (Join-Path $build "bin/$labSoundName"),
+    (Join-Path $build "bin/Release/$labSoundName")
 ) "LabSound"
 $libraries = @($labSoundLib)
 if (-not $coreOnlyBuild) {
     $nyquistLib = Resolve-BuiltLibrary @(
-        (Join-Path $build "_deps\libnyquist-build\lib\libnyquist.lib"),
-        (Join-Path $build "_deps\libnyquist-build\lib\Release\libnyquist.lib")
+        (Join-Path $build "_deps/libnyquist-build/lib/$nyquistName"),
+        (Join-Path $build "_deps/libnyquist-build/lib/Release/$nyquistName")
     ) "libnyquist"
     $libraries += $nyquistLib
 }
@@ -161,7 +170,7 @@ Copy-Item -Force (Join-Path $source "LICENSE") (Join-Path $output "LabSound-LICE
 Copy-Item -Force (Join-Path $source "COPYING") (Join-Path $output "LabSound-COPYING.txt")
 if ($coreOnlyBuild) {
     foreach ($obsolete in @(
-        (Join-Path $libOut "libnyquist.lib"),
+        (Join-Path $libOut $nyquistName),
         (Join-Path $output "libnyquist-LICENSE.txt"),
         (Join-Path $output "libnyquist-COPYING.txt")
     )) {

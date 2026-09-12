@@ -9,6 +9,7 @@ import {
     defaultDevelopmentBackend,
     DEVELOPMENT_VCPKG_INSTALL,
     developmentVcpkgFeatures,
+    developmentTriplet,
     hostOfflineShaderTarget,
     needsOfflineShaders,
 } from "../src/build-options.js";
@@ -199,7 +200,7 @@ test("normalizes retained CSS cascade keywords and measures width resets", () =>
 
 test("canonicalizes the build-time backend flag", () => {
     assert.equal(defaultDevelopmentBackend("win32"), "BOTH");
-    assert.equal(defaultDevelopmentBackend("linux"), "SDL_GPU");
+    assert.equal(defaultDevelopmentBackend("linux"), "BOTH");
     assert.equal(canonicalCompiledBackend("sdl_gpu", "build"), "SDL_GPU");
     assert.equal(canonicalCompiledBackend("DAWN", "process"), "DAWN");
     assert.equal(canonicalCompiledBackend("both", "process"), "BOTH");
@@ -207,6 +208,13 @@ test("canonicalizes the build-time backend flag", () => {
         () => canonicalCompiledBackend("vulkan", "build"),
         /--backend must be sdl_gpu\|dawn\|both/,
     );
+});
+
+test("development dependencies use the host platform and architecture", () => {
+    assert.equal(developmentTriplet("linux", "x64"), "x64-linux");
+    assert.equal(developmentTriplet("linux", "arm64"), "arm64-linux");
+    assert.equal(developmentTriplet("win32", "x64"), "x64-windows");
+    assert.equal(developmentTriplet("darwin", "arm64"), "arm64-osx");
 });
 
 test("compiles only the host's offline shader format by default", () => {

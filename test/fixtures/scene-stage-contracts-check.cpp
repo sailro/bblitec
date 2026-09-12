@@ -107,16 +107,27 @@ struct Graph {
     static void draw_task_billboards(BillboardDepthMode mode) { Stages::draw_billboards(mode); }
 };
 struct SdlGraph : Graph {
+    struct ShaderTaskTarget { SDL_GPUTextureFormat color, depth; SDL_GPUSampleCount samples; };
     int task_pass = 0, graph_scene = 0, graph_meshes = 0;
     struct { int grid_pipeline = 0, grid_double_sided_pipeline = 0, grid_transparent_pipeline = 0,
-        grid_transparent_double_sided_pipeline = 0, shader_pipelines = 0, shader_a2c_pipelines = 0; } state;
+        grid_transparent_double_sided_pipeline = 0, shader_pipelines = 0, shader_a2c_pipelines = 0;
+        SDL_GPUTextureFormat depth_format = SDL_GPU_TEXTUREFORMAT_D32_FLOAT; } state;
+    struct { SDL_GPUTextureFormat color_format = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM; } target;
+    struct { SDL_GPUSampleCount samples = SDL_GPU_SAMPLECOUNT_1; } target_record;
+    bool task_depth_pointer = false;
+    static SDL_GPUSampleCount task_sample_count(const auto&, SDL_GPUSampleCount samples) { return samples; }
     std::vector<int> task_draw_lists{1}; MeshHandle handle{0};
     bool ground = true;
     static void draw_task_skyboxes(int, int, int, int) { draws.push_back("skybox"); }
     void draw_task_ground(int, int, int) { if (ground) draws.push_back("ground"); }
     static void draw_task_billboards(int, BillboardDepthMode mode, int, int) { Graph::draw_task_billboards(mode); }
     template<class... Args> void draw_scene(Args... args) {
-        graph_mesh_stages(std::get<sizeof...(Args) - 1>(std::tuple{args...}));
+        const auto parameters = std::tuple{args...};
+        const auto profile = std::get<sizeof...(Args) - 1>(parameters);
+        assert(profile.color == target.color_format);
+        assert(profile.depth == (task_depth_pointer ? state.depth_format : SDL_GPU_TEXTUREFORMAT_INVALID));
+        assert(profile.samples == target_record.samples);
+        graph_mesh_stages(std::get<sizeof...(Args) - 2>(parameters));
     }
 #include "SdlGraphStages.hpp"
 };
@@ -192,6 +203,10 @@ int main() {
         if (scene_stages) expected.push_back("billboard-transparent");
         draws.clear(); dawn_graph.graph(); assert(draws == expected);
         if (scene_stages) expected.insert(expected.begin(), "skybox");
-        draws.clear(); sdl_graph.graph(); assert(draws == expected);
+        for (bool depth : {false, true}) for (const auto samples : {SDL_GPU_SAMPLECOUNT_1, SDL_GPU_SAMPLECOUNT_4}) {
+            sdl_graph.task_depth_pointer = depth;
+            sdl_graph.target_record.samples = samples;
+            draws.clear(); sdl_graph.graph(); assert(draws == expected);
+        }
     }
 }

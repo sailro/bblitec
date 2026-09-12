@@ -265,7 +265,7 @@ export function registerUiImageAsset(
  * the source entry-relative makes manifests portable and lets both routes
  * share the same packaged payload and output name.
  */
-function canonicalLocalAssetSource(
+export function canonicalLocalAssetSource(
     source: string,
     entryFileName: string,
 ): string {

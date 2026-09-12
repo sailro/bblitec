@@ -1,6 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
-import { delimiter, dirname, isAbsolute, join, resolve } from "node:path";
+import { dirname, isAbsolute, join, resolve } from "node:path";
+import { developmentTriplet } from "./build-options.js";
 
 import type { canonicalDevelopmentCompiler } from "./build-options.js";
 
@@ -22,6 +23,9 @@ export interface WindowsBuildTools {
 export interface DevelopmentTools {
     ccache: string | undefined;
     cmake: string | undefined;
+    cc: string | undefined;
+    cxx: string | undefined;
+    ninja: string | undefined;
     dawnDirectory: string;
     dawnInstalled: boolean;
     dxc: string | undefined;
@@ -74,10 +78,10 @@ function findExecutable(
         return existsSync(candidate) ? candidate : undefined;
     }
     const path = environmentValue(environment, "PATH") ?? "";
-    const pathDelimiter = platform === "win32" ? ";" : delimiter;
+    const pathDelimiter = platform === "win32" ? ";" : ":";
     for (const directory of path.split(pathDelimiter).filter(Boolean)) {
         for (const name of executableNames(command, platform)) {
-            const candidate = join(directory.replace(/^"|"$/g, ""), name);
+            const candidate = resolve(cwd, directory.replace(/^"|"$/g, ""), name);
             if (existsSync(candidate)) return candidate;
         }
     }
@@ -310,7 +314,7 @@ export function discoverDevelopmentTools(
         "tools",
         "shader-compiler",
         "vcpkg_installed",
-        "x64-windows",
+        developmentTriplet(platform),
         "tools",
         "directx-dxc",
         platform === "win32" ? "dxc.exe" : "dxc",
@@ -323,7 +327,7 @@ export function discoverDevelopmentTools(
                   join(dawnDirectory, "bin", "dxcompiler.dll"),
                   join(dawnDirectory, "bin", "dxil.dll"),
               ]
-            : []),
+            : platform === "linux" ? [join(dawnDirectory, "lib", "libwebgpu_dawn.so")] : []),
     ];
     const rmlUiConfig = join(
         rmlUiDirectory,
@@ -346,6 +350,9 @@ export function discoverDevelopmentTools(
                 ?? findExecutable("ccache", options),
         visualStudioRoot,
         cmake,
+        cc: platform === "win32" ? undefined : findExecutable(environment.CC ?? (platform === "linux" ? "clang" : "cc"), options),
+        cxx: platform === "win32" ? undefined : findExecutable(environment.CXX ?? (platform === "linux" ? "clang++" : "c++"), options),
+        ninja: findExecutable(environment.NINJA_PATH ?? "ninja", options),
         powershell: findExecutable(
             platform === "win32" ? "pwsh.exe" : "pwsh",
             options,
@@ -372,8 +379,8 @@ export function discoverDevelopmentTools(
                     : findExecutable("dxc", options),
         labSoundDirectory,
         labSoundInstalled:
-            existsSync(join(labSoundDirectory, "lib", "LabSound.lib")) &&
-            existsSync(join(labSoundDirectory, "lib", "libnyquist.lib")) &&
+            existsSync(join(labSoundDirectory, "lib", platform === "win32" ? "LabSound.lib" : "libLabSound.a")) &&
+            existsSync(join(labSoundDirectory, "lib", platform === "win32" ? "libnyquist.lib" : "liblibnyquist.a")) &&
             existsSync(join(labSoundDirectory, "include", "libnyquist", "Decoders.h")),
         rmlUiDirectory,
         rmlUiInstalled:

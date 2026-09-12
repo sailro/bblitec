@@ -44,7 +44,10 @@ int main() {
     for (const auto& band : canvas_coverage_bands(3.0, -1.0)) assert(band.coverage == 0.0);
     for (const auto& band : canvas_coverage_bands(0.0, std::numeric_limits<double>::infinity())) assert(band.coverage == 0.0);
 
-    UiElementRecord::CanvasState canvas;
+    UiElementRecord element;
+    auto& canvas = element.canvas.emplace();
+    assert(canvas.width == 300 && canvas.height == 150);
+    assert(canvas.scale_x == 1 && canvas.scale_y == 1 && canvas.fill_style == "#000000");
     canvas.width = 20;
     canvas.height = 10;
     canvas.fill_style = "#abc";

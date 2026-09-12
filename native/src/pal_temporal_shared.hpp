@@ -3,6 +3,7 @@
 #include <bblite/runtime.hpp>
 #include <cstring>
 #include <stdexcept>
+#include <type_traits>
 
 namespace bbl::pal {
 
@@ -105,11 +106,12 @@ void prepare_temporal_scene_uniforms(
 }
 
 inline upstream::SceneUniforms temporal_clean_scene_block(const PersistentSceneUniforms& source) {
+    static_assert(std::is_trivially_copyable_v<upstream::SceneUniforms>);
     upstream::SceneUniforms block{};
     if (source.clean.size() * sizeof(float) != sizeof(block)) {
         throw std::runtime_error("Temporal clean scene UBO does not match its pinned block layout.");
     }
-    std::memcpy(&block, source.clean.data(), sizeof(block));
+    std::memcpy(static_cast<void*>(&block), source.clean.data(), sizeof(block));
     return block;
 }
 

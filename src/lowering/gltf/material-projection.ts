@@ -214,10 +214,10 @@ MaterialHandle load_material(
         material.base_color_factor = Color4{static_cast<float>(base_factor.at(0).number()), static_cast<float>(base_factor.at(1).number()),
             static_cast<float>(base_factor.at(2).number()), static_cast<float>(base_factor.at(3).number())};
     }
-    const auto& base_texture = props.get("baseColorTexture").texture();
-    if (base_texture.fallback) material.base_color_fallback = *base_texture.fallback;
-    const auto& orm_texture = props.get("ormTexture").texture();
-    if (orm_texture.fallback) material.orm_fallback = *orm_texture.fallback;
+    const auto base_fallback = props.get("baseColorTexture").texture().fallback;
+    if (base_fallback) material.base_color_fallback = *base_fallback;
+    const auto orm_fallback = props.get("ormTexture").texture().fallback;
+    if (orm_fallback) material.orm_fallback = *orm_fallback;
     ${materialProperty("metallic_factor")}
     ${materialProperty("roughness_factor")}
     ${materialProperty("reflectance")}

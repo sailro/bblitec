@@ -3075,6 +3075,18 @@ struct UiRmlRuntime {
                  fallback->face_index != system_regular->face_index)) {
                 load_rml_font(*fallback, fallback->family, 400, true);
             }
+#if defined(__linux__)
+            // Noto's two symbol faces cover complementary Unicode ranges:
+            // Symbols 2 omits the ordinary directional arrows in Symbols.
+            const auto text_symbols = find_system_font("Noto Sans Symbols", 400);
+            if (text_symbols &&
+                (text_symbols->path != system_regular->path ||
+                 text_symbols->face_index != system_regular->face_index) &&
+                (!fallback || text_symbols->path != fallback->path ||
+                 text_symbols->face_index != fallback->face_index)) {
+                load_rml_font(*text_symbols, text_symbols->family, 400, true);
+            }
+#endif
             // Unicode/VS16-selected spans name the color face explicitly.
             // Text-presentation arrows and media symbols must first retain
             // the ordinary symbol face, even when the color font has glyphs.

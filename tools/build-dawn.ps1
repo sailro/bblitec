@@ -18,21 +18,29 @@ $source = Join-Path $workspacePath "dawn"
 $build = Join-Path $workspacePath "build-dawn"
 $output = Resolve-RepositoryPath $OutputDirectory
 $CMake = Find-CMake $CMake
+if (-not $IsWindows -and -not $IsLinux) { throw "Dawn setup supports Windows and Linux." }
+$d3d12 = if ($IsWindows) { "ON" } else { "OFF" }
+$vulkan = if ($IsLinux) { "ON" } else { "OFF" }
 
 New-Item -ItemType Directory -Path $workspacePath, $output -Force |
     Out-Null
 Sync-PinnedCheckout $source $pin.repository $pin.commit "Dawn"
 
-& $CMake -S $source -B $build `
+# We consume the C API. The pin's module probe accepts GCC 13 even though
+# CMake cannot scan that compiler's module dependencies.
+$compilerArguments = Get-LinuxCompilerArguments
+& $CMake -S $source -B $build @compilerArguments `
     -DCMAKE_BUILD_TYPE=Release `
+    -DDAWN_SUPPORTS_CXX_MODULES=OFF `
     "-DCMAKE_INSTALL_PREFIX=$output" `
+    -DCMAKE_INSTALL_LIBDIR=lib `
     -DDAWN_FETCH_DEPENDENCIES=ON `
     -DDAWN_ENABLE_INSTALL=ON `
     -DDAWN_BUILD_MONOLITHIC_LIBRARY=SHARED `
-    -DDAWN_USE_BUILT_DXC=ON `
+    "-DDAWN_USE_BUILT_DXC=$d3d12" `
     -DDAWN_ENABLE_D3D11=OFF `
-    -DDAWN_ENABLE_D3D12=ON `
-    -DDAWN_ENABLE_VULKAN=OFF `
+    "-DDAWN_ENABLE_D3D12=$d3d12" `
+    "-DDAWN_ENABLE_VULKAN=$vulkan" `
     -DDAWN_ENABLE_NULL=OFF `
     -DDAWN_ENABLE_DESKTOP_GL=OFF `
     -DDAWN_ENABLE_OPENGLES=OFF `
@@ -50,10 +58,12 @@ if ($LASTEXITCODE -ne 0) {
     throw "Dawn CMake configuration failed."
 }
 
-& $CMake --build $build `
-    --target webgpu_dawn --target dxcompiler --target copy_dxil_dll `
+$targets = @("--target", "webgpu_dawn")
+$parallelArguments = Get-BuildParallelArguments
+if ($IsWindows) { $targets += @("--target", "dxcompiler", "--target", "copy_dxil_dll") }
+& $CMake --build $build @targets `
     --config Release `
-    --parallel
+    @parallelArguments
 if ($LASTEXITCODE -ne 0) {
     throw "Dawn build failed."
 }
@@ -66,25 +76,27 @@ if ($LASTEXITCODE -ne 0) {
 # Deploy Dawn's own-built DXC and the validator DLL selected by Dawn's
 # copy_dxil_dll target. With DAWN_USE_BUILT_DXC the D3D12 backend loads
 # both beside webgpu_dawn.dll when use_dxc is enabled.
-$builtDxc = Get-ChildItem -Recurse (Join-Path $build "third_party") `
-    -Filter "dxcompiler.dll" -ErrorAction SilentlyContinue |
-    Where-Object { $_.FullName -match "Release" } |
-    Select-Object -First 1
-if (-not $builtDxc) {
-    $builtDxc = Get-ChildItem -Recurse $build -Filter "dxcompiler.dll" `
-        -ErrorAction SilentlyContinue | Select-Object -First 1
+if ($IsWindows) {
+    $builtDxc = Get-ChildItem -Recurse (Join-Path $build "third_party") `
+        -Filter "dxcompiler.dll" -ErrorAction SilentlyContinue |
+        Where-Object { $_.FullName -match "Release" } |
+        Select-Object -First 1
+    if (-not $builtDxc) {
+        $builtDxc = Get-ChildItem -Recurse $build -Filter "dxcompiler.dll" `
+            -ErrorAction SilentlyContinue | Select-Object -First 1
+    }
+    if (-not $builtDxc) {
+        throw "Dawn's built dxcompiler.dll was not found in the build tree."
+    }
+    Copy-Item $builtDxc.FullName (Join-Path $output "bin") -Force
+    $builtDxil = Get-ChildItem (Join-Path $build "Release") `
+        -Filter "dxil.dll" -ErrorAction SilentlyContinue |
+        Select-Object -First 1
+    if (-not $builtDxil) {
+        throw "Dawn's selected dxil.dll was not found in the build tree."
+    }
+    Copy-Item $builtDxil.FullName (Join-Path $output "bin") -Force
 }
-if (-not $builtDxc) {
-    throw "Dawn's built dxcompiler.dll was not found in the build tree."
-}
-Copy-Item $builtDxc.FullName (Join-Path $output "bin") -Force
-$builtDxil = Get-ChildItem (Join-Path $build "Release") `
-    -Filter "dxil.dll" -ErrorAction SilentlyContinue |
-    Select-Object -First 1
-if (-not $builtDxil) {
-    throw "Dawn's selected dxil.dll was not found in the build tree."
-}
-Copy-Item $builtDxil.FullName (Join-Path $output "bin") -Force
 
 # FXC (d3dcompiler_47.dll) is intentionally not installed: it is only
 # reached when Dawn force-disables use_dxc on adapters below shader

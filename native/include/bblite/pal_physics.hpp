@@ -311,11 +311,11 @@ void physics_world_release(PhysicsWorldHandle world);
 /** `HP_World_Step`, taking seconds exactly as the pin converts them. */
 void physics_world_step(PhysicsWorldHandle world, double seconds);
 [[nodiscard]] const std::vector<PhysicsCollisionEvent>&
-physics_world_collision_events(PhysicsWorldHandle world);
+physics_world_collision_events(const PhysicsWorldHandle& world);
 #if BBLITE_HAS_PHYSICS_TRIGGER
 /** `HP_World_GetTriggerEvents`, drained into one list per step. */
 [[nodiscard]] const std::vector<PhysicsTriggerEvent>&
-physics_world_trigger_events(PhysicsWorldHandle world);
+physics_world_trigger_events(const PhysicsWorldHandle& world);
 #endif
 /**
  * `HP_World_QueryRaycast`. `should_hit_triggers` is the pin's own option

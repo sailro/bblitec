@@ -23,11 +23,10 @@
 // - Chromium flags. The two screenshot harnesses pin
 //   `--force-color-profile=srgb` (golden bytes must not depend on the
 //   host color profile) plus `--enable-unsafe-webgpu`; the two WebGPU
-//   compute harnesses pass only the WebGPU flag; the canvas2D atlas
-//   passes none. The three baked-byte harnesses (HDR, LUT, atlas) feed
-//   golden-checked or committed assets, so their flag sets must stay
-//   byte-for-byte what shipped: `browserArgs` is exact per caller and
-//   never defaulted.
+//   compute harnesses enable WebGPU; Linux also selects Vulkan for both.
+//   The canvas2D atlas passes none. The three baked-byte harnesses (HDR,
+//   LUT, atlas) feed golden-checked or committed assets: `browserArgs`
+//   is exact per caller and never defaulted. Windows flags stay unchanged.
 // - Viewport. The screenshot harnesses pin 1280x720 at
 //   deviceScaleFactor 1 (the golden's dimensions); the compute harnesses
 //   never rasterize the page and set none.
@@ -60,19 +59,17 @@ import { transpileForBrowser } from "./typescript-transpile.js";
 import { resolveBrowserPath } from "./browser-path.js";
 import { captureSettleMilliseconds } from "./capture-timing.js";
 
-/** The screenshot harnesses' flags: the sRGB pin keeps golden bytes
- *  independent of the host display profile, and WebGPU is what the
- *  pinned engine renders through. */
-export const screenshotCaptureBrowserArgs = [
-    "--force-color-profile=srgb",
-    "--enable-unsafe-webgpu",
-] as const;
-
-/** The compute harnesses' flags: WebGPU alone. They read buffers back
- *  rather than rasterizing the page, but their baked bytes are pinned to
- *  the Chrome that ran them, so the set stays exactly what shipped. */
+/** Enable WebGPU, with Vulkan on Linux. Baked bytes depend on the browser
+ *  and GPU; enabling another host does not repin their golden hashes. */
 export const webgpuComputeBrowserArgs = [
     "--enable-unsafe-webgpu",
+    ...(process.platform === "linux" ? ["--use-angle=vulkan", "--enable-features=Vulkan"] : []),
+] as const;
+
+/** The sRGB pin keeps screenshots independent of the host display profile. */
+export const screenshotCaptureBrowserArgs = [
+    "--force-color-profile=srgb",
+    ...webgpuComputeBrowserArgs,
 ] as const;
 
 export interface BrowserPageOptions {
@@ -99,7 +96,7 @@ export interface BrowserPageOptions {
 
 /**
  * Serve `server` on an ephemeral 127.0.0.1 port, launch the resolved
- * Chromium headless, open one page, run `body` with the page and the
+ * Chromium, open one page, run `body` with the page and the
  * server's origin, and tear both down whatever `body` does.
  *
  * The server's payload is the caller's: the scene harnesses pass the
@@ -124,7 +121,9 @@ export async function withBrowserPage<T>(
     try {
         browser = await chromium.launch({
             executablePath: resolveBrowserPath(options.browserRequirement),
-            headless: options.headless ?? true,
+            // Linux needs a graphical session for reliable WebGPU external
+            // image uploads and canvas presentation, including under SSH.
+            headless: options.headless ?? process.platform !== "linux",
             ...(options.browserArgs
                 ? { args: [...options.browserArgs] }
                 : {}),

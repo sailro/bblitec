@@ -629,7 +629,7 @@ inline CsmCascades& csm_compute_cascades(
     double effective_aspect, const Camera& camera,
     const Light& light, const CsmConfig& cfg,
     const std::vector<ShadowCaster>& casters, CsmCascadeScratch& scratch,
-    const Project& project) {
+    const Project project) {
 ${declaration.body!.statements.flatMap((statement) => lowerer.statement(statement, "    ")).join("\n")}
 }`;
 }

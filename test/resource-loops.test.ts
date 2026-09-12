@@ -1006,7 +1006,7 @@ test("small sign loops do not duplicate an expensive data callback", () => {
         };
         for (const sign of [1, -1] as const) patch(sign);
     `);
-    assert.match(result.cpp, /for \(auto&&/);
+    assert.match(result.cpp, /for \([^\n]*auto&&/);
     assert.equal(result.cpp.match(/v_total \+=/g)?.length, 80);
 });
 

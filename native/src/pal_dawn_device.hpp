@@ -15,6 +15,13 @@ struct DawnDevice {
     DawnDevice& operator=(const DawnDevice&) = delete;
     ~DawnDevice() { release(); }
 
+    void destroy_device() noexcept {
+        // Release the surface while its device can still retire swapchains,
+        // including the recycled swapchain Dawn retains after unconfigure.
+        if (auto value = std::exchange(surface, nullptr)) wgpuSurfaceRelease(value);
+        if (device) wgpuDeviceDestroy(device);
+    }
+
     void release() noexcept {
         if (auto value = std::exchange(surface, nullptr)) wgpuSurfaceRelease(value);
         if (auto value = std::exchange(queue, nullptr)) wgpuQueueRelease(value);

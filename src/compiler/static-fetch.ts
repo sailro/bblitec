@@ -21,7 +21,7 @@ import { dirname, relative, resolve, sep } from "node:path";
 
 import { floatLiteral } from "../cpp-literals.js";
 import { readAssetBytesSync } from "./asset-bytes-sync.js";
-import { resolveBundledAsset } from "./assets.js";
+import { canonicalLocalAssetSource, resolveBundledAsset } from "./assets.js";
 import {
     jsonToValue,
     type JsonValuePolicy,
@@ -150,7 +150,9 @@ function compileDynamicCandidateFetch(
                             relative(directory, file)
                                 .split(sep)
                                 .join("/"),
-                        source: file,
+                        // Keep filesystem discoveries entry-relative: on Unix
+                        // a leading slash otherwise denotes a browser public URL.
+                        source: canonicalLocalAssetSource(file, context.options.fileName),
                     }));
                 } catch {
                     return [];

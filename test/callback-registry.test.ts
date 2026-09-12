@@ -482,6 +482,28 @@ test("borrows keyboard and base Event views from their active callbacks", () => 
     assert.match(base.cpp, /->event\.get\(\)\.prevent_default\(\)/);
 });
 
+test("inlined class parameters keep borrowed event wrappers alive", () => {
+    for (const eventType of ["MouseEvent", "KeyboardEvent", "Event"]) {
+        const target = eventType === "KeyboardEvent" ? "window" : "canvas";
+        const eventName = eventType === "KeyboardEvent" ? "keydown" : "mousedown";
+        const result = compileSource(`
+            ${platformPreamble}
+            class Handler {
+                private readonly handlers = new Set<(event: ${eventType}) => void>();
+                on(callback: (event: ${eventType}) => void): void { this.handlers.add(callback); }
+                consume(event: ${eventType}): void {
+                    for (const callback of this.handlers) callback(event);
+                }
+            }
+            const handler = new Handler();
+            handler.on(event => event.preventDefault());
+            ${target}.addEventListener("${eventName}", (event) => handler.consume(event));
+        `);
+        assert.match(result.cpp, /const auto (\w+event_argument\w*) = bbl::js::Borrowed[^;]+;\s*\[\[maybe_unused\]\] const auto& \w+ = \1\.get\(\);/);
+        assert.doesNotMatch(result.cpp, /const auto& \w+ = bbl::js::Borrowed[^;]+\.get\(\);/);
+    }
+});
+
 test("refuses borrowed payloads at retained storage and capture sites", () => {
     const cases = [
         {

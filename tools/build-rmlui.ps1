@@ -46,6 +46,7 @@ param(
 $ErrorActionPreference = "Stop"
 Import-Module (Join-Path $PSScriptRoot "bblite-tools.psm1") -Force
 $root = Get-RepositoryRoot
+if ($StaticRuntime -and -not $IsWindows) { throw "-StaticRuntime selects the Windows shipping CRT." }
 # Development keeps one complete artifact. Shipping selects SVG only when
 # the generated scene reaches ui:inline-svg.
 $rmlSvgEnabled = -not $StaticRuntime -or $EnableSvg
@@ -110,7 +111,9 @@ if (-not $FreetypeRoot) {
             }
         }
     } else {
-        $FreetypeRoot = Join-Path $installedRoot "development-full\x64-windows"
+        $hostArch = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString().ToLowerInvariant()
+        $triplet = if ($IsWindows) { "x64-windows" } else { "$hostArch-linux" }
+        $FreetypeRoot = Join-Path $installedRoot "development-full/$triplet"
     }
 }
 if (-not (Test-Path (Join-Path $FreetypeRoot "include\ft2build.h"))) {
@@ -184,6 +187,7 @@ $configureArguments = @(
     "-U", "plutovg_DIR",
     "-DCMAKE_BUILD_TYPE=Release",
     "-DCMAKE_INSTALL_PREFIX=$output",
+    "-DCMAKE_INSTALL_LIBDIR=lib",
     "-DCMAKE_PREFIX_PATH=$FreetypeRoot",
     "-DBUILD_SHARED_LIBS=OFF",
     "-DRMLUI_SAMPLES=OFF",
@@ -207,7 +211,7 @@ if ($StaticRuntime) {
 # -StaticRuntime shipping artifact stays on MSVC, the shipping compiler,
 # whose consumers are MSVC-built too.
 $devToolchain = if ($StaticRuntime) { $null } else { Get-DevToolchain }
-$intendedGenerator = if ($devToolchain) { "Ninja" } else { "" }
+$intendedGenerator = if ($devToolchain) { "Ninja" } else { $env:CMAKE_GENERATOR }
 if ($devToolchain) {
     $env:PATH = "$($devToolchain.Path);$env:PATH"
     $env:INCLUDE = $devToolchain.Include
@@ -234,13 +238,13 @@ if (Test-Path $cachePath) {
         Remove-Item -Recurse -Force $build
     }
 }
+$configureArguments += @(Get-LinuxCompilerArguments)
 & $CMake @configureArguments
 if ($LASTEXITCODE -ne 0) {
     throw "RmlUi CMake configuration failed."
 }
 
-$buildArguments = @("--build", $build, "--config", "Release", "--parallel")
-if ($Jobs) { $buildArguments += "$Jobs" }
+$buildArguments = @("--build", $build, "--config", "Release") + (Get-BuildParallelArguments $Jobs)
 & $CMake @buildArguments
 if ($LASTEXITCODE -ne 0) {
     throw "RmlUi build failed."

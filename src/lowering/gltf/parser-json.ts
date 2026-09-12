@@ -49,9 +49,9 @@ std::size_t gltf_checked_index(double value) {
         throw std::runtime_error("Invalid glTF index.");
     return static_cast<std::size_t>(value);
 }
-const JsonArray& gltf_array_or_empty(const JsonObject& object, const std::string& key) {
+const JsonArray& gltf_array_or_empty(const JsonObject& object, std::string_view key) {
     static const JsonArray empty;
-    const auto* value = optional(object, key);
+    const auto* value = optional(object, std::string(key));
     return value && !value->is_null() ? value->as_array() : empty;
 }
 // ${context.provenance(module, "getTextureImageIndex")}

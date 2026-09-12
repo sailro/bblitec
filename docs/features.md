@@ -119,8 +119,9 @@ Sparse, quantized and compressed inputs become ordinary native accessors. Other 
 
 KTX1 is parsed at generation into a mip table and GPU blocks; native mip spans share that payload.
 Basis and glTF KTX2 use the pinned browser transcoder
-at generation. The compression target is fixed for the validated device family; native upload
-checks device support. Sampler, encoding and invertY behavior are producer-specific.
+at generation, enabling only compression families supported by native upload.
+The pinned loader selects within that device feature set; native upload checks device support.
+Sampler, encoding and invertY behavior are producer-specific.
 
 ### Gaussian splat row updates
 

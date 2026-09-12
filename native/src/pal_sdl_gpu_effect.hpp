@@ -131,13 +131,15 @@ inline EffectPass create_effect_pass(
         std::string(entry.vertex_stem).c_str(),
         SDL_GPU_SHADERSTAGE_VERTEX,
         0,
-        0);
+        0,
+        "effectFullscreenVertex");
     auto fragment = load_shader(
         device,
         std::string(entry.fragment_stem).c_str(),
         SDL_GPU_SHADERSTAGE_FRAGMENT,
         sampler_count,
-        uniform_count);
+        uniform_count,
+        "effectFragment");
 
     SDL_GPUColorTargetDescription color{};
     color.format = format;

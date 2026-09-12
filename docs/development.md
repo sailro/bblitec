@@ -4,13 +4,64 @@
 
 Requires Node.js 22.12+, CMake 3.24+, Ninja, C++20, vcpkg, PowerShell, a GPU
 and WebGPU-capable Chrome/Edge. Windows development uses clang-cl when
-available, otherwise MSVC; shipping uses MSVC.
+available, otherwise MSVC; shipping uses MSVC. Linux development defaults to Clang.
 
 ```powershell
 npm ci
 npm run dev:setup
 npm run doctor
 ```
+
+### Linux prerequisites
+
+Linux development uses Vulkan on SDL_GPU and Dawn. Install Node.js 22.12+,
+[PowerShell 7](https://learn.microsoft.com/powershell/scripting/install/install-ubuntu),
+and Chrome/Chromium. On Ubuntu 24.04, install the native host prerequisites:
+
+```sh
+sudo apt-get install build-essential clang cmake ninja-build git curl zip unzip \
+  pkg-config python3-venv autoconf autoconf-archive automake libtool ccache \
+  libltdl-dev libx11-dev libx11-xcb-dev libxft-dev libxext-dev libxrandr-dev libxinerama-dev \
+  libxcursor-dev libxi-dev libxfixes-dev libxss-dev libxtst-dev \
+  libwayland-dev wayland-protocols libxkbcommon-dev libegl1-mesa-dev \
+  libibus-1.0-dev libfontconfig1-dev libvulkan-dev mesa-vulkan-drivers \
+  fonts-noto-core fonts-noto-color-emoji
+git clone https://github.com/microsoft/vcpkg.git "$HOME/vcpkg"
+"$HOME/vcpkg/bootstrap-vcpkg.sh" -disableMetrics
+export VCPKG_ROOT="$HOME/vcpkg"
+export CMAKE_GENERATOR=Ninja
+export CMAKE_BUILD_PARALLEL_LEVEL=3
+export VCPKG_MAX_CONCURRENCY=3
+npm ci
+npm run dev:setup
+npm run doctor
+npm run scene -- process scene1
+npm run scene -- parity scene1 --differential
+```
+
+Choose concurrency for available RAM; Dawn/Tint builds can be large. Setup
+uses the host vcpkg triplet, the existing dependency pins and maintained patches.
+Linux ccache comes from the host package manager. Set `CHROME_PATH` if Chromium
+is outside the usual system locations, and `CC`/`CXX` to select another native
+compiler (for example, `CC=gcc CXX=g++ npm run scene -- process scene1`). Scene
+builds recreate their disposable CMake tree when the selected compiler changes.
+Use a fresh dependency workspace when switching compilers for the pinned tools.
+
+Linux browser captures and GPU-assisted generation open Chromium with Vulkan
+enabled. Run them in a graphical session too: headless Chromium may expose
+WebGPU while failing external-image uploads or canvas presentation.
+
+Run scenes inside a graphical session. SDL selects X11 or Wayland;
+`SDL_VIDEODRIVER=x11|wayland` forces that selection. An SSH session needs display
+access (`DISPLAY`/Xauthority for X11, `XDG_RUNTIME_DIR`/`WAYLAND_DISPLAY` for
+Wayland) and permission to use the GPU's render node. No display is provided by
+SSH alone. Minimal Windows shipping/package commands below remain Windows-only.
+
+Linux resolves installed fonts through Fontconfig and renders UI text with
+RmlUi's FreeType engine. Windows additionally uses the custom DirectWrite
+shaping and rasterization engine described in [UI](ui.md#css-layout-and-fonts).
+Font selection, fallback coverage and text metrics can therefore differ;
+successful Linux builds do not imply passing the existing strict visual gates.
 
 Rebuild installed dependencies when their maintained patches change.
 LabSound uses `tools/patches/labsound-lazy-decoders.patch` to keep its optional file-decoder registry lazy.
@@ -115,8 +166,8 @@ use the saved differential reports and the validation sequence above.
 
 ## Native builds
 
-`--backend sdl_gpu|dawn|both` selects renderers; Windows defaults to both and
-requires Dawn. `--compiler auto|clangcl|msvc` selects the Windows compiler.
+`--backend sdl_gpu|dawn|both` selects renderers; Windows and Linux default to both and
+require Dawn. `--compiler auto|clangcl|msvc` selects the Windows compiler.
 `BBLITE_DEV_COMPILER` and `BBLITE_CMAKE_GENERATOR` override compiler/generator.
 
 Dual-backend builds use `native/build-<id>-release`; single-backend builds append
@@ -165,7 +216,7 @@ defaults and coordinate independent workflows. Inspect scheduling with
 `node tools/model-build-scheduling.mjs <workspace> <workers>`.
 Batch shared-header edits before population builds.
 
-Development setup installs pinned ccache. Native builds reuse objects in
+Windows setup installs pinned ccache; Linux uses the host's ccache. Native builds reuse objects in
 `artifacts/native-cache` and skip per-scene PCHs when ccache is active.
 Identical generated backend headers share a directory in that cache.
 `CCACHE_PATH` selects another executable; `BBLITE_NATIVE_CACHE=0` disables it.

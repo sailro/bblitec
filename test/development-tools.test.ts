@@ -77,3 +77,37 @@ test("an explicit invalid vcpkg root is reported instead of hidden by a fallback
     assert.equal(tools.vcpkgRoot, undefined);
     assert.equal(tools.vcpkg, undefined);
 });
+
+test("Linux discovery finds native tools and archives without Windows artifacts", (t) => {
+    const root = mkdtempSync(join(tmpdir(), "bblitec-linux-tools-"));
+    t.after(() => rmSync(root, { recursive: true, force: true }));
+    const bin = join(root, "bin");
+    for (const name of ["cmake", "pwsh", "git", "ccache", "clang", "clang++", "gcc", "g++"]) touch(join(bin, name));
+    const vcpkg = join(root, "vcpkg");
+    touch(join(vcpkg, "vcpkg"));
+    touch(join(vcpkg, "scripts/buildsystems/vcpkg.cmake"));
+    const dawn = join(root, "artifacts/tools/dawn");
+    touch(join(dawn, "lib/cmake/Dawn/DawnConfig.cmake"));
+    touch(join(dawn, "lib/libwebgpu_dawn.so"));
+    const labsound = join(root, "artifacts/tools/labsound");
+    for (const path of ["lib/libLabSound.a", "lib/liblibnyquist.a", "include/libnyquist/Decoders.h"]) {
+        touch(join(labsound, path));
+    }
+    const dxc = join(root, `tools/shader-compiler/vcpkg_installed/${process.arch}-linux/tools/directx-dxc/dxc`);
+    touch(dxc);
+    touch(join(root, "artifacts/tools/tint/tint"));
+    const tools = discoverDevelopmentTools({ cwd: root, platform: "linux", environment: { PATH: "bin", VCPKG_ROOT: vcpkg } });
+    assert.equal(tools.cmake, join(bin, "cmake"));
+    assert.equal(tools.cc, join(bin, "clang"));
+    assert.equal(tools.cxx, join(bin, "clang++"));
+    const gcc = discoverDevelopmentTools({ cwd: root, platform: "linux", environment: { PATH: "bin", CC: "gcc", CXX: "g++" } });
+    assert.equal(gcc.cc, join(bin, "gcc"));
+    assert.equal(gcc.cxx, join(bin, "g++"));
+    assert.equal(discoverDevelopmentTools({ cwd: root, platform: "linux", environment: { PATH: "bin", CXX: "missing" } }).cxx, undefined);
+    assert.equal(tools.powershell, join(bin, "pwsh"));
+    assert.equal(tools.vcpkg, join(vcpkg, "vcpkg"));
+    assert.equal(tools.dxc, dxc);
+    assert.equal(tools.dawnInstalled, true);
+    assert.equal(tools.labSoundInstalled, true);
+    assert.equal(tools.visualStudioRoot, undefined);
+});

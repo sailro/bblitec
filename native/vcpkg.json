@@ -4,7 +4,8 @@
   "builtin-baseline": "ea1a7396b05637a53bf23c078647ecc0edee4b80",
   "dependencies": [
     "nlohmann-json",
-    "sdl3"
+    { "name": "sdl3", "platform": "!linux" },
+    { "name": "sdl3", "platform": "linux", "features": ["vulkan", "alsa"] }
   ],
   "features": {
     "text-layout": {
@@ -65,6 +66,12 @@
         {
           "name": "freetype",
           "default-features": false
+        },
+        {
+          "name": "freetype",
+          "platform": "linux",
+          "default-features": false,
+          "features": ["png"]
         }
       ]
     },

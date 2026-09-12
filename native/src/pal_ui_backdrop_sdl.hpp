@@ -9,6 +9,43 @@
 
 namespace bbl::pal {
 
+// SDL swapchain images are write-only. Backdrops and captures need an owned
+// composition target, copied to the swapchain after the final UI draw.
+struct UiSdlReadableSurface {
+    SDL_GPUTexture* texture = nullptr;
+    std::uint32_t width = 0, height = 0;
+
+    void release(SDL_GPUDevice* device) {
+        if (texture) SDL_ReleaseGPUTexture(device, texture);
+        *this = {};
+    }
+
+    SDL_GPUTexture* target(SDL_GPUDevice* device, SDL_GPUTexture* swapchain,
+                          SDL_GPUTextureFormat format, std::uint32_t w,
+                          std::uint32_t h, bool readable) {
+        if (!readable) return swapchain;
+        if (!texture || width != w || height != h) {
+            release(device);
+            texture = create_frame_texture(device, format, SDL_GPU_SAMPLECOUNT_1,
+                w, h, SDL_GPU_TEXTUREUSAGE_SAMPLER | SDL_GPU_TEXTUREUSAGE_COLOR_TARGET);
+            width = w;
+            height = h;
+        }
+        return texture;
+    }
+
+    static void present(SDL_GPUCommandBuffer* command, SDL_GPUTexture* target,
+                        SDL_GPUTexture* swapchain, std::uint32_t w, std::uint32_t h) {
+        if (target == swapchain) return;
+        SDL_GPUBlitInfo blit{};
+        blit.source = {target, 0, 0, 0, 0, w, h};
+        blit.destination = {swapchain, 0, 0, 0, 0, w, h};
+        blit.load_op = SDL_GPU_LOADOP_DONT_CARE;
+        blit.filter = SDL_GPU_FILTER_NEAREST;
+        SDL_BlitGPUTexture(command, &blit);
+    }
+};
+
 struct UiBackdropSdlResources {
     struct Pair {
         SDL_GPUTexture* snapshot = nullptr;
