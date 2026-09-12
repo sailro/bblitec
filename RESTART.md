@@ -23,7 +23,7 @@ it does not establish that this external application compiles or runs.
 | Branch | `codex/external-project-support` |
 | Remote | `https://github.com/sailro/bblitec.git` |
 | Branch base used in this session | `3474e835` on `main` |
-| Last completed executable-code/test commit before the timer unit | `7fdf4ab9` (2026-09-12) |
+| Last completed executable-code/test commit before the disabled unit | `e30a522a` (2026-09-12) |
 | Draft PR | [#247 — Extend generic application compilation and retained UI support](https://github.com/sailro/bblitec/pull/247) |
 | External checkout | `C:/Dev/_prototypes/external-native-app` |
 | External source revision | `d7c477a6d5963680c55249dceb93cb6e4ab9ce56` |
@@ -125,6 +125,15 @@ incomplete. Do not merge or mark it ready merely because the sweep passes.
   starting it can omit `pal_async_engine.hpp` from generated includes. Creation
   needs a native canvas argument and an async function in a Window realm. This
   include gap was not changed or established as the external app's next blocker.
+- `e30a522a` saves qualified realm timers. The disabled-control unit shares
+  boolean-attribute storage and RmlUi's form-control base for HTML buttons;
+  pointer activation, explicit click, focus and live attribute state are covered.
+  `focused247` passed seven tests with no skips, including hidden and hover.
+- `compile245` (exit 1) reached a callback returning `Promise<void> | void` at
+  `src/ui/crash-reporter.ts:625:22`. Storing its result fails because its native
+  signature currently discards the promise through synchronous return-type
+  unwrapping. Preserve both promise and absent outcomes, including their effects;
+  do not force every callback to return a promise. Full generation is pending.
 
 The resumed environment uses a workspace-write sandbox. Git metadata writes and
 network access may need escalation; the requested unit commits/pushes remain

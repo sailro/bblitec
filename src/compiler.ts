@@ -5162,8 +5162,9 @@ class Compiler
         if (owner.kind === "ui-element" && property === "dataset") {
             return { ...owner, uiDataset: true };
         }
-        if (owner.kind === "ui-element" && !owner.uiDataset && property === "hidden") {
-            return {kind:"boolean", cpp:`bbl::ui_has_attribute(${this.requireEngine(owner, expression)}, ${owner.cpp}, "hidden")`, impure:true};
+        if (owner.kind === "ui-element" && !owner.uiDataset) {
+            const attribute = this.ui.booleanAttribute(owner, property, expression);
+            if (attribute) return {kind:"boolean", cpp:`bbl::ui_has_attribute(${this.requireEngine(owner, expression)}, ${owner.cpp}, ${this.cppString(attribute)})`, impure:true};
         }
         if (owner.kind === "ui-element" && property === "value" && (owner.uiTag === "textarea" || owner.uiTag === "input") && !owner.uiFileInput) {
             return { kind: "string", cpp: `bbl::ui_get_form_value(${this.requireEngine(owner, expression)}, ${owner.cpp})`,
