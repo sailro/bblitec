@@ -43,6 +43,8 @@ std::string ui_get_attribute(
     Engine& engine,
     UiElementHandle element,
     std::string_view name);
+bool ui_has_attribute(Engine& engine, UiElementHandle element, std::string_view name);
+void ui_set_boolean_attribute(Engine& engine, UiElementHandle element, std::string name, bool present);
 std::string ui_escape_rml(std::string_view text);
 void ui_set_attribute(
     Engine& engine,
