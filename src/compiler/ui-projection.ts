@@ -373,6 +373,10 @@ export class UiProjection {
         );
     }
 
+    public uiAttributeName(expression: ts.Expression): string {
+        return this.context.compileStringLiteral(expression).replace(/[A-Z]/g, letter => letter.toLowerCase());
+    }
+
 
     public tryUiStaticString(expression: ts.Expression): string | undefined {
         try {
@@ -559,9 +563,10 @@ export class UiProjection {
         value: Value,
         name: string,
         expression: ts.Expression,
+        knownValue?: string,
     ): void {
         const element = this.uiStaticElement(value);
-        const candidates = this.uiStringCandidates(expression);
+        const candidates = knownValue === undefined ? this.uiStringCandidates(expression) : [knownValue];
         if (!element || !candidates) {
             this.uiUnknownAttributeMutations.push({
                 attribute: name as "class" | "id",

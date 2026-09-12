@@ -23,7 +23,7 @@ it does not establish that this external application compiles or runs.
 | Branch | `codex/external-project-support` |
 | Remote | `https://github.com/sailro/bblitec.git` |
 | Branch base used in this session | `3474e835` on `main` |
-| Latest completed executable-code/test commit | `90e85ddf` (2026-09-12), followed by nullable scalar joins in this savepoint |
+| Latest completed executable-code/test commit | `b5b805af` (2026-09-12), followed by retained attribute removal in this savepoint |
 | Draft PR | [#247 — Extend generic application compilation and retained UI support](https://github.com/sailro/bblitec/pull/247) |
 | External checkout | `C:/Dev/_prototypes/external-native-app` |
 | External source revision | `d7c477a6d5963680c55249dceb93cb6e4ab9ce56` |
@@ -323,6 +323,21 @@ incomplete. Do not merge or mark it ready merely because the sweep passes.
   (three checks, no skips). `compile322` (exit 1) advanced to `removeAttribute`
   on a retained image. Complete generation remains pending. Open GitHub issues
   were rechecked and remain empty; this unit closes no remaining TODO clause.
+
+- `b5b805af` saves nullable scalar joins and UI string conversion and is pushed.
+  Retained `removeAttribute` now removes image sources, classes, booleans and
+  all inline style storage, with shared native boolean removal and HTML ASCII
+  attribute casing. File-action metadata is cleared with its attributes;
+  removing the type of an active native file input explicitly refuses.
+  Optional DOM dispatch reads retained nullable storage even when the checker
+  has narrowed it to null. `attributes327` passed two generated native tests,
+  covering missing receivers and live image/style updates. `attributes324`
+  passed the four existing hidden/disabled checks, and `file324` passed all ten
+  browser-file checks. `full327` was launched afterward; inspect its result.
+  `compile324` (exit 1) advanced to `image.style.setProperty(...)`, including a
+  custom CSS property. CSS declaration methods and distinct document roots
+  remain unimplemented. There is no verified file-by-file compilation matrix;
+  the user requested not to spend time computing one. No TODO clause closed.
 
 The refreshed harness explicitly reports `danger-full-access`, networking
 enabled and approval policy `never`. Do not pass `sandbox_permissions` or ask
