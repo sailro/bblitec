@@ -9607,6 +9607,10 @@ class Compiler
             return;
         }
         if (!statement.expression) {
+            if (returnType.kind === "optional") {
+                this.emit(`${returnKeyword} std::nullopt;`);
+                return;
+            }
             this.fail(
                 statement,
                 "Non-void native functions must return a value.",

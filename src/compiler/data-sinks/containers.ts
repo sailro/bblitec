@@ -43,6 +43,10 @@ function expressionSpanOrTupleOrTable(dataType: DataType<"span" | "tuple" | "tab
 }
 
 function valueOptional(dataType: DataType<"optional">, lowerer: DataSinkHost, value: Value, node: ts.Node): string | undefined {
+    if (value.kind === "void") {
+        lowerer.context.emitDiscardedValue(value);
+        return "std::nullopt";
+    }
     if (value.kind === "json-null") {
         return "std::nullopt";
     }

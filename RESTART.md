@@ -134,6 +134,17 @@ incomplete. Do not merge or mark it ready merely because the sweep passes.
   signature currently discards the promise through synchronous return-type
   unwrapping. Preserve both promise and absent outcomes, including their effects;
   do not force every callback to return a promise. Full generation is pending.
+- `931cd415` saves disabled controls and is pushed, including the timer commit.
+  The final disabled fixture also checks focus and input/textarea state (`disabled248`).
+- The optional-promise unit retains asynchronous callback return unions, models
+  synchronous void as absence and evaluates optional sink producers once. Existing
+  picked-mesh conversion is now available through the shared known-value sink.
+  `focused252` passed 664 of 665 tests; the picked-mesh conversion fixed its one
+  failure. Both that case and the new native callback fixture passed `focused253`.
+  `full253` was launched afterward; inspect its exit and final totals.
+- `compile251` (exit 1) progressed to `src/ui/crash-reporter.ts:543:3`, a direct
+  `document.getElementById(...)? .remove()` call (without the space in source).
+  DOM optional-call dispatch is the next unit. Full generation remains incomplete.
 
 The resumed environment uses a workspace-write sandbox. Git metadata writes and
 network access may need escalation; the requested unit commits/pushes remain

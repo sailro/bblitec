@@ -2304,6 +2304,7 @@ export class UserFunctionLowerer {
         if (
             dataType.result &&
             dataType.result.kind !== "promise" &&
+            dataType.result.kind !== "optional" &&
             signature &&
             !nativeReturnTsType(
                 this.checker,
@@ -2339,7 +2340,8 @@ export class UserFunctionLowerer {
             cppName: `${prefix}arg_${index}`,
         }));
         const asynchronous = !!context.options.workers && ts.getModifiers(declaration)?.some(modifier => modifier.kind === ts.SyntaxKind.AsyncKeyword) === true;
-        const promiseType = dataType.result?.kind === "promise" ? dataType.result : undefined;
+        const resultType = dataType.result?.kind === "optional" ? dataType.result.inner : dataType.result;
+        const promiseType = resultType?.kind === "promise" ? resultType : undefined;
         const bodyResult = asynchronous ? promiseType?.result : dataType.result;
         const returnCpp = asynchronous ? context.dataTypes.cppType(promiseType ?? {kind:"promise"})
             : dataType.result ? context.dataTypes.cppType(dataType.result) : "void";
@@ -2443,6 +2445,9 @@ export class UserFunctionLowerer {
                     }
                 }
                 if (asynchronous && !terminated && !bodyResult) context.emit("co_return bbl::js::PromiseVoid{};");
+                if (!terminated && !ir.returnExpression && bodyResult?.kind === "optional") {
+                    context.emit(`${asynchronous ? "co_return" : "return"} std::nullopt;`);
+                }
             });
             closure = asynchronous ? context.withOwnedCallbackBody(() => context.withAsyncActivation(compileBody)) : compileBody();
         } finally {

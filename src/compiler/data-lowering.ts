@@ -8175,6 +8175,9 @@ export class DataLowerer {
                 ts.isElementAccessExpression(unwrapped)
                 ? this.context.compileValue(unwrapped)
                 : undefined);
+        if (optional?.kind === "void") {
+            return this.compileKnownValueForSink(optional, dataType, unwrapped);
+        }
         if (optional?.kind === "json-null") {
             // A destructured optional tuple lane can bind a local to
             // JavaScript null/undefined. The binding is still the
@@ -8222,10 +8225,8 @@ export class DataLowerer {
         // capture matched the browser's while carrying 27% more
         // draws. A value whose own type is the inner one needs no
         // conversion, so it is handed on rather than recompiled.
-        const inner = (optional?.kind === "data" &&
-            optional.dataType &&
-            dataTypesEqual(optional.dataType, dataType.inner))
-            ? optional.cpp
+        const inner = optional
+            ? this.compileKnownValueForSink(optional, dataType.inner, expression)
             : this.compileForSink(expression, dataType.inner);
         if (dataType.inner.kind === "struct" &&
             this.context.dataTypes.isReferenceStruct(dataType.inner.name)) {

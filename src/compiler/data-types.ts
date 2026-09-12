@@ -609,6 +609,12 @@ export class DataTypeRegistry {
    * representation is opaque here (promises, functions, DOM objects, ...).
    */
   public fromTsType(type: ts.Type, node: ts.Node): DataType | undefined {
+    if (type.isUnion() && type.types.some(member => (member.flags & ts.TypeFlags.Void) !== 0)) {
+      const present = type.types.filter(member =>
+        (member.flags & (ts.TypeFlags.Void | ts.TypeFlags.Null | ts.TypeFlags.Undefined)) === 0);
+      const inner = present.length === 1 ? this.fromTsType(present[0]!, node) : undefined;
+      return inner ? this.nullableType(inner) : undefined;
+    }
     if (
       (type.flags & ts.TypeFlags.Union) !== 0 &&
       (type.flags & ts.TypeFlags.Boolean) === 0 &&
@@ -924,7 +930,7 @@ export class DataTypeRegistry {
       return undefined;
     }
     const signatureResult = this.checker.getReturnTypeOfSignature(signature);
-    const resultType = this.asynchronous && signatureResult.symbol?.name === "Promise" ? signatureResult : nativeReturnTsType(
+    const resultType = this.asynchronous && (signatureResult.flags & ts.TypeFlags.Void) === 0 ? signatureResult : nativeReturnTsType(
       this.checker,
       signatureResult,
       signature.declaration,

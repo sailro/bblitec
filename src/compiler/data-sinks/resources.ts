@@ -15,7 +15,7 @@ function expressionHandle(dataType: DataType<"handle">, lowerer: DataSinkHost, _
         return lowerer.compileKnownValueForSink(rawValue, dataType, unwrapped);
     if (dataType.handle === "mesh" &&
         rawValue.kind === "picked-node") {
-        return pickedMeshHandleCpp(lowerer.context, rawValue, unwrapped);
+        return lowerer.compileKnownValueForSink(rawValue, dataType, unwrapped);
     }
     if (dataType.handle ===
         "property-animation-group" &&
@@ -111,6 +111,9 @@ function expressionTypedArray(dataType: DataType<TypedArrayKind>, lowerer: DataS
 }
 
 function valueResource(dataType: DataType<"arraybuffer" | "dataview" | TypedArrayKind | "handle">, lowerer: DataSinkHost, value: Value, node: ts.Node): string | undefined {
+    if (dataType.kind === "handle" && dataType.handle === "mesh" && value.kind === "picked-node") {
+        return pickedMeshHandleCpp(lowerer.context, value, node);
+    }
     if (dataType.kind === "handle" && dataType.handle === "text-run-ref" &&
         (value.kind === "number" || value.kind === "text-run"))
         return `bbl::TextRunRef{${value.cpp}}`;
