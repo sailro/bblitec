@@ -8,6 +8,19 @@ import { CompileError, compileSource } from "../src/compiler.js";
 import { optionalNativeFixtureTools, runNativeFixtureCompiler } from "./native-fixture.js";
 
 const nativeTools = optionalNativeFixtureTools();
+for (const workers of [false, true]) test(`DOM phases and listener ownership with workers=${workers}`, {skip: !nativeTools}, () => {
+    const output = resolve(`artifacts/dom-event-check-${workers ? "workers" : "scene"}`);
+    mkdirSync(output, {recursive: true});
+    const executable = join(output, "dom-event-check.exe");
+    runNativeFixtureCompiler(nativeTools!, [
+        "/nologo", "/std:c++20", "/W4", "/WX", "/permissive-", "/EHsc",
+        ...(workers ? ["/DBBLITE_WORKERS=1"] : []),
+        `/Fo:${output}\\`, `/Fe:${executable}`, "/I", "native/include",
+        "test/fixtures/js-callback/dom-event-check.cpp",
+    ]);
+    assert.match(execFileSync(executable, [], {encoding: "utf8"}), /dom-event-check: ok/);
+});
+
 test("retained callback snapshots preserve mutable state and survive self-disposal", {
     skip: !nativeTools,
 }, () => {
