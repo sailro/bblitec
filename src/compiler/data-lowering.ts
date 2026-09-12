@@ -631,7 +631,7 @@ export class DataLowerer {
                 );
             }
             if (mode === "write") {
-                const shared = this.sharesObjectStorage(bound.dataType);
+                const shared = this.sharesObjectStorage(this.narrowOptional(bound, unwrapped).dataType);
                 if (state === "copy" && !shared) {
                     this.context.fail(
                         unwrapped,
@@ -1452,6 +1452,7 @@ export class DataLowerer {
         }
         const narrowed = this.dataTypeAt(expression);
         const inner = value.dataType.inner;
+        if (!assertedNonNull && value.preserveUncheckedLookup && inner.kind === "union" && narrowed && dataTypesEqual(narrowed, inner)) return value;
         if (
             assertedNonNull ||
             ((!value.preserveUncheckedLookup || inner.kind !== "number") && narrowed &&
@@ -2089,9 +2090,29 @@ export class DataLowerer {
             const receiver = this.context.allocateTemporaryCppName("indexed_tuple");
             this.context.emit(`const auto ${receiver} = ${owner.cpp};`);
             const index = this.context.compileValue(access.argumentExpression);
-            if (index.staticNumber === undefined)
-                this.context.fail(access, "Mixed tuple indexing requires a statically known lane.");
-            return this.fixedTupleElement({ ...owner, cpp: receiver }, index.staticNumber, access);
+            if (index.staticNumber !== undefined) {
+                if (mode === "read" && (!Number.isInteger(index.staticNumber) || index.staticNumber < 0 || index.staticNumber >= dataType.elements.length))
+                    return {kind: "json-null", cpp: "std::nullopt"};
+                return this.fixedTupleElement({ ...owner, cpp: receiver }, index.staticNumber, access);
+            }
+            if (mode === "write") this.context.fail(access, "Dynamic mixed-tuple writes require mutable union-backed lanes.");
+            const elementTsType = this.context.checker.getIndexTypeOfType(this.context.checker.getTypeAtLocation(access.expression), ts.IndexKind.Number);
+            const elementType = elementTsType ? this.context.dataTypes.fromTsType(elementTsType, access) : undefined;
+            if (!elementType) this.context.fail(access, "Mixed tuple indexing requires a concrete element union.");
+            const resultType = this.context.dataTypes.nullableType(elementType);
+            const indexCpp = this.context.allocateTemporaryCppName("tuple_index");
+            this.context.emit(`const double ${indexCpp} = ${this.compileKnownValueForSink(index, {kind: "number"}, access.argumentExpression)};`);
+            const result = this.context.allocateTemporaryCppName("tuple_element");
+            this.context.emit(`const auto ${result} = [&]() -> ${this.context.dataTypes.cppType(resultType)} {`);
+            this.context.increaseIndent();
+            for (let lane = 0; lane < dataType.elements.length; ++lane) {
+                const value = this.fixedTupleElement({...owner, cpp: receiver}, lane, access)!;
+                this.context.emit(`if (${indexCpp} == ${lane}.0) return ${this.compileKnownValueForSink(value, resultType, access)};`);
+            }
+            this.context.emit("return std::nullopt;");
+            this.context.decreaseIndent();
+            this.context.emit("}();");
+            return {...this.leafValue(result, resultType), preserveUncheckedLookup: true};
         }
         if (dataType.kind === "numberindex") {
             const receiver = this.context.allocateTemporaryCppName("indexed_numbers");

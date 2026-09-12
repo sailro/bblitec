@@ -989,9 +989,12 @@ export class ExpressionLowerer {
                     staticString: "undefined",
                 };
             }
-            const operand = this.context.compileValue(
-                expression,
-            );
+            const compiledOperand = this.context.compileValue(expression);
+            // An unchecked tuple lookup can be absent even when TypeScript's
+            // flow type lists only its declared lanes. typeof observes the
+            // stored value before narrowing it to one of those lanes.
+            const storedOperand = ts.isIdentifier(expression) ? this.context.lookupOptional(expression) : undefined;
+            const operand = storedOperand?.preserveUncheckedLookup ? storedOperand : compiledOperand;
             if (operand.kind === "json-null") {
                 return staticStringValue(operand.cpp === "std::nullopt" ? "undefined" : "object", text => this.context.cppString(text));
             }

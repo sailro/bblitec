@@ -2574,6 +2574,7 @@ class Compiler
                 ...(narrowed.nativeVectorData
                     ? { nativeVectorData: true as const }
                     : {}),
+                ...(narrowed.preserveUncheckedLookup ? {preserveUncheckedLookup: true as const} : {}),
                 ...(optionalHandle
                     ? {
                           optionalStorageCpp: boundCpp,
@@ -3761,6 +3762,12 @@ class Compiler
                 aliasingInitializer: (initializer, scan) =>
                     isAlias(scan, initializer),
                 mutates: (node, scan) => {
+                    if (ts.isVariableDeclaration(node) && node.type && node.initializer && scan.containsAlias(node.initializer)) {
+                        const type = this.dataTypes.fromTsType(this.checker.getTypeFromTypeNode(node.type), node.type);
+                        // A typed native array retains this object's identity,
+                        // including when a later dynamic tuple read mutates it.
+                        if (type?.kind === "vector" || type?.kind === "product") return true;
+                    }
                     if (ts.isDeleteExpression(node) && isAlias(scan, node.expression)) return true;
                     if (
                         ts.isBinaryExpression(node) &&

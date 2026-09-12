@@ -148,7 +148,9 @@ Fresh tuple alternatives with matching lane representations can share array stor
 literal sets widen to strings in that lane. Conditional spreads inherit the destination element type.
 Array and Set spreads can widen string-literal element types into the destination's string storage.
 Fresh mapped records and their spreads also inherit destination field types, including nullable fields.
-Dynamic mixed-tuple indexing, rest bindings and length-changing methods refuse.
+Dynamic mixed-tuple reads return the selected lane or undefined, retain object
+identity and preserve receiver/index evaluation order. Dynamic writes, rest
+bindings and length-changing methods refuse.
 Map/Set `forEach` observes insertion order, deletion and appended entries,
 and receives the original collection as its third argument.
 `Set.entries()` yields fresh `[value, value]` pairs in direct `for...of`, spreads
