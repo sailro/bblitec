@@ -59,6 +59,9 @@ groups retain traced callback storage.
 data functions; `user-functions.ts` specializes resource helpers by arguments,
 receiver and lexical dependencies. Dedicated modules own classes, module
 initialization, closures and collections.
+Module initialization planning summarizes eager mutations once per module,
+tracking alias origins and called bodies, then intersects those facts with
+observed storage as dependency reach grows.
 
 Definite generation-dependent helper calls replay compiler metadata and intern
 equivalent native definitions using explicit local bindings. Each call retains

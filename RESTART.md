@@ -44,9 +44,9 @@ it does not establish that this external application compiles or runs.
 | External generated output | `generated/external-app` (ignored; not a successful complete generation) |
 | Session diagnostics | `artifacts/external-integration` (ignored) |
 
-Latest complete-entry diagnostic: `compile487` passed the reached stylesheets and
-stopped at a guarded ambient build flag. The current language unit implements
-absent-global `typeof`; no complete-entry attempt after it has run yet.
+Latest complete-entry diagnostic: `compile495` passed the ambient build guard and
+stopped at a scoped retained-element query requiring a statically known root.
+Generation, native build and application runtime remain incomplete.
 
 Current assessment artifacts: `requirements356.json` inventories the unchanged
 entry's static local import graph (1,343 files, 1,002 unassessed API/syntax groups;
@@ -275,15 +275,22 @@ including JavaScript/native parity and an imported fallback module. `language492
 passes all 791 language/compiler checks without skips. These checks also cover the
 shared native language-fixture helper extracted for the imported-module test.
 
-`rmlui485` successfully reconciled the standard development artifact with fourteen
-patches. `rmlui-static493` is rebuilding the static variant with its existing explicit
-FreeType root, so no vcpkg install is needed. The static SVG variant still needs the
-same reconciliation. Historical offscreen/text artifacts should be inspected before
-use rather than mistaken for the current development artifact.
+`rmlui485`, `rmlui-static493` and `rmlui-static-svg495` successfully reconciled the
+development, static and static SVG artifacts with fourteen patches, using existing
+explicit FreeType roots without vcpkg installation. Historical offscreen/text
+artifacts should be inspected before use rather than mistaken for these artifacts.
 
-The next complete-entry checkpoint can collect a Node CPU profile in the ignored
-diagnostics directory: generation took several minutes before the ambient refusal.
-Use it to find measured iteration costs. `declaration-batch-notes.md` records the
+`compile495.cpuprofile` measured 99.4 seconds of sampled generation, with about 46%
+inside repeated initializer-mutation queries. The planner now collects mutation
+origins once per module and reuses the result as observed storage grows. The isolated
+unchanged-entry planner benchmark dropped from 50.3 to 6.6 seconds and selected the
+same 164 modules in the same order (`initializer-before497` / `initializer-after497`).
+`planner497` passed all 673 existing compiler/worker/transaction/analysis checks;
+`planner498` passes the new alias/recursive-call/dormant-body fixture after correcting
+its assumption about the separate conservative container-mutation scan.
+Whole-application timing after the optimization has not yet been measured.
+
+`declaration-batch-notes.md` records the
 next CSS assessment: do not simply allow registered names. Pinned text-transform
 is ASCII-only and has no capitalize implementation; italic needs actual platform
 font discovery/loading. No declaration-family implementation followed those findings.
