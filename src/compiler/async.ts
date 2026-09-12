@@ -19,6 +19,7 @@ interface AsyncContext
         | "allocateTemporaryCppName"
         | "registerNativeBinding"
         | "emit"
+        | "emitDiscardedValue"
         | "unwrap"
         | "lookupOptional"
         | "isDefaultLibraryIdentifier"
@@ -47,6 +48,15 @@ export class AsyncLowerer {
         // unwrap intentionally removes awaits for the existing immediate path;
         // this realm path must see the suspension before that happens.
         const node = unwrapExpression(expression);
+        if (ts.isTypeOfExpression(node)) {
+            const property = context.unwrap(node.expression);
+            if (this.isPromiseMethod(property)) {
+                const receiver = context.dataLowerer.narrowOptional(context.compileValue(property.expression), property.expression);
+                if (receiver.kind !== "promise") return context.fail(property, "Promise method inspection requires a present native promise.");
+                context.emitDiscardedValue(receiver);
+                return {kind:"string", cpp:'"function"', staticString:"function"};
+            }
+        }
         if (ts.isAwaitExpression(node)) {
             if (!this.depth) return context.fail(node, "This await needs an asynchronous realm activation.");
             const erasedVoid = context.isBrowserOnlyExpression(node.expression) &&
@@ -63,7 +73,7 @@ export class AsyncLowerer {
             if (node.arguments.length > 1) return context.fail(node, "Promise.resolve accepts at most one value.");
             return this.asPromise(node.arguments[0] ? context.compileValue(node.arguments[0]) : { kind: "void", cpp: "" }, node);
         }
-        if (ts.isPropertyAccessExpression(callee) && ["then", "catch"].includes(callee.name.text) && this.isPromiseType(callee.expression)) {
+        if (this.isPromiseMethod(callee)) {
             const rejection = callee.name.text === "catch";
             if (node.arguments.length < 1 || node.arguments.length > (rejection ? 1 : 2)) {
                 return context.fail(node, rejection ? "Promise.catch requires one callback." : "Promise.then requires one or two callbacks.");
@@ -152,6 +162,10 @@ export class AsyncLowerer {
 
     private isPromiseType(expression: ts.Expression): boolean {
         return this.context.checker.getTypeAtLocation(expression).getSymbol()?.name === "Promise";
+    }
+    private isPromiseMethod(expression: ts.Expression): expression is ts.PropertyAccessExpression {
+        return ts.isPropertyAccessExpression(expression) && ["then", "catch"].includes(expression.name.text) &&
+            this.isPromiseType(expression.expression);
     }
     private cppType(value: Value, node: ts.Node): string {
         if (value.kind === "void") return "bbl::js::PromiseVoid";

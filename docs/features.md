@@ -69,6 +69,9 @@ such as `Pick<Controller, "dispose">` retain the original receiver. Optional sto
 before evaluating arguments and skip those arguments when the receiver or callback is absent. Stored callbacks
 may omit trailing optional/default parameters from their exposed signature; source defaults run at invocation.
 In asynchronous realms, stored async callbacks return retained promises and own their suspended captures.
+Callbacks returning `Promise<T> | void` retain either the promise or an absent result.
+Bare returns, fallthrough and void-returning expressions preserve their effects; present promises
+support `typeof` checks of their `then` and `catch` methods.
 Promise reactions and microtasks share mutable outer bindings, including through called helpers.
 Engine contexts
 can be stored in records and collections as references to the entry engine. Empty asserted output records
@@ -149,8 +152,8 @@ Strings support string-pattern `replace`/`replaceAll` with string replacements
 and substitution tokens, `substring`, `repeat`, string-argument `concat`, `at`,
 `charAt`, `codePointAt`, `padEnd`, `trimStart` and `trimEnd`. Numeric bracket access,
 these indexed methods and string length use UTF-16 code units; missing bracket indices return undefined.
-Native storage is UTF-8, with WTF-8 for lone surrogates. Regex `replaceAll`,
-replacement callbacks, locale collation and normalization remain unsupported.
+Native storage is UTF-8, with WTF-8 for lone surrogates. Regex `replaceAll` and
+replacement callbacks remain unsupported. Supported normalization and collation forms are listed above.
 Stored string-literal unions expose the same string methods, indexed reads and length.
 
 `Object.freeze`, `seal` and `preventExtensions` are the identity over their argument.
