@@ -1937,6 +1937,41 @@ function compileStringDataMethod(lowerer: DataLowerer, call: ts.CallExpression, 
         if (pattern.kind === "string" || pattern.dataType?.kind === "string") {
             const search = snapshot(pattern, "replace_search");
             const replacementValue = lowerer.context.compileValue(argumentAt(call, 1));
+            if (replacementValue.kind === "callback" || replacementValue.dataType?.kind === "function") {
+                const callbackType: DataType<"function"> = {
+                    kind: "function", parameters: [{kind: "string"}, {kind: "number"}, {kind: "string"}], result: {kind: "string"},
+                };
+                let storedCallback: Value | undefined;
+                if (replacementValue.dataType?.kind === "function") {
+                    const stored = lowerer.context.allocateTemporaryCppName("replacement_callback");
+                    lowerer.context.emit(`const auto ${stored} = ${replacementValue.cpp};`);
+                    storedCallback = {...replacementValue, cpp: stored, nativeCaptures: [lowerer.context.registerNativeBinding(stored)]};
+                }
+                const adapter = lowerer.context.allocateTemporaryCppName("replacement_invoke");
+                const supplied = callbackType.parameters.map(type => lowerer.leafValue(lowerer.context.allocateTemporaryCppName("replacement_arg"), type));
+                const parameters = supplied.map(value => `[[maybe_unused]] ${lowerer.context.dataTypes.cppType(value.dataType!)} ${value.cpp}`).join(", ");
+                lowerer.context.emit(`const auto ${adapter} = [&](${parameters}) -> std::string {`);
+                lowerer.context.increaseIndent();
+                lowerer.context.pushScope(lowerer.context.allocateBlockPrefix());
+                lowerer.context.enterRuntimeControlFlow();
+                lowerer.context.enterRuntimeIteration();
+                try {
+                    const arguments_ = supplied.map(value => ({...value, nativeCaptures: [lowerer.context.registerNativeBinding(value.cpp)]}));
+                    const invoke = () => replacementValue.callbackDeclaration
+                        ? lowerer.context.compileCallbackWithValues(replacementValue.callbackDeclaration, arguments_, call)
+                        : lowerer.context.fail(call, "String replacement requires a callable value.");
+                    const result = storedCallback ? lowerer.compileFunctionValueCall(storedCallback, arguments_, call)
+                        : replacementValue.callbackRecordOwner ? lowerer.context.withRecordScopes(replacementValue.callbackRecordOwner, invoke) : invoke();
+                    lowerer.context.emit(`return ${lowerer.compileKnownValueForSink(result, {kind: "string"}, call)};`);
+                } finally {
+                    lowerer.context.leaveRuntimeIteration();
+                    lowerer.context.leaveRuntimeControlFlow();
+                    lowerer.context.popScope();
+                    lowerer.context.decreaseIndent();
+                }
+                lowerer.context.emit("};");
+                return lowerer.leafValue(`bbl::js::string_replace_with(${source}, ${search}, ${adapter}, ${method === "replaceAll"})`, {kind: "string"});
+            }
             if (narrowed.staticString !== undefined && pattern.staticString !== undefined && replacementValue.staticString !== undefined) {
                 const value = method === "replaceAll"
                     ? narrowed.staticString.replaceAll(pattern.staticString, replacementValue.staticString)

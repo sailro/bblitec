@@ -160,6 +160,7 @@ export interface DataLoweringContext
         | "popScope"
         | "allocateBlockPrefix"
         | "compileCallbackWithValues"
+        | "withRecordScopes"
         | "compilePredicateWithValues"
         | "compileStoredDataFunction"
         | "compileSpriteAtlasRecord"
