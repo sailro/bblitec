@@ -749,6 +749,9 @@ export class DataTypeRegistry {
     if (type.symbol?.name === "OffscreenCanvas" && declaredInDomLibrary(type.symbol)) {
       return { kind: "handle", handle: "offscreen-canvas" };
     }
+    if (type.symbol?.name === "MediaQueryList" && declaredInDomLibrary(type.symbol)) {
+      return { kind: "handle", handle: "worker-media-query" };
+    }
     if (
       type.symbol &&
       (type.symbol.declarations ?? []).some(ts.isClassDeclaration)

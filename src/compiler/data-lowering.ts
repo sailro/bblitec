@@ -1505,7 +1505,13 @@ export class DataLowerer {
     public compileNullishCoalesce(
         expression: ts.BinaryExpression,
     ): Value | undefined {
-        const left = this.context.compileValue(expression.left);
+        // The operator tests storage even when TypeScript still considers a
+        // field narrowed across a helper that can have changed it.
+        const leftNode = this.context.unwrap(expression.left);
+        const storage = ts.isIdentifier(leftNode) || ts.isPropertyAccessExpression(leftNode)
+            ? this.context.probeEmission(() => this.compileDataPath(expression.left, "read")) : undefined;
+        const left = storage ??
+            this.context.compileValue(expression.left);
         if (left.kind === "json-null") {
             return this.context.compileValue(
                 expression.right,
@@ -1712,14 +1718,21 @@ export class DataLowerer {
                     dataType: left.dataType,
                 };
             }
+            const fallbackForSink = (type: DataType): string => {
+                let cpp = "";
+                const lines = this.context.captureEmittedLines(() => {
+                    this.context.enterRuntimeControlFlow();
+                    try { cpp = this.compileForSink(expression.right, type); }
+                    finally { this.context.leaveRuntimeControlFlow(); }
+                });
+                return lines.length === 0 ? cpp :
+                    `([&]() -> ${this.context.dataTypes.cppType(type)} {\n${lines.join("\n")}\nreturn ${cpp};\n}())`;
+            };
             if (
                 inner.kind === "struct" &&
                 this.context.dataTypes.isReferenceStruct(inner.name)
             ) {
-                const fallback = this.compileForSink(
-                    expression.right,
-                    inner,
-                );
+                const fallback = fallbackForSink(inner);
                 return this.leafValue(
                     `(${temp} ? ${temp} : ${fallback})`,
                     inner,
@@ -1735,11 +1748,7 @@ export class DataLowerer {
                     left.dataType,
                 )
             ) {
-                const fallbackOptional =
-                    this.compileForSink(
-                        expression.right,
-                        left.dataType,
-                    );
+                const fallbackOptional = fallbackForSink(left.dataType);
                 return {
                     kind: "data",
                     cpp:
@@ -1748,10 +1757,7 @@ export class DataLowerer {
                     dataType: left.dataType,
                 };
             }
-            const fallback = this.compileForSink(
-                expression.right,
-                inner,
-            );
+            const fallback = fallbackForSink(inner);
             // Through `leafValue`, so the select carries the inner
             // type's own Value kind — an optional number selects as a
             // number, an optional handle keeps its engine spelling —
@@ -1773,6 +1779,7 @@ export class DataLowerer {
             left.kind === "number" ||
             left.kind === "boolean" ||
             left.kind === "string" ||
+            left.dataType?.kind === "handle" ||
             (left.kind === "data" && left.dataType !== undefined)
         ) {
             return left;

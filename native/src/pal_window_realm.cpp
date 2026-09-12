@@ -4,6 +4,7 @@
 #include "pal_window_presenter.hpp"
 #include "pal_gpu_shared.hpp"
 #include "pal_platform_events.hpp"
+#include "pal_system_preferences.hpp"
 #if BBLITE_HAS_PBR_RENDERER
 #include "pal_camera_controls.hpp"
 #endif
@@ -14,7 +15,6 @@
 #include <iostream>
 #include <sstream>
 #include <iomanip>
-#include <regex>
 #include <thread>
 
 namespace bbl::pal {
@@ -385,24 +385,8 @@ std::shared_ptr<ResizeObserver> create_resize_observer(ResizeObserver::Callback 
     observer->self_ = observer;
     return observer;
 }
-MediaQueryList::MediaQueryList(std::string query) {
-    std::smatch result;
-    static const std::regex resolution(R"(^\s*\(\s*resolution\s*:\s*([0-9]+(?:\.[0-9]+)?)dppx\s*\)\s*$)");
-    if (!std::regex_match(query, result, resolution)) throw std::invalid_argument("Only resolution media queries are admitted by the Window realm.");
-    resolution_ = std::stod(result[1].str());
-    matches_ = resolution_ == window_device_pixel_ratio();
-}
-void MediaQueryList::add_change_listener(js::Callback<void()> callback) { listeners_.add(callback.identity(), std::move(callback)); }
-void MediaQueryList::deliver() {
-    const bool next = resolution_ == window_device_pixel_ratio();
-    if (matches_ == next) return;
-    matches_ = next;
-    listeners_.dispatch_with([](const auto& callback) {
-        EventLoop::current().dispatch_callback(callback);
-    });
-}
 std::shared_ptr<MediaQueryList> create_media_query(std::string query) {
-    auto media = js::make_gc_shared<MediaQueryList>(std::move(query));
+    auto media = js::make_gc_shared<MediaQueryList>(std::move(query), window_device_pixel_ratio, system_reduced_motion);
     current_document().media.push_back(media);
     return media;
 }

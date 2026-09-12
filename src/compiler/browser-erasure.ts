@@ -74,6 +74,7 @@ const NATIVE_DOM_BRIDGE_KINDS = new EmissionSet<Value["kind"]>([
     "worker-scope",
     "worker-message-event",
     "worker-error-event",
+    "worker-media-query",
     "offscreen-canvas",
 ]);
 
@@ -892,6 +893,7 @@ export class BrowserErasure {
         if (
             ts.isPropertyAccessExpression(unwrapped) &&
             unwrapped.name.text === "matches" &&
+            !this.context.options.workers &&
             ts.isCallExpression(unwrapped.expression) &&
             ts.isPropertyAccessExpression(unwrapped.expression.expression) &&
             unwrapped.expression.expression.name.text === "matchMedia" &&
