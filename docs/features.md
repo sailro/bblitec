@@ -601,6 +601,11 @@ sample rate; fetched clips are packaged. Direct response-buffer reads select cod
 Asynchronous realms return owned buffer promises and reject decode failures.
 Stored or constructed buffers retain all supported codecs. Broader Babylon sound/bus/spatial APIs and master ramps are unsupported.
 Audio nodes and parameters retain their identity through records, arrays and collection keys.
+AudioBuffer exposes `duration`, `length`, `sampleRate` and `numberOfChannels`, including decoded
+buffers. `copyFromChannel`/`copyToChannel` support Float32Array views, bounded offsets and overlapping
+storage; uncopied samples remain unchanged. Source-node `buffer` reads retain the assigned buffer's
+identity and report absence before assignment. These operations follow the
+[Web Audio buffer contract](https://www.w3.org/TR/webaudio/#AudioBuffer).
 
 ## Shadows
 

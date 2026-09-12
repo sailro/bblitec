@@ -36,7 +36,7 @@ it does not establish that this external application compiles or runs.
 | Branch | `codex/external-project-support` |
 | Remote | `https://github.com/sailro/bblitec.git` |
 | Branch base used in this session | `3474e835` on `main` |
-| Latest executable-code/test unit | Fixed-signature Math callback values and forwarded array predicates; prior savepoints `acfebcc6` (owned packaged fetch) and `29def3e0` (async aggregation/destructuring) |
+| Latest executable-code/test unit | AudioBuffer metadata/channel copies/source-buffer identity; prior savepoints `310e61dc` (Math and forwarded callbacks), `acfebcc6` (owned packaged fetch) and `29def3e0` (async aggregation/destructuring) |
 | Draft PR | [#247 — Extend generic application compilation and retained UI support](https://github.com/sailro/bblitec/pull/247) |
 | External checkout | `C:/Dev/_prototypes/external-native-app` |
 | External source revision | `d7c477a6d5963680c55249dceb93cb6e4ab9ce56` |
@@ -44,8 +44,8 @@ it does not establish that this external application compiles or runs.
 | External generated output | `generated/external-app` (ignored; not a successful complete generation) |
 | Session diagnostics | `artifacts/external-integration` (ignored) |
 
-Latest complete-entry diagnostic: `compile576` passed packaged response ownership,
-async audio loading and a Math callback default, then stopped at `AudioBuffer.duration`.
+Latest complete-entry diagnostic: `compile582` passed AudioBuffer properties and
+stopped at an await in an async scheduling function compiled outside an async activation.
 Generation, native build and application runtime remain incomplete.
 
 The packaged-fetch batch has 681 passing compiler/async/audio/HTTP checks without
@@ -63,7 +63,15 @@ and Sets, captured/named/returned callbacks, callback replacement during iterati
 truthiness and short-circuit effects. `regressions576` passes 679/680 checks; the
 sole failure was a generated-text assertion expecting a single-line tuple `some`.
 After updating it, `callbacks577` passes all 654 compiler and focused checks without
-skips. The next unit assesses AudioBuffer properties and neighboring operations.
+skips.
+
+`population578` generated all 288 corpus entries. The AudioBuffer assessment
+(`assess-audio-buffers.mjs`) advances from 1/8 accepted to 8/8 (`audio-buffers579.json`),
+covering metadata, channel copies, source ranges and buffer readback. Native fixtures
+verify bounded/overlapping copies, ArrayBuffer views, channel failures, decoded
+metadata, source-buffer identity and metadata after context close. All 670 selected
+compiler/audio checks pass without skips (`regressions582`). The next batch needs
+deferred async callback activation and retained scheduling helpers.
 
 Current assessment artifacts: `requirements356.json` inventories the unchanged
 entry's static local import graph (1,343 files, 1,002 unassessed API/syntax groups;

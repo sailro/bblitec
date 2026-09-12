@@ -43,6 +43,7 @@ interface AudioCallContext
     Pick<LoweringServices,
         | "checker"
         | "expectKind"
+        | "expectArgumentCount"
         | "allocateTemporaryCppName"
         | "cppString"
         | "registerAsset"
@@ -384,6 +385,27 @@ export function compileAudioMethodCall(
                 `static_cast<std::uint32_t>(${context.compileNumber(argumentAt(call, 0))}))`,
             dataType: { kind: "f32array" },
         };
+    }
+
+    if (receiver.kind === "audio-buffer" && (method === "copyFromChannel" || method === "copyToChannel")) {
+        context.expectArgumentCount(call, 2, 3);
+        context.reachFeature("audio:buffer-source", call);
+        const buffer = context.allocateTemporaryCppName("audio_copy_buffer");
+        context.emit(`const auto ${buffer} = ${receiver.cpp};`);
+        const samples = context.compileValue(argumentAt(call, 0));
+        if (samples.dataType?.kind !== "f32array") context.fail(argumentAt(call, 0), `${method} requires a Float32Array.`);
+        const input = context.allocateTemporaryCppName("audio_copy_samples");
+        context.emit(`const auto ${input} = ${samples.cpp};`);
+        const index = (argument: ts.Expression): string => {
+            const cpp = context.compileNumber(argument, "double");
+            const name = context.allocateTemporaryCppName("audio_copy_index");
+            context.emit(`const auto ${name} = bbl::js::to_uint32(${cpp});`);
+            return name;
+        };
+        const channel = index(argumentAt(call, 1));
+        const offset = call.arguments[2] ? index(call.arguments[2]) : "0u";
+        const direction = method === "copyToChannel" ? "ToChannel" : "FromChannel";
+        return {kind:"void", cpp:`bbl::pal::audio_buffer_copy(${buffer}, ${input}, ${channel}, ${offset}, bbl::pal::AudioBufferCopy::${direction})`};
     }
 
     if (receiver.kind === "audio-node") {

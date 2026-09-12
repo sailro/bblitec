@@ -83,6 +83,7 @@ struct AudioNodeRecord {
     std::shared_ptr<AudioSourceState> source;
 #if BBLITE_HAS_AUDIO_BUFFER_SOURCE
     bool source_loop = false;
+    AudioBufferHandle buffer{};
 #endif
 };
 
@@ -875,6 +876,48 @@ AudioNodeHandle audio_create_buffer_source(AudioContextHandle context)
 #endif
 }
 
+double audio_buffer_property(AudioBufferHandle buffer, AudioBufferProperty property) {
+#if BBLITE_HAS_AUDIO_BUFFER_SOURCE
+    const auto record = require_buffer(buffer);
+    switch (property) {
+        case AudioBufferProperty::Duration: return static_cast<double>(record->bus.length()) / record->bus.sampleRate();
+        case AudioBufferProperty::Length: return static_cast<double>(record->bus.length());
+        case AudioBufferProperty::SampleRate: return record->bus.sampleRate();
+        case AudioBufferProperty::NumberOfChannels: return static_cast<double>(record->channels.size());
+    }
+    throw std::logic_error("Unknown AudioBuffer property.");
+#else
+    (void)buffer; (void)property;
+    throw std::runtime_error("Audio buffer source support was not compiled.");
+#endif
+}
+
+void audio_buffer_copy(AudioBufferHandle buffer, bbl::js::F32Array samples,
+    std::uint32_t channel, std::uint32_t offset, AudioBufferCopy direction) {
+    auto channel_data = audio_buffer_channel(buffer, channel);
+    if (offset >= channel_data.size()) return;
+    const auto count = std::min(samples.size(), channel_data.size() - offset);
+    // A source view can overlap its destination. Snapshot only the copied
+    // samples and use typed-array loads/stores for ArrayBuffer-backed views.
+    auto source = direction == AudioBufferCopy::ToChannel ? samples.copy_range(0, count)
+        : channel_data.copy_range(offset, offset + count);
+    auto destination = direction == AudioBufferCopy::ToChannel ? channel_data : samples;
+    const auto start = direction == AudioBufferCopy::ToChannel ? offset : 0u;
+    for (std::size_t index = 0; index < count; ++index) destination.store(start + index, source.load(index));
+}
+
+bbl::js::Nullable<AudioBufferHandle> audio_source_buffer(AudioNodeHandle source) {
+#if BBLITE_HAS_AUDIO_BUFFER_SOURCE
+    if (!std::dynamic_pointer_cast<lab::SampledAudioNode>(require_node(source)))
+        throw std::runtime_error("Audio node is not a buffer source.");
+    if (!source.ownership->buffer.value) return std::nullopt;
+    return source.ownership->buffer;
+#else
+    (void)source;
+    throw std::runtime_error("Audio buffer source support was not compiled.");
+#endif
+}
+
 void audio_set_buffer(AudioNodeHandle source, AudioBufferHandle buffer)
 {
 #if BBLITE_HAS_AUDIO_BUFFER_SOURCE
@@ -891,6 +934,7 @@ void audio_set_buffer(AudioNodeHandle source, AudioBufferHandle buffer)
     // Alias the bus to the buffer owner: LabSound can keep playing after JS
     // releases its AudioBuffer handle, without dangling channel memory.
     sampled->setBus(std::shared_ptr<lab::AudioBus>(buffer_record, &buffer_record->bus));
+    source.ownership->buffer = buffer;
     if (runtime_trace_enabled()) {
         float peak = 0.0f;
         for (const auto& channel : buffer_record->channels) {

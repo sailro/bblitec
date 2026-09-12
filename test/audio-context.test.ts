@@ -22,6 +22,11 @@ test("direct audio contexts preserve owned aliases and lifecycle promises", t =>
         const worker = new Worker(new URL("./worker.ts", import.meta.url), {type:"module"});
         worker.terminate();
         function create(): {context: AudioContext} { return {context: new AudioContext()}; }
+        function equal(actual:Float32Array,expected:number[]):boolean {
+            if(actual.length!==expected.length)return false;
+            for(let index=0;index<expected.length;index++)if(actual[index]!==expected[index])return false;
+            return true;
+        }
         async function exercise(): Promise<void> {
             const owner = create();
             const context = owner.context;
@@ -29,6 +34,36 @@ test("direct audio contexts preserve owned aliases and lifecycle promises", t =>
             if (aliases[0] !== context) throw new Error("context identity");
             const rate = context.sampleRate;
             if (rate <= 0) throw new Error("sample rate");
+            const pcm=context.createBuffer(2,8,16000);
+            if(pcm.length!==8||pcm.numberOfChannels!==2||pcm.sampleRate!==16000||pcm.duration!==0.0005)
+                throw new Error("buffer metadata");
+            const source=context.createBufferSource();
+            if(source.buffer!==null) throw new Error("initial source buffer");
+            source.buffer=pcm;
+            const sourceAlias=source;
+            if(sourceAlias.buffer!==pcm) throw new Error("source buffer identity");
+            pcm.copyToChannel(new Float32Array([1,2,3]),1,6);
+            const tail=new Float32Array([9,9,9,9]);
+            pcm.copyFromChannel(tail,1,6);
+            if(!equal(tail,[1,2,9,9])) throw new Error("bounded channel copy");
+            pcm.copyFromChannel(tail,1,8);
+            pcm.copyFromChannel(tail,1,-1);
+            if(!equal(tail,[1,2,9,9])) throw new Error("out of range offset");
+            let invalidChannel=false;
+            try{pcm.copyToChannel(tail,2);}catch{invalidChannel=true;}
+            if(!invalidChannel) throw new Error("channel validation");
+            const channel=pcm.getChannelData(0);
+            channel.set([0,1,2,3,4,5,6,7]);
+            pcm.copyToChannel(channel.subarray(0,4),0,2);
+            if(!equal(channel,[0,1,0,1,2,3,6,7])) throw new Error("overlapping channel write");
+            pcm.copyFromChannel(channel.subarray(1,5),0);
+            if(!equal(channel,[0,0,1,0,1,3,6,7])) throw new Error("overlapping channel read");
+            const storage=new ArrayBuffer(24);
+            const view=new Float32Array(storage,4,4);
+            pcm.copyFromChannel(view,0,4);
+            if(!equal(view,[1,3,6,7])) throw new Error("ArrayBuffer destination view");
+            pcm.copyToChannel(view,1,2);
+            if(!equal(pcm.getChannelData(1),[0,0,1,3,6,7,1,2])) throw new Error("ArrayBuffer source view");
             const gain = context.createGain();
             gain.connect(context.destination);
             if (typeof context.createGain !== "function") throw new Error("factory capability");
@@ -53,6 +88,8 @@ test("direct audio contexts preserve owned aliases and lifecycle promises", t =>
             [first,destination.buffer]=await Promise.all([decode(),decode()]);
             if(!first||!destination.buffer) throw new Error("fetched audio decode");
             const samples=first.getChannelData(0);
+            if(first.sampleRate!==rate||first.numberOfChannels!==1||first.length!==samples.length||first.duration!==first.length/rate)
+                throw new Error("decoded buffer metadata");
             if(samples.length<900||samples.length>1100||Math.abs(samples[100]-0.25)>0.001)
                 throw new Error("fetched audio PCM");
             let invalid=false;
@@ -74,6 +111,7 @@ test("direct audio contexts preserve owned aliases and lifecycle promises", t =>
             await context.close();
             if (aliases[0]!.state !== "closed") throw new Error("closed alias");
             if (context.sampleRate !== rate) throw new Error("closed sample rate");
+            if(pcm.duration!==0.0005) throw new Error("closed context buffer metadata");
             const closedTime = context.currentTime;
             let rejected = 0;
             await context.close().catch(() => { rejected++; });

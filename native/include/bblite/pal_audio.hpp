@@ -163,6 +163,13 @@ bbl::js::F32Array audio_buffer_channel(
     AudioBufferHandle buffer,
     std::uint32_t channel);
 
+enum class AudioBufferProperty { Duration, Length, SampleRate, NumberOfChannels };
+double audio_buffer_property(AudioBufferHandle buffer, AudioBufferProperty property);
+enum class AudioBufferCopy { FromChannel, ToChannel };
+void audio_buffer_copy(AudioBufferHandle buffer, bbl::js::F32Array samples,
+    std::uint32_t channel, std::uint32_t offset, AudioBufferCopy direction);
+bbl::js::Nullable<AudioBufferHandle> audio_source_buffer(AudioNodeHandle source);
+
 /** `ctx.createBufferSource()`. */
 AudioNodeHandle audio_create_buffer_source(AudioContextHandle context);
 
