@@ -13,6 +13,52 @@ import { nativeFixtureVcpkgRoot, optionalNativeFixtureTools, runNativeFixtureCom
 // them identically.
 const native = optionalNativeFixtureTools(false);
 
+check("set-entry-iteration", `
+    const values = new Set<number>([2, 3, 4]);
+    let seen = "";
+    for (const [first, second] of values.entries()) {
+        if (first !== second) throw new Error("entry lanes");
+        seen += first;
+        if (first === 2) { values.delete(3); values.add(5); }
+    }
+    if (seen !== "245") throw new Error("live entry iteration");
+    const pairs = [...values.entries()];
+    pairs[0]![0] = 99;
+    if (!values.has(2) || values.has(99) || pairs[0]![1] !== 2) throw new Error("fresh numeric pairs");
+    const copied = Array.from(values.entries());
+    if (copied.map(([a,b]) => a + b).join(",") !== "4,8,10") throw new Error("entry array copy");
+    let visits = 0;
+    const projected = Array.from(values.entries(), ([a,b], index) => { visits++; return a + b + index; });
+    if (visits !== 3 || projected.join(",") !== "4,9,12") throw new Error("entry array mapper");
+    for (let [a,b] of values.entries()) { a = 20; b = 30; if (a + b !== 50) throw new Error("local entry bindings"); }
+    const mutated = Array.from(values.entries(), pair => { pair[0] = 100; return pair[1]; });
+    if (mutated.join(",") !== "2,4,5" || Array.from(values).join(",") !== "2,4,5") throw new Error("mapper pair identity");
+    const records = new Set<{score:number}>();
+    const record = {score:7}; records.add(record);
+    for (const pair of records.entries()) {
+        if (pair[0] !== pair[1] || pair[0] !== record) throw new Error("shared entry object");
+        pair[0].score++;
+        pair[0] = {score:20};
+        if (pair[1] !== record) throw new Error("independent entry lanes");
+    }
+    const objects = [...records.entries()];
+    if (record.score !== 8 || objects[0]![0] !== record || objects[0]![1] !== record) throw new Error("retained object identity");
+    const secondCopy = [...records.entries()];
+    if (objects[0] === secondCopy[0]) throw new Error("fresh entry identities");
+    const cleared = new Set<number>([1,2]);
+    let clearedSeen = "";
+    for (const [value] of cleared.entries()) { clearedSeen += value; if (value === 1) { cleared.clear(); cleared.add(3); } }
+    if (clearedSeen !== "13") throw new Error("clear during iteration");
+    const mapping = new Map<string, number>([["a",1],["b",2]]);
+    for (let [key, value] of mapping.entries()) { key = "other"; value = 9; if (key !== "other" || value !== 9) throw new Error("map locals"); }
+    const mappedPairs = Array.from(mapping.entries(), pair => { pair[0] = "new"; return pair; });
+    if (mapping.has("other") || mapping.has("new") || mapping.get("a") !== 1 || mappedPairs[0]![0] !== "new") throw new Error("map fresh pairs");
+    const source = {values: new Set<number>([1,2])};
+    const original = source.values;
+    const rewritten = Array.from(source.values, value => { source.values = new Set<number>([9]); value += 10; return value; });
+    if (rewritten.join(",") !== "11,12" || Array.from(original).join(",") !== "1,2") throw new Error("mapper receiver and value snapshots");
+`);
+
 check("string-replacement-callbacks", `
     let calls = 0;
     let input = "aba";

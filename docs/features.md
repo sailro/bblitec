@@ -151,6 +151,11 @@ Fresh mapped records and their spreads also inherit destination field types, inc
 Dynamic mixed-tuple indexing, rest bindings and length-changing methods refuse.
 Map/Set `forEach` observes insertion order, deletion and appended entries,
 and receives the original collection as its third argument.
+`Set.entries()` yields fresh `[value, value]` pairs in direct `for...of`, spreads
+and `Array.from` (with or without a mapper). Map entries share that path.
+Entry iteration observes deletion, clear and appended members; rebinding a pair
+lane or destructured variable leaves the collection unchanged. Stored Set entry
+iterators and manual `next()` calls remain unsupported.
 
 Strings support string-pattern `replace`/`replaceAll` with string replacements
 and substitution tokens or callbacks receiving the match, UTF-16 offset and original string.

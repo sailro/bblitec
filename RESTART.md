@@ -23,7 +23,7 @@ it does not establish that this external application compiles or runs.
 | Branch | `codex/external-project-support` |
 | Remote | `https://github.com/sailro/bblitec.git` |
 | Branch base used in this session | `3474e835` on `main` |
-| Latest completed executable-code/test commit | `4d9bfcca` (2026-09-12), followed by string replacement callbacks in this savepoint |
+| Latest completed executable-code/test commit | `20349d32` (2026-09-12), followed by direct entry iteration in this savepoint |
 | Draft PR | [#247 — Extend generic application compilation and retained UI support](https://github.com/sailro/bblitec/pull/247) |
 | External checkout | `C:/Dev/_prototypes/external-native-app` |
 | External source revision | `d7c477a6d5963680c55249dceb93cb6e4ab9ce56` |
@@ -236,6 +236,15 @@ incomplete. Do not merge or mark it ready merely because the sweep passes.
   empty patterns across surrogate pairs, skipped callbacks and literal dollar
   results. `strings278` passed all 127 core-library and language-construct checks
   without skips. RegExp callback support remains open in the first TODO item.
+- `20349d32` saves string-pattern callbacks and is pushed. The entry unit adds
+  direct `Set.entries()` consumption through shared Map/Set pair iteration,
+  spreads and `Array.from`. Pairs and destructured variables are independent;
+  object references survive, and mutation of the collection stays observable.
+  `entries285` passed 665 compiler/core-library checks. `set287` passed the final
+  generated native checks after adding pair writes, Map locals and mapper
+  receiver/value snapshots. Stored Set entry iterators are still unrepresented.
+  Separate probes found existing refusals for immediate `[...set].join()` and
+  rebinding a plain Set local; neither was changed by this unit.
 
 The refreshed harness explicitly reports `danger-full-access`, networking
 enabled and approval policy `never`. Do not pass `sandbox_permissions` or ask
@@ -550,7 +559,7 @@ that does not make the source compiler or JS API support automatic.
 The foundation narrowed the first compiler TODO: normalization, bounded locale
 comparison and mixed Map entry tuples are supported. Remaining work still
 includes RegExp replacement callbacks, locale lists/options beyond numeric/sensitivity,
-`Set.entries()`, dynamic mixed-tuple indexing, rest bindings and length-changing
+stored `Set.entries()` iterators, dynamic mixed-tuple indexing, rest bindings and length-changing
 methods. Later UI units and the sweep fixes did not fully close another listed
 TODO. Open GitHub issues were queried earlier and returned an empty list; that
 was a session observation, not a permanently current claim.

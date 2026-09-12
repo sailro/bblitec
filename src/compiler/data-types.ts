@@ -185,6 +185,7 @@ export function opaqueEngineValue(
 export type DataIterationElement =
   | DataType
   | { kind: "map-entry"; key: DataType; value: DataType }
+  | { kind: "set-entry"; element: DataType }
   | { kind: "array-entry"; element: DataType; indexCpp: string }
   | { kind: "array-index"; indexCpp: string };
 
