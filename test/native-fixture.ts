@@ -90,7 +90,7 @@ export function runNativeFixtureCompiler(
 }
 
 /** Build a retained-UI fixture against the same pinned library and platform fonts. */
-export function runRmlUiFixture(t: TestContext, name: string): void {
+export function runRmlUiFixture(t: TestContext, name: string, options: {imageDecoder?: boolean} = {}): void {
     const tools = optionalNativeFixtureTools();
     const rml = resolve(process.env.BBLITE_RMLUI_DIR ?? "artifacts/tools/rmlui");
     if (!tools || !existsSync(join(rml, "lib/rmlui.lib"))) {
@@ -100,7 +100,7 @@ export function runRmlUiFixture(t: TestContext, name: string): void {
     mkdirSync(output, { recursive: true });
     const executable = join(output, "check.exe");
     runNativeFixtureCompiler(tools, ["/nologo", "/std:c++20", "/W4", "/WX", "/EHsc", "/MD", "/O2", "/Gy",
-        "/DBBLITE_HAS_UI=1", "/DBBLITE_HAS_IMAGE_DECODER=0", "/DRMLUI_STATIC_LIB", "/DRMLUI_SDL_VERSION_MAJOR=3",
+        "/DBBLITE_HAS_UI=1", `/DBBLITE_HAS_IMAGE_DECODER=${options.imageDecoder ? 1 : 0}`, "/DRMLUI_STATIC_LIB", "/DRMLUI_SDL_VERSION_MAJOR=3",
         `/Fo:${output}/`, `/Fe:${executable}`, "/I", "native/include", "/I", "native/src",
         `/external:I${join(rml, "include")}`, `/external:I${join(rml, "Backends")}`,
         `/external:I${join(nativeFixtureVcpkgRoot, "include")}`, "/external:W0",
@@ -108,6 +108,7 @@ export function runRmlUiFixture(t: TestContext, name: string): void {
         join(rml, "Backends/RmlUi_Platform_SDL.cpp"), "/link", "/OPT:REF",
         join(rml, "lib/rmlui.lib"), join(nativeFixtureVcpkgRoot, "lib/freetype.lib"),
         join(nativeFixtureVcpkgRoot, "lib/lunasvg.lib"), join(nativeFixtureVcpkgRoot, "lib/SDL3.lib"),
+        ...(options.imageDecoder ? [join(nativeFixtureVcpkgRoot, "lib/SDL3_image.lib")] : []),
         "dwrite.lib", "user32.lib"]);
     assert.equal(execFileSync(executable, { encoding: "utf8",
         env: { ...tools.environment, PATH: `${join(nativeFixtureVcpkgRoot, "bin")};${tools.environment.PATH ?? ""}` },

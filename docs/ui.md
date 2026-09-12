@@ -143,6 +143,11 @@ Slices accept numbers or percentages; widths accept border-width multipliers, px
 Widths track layout changes and share one reduction factor when opposing borders overlap.
 The `border` shorthand resets the image. Nonzero outset, center fill, repeated tiles, SVG sources,
 individual border-image longhands and runtime-generated image declarations are unsupported.
+Raster images support `object-fit:fill/contain/cover/none/scale-down`, centered in their content box.
+Fitting preserves the CSS layout size and clips the image and texture coordinates at that box;
+source changes, live styles, resizing and display scaling update the painted image.
+This follows [CSS object sizing](https://www.w3.org/TR/css-images-3/#the-object-fit).
+`object-position` remains unsupported; retained Canvas2D currently accepts `fill` only.
 
 Selectors are bounded class/id/compound and proven ancestor forms, with optional
 hover, active and focus-visible states, shared by CSS text and host UI rules.
@@ -174,6 +179,7 @@ native range painting follows browser geometry and control states.
 | `rmlui-premultiplied-rounding.patch` | Browser-oriented color/opacity rounding |
 | `rmlui-fractional-letter-spacing.patch` | Fractional default-font accumulation; excludes HarfBuzz sample |
 | `rmlui-line-leading.patch` | Floor upper half-leading; preserve authored fractional textarea line height |
+| `rmlui-object-fit.patch` | Raster-image fitting, centered geometry and content-box texture cropping |
 | `rmlui-overflow-wrap.patch` | Inherited emergency wrapping independent of word-break |
 | `rmlui-transform-key-ownership.patch` | Own mutable transition keys; preserve shared relative transforms |
 
