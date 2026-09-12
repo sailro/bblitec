@@ -137,9 +137,71 @@ void keyboard() {
     registry.dispatch(event);
     require(calls == 1 && event.default_prevented, "keyboard cancellation");
 }
+
+void engine_ownership() {
+    bbl::Engine application, display;
+    int calls = 0;
+    bbl::on_dom_pointer(application, child, "pointermove", 1, [&](const Event&) { ++calls; });
+    bbl::on_dom_pointer(application, window, "pointermove", 1, [&](const Event&) { ++calls; });
+    require(application.dom_input->revision == 1, "transport types change only when needed");
+    std::optional<Event> mailbox;
+    bbl::dom_input(display).pointer_sink = [&](const Event& event) { mailbox = event; };
+    bbl::dispatch_dom_pointer(display, bbl::dom_event(Event{}, "pointermove", {child, document, window}));
+    require(calls == 0 && mailbox.has_value(), "display queues native payload without invoking script");
+    bbl::dispatch_dom_pointer(application, *mailbox);
+    require(calls == 2, "application dispatches its own listeners");
+    bbl::off_dom_pointer(application, child, "pointermove", 1);
+    bbl::dispatch_dom_pointer(application, pointer());
+    require(calls == 3, "engine-owned removal");
+}
+
+void physical_input_transactions() {
+    bbl::Engine application, display;
+    const auto sibling = bbl::DomEventTarget::node(8);
+    std::vector<std::string> visits;
+    bbl::on_dom_pointer(application, child, "pointerout", 1, [&](const Event& event) {
+        require(event.dom->related_target == sibling, "out carries the new hit target");
+        visits.push_back("out");
+    });
+    bbl::on_dom_pointer(application, parent, "pointerleave", 2, [&](const Event&) { visits.push_back("parent-leave"); });
+    bbl::on_dom_pointer(application, sibling, "pointerenter", 3, [&](const Event& event) {
+        require(event.dom->related_target == child && !event.dom->bubbles, "enter carries the previous hit target");
+        visits.push_back("enter");
+    });
+    bbl::dom_input(display).hover_path = {child, parent, document, window};
+    auto move = bbl::dom_pointer_input(display, bbl::DomPointerAction::Move, Event{}, {sibling, parent, document, window});
+    std::shared_ptr<bbl::DomEventBatch> mailbox;
+    display.dom_input->batch_sink = [&](auto batch) { mailbox = std::move(batch); };
+    bbl::dispatch_dom_batch(display, move);
+    require(!move->ready() && visits.empty(), "display never runs application listeners or waits for completion");
+    mailbox->dispatch(application);
+    require(move->ready() && visits == std::vector<std::string>{"out", "enter"}, "sibling crossing preserves the common parent's hover");
+
+    int mouse_down = 0, mouse_up = 0, clicks = 0;
+    bbl::on_dom_pointer(application, sibling, "pointerdown", 4, [](const Event& event) { event.prevent_default(); });
+    bbl::on_dom_pointer(application, sibling, "mousedown", 5, [&](const Event&) { ++mouse_down; });
+    bbl::on_dom_pointer(application, sibling, "mouseup", 6, [&](const Event&) { ++mouse_up; });
+    bbl::on_dom_pointer(application, sibling, "click", 7, [&](const Event&) { ++clicks; });
+    const std::vector path{sibling, parent, document, window};
+    auto down = bbl::dom_pointer_input(display, bbl::DomPointerAction::Down, Event{.button = 0, .buttons = 1}, path);
+    down->dispatch(application);
+    require(down->ready() && down->default_prevented && mouse_down == 0, "pointerdown cancellation suppresses native default and compatibility mousedown");
+    auto up = bbl::dom_pointer_input(display, bbl::DomPointerAction::Up, Event{.button = 0, .buttons = 0}, path);
+    up->dispatch(application);
+    require(mouse_up == 0 && clicks == 1, "compatibility suppression does not suppress click");
+    bbl::off_dom_pointer(application, sibling, "pointerdown", 4);
+    bbl::dom_pointer_input(display, bbl::DomPointerAction::Down, Event{.button = 0, .buttons = 1}, path)->dispatch(application);
+    require(mouse_down == 1, "released pointer clears compatibility suppression");
+
+    bbl::on_dom_keyboard(application, window, "keydown", 8, [](const bbl::PlatformKeyboardEvent& event) { event.prevent_default(); });
+    bbl::DomEventBatch keys;
+    keys.add(bbl::dom_event(bbl::PlatformKeyboardEvent{}, "keydown", path), true);
+    keys.dispatch(application);
+    require(keys.ready() && keys.default_prevented, "keyboard native default waits for source cancellation");
+}
 }
 
 int main() {
-    phases(); mutation(); stopping(); cancellation(); keyboard();
+    phases(); mutation(); stopping(); cancellation(); keyboard(); engine_ownership(); physical_input_transactions();
     std::cout << "dom-event-check: ok\n";
 }

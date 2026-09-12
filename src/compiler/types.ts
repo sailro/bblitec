@@ -2447,6 +2447,7 @@ export type Feature =
   | "backend:sdl"
   | "engine:device-recovery"
   | "input:gamepad"
+  | "input:dom"
   | "camera:arc-rotate"
   | "camera:default"
   | "camera:free"

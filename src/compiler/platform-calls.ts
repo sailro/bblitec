@@ -8,6 +8,7 @@ import type { Value } from "./types.js";
 import { UiProjection } from "./ui-projection.js";
 import { requireWindowHost, windowErrorEventValue } from "./window-events.js";
 import { browserGlobalNamed } from "./browser-erasure.js";
+import { emitDomEventListener } from "./dom-listeners.js";
 
 
 
@@ -80,6 +81,7 @@ interface PlatformCallContext extends CharacterIntrinsicContext, Pick<LoweringSe
     "cppString" |
     "defaultEngine" |
     "dataLowerer" |
+    "dataTypes" |
     "emit" |
     "engineHasStarted" |
     "evaluateBrowserValue" |
@@ -253,7 +255,7 @@ export class PlatformCalls {
             };
         }
         if (
-            callee.name.text === "preventDefault"
+            callee.name.text === "preventDefault" || callee.name.text === "stopPropagation" || callee.name.text === "stopImmediatePropagation"
         ) {
             const platformEvent = ts.isIdentifier(receiver)
                 ? this.context.lookupOptional(receiver)
@@ -265,10 +267,14 @@ export class PlatformCalls {
                 platformEvent?.kind === "platform-keyboard-event" ||
                 platformEvent?.kind === "platform-mouse-event" || platformEvent?.nativeErrorEvent
             ) {
-                if (call.arguments.length) this.context.fail(call, "Event.preventDefault accepts no arguments.");
+                if (call.arguments.length) this.context.fail(call, `Event.${callee.name.text} accepts no arguments.`);
+                if (platformEvent.nativeErrorEvent && callee.name.text !== "preventDefault")
+                    this.context.fail(call, "Application error propagation methods are not represented.");
+                const method = callee.name.text === "preventDefault" ? "prevent_default"
+                    : callee.name.text === "stopPropagation" ? "stop_propagation" : "stop_immediate_propagation";
                 return {
                     kind: "void",
-                    cpp: `${platformEvent.cpp}.prevent_default()`,
+                    cpp: `${platformEvent.cpp}.${method}()`,
                 };
             }
         }
@@ -435,6 +441,8 @@ export class PlatformCalls {
         }
         const removing = callee.name.text === "removeEventListener";
         const uiElement = this.ui.uiElementValue(callee.expression);
+        if (this.context.probeEmission(() => emitDomEventListener(this.context, call, uiElement,
+            (value, node) => this.platformEventCallbackIdentity(value, node)) ? true : undefined)) return true;
         if (uiElement) {
             if (removing) return false;
             this.context.expectArgumentCount(call, 2, 2);

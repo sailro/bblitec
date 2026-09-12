@@ -4610,6 +4610,10 @@ export class UiProjection {
 
     public emitUiPropertyAssignment(expression: ts.BinaryExpression): boolean {
         const globalLeft = this.context.unwrap(expression.left);
+        if (expression.operatorToken.kind !== ts.SyntaxKind.EqualsToken && ts.isPropertyAccessExpression(globalLeft) &&
+            (globalLeft.name.text === "textContent" || globalLeft.name.text === "innerText") &&
+            this.uiElementValue(globalLeft.expression))
+            this.context.fail(expression, "Compound retained text assignments require a represented text getter.");
         if (this.context.hasFeature("engine:device-recovery") && ts.isPropertyAccessExpression(globalLeft) &&
             ts.isIdentifier(this.context.unwrap(globalLeft.expression)) && this.context.unwrap(globalLeft.expression).getText() === "globalThis" &&
             expression.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
