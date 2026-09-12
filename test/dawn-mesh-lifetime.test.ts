@@ -15,6 +15,8 @@ test("Dawn mesh teardown releases bindings before resources and shared layouts",
     const source = readFileSync("native/src/pal_dawn.cpp", "utf8");
     const shared = readFileSync("native/src/pal_gpu_shared.hpp", "utf8");
     writeFileSync(join(output, "records.hpp"), [
+        cppRecord(source, "struct DawnSharedMaterialTextures {"),
+        "using DawnSharedShaderMaterialTextures = DawnSharedMaterialTextures;",
         ...["DawnMeshBindings", "DawnShaderBindings", "DawnShaderBindingKey", "DawnDrawResources"].map(name => cppRecord(source, `struct ${name} {`)),
         "struct DawnState; using DawnDrawState = OwnedGpuRecord<DawnDrawResources, DawnState>;",
         cppRecord(source, "struct DawnMeshResources {"),
