@@ -1,6 +1,7 @@
 #pragma once
 
 #include <bblite/js_callback.hpp>
+#include <bblite/dom_event_state.hpp>
 
 // Plain-data JavaScript runtime support for compiled scene logic: dynamic
 // arrays, nullable objects, readonly views, all-number tuples, JavaScript
@@ -455,7 +456,8 @@ class Borrowed {
 };
 
 /**
- * The common DOM Event view: only preventDefault survives on the base type.
+ * The common DOM Event view borrows dispatch state and cancellation from its
+ * payload, including when it crosses a helper typed as Event.
  *
  * MouseEvent and KeyboardEvent retain their typed Borrowed<T> wrappers. This
  * erased facade accepts either without introducing a third platform-event
@@ -470,10 +472,17 @@ class BorrowedEvent {
           type_(&type_tag<T>),
           prevent_default_([](const void* borrowed) noexcept {
               static_cast<const T*>(borrowed)->prevent_default();
-          }) {}
+          }),
+          default_prevented_([](const void* borrowed) noexcept { return static_cast<const T*>(borrowed)->default_prevented; }) {
+        dom = value.dom.get();
+    }
 
     [[nodiscard]] const BorrowedEvent& get() const noexcept { return *this; }
     void prevent_default() const noexcept { prevent_default_(value_); }
+    [[nodiscard]] bool is_default_prevented() const noexcept { return default_prevented_(value_); }
+    void stop_propagation() const { bbl::dom_event_state(*this).stop_propagation(); }
+    void stop_immediate_propagation() const { bbl::dom_event_state(*this).stop_immediate_propagation(); }
+    bbl::DomEventState* dom = nullptr;
 
     template <typename T>
     [[nodiscard]] const T& as() const {
@@ -489,6 +498,7 @@ class BorrowedEvent {
     const void* value_;
     const void* type_;
     void (*prevent_default_)(const void*) noexcept;
+    bool (*default_prevented_)(const void*) noexcept;
 };
 
 /** A Uint8Array view. Subarrays share storage; slices own a copy. */

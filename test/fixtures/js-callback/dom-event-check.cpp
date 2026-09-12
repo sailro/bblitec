@@ -160,6 +160,7 @@ void physical_input_transactions() {
     const auto sibling = bbl::DomEventTarget::node(8);
     std::vector<std::string> visits;
     bbl::on_dom_pointer(application, child, "pointerout", 1, [&](const Event& event) {
+        require(&bbl::dom_event_owner(event) == &application, "target values use the receiving realm's document");
         require(event.dom->related_target == sibling, "out carries the new hit target");
         visits.push_back("out");
     });
@@ -176,6 +177,9 @@ void physical_input_transactions() {
     require(!move->ready() && visits.empty(), "display never runs application listeners or waits for completion");
     mailbox->dispatch(application);
     require(move->ready() && visits == std::vector<std::string>{"out", "enter"}, "sibling crossing preserves the common parent's hover");
+    for (const auto& entry : move->events) std::visit([](const auto& event) {
+        require(event.dom->dispatch_engine == nullptr, "completed packets retain no realm pointer");
+    }, entry.payload);
 
     int mouse_down = 0, mouse_up = 0, clicks = 0;
     bbl::on_dom_pointer(application, sibling, "pointerdown", 4, [](const Event& event) { event.prevent_default(); });

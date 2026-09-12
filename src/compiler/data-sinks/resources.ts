@@ -48,6 +48,8 @@ function expressionHandle(dataType: DataType<"handle">, lowerer: DataSinkHost, _
     const value = rawValue.kind === "data"
         ? lowerer.narrowOptional(rawValue, unwrapped)
         : rawValue;
+    if (dataType.handle === "ui-element" && value.dataType?.kind === "event-target")
+        return lowerer.compileKnownValueForSink(value, dataType, unwrapped);
     if (dataType.handle === "sprite-atlas" &&
         value.kind === "record") {
         const atlas = lowerer.context.compileSpriteAtlasRecord(value, unwrapped);
@@ -111,6 +113,10 @@ function expressionTypedArray(dataType: DataType<TypedArrayKind>, lowerer: DataS
 }
 
 function valueResource(dataType: DataType<"arraybuffer" | "dataview" | TypedArrayKind | "handle">, lowerer: DataSinkHost, value: Value, node: ts.Node): string | undefined {
+    if (dataType.kind === "handle" && dataType.handle === "ui-element" && value.dataType?.kind === "event-target") {
+        lowerer.context.reachFeature("input:dom", node);
+        return `bbl::dom_target_element(${value.cpp})`;
+    }
     if (dataType.kind === "handle" && dataType.handle === "mesh" && value.kind === "picked-node") {
         return pickedMeshHandleCpp(lowerer.context, value, node);
     }

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <bblite/runtime.hpp>
+#include <bblite/js_data.hpp>
 
 #include <map>
 #include <set>
@@ -42,11 +43,12 @@ class DomEventListeners {
     }
 
     template <typename Invoke>
-    void dispatch(const Event& event, Invoke&& invoke) {
+    void dispatch(const Event& event, Invoke&& invoke, Engine* owner = nullptr) {
         if (!event.dom) throw std::logic_error("DOM dispatch requires an owned event path.");
         auto& state = *event.dom;
         if (state.dispatching) throw std::logic_error("The same event is already being dispatched.");
         state.dispatching = true;
+        state.dispatch_engine = owner;
         struct Reset {
             DomEventState& state;
             ~Reset() {
@@ -56,6 +58,7 @@ class DomEventListeners {
                 state.propagation_stopped = false;
                 state.immediate_propagation_stopped = false;
                 state.dispatching = false;
+                state.dispatch_engine = nullptr;
             }
         } reset{state};
         const auto path = state.path;
@@ -177,13 +180,13 @@ template <typename Event>
 inline void dispatch_dom_pointer(Engine& engine, const PlatformMouseEvent& event) {
     if (!engine.dom_input) return;
     if (engine.dom_input->pointer_sink) engine.dom_input->pointer_sink(event);
-    else engine.dom_input->pointer.dispatch(event);
+    else engine.dom_input->pointer.dispatch(event, [](auto& callback, const auto& payload) { callback(payload); }, &engine);
 }
 
 inline void dispatch_dom_keyboard(Engine& engine, const PlatformKeyboardEvent& event) {
     if (!engine.dom_input) return;
     if (engine.dom_input->keyboard_sink) engine.dom_input->keyboard_sink(event);
-    else engine.dom_input->keyboard.dispatch(event);
+    else engine.dom_input->keyboard.dispatch(event, [](auto& callback, const auto& payload) { callback(payload); }, &engine);
 }
 
 /** One physical input transaction. Only native payloads cross threads. The
@@ -215,10 +218,10 @@ struct DomEventBatch {
                     const auto& type = event.dom->type;
                     if (engine.dom_input->suppress_compatibility_mouse &&
                         (type == "mousedown" || type == "mouseup" || type == "mousemove")) return;
-                    engine.dom_input->pointer.dispatch(event, invoke);
+                    engine.dom_input->pointer.dispatch(event, invoke, &engine);
                     if (type == "pointerdown" && event.default_prevented) engine.dom_input->suppress_compatibility_mouse = true;
                 }
-                else engine.dom_input->keyboard.dispatch(event, invoke);
+                else engine.dom_input->keyboard.dispatch(event, invoke, &engine);
             }
             if (entry.controls_default && event.default_prevented) default_prevented = true;
         }, entry.payload);
@@ -237,6 +240,21 @@ inline void dispatch_dom_batch(Engine& engine, const std::shared_ptr<DomEventBat
 
 inline std::vector<DomEventTarget> dom_canvas_path() {
     return {DomEventTarget::canvas(), DomEventTarget::document(), DomEventTarget::window()};
+}
+
+inline js::Nullable<DomEventTargetValue> dom_target_value(Engine& engine, std::optional<DomEventTarget> target) {
+    if (!target) return std::nullopt;
+    return dom_target_value(engine, *target);
+}
+
+inline UiElementHandle dom_target_element(DomEventTargetValue value) {
+    if (value.target.kind != DomEventTargetKind::Element) throw std::runtime_error("The event target is not a retained element.");
+    return {value.target.element};
+}
+
+inline Engine& dom_target_owner(DomEventTargetValue value) {
+    if (!value.engine) throw std::logic_error("An event target has no owning document.");
+    return *value.engine;
 }
 
 #if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI

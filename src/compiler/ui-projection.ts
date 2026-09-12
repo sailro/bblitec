@@ -230,6 +230,15 @@ export class UiProjection {
                 return undefined;
             }
             const narrowed = this.context.dataLowerer.narrowOptional(value, owner);
+            if (narrowed.kind === "data" && narrowed.dataType?.kind === "event-target") {
+                const requested = this.context.dataLowerer.dataTypeAt(expression);
+                if (requested?.kind !== "handle" || requested.handle !== "ui-element") return undefined;
+                const selected = {...narrowed};
+                delete selected.nativeBinding;
+                const snapshot = this.context.pinValueToTemporary(selected, "event_target", expression);
+                return valueForKind("ui-element", {cpp:`bbl::dom_target_element(${snapshot.cpp})`,
+                    dataType:{kind:"handle", handle:"ui-element"}, engineCpp:`bbl::dom_target_owner(${snapshot.cpp})`});
+            }
             if (narrowed.kind === "ui-element") {
                 return withTrackedTag(narrowed);
             }

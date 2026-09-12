@@ -3079,6 +3079,7 @@ export class DataLowerer {
         }
         if (
             ![
+                "event-target",
                 "struct",
                 "date",
                 "date-time-format",
@@ -7289,6 +7290,7 @@ export class DataLowerer {
 
     /** JavaScript truthiness for a value the caller already compiled. */
     public conditionFromValue(value: Value): string | undefined {
+        if (value.kind === "data" && value.dataType?.kind === "event-target") return "true";
         if (value.kind === "data" && isOpaqueReference(value.dataType)) {
             return value.truthinessCpp ?? value.optionalFoundCpp ?? `static_cast<bool>(${value.cpp})`;
         }
@@ -7550,7 +7552,7 @@ export class DataLowerer {
             dataType: DataType | undefined,
         ): dataType is Extract<DataType, { kind: "optional" }> =>
             dataType?.kind === "optional" &&
-            (["number", "boolean", "string", "enum", "handle", "date", "date-time-format", "storage", "arraybuffer", "dataview", "bufferview", "numberindex"].includes(
+            (["event-target", "number", "boolean", "string", "enum", "handle", "date", "date-time-format", "storage", "arraybuffer", "dataview", "bufferview", "numberindex"].includes(
                 dataType.inner.kind,
             ) || isTypedArrayType(dataType.inner));
         // TypeScript's index signatures describe `Record<K, V>[key]` as V,
@@ -7835,6 +7837,7 @@ export class DataLowerer {
         if (
             value?.kind === "data" && value.dataType !== undefined &&
             (isOpaqueReference(value.dataType) ||
+                value.dataType.kind === "event-target" ||
                 value.dataType.kind === "iterator" ||
                 value.dataType?.kind === "enum" ||
                 value.dataType?.kind === "string" ||

@@ -36,7 +36,7 @@ it does not establish that this external application compiles or runs.
 | Branch | `codex/external-project-support` |
 | Remote | `https://github.com/sailro/bblitec.git` |
 | Branch base used in this session | `3474e835` on `main` |
-| Latest executable-code/test unit | Shared DOM input routing and listener options; prior savepoints `61f878fb` (native dispatcher) and `58c6fe8c` (mixed tuples) |
+| Latest executable-code/test unit | Document-owned event target values; prior savepoints `48f5224f` (DOM input bridge), `61f878fb` (native dispatcher) and `58c6fe8c` (mixed tuples) |
 | Draft PR | [#247 — Extend generic application compilation and retained UI support](https://github.com/sailro/bblitec/pull/247) |
 | External checkout | `C:/Dev/_prototypes/external-native-app` |
 | External source revision | `d7c477a6d5963680c55249dceb93cb6e4ab9ce56` |
@@ -144,7 +144,22 @@ projection remains refused. This ratio is not application completion. `compile40
 still the latest unchanged-application attempt; complete generation/build/runtime remain
 unpassed. Do not run another full application after each small event-field edit.
 
-Next work: target/currentTarget/relatedTarget identities, AbortSignal, explicit pointer
+The next unit adds document-owned target/currentTarget/relatedTarget values, nullable
+storage and identity comparisons, typed Event helpers, retained-element assertions and
+listener registration through guarded EventTarget aliases. Dispatch ownership is local
+to the invoking realm and cleared before completed native packets return to the display.
+`events441` passes 676 focused checks without skips; `window441` builds and runs the
+Window fixture on both renderers. `capabilities437` accepts all 24 original generation
+probes. This closes the target-projection TODO clause, not all event support.
+
+`compile438` passed the former listener-options blocker and now refuses stylesheet
+selector `button img`; the unchanged application still has not completed generation,
+build or runtime. `selectors442.json` inventories literal selector candidates across the
+private source; it contains shader false positives and dynamic forms, so clean the
+assessment before reporting coverage. Batch selector grammar and native/static consumers
+instead of adding one form followed by another full-application retry.
+
+Next event work: AbortSignal, explicit pointer
 capture (existing set/release are no-ops and hasCapture is true), coalesced events, and
 shared focus/form input propagation. Focus/form callbacks still take their old path.
 Compound retained text writes were found to erase silently and now refuse explicitly;

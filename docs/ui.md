@@ -94,6 +94,9 @@ share target/capture/bubble dispatch, callback identity, removal and `once`.
 Boolean capture and represented `capture`/`once`/`passive` option records are supported;
 passive listeners cannot cancel defaults. `stopPropagation` and `stopImmediatePropagation`
 control traversal. Common event flags, phase, pointer type/ID and modifiers are exposed.
+`target`, nullable `currentTarget` and mouse `relatedTarget` preserve document-owned
+identity through typed storage and helpers. Guarded target values can register input
+listeners; retained-element assertions expose the corresponding element handle.
 Window input waits for callback completion before applying defaults while continuing
 to service document layout requests. Retained elements preserve focus and hover identity.
 Borrowed events cannot escape dispatch; copy
@@ -259,7 +262,7 @@ Runtime track replacement and implicit extra rows refuse. Form dimensions suppor
   modes refuse. Saved layer textures and general mask-image filters are unsupported.
 - blur(px)/none are supported; other reached backdrop functions can degrade.
 - will-change, touch-action, user-select and image-rendering are accepted hints.
-- Abort signals, event-target value projection and explicit pointer-capture lifecycle remain unsupported.
+- Abort signals and explicit pointer-capture lifecycle remain unsupported.
   Focus and form-input callbacks retain their earlier per-element dispatch path.
 - element.animate and removal of listeners outside the shared input dispatch remain no-ops;
   CSS keyframes use mapped easing. Compound textContent/innerText writes refuse.
