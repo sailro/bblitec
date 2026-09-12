@@ -570,104 +570,26 @@ export function compileDataMethodCall(
     ) {
         return undefined;
     }
-    const optionalOwnerType =
-        owner.kind === "data" &&
-        owner.dataType?.kind === "optional"
-            ? owner.dataType
-            : undefined;
-    const optionalSetType =
-        optionalOwnerType?.inner.kind === "set"
-            ? optionalOwnerType.inner
-            : undefined;
-    if (callee.questionDotToken && optionalOwnerType &&
-        (method === "indexOf" || method === "includes") &&
-        (optionalOwnerType.inner.kind === "vector" || optionalOwnerType.inner.kind === "span")) {
-        const receiver = lowerer.context.allocateTemporaryCppName("optional_array");
-        const result = lowerer.context.allocateTemporaryCppName("optional_search");
-        const resultType: DataType = { kind: "optional", inner: { kind: method === "indexOf" ? "number" : "boolean" } };
-        lowerer.context.emit({ kind: "declaration", type: "const auto", name: receiver, initializer: owner.cpp });
-        lowerer.context.emit(`${lowerer.context.dataTypes.cppType(resultType)} ${result};`);
-        lowerer.context.emit(`if (${receiver}.has_value()) {`);
-        lowerer.context.increaseIndent();
-        lowerer.context.enterRuntimeControlFlow();
-        try {
-            const search = lowerer.compileArraySearch(call,
-                { kind: "data", cpp: `(*${receiver})`, dataType: optionalOwnerType.inner },
-                optionalOwnerType.inner.element, method);
-            lowerer.context.emit(`${result} = ${search.cpp};`);
-        } finally {
-            lowerer.context.leaveRuntimeControlFlow();
-            lowerer.context.decreaseIndent();
-        }
-        lowerer.context.emit("}");
-        return { kind: "data", cpp: result, dataType: resultType };
+    // Optional chains continue through later calls even without another ?.
+    // Guard the whole method, including its argument effects, with the same
+    // snapshot and result-flattening mechanism used by property/DOM accesses.
+    if (ts.isPropertyAccessChain(callee) && owner.dataType?.kind === "optional") {
+        return lowerer.optionalAccess(owner, call,
+            present => compileKnownDataMethod(lowerer, call, callee, present, dynamicOwner, expectedResult));
     }
-    if (
-        callee.questionDotToken !== undefined &&
-        method === "delete" &&
-        optionalOwnerType &&
-        optionalSetType
-    ) {
-        if (call.arguments.length !== 1) {
-            lowerer.context.fail(
-                call,
-                "Set.delete expects exactly one value.",
-            );
-        }
-        const optional = lowerer.context.allocateTemporaryCppName(
-            "optional_set",
-        );
-        const lookup = lowerer.context.allocateTemporaryCppName(
-            "optional_set_lookup",
-        );
-        const result = lowerer.context.allocateTemporaryCppName(
-            "optional_delete",
-        );
-        const resultType = {
-            kind: "optional",
-            inner: { kind: "boolean" },
-        } as const;
-        lowerer.context.emit(
-            `${lowerer.context.dataTypes.cppType(optionalOwnerType)} ${optional};`,
-        );
-        lowerer.context.emit("{");
-        lowerer.context.increaseIndent();
-        lowerer.context.emit({ kind: "declaration", type: "const auto", name: lookup, initializer: owner.cpp });
-        lowerer.context.emit(`if (${lookup}.has_value()) {`);
-        lowerer.context.increaseIndent();
-        lowerer.context.emit(`${optional} = *${lookup};`);
-        lowerer.context.decreaseIndent();
-        lowerer.context.emit("}");
-        lowerer.context.decreaseIndent();
-        lowerer.context.emit("}");
-        lowerer.context.emit(
-            `${lowerer.context.dataTypes.cppType(resultType)} ${result};`,
-        );
-        lowerer.context.emit(`if (${optional}.has_value()) {`);
-        lowerer.context.increaseIndent();
-        lowerer.context.enterRuntimeControlFlow();
-        try {
-            const value = lowerer.compileForSink(
-                argumentAt(call, 0),
-                optionalSetType.element,
-            );
-            lowerer.context.emit(
-                `${result} = (*${optional}).erase(${value});`,
-            );
-        } finally {
-            lowerer.context.leaveRuntimeControlFlow();
-        }
-        lowerer.context.decreaseIndent();
-        lowerer.context.emit("}");
-        return {
-            kind: "data",
-            cpp: result,
-            dataType: resultType,
-            truthinessCpp:
-                `(${result}.has_value() && *${result})`,
-            requiresExplicitDiscard: true,
-        };
-    }
+    return compileKnownDataMethod(lowerer, call, callee, owner, dynamicOwner, expectedResult);
+}
+
+function compileKnownDataMethod(
+    lowerer: DataLowerer,
+    call: ts.CallExpression,
+    callee: ts.PropertyAccessExpression,
+    owner: Value,
+    dynamicOwner: Value | undefined,
+    expectedResult?: DataType<"vector">,
+): Value | undefined {
+    const method = callee.name.text;
+    const ownerExpression = lowerer.context.unwrap(callee.expression);
     const narrowedOwner = lowerer.stringReceiver(lowerer.narrowOptional(
         owner,
         callee.expression,

@@ -540,7 +540,7 @@ void ui_remove_attribute(Engine& engine, UiElementHandle element, std::string_vi
         record.style_property_order.clear();
     }
 #if defined(BBLITE_HAS_BROWSER_FILE) && BBLITE_HAS_BROWSER_FILE
-    if (normalized == "href" && record.download_url.value != invalid_handle) {
+    if (normalized == "href" && record.download_url.slot != invalid_handle) {
         record.download_url = {};
         changed = true;
     }

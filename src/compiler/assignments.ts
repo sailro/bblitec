@@ -1151,10 +1151,14 @@ export function emitPropertyAssignment(
   }
   // The same distinction applies to a nullable Web Audio handle stored in
   // a lowered class. Its declaration already created optional native
-  // storage, so an assignment to `this.context` or `this.node` must fill
+  // storage, so an assignment through this or a named instance must fill
   // that storage before browser erasure considers the field's DOM type.
-  if (operator === "=" && left.expression.kind === ts.SyntaxKind.ThisKeyword) {
-    const existing = context.resolveThisField(left.name.text);
+  if (operator === "=") {
+    const existing = left.expression.kind === ts.SyntaxKind.ThisKeyword
+      ? context.resolveThisField(left.name.text)
+      : ts.isIdentifier(left.expression)
+        ? context.lookupOptional(left.expression)?.recordProperties?.[left.name.text]
+        : undefined;
     if (
       existing &&
       context.emitOptionalResourceAssignment(expression, existing)
@@ -1168,7 +1172,8 @@ export function emitPropertyAssignment(
     // would have to change a field no instance stores, and every reader
     // would keep naming the proven value. It falls through to the rebind
     // refusal instead of disappearing.
-    const hoisted = existing?.classHoistedAssignment;
+    const hoisted = left.expression.kind === ts.SyntaxKind.ThisKeyword
+      ? existing?.classHoistedAssignment : undefined;
     if (hoisted) {
       if (hoisted === expression) {
         return;

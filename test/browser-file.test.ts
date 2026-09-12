@@ -11,6 +11,7 @@ import test from "node:test";
 
 import { CompileError, compileSource } from "../src/compiler.js";
 import {
+    cppFunction,
     nativeFixtureVcpkgRoot,
     optionalNativeFixtureTools,
     runNativeFixtureCompiler,
@@ -414,13 +415,13 @@ test("browser file ownership stays generic and PAL-isolated", () => {
         "programmatic and projected clicks dispatch listeners before the default action",
     );
     assert.match(
-        ui,
-        /void ui_remove\([\s\S]{0,300}release_browser_file_subtree\(engine, element\)/,
+        cppFunction(ui, "void ui_remove("),
+        /release_browser_file_subtree\(engine, element\)/,
         "element removal releases its browser-file ownership",
     );
     assert.match(
-        ui,
-        /void ui_replace_children\([\s\S]{0,300}release_browser_file_subtree\(engine, child\)/,
+        cppFunction(ui, "void ui_replace_children("),
+        /release_browser_file_subtree\(engine, child\)/,
         "subtree removal releases descendant browser-file ownership",
     );
     assert.match(ui, /event_type == "click"[\s\S]{0,80}ui_click\(engine, element\)/);

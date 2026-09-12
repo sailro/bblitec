@@ -95,6 +95,9 @@ owned scalar fields.
 
 Optional calls on nullable retained elements evaluate the receiver once, skip
 arguments when it is absent, and keep its original handle through argument effects.
+Later container calls in the same chain retain that guard, including iteration
+over a scoped class query. Named class-instance writes update the same nullable
+DOM storage as writes inside its methods.
 ID lookup classification does not execute the source ID expression.
 
 Canvas `width/height` are drawable pixels; `clientWidth/clientHeight` are CSS
@@ -191,7 +194,9 @@ Other platforms currently refuse when this preference is reached.
 Stylesheet strings can be assembled by closed helpers over literal scalars and option records;
 argument effects execute once. Runtime-generated stylesheet text remains unsupported.
 Only fixed grids with proven equivalent wrapping-flex geometry lower; unknown
-track/class/id changes refuse.
+track/class/id changes refuse. Conditional removal of known stylesheets checks
+each remaining cascade against the same grid proof. Dynamic sheet reordering,
+contents replacement and fractional-grid removal remain unsupported.
 
 Fonts use DirectWrite/CoreText/fontconfig. Generic emoji/ZWJ shaping is limited.
 Unauthored button fonts use the generic sans default; normal line height uses

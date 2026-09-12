@@ -13,6 +13,30 @@ import { nativeFixtureVcpkgRoot, optionalNativeFixtureTools, runNativeFixtureCom
 // them identically.
 const native = optionalNativeFixtureTools(false);
 
+check("optional-container-method-continuations", `
+    const original = new Set<number>([4]);
+    const groups = new Map<string, Set<number>>([['entry', original]]);
+    let calls = 0;
+    function argument(): number { calls++; groups.clear(); return 4; }
+    const removed = groups.get('entry')?.delete(argument());
+    const missing = groups.get('missing')?.delete(argument());
+    groups.get('missing')?.clear();
+    if (removed !== true || missing !== undefined || original.size !== 0 || calls !== 1)
+        throw new Error('optional receiver snapshot and argument guard');
+    const state: {values: number[] | null} = {values: [3, 5, 7]};
+    let sum = 0;
+    function start(): number { calls++; state.values = null; return 1; }
+    state.values?.slice(start()).forEach(value => { sum += value; });
+    state.values?.slice(start()).forEach(value => { sum += value; });
+    if (sum !== 12 || calls !== 2) throw new Error('chain continuation');
+    const rows: Record<string, string>[] = [{}, {code:'north'}, {code:'south'}];
+    const match = rows.find(row => row.code?.startsWith('n'));
+    if (match?.code !== 'north' || rows.findIndex(row => row.code?.startsWith('s')) !== 2 ||
+        rows.filter(row => row.code?.startsWith('n')).length !== 1 ||
+        !rows.some(row => row.code?.startsWith('s')) || rows.every(row => row.code?.startsWith('n')))
+        throw new Error('predicate truthiness after unchecked lookup');
+`);
+
 check("nullable-coalesce-widening", `
     type Tag = "north" | "south";
     const values: (Tag | null)[] = ["north", null, "south"];
