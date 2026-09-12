@@ -65,7 +65,7 @@ test("async IIFEs aggregate owned ordered values before applying assignments", t
         })().then(()=>{
             if(assigned!==6||record.value!==7) throw new Error("outer assignment lifetime");
             globalThis.close();
-        }).catch(error=>{console.log(error);globalThis.close();});
+        });
     `,{fileName:join(directory,"entry.ts")});
     const tools=optionalNativeFixtureTools(false);
     if(!tools){t.skip("Native fixture compiler unavailable.");return;}

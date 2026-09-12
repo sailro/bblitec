@@ -56,7 +56,7 @@ test("packaged fetch owns responses, snapshots selections and rejects missing or
             const sequence=new Uint8Array(await Promise.resolve([258,3]));
             if(sized.length!==3||sequence[0]!==2||sequence[1]!==3) throw new Error("awaited typed array constructor");
             globalThis.close();
-        })().catch(error=>{console.log(error);globalThis.close();});
+        })();
     `, {fileName:join(directory,"entry.ts"),publicDir,siteUrl:"https://assets.example/"});
     assert.ok(result.manifest.features.includes("platform:packaged-fetch"));
     assert.ok(!result.manifest.features.includes("platform:http"));

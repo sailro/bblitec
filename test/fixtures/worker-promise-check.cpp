@@ -101,6 +101,21 @@ void shutdown_releases_suspended_activations() {
     require(destroyed == 1, "Suspended activation survived realm shutdown");
 }
 
+void unhandled_rejections_reach_the_realm_error_handler() {
+    const js::RealmScope realm;
+    pal::EventLoop loop;
+    int failures = 0;
+    loop.on_error([&](std::exception_ptr error) {
+        require(js::promise_error_string(error) == "Error: unhandled", "Default rejection report lost its error");
+        ++failures;
+        loop.close();
+    });
+    loop.run([&] {
+        static_cast<void>(js::Promise<double>::rejected(std::make_exception_ptr(std::runtime_error("unhandled"))));
+    });
+    require(failures == 1, "Unhandled rejection disappeared without a dedicated listener");
+}
+
 int frame_steps = 0;
 int frame_cleanup = 0;
 pal::FrameDriver renderer_activation(Engine& engine) {
@@ -146,6 +161,7 @@ int main() {
         ordering_and_recovery();
         aggregate_promises();
         shutdown_releases_suspended_activations();
+        unhandled_rejections_reach_the_realm_error_handler();
         renderer_tasks_yield_and_retire();
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n';

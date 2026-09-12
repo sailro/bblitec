@@ -161,6 +161,8 @@ class EventLoop {
     void report_unhandled_rejection(std::exception_ptr error) {
         require_owner();
         if (rejection_handler_) rejection_handler_(std::move(error));
+        else if (error_handler_) error_handler_(std::move(error));
+        else std::rethrow_exception(error);
     }
     void after_microtasks(Task task) { require_owner(); rejection_checks_.push_back(std::move(task)); }
     void defer_cleanup(Task cleanup) { require_owner(); cleanups_.push_back(std::move(cleanup)); }

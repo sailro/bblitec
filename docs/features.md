@@ -76,6 +76,10 @@ such as `Pick<Controller, "dispose">` retain the original receiver. Optional sto
 before evaluating arguments and skip those arguments when the receiver or callback is absent. Stored callbacks
 may omit trailing optional/default parameters from their exposed signature; source defaults run at invocation.
 In asynchronous realms, stored async callbacks return retained promises and own their suspended captures.
+Recursive local callbacks and mutually recursive groups share traced function cells across suspension,
+including timers and calls that outlive their declaring scope. Their signatures require owned data types.
+Async returns adopt represented promises; conditional and short-circuit condition branches keep awaits lazy
+inside the current activation.
 Callbacks returning `Promise<T> | void` retain either the promise or an absent result.
 Bare returns, fallthrough and void-returning expressions preserve their effects; present promises
 support `typeof` checks of their `then` and `catch` methods.

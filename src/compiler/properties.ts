@@ -518,6 +518,7 @@ export const propertyRules: readonly PropertyRule[] = [
   })),
   {
     owner: "audio-node", property: "buffer", value: "data", helper: "bbl::pal::audio_source_buffer",
+    helperReturnsFreshData: true,
     dataType: {kind:"optional", inner:{kind:"handle", handle:"audio-buffer"}}, feature: "audio:buffer-source", impure: true,
   },
   {

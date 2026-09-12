@@ -42,6 +42,10 @@ test("direct audio contexts preserve owned aliases and lifecycle promises", t =>
             source.buffer=pcm;
             const sourceAlias=source;
             if(sourceAlias.buffer!==pcm) throw new Error("source buffer identity");
+            let sourceReads=0;
+            function receiver():AudioBufferSourceNode{sourceReads++;return source;}
+            receiver().buffer=pcm;
+            if(sourceReads!==1)throw new Error("buffer setter receiver evaluation");
             pcm.copyToChannel(new Float32Array([1,2,3]),1,6);
             const tail=new Float32Array([9,9,9,9]);
             pcm.copyFromChannel(tail,1,6);
@@ -112,6 +116,9 @@ test("direct audio contexts preserve owned aliases and lifecycle promises", t =>
             if (aliases[0]!.state !== "closed") throw new Error("closed alias");
             if (context.sampleRate !== rate) throw new Error("closed sample rate");
             if(pcm.duration!==0.0005) throw new Error("closed context buffer metadata");
+            const retained=new Float32Array(2);
+            pcm.copyFromChannel(retained,1,6);
+            if(!equal(retained,[1,2])||pcm.getChannelData(0)!==channel)throw new Error("closed context buffer data");
             const closedTime = context.currentTime;
             let rejected = 0;
             await context.close().catch(() => { rejected++; });
@@ -120,7 +127,7 @@ test("direct audio contexts preserve owned aliases and lifecycle promises", t =>
             if (rejected !== 3 || context.currentTime !== closedTime) throw new Error("closed transitions");
             globalThis.close();
         }
-        void exercise().catch(error=>{console.log(error);globalThis.close();});
+        void exercise();
     `, {fileName:join(output, "entry.ts")});
     for(const asset of result.manifest.assets) {
         const destination=join(output,asset.output);

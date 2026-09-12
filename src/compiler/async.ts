@@ -109,7 +109,7 @@ export class AsyncLowerer {
             const value = context.compileValue(argument);
             if (!value.cpp || value.kind === "engine") return value;
             const temporary = context.allocateTemporaryCppName("async_argument");
-            context.emit({ kind: "declaration", type: "auto", name: temporary, initializer: value.cpp });
+            context.emit({ kind: "declaration", type: "auto", name: temporary, initializer: value.cpp, attributes: "[[maybe_unused]] " });
             const binding = context.registerNativeBinding(temporary);
             return { ...this.resultAt(value, temporary), nativeCaptures: [binding] };
         });

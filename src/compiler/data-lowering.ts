@@ -5076,6 +5076,22 @@ export class DataLowerer {
         }
         const returnType =
             this.context.dataTypes.cppType(dataType);
+        if (this.context.options.workers && [unwrapped.whenTrue, unwrapped.whenFalse].some(branch =>
+            someAnalysisNode(branch, ts.isAwaitExpression, {functions:"skip"}))) {
+            // Await belongs to the enclosing coroutine, never a synchronous
+            // branch IIFE. Keep preparation lazy in ordinary statement arms.
+            const result = this.context.allocateTemporaryCppName("conditional_result");
+            this.context.emit({kind:"declaration", type:returnType, name:result, initializer:"", initialization:"default"});
+            this.context.registerNativeBinding(result);
+            this.context.emit(`if (${condition}) {`);
+            for (const line of whenTrue.lines) this.context.emit(`    ${line}`);
+            this.context.emit(`    ${result} = ${whenTrue.cpp};`);
+            this.context.emit("} else {");
+            for (const line of whenFalse.lines) this.context.emit(`    ${line}`);
+            this.context.emit(`    ${result} = ${whenFalse.cpp};`);
+            this.context.emit("}");
+            return result;
+        }
         const indented = (lines: string[]): string =>
             lines.map((line) => `        ${line}`).join("\n");
         const trueLines = indented(whenTrue.lines);
@@ -6796,10 +6812,12 @@ export class DataLowerer {
                 return true;
             }
         }
-        const target = this.compileDataPath(
-            left,
-            "write",
-        );
+        const target = this.context.probeEmission(() => {
+            const path = this.compileDataPath(left, "write");
+            // A getter returning an owning wrapper is not a writable field.
+            // Roll its receiver preparation back before the setter owns it.
+            return path?.freshData ? undefined : path;
+        });
         if (!target) {
             return false;
         }
@@ -6843,13 +6861,6 @@ export class DataLowerer {
                       ? "class field assignment"
                       : "data field assignment",
             );
-        }
-        // A declared engine property can expose a freshly materialized data
-        // value for reads (mesh.boundMin is one). Assigning to that helper's
-        // return value would only mutate a temporary; let the property layer
-        // handle the owner's real setter instead.
-        if (target.freshData) {
-            return false;
         }
         if (target.kind === "number") {
             let targetCpp = target.cpp;

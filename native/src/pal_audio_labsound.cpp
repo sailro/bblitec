@@ -89,6 +89,7 @@ struct AudioNodeRecord {
 
 #if BBLITE_HAS_AUDIO_BUFFER_SOURCE
 struct AudioBufferRecord {
+    std::uint32_t handle = 0;
     std::vector<bbl::js::F32Array> channels;
     lab::AudioBus bus;
     AudioBufferRecord(std::uint32_t channel_count, std::uint32_t frames)
@@ -373,9 +374,9 @@ std::shared_ptr<lab::AudioNode> require_node(AudioNodeHandle node)
 #if BBLITE_HAS_AUDIO_BUFFER_SOURCE
 std::shared_ptr<AudioBufferRecord> require_buffer(AudioBufferHandle buffer)
 {
-    ContextRecord& record = require_context(context_of(buffer.value));
-    const std::uint32_t index = index_of(buffer.value);
-    if (!record.buffers.contains(index, buffer.ownership)) {
+    // Buffer data outlives its creating context. Validate its owned record,
+    // which retains the packed identity even after the context registry dies.
+    if (!buffer.value || !buffer.ownership || buffer.ownership->handle != buffer.value) {
         throw std::runtime_error("Invalid audio buffer handle.");
     }
     return buffer.ownership;
@@ -404,7 +405,8 @@ AudioBufferHandle allocate_audio_buffer(
             static_cast<int>(frames));
     }
     auto entry = context_record.buffers.insert(std::move(buffer));
-    return AudioBufferHandle{pack(context.value, entry.index), std::move(entry.ownership)};
+    entry.ownership->handle = pack(context.value, entry.index);
+    return AudioBufferHandle{entry.ownership->handle, std::move(entry.ownership)};
 }
 #endif
 

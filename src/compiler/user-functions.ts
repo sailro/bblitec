@@ -812,6 +812,7 @@ export interface UserFunctionContext
     Pick<LoweringServices,
         | "options"
         | "withAsyncActivation"
+        | "compileAsyncReturn"
         | "withOwnedCallbackBody"
         | "checker"
         | "dataTypes"
@@ -1633,6 +1634,32 @@ export class UserFunctionLowerer {
         recursive = true,
         pinArguments = true,
     ): Value {
+        if (recursive && context.options.workers && declarations.some(declaration =>
+            ts.getModifiers(declaration)?.some(modifier => modifier.kind === ts.SyntaxKind.AsyncKeyword))) {
+            // Every sibling must survive suspension. Materialize the group with
+            // the stored-function body/ownership protocol, including sync peers.
+            context.reachJsData();
+            context.pushScope(context.allocateUserFunctionPrefix());
+            try {
+                const entries = declarations.map(declaration => {
+                    const type = context.dataTypes.fromTsType(this.checker.getTypeAtLocation(declaration), declaration);
+                    if (type?.kind !== "function") context.fail(declaration, "Async recursive groups require owned function signatures.");
+                    const name = context.allocateTemporaryCppName("recursive_callback");
+                    context.emit({kind:"declaration", type:"auto", name, initializer:`bbl::js::make_gc_shared<${context.dataTypes.cppType(type)}>()`});
+                    const value = {...context.dataValue(`(*${name})`, type), sharedStorageCpp:name};
+                    context.bindCompileTimeValue(this.declarationIdentifier(declaration), value);
+                    return {declaration,type,value};
+                });
+                for (const entry of entries) {
+                    const cpp = context.compileStoredDataFunction(entry.declaration, entry.type);
+                    context.emit(`${entry.value.cpp} = ${cpp};`);
+                }
+                const entry = entries.find(entry => entry.declaration === root.declaration)!;
+                return context.dataLowerer.compileFunctionValueCall(entry.value, rootArguments, call);
+            } finally {
+                context.popScope();
+            }
+        }
         const argumentExpressions = pinArguments && ts.isCallExpression(call) ? call.arguments : [];
         const callSiteEffects = !recursive && root.declaration.body !== undefined && context.canReplaySharedCallEffects(root.declaration.body);
         rootArguments = rootArguments.map((value, index) => {
@@ -2357,14 +2384,15 @@ export class UserFunctionLowerer {
             context.emit(
                 { kind: "declaration", type: "auto", name: selfOwnerCpp!, initializer: `bbl::js::make_gc_shared<${cppType}>()` },
             );
-            context.emit(
+            if (!asynchronous) context.emit(
                 { kind: "declaration", type: `std::weak_ptr<${cppType}>`, name: selfWeakCpp!, initializer: selfOwnerCpp! },
             );
             const selfValue: Value = {
                 kind: "data",
-                cpp: `bbl::js::retain_callback(${selfWeakCpp}.lock())`,
+                cpp: asynchronous ? `(*${selfOwnerCpp})` : `bbl::js::retain_callback(${selfWeakCpp}.lock())`,
                 dataType,
-                nativeCaptures: [context.registerNativeBinding(selfWeakCpp!)],
+                nativeCaptures: [context.registerNativeBinding(asynchronous ? selfOwnerCpp! : selfWeakCpp!)],
+                ...(asynchronous ? {sharedStorageCpp:selfOwnerCpp!} : {}),
             };
             if (context.lookupIdentifierValue(selfIdentifier)) {
                 context.rebindCompileTimeValue(selfIdentifier, selfValue);
@@ -2425,18 +2453,20 @@ export class UserFunctionLowerer {
                 }
                 const terminated = emitReachableStatements(context, ir.statements);
                 if (!terminated && ir.returnExpression) {
-                    if (!bodyResult) {
+                    if (asynchronous) {
+                        context.emit(`co_return ${context.compileAsyncReturn(ir.returnExpression, bodyResult)};`);
+                    } else if (!bodyResult) {
                         const discarded = context.compileValue(
                             ir.returnExpression,
                         );
                         context.emitDiscardedValue(discarded);
                     } else {
                         context.emit(
-                            `${asynchronous ? "co_return" : "return"} ${context.compileForDataSink(ir.returnExpression, bodyResult)};`,
+                            `return ${context.compileForDataSink(ir.returnExpression, bodyResult)};`,
                         );
                     }
                 }
-                if (asynchronous && !terminated && !bodyResult) context.emit("co_return bbl::js::PromiseVoid{};");
+                if (asynchronous && !terminated && !ir.returnExpression && !bodyResult) context.emit("co_return bbl::js::PromiseVoid{};");
                 if (!terminated && !ir.returnExpression && bodyResult?.kind === "optional") {
                     context.emit(`${asynchronous ? "co_return" : "return"} std::nullopt;`);
                 }

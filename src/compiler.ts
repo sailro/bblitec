@@ -2950,6 +2950,20 @@ class Compiler
         });
         visit(callback.body);
         if (!recursive) return;
+        if (this.options.workers && ts.getModifiers(callback)?.some(modifier => modifier.kind === ts.SyntaxKind.AsyncKeyword)) {
+            const type = this.dataTypes.fromTsType(this.checker.getTypeAtLocation(callback), callback);
+            if (type?.kind !== "function") this.fail(callback, "Recursive async callback requires an owned function signature.");
+            this.reachJsData();
+            const callbackType = this.dataTypes.cppType(type);
+            this.emit({kind:"declaration", type:"auto", name:cppName, initializer:`bbl::js::make_gc_shared<${callbackType}>()`});
+            const value = {...this.dataValue(`(*${cppName})`, type), sharedStorageCpp:cppName};
+            this.defineVariable(name, value);
+            // Suspended invocations retain the recursive cell through the same
+            // traced environment used by stored async callbacks.
+            const compiled = this.compileStoredDataFunction(callback, type);
+            this.emit(`${value.cpp} = ${compiled};`);
+            return;
+        }
         if (!ts.isBlock(callback.body)) {
             this.fail(
                 callback.body,
@@ -4702,6 +4716,20 @@ class Compiler
 
     public withAsyncActivation<T>(work: () => T): T {
         return this.asyncLowerer.withActivation(work);
+    }
+
+    public compileAsyncReturn(expression: ts.Expression, type: DataType | undefined): string {
+        const value = this.compileValue(expression);
+        if (value.kind === "promise") {
+            const expected = type ? this.dataTypes.cppType(type) : "bbl::js::PromiseVoid";
+            if (value.promiseType !== expected) this.fail(expression, "Async return adoption requires the declared result representation.");
+            return value.cpp;
+        }
+        if (!type) {
+            this.emitDiscardedValue(value);
+            return "bbl::js::PromiseVoid{}";
+        }
+        return this.dataLowerer.compileKnownValueForSink(value, type, expression);
     }
 
     public withOwnedCallbackBody<T>(body: () => T): T {
@@ -6643,6 +6671,16 @@ class Compiler
                 }
             }
             if (rightLines.length > 0) {
+                if (this.options.workers && someAnalysisNode(unwrapped.right, ts.isAwaitExpression, {functions:"skip"})) {
+                    const result = this.allocateTemporaryCppName("logical_result");
+                    this.emit({kind:"declaration", type:"bool", name:result, initializer:left});
+                    this.registerNativeBinding(result);
+                    this.emit(`if (${isAnd ? result : `!${result}`}) {`);
+                    for (const line of rightLines) this.emit(`    ${line}`);
+                    this.emit(`    ${result} = ${right};`);
+                    this.emit("}");
+                    return result;
+                }
                 const guardedLines = rightLines
                     .map((line) => `    ${line}`)
                     .join("\n");
@@ -9630,6 +9668,10 @@ class Compiler
         const returnType = this.activeNativeReturnType();
         if (returnType === undefined) {
             this.fail(statement, "Return outside a native function.");
+        }
+        if (coroutine && statement.expression) {
+            this.emit(`co_return ${this.compileAsyncReturn(statement.expression, returnType === "void" ? undefined : returnType)};`);
+            return;
         }
         if (returnType === "void") {
             if (statement.expression) {

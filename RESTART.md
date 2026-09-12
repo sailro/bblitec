@@ -36,7 +36,7 @@ it does not establish that this external application compiles or runs.
 | Branch | `codex/external-project-support` |
 | Remote | `https://github.com/sailro/bblitec.git` |
 | Branch base used in this session | `3474e835` on `main` |
-| Latest executable-code/test unit | AudioBuffer metadata/channel copies/source-buffer identity; prior savepoints `310e61dc` (Math and forwarded callbacks), `acfebcc6` (owned packaged fetch) and `29def3e0` (async aggregation/destructuring) |
+| Latest executable-code/test unit | Owned recursive async activation and hardened audio validation; prior savepoints `f5cd2061` (AudioBuffer surface), `310e61dc` (Math and forwarded callbacks), `acfebcc6` (owned packaged fetch) and `29def3e0` (async aggregation/destructuring) |
 | Draft PR | [#247 — Extend generic application compilation and retained UI support](https://github.com/sailro/bblitec/pull/247) |
 | External checkout | `C:/Dev/_prototypes/external-native-app` |
 | External source revision | `d7c477a6d5963680c55249dceb93cb6e4ab9ce56` |
@@ -44,9 +44,29 @@ it does not establish that this external application compiles or runs.
 | External generated output | `generated/external-app` (ignored; not a successful complete generation) |
 | Session diagnostics | `artifacts/external-integration` (ignored) |
 
-Latest complete-entry diagnostic: `compile582` passed AudioBuffer properties and
-stopped at an await in an async scheduling function compiled outside an async activation.
+Latest complete-entry diagnostic: `compile589` passed recursive async activation
+and stopped at rebinding a nullable cached promise read from a map.
 Generation, native build and application runtime remain incomplete.
+
+The recursive-async baseline (`deferred583`) accepted 3/10 generation probes,
+but only 1/10 built and ran. `deferred588-native.json` builds and runs all ten:
+local/named/mutual recursion, deferred timers, void sinks, concise bodies,
+record results, rejections and invocations outliving their declaration scope.
+They reuse stored-function coroutine bodies with traced recursive cells.
+`regressions592` passes all 665 compiler/callback/worker/loading/fetch checks;
+the dedicated recursive fixture also passes. The next assessment is
+`promise-caches593.json`, covering caches, async reactions and return adoption.
+
+Validation correction: earlier async/audio fixtures closed the realm from an
+error callback whose console output was erased, allowing failures to pass.
+Those callbacks are removed, and default unhandled rejections now reach the
+realm's error handler. The stronger audio fixture exposed a source-buffer setter
+intercepted by its getter and buffer data incorrectly requiring an open context.
+Both are repaired: fresh getter-path probes roll back before setter evaluation,
+and owned buffer records retain their own handle identity after context close.
+`audio593` passes all three context/capability/playback checks without skips,
+including effectful setter receivers and channel reads after close. Earlier
+audio success claims must be interpreted with this correction.
 
 The packaged-fetch batch has 681 passing compiler/async/audio/HTTP checks without
 skips (`regressions568`). Native fixtures cover response aliases, consumption,
@@ -70,8 +90,8 @@ skips.
 covering metadata, channel copies, source ranges and buffer readback. Native fixtures
 verify bounded/overlapping copies, ArrayBuffer views, channel failures, decoded
 metadata, source-buffer identity and metadata after context close. All 670 selected
-compiler/audio checks pass without skips (`regressions582`). The next batch needs
-deferred async callback activation and retained scheduling helpers.
+compiler/audio checks passed without skips (`regressions582`), subject to the
+validation correction above. Deferred async activation is now implemented.
 
 Current assessment artifacts: `requirements356.json` inventories the unchanged
 entry's static local import graph (1,343 files, 1,002 unassessed API/syntax groups;
