@@ -85,6 +85,18 @@ Direct missing-property access on an unmaterialized static union dictionary is
 another recorded diagnostic gap; it is not established as a reached app blocker.
 The full application has not been retried during these focused core units.
 
+RegExp replacement callbacks are also implemented through the shared inline/
+stored callback path. Native RegExp aliases share state, matching uses UTF-16
+code units, captures preserve missing values, and global matches are collected
+before callbacks. Runtime-created/selected patterns use typed positional
+arguments. `charCodeAt` now uses the existing UTF-16 decoder. `core387` passed
+161 checks with no skips; `regex388` passed five focused checks including native
+capture lifetimes and compiler RegExp regressions. `capabilities385.json` records
+6/24 accepted generation probes. Three original core TODO clauses are closed;
+dynamic mixed-tuple writes and resizing remain, along with the newly identified
+destructuring-assignment gap. The next batch needs shared mutable tuple storage;
+do not implement each length-changing method as a separate special case.
+
 The branch was clean and synchronized with its remote before adding this
 document. All 14 implementation/test commits listed below were pushed. The PR
 remains a draft because integration and other explicitly pending work are

@@ -47,6 +47,7 @@ import { compileHttpFunction, compileHttpCall } from "./http.js";
 import { compileWindowServiceCall } from "./window-events.js";
 import { CompileError } from "./compile-error.js";
 import { firstReturn } from "./loop-control.js";
+import { regexpCaptureCount } from "./string-replacement.js";
 import {
     FORMATTED_MATH_FOLDS,
     mathMemberAccess,
@@ -628,11 +629,8 @@ export class ExpressionLowerer {
                         "RegExp expects a pattern and optional flags.",
                     );
                 }
-                const pattern =
-                    this.context.dataLowerer.compileForSink(
-                        arguments_[0]!,
-                        { kind: "string" },
-                    );
+                const patternValue = this.compileValue(arguments_[0]!);
+                const pattern = this.context.dataLowerer.compileKnownValueForSink(patternValue, {kind: "string"}, arguments_[0]!);
                 const flags = arguments_[1]
                     ? this.compileValue(arguments_[1]!).staticString
                     : "";
@@ -653,6 +651,7 @@ export class ExpressionLowerer {
                 this.context.reachJsData();
                 return {
                     kind: "regexp",
+                    ...(patternValue.staticString !== undefined ? {regexpCaptureCount: regexpCaptureCount(patternValue.staticString)} : {}),
                     cpp:
                         `bbl::js::RegExp(${pattern}, ` +
                         `${flags.includes("g") ? "true" : "false"}, ` +
@@ -857,6 +856,7 @@ export class ExpressionLowerer {
             this.context.reachJsData();
             return {
                 kind: "regexp",
+                regexpCaptureCount: regexpCaptureCount(pattern),
                 cpp:
                     `bbl::js::RegExp(${this.context.cppString(pattern)}, ` +
                     `${flags.includes("g") ? "true" : "false"}, ` +
@@ -896,6 +896,20 @@ export class ExpressionLowerer {
                 dataType: { kind: "string" },
                 ...(known ? { staticString: constants.join("") } : {}),
             };
+        }
+        if (ts.isBinaryExpression(unwrapped) && unwrapped.operatorToken.kind === ts.SyntaxKind.PlusToken &&
+            (this.context.checker.getTypeAtLocation(unwrapped).flags & ts.TypeFlags.Any) !== 0) {
+            // Library callback rest arguments can be inferred as any even when their
+            // supplied native values are concrete strings. Preserve ordinary + semantics.
+            const concatenated = this.context.probeEmission(() => {
+                const left = this.context.pinValueToTemporary(this.compileValue(unwrapped.left), "plus_left", unwrapped.left);
+                const right = this.context.pinValueToTemporary(this.compileValue(unwrapped.right), "plus_right", unwrapped.right);
+                const string = (value: Value): boolean => value.kind === "string" || value.dataType?.kind === "string" || value.dataType?.kind === "enum";
+                if (!string(left) && !string(right)) return undefined;
+                this.context.reachJsData();
+                return this.context.dataLowerer.leafValue(`bbl::js::concat(${stringConcatPart(this.context, left, unwrapped.left)}, ${stringConcatPart(this.context, right, unwrapped.right)})`, {kind: "string"});
+            });
+            if (concatenated) return concatenated;
         }
         if (
             ts.isBinaryExpression(unwrapped) &&
@@ -3522,8 +3536,24 @@ export class ExpressionLowerer {
             }), type);
         });
         if (jsonConditional) return jsonConditional;
-        const whenTrue = this.inRuntimeControlFlow(() => this.compileValue(unwrapped.whenTrue));
-        const whenFalse = this.inRuntimeControlFlow(() => this.compileValue(unwrapped.whenFalse));
+        const branch = (expression: ts.Expression, truth: boolean): Value => {
+            const value = this.inRuntimeControlFlow(() => this.compileValue(expression));
+            const guard = this.context.unwrap(unwrapped.condition);
+            const selected = this.context.unwrap(expression);
+            if (value.dataType?.kind !== "optional" || !ts.isIdentifier(selected) || !ts.isBinaryExpression(guard)) return value;
+            const equal = guard.operatorToken.kind === ts.SyntaxKind.EqualsEqualsEqualsToken || guard.operatorToken.kind === ts.SyntaxKind.EqualsEqualsToken;
+            const unequal = guard.operatorToken.kind === ts.SyntaxKind.ExclamationEqualsEqualsToken || guard.operatorToken.kind === ts.SyntaxKind.ExclamationEqualsToken;
+            if ((!equal && !unequal) || truth === equal) return value;
+            const absent = (node: ts.Expression): boolean => {
+                const operand = this.context.unwrap(node);
+                return operand.kind === ts.SyntaxKind.NullKeyword || (ts.isIdentifier(operand) && operand.text === "undefined" && !this.context.lookupOptional(operand));
+            };
+            const tested = absent(guard.left) ? this.context.unwrap(guard.right) : absent(guard.right) ? this.context.unwrap(guard.left) : undefined;
+            return tested && ts.isIdentifier(tested) && this.context.checker.getSymbolAtLocation(tested) === this.context.checker.getSymbolAtLocation(selected)
+                ? this.context.dataLowerer.narrowOptional(value, expression, true) : value;
+        };
+        const whenTrue = branch(unwrapped.whenTrue, true);
+        const whenFalse = branch(unwrapped.whenFalse, false);
         // A tuple value is a compile-time list of element values with
         // no native expression of its own, so selecting between two
         // tuples is selecting element by element. Same arity is the
