@@ -17,6 +17,11 @@ and nullable values; `matches` reads current state and `media` returns the norma
 Zero-argument `change` listeners run when the result changes. Other query forms,
 event payloads and listener removal are unsupported. Motion queries share the
 platform preference and refresh interval described under CSS below.
+Application and dedicated-worker `requestAnimationFrame` calls return numeric IDs;
+`cancelAnimationFrame` cancels pending callbacks in that realm. Callbacks run once
+per registration on the owner Window's repaint clock, with a timestamp and shared
+captured state. Re-registering schedules the next repaint, including from inside
+a callback; no scene engine is required. A realm without a Window repaint source refuses.
 The application `document` can be passed through specialized dependency records with a stable identity
 distinct from `window`; reached DOM operations remain limited to the projection below.
 DOM handles stored in records, arrays, nullable fields and helper parameters retain the document owner.

@@ -23,7 +23,7 @@ it does not establish that this external application compiles or runs.
 | Branch | `codex/external-project-support` |
 | Remote | `https://github.com/sailro/bblitec.git` |
 | Branch base used in this session | `3474e835` on `main` |
-| Latest completed executable-code/test commit | `c51d2405` (2026-09-12), followed by media queries in this savepoint |
+| Latest completed executable-code/test commit | `1ef18ea1` (2026-09-12), followed by realm RAF in this savepoint |
 | Draft PR | [#247 — Extend generic application compilation and retained UI support](https://github.com/sailro/bblitec/pull/247) |
 | External checkout | `C:/Dev/_prototypes/external-native-app` |
 | External source revision | `d7c477a6d5963680c55249dceb93cb6e4ab9ce56` |
@@ -298,6 +298,19 @@ incomplete. Do not merge or mark it ready merely because the sweep passes.
   cancellation, but the compiler still routes RAF through the synchronous scene
   conductor. Window/worker repaint subscription also needs checking before
   exposing those APIs. Complete external generation remains pending.
+
+- `1ef18ea1` saves typed media queries and nullable application state and is
+  pushed. The RAF unit now lowers application and dedicated-worker calls through
+  `EventLoop`'s existing one-shot queue and cancellation. HostServices supplies
+  the owner Window's shared repaint source; each realm subscribes on its first
+  request, independently of scene engine startup. Stored callback lowering keeps
+  self-rearming functions and captured bindings alive instead of recursively
+  inlining them. `raf319` passed the generated native scheduling/cancellation
+  fixture and the existing realm event-loop tests (two checks, no skips).
+  `full319` passed all 2,583 tests without failures or skips. `compile319` failed
+  at a nullable string-union fallback of the form `id ?? ""`: the fallback was
+  incorrectly forced into the narrower source enum. Complete generation remains
+  pending. The known document-root erasure gap also remains in scope.
 
 The refreshed harness explicitly reports `danger-full-access`, networking
 enabled and approval policy `never`. Do not pass `sandbox_permissions` or ask

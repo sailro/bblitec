@@ -15,6 +15,8 @@ export interface WorkerLoweringContext
         | "lookupOptional"
         | "compileValue"
         | "compileFrameCallback"
+        | "reachFeature"
+        | "reachJsData"
         | "compileWorkerCallback"
         | "compileNumber"
         | "emit"
@@ -46,7 +48,7 @@ export function isNativeWorkerExpression(context: WorkerLoweringContext, express
         browserGlobalNamed(context, node.expression)?.text === "location") return true;
     const globalMember = browserGlobalNamed(context, node);
     if (globalMember && globalMember !== node) {
-        return ["Worker", "OffscreenCanvas", "ResizeObserver", "matchMedia", "devicePixelRatio", "isSecureContext", "setTimeout", "setInterval", "clearTimeout", "clearInterval", "queueMicrotask", "postMessage", "close"].includes(globalMember.text);
+        return ["Worker", "OffscreenCanvas", "ResizeObserver", "matchMedia", "devicePixelRatio", "isSecureContext", "requestAnimationFrame", "cancelAnimationFrame", "setTimeout", "setInterval", "clearTimeout", "clearInterval", "queueMicrotask", "postMessage", "close"].includes(globalMember.text);
     }
     const root = rootIdentifier(node, inner => context.unwrap(inner));
     if (!root) return false;
@@ -54,7 +56,7 @@ export function isNativeWorkerExpression(context: WorkerLoweringContext, express
     if (bound?.hostFunction) return true;
     if (bound?.kind.startsWith("worker") || bound?.kind === "offscreen-canvas") return true;
     return browserGlobalNamed(context, root) !== undefined &&
-        ["Worker", "OffscreenCanvas", "ResizeObserver", "matchMedia", "self", "setTimeout", "setInterval", "clearTimeout", "clearInterval", "queueMicrotask", "postMessage", "close"].includes(root.text);
+        ["Worker", "OffscreenCanvas", "ResizeObserver", "matchMedia", "self", "requestAnimationFrame", "cancelAnimationFrame", "setTimeout", "setInterval", "clearTimeout", "clearInterval", "queueMicrotask", "postMessage", "close"].includes(root.text);
 }
 
 /** Browser Worker operations lower to realm services, independently of an engine. */
@@ -170,6 +172,18 @@ export function compileWorkerValue(context: WorkerLoweringContext, expression: t
     if (workerScope && member === "close" && node.arguments.length === 0) return { kind: "void", cpp: `${realm}.close()` };
     if (owner?.kind === "worker-error-event" && member === "preventDefault" && node.arguments.length === 0) {
         return { kind: "void", cpp: `${owner.cpp}.prevent_default()` };
+    }
+    if ((global || workerScope) && member === "requestAnimationFrame") {
+        if (node.arguments.length !== 1) return context.fail(node, "requestAnimationFrame requires one callback.");
+        context.reachFeature("platform:window", node);
+        context.reachFeature("ui:rml", node);
+        const callback = context.dataLowerer.compileForSink(argumentAt(node, 0), {kind:"function", parameters:[{kind:"number"}]});
+        return {kind:"number", cpp:`static_cast<double>(${realm}.request_animation_frame(${callback}))`, impure:true};
+    }
+    if ((global || workerScope) && member === "cancelAnimationFrame") {
+        if (node.arguments.length !== 1) return context.fail(node, "cancelAnimationFrame requires one numeric identifier.");
+        context.reachJsData();
+        return {kind:"void", cpp:`${loop}.cancel_animation_frame(bbl::js::to_uint32(${context.compileNumber(argumentAt(node, 0), "double")}))`};
     }
     if ((global || workerScope) && (member === "setTimeout" || member === "setInterval")) {
         if (node.arguments.length < 1 || node.arguments.length > 2) return context.fail(node, "Native timers require a callback and optional delay.");
