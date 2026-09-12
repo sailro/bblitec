@@ -108,6 +108,8 @@ microtasks and reported in a subsequent task; application listeners are describe
 `then` accepts fulfillment and rejection callbacks that settle to the same admitted result type,
 including returned promises. The rejection callback handles the original outcome; exceptions from
 either callback reject the returned promise. Mixed callback result types remain unsupported.
+Timers and microtasks use the realm event loop through bare globals or `window`/`globalThis`
+qualification; they do not require a scene engine. Worker realms reject the Window global.
 Worker codecs support typed plain data, cycles, repeated references and copied
 buffers. Transfer lists admit OffscreenCanvas only; MessagePort and shared memory are unsupported.
 Classic workers and runtime-selected scripts refuse. Worker options admit `name`, `type: "module"`

@@ -23,7 +23,7 @@ it does not establish that this external application compiles or runs.
 | Branch | `codex/external-project-support` |
 | Remote | `https://github.com/sailro/bblitec.git` |
 | Branch base used in this session | `3474e835` on `main` |
-| Last completed executable-code/test commit before the promise unit | `cb92759f` (2026-09-12) |
+| Last completed executable-code/test commit before the timer unit | `7fdf4ab9` (2026-09-12) |
 | Draft PR | [#247 — Extend generic application compilation and retained UI support](https://github.com/sailro/bblitec/pull/247) |
 | External checkout | `C:/Dev/_prototypes/external-native-app` |
 | External source revision | `d7c477a6d5963680c55249dceb93cb6e4ab9ce56` |
@@ -111,10 +111,14 @@ incomplete. Do not merge or mark it ready merely because the sweep passes.
   passed a generated native record-valued recovery check.
 - `compile241` (exit 1) progressed to `src/ui/crash-reporter.ts:616:7`:
   "This intrinsic requires createEngine to run first." The reached expression is
-  `window.setTimeout`. Worker expression recognition accepts qualified globals,
-  but `compiler/workers.ts` currently recognizes only bare global callees when
-  selecting timer lowering. Use the existing symbol-aware `browserGlobalNamed`
-  mechanism so qualified timers use the realm event loop too.
+  `window.setTimeout`. The timer unit now uses the existing symbol-aware
+  `browserGlobalNamed` mechanism for callee selection. Qualified timers,
+  cancellation, intervals and microtasks passed native execution without a scene
+  engine (`focused245`, three tests); shadowed globals stay ordinary local
+  functions and the Window global is refused in worker realms.
+- `7fdf4ab9` saves the promise unit and is pushed. The generated promise fixture
+  also compiled and ran under Clang with warnings as errors. `compile245` was
+  started after the timer fix; inspect its log/exit file for the next blocker.
 - Open GitHub issues were checked on 2026-09-12: none. Neither completed DOM
   unit closes a listed TODO item. The broader UI and worker gaps remain open.
 - A separate neutral probe found that creating a realm rendering engine without

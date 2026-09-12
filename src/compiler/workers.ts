@@ -104,7 +104,11 @@ export function compileWorkerValue(context: WorkerLoweringContext, expression: t
     const callee = context.unwrap(node.expression);
     const member = ts.isPropertyAccessExpression(callee) ? callee.name.text : ts.isIdentifier(callee) ? callee.text : undefined;
     const owner = ts.isPropertyAccessExpression(callee) ? scope(callee.expression) : undefined;
-    const global = ts.isIdentifier(callee) && context.isDefaultLibraryIdentifier(callee);
+    const global = browserGlobalNamed(context, callee) !== undefined;
+    if (global && context.options.workers.namespace && ts.isPropertyAccessExpression(callee) &&
+        browserGlobalNamed(context, callee.expression)?.text === "window") {
+        return context.fail(callee, "The Window global is not available in a worker realm.");
+    }
     const worker = owner?.kind === "worker";
     const workerScope = owner?.kind === "worker-scope" || (global && context.options.workers.namespace !== undefined);
     const receiver = worker ? `${owner.cpp}->` : `${realm}.`;
