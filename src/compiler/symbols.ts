@@ -59,6 +59,18 @@ export function declarationInDefaultLibrary(declaration: ts.Node): boolean {
     return file.isDeclarationFile && file.hasNoDefaultLib;
 }
 
+/** An erased ambient declaration does not provide a native runtime binding.
+ * Bare typeof may observe that absence; ordinary reads and imports still need
+ * their actual implementation. Library globals retain their own lowering. */
+export function isAbsentTypeofIdentifier(checker: ts.TypeChecker, identifier: ts.Identifier): boolean {
+    const symbol = checker.getSymbolAtLocation(identifier);
+    if (!symbol) return true;
+    if ((symbol.flags & ts.SymbolFlags.Alias) !== 0 || declaredInDefaultLibrary(symbol)) return false;
+    if (declaredInDefaultLibrary(checker.resolveName(identifier.text, undefined, ts.SymbolFlags.Value, false))) return false;
+    return Boolean(symbol.declarations?.length) && symbol.declarations!.every(declaration =>
+        declaration.getSourceFile().isDeclarationFile || (ts.getCombinedModifierFlags(declaration) & ts.ModifierFlags.Ambient) !== 0);
+}
+
 /**
  * Whether an identifier names a default-library global (`Math`, `fetch`,
  * `URL`, `Error`) rather than a binding of the program's own. The one

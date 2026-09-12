@@ -26,6 +26,7 @@ import ts from "typescript";
 import { isHandleKind } from "./data-types.js";
 
 import { doubleLiteral } from "../cpp-literals.js";
+import {isAbsentTypeofIdentifier} from "./symbols.js";
 import { compileNumberPredicate, numberConstant, numberConstantValue } from "./number-intrinsics.js";
 import {
     compileAudioMethodCall,
@@ -994,7 +995,7 @@ export class ExpressionLowerer {
             }
             if (
                 ts.isIdentifier(expression) &&
-                expression.text === "undefined" &&
+                (expression.text === "undefined" || isAbsentTypeofIdentifier(this.context.checker, expression)) &&
                 !this.context.lookupOptional(expression)
             ) {
                 return {

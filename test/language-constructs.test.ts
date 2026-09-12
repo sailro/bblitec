@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
-import test from "node:test";
+import test, {type TestContext} from "node:test";
 import { runInNewContext } from "node:vm";
 import ts from "typescript";
 import { compileSource } from "../src/compiler.js";
@@ -12,6 +12,51 @@ import { nativeFixtureVcpkgRoot, optionalNativeFixtureTools, runNativeFixtureCom
 // assertions in JavaScript first, then the generated C++ must build and run
 // them identically.
 const native = optionalNativeFixtureTools(false);
+
+check("ambient-typeof-guards", `
+    declare const OPTIONAL_BUILD: boolean | undefined;
+    declare function OPTIONAL_HOOK(): void;
+    declare namespace OPTIONAL_PACKAGE { function run(): void; }
+    declare class OptionalClass { value: number; }
+    const enabled = typeof OPTIONAL_BUILD !== "undefined" && OPTIONAL_BUILD === true;
+    if (enabled || typeof OPTIONAL_HOOK !== "undefined") throw new Error("absent ambient globals");
+    if (typeof NEVER_PROVIDED !== "undefined") throw new Error("unbound typeof");
+    if (typeof OPTIONAL_PACKAGE !== "undefined" || typeof OptionalClass !== "undefined") throw new Error("erased declarations");
+    function kind(OPTIONAL_BUILD: number): string { return typeof OPTIONAL_BUILD; }
+    if (kind(7) !== "number") throw new Error("parameter binding");
+    {
+        const OPTIONAL_BUILD = true;
+        if (typeof OPTIONAL_BUILD !== "boolean") throw new Error("local binding");
+    }
+    const selected = typeof OPTIONAL_BUILD === "undefined" ? "fallback" : "provided";
+    if (selected !== "fallback") throw new Error("conditional guard");
+    let effects=0;
+    function receiver(): {value:number} { effects++; return {value:7}; }
+    if (typeof receiver().value !== "number" || effects !== 1) throw new Error("member operand evaluation");
+`);
+
+test("absent typeof support preserves errors for unprovided reads and imported implementations", () => {
+    assert.throws(() => compileSource('declare const OPTIONAL_BUILD: boolean; const value=OPTIONAL_BUILD;'), /Unknown or unsupported variable/);
+    assert.throws(() => compileSource('declare const OPTIONAL_BUILD: {value:number}; const value=typeof OPTIONAL_BUILD.value;'), /Unknown or unsupported variable/);
+    const directory=resolve("artifacts/ambient-typeof-import");
+    mkdirSync(directory,{recursive:true});
+    writeFileSync(join(directory,"provider.ts"),'export declare const supplied: number;');
+    assert.throws(() => compileSource('import {supplied} from "./provider.js"; const kind=typeof supplied;', {fileName:join(directory,"entry.ts")}));
+});
+
+test("ambient availability guards settle through imported helpers", async t => {
+    const directory=resolve("artifacts/ambient-typeof-module");
+    mkdirSync(directory,{recursive:true});
+    const module=`declare const OPTIONAL_LABEL: string | undefined;
+        export const label = typeof OPTIONAL_LABEL === "undefined" ? "baseline" : OPTIONAL_LABEL;
+        export function describe(prefix="value"): string { return prefix+":"+label; }`;
+    writeFileSync(join(directory,"feature.ts"),module);
+    const javascript=ts.transpileModule(module,{compilerOptions:{target:ts.ScriptTarget.ESNext,module:ts.ModuleKind.CommonJS}}).outputText;
+    assert.equal(runInNewContext('const exports={};'+javascript+';exports.describe()'),"value:baseline");
+    const result=compileSource('import {describe,label} from "./feature.js"; if(describe()!=="value:baseline" || label!=="baseline") throw new Error("module fallback");',
+        {fileName:join(directory,"entry.ts")});
+    await executeGeneratedAssertions(t,"ambient-typeof-module",result.cpp);
+});
 
 check("optional-container-method-continuations", `
     const original = new Set<number>([4]);
@@ -578,24 +623,27 @@ check("nullable-string-enum-assertions", `
     if (parsed[0] !== "high" || parsed[1] !== null || parsed[2] !== null || parsed[3] !== "low") throw new Error("nullable enum assertion");
 `);
 
+async function executeGeneratedAssertions(t: TestContext, name: string, source: string): Promise<void> {
+    await t.test("generated C++ executes the same assertions", {skip:!native}, () => {
+        const directory=resolve("artifacts/language-constructs",name);
+        mkdirSync(directory,{recursive:true});
+        const cpp=join(directory,"check.cpp"),exe=join(directory,"check.exe");
+        writeFileSync(cpp,source);
+        runNativeFixtureCompiler(native!,[
+            "/nologo","/std:c++20","/W4","/WX","/permissive-","/EHsc","/MD","/fp:precise","/utf-8",
+            "/I","native/include","/I",join(nativeFixtureVcpkgRoot,"include"),`/Fo:${directory}/`,`/Fe:${exe}`,cpp,
+        ]);
+        execFileSync(exe,{stdio:"pipe"});
+    });
+}
+
 function check(name: string, source: string): void {
     test(name, async t => {
         runInNewContext(ts.transpileModule(source, {
             compilerOptions: { target: ts.ScriptTarget.ESNext, module: ts.ModuleKind.None },
         }).outputText);
         const result = compileSource(source, { fileName: `${name}.ts` });
-        await t.test("generated C++ executes the same assertions", { skip: !native }, () => {
-            const directory = resolve("artifacts/language-constructs", name);
-            mkdirSync(directory, { recursive: true });
-            const cpp = join(directory, "check.cpp");
-            const exe = join(directory, "check.exe");
-            writeFileSync(cpp, result.cpp);
-            runNativeFixtureCompiler(native!, [
-                "/nologo", "/std:c++20", "/W4", "/WX", "/permissive-", "/EHsc", "/MD", "/fp:precise", "/utf-8",
-                "/I", "native/include", "/I", join(nativeFixtureVcpkgRoot, "include"), `/Fo:${directory}/`, `/Fe:${exe}`, cpp,
-            ]);
-            execFileSync(exe, { stdio: "pipe" });
-        });
+        await executeGeneratedAssertions(t,name,result.cpp);
     });
 }
 

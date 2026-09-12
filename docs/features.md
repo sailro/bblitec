@@ -62,6 +62,12 @@ Custom environment fields are explicit string inputs (`--env NAME=value`, repeat
 `CompileOptions.environment`). Missing custom keys read as undefined; empty strings stay empty.
 Built-in constants cannot be overridden. Host environment variables and dotenv files are not read implicitly.
 
+Ambient `declare` statements provide types without creating runtime bindings.
+Bare `typeof` on an unprovided ambient or unbound identifier yields `"undefined"`,
+so availability guards and fallback constants can settle through imported helpers.
+Ordinary reads, member accesses and imports still require implementations; local
+bindings and supported library globals keep their existing value semantics.
+
 Stored class callback fields retain their instance captures and function identity. Locally bound records
 and returned callbacks preserve their enclosing generic instantiation when invoked later. Records
 with reassigned callback fields use shared native function storage, so retained
