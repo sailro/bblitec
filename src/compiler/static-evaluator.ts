@@ -1097,7 +1097,7 @@ export class StaticEvaluator {
         }
         if (ts.isIdentifier(unwrapped)) {
             const value = this.lookup(unwrapped);
-            if (value.staticString !== undefined) {
+            if (value.staticString !== undefined && !value.parameterBinding) {
                 return value.staticString;
             }
             this.fail(
@@ -1108,7 +1108,7 @@ export class StaticEvaluator {
         }
         if (ts.isPropertyAccessExpression(unwrapped)) {
             const value = this.resolveProperty(unwrapped);
-            if (value?.staticString !== undefined) {
+            if (value?.staticString !== undefined && !value.parameterBinding) {
                 return value.staticString;
             }
         }
@@ -1573,6 +1573,15 @@ export class StaticEvaluator {
         if (ts.isNumericLiteral(unwrapped)) {
             return String(Number(unwrapped.text));
         }
+        const staticContext = {
+            isDefaultLibraryIdentifier: this.isDefaultLibraryIdentifier,
+            resolveStaticExpression: (value: ts.Expression) => this.resolveStaticExpression(value),
+            lookup: (identifier: ts.Identifier) => this.lookup(identifier),
+            lookupOptional: (identifier: ts.Identifier) => this.lookupOptional(identifier),
+            fail: (node: ts.Node, message: string): never => this.fail(node, message),
+        };
+        const numeric = staticNumberValue(staticContext, unwrapped);
+        if (numeric !== undefined) return String(numeric);
         if (
             ts.isCallExpression(unwrapped) &&
             ts.isPropertyAccessExpression(
@@ -1583,18 +1592,6 @@ export class StaticEvaluator {
             ) &&
             unwrapped.arguments.length <= 1
         ) {
-            const staticContext = {
-                isDefaultLibraryIdentifier: this.isDefaultLibraryIdentifier,
-                resolveStaticExpression: (
-                    value: ts.Expression,
-                ) => this.resolveStaticExpression(value),
-                lookup: (identifier: ts.Identifier) =>
-                    this.lookup(identifier),
-                lookupOptional: (identifier: ts.Identifier) =>
-                    this.lookupOptional(identifier),
-                fail: (node: ts.Node, message: string): never =>
-                    this.fail(node, message),
-            };
             const number = staticNumberValue(
                 staticContext,
                 unwrapped.expression.expression,
@@ -1606,7 +1603,7 @@ export class StaticEvaluator {
                   )
                 : undefined;
             const method = unwrapped.expression.name.text;
-            if (number !== undefined && digits === undefined) {
+            if (number !== undefined && unwrapped.arguments.length === 0) {
                 return method === "toFixed"
                     ? number.toFixed()
                     : method === "toPrecision"
@@ -1644,12 +1641,12 @@ export class StaticEvaluator {
             const value = ts.isIdentifier(unwrapped)
                 ? this.lookup(unwrapped)
                 : this.resolveProperty(unwrapped);
-            if (value?.staticString !== undefined) {
+            if (value?.staticString !== undefined && !value.parameterBinding) {
                 return value.staticString;
             }
             if (
                 value?.kind === "number" &&
-                value.staticNumber !== undefined
+                value.staticNumber !== undefined && !value.parameterBinding
             ) {
                 return String(value.staticNumber);
             }

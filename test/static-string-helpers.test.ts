@@ -46,6 +46,40 @@ test("runtime inputs cannot become static stylesheet strings through helpers", (
     `), /Expected a string literal/);
 });
 
+test("numeric template substitutions share constant evaluation beside string helpers", () => {
+    const result = compileSource(`
+        import { createEngine } from "@babylonjs/lite";
+        const EDGE = 7;
+        const GAP = EDGE + 3;
+        const WIDTH = 2 * GAP;
+        function unit(): string { return "px"; }
+        const CSS = \`.panel { width: \${WIDTH}\${unit()}; margin-left: \${-2}px; }
+            .other { width: \${2 * (7 + 3)}px; height: \${Math.max(12, 20)}px;
+                margin-top: \${Math.PI}px; padding: \${(2 * GAP).toFixed(1)}px; }\`;
+        async function main() {
+            await createEngine({});
+            const sheet = document.createElement("style");
+            sheet.textContent = CSS;
+            document.head.appendChild(sheet);
+        }
+        void main();
+    `);
+    assert.match(result.cpp, /ui_add_class_style[^\n]*"panel"[^\n]*width:\s*20px;\s*margin-left:\s*-2px/);
+    assert.match(result.cpp, /ui_add_class_style[^\n]*"other"[^\n]*margin-top: 3\.141592653589793px; padding: 20\.0px/);
+});
+
+test("unknown explicit formatting precision cannot fold as omitted precision", () => {
+    for (const method of ["toFixed", "toPrecision", "toExponential"]) {
+        assert.throws(() => compileSource(`
+            function main() {
+                const text = \`\${(1.25).${method}(Math.random())}\`;
+                if (text === "") throw new Error("unexpected empty value");
+            }
+            main();
+        `), /requires a static number and integer precision/);
+    }
+});
+
 test("enum-indexed constant palettes preserve strings through nested stylesheet helpers", () => {
     const result = compileSource(`
         import { createEngine } from "@babylonjs/lite";
@@ -94,6 +128,25 @@ test("static string specialization evaluates argument effects once and preserves
         settings.width = 7;
         const second = read();
         if (first !== "4px" || second !== "7px") throw new Error("mutable read frozen");
+        let mutable = 2;
+        function change(): string { mutable = 5; calls++; return "next"; }
+        const ordered = \`\${mutable}-\${change()}-\${mutable}\`;
+        if (ordered !== "2-next-5" || calls !== 2) throw new Error("template read order");
+        let steps = 0;
+        function step(): number { steps++; return steps; }
+        const stepped = \`\${step()}/\${step()}\`;
+        if (stepped !== "1/2" || steps !== 2) throw new Error("template call order");
+        function mutateParameter(value: number): string {
+            value += 1;
+            const before = \`\${value}\`;
+            value += 2;
+            return \`\${before}:\${value}\`;
+        }
+        if (mutateParameter(3) !== "4:6") throw new Error("mutable template parameter");
+        function mutateText(value: string): string { value += "!"; return \`\${value}\`; }
+        function mutateFlag(value: boolean): string { value = !value; return \`\${value}\`; }
+        if (mutateText("ready") !== "ready!" || mutateFlag(true) !== "false")
+            throw new Error("mutable primitive template parameters");
         }
         main();
     `);

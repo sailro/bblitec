@@ -12692,6 +12692,14 @@ class Compiler
      * difference is the contract rather than an accident.
      */
     public pinValueToTemporary(value: Value, label: string, node?: ts.Expression): Value {
+        if (value.parameterBinding) {
+            // Writable parameters retain initial metadata for other lowering
+            // decisions; a snapshot must read their current native value.
+            value = { ...value };
+            delete value.staticNumber;
+            delete value.staticString;
+            delete value.staticBoolean;
+        }
         if (["text-data", "text-renderable", "text-vector"].includes(value.kind)) {
             const retained = retainTextValue(this, value);
             this.describeNativeValue(retained);
@@ -13291,7 +13299,9 @@ class Compiler
             return;
         }
         if (
-            value.kind === "string" ||
+            (value.kind === "string" && (!parameter ||
+                (ts.isParameter(identifier.parent) && isSupportedFunction(identifier.parent.parent) &&
+                    parameterIsReadOnly(this.checker, identifier.parent.parent, identifier)))) ||
             value.kind === "callback" ||
             isCompileTimeOnlyValue(value.kind)
         ) {
@@ -13315,7 +13325,7 @@ class Compiler
                 ? "double"
                 : value.kind === "boolean"
                   ? "bool"
-                  : value.kind === "data" && value.dataType?.kind === "string"
+                  : value.kind === "string" || (value.kind === "data" && value.dataType?.kind === "string")
                     ? "std::string"
                     : parameter && !copiesHandle
                       ? "auto&&"

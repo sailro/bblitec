@@ -269,7 +269,9 @@ On Windows, they follow the system [client-area animation preference](https://le
 checked about once per second while the UI runs.
 Other platforms currently refuse when this preference is reached.
 Stylesheet strings can be assembled by closed helpers over literal scalars and option records;
-argument effects execute once. Runtime-generated stylesheet text remains unsupported.
+numeric constant expressions retain their values alongside helper results. Template substitutions
+execute in source order and snapshot mutable reads; argument effects execute once.
+Runtime-generated stylesheet text remains unsupported.
 Window `getBoundingClientRect()` publishes pending document edits and waits for their
 layout; the returned fields retain the snapshot taken by that call.
 Grids without explicit tracks use one native auto column and an auto row per

@@ -36,7 +36,7 @@ it does not establish that this external application compiles or runs.
 | Branch | `codex/external-project-support` |
 | Remote | `https://github.com/sailro/bblitec.git` |
 | Branch base used in this session | `3474e835` on `main` |
-| Latest executable-code/test unit | Native implicit grids/unmarked lists; prior savepoints 1fe43c54 (CSS presentation/visibility), `a81992d4` (owned async methods and promise selection), `0bdfc5b1` (native graphics availability), `613d52b6` (image/promise startup readiness), `8af15082` (asynchronous startup), `f699ad6b` (promise cleanup), `059bfbca` (generic/nested/defaulted destructuring), `bdce7a97` (captured lexical initialization), `bc21486a` (scheduled audio events), `95b04043` (async control flow), `e5ea2607` (async collections), `24281f2c` (promise caches/reactions), `53ba4164` (recursive async and hardened validation) and `f5cd2061` (AudioBuffer surface) |
+| Latest executable-code/test unit | Control appearance/logical spacing/input types (`ac616c41`); prior savepoints `a25c5eea` (implicit grids/unmarked lists), 1fe43c54 (CSS presentation/visibility), `a81992d4` (owned async methods and promise selection), `0bdfc5b1` (native graphics availability), `613d52b6` (image/promise startup readiness), `8af15082` (asynchronous startup), `f699ad6b` (promise cleanup), `059bfbca` (generic/nested/defaulted destructuring), `bdce7a97` (captured lexical initialization), `bc21486a` (scheduled audio events), `95b04043` (async control flow), `e5ea2607` (async collections), `24281f2c` (promise caches/reactions), `53ba4164` (recursive async and hardened validation) and `f5cd2061` (AudioBuffer surface) |
 | Draft PR | [#247 — Extend generic application compilation and retained UI support](https://github.com/sailro/bblitec/pull/247) |
 | External checkout | `C:/Dev/_prototypes/external-native-app` |
 | External source revision | `d7c477a6d5963680c55249dceb93cb6e4ab9ce56` |
@@ -49,6 +49,45 @@ and stops at the stylesheet helper's css argument, bound as data without a stati
 string (213.4 seconds). Next trace the argument's caller/origin and assess helper
 specialization, rather than guessing another CSS property. Full intended application
 generation, native build and runtime remain incomplete.
+
+The control/spacing unit is committed and pushed as ac616c41; draft PR #247 was
+updated with pr744.json. Staged TypeScript/privacy/whitespace checks pass, along
+with the final spacing743 focused and two-backend Window checks.
+
+static-argument744 traces the same application failure in 204.4 seconds to a
+stylesheet mixing closed string helpers with numeric constant arithmetic. The
+eight basic Window helper forms in style-arguments746 all pass; 745 was an invalid
+non-Window probe and is not a capability baseline. numeric-templates749 establishes
+a separate eight-case arithmetic template baseline: two accepted, six refused.
+752 accepts all eight. Numeric facts now use the existing static number evaluator
+at the template sink, without folding arbitrary ordinary numeric expressions.
+Substitutions are evaluated and pinned in source order. Writable parameter initial
+metadata must not masquerade as a current value, and writable string parameters
+need native string storage. An explicit unknown formatter precision cannot fold
+as an omitted argument. templates750 exposed stale mutable parameter text and an
+overly strict whitespace assertion; 752 exposed a writable string bound to its
+literal instead of native storage. 753 passes all eleven string/specialization
+checks including native effect order and mutable number/string/boolean parameters.
+
+The new ignored assess-module-stylesheets.mjs evaluates module-level stylesheet
+constants with their original dependencies using an in-memory Window probe. It
+does not edit private files. module-stylesheets747 refines the 36 previously dynamic
+templates: seven accepted, twenty-one refused, eight local templates unassessed.
+Four refusals are missing static strings; the rest reach concrete CSS requirements.
+This includes unused code and remains separate from application/native completion.
+Full captured CSS lives beside each module report in its -sheets directory.
+module-stylesheets754 keeps the same seven/twenty-one/eight outcome counts, but all
+four missing-static-string cases now reach and capture CSS. Their next refusals
+are background sizing/repeat, explicit grids, and decoration on generated content.
+templates754-regressions passes 953/953 without skips. templates-window755 passes
+numeric stylesheet geometry, mutation/order checks and the original DPWCDWMK
+replay on SDL_GPU and Dawn. population755 has generated all 288 entries; its
+native bootstrap passes. The unchanged complete-entry compile756 still stops at
+the stylesheet argument after eight sheets (202.3 seconds). Do not claim the
+application boundary is cleared from the isolated-module result. imported-styles757
+reproduces it by importing only the stylesheet installer, avoiding another complete
+entry retry; the two neutral imported arithmetic-template controls pass. Trace the
+remaining difference in that reduced import path before the next CSS unit.
 
 Control/spacing support uses native property/shorthand registration without another
 RmlUi patch (still sixteen). appearance:auto/none and the prefixed alias share one

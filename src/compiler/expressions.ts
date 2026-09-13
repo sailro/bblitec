@@ -227,6 +227,7 @@ export interface ExpressionContext
  * and `null`.
  */
 function staticStringCoercion(value: Value): string | undefined {
+    if (value.parameterBinding) return undefined;
     if (value.staticString !== undefined) return value.staticString;
     if (value.staticNumber !== undefined) return String(value.staticNumber);
     if (value.staticBoolean !== undefined) return String(value.staticBoolean);
@@ -1241,41 +1242,18 @@ export class ExpressionLowerer {
     private compileTemplate(
         expression: ts.TemplateExpression,
     ): Value {
-        const staticValues = expression.templateSpans.map(
-            (span) =>
-                this.context.evaluator.staticTextValue(
-                    span.expression,
-                ),
-        );
-        if (
-            staticValues.every(
-                (value): value is string =>
-                    value !== undefined,
-            )
-        ) {
-            let text = expression.head.text;
-            expression.templateSpans.forEach(
-                (span, index) => {
-                    text += staticValues[index];
-                    text += span.literal.text;
-                },
-            );
-            return {
-                kind: "string",
-                cpp: this.context.cppString(text),
-                staticString: text,
-            };
-        }
-
         const parts: string[] = [
             this.context.cppString(expression.head.text),
         ];
         let compiledStaticText = expression.head.text;
         let allCompiledValuesAreStatic = true;
         expression.templateSpans.forEach((span) => {
-            const value = this.compileValue(
-                span.expression,
-            );
+            // Resolve each substitution after its predecessors' effects. A
+            // closed numeric expression keeps its fact alongside helper results.
+            const known = this.context.evaluator.staticTextValue(span.expression);
+            const value = known === undefined
+                ? this.context.pinValueToTemporary(this.compileValue(span.expression), "template_part", span.expression)
+                : staticStringValue(known, text => this.context.cppString(text));
             const staticText = staticStringCoercion(value);
             if (staticText === undefined) {
                 allCompiledValuesAreStatic = false;
