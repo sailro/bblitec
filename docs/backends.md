@@ -55,6 +55,8 @@ patch supplies buffer byte lengths at reserved buffer index 30, and the compiler
 maps Tint's length entries to SDL storage slots.
 The Metal fence patch restores SDL's completed-fence query contract, allowing
 the worker-window presenter to retire submitted frames.
+Dawn's Metal capability patch enables primitive-index attribution on Mac2 GPUs,
+which expose Primitive ID alongside Apple7 in Apple's Metal feature tables.
 
 Composed material pipelines use each render task's attachment sample count;
 their caches distinguish it from the main window's multisampling state.

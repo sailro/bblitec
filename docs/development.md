@@ -343,15 +343,32 @@ Vulkan and X11/Wayland while removing unused audio/gamepad and renderer code.
 The packager includes only SPIR-V and binding sidecars, checks dynamic library
 resolution without development loader overrides, and forces Vulkan for smoke.
 
-macOS x64 uses the same release command. Its minimal build uses `-Oz`, LTO and
-the Apple linker's `-dead_strip`, with trimmed static project dependencies.
+On Intel or Apple silicon Macs, the same release command produces universal
+packages (`bblitec-<scene>-sdl-gpu-macos-universal.zip`). It builds separate
+`x86_64` and `arm64` executables with Clang/Ninja, then combines them with
+`lipo`. Each slice uses `-Oz`, LTO and the Apple linker's `-dead_strip`, with
+matching trimmed static dependencies. Build trees and dependency workspaces,
+outputs and vcpkg installs are separated by architecture; generation and MSL
+compilation run once. Normal development builds keep the host architecture.
 Packages contain MSL and binding sidecars, preserve executable permissions,
-and check startup with Metal. The staged executable is stripped and ad-hoc
-signed; it is not Developer ID signed or notarized. `RUNTIME-LIBRARIES.txt`
-records system libraries/frameworks and packaging refuses external dynamic
-dependencies. Set `MACOSX_DEPLOYMENT_TARGET` before building dependencies and
-scenes to choose the minimum OS version. Minimal Apple Silicon packaging is
-not enabled.
+and check startup with Metal on the build host. The packager validates both
+thin inputs against the same generated payload and matching deployment/capture
+settings, strips the combined executable, ad-hoc signs it and verifies both
+signatures. It is not Developer ID signed or notarized. `RUNTIME-LIBRARIES.txt`
+records system libraries/frameworks for both slices; packaging refuses external
+dynamic dependencies in either slice. Receipts record included architectures
+and which host architecture passed startup. An Intel Mac can cross-compile ARM
+but cannot run that slice; native ARM validation needs an Apple silicon Mac.
+See [Apple's universal binary guidance](https://developer.apple.com/documentation/apple-silicon/building-a-universal-macos-binary).
+
+Set `MACOSX_DEPLOYMENT_TARGET` before building dependencies and scenes to choose
+the minimum OS version (at least 11 for ARM). Use fresh dependency caches when
+changing it. For manual builds, pass `-MacArchitecture x86_64` or `arm64` to
+the trimmed dependency scripts and use matching `x64-osx`/`arm64-osx` vcpkg
+installs and `CMAKE_OSX_ARCHITECTURES` for each scene build. Package with
+`npm run package:demo -- -Scene <id> -BuildDirectory <intel-build> -Arm64BuildDirectory <arm-build>`.
+Omitting the paths selects `native/build-<id>-min-sdl-x86_64` and
+`native/build-<id>-min-sdl-arm64`; macOS packaging always requires both.
 
 For a manual Windows build, use `BBLITE_MINSIZE=ON`, one backend, MSVC, static CRT and
 `VCPKG_TARGET_TRIPLET=x64-windows-static`. Set `BBLITE_GENERATED_DIR` and

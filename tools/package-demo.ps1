@@ -2,6 +2,7 @@ param(
     [string]$Scene = "scene1",
     [string]$OutputRoot = "artifacts\releases",
     [string]$BuildDirectory = "",
+    [string]$Arm64BuildDirectory = "",
     [ValidateSet("", "SDL_GPU", "DAWN")]
     [string]$ExpectBackend = ""
 )
@@ -19,10 +20,14 @@ Import-Module (Join-Path $PSScriptRoot "bblite-tools.psm1") -Force
 Import-Module (Join-Path $PSScriptRoot "image-codecs.psm1") -Force
 Import-Module (Join-Path $PSScriptRoot "package-output.psm1") -Force
 $root = Get-RepositoryRoot
+$hostArchitecture = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture
 if ((-not $IsWindows -and -not $IsLinux -and -not $IsMacOS) -or
-    [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture -ne 'X64') {
-    throw "Minimal packaging supports Windows, Linux and macOS x64."
+    ($hostArchitecture -ne 'X64' -and -not ($IsMacOS -and $hostArchitecture -eq 'Arm64'))) {
+    throw "Minimal packaging supports Windows/Linux x64 and macOS x64/arm64 hosts."
 }
+if ($Arm64BuildDirectory -and -not $IsMacOS) { throw '-Arm64BuildDirectory requires macOS.' }
+$architectureToken = if ($IsMacOS) { 'universal' } else { 'x64' }
+$architectures = if ($IsMacOS) { @('x86_64', 'arm64') } else { @('x64') }
 $platformName = if ($IsWindows) { "windows" } elseif ($IsMacOS) { "macos" } else { "linux" }
 $gpuDriver = if ($IsWindows) { "direct3d12" } elseif ($IsMacOS) { "metal" } else { "vulkan" }
 $graphicsApi = if ($IsWindows) { "D3D12" } elseif ($IsMacOS) { "Metal" } else { "Vulkan" }
@@ -37,136 +42,178 @@ if ($Scene -notmatch '^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$') {
     )
 }
 if (-not $BuildDirectory) {
-    $BuildDirectory = "native\build-$Scene-min-sdl"
+    $BuildDirectory = "native\build-$Scene-min-sdl$(if ($IsMacOS) { '-x86_64' })"
 }
 $buildPath = Resolve-RepositoryPath $BuildDirectory
+if ($IsMacOS -and -not $Arm64BuildDirectory) { $Arm64BuildDirectory = "native/build-$Scene-min-sdl-arm64" }
+$buildPaths = @($buildPath)
+if ($IsMacOS) { $buildPaths += Resolve-RepositoryPath $Arm64BuildDirectory }
+$executables = @()
+$firstCache = $null
 $upstreamPin = Get-Content (
     Join-Path $root "upstream\babylon-lite.json"
 ) -Raw | ConvertFrom-Json
 
-$cacheFile = Join-Path $buildPath "CMakeCache.txt"
-if (-not (Test-Path $cacheFile)) {
-    throw "CMake cache not found: $cacheFile. Configure and build the exact mini tree described in docs/development.md#minimal-size-shipping-builds."
-}
-$cache = Read-CMakeCache $cacheFile
-$backend = $cache["BBLITE_BACKEND"]
-if ($null -eq $backend) {
-    throw "BBLITE_BACKEND is not recorded in $cacheFile. Reconfigure the exact mini tree with the current toolchain."
-}
-if ($backend -notin @("SDL_GPU", "DAWN", "BOTH")) {
-    throw "Unsupported BBLITE_BACKEND '$backend' in $cacheFile."
-}
-if ($backend -eq "BOTH") {
-    throw "Shipping requires a single backend; $BuildDirectory was configured with BBLITE_BACKEND=BOTH."
-}
-if ($ExpectBackend -and $backend -ne $ExpectBackend) {
-    throw "Build directory $BuildDirectory was configured with BBLITE_BACKEND=$backend, not $ExpectBackend."
-}
-if (-not $IsWindows -and $backend -ne "SDL_GPU") { throw "$platformName shipping requires SDL_GPU with $graphicsApi." }
-$minSize = $cache["BBLITE_MINSIZE"]
-if ($minSize -ne "ON") {
-    throw "Shipping requires BBLITE_MINSIZE=ON; configure the exact mini build before packaging."
-}
-$triplet = $cache["VCPKG_TARGET_TRIPLET"]
-if ($triplet -ne $expectedTriplet) {
-    throw "Shipping requires VCPKG_TARGET_TRIPLET=$expectedTriplet; got '$triplet'."
-}
-$runtime = $cache["CMAKE_MSVC_RUNTIME_LIBRARY"]
-if ($IsWindows -and $runtime -notmatch '^MultiThreaded(?:Debug)?(?:\$<.*>)?$') {
-    throw "Shipping requires the static MSVC runtime (CMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded); got '$runtime'."
-}
-# Every per-scene read below (features, deployed-payload comparison) must
-# describe the same generated tree the executable was built from, so a
-# cache naming a different one is refused rather than silently packaged.
-$generatedDirectory = $cache["BBLITE_GENERATED_DIR"]
-if (-not $generatedDirectory) {
-    throw "BBLITE_GENERATED_DIR is not recorded in $cacheFile. Reconfigure the exact mini tree with the current toolchain."
-}
-$generatedDirectory = [System.IO.Path]::GetFullPath($generatedDirectory)
-$expectedGenerated = [System.IO.Path]::GetFullPath(
-    (Join-Path $root "generated\$Scene")
-)
-if (-not [string]::Equals(
-    $generatedDirectory,
-    $expectedGenerated,
-    $pathComparison
-)) {
-    throw "Build directory $BuildDirectory was configured against $generatedDirectory, not $expectedGenerated. Reconfigure the mini tree for the packaged scene."
-}
-# Package notices follow the generated features and optional capture capabilities.
-$audioCapture = $cache["BBLITE_AUDIO_CAPTURE"] -eq "ON"
-$visualCapture = $cache["BBLITE_VISUAL_CAPTURE"] -ne "OFF"
-$featuresPath = Join-Path $generatedDirectory "features.cmake"
-$featuresText = Get-Content -LiteralPath $featuresPath -Raw
-$imageCodecLicenses = Get-ImageCodecLicenses `
-    -ManifestPath (Join-Path $root "native\vcpkg.json") `
-    -FeaturesText $featuresText -VisualCapture $visualCapture
-$audioReached = $featuresText -match '"audio:engine"'
-$audioDecoded = $featuresText -match '"audio:decoded-buffer"'
-$physicsReached = $featuresText -match '"physics:world"'
-$navigationReached = $featuresText -match '"navigation:recast"'
-$uiReached = $featuresText -match '"ui:rml"'
-$uiSvgReached = $featuresText -match '"ui:inline-svg"'
-$textLayoutReached = $featuresText -match '"text:layout"'
-
-$executable = @(
-    (Join-Path $buildPath "bblite_native$exeExtension"),
-    (Join-Path $buildPath "Release/bblite_native$exeExtension")
-) | Where-Object { Test-Path $_ } | Select-Object -First 1
-if (-not $executable) {
-    throw "Required shipping executable not found under: $buildPath"
-}
-$runtimeDirectory = Split-Path -Parent $executable
-$shaderSource = Join-Path $runtimeDirectory "shaders"
-$assetSource = Join-Path $runtimeDirectory "assets"
-foreach ($required in @($executable, $shaderSource)) {
-    if (-not (Test-Path $required)) {
-        throw "Required shipping input not found: $required"
+foreach ($buildPath in $buildPaths) {
+    $sliceIndex = $executables.Count
+    $cacheFile = Join-Path $buildPath "CMakeCache.txt"
+    if (-not (Test-Path $cacheFile)) {
+        throw "CMake cache not found: $cacheFile. Configure and build the exact mini tree described in docs/development.md#minimal-size-shipping-builds."
     }
-}
-
-# The CMake asset deploy merges rather than mirrors (native/CMakeLists.txt
-# records why beside the target), so a reused build tree can still hold
-# files the generated tree no longer owns — the exact leftover a pin bump
-# produces. A package ships only what the current generation owns; refuse
-# the stale tree instead of guessing.
-$orphans = @()
-foreach ($payload in @(
-    @{
-        Source = Join-Path $generatedDirectory "assets"
-        Deployed = $assetSource
-    },
-    @{
-        Source = Join-Path $generatedDirectory "upstream\shaders"
-        Deployed = $shaderSource
+    $cache = Read-CMakeCache $cacheFile
+    if ($IsMacOS) {
+        $expectedTriplet = if ($sliceIndex -eq 0) { 'x64-osx' } else { 'arm64-osx' }
+        if ($cache['CMAKE_OSX_ARCHITECTURES'] -ne $architectures[$sliceIndex]) {
+            throw "Expected CMAKE_OSX_ARCHITECTURES=$($architectures[$sliceIndex]) in $cacheFile."
+        }
+        if ($firstCache) {
+            foreach ($key in @('BBLITE_AUDIO_CAPTURE', 'BBLITE_VISUAL_CAPTURE', 'CMAKE_OSX_DEPLOYMENT_TARGET')) {
+                if ($cache[$key] -ne $firstCache[$key]) { throw "Universal build slices disagree on $key." }
+            }
+        }
     }
-)) {
-    if (-not (Test-Path $payload.Deployed)) { continue }
-    $owned = [System.Collections.Generic.HashSet[string]]::new(
-        $pathComparer
+    $backend = $cache["BBLITE_BACKEND"]
+    if ($null -eq $backend) {
+        throw "BBLITE_BACKEND is not recorded in $cacheFile. Reconfigure the exact mini tree with the current toolchain."
+    }
+    if ($backend -notin @("SDL_GPU", "DAWN", "BOTH")) {
+        throw "Unsupported BBLITE_BACKEND '$backend' in $cacheFile."
+    }
+    if ($backend -eq "BOTH") {
+        throw "Shipping requires a single backend; $BuildDirectory was configured with BBLITE_BACKEND=BOTH."
+    }
+    if ($ExpectBackend -and $backend -ne $ExpectBackend) {
+        throw "Build directory $BuildDirectory was configured with BBLITE_BACKEND=$backend, not $ExpectBackend."
+    }
+    if (-not $IsWindows -and $backend -ne "SDL_GPU") { throw "$platformName shipping requires SDL_GPU with $graphicsApi." }
+    $minSize = $cache["BBLITE_MINSIZE"]
+    if ($minSize -ne "ON") {
+        throw "Shipping requires BBLITE_MINSIZE=ON; configure the exact mini build before packaging."
+    }
+    $triplet = $cache["VCPKG_TARGET_TRIPLET"]
+    if ($triplet -ne $expectedTriplet) {
+        throw "Shipping requires VCPKG_TARGET_TRIPLET=$expectedTriplet; got '$triplet'."
+    }
+    $runtime = $cache["CMAKE_MSVC_RUNTIME_LIBRARY"]
+    if ($IsWindows -and $runtime -notmatch '^MultiThreaded(?:Debug)?(?:\$<.*>)?$') {
+        throw "Shipping requires the static MSVC runtime (CMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded); got '$runtime'."
+    }
+    # Every per-scene read below (features, deployed-payload comparison) must
+    # describe the same generated tree the executable was built from, so a
+    # cache naming a different one is refused rather than silently packaged.
+    $generatedDirectory = $cache["BBLITE_GENERATED_DIR"]
+    if (-not $generatedDirectory) {
+        throw "BBLITE_GENERATED_DIR is not recorded in $cacheFile. Reconfigure the exact mini tree with the current toolchain."
+    }
+    $generatedDirectory = [System.IO.Path]::GetFullPath($generatedDirectory)
+    $expectedGenerated = [System.IO.Path]::GetFullPath(
+        (Join-Path $root "generated\$Scene")
     )
-    if (Test-Path $payload.Source) {
-        foreach ($file in Get-ChildItem $payload.Source -File -Recurse) {
-            [void]$owned.Add(
-                [System.IO.Path]::GetRelativePath($payload.Source, $file.FullName)
-            )
+    if (-not [string]::Equals(
+        $generatedDirectory,
+        $expectedGenerated,
+        $pathComparison
+    )) {
+        throw "Build directory $BuildDirectory was configured against $generatedDirectory, not $expectedGenerated. Reconfigure the mini tree for the packaged scene."
+    }
+    # Package notices follow the generated features and optional capture capabilities.
+    $audioCapture = $cache["BBLITE_AUDIO_CAPTURE"] -eq "ON"
+    $visualCapture = $cache["BBLITE_VISUAL_CAPTURE"] -ne "OFF"
+    $featuresPath = Join-Path $generatedDirectory "features.cmake"
+    $featuresText = Get-Content -LiteralPath $featuresPath -Raw
+    $imageCodecLicenses = Get-ImageCodecLicenses `
+        -ManifestPath (Join-Path $root "native\vcpkg.json") `
+        -FeaturesText $featuresText -VisualCapture $visualCapture
+    $audioReached = $featuresText -match '"audio:engine"'
+    $audioDecoded = $featuresText -match '"audio:decoded-buffer"'
+    $physicsReached = $featuresText -match '"physics:world"'
+    $navigationReached = $featuresText -match '"navigation:recast"'
+    $uiReached = $featuresText -match '"ui:rml"'
+    $uiSvgReached = $featuresText -match '"ui:inline-svg"'
+    $textLayoutReached = $featuresText -match '"text:layout"'
+
+    $executable = @(
+        (Join-Path $buildPath "bblite_native$exeExtension"),
+        (Join-Path $buildPath "Release/bblite_native$exeExtension")
+    ) | Where-Object { Test-Path $_ } | Select-Object -First 1
+    if (-not $executable) {
+        throw "Required shipping executable not found under: $buildPath"
+    }
+    $runtimeDirectory = Split-Path -Parent $executable
+    $shaderSource = Join-Path $runtimeDirectory "shaders"
+    $assetSource = Join-Path $runtimeDirectory "assets"
+    foreach ($required in @($executable, $shaderSource)) {
+        if (-not (Test-Path $required)) {
+            throw "Required shipping input not found: $required"
         }
     }
-    foreach ($file in Get-ChildItem $payload.Deployed -File -Recurse) {
-        # The build's own dot-named marker files (the shader snapshot
-        # stamp) are deployment machinery, not payload.
-        if ($file.Name.StartsWith(".")) { continue }
-        $relative = [System.IO.Path]::GetRelativePath(
-            $payload.Deployed, $file.FullName
+
+    # The CMake asset deploy merges rather than mirrors (native/CMakeLists.txt
+    # records why beside the target), so a reused build tree can still hold
+    # files the generated tree no longer owns — the exact leftover a pin bump
+    # produces. A package ships only what the current generation owns; refuse
+    # the stale tree instead of guessing.
+    $orphans = @()
+    foreach ($payload in @(
+        @{
+            Source = Join-Path $generatedDirectory "assets"
+            Deployed = $assetSource
+        },
+        @{
+            Source = Join-Path $generatedDirectory "upstream\shaders"
+            Deployed = $shaderSource
+        }
+    )) {
+        if (-not (Test-Path $payload.Deployed)) {
+            if ($IsMacOS -and (Test-Path $payload.Source)) { throw "Missing universal slice payload: $($payload.Deployed)" }
+            continue
+        }
+        $owned = [System.Collections.Generic.HashSet[string]]::new(
+            $pathComparer
         )
-        if (-not $owned.Contains($relative)) {
-            $orphans += (Join-Path $payload.Deployed $relative)
+        if (Test-Path $payload.Source) {
+            foreach ($file in Get-ChildItem $payload.Source -File -Recurse) {
+                $relative = [System.IO.Path]::GetRelativePath($payload.Source, $file.FullName)
+                [void]$owned.Add($relative)
+                # Both executable slices must ship the same current assets and MSL.
+                # Other shader intermediates are not part of a Metal package.
+                if ($IsMacOS -and ($payload.Deployed -eq $assetSource -or $file.Extension -in @('.msl', '.slots'))) {
+                    $deployedFile = Join-Path $payload.Deployed $relative
+                    if (-not (Test-Path -LiteralPath $deployedFile) -or
+                        (Get-FileHash -LiteralPath $deployedFile).Hash -ne (Get-FileHash -LiteralPath $file.FullName).Hash) {
+                        throw "Universal slice has missing or stale deployed payload: $deployedFile. Rebuild both slices."
+                    }
+                }
+            }
+        }
+        foreach ($file in Get-ChildItem $payload.Deployed -File -Recurse) {
+            # The build's own dot-named marker files (the shader snapshot
+            # stamp) are deployment machinery, not payload.
+            if ($file.Name.StartsWith(".")) { continue }
+            $relative = [System.IO.Path]::GetRelativePath(
+                $payload.Deployed, $file.FullName
+            )
+            if (-not $owned.Contains($relative)) {
+                $orphans += (Join-Path $payload.Deployed $relative)
+            }
         }
     }
+    if ($orphans.Count -gt 0) {
+        throw "Deployed payload holds files the generated tree no longer owns: $($orphans -join ', '). The deploy merges rather than mirrors; delete these files and rebuild the mini tree before packaging."
+    }
+
+    if ($IsMacOS) {
+        $actualArchitecture = & lipo -archs $executable
+        if ($LASTEXITCODE -ne 0 -or "$actualArchitecture".Trim() -ne $architectures[$sliceIndex]) {
+            throw "Expected a thin $($architectures[$sliceIndex]) executable: $executable; got $actualArchitecture."
+        }
+    }
+    $executables += $executable
+    if (-not $firstCache) { $firstCache = $cache }
 }
-if ($orphans.Count -gt 0) {
-    throw "Deployed payload holds files the generated tree no longer owns: $($orphans -join ', '). The deploy merges rather than mirrors; delete these files and rebuild the mini tree before packaging."
-}
+$cache = $firstCache
+$buildPath = $buildPaths[0]
+$triplet = $cache['VCPKG_TARGET_TRIPLET']
 
 $backendToken = $backend.ToLowerInvariant().Replace("_", "-")
 $outputRootPath = if ([System.IO.Path]::IsPathRooted($OutputRoot)) {
@@ -174,7 +221,7 @@ $outputRootPath = if ([System.IO.Path]::IsPathRooted($OutputRoot)) {
 } else {
     [System.IO.Path]::GetFullPath((Join-Path $root $OutputRoot))
 }
-$packageName = "bblitec-$Scene-$backendToken-$platformName-x64"
+$packageName = "bblitec-$Scene-$backendToken-$platformName-$architectureToken"
 $outputPlan = New-PackageOutput $outputRootPath $packageName
 $packageDirectory = Join-Path $outputPlan.Staging $packageName
 $archivePath = Join-Path $outputPlan.Staging "$packageName.zip"
@@ -189,7 +236,14 @@ $shaders = Join-Path $packageDirectory "shaders"
 $licenses = Join-Path $packageDirectory "licenses"
 New-Item -ItemType Directory -Path $assets, $shaders, $licenses -Force | Out-Null
 
-Copy-Item $executable (Join-Path $packageDirectory $exeName)
+if ($IsMacOS) {
+    & lipo -create @executables -output (Join-Path $packageDirectory $exeName)
+    if ($LASTEXITCODE -ne 0) { throw 'Unable to combine the macOS executable slices.' }
+    & lipo (Join-Path $packageDirectory $exeName) -verify_arch x86_64 arm64
+    if ($LASTEXITCODE -ne 0) { throw 'The staged executable is not universal.' }
+} else {
+    Copy-Item $executable (Join-Path $packageDirectory $exeName)
+}
 if (-not $IsWindows) {
     $strip = $cache["CMAKE_STRIP"]
     if (-not $strip -or -not (Test-Path -LiteralPath $strip)) { throw "CMAKE_STRIP must name the native strip tool." }
@@ -201,6 +255,8 @@ if (-not $IsWindows) {
     if ($IsMacOS) {
         & codesign --force --sign - (Join-Path $packageDirectory $exeName)
         if ($LASTEXITCODE -ne 0) { throw "Unable to ad-hoc sign the staged executable." }
+        & codesign --verify --strict --all-architectures (Join-Path $packageDirectory $exeName)
+        if ($LASTEXITCODE -ne 0) { throw "Unable to verify both signed executable slices." }
     }
 }
 # Statically linked builds carry SDL (and Windows Dawn) inside the executable.
@@ -269,6 +325,11 @@ if ($navigationReached) {
 }
 if ($uiReached -or $textLayoutReached) {
     $licensePackages["FreeType.txt"] = "freetype"
+}
+if ($uiReached -and ($IsLinux -or $IsMacOS)) {
+    # The system color fonts use PNG glyphs, independently of scene textures.
+    $licensePackages["libpng.txt"] = "libpng"
+    $licensePackages["zlib.txt"] = "zlib"
 }
 if ($textLayoutReached) {
     $licensePackages["HarfBuzz.txt"] = "harfbuzz"
@@ -372,7 +433,7 @@ $fxcNote = if ($backend -eq "DAWN") {
 }
 
 $runInstructions = if ($IsWindows) { "Double-click $exeName. Its console window shows startup errors." } else { "Run ./$exeName from a terminal in this directory." }
-$requirements = if ($IsWindows) { "Windows 10/11 and a Direct3D 12 GPU" } elseif ($IsMacOS) { "macOS x64 with a Metal GPU and an active desktop session" } else { "Linux x64 with a Vulkan GPU/driver and an X11 or Wayland session" }
+$requirements = if ($IsWindows) { "Windows 10/11 and a Direct3D 12 GPU" } elseif ($IsMacOS) { "macOS on Intel or Apple silicon, with a Metal GPU and an active desktop session" } else { "Linux x64 with a Vulkan GPU/driver and an X11 or Wayland session" }
 $linuxNote = if ($IsLinux) {
     "`n  - Built for the host Linux system ABI; see RUNTIME-LIBRARIES.txt for linked system libraries.`n  - Install Fontconfig and fonts for text/UI. Audio requires a working host audio service."
 } else { "" }
@@ -380,7 +441,7 @@ $macNote = if ($IsMacOS) {
     "`n  - Built for the configured macOS deployment target; see RUNTIME-LIBRARIES.txt for system frameworks/libraries.`n  - Ad-hoc signed for local use; this package is not Developer ID signed or notarized."
 } else { "" }
 @"
-bblitec $Scene shipping demo ($platformName x64)
+bblitec $Scene shipping demo ($platformName $architectureToken)
 ================================================
 
 Backend: $backendDescription
@@ -510,12 +571,15 @@ if ($IsLinux) {
         $env:LC_ALL = $oldLocale
     }
 } elseif ($IsMacOS) {
-    $dependencies = & otool -L (Join-Path $packageDirectory $exeName) 2>&1
-    if ($LASTEXITCODE -ne 0) { throw "Unable to inspect Mach-O dependencies: $dependencies" }
-    foreach ($line in $dependencies | Select-Object -Skip 1) {
-        if ($line.Trim() -notmatch '^(?:/usr/lib/|/System/Library/)') {
-            throw "Shipping requires static project libraries and system frameworks, but imports: $line"
+    $dependencies = foreach ($architecture in $architectures) {
+        $sliceDependencies = & otool -arch $architecture -L (Join-Path $packageDirectory $exeName) 2>&1
+        if ($LASTEXITCODE -ne 0) { throw "Unable to inspect Mach-O dependencies: $sliceDependencies" }
+        foreach ($line in $sliceDependencies | Select-Object -Skip 1) {
+            if ($line.Trim() -notmatch '^(?:/usr/lib/|/System/Library/)') {
+                throw "Shipping requires static project libraries and system frameworks, but imports: $line"
+            }
         }
+        $sliceDependencies
     }
     $dependencies | Set-Content (Join-Path $packageDirectory "RUNTIME-LIBRARIES.txt")
 } else {
@@ -549,6 +613,13 @@ if ($IsLinux) {
 $smokeFrames = 5
 $smokeStart = [System.Diagnostics.ProcessStartInfo]::new()
 $smokeStart.FileName = Join-Path $packageDirectory $exeName
+if ($IsMacOS) {
+    # Explicitly select the native host slice even when PowerShell/Node runs
+    # under Rosetta; the receipt must name the architecture actually tested.
+    $smokeStart.FileName = '/usr/bin/arch'
+    $smokeStart.ArgumentList.Add($(if ($hostArchitecture -eq 'Arm64') { '-arm64' } else { '-x86_64' }))
+    $smokeStart.ArgumentList.Add((Join-Path $packageDirectory $exeName))
+}
 $smokeStart.WorkingDirectory = $packageDirectory
 $smokeStart.UseShellExecute = $false
 $smokeStart.CreateNoWindow = $true
@@ -601,6 +672,7 @@ $receipt = [ordered]@{
     zipSha256 = (Get-FileHash -LiteralPath $archivePath -Algorithm SHA256).Hash
     previousExeBytes = $previousExeBytes; previousZipBytes = $previousZipBytes
     smokeFrames = $smokeFrames; smokeExit = $smoke.ExitCode
+    architectures = $architectures; smokeArchitecture = "$hostArchitecture"; buildDirectories = $buildPaths
 }
 $receipt | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $outputPlan.Staging "$packageName.json") -Encoding utf8
 Publish-PackageOutput $outputPlan

@@ -33,6 +33,7 @@
 param(
     [string]$Workspace = "",
     [string]$OutputDirectory = "",
+    [ValidateSet('', 'x86_64', 'arm64')][string]$MacArchitecture = '',
     [string]$FreetypeRoot = "",
     # Only the -StaticRuntime artifact needs vcpkg, to install the
     # static-triplet FreeType headers it compiles against (see below).
@@ -61,6 +62,7 @@ if (-not $Workspace) {
     } else {
         ".cache\rmlui"
     }
+    if ($MacArchitecture) { $Workspace += "-$MacArchitecture" }
 }
 if (-not $OutputDirectory) {
     $OutputDirectory = if ($minimalBuild) {
@@ -68,6 +70,7 @@ if (-not $OutputDirectory) {
     } else {
         "artifacts\tools\rmlui"
     }
+    if ($MacArchitecture) { $OutputDirectory += "-$MacArchitecture" }
 }
 if (-not $FreetypeRoot) {
     $installedRoot = if ($env:BBLITE_VCPKG_INSTALLED_ROOT) {
@@ -247,7 +250,7 @@ if ($MinSize -and -not $IsWindows) {
         '-DCMAKE_C_FLAGS_RELEASE=-Os -DNDEBUG -ffunction-sections -fdata-sections'
     )
 }
-$configureArguments += @(Get-PosixCompilerArguments)
+$configureArguments += @(Get-PosixCompilerArguments $MacArchitecture)
 & $CMake @configureArguments
 if ($LASTEXITCODE -ne 0) {
     throw "RmlUi CMake configuration failed."

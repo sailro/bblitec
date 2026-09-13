@@ -24,6 +24,7 @@
 param(
     [string]$Workspace = "",
     [string]$OutputDirectory = "",
+    [ValidateSet('', 'x86_64', 'arm64')][string]$MacArchitecture = '',
     [switch]$StaticRuntime,
     [switch]$MinSize,
     [switch]$CoreOnly,
@@ -47,6 +48,7 @@ if (-not $Workspace) {
     } else {
         ".cache\labsound"
     }
+    if ($MacArchitecture) { $Workspace += "-$MacArchitecture" }
 }
 if (-not $OutputDirectory) {
     $OutputDirectory = if ($minimalBuild) {
@@ -58,6 +60,7 @@ if (-not $OutputDirectory) {
     } else {
         "artifacts\tools\labsound"
     }
+    if ($MacArchitecture) { $OutputDirectory += "-$MacArchitecture" }
 }
 if ($CoreOnly -and $EnableCodecs) {
     throw "-CoreOnly and -EnableCodecs are mutually exclusive."
@@ -128,7 +131,7 @@ if ($MinSize -and -not $IsWindows) {
     $configureArguments += @("-DCMAKE_CXX_FLAGS_RELEASE=$cppFlags",
         '-DCMAKE_C_FLAGS_RELEASE=-Os -DNDEBUG -ffunction-sections -fdata-sections')
 }
-$configureArguments += @(Get-PosixCompilerArguments)
+$configureArguments += @(Get-PosixCompilerArguments $MacArchitecture)
 & $CMake @configureArguments
 if ($LASTEXITCODE -ne 0) {
     throw "LabSound CMake configuration failed."

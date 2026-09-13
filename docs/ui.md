@@ -90,6 +90,8 @@ Only fixed grids with proven equivalent wrapping-flex geometry lower; unknown
 track/class/id changes refuse.
 
 Fonts use DirectWrite/CoreText/fontconfig. Generic emoji/ZWJ shaping is limited.
+Linux and macOS UI retain FreeType's PNG decoder for system color-font glyphs,
+including Apple Color Emoji's bitmap data and media-symbol fallbacks.
 Unauthored button fonts use the generic sans default; normal line height uses
 per-face ratios, so browser glyph/size rounding can differ.
 Windows file fonts use DirectWrite OpenType shaping and browser-compatible raster modes and coverage.

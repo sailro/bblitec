@@ -12613,16 +12613,11 @@ public:
                 WGPUBufferUsage_Storage,
                 zero_delta.data(),
                 sizeof(zero_delta));
-            // Sixteen-byte {count, vertexCount} header plus one zero
-            // weight: derived background pipeline layouts require the
-            // shader's 20-byte minimum binding size for the runtime
-            // weights array.
-            const std::array<std::uint32_t, 5> zero_header{};
             state.empty_morph_weights = create_buffer(
                 state,
                 WGPUBufferUsage_Storage,
-                zero_header.data(),
-                sizeof(zero_header));
+                empty_morph_weight_data.data(),
+                sizeof(empty_morph_weight_data));
         }
 #endif
         upload_environment(state, scene.environment);

@@ -1,6 +1,7 @@
 param(
     [string]$Workspace = "",
     [string]$OutputDirectory = "",
+    [ValidateSet('', 'x86_64', 'arm64')][string]$MacArchitecture = '',
     [switch]$EnableAudio,
     [switch]$EnableGamepad,
     [string]$CMake = $env:CMAKE_COMMAND
@@ -35,10 +36,10 @@ $featureSuffix = if ($enabledFeatures.Count -gt 0) {
 }
 
 if (-not $Workspace) {
-    $Workspace = ".cache\sdl$featureSuffix"
+    $Workspace = ".cache\sdl$featureSuffix$(if ($MacArchitecture) { "-$MacArchitecture" })"
 }
 if (-not $OutputDirectory) {
-    $OutputDirectory = "artifacts\tools\sdl-min$featureSuffix"
+    $OutputDirectory = "artifacts\tools\sdl-min$featureSuffix$(if ($MacArchitecture) { "-$MacArchitecture" })"
 }
 $audioSetting = if ($EnableAudio) { "ON" } else { "OFF" }
 $gamepadSetting = if ($EnableGamepad) { "ON" } else { "OFF" }
@@ -167,7 +168,7 @@ if ($IsWindows) {
         '-DCMAKE_C_FLAGS_MINSIZEREL=/O1 /Ob1 /DNDEBUG /Gw'
     )
 } else {
-    $configureArguments += @(Get-PosixCompilerArguments)
+    $configureArguments += @(Get-PosixCompilerArguments $MacArchitecture)
     $configureArguments += @(
         "-G", "Ninja", "-DCMAKE_INSTALL_LIBDIR=lib",
         "-DCMAKE_C_FLAGS_MINSIZEREL=-Os -DNDEBUG -ffunction-sections -fdata-sections",

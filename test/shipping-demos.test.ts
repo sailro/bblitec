@@ -59,6 +59,7 @@ test("Linux shipping selects static host libraries and Vulkan-compatible native 
     assert.equal(shippingPlatform("linux", "x64"), "linux");
     assert.equal(shippingPlatform("win32", "x64"), "win32");
     assert.equal(shippingPlatform("darwin", "x64"), "darwin");
+    assert.equal(shippingPlatform("darwin", "arm64"), "darwin");
     assert.throws(() => shippingPlatform("freebsd", "x64"));
     assert.throws(() => shippingPlatform("linux", "arm64"));
     const plan = shippingPlan(process.cwd(), [{ scene: sample, reached: core }], undefined, "linux");
@@ -77,6 +78,30 @@ test("Linux shipping selects static host libraries and Vulkan-compatible native 
     assert.match(packageSizeReport([], "darwin"), /SDL_GPU \/ Metal/);
 });
 
+test("universal shipping isolates both architectures while sharing codec-compatible profiles within each slice", () => {
+    const inputs = [
+        { scene: sample, reached: { features: ["png", "ui"], codecs: ["png"], runtime: ["ui:rml", "audio:engine"] } },
+        { scene: { ...sample, id: "second" }, reached: { features: ["png", "physics"], codecs: ["png"], runtime: ["ui:rml", "audio:engine"] } },
+    ];
+    const plan = shippingPlan(process.cwd(), inputs, undefined, "darwin");
+    assert.equal(plan.scenes.length, 4);
+    assert.deepEqual(plan.profiles.map(profile => profile.triplet), ["x64-osx", "arm64-osx"]);
+    for (const profile of plan.profiles) assert.deepEqual(profile.features, ["physics", "png", "ui"]);
+    const [intel, arm, secondIntel, secondArm] = plan.scenes;
+    assert.equal(intel!.installedDirectory, secondIntel!.installedDirectory);
+    assert.equal(arm!.installedDirectory, secondArm!.installedDirectory);
+    for (const key of ["buildDirectory", "installedDirectory", "sdlDirectory", "labSoundDirectory", "rmlUiDirectory"] as const) {
+        assert.notEqual(intel![key], arm![key], `Architectures must not overwrite ${key}`);
+    }
+    assert.equal(intel!.output, arm!.output, "Both slices consume the same generated scene and Metal shader payload");
+    for (const scene of [intel!, arm!]) {
+        const args = shippingConfigureArguments(process.cwd(), scene,
+            { compiler: "/tools/clang++", ninja: "/tools/ninja" }, "/tools/vcpkg.cmake");
+        assert.ok(args.includes(`-DCMAKE_OSX_ARCHITECTURES=${scene.macArchitecture}`));
+        assert.ok(args.includes(`-DVCPKG_TARGET_TRIPLET=${scene.triplet}`));
+    }
+});
+
 test("shipping selects all application registry entries and refuses paths or duplicate IDs", () => {
     assert.deepEqual(selectShippingScenes(undefined), applicationScenes);
     assert.deepEqual(selectShippingScenes("all"), applicationScenes);
@@ -87,6 +112,73 @@ test("shipping selects all application registry entries and refuses paths or dup
     assert.throws(() => shippingPlan(process.cwd(), [{ scene: { ...sample, id: "../escape" }, reached: core }]));
 });
 
+test("universal packaging rejects missing, mismatched and stale slices before merging", { skip: !tools.powershell }, t => {
+    const root = mkdtempSync(join(tmpdir(), "bblite-universal-"));
+    t.after(() => rmSync(root, { recursive: true, force: true }));
+    for (const path of ["native", "upstream", "generated/demo/upstream/shaders", "generated/demo/assets"]) mkdirSync(join(root, path), { recursive: true });
+    writeFileSync(join(root, "native/vcpkg.json"), '{}');
+    writeFileSync(join(root, "upstream/babylon-lite.json"), '{}');
+    writeFileSync(join(root, "generated/demo/features.cmake"), 'set(BBLITE_IMAGE_CODECS "")');
+    writeFileSync(join(root, "generated/demo/assets/data.bin"), "current asset");
+    writeFileSync(join(root, "generated/demo/upstream/shaders/main.msl"), "current shader");
+    const source = readFileSync("tools/package-demo.ps1", "utf8");
+    const end = source.indexOf("$backendToken =");
+    assert.ok(end > 0);
+    // Run the real input validation on fixture trees. Mock only host detection
+    // and lipo (actual Mach-O merging/signing is exercised on the Mac).
+    const script = source.slice(0, end)
+        .replaceAll('$PSScriptRoot', '$env:BBLITE_TEST_TOOLS')
+        .replace('$root = Get-RepositoryRoot', '$root = $env:BBLITE_TEST_ROOT')
+        .replaceAll('$IsMacOS', '$macHost').replaceAll('$IsWindows', '$windowsHost').replaceAll('$IsLinux', '$linuxHost')
+        .replace('$ErrorActionPreference = "Stop"', `$ErrorActionPreference = "Stop"
+$macHost = $true; $windowsHost = $false; $linuxHost = $false
+function lipo { param([switch]$archs, [string]$Path) $global:LASTEXITCODE = 0; Get-Content -LiteralPath $Path }
+`);
+    const probe = join(root, "validate.ps1");
+    writeFileSync(probe, script);
+    const cache = (arch: string): string => Object.entries({
+        CMAKE_OSX_ARCHITECTURES: arch, CMAKE_OSX_DEPLOYMENT_TARGET: "12.0",
+        BBLITE_BACKEND: "SDL_GPU", BBLITE_MINSIZE: "ON", BBLITE_AUDIO_CAPTURE: "OFF", BBLITE_VISUAL_CAPTURE: "OFF",
+        VCPKG_TARGET_TRIPLET: arch === "arm64" ? "arm64-osx" : "x64-osx", BBLITE_GENERATED_DIR: join(root, "generated/demo"),
+    }).map(([key, value]) => `${key}:STRING=${value}`).join("\n");
+    const reset = (): void => {
+        for (const arch of ["x86_64", "arm64"]) {
+            const build = join(root, `native/${arch}`);
+            mkdirSync(join(build, "assets"), { recursive: true });
+            mkdirSync(join(build, "shaders"), { recursive: true });
+            writeFileSync(join(build, "CMakeCache.txt"), cache(arch));
+            writeFileSync(join(build, "bblite_native"), arch);
+            writeFileSync(join(build, "assets/data.bin"), "current asset");
+            writeFileSync(join(build, "shaders/main.msl"), "current shader");
+        }
+    };
+    const run = () => spawnSync(tools.powershell!, ["-NoProfile", "-File", probe, "-Scene", "demo",
+        "-BuildDirectory", join(root, "native/x86_64"), "-Arm64BuildDirectory", join(root, "native/arm64")], {
+        encoding: "utf8", windowsHide: true, env: { ...process.env, BBLITE_TEST_TOOLS: resolve("tools"), BBLITE_TEST_ROOT: root },
+    });
+    reset();
+    const valid = run();
+    assert.equal(valid.status, 0, valid.stdout + valid.stderr);
+    for (const [path, value, message] of [
+        ["CMakeCache.txt", cache("arm64").replace("12.0", "13.0"), /disagree on CMAKE_OSX_DEPLOYMENT_TARGET/],
+        ["CMakeCache.txt", cache("x86_64"), /Expected CMAKE_OSX_ARCHITECTURES=arm64/],
+        ["bblite_native", "x86_64", /Expected a thin arm64/],
+        ["assets/data.bin", "old asset", /stale deployed payload/],
+        ["shaders/main.msl", "old shader", /stale deployed payload/],
+    ] as const) {
+        reset();
+        writeFileSync(join(root, "native/arm64", path), value);
+        const invalid = run();
+        assert.notEqual(invalid.status, 0);
+        assert.match(invalid.stderr, message);
+    }
+    reset();
+    rmSync(join(root, "native/arm64/bblite_native"));
+    const missing = run();
+    assert.notEqual(missing.status, 0);
+    assert.match(missing.stderr, /Required shipping executable not found/);
+});
+
 test("static installs share optional libraries only within the exact image-codec set", () => {
     const rows = [
         { scene: sample, reached: { features: ["png"], codecs: ["png"], runtime: [] } },
@@ -94,7 +186,7 @@ test("static installs share optional libraries only within the exact image-codec
         { scene: { ...sample, id: "third" }, reached: { features: ["webp"], codecs: ["webp"], runtime: ["audio:engine", "audio:decoded-buffer", "input:gamepad", "ui:inline-svg"] } },
         { scene: { ...sample, id: "fourth" }, reached: core },
     ];
-    const plan = shippingPlan(resolve("artifacts/fixture root"), rows);
+    const plan = shippingPlan(resolve("artifacts/fixture root"), rows, undefined, "win32");
     assert.equal(plan.profiles.length, 3);
     assert.equal(plan.scenes[0]!.installedDirectory, plan.scenes[1]!.installedDirectory);
     assert.notEqual(plan.scenes[0]!.installedDirectory, plan.scenes[2]!.installedDirectory);
@@ -226,7 +318,9 @@ if ((Get-Content -LiteralPath (Join-Path $root '@previous/baseline.zip')) -ne 'c
 if (@(Get-ChildItem -LiteralPath (Join-Path $root '@previous')).Count -ne 1) { throw 'baseline acquired files' }
 $linuxPlan = New-PackageOutput $root 'bblitec-demo-sdl-gpu-linux-x64'
 if ($linuxPlan.Name -ne 'bblitec-demo-sdl-gpu-linux-x64') { throw 'Linux package name changed' }
-foreach ($invalid in @('../escape', 'bblitec-../escape-windows-x64')) {
+$macPlan = New-PackageOutput $root 'bblitec-demo-sdl-gpu-macos-universal'
+if ($macPlan.Name -ne 'bblitec-demo-sdl-gpu-macos-universal') { throw 'Universal package name changed' }
+foreach ($invalid in @('../escape', 'bblitec-../escape-windows-x64', 'bblitec-demo-sdl-gpu-linux-universal')) {
     $rejected = $false
     try { New-PackageOutput $root $invalid | Out-Null } catch { $rejected = $true }
     if (-not $rejected) { throw 'unsafe name accepted' }

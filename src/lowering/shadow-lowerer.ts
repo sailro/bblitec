@@ -2520,15 +2520,6 @@ void build_shadow_task(Scene& scene, ShadowGeneratorHandle handle) {
     // resolves through.
     engine.shadow_generators[handle.value].map_target = rt;
     refresh_shadow_task_meshes(engine, handle);
-    // ensureShadowTask unshifts the scheduler ahead of the scene's own
-    // tasks, so every shadow map renders before the pass that samples it.
-    // Registered back to front, because each insert pushes the previous
-    // one along: the cascades then stand in the pin's own layer order.
-    const std::vector<TaskHandle>& caster_tasks =
-        engine.shadow_generators[handle.value].caster_tasks;
-    for (std::size_t index = caster_tasks.size(); index-- > 0;) {
-        add_task_at_start(scene, caster_tasks[index]);
-    }
 }
 
 } // namespace
@@ -2537,8 +2528,9 @@ void register_scene_with_shadow_support(Scene& scene) {
     if (!scene.engine) {
         throw std::runtime_error("Scene is not associated with an engine.");
     }
-    // Idempotent, the way the pinned ensureShadowTask is: a re-registered
-    // scene keeps the tasks it already carries.
+    // The pin installs its shadow scheduler on each scene. A persistent
+    // generator can outlive a disposed scene, so existing caster passes
+    // still have to be scheduled by the scene that now uses it.
     for (const LightHandle light : scene.lights) {
         if (light.value >= scene.engine->lights.size()) continue;
         const ShadowGeneratorHandle generator =
@@ -2546,12 +2538,20 @@ void register_scene_with_shadow_support(Scene& scene) {
         if (generator.value >= scene.engine->shadow_generators.size()) {
             continue;
         }
-        if (
-            !scene.engine->shadow_generators[generator.value]
-                 .caster_tasks.empty()) {
-            continue;
+        const auto& caster_tasks =
+            scene.engine->shadow_generators[generator.value].caster_tasks;
+        if (caster_tasks.empty()) build_shadow_task(scene, generator);
+        // Prepend in reverse order to preserve cascade order. Re-registering
+        // the same scene keeps each pass exactly once.
+        for (std::size_t index = caster_tasks.size(); index-- > 0;) {
+            const TaskHandle task = caster_tasks[index];
+            if (std::any_of(scene.tasks.begin(), scene.tasks.end(),
+                    [&](TaskHandle existing) { return existing.value == task.value; })) {
+                continue;
+            }
+            scene.engine->frame_tasks[task.value].source_scene = scene.state;
+            add_task_at_start(scene, task);
         }
-        build_shadow_task(scene, generator);
     }
     register_scene(scene);
     rebuild_scene_renderables(scene);

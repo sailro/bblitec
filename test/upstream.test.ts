@@ -360,7 +360,7 @@ test("clears an armed topology rebuild after replacement shadow tasks exist", ()
 
     assert.match(
         source,
-        /void register_scene_with_shadow_support\(Scene& scene\)[\s\S]{0,1000}build_shadow_task\(scene, generator\);[\s\S]{0,160}register_scene\(scene\);\s*rebuild_scene_renderables\(scene\);/,
+        /void register_scene_with_shadow_support\(Scene& scene\)[\s\S]{0,1000}build_shadow_task\(scene, generator\);[\s\S]{0,1200}register_scene\(scene\);\s*rebuild_scene_renderables\(scene\);/,
     );
 });
 

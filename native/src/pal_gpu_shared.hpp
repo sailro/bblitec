@@ -4512,6 +4512,10 @@ inline upstream::StandardUvTxUniforms standard_uv_transform_block(
 // byte-identically: the deltas are indexed by the shader as
 // (target * vertexCount + vertex) * 6, and the weights blob carries a
 // 16-byte header the shader reads before the float array.
+// The empty binding still needs the 16-byte header plus one runtime-array
+// element. Both WebGPU and Metal validate that 20-byte minimum.
+inline constexpr std::array<std::uint32_t, 5> empty_morph_weight_data{};
+
 inline std::vector<float> pack_morph_deltas(
     const ModelGeometry& geometry) {
     // Flat 6-float deltas indexed
