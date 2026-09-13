@@ -1,0 +1,4 @@
+{
+  "angles": ["reuse", "simplification", "efficiency", "altitude"],
+  "findings": [{"summary": "Simplify the shadow lifecycle fixture by starting from existing passes instead of simulating their creation, keeping the regression focused on scheduling after scene replacement.", "applied": true}]
+}
