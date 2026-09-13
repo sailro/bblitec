@@ -8,6 +8,25 @@ dependencies will not be present in a fresh clone.
 
 ## Read this first
 
+**PR250 rebase is complete.** Rebased all 118 branch commits onto origin/main
+9265afa7 without conflicts. Backup branch is
+codex/external-project-support-before-pr250 at 81f4d0e5f8da1bb615f1cb7b39375458b7411169.
+range-diff1046 shows every patch unchanged except two docs/ui.md context lines
+around main's added macOS PNG-font documentation; no implementation changes were
+lost. rebase1046-tests passes **90/90** shipping/shadow/upstream/RmlUi-patch checks.
+Dist is rebuilt from the rebased tree. Recent commit ids are now:
+a981983a optional conversion; d9ce8fd4 inferred factory probe gate; eb647878 dynamic
+keys/nullish/captures; 373ce15e shared getters. The rebase will be pushed with the
+explicit saved remote lease from rebase1046-lease.txt.
+
+**Active full compile1047**, exec session **88684**, uses the rebased compiler plus
+the nullable fix and inferred-initializer performance gate. It writes
+application-progress1047.json, compile1047.log/cpuprofile and styles1047. The progress
+runner now also imports the existing style logger. Baseline1036 remains immutable
+(546 successful bodies / 547 observed, 92 modules, same terminal quality refusal).
+No other tests/builds are running. Do not rebuild dist until1047 finishes. Continue
+with its next refusal; refresh the global Markdown report with new measurements.
+
 **Latest savepoint / rebase next.** Nullable enum-to-string conversions now share
 the existing optional value sink in compileOptionalSink and bindOptional. The
 new public core-library assertions pass in JavaScript and native C++
