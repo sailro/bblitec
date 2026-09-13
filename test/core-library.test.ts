@@ -10,6 +10,22 @@ import { optionalNativeFixtureTools, runNativeFixtureCompiler } from "./native-f
 
 const native = optionalNativeFixtureTools(false);
 
+check("optional string unions widen through chained lazy fallbacks without losing absence", `
+    type Mode="quiet"|"balanced"|"vivid";
+    type Choice=Mode|"custom"|"";
+    let automatic:Mode|undefined;
+    let calls=0;
+    function fallback():Mode|undefined {calls++;return automatic;}
+    function select(saved:Choice|null):Choice {return saved??fallback()??"balanced";}
+    function text():string|undefined {return automatic;}
+    if(select(null)!=="balanced"||text()!==undefined||calls!==1)throw new Error("empty optional");
+    automatic="quiet";
+    if(select(null)!=="quiet"||text()!=="quiet"||calls!==2)throw new Error("present optional");
+    if(select("custom")!=="custom"||select("")!==""||calls!==2)throw new Error("lazy optional fallback");
+    automatic=undefined;
+    if(select(null)!=="balanced"||text()!==undefined||calls!==3)throw new Error("cleared optional");
+`);
+
 check("pop and shift consume temporary arrays once and preserve shared receivers", `
     const texts:string[]=["a,b,c"];
     let calls=0;

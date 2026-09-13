@@ -8001,8 +8001,7 @@ export class DataLowerer {
             }
             if (
                 value.kind !== "data" ||
-                value.dataType?.kind !== "optional" ||
-                !dataTypesEqual(value.dataType.inner, expected.inner)
+                value.dataType?.kind !== "optional"
             ) {
                 this.context.fail(
                     operand,
@@ -8014,7 +8013,8 @@ export class DataLowerer {
                     "optional_compare",
                 );
             this.context.emit(
-                { kind: "declaration", type: "const auto", name: temporary, initializer: value.cpp },
+                { kind: "declaration", type: "const auto", name: temporary,
+                    initializer: this.compileKnownValueForSink(value, expected, operand) },
             );
             return temporary;
         };
@@ -8753,9 +8753,8 @@ export class DataLowerer {
             return "std::nullopt";
         }
         if (optional?.kind === "data" &&
-            optional.dataType?.kind === "optional" &&
-            dataTypesEqual(optional.dataType.inner, dataType.inner)) {
-            return optional.cpp;
+            optional.dataType?.kind === "optional") {
+            return this.compileKnownValueForSink(optional, dataType, unwrapped);
         }
         // A handle the expression already produced IS the value
         // the inner sink takes. Falling through would compile the

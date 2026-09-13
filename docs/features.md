@@ -247,6 +247,9 @@ aliases. Dynamic element reads share property-key conversion for strings, stored
 string-literal unions and represented scalar keys; receiver evaluation precedes
 key effects. Nullish coalescing tests dynamic null/undefined at runtime and
 evaluates its fallback lazily, preserving other falsy values.
+Optional string-literal unions widen through the shared nullable conversion when
+assigned, compared or selected by chained fallbacks; absence and lazy evaluation
+are preserved.
 `Array.find` over stored literal tuples preserves the selected literal domain;
 found records retain their source identity and shared writes.
 `pop` and `shift` accept temporary arrays, including results of string splitting;

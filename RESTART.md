@@ -8,6 +8,34 @@ dependencies will not be present in a fresh clone.
 
 ## Read this first
 
+**Latest savepoint / rebase next.** Nullable enum-to-string conversions now share
+the existing optional value sink in compileOptionalSink and bindOptional. The
+new public core-library assertions pass in JavaScript and native C++
+(selection1042-focused). The unchanged quality getter plus recommendation setter
+generates in 0.46s (selection1042.log); selection1044-native builds/runs with actual
+PAL/storage services and the worker realm. selection1043-regressions is green:
+**691/691**, no skips. Its exec session 8446 still needs collecting. No native
+build is running. Generated selection-probe is a normal CLI output with core,
+platform:workers and storage:local; a Window/UI CMake build was unnecessary.
+
+The instrumented full baseline1036 completed: **546/22,709 bodies have at least
+one successful lowering (2.4% observed coverage), 547 bodies observed across
+92/1,343 modules (6.9%), 22,162 bodies unobserved**, in 512.45 seconds. One body has
+both successful/refused attempts. This is source coverage, NOT effort completion;
+many unobserved bodies may already be supported. Same terminal refusal as1033,
+main statement39/294 before engine creation. Session10032 is closed. The Markdown
+progress report and per-module JSON were refreshed with this final baseline.
+
+The user landed another PR and requested a rebase when ready. origin/main is now
+**9265afa7** (PR250); new commits from 32cab018 include macOS PNG color glyphs,
+Metal morph/compressed-mip fixes, universal packaging and persistent shadow pass
+scheduling after scene replacement. Finish this unit's commit, create a branch
+backup, rebase onto origin/main, resolve by preserving both support changes, then
+run appropriate affected checks and push with an explicit force-with-lease.
+Performance gate is already committed/pushed as f2f5815f (preceded by f8db96a6).
+After rebase rebuild dist and run the next full entry with compile-with-progress
+to compare against application-progress1036.json. Do not stop after the rebase.
+
 **Global measurement and next unit (2026-09-13).** User explicitly needs a global
 view, not selected-probe percentages. application-progress.mjs inventories the
 entry's real import graph (application src root, excludes tests/declarations and
