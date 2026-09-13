@@ -1484,6 +1484,7 @@ class IndexedInsertionOrdered {
     [[nodiscard]] std::size_t size() const {
         return storage_->index.size();
     }
+    [[nodiscard]] const void* identity() const { return storage_.get(); }
     void gc_trace(const TraceVisitor& visitor) const { visitor(storage_); }
 
   protected:

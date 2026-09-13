@@ -29,14 +29,19 @@ function expressionJson(dataType: DataType<"json">, lowerer: DataSinkHost, _expr
     return lowerer.compileKnownValueForSink(lowerer.context.compileValue(unwrapped), dataType, unwrapped);
 }
 
-function valueJson(_dataType: DataType<"json">, lowerer: DataSinkHost, value: Value): string | undefined {
+function valueJson(_dataType: DataType<"json">, lowerer: DataSinkHost, value: Value, node: ts.Node): string | undefined {
     if (isJsonValue(value)) {
         lowerer.markEscaped(value);
         return value.cpp;
     }
     if (value.kind === "json-null") return value.cpp === "std::nullopt"
         ? "bbl::js::JsonValue{}" : "bbl::js::JsonValue::null_value()";
-    return undefined;
+    if (value.dataType?.kind === "map" && value.dataType.key.kind === "string" && value.dataType.value.kind === "json" &&
+        lowerer.context.checker.getIndexTypeOfType(lowerer.context.checker.getTypeAtLocation(node), ts.IndexKind.String))
+        return `bbl::js::JsonValue::from_native(${value.cpp})`;
+    const type = value.dataType ?? (value.kind === "number" || value.kind === "boolean" || value.kind === "string"
+        ? {kind: value.kind} : undefined);
+    return type ? lowerer.context.dataTypes.jsonValueCpp(type, value.cpp, node) : undefined;
 }
 
 function valueNumber(_dataType: DataType<"number">, lowerer: DataSinkHost, value: Value, _node: ts.Node): string | undefined {

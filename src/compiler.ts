@@ -6,6 +6,7 @@ import { SharedNativeFunctions } from "./compiler/shared-native-functions.js";
 import { renderNativeDeclaration, type NativeDeclaration } from "./compiler/native-declarations.js";
 import { persistContinuationLocals } from "./compiler/continuation-storage.js";
 import ts from "typescript";
+import {isJsonValue} from "./compiler/json-bridge.js";
 import { resolve } from "node:path";
 import { inferUninitializedHandle } from "./compiler/uninitialized-handle.js";
 import { framePollExecutor } from "./compiler/frame-poll.js";
@@ -3095,7 +3096,7 @@ class Compiler
             { unwrapPromise: false },
         );
         const returnType = returnTsType
-            ? this.dataTypes.fromTsType(returnTsType, callback)
+            ? this.dataTypes.fromTsType(returnTsType, callback) ?? this.dataTypes.dynamicJsonType(returnTsType)
             : undefined;
         if (returnTsType && !returnType) {
             this.fail(
@@ -3113,7 +3114,7 @@ class Compiler
             const type = this.dataTypes.fromTsType(
                 this.checker.getTypeAtLocation(parameter),
                 parameter,
-            );
+            ) ?? this.dataTypes.dynamicJsonType(this.checker.getTypeAtLocation(parameter));
             if (!type) {
                 this.fail(
                     parameter,
@@ -3192,7 +3193,9 @@ class Compiler
             parameterDeclarations = captured.parameterDeclarations;
             for (const line of captured.lines) this.emit(line);
         };
-        const compiled = this.captureManagedClosureLines(emitCallbackBody, !escapes);
+        const compiled = this.dataTypes.withDynamicJsonTypes(
+            returnType?.kind === "json" || parameters.some(parameter => parameter.type.kind === "json"),
+            () => this.captureManagedClosureLines(emitCallbackBody, !escapes));
         this.emit(
             `${storage.cpp} = ${renderClosure(compiled, parameterDeclarations.join(", "), returnCpp)};`,
         );
@@ -4465,6 +4468,11 @@ class Compiler
             return undefined;
         }
         const value = this.compileValue(expression.left);
+        if (isJsonValue(value)) {
+            const type = this.dataTypes.fromSharedReturnType(this.checker.getDeclaredTypeOfSymbol(symbol), expression);
+            if (type?.kind !== "struct") this.fail(expression, "A dynamic instanceof check requires a represented class type.");
+            return `${value.cpp}.instance_of<${this.dataTypes.cppType(type)}>()`;
+        }
         if (value.kind === "record" && value.classDeclaration) {
             return value.classDeclaration === declaration ? "true" : "false";
         }

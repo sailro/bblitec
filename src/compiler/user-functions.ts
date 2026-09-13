@@ -1711,7 +1711,7 @@ export class UserFunctionLowerer {
                       declaration,
                   );
             const mappedReturnType = returnTsType
-                ? context.dataTypes.fromSharedReturnType(returnTsType, declaration)
+                ? context.dataTypes.fromSharedReturnType(returnTsType, declaration) ?? context.dataTypes.dynamicJsonType(returnTsType)
                 : undefined;
             const returnType = mappedReturnType?.kind === "struct" && context.dataTypes.carriesHandle(mappedReturnType)
                 ? context.dataTypes.markStoredObjectReferences(mappedReturnType)
@@ -1729,7 +1729,7 @@ export class UserFunctionLowerer {
                     let mapped = context.dataTypes.fromTsType(
                         type,
                         parameter,
-                    );
+                    ) ?? context.dataTypes.dynamicJsonType(type);
                     const freshMatchingArray = arrayStorage === "fresh" &&
                         mapped?.kind === "span" && returnType?.kind === "vector" && dataTypesEqual(mapped.element, returnType.element);
                     if (mapped && returnsArray && !freshMatchingArray) {
@@ -2012,7 +2012,7 @@ export class UserFunctionLowerer {
         let returnMetadata: Value | undefined;
         context.pushScope(context.allocateUserFunctionPrefix());
         try {
-            const parameterDeclarations: string[] = localGroup?.self ? [`[[maybe_unused]] auto& ${localGroup.self}`] : [];
+            const parameterDeclarations: string[] = [];
             const parameterNames: string[] = [];
             const parameterBindings: Array<{
                 parameter: UserFunctionParameterIr;
@@ -2092,7 +2092,9 @@ export class UserFunctionLowerer {
             });
             let captured: CapturedClosure;
             try {
-                captured = context.captureManagedClosureLines(() => {
+                captured = context.dataTypes.withDynamicJsonTypes(
+                    entry.returnType?.kind === "json" || entry.parameterTypes.some(type => type?.kind === "json"),
+                    () => context.captureManagedClosureLines(() => {
                 if (localGroup?.self) context.registerNativeBinding(localGroup.self, true);
                 for (const { parameter, value, compileTime } of parameterBindings) {
                     if (value.nativeBinding && parameterNames.includes(value.cpp)) {
@@ -2139,7 +2141,7 @@ export class UserFunctionLowerer {
                         );
                     }
                 }
-                }, !escapes);
+                }, !escapes));
                 if (returnedValues.length > 0 && isHandleKind(returnedValues[0]!.kind)) {
                     const common = commonResourceValue(returnedValues[0]!, returnedValues);
                     // The caller owns its result storage and presence test. Callee
@@ -2165,7 +2167,22 @@ export class UserFunctionLowerer {
                 context.endNativeFunctionBody();
             }
             let closure: string;
-            if (localGroup?.sharedName) {
+            if (localGroup?.self) {
+                // MSVC fails to instantiate nested generic lambdas with these
+                // environments. A named invoker keeps the same traced captures.
+                const name = context.allocateTemporaryCppName("recursive_body");
+                const parameters = [`[[maybe_unused]] Environment& ${captured.environment}`,
+                    `[[maybe_unused]] Self& ${localGroup.self}`, ...parameterDeclarations];
+                const sharedName = context.registerSharedNativeFunction(name, [
+                    `struct ${name} {`,
+                    `    template<typename Environment, typename Self>`,
+                    `    ${returnCpp} operator()(${parameters.join(", ")}) const {`,
+                    ...captured.lines.map(line => `        ${line}`),
+                    "    }", "};",
+                ], [...captured.localBindings, ...parameterNames, captured.environment, localGroup.self]);
+                closure = `bbl::js::make_closure(${captured.initializer}, bblscene::${sharedName}{})`;
+                entry.value.nativeCaptures = captured.nativeCaptures;
+            } else if (localGroup?.sharedName) {
                 const parameters = [`[[maybe_unused]] auto& ${captured.environment}`, ...parameterDeclarations];
                 const sharedName = context.registerSharedNativeFunction(localGroup.sharedName, [
                     `inline constexpr auto ${localGroup.sharedName} = [](${parameters.join(", ")}) -> ${returnCpp} {`,

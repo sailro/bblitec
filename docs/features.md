@@ -202,10 +202,26 @@ tuple `some` calls skip the callback's statements as well as its return expressi
 
 Dense `T[]` arrays of user data support `flatMap`, `concat`, `at`, `lastIndexOf`,
 `copyWithin`, `join` for strings/numbers/booleans/enums, ranged `fill` and `splice` with removal/insertion.
+Default `sort()` compares scalar string representations in UTF-16 order; numeric
+comparators preserve the original order of ties. Sorting returns the same array.
+`flat` accepts a generation-known depth, including infinity; represented dynamic
+arrays flatten according to each element's runtime array kind.
 `fill` and `copyWithin` return the original array; `splice` returns a fresh array
 of removed values. `Array.of`, `Array.from(arrayOrSet)`, and length-only
 `Array.from({ length }, (value, index) => ...)` are admitted. Callback overloads
 require a local function or function literal and omit `thisArg`.
+
+Recursive unknown-value parameters and returns can retain parsed values, scalars,
+arrays of dynamic values, string-keyed unknown dictionaries and owned class views.
+Array and object aliases preserve storage and identity; class views read live fields
+and retain `instanceof`. Class fields currently require scalar, dynamic-value,
+dynamic-array or owned-record storage; optional field presence and other field
+representations refuse. This boundary does not convert arbitrary native objects or
+compile-time configuration records into dynamic values. Stored `Array.isArray`
+callbacks preserve library function identity and accept these represented values.
+Object key enumeration orders numeric index keys before other insertion-ordered
+keys. Conditional Set, Map and dynamic-value construction evaluates only the
+selected branch, including any array operations needed to build it.
 
 Map construction accepts literal key/value pairs, direct array `map` projections,
 stored pair arrays, or another Map with compatible entries. Fresh collections honor wider destination

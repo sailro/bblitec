@@ -23,6 +23,8 @@ import type { LoweringServices } from "./lowering-services.js";
 // native functions, user functions) is the resolution order a call site
 // observes.
 import ts from "typescript";
+import {arrayFunctionValue} from "./native-function-values.js";
+import {isJsonValue} from "./json-bridge.js";
 import { isHandleKind } from "./data-types.js";
 
 import { doubleLiteral } from "../cpp-literals.js";
@@ -560,6 +562,8 @@ export class ExpressionLowerer {
         }
         if (ts.isPropertyAccessExpression(unwrapped)) {
             const mathFunction = mathFunctionValue(this.context, unwrapped);
+            const arrayFunction = arrayFunctionValue(this.context, unwrapped);
+            if (arrayFunction) return arrayFunction;
             if (mathFunction) return mathFunction;
             const audioPrototype = audioPrototypeValue(this.context, unwrapped);
             if (audioPrototype) return audioPrototype;
@@ -576,7 +580,7 @@ export class ExpressionLowerer {
             // path tries to give it one.
             const json = compileJsonRead(this.context, unwrapped);
             if (json) {
-                return json;
+                return this.context.dataLowerer.narrowOptional(json, expression);
             }
             if (
                 mathMemberAccess(unwrapped, (identifier) =>
@@ -608,6 +612,7 @@ export class ExpressionLowerer {
                 "read",
             );
             const property = data ?? this.context.compilePropertyAccess(unwrapped);
+            if (isJsonValue(property)) return this.context.dataLowerer.narrowOptional(property, expression);
             if (assertedNonNull && property.kind === "data" &&
                 property.dataType?.kind === "optional") {
                 return this.context.dataLowerer.narrowOptional(property, expression, true);
@@ -691,6 +696,8 @@ export class ExpressionLowerer {
             const classDeclaration =
                 this.context.classLowerer.resolveClass(unwrapped);
             if (classDeclaration) {
+                if (this.context.dataTypes.hasDynamicJsonStorage)
+                    this.context.dataTypes.fromSharedReturnType(this.context.checker.getTypeAtLocation(unwrapped), unwrapped);
                 const instance =
                     this.context.classLowerer.construct(
                         unwrapped,
@@ -1346,6 +1353,10 @@ export class ExpressionLowerer {
         this.context.expectArgumentCount(call, 1, 1);
         const object = this.compileValue(argumentAt(call, 0));
         const resultType = this.context.dataLowerer.dataTypeAt(call);
+        if (isJsonValue(object)) {
+            return {kind:"data", cpp:`${object.cpp}.own_${projection}()`,
+                dataType:{kind:"vector", element:{kind:projection === "keys" ? "string" : "json"}}, freshData:true};
+        }
         const enumOrder = object.dataType?.kind === "enummap"
             ? this.context.dataTypes.enumMembers(object.dataType.enumName) : undefined;
         if (
@@ -3067,7 +3078,7 @@ export class ExpressionLowerer {
         }
         const json = compileJsonRead(this.context, unwrapped);
         if (json) {
-            return json;
+            return this.context.dataLowerer.narrowOptional(json, expression);
         }
         if (this.context.dataLowerer.dataTypeAt(unwrapped.expression)?.kind === "enummap") {
             const constant = this.context.probeEmission(() => {
@@ -3472,6 +3483,9 @@ export class ExpressionLowerer {
             conditionalType?.kind === "union" ||
             conditionalType?.kind === "product" ||
             conditionalType?.kind === "vector" ||
+            conditionalType?.kind === "set" ||
+            conditionalType?.kind === "map" ||
+            conditionalType?.kind === "json" ||
             (conditionalType?.kind === "struct" &&
                 this.context.dataTypes.isReferenceStruct(conditionalType.name))) {
             const condition = this.context.compileCondition(unwrapped.condition);

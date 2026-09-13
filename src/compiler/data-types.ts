@@ -525,6 +525,7 @@ export class DataTypeRegistry {
    * record does not carry a writer for every other record it declares.
    */
   private readonly jsonSerializedStructs = new EmissionSet<string>();
+  private readonly jsonBoxedStructs = new EmissionMap<string, ts.Node>();
   private readonly jsonSerializedEnums = new EmissionSet<string>();
   private readonly partialRecords = new EmissionSet<ts.Symbol | ts.Type | string>();
 
@@ -661,6 +662,26 @@ export class DataTypeRegistry {
     return mapped;
   }
 
+  /** A checked recursive boundary may retain a dynamic parsed value. Call sinks
+   * still require JSON storage; this does not erase arbitrary native objects. */
+  public dynamicJsonType(type: ts.Type): DataType<"json"> | undefined {
+    if ((type.flags & ts.TypeFlags.Unknown) !== 0) return {kind:"json"};
+    const element = this.checker.isArrayType(type)
+      ? this.checker.getIndexTypeOfType(type, ts.IndexKind.Number)
+      : this.checker.getIndexTypeOfType(type, ts.IndexKind.String);
+    return element && (element.flags & ts.TypeFlags.Unknown) !== 0 ? {kind:"json"} : undefined;
+  }
+
+  private dynamicJsonStorage = false;
+  public get hasDynamicJsonStorage(): boolean { return this.dynamicJsonStorage; }
+
+  public withDynamicJsonTypes<T>(enabled: boolean, work: () => T): T {
+    const previous = this.dynamicJsonStorage;
+    this.dynamicJsonStorage ||= enabled;
+    try { return work(); }
+    finally { this.dynamicJsonStorage = previous; }
+  }
+
   private fromNonNullableType(
     type: ts.Type,
     node: ts.Node,
@@ -669,6 +690,7 @@ export class DataTypeRegistry {
     if (substituted) {
       return this.fromTsType(substituted, node);
     }
+    if (this.dynamicJsonStorage && (type.flags & ts.TypeFlags.Unknown) !== 0) return {kind:"json"};
     if (
       (type.flags & (ts.TypeFlags.Number | ts.TypeFlags.NumberLiteral)) !==
       0
@@ -2575,6 +2597,51 @@ export class DataTypeRegistry {
     visit(dataType);
   }
 
+  /** One conversion contract for dynamic sinks and reflected native fields. */
+  public jsonValueCpp(type: DataType, cpp: string, node: ts.Node): string | undefined {
+    if (type.kind === "enum")
+      return `bbl::js::json_value(${this.enumToStringCpp(type, cpp, node)})`;
+    if (type.kind === "struct") this.markJsonBoxed(type, node);
+    else if (!["json", "string", "number", "boolean"].includes(type.kind) &&
+        !(type.kind === "vector" && type.element.kind === "json")) return undefined;
+    return `bbl::js::json_value(${cpp})`;
+  }
+
+  /** Native object views retain the original reference and read its live fields. */
+  public markJsonBoxed(type: DataType<"struct">, node: ts.Node): void {
+    if (!this.isReferenceStruct(type.name)) this.fail(node, "Dynamic object storage requires an owned reference.");
+    if (this.jsonBoxedStructs.has(type.name)) return;
+    this.jsonBoxedStructs.set(type.name, node);
+    this.cppType(type);
+    for (const field of this.structFields(type.name, node)) {
+      if (field.optionalProperty || field.uncheckedProperty || field.type.kind === "optional")
+        this.fail(node, "Dynamic object views require represented own-property presence for optional fields.");
+      if (this.jsonValueCpp(field.type, "value", node) === undefined)
+        this.fail(node, `Dynamic object field '${field.sourceName}' has no retained value view.`);
+    }
+  }
+
+  private renderJsonObjectViews(used: ReadonlySet<string>): string[] {
+    const names = [...this.jsonBoxedStructs.keys()].filter(name => used.has(name));
+    const lines = names.flatMap(name => [
+      `inline bbl::js::JsonValue json_value_property(const ${name}& value, std::string_view key);`,
+      `inline bbl::js::Array<std::string> json_value_keys(const ${name}& value);`,
+    ]);
+    for (const name of names) {
+      const fields = [...this.structsByKey.values()].find(definition => definition.name === name)!.fields;
+      lines.push(`inline bbl::js::JsonValue json_value_property(const ${name}& value, std::string_view key) {`);
+      for (const field of fields) {
+        const property = `value->${field.name}`;
+        const cpp = this.jsonValueCpp(field.type, property, this.jsonBoxedStructs.get(name)!)!;
+        lines.push(`    if (key == ${JSON.stringify(field.sourceName)}) return ${cpp};`);
+      }
+      lines.push("    return {};", "}",
+        `inline bbl::js::Array<std::string> json_value_keys([[maybe_unused]] const ${name}& value) {`,
+        `    return {${fields.map(field => JSON.stringify(field.sourceName)).join(", ")}};`, "}", "");
+    }
+    return lines;
+  }
+
   /**
    * The `json_write` overloads for the reached records, emitted beside the
    * structs themselves so ADL finds them from the generic writer. The
@@ -2788,6 +2855,7 @@ export class DataTypeRegistry {
       );
     }
     lines.push(...this.renderJsonCodecs(used.structs));
+    lines.push(...this.renderJsonObjectViews(used.structs));
     lines.push("}  // namespace bblscene");
     return lines.join("\n");
   }

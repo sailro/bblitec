@@ -7535,8 +7535,8 @@ test("keeps synchronous frame-local recursive callbacks in local storage", () =>
 
 test("keeps synchronous recursive groups in automatic callable storage", () => {
     // The recursive-group arm of the same rule: a local declaration that
-    // captures scoped state cannot be lifted to a namespace function, but
-    // with only direct calls its storage still needs no engine ownership.
+    // captures scoped state keeps its environment in automatic storage,
+    // even when a named invoker implements its body.
     const result = compileSource(`
         import { createEngine } from "@babylonjs/lite";
 
@@ -7559,7 +7559,7 @@ test("keeps synchronous recursive groups in automatic callable storage", () => {
     );
     assert.match(
         result.cpp,
-        /bbl::js::make_closure\(std::tuple\{std::ref\(v_total\)\}, \[\]/,
+        /bbl::js::make_closure\(std::tuple\{std::ref\(v_total\)\}, bblscene::\w+\{\}/,
     );
     assert.doesNotMatch(result.cpp, /native_callback_owners/);
     assert.doesNotMatch(result.cpp, /drain_owner/);
@@ -12117,10 +12117,8 @@ ${containerFlattenClosure}
 test("refuses a closure flatten whose descent skips a node", () => {
     // The descent moved inside the collect arm: a transform node between
     // two meshes would end the walk there, so the proof must not accept it.
-    // The call then inlines, and the closure refuses at its own `unknown`
-    // parameter -- ahead of the `container.entities` the worklist spelling
-    // reaches, because a local arrow is lowered before the loop that drives
-    // it.
+    // The call then inlines. Dynamic values can cross recursive unknown
+    // parameters, but cannot become native mesh handles by a type assertion.
     assert.throws(
         () =>
             compileSource(`
@@ -12158,7 +12156,7 @@ test("refuses a closure flatten whose descent skips a node", () => {
 
                 function keep(_mesh: Mesh): void {}
             `),
-        /Recursive callback parameters must have plain-data types/,
+        /expected data handle.*"kind":"json"/,
     );
 });
 

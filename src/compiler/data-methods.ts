@@ -23,6 +23,8 @@ import { isJsonValue } from "./json-bridge.js";
 import { commonResourceValue, runtimeMeshValue, type Value } from "./types.js";
 import { declarationInDefaultLibrary } from "./symbols.js";
 import { replacementCallback } from "./string-replacement.js";
+import { stringConcatPart } from "./expressions.js";
+import { numberConstantValue } from "./number-intrinsics.js";
 
 /**
  * `Array.isArray(value)` over the data model. Parsed JSON remains dynamic;
@@ -929,7 +931,9 @@ function compileArrayFlat({ lowerer, call, narrowed, dataType }: ArrayMethodStat
     const output = lowerer.context.allocateTemporaryCppName("flat_result");
     lowerer.context.emit({ kind: "declaration", type: lowerer.context.dataTypes.cppType(resultType), name: output, initializer: "{}" });
     const append = (cpp: string, type: DataType, levels: number): void => {
-        if (levels > 0 && (type.kind === "vector" || type.kind === "span" || type.kind === "tuple")) {
+        if (levels > 0 && type.kind === "json" && resultType.element.kind === "json") {
+            lowerer.context.emit(`bbl::js::json_flatten_into(${output}, ${cpp}, ${numberConstantValue(levels).cpp});`);
+        } else if (levels > 0 && (type.kind === "vector" || type.kind === "span" || type.kind === "tuple")) {
             const item = lowerer.context.allocateTemporaryCppName("flat_item");
             lowerer.context.emit(`for (const auto& ${item} : ${cpp}) {`);
             lowerer.context.increaseIndent();
@@ -999,11 +1003,11 @@ function compileArraySlice(state: ArrayMethodState): Value {
 function compileArraySort(state: ArrayMethodState): Value {
     const lowerer: DataLowerer = state.lowerer;
     const { call, narrowed, dataType } = state;
-    if (call.arguments.length !== 1) {
-        lowerer.context.fail(call, "Array.sort currently requires one comparator callback.");
+    if (call.arguments.length > 1) {
+        lowerer.context.fail(call, "Array.sort expects at most one comparator callback.");
     }
-    const callback = lowerer.context.unwrap(argumentAt(call, 0));
-    if (!ts.isIdentifier(callback) &&
+    const callback = call.arguments[0] ? lowerer.context.unwrap(call.arguments[0]) : undefined;
+    if (callback && !ts.isIdentifier(callback) &&
         !ts.isArrowFunction(callback) &&
         !ts.isFunctionExpression(callback)) {
         lowerer.context.fail(callback, "Array.sort requires a local function or function literal comparator.");
@@ -1012,20 +1016,30 @@ function compileArraySort(state: ArrayMethodState): Value {
     const left = lowerer.context.allocateTemporaryCppName("sort_left");
     const right = lowerer.context.allocateTemporaryCppName("sort_right");
     lowerer.context.emit({ kind: "declaration", type: "auto", name: result, initializer: narrowed.cpp });
-    lowerer.context.emit(`std::sort(${result}.begin(), ${result}.end(), [&](const auto& ${left}, const auto& ${right}) {`);
+    lowerer.context.emit(`std::stable_sort(${result}.begin(), ${result}.end(), [&](const auto& ${left}, const auto& ${right}) {`);
     lowerer.context.increaseIndent();
     lowerer.context.pushScope(lowerer.context.allocateBlockPrefix());
     try {
         lowerer.context.enterRuntimeIteration();
         try {
-            const compared = lowerer.context.compileCallbackWithValues(callback, [
-                { ...lowerer.leafValue(left, dataType.element), nativeCaptures: [lowerer.context.registerNativeBinding(left)] },
-                { ...lowerer.leafValue(right, dataType.element), nativeCaptures: [lowerer.context.registerNativeBinding(right)] },
-            ], call);
-            if (compared.kind !== "number") {
-                lowerer.context.fail(callback, "Array.sort comparator must return a number.");
+            if (!callback) {
+                const text = (name: string): string => {
+                    if (dataType.element.kind === "string") return name;
+                    if (!["number", "boolean", "enum"].includes(dataType.element.kind))
+                        return lowerer.context.fail(call, "Default Array.sort requires scalar string, number, boolean or enum elements.");
+                    return `bbl::js::concat(${stringConcatPart(lowerer.context, lowerer.leafValue(name, dataType.element), call)})`;
+                };
+                lowerer.context.emit(`return bbl::js::string_code_units(${text(left)}) < bbl::js::string_code_units(${text(right)});`);
+            } else {
+                const compared = lowerer.context.compileCallbackWithValues(callback, [
+                    { ...lowerer.leafValue(left, dataType.element), nativeCaptures: [lowerer.context.registerNativeBinding(left)] },
+                    { ...lowerer.leafValue(right, dataType.element), nativeCaptures: [lowerer.context.registerNativeBinding(right)] },
+                ], call);
+                if (compared.kind !== "number") {
+                    lowerer.context.fail(callback, "Array.sort comparator must return a number.");
+                }
+                lowerer.context.emit(`return ${compared.cpp} < 0.0;`);
             }
-            lowerer.context.emit(`return ${compared.cpp} < 0.0;`);
         }
         finally {
             lowerer.context.leaveRuntimeIteration();
@@ -1036,6 +1050,7 @@ function compileArraySort(state: ArrayMethodState): Value {
         lowerer.context.decreaseIndent();
     }
     lowerer.context.emit("});");
+    lowerer.invalidateStaticElements(narrowed, true);
     lowerer.registerLocal(result, "owned");
     return { kind: "data", cpp: result, dataType };
 }

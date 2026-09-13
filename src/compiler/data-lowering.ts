@@ -1509,6 +1509,9 @@ export class DataLowerer {
     ): Value {
         if (value.dataType?.kind === "json") {
             const narrowed = this.dataTypeAt(expression);
+            if (narrowed && (narrowed.kind === "vector" || narrowed.kind === "span") && narrowed.element.kind === "json") {
+                return this.leafValue(`${value.cpp}.array_value()`, {kind:"vector", element:{kind:"json"}});
+            }
             if (narrowed && ["string", "number", "boolean", "enum"].includes(narrowed.kind)) {
                 const cpp = compileDataValueSink(narrowed, this, value, expression);
                 if (cpp !== undefined) return this.leafValue(cpp, narrowed);
@@ -5292,7 +5295,7 @@ export class DataLowerer {
         // binding graph, generation cannot retain a snapshot of its contents.
         if (value.dataType?.kind === "tuple") this.invalidateStaticElements(value);
         if (
-            dataType.kind !== "optional" &&
+            dataType.kind !== "optional" && dataType.kind !== "json" &&
             ts.isExpression(node)
         ) {
             value = this.narrowOptional(value, node);
@@ -5324,6 +5327,8 @@ export class DataLowerer {
         if (
             isJsonValue(value)
         ) {
+            if ((dataType.kind === "vector" || dataType.kind === "span") && dataType.element.kind === "json")
+                return `${value.cpp}.array_value()`;
             if (dataType.kind === "tuple") {
                 this.context.reachJsData();
                 return `bbl::js::json_tuple<${dataType.arity}>(${value.cpp})`;
@@ -5418,6 +5423,7 @@ export class DataLowerer {
                           rawValue.dataType.inner,
                       ), rawValue)
                 : rawValue;
+        if (isJsonValue(value)) return this.compileKnownValueForSink(value, dataType, expression);
         if (value.dataType?.kind === "tuple") this.invalidateStaticElements(value);
         if (dataType.kind === "tuple" && value.kind === "tuple") {
             return this.compileKnownValueForSink(
@@ -6317,6 +6323,12 @@ export class DataLowerer {
             return keys.length ? `(${keys.map(key => `${name} == ${this.context.cppString(key)}`).join(" || ")})` : "false";
         }
         const dataType = narrowed.dataType;
+        if (isJsonValue(narrowed)) {
+            const keyCpp = key.kind === "number" || key.dataType?.kind === "number"
+                ? `bbl::js::number_to_string(${key.cpp})`
+                : this.compileKnownValueForSink(key, {kind:"string"}, keyNode);
+            return `${narrowed.cpp}.${operator === "in" ? "has_property" : "has_own"}(${keyCpp})`;
+        }
         if (narrowed.kind === "data" && dataType?.kind === "map") {
             this.context.reachJsData();
             const keyCpp = this.compileKnownValueForSink(key, dataType.key, keyNode);

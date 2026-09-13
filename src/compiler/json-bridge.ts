@@ -317,12 +317,7 @@ export function compileJsonStrictComparison(
         return `${documentCpp}.strict_equals(${compileString(other)})`;
     }
     if (isJsonValue(value)) {
-        context.fail(
-            other,
-            "Two parsed documents compare by reference in JavaScript; " +
-                "the bridge lowers a document against a scalar, null or " +
-                "undefined.",
-        );
+        return `${documentCpp}.strict_equals(${value.cpp})`;
     }
     return undefined;
 }

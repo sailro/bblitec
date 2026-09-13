@@ -21,6 +21,7 @@ import ts from "typescript";
 import type { LoweringServices } from "./lowering-services.js";
 import type { Value } from "./types.js";
 import type { DataType } from "./data-types.js";
+import {nativeFunctionValue} from "./native-function-values.js";
 import {
     pinnedHypotCall,
     pinnedMathSpelling,
@@ -234,18 +235,14 @@ export function mathFunctionValue(
     const member = MATH_MEMBERS.get(access.name.text);
     const extreme = access.name.text === "max" || access.name.text === "min";
     if (!member && !extreme) return undefined;
-    const declaration = context.checker.getSymbolAtLocation(access.name)?.valueDeclaration;
-    if (!declaration) return context.fail(access, "Math function has no resolved library declaration.");
     const variadic = extreme || member?.variadic;
     const type: DataType<"function"> = {kind:"function",
         parameters:variadic ? [{kind:"vector", element:{kind:"number"}}] : Array.from({length:member!.arity}, () => ({kind:"number"})),
         ...(variadic ? {restParameter:0} : {}),
         result:{kind:"number"}, identity:true};
     const parameters = type.parameters.map((_, index) => `argument_${index}`);
-    context.reachJsData();
     if (member?.reach === "js-random") context.reachJsRandom();
     const body = extreme ? `bbl::js::math_extreme<${access.name.text === "max"}>(argument_0)`
         : variadic ? member!.rangeCpp!("argument_0") : member!.cpp(parameters);
-    return context.dataLowerer.leafValue(`${context.dataTypes.cppType(type)}{${context.callbackIdentity(declaration, undefined)}u, ` +
-        `[](${parameters.map((name, index) => `${context.dataTypes.cppType(type.parameters[index]!)} ${name}`).join(", ")}) -> double { return ${body}; }}`, type);
+    return nativeFunctionValue(context, access, type, `return ${body};`);
 }

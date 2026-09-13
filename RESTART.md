@@ -8,6 +8,43 @@ dependencies will not be present in a fresh clone.
 
 ## Read this first
 
+**Latest batch: retained dynamic values and recursive native invokers.**
+The isolated unchanged validator now generates, compiles with MSVC and passes
+eight cases against its JavaScript implementation (`check-validator854.mjs`,
+`validator863.log`). This exercises mixed object/array/scalar schemas, nested array
+flattening, missing keys, null fields and numeric key ordering. Clang also passed
+the same generated program. Public `recursive-json-values` tests pass 4/4 in
+`dynamic867-focused`, covering recursive unknown parameters/returns, live dictionary
+and class views, shared array identity, builtin callback identity, flattening,
+conditional Set laziness, UTF-16 sorting and stable comparator ties.
+
+MSVC first rejected nested generic closure capture types and then hit an internal
+compiler error with lifted generic lambdas. Resolving environment types through
+aliases and changing lambda deduction did not fix it. Named namespace invoker
+structs, used through the existing traced closure/group mechanism, compile on
+both compilers. The ignored reduction script is `reduce-msvc862.mjs`; do not
+change toolchain flags to hide this issue. A JSON-to-JSON sink must not narrow
+using an array operation's result node; that previously cast filter elements to
+arrays. Conditional Set/Map/JSON values now use the existing lazy sink path.
+
+**Next actual application blocker:** `typed-validator864.mjs` imports both the
+unchanged validator and its real typed defaults. It reproduces a refusal in about
+three seconds: a compile-time configuration record cannot enter a JSON-valued
+recursive callback parameter. The earlier eight-case test uses parsed defaults,
+so it is not proof of this typed boundary. Preserve original object identity and
+live field storage; do not serialize/copy the defaults to bypass this refusal.
+Extend existing retained-record mechanisms and test independently. Full generation,
+build and application execution remain unachieved; the latest full attempt is
+still `compile842`. Do not retry the full entry until this isolated typed probe
+passes. `dynamic868-regressions` passed 912/914; its two failures were obsolete
+output/refusal assertions, now corrected. After the four simplify review angles
+(three child reviewers and the root reviewing efficiency), boxing and default-sort
+conversions share existing helpers; JSON serialization visits entries without a
+full copy. `dynamic870-focused` passes 7/7, including a string-literal overload
+regression caught during that cleanup. The complete `dynamic871-regressions`
+run passes 914/914 without skips. The full branch review/sweep is still pending
+completion of the application integration; this review covered the current batch.
+
 **Current batch: recursive unknown values.** String savepoint `12d08e2e` is
 committed and pushed. `compile842` passed typeof string sinks and stops at a local
 recursive callback's readonly unknown-array parameter in 271.1 seconds. An ignored
