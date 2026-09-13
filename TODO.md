@@ -7,10 +7,10 @@ status. One line per item: the gap, where it is, its size (S < 1 h, M < half day
 ## Compiler
 
 - [ ] Stored variadic Math functions (min/max/hypot) need a variable-argument function representation (math-intrinsics.ts); fixed signatures share the direct-call table. M; reusable numeric callbacks.
-- [ ] Stored-array destructuring assignments still refuse nested/defaulted patterns and accessor targets (data-lowering.ts); identifiers, stored members, indexed targets and a final rest are represented. S/M; collection transforms use destructuring.
+- [ ] Stored-array destructuring assignments still refuse nested/defaulted patterns, accessor targets and generic RHS elements whose concrete type lives in a bound value (data-lowering.ts); identifiers, stored members, indexed targets and a final rest are represented. S/M; collection transforms use destructuring.
 - [ ] Promise.all still refuses literal spreads, non-array iterables, stored void/value-only arrays and recovery/rebinding with a different tuple representation (async.ts). M; reusable aggregation.
 - [ ] Await inside catch/finally blocks needs suspended exception/cleanup completion; these forms explicitly refuse (async.ts, statements.ts). M; asynchronous recovery and cleanup.
-- [ ] A timer callback referring to the handle declared by that same initializer needs a forward binding cell (compiler.ts); helper forms refuse and module forms can recurse during resolution. M; cancellable scheduled work.
+- [ ] Self-referencing record initializers need a representable recursive record/function type; initializer captures with owned data types share lexical cells (compiler.ts, data-types.ts). M; retained state factories.
 - [ ] Retained `textContent`/`innerText` compound assignments need a text getter preserving descendant/markup text; they refuse in ui-projection.ts. M; event-driven UI updates.
 - [ ] Retained DOM queries need authored innerHTML trees, interaction-state snapshots, :scope and computed selector strings (platform-calls.ts, pal_ui_rml.cpp). M/L; reusable UI helpers and application overlays.
 - [ ] Class inheritance, `#private` members, static blocks and mutable static fields written from static methods refuse (classes.ts); a caught error's `name` is always `Error` and its `cause` is dropped (error-values.ts), pending an error value kind over a native exception carrying both. M; real applications reach each a few times.

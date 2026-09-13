@@ -146,6 +146,10 @@ including owned resource results and empty tuples. Literal spreads, other iterab
 void/value-only arrays refuse. Recovery must preserve the admitted result representation.
 Timers and microtasks use the realm event loop through bare globals or `window`/`globalThis`
 qualification; they do not require a scene engine. Worker realms reject the Window global.
+Inline or named retained callbacks can refer to the binding initialized by their
+registration, including self-cancelling timers and callbacks escaping helper calls. Owned lexical
+cells preserve mutable aliases and awaited initialization; reading before successful initialization
+throws. Recursive record initializers still require a represented data type.
 Worker codecs support typed plain data, cycles, repeated references and copied
 buffers. Transfer lists admit OffscreenCanvas only; MessagePort and shared memory are unsupported.
 Classic workers and runtime-selected scripts refuse. Worker options admit `name`, `type: "module"`

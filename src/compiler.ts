@@ -2034,6 +2034,20 @@ class Compiler
         );
     }
 
+    private initializerCapturesBinding(initializer: ts.Expression, symbol: ts.Symbol): boolean {
+        const namesBinding = (node: ts.Node): boolean => ts.isIdentifier(node) && this.symbols.valueSymbol(node) === symbol;
+        if (findAnalysisNodeWithState(initializer, false,
+            (node, closure) => closure && namesBinding(node),
+            (node, closure) => closure || ts.isFunctionLike(node))) return true;
+        return someAnalysisNode(initializer, node => ts.isCallExpression(node) && node.arguments.some((argument, index) => {
+            const value = this.unwrap(argument);
+            if (!ts.isIdentifier(value)) return false;
+            const callback = tryResolveFunctionDeclaration(this.checker, value);
+            return !!callback?.body && this.callRetainsArgument(node, index, true) &&
+                someAnalysisNode(callback.body, namesBinding);
+        }));
+    }
+
     public emitVariableDeclaration(declaration: ts.VariableDeclaration): void {
         if ((ts.getCombinedModifierFlags(declaration) & ts.ModifierFlags.Ambient) !== 0) return;
         if (!declaration.initializer && declaration.type && ts.isTypeReferenceNode(declaration.type) &&
@@ -2082,6 +2096,26 @@ class Compiler
         }
         const sourceName = declaration.name.text;
         const cppName = this.cppIdentifier(sourceName);
+        if (this.options.workers && declaration.initializer && declarationSymbol &&
+            !ts.isArrowFunction(declaration.initializer) && !ts.isFunctionExpression(declaration.initializer) &&
+            this.initializerCapturesBinding(declaration.initializer, declarationSymbol)) {
+            const type = this.dataLowerer.dataTypeAt(declaration.name);
+            if (!type) this.fail(declaration, "A binding captured by its initializer requires an owned data type.");
+            this.reachJsData();
+            this.emit({kind:"declaration", type:"auto", name:cppName,
+                initializer:`bbl::js::make_gc_shared<bbl::js::LexicalBinding<${this.dataTypes.cppType(type)}>>()`});
+            this.defineVariable(declaration.name, {...this.dataLowerer.leafValue(`${cppName}->get()`, type),
+                sharedStorageCpp:cppName, nativeBinding:true});
+            this.staticConstants.delete(declarationSymbol);
+            const value = this.compileValue(declaration.initializer);
+            if (value.kind === "void" && value.abruptCompletion) {
+                this.emitDiscardedValue(value);
+                return;
+            }
+            const initializer = this.dataLowerer.compileKnownValueForSink(value, type, declaration.initializer);
+            this.emit(`${cppName}->initialize(${initializer});`);
+            return;
+        }
         const sharedClosureStorage =
             this.needsSharedClosureStorage(declaration);
         if (!declaration.initializer) {

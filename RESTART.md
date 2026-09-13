@@ -36,7 +36,7 @@ it does not establish that this external application compiles or runs.
 | Branch | `codex/external-project-support` |
 | Remote | `https://github.com/sailro/bblitec.git` |
 | Branch base used in this session | `3474e835` on `main` |
-| Latest executable-code/test unit | Scheduled audio events and realm ownership; prior savepoints `95b04043` (async control flow), `e5ea2607` (async collections), `24281f2c` (promise caches/reactions), `53ba4164` (recursive async and hardened validation) and `f5cd2061` (AudioBuffer surface) |
+| Latest executable-code/test unit | Captured lexical initialization and timer bindings; prior savepoints `bc21486a` (scheduled audio events), `95b04043` (async control flow), `e5ea2607` (async collections), `24281f2c` (promise caches/reactions), `53ba4164` (recursive async and hardened validation) and `f5cd2061` (AudioBuffer surface) |
 | Draft PR | [#247 — Extend generic application compilation and retained UI support](https://github.com/sailro/bblitec/pull/247) |
 | External checkout | `C:/Dev/_prototypes/external-native-app` |
 | External source revision | `d7c477a6d5963680c55249dceb93cb6e4ab9ce56` |
@@ -44,9 +44,38 @@ it does not establish that this external application compiles or runs.
 | External generated output | `generated/external-app` (ignored; not a successful complete generation) |
 | Session diagnostics | `artifacts/external-integration` (ignored) |
 
-Latest complete-entry diagnostic: `compile629` passed scheduled-source ended
-listeners and stopped at a callback's reference to the timer being initialized.
+Latest complete-entry diagnostic: `compile636` passed timer initializer captures
+and stopped at generic indexed swapping through array destructuring assignment.
 Generation, native build and application runtime remain incomplete.
+
+Lexical bindings captured inside their own initializer now receive a traced
+`LexicalBinding<T>` cell before lowering the initializer. Ordinary typed sinks
+initialize it once; early reads and reads after failed initialization throw.
+The static-constant entry is removed before callback lowering, preventing module
+timer reads from recursively re-evaluating the registration. Named retained
+callbacks use the existing function resolver and callback-retention analysis.
+The frame-only emitter is unchanged. Self-referencing record initializers still
+refuse when the recursive record/function type has no owned representation.
+
+`timer-bindings629` accepts 1/8 generation probes at baseline; both
+`timer-bindings632-native` and `timer-bindings636-native` build/run all eight.
+`timers635` passes the permanent native fixture plus control-flow and recursion.
+It verifies early reads, an escaped binding whose initializer throws, initialized
+null, per-iteration captures, nested timers and interval/mutable-handle behavior;
+stdout and stderr must both be empty. `regressions636` passes all 901 checks
+without skips; `population636` generates all 288 entries and completes scene41's
+native bootstrap. The later named-callback extension passes `timers637` (3/3),
+`initializer-captures637-native` (both named cases and awaited initialization),
+and `regressions638` (715 compiler/audio/timer checks, no skips). The separate
+record-initializer probe remains refused. Do not combine the four additional
+initializer probes with the fixed eight-probe timer baseline.
+
+Next batch: generic destructuring assignments. In `data-lowering.ts`, the literal
+RHS path of `emitArrayDestructuringAssignment` asks only checker types for each
+element before compiling it. A generic array's bound native element type can be
+concrete while the original AST still has T. The reached unchanged form swaps
+two indexed array elements using a literal RHS. Assess this together with the
+existing nested/default/accessor TODO before changing shared assignment lowering.
 
 Scheduled audio events use shared listener identity/options and the native
 PlatformEventListeners registry. Started sources with listeners retain a realm
@@ -76,7 +105,7 @@ results: `regressions630` passes all 714 compiler/audio checks without skips aft
 that correction. `population630` generates all 288 entries and completes its
 scene41 native physics bootstrap successfully.
 
-Next batch: timer bindings referenced from callbacks in their own initializer.
+The prior timer assessment covered callbacks in their own initializer.
 `assess-timer-bindings.mjs` saves eight independent probes. `timer-bindings629`
 accepts only the already-declared mutable binding (1/8 generation, native not yet
 assessed); self-timeouts/intervals, helper callbacks, nested timers, returned cleanup
