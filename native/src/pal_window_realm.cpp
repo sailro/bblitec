@@ -67,6 +67,7 @@ struct WindowServices final : CanvasProvider {
     explicit WindowServices(std::shared_ptr<OffscreenDevice> graphics, std::uint64_t capture_frame_count)
         : graphics(std::move(graphics)), capture_frame_count(capture_frame_count) {}
     std::shared_ptr<AnimationFrameSource> animation_frame_source() const override { return animation_frames; }
+    const void* graphics_identity() const override { return graphics.get(); }
     std::shared_ptr<CanvasEndpoint> create_endpoint(std::uint64_t width, std::uint64_t height) override {
         if (width > 16384 || height > 16384) throw InvalidCanvasState("Native canvas allocation exceeds 16384 pixels.");
         auto endpoint = std::make_shared<CanvasEndpoint>(std::make_shared<OffscreenSurface>(

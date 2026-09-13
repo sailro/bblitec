@@ -25,9 +25,9 @@ each small edit. Keep focused checks during a batch; use the unchanged entry and
 broader regression checks at useful batch boundaries. Unknown requirements stay
 visible; do not invent an overall completion percentage from static counts.
 
-**The external application does not fully compile yet.** The unchanged entry now generates its no-GPU fallback only; the intended
-scene has no generated renderer. Its native build and application runtime have
-never been reached. A green sweep validates the registered corpus;
+**The external application does not fully compile yet.** Native graphics availability now opens the intended startup branch; generation
+stops on conditional asynchronous composition. Its native build and intended
+application runtime have never been reached. A green sweep validates the registered corpus;
 it does not establish that this external application compiles or runs.
 
 | Item | Saved state |
@@ -36,7 +36,7 @@ it does not establish that this external application compiles or runs.
 | Branch | `codex/external-project-support` |
 | Remote | `https://github.com/sailro/bblitec.git` |
 | Branch base used in this session | `3474e835` on `main` |
-| Latest executable-code/test unit | Owned image/promise startup readiness; prior savepoints `8af15082` (asynchronous startup), `f699ad6b` (promise cleanup), `059bfbca` (generic/nested/defaulted destructuring), `bdce7a97` (captured lexical initialization), `bc21486a` (scheduled audio events), `95b04043` (async control flow), `e5ea2607` (async collections), `24281f2c` (promise caches/reactions), `53ba4164` (recursive async and hardened validation) and `f5cd2061` (AudioBuffer surface) |
+| Latest executable-code/test unit | Native graphics availability; prior savepoints `613d52b6` (image/promise startup readiness), `8af15082` (asynchronous startup), `f699ad6b` (promise cleanup), `059bfbca` (generic/nested/defaulted destructuring), `bdce7a97` (captured lexical initialization), `bc21486a` (scheduled audio events), `95b04043` (async control flow), `e5ea2607` (async collections), `24281f2c` (promise caches/reactions), `53ba4164` (recursive async and hardened validation) and `f5cd2061` (AudioBuffer surface) |
 | Draft PR | [#247 — Extend generic application compilation and retained UI support](https://github.com/sailro/bblitec/pull/247) |
 | External checkout | `C:/Dev/_prototypes/external-native-app` |
 | External source revision | `d7c477a6d5963680c55249dceb93cb6e4ab9ce56` |
@@ -44,13 +44,27 @@ it does not establish that this external application compiles or runs.
 | External generated output | `generated/external-app` (ignored; not a successful complete generation) |
 | Session diagnostics | `artifacts/external-integration` (ignored) |
 
-Latest complete-entry attempt: `compile677` completes generation in 132.5 seconds,
-but ONLY the no-GPU fallback: its manifest has no scene renderer. This is not full
-application compilation or integration. `navigator.gpu` is currently represented
-as absent, so the scene branch is pruned. Next batch must represent native GPU
-availability and reach the intended engine/scene. Do not build/test the fallback
-and report application success. `compile675` had stopped on undefined recovery
-from image decoding; undefined promise results now have a void representation.
+Latest complete-entry attempt: `compile685` reaches the graphics-enabled startup
+branch and stops on a conditional whose native arms are void and promise, after
+214.9 seconds. Next batch must assess asynchronous method calls and conditional
+promise composition together. The earlier `compile677` generated only the no-GPU
+fallback (132.5 seconds, no scene renderer); it was never full application success.
+
+Native GPU availability uses the optional HostServices graphics identity. Window
+services expose their existing device; child workers inherit those services.
+Compute-only realms have no graphics identity. Browser adapter creation and raw
+GPU prototypes remain unsupported. Presence, aliases, identity, null comparisons,
+and typeof through helpers preserve runtime presence rather than TS non-nullness.
+
+The fixed graphics availability assessment improves from `679-native` 3/8 to
+`681-native` 8/8. `graphics-availability684` passes three permanent checks, including
+scene-generation retention and capability inheritance in workers with/without a
+host device. `graphics-window683` passes actual Window service checks on SDL_GPU
+and Dawn with the unchanged DOM replay/completion checks. `regressions685` passes
+921/921 without skips; `population685` generates all 288 registered entries and
+completes scene41's native bootstrap. An independently found dynamic typeof to
+inferred string-literal enum field conversion gap remains visible in TODO.md;
+explicitly string-typed message fields work.
 
 `emitEntryBody` detects entry-level awaits in realm-backed entries, skips nested
 function bodies, and emits one owned coroutine with a native return frame. It

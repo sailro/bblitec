@@ -111,6 +111,8 @@ owns a device/queue and OS window. Each producer owns an engine, scene, encoders
 and resources. A three-image pool provides a latest-frame mailbox; consumer
 fences prevent overwriting sampled images. Normal presentation samples GPU
 textures; screenshots use readback.
+The optional HostServices graphics identity exposes this existing capability to
+application availability guards and inherited workers, without creating another device.
 The first document snapshot follows initialization's microtasks, so initial input
 sees DOM content and listeners created during awaited startup.
 Image readiness stays on the application realm and is removed from document snapshots.

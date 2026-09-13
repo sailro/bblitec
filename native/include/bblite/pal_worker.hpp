@@ -127,6 +127,10 @@ class WorkerRealm {
     EventLoop& loop() { return loop_; }
     const std::string& name() const { return name_; }
     const std::shared_ptr<HostServices>& host_services() const { return host_services_; }
+    const void* graphics_identity() const {
+        require_owner();
+        return host_services_ ? host_services_->graphics_identity() : nullptr;
+    }
 
     EventLoop::AnimationFrameId request_animation_frame(EventLoop::AnimationCallback callback) {
         require_owner();

@@ -32,8 +32,12 @@ Removal, `once` and `preventDefault` are supported; events borrow their dispatch
 names remain `Error`, `stack` is undefined and source locations are unavailable; `rejectionhandled` and arbitrary rejection values are unsupported.
 
 Environment reads support aliased `navigator` values, native platform identification, processor
-count and system language. Optional browser client hints, device-memory estimates and the browser WebGPU
-entry point are absent.
+count and system language. Optional browser client hints and device-memory estimates are absent.
+In asynchronous realms, `navigator.gpu` exposes the presence and identity of the native graphics
+service. A Window and its workers share that capability; computation-only realms without the
+service observe undefined. Aliases, helper parameters, `typeof` and null/undefined comparisons
+preserve presence. This availability check uses the existing device; browser adapter requests,
+GPU constructors and prototype instrumentation remain unrepresented.
 `navigator.userAgent` is the fixed identifier `bblitec/native`; operating-system identity is available separately as `navigator.platform`.
 Aliased `performance.now()` reads the native monotonic clock; the nonstandard JavaScript heap snapshot is absent.
 Location origin, pathname and href follow the configured deployment base and query.

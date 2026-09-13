@@ -1069,7 +1069,7 @@ export class ExpressionLowerer {
                     ));
             const present =
                 operand.parameterBinding &&
-                !checkedMayBeUndefined
+                !checkedMayBeUndefined && operand.kind !== "record"
                     ? undefined
                     : operand.optionalFoundCpp ??
                       (operand.dataType?.kind === "optional"

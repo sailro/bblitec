@@ -147,14 +147,15 @@ export function browserGlobalNamed(
         : undefined;
 }
 
-export function browserEnvironmentPropertyValue(context: BrowserGlobalContext, expression: ts.Expression): Value | undefined {
+export function browserEnvironmentPropertyValue(context: BrowserGlobalContext & Pick<LoweringServices, "options">, expression: ts.Expression): Value | undefined {
     const unwrapped = context.unwrap(expression);
     if (!ts.isPropertyAccessExpression(unwrapped)) return undefined;
     const owner = browserEnvironmentValue(context, unwrapped.expression);
     return owner?.recordProperties?.[unwrapped.name.text];
 }
 
-function nativeNavigatorProperties(): Record<string, Value> {
+function nativeNavigatorProperties(realm: boolean): Record<string, Value> {
+    const graphics = "bbl::pal::WorkerRealm::current().graphics_identity()";
     return {
         language: {kind:"string", cpp:"bbl::preferred_language()"},
         userAgent: staticStringValue("bblitec/native", stringLiteral),
@@ -163,7 +164,9 @@ function nativeNavigatorProperties(): Record<string, Value> {
         onLine: {kind:"boolean", cpp:"true", staticBoolean:true},
         userAgentData: {kind:"json-null", cpp:"std::nullopt"},
         deviceMemory: {kind:"json-null", cpp:"std::nullopt"},
-        gpu: {kind:"json-null", cpp:"std::nullopt"},
+        gpu: realm ? {kind:"record", cpp:graphics, objectIdentityCpp:graphics,
+            optionalFoundCpp:`(${graphics} != nullptr)`, truthinessCpp:`(${graphics} != nullptr)`, recordProperties:{}}
+            : {kind:"json-null", cpp:"std::nullopt"},
         clipboard: {kind:"record", cpp:"", truthinessCpp:"true", recordProperties:{
             writeText: {kind:"callback", cpp:"", hostFunction:"clipboard-write"},
         }},
@@ -171,7 +174,7 @@ function nativeNavigatorProperties(): Record<string, Value> {
 }
 
 /** Native environment properties can travel through an aliased host object. */
-export function browserEnvironmentValue(context: BrowserGlobalContext, expression: ts.Expression): Value | undefined {
+export function browserEnvironmentValue(context: BrowserGlobalContext & Pick<LoweringServices, "options">, expression: ts.Expression): Value | undefined {
     const global = browserGlobalNamed(context, expression)?.text;
     if (global === "performance") return {
         kind: "record", cpp: "", truthinessCpp: "true", objectIdentityCpp: "bbl::native_performance_identity()",
@@ -181,7 +184,7 @@ export function browserEnvironmentValue(context: BrowserGlobalContext, expressio
         },
     };
     if (global !== "navigator") return undefined;
-    return {kind:"record", cpp:"", truthinessCpp:"true", objectIdentityCpp:"bbl::native_navigator_identity()", recordProperties:nativeNavigatorProperties()};
+    return {kind:"record", cpp:"", truthinessCpp:"true", objectIdentityCpp:"bbl::native_navigator_identity()", recordProperties:nativeNavigatorProperties(!!context.options.workers)};
 }
 
 export function browserDeploymentValue(context: BrowserGlobalContext & Pick<LoweringServices, "options">, expression: ts.Expression): string | boolean | null | undefined {
