@@ -70,7 +70,7 @@
         },
         {
           "name": "freetype",
-          "platform": "linux",
+          "platform": "linux | osx",
           "default-features": false,
           "features": ["png"]
         }

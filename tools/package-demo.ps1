@@ -270,6 +270,11 @@ if ($navigationReached) {
 if ($uiReached -or $textLayoutReached) {
     $licensePackages["FreeType.txt"] = "freetype"
 }
+if ($uiReached -and ($IsLinux -or $IsMacOS)) {
+    # The system color fonts use PNG glyphs, independently of scene textures.
+    $licensePackages["libpng.txt"] = "libpng"
+    $licensePackages["zlib.txt"] = "zlib"
+}
 if ($textLayoutReached) {
     $licensePackages["HarfBuzz.txt"] = "harfbuzz"
 }
