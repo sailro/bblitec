@@ -343,6 +343,10 @@ later properties override earlier entries. Spreading a represented unknown value
 allocates a fresh dynamic dictionary and retains nested object identities. Nullish
 values contribute no properties; arrays and strings contribute enumerable index
 keys. Dynamic dictionary reads preserve missing values as undefined.
+Native record sources copy their own fields into dynamic spreads without retaining
+the source root; scalar snapshots and shared nested objects follow shallow-copy semantics.
+Parsed objects and dictionaries serialize index keys numerically before other keys
+in insertion order, omitting undefined properties.
 Fresh literals keep this representation when their source has an asserted static
 record shape, including later property writes. A dictionary's `size` is an ordinary
 property; collection size remains available on Map and Set.

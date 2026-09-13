@@ -41,6 +41,7 @@ import {
     type TypedArrayKind,
 } from "./data-types.js";
 import { commonResourceValue, runtimeMeshValue, type Value } from "./types.js";
+import {ownObjectEntries} from "./object-statics.js";
 import {
     compileJsonStrictComparison,
     compileJsonElementRead,
@@ -5714,6 +5715,20 @@ export class DataLowerer {
                     if (source.kind === "json-null") continue;
                     if (dataType.key.kind === "string" && dataType.value.kind === "json") {
                         this.context.reachJson();
+                        if (source.kind === "data" && source.dataType?.kind === "struct") {
+                            // Spread snapshots the fields, not the root object's
+                            // identity. Native field storage can therefore be
+                            // enumerated without boxing an unowned root record.
+                            const snapshot = this.context.allocateTemporaryCppName("spread_source");
+                            this.context.emit({kind:"declaration", type:"const auto", name:snapshot, initializer:source.cpp});
+                            const entries = ownObjectEntries({dataTypes:this.context.dataTypes, dataLowerer:this,
+                                fail:(node, message) => this.context.fail(node, message)}, {...source, cpp:snapshot}, property)!;
+                            for (const [key, value] of entries) {
+                                const cpp = this.compileKnownValueForSink(value, dataType.value, property);
+                                this.context.emit(`${result}.set(${this.context.cppString(key)}, ${cpp});`);
+                            }
+                            continue;
+                        }
                         const value = this.compileKnownValueForSink(source, dataType.value, property);
                         this.context.emit(`bbl::js::json_spread_into(${result}, ${value});`);
                         continue;

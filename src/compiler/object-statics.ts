@@ -28,6 +28,8 @@ export type ObjectStaticContext = Pick<
     | "fail"
 >;
 
+type OwnObjectContext = Pick<ObjectStaticContext, "dataTypes" | "dataLowerer" | "fail">;
+
 /** A string-typed value's native text, static or data. */
 function stringCpp(context: ObjectStaticContext, value: Value, node: ts.Node): string {
     return context.dataLowerer.compileKnownValueForSink(value, { kind: "string" }, node);
@@ -35,7 +37,7 @@ function stringCpp(context: ObjectStaticContext, value: Value, node: ts.Node): s
 
 /** Read current field storage, using proven own keys when optional fields exist. */
 function structEntries(
-    context: ObjectStaticContext,
+    context: OwnObjectContext,
     owner: Value,
     dataType: DataType & { kind: "struct" },
     node: ts.Node,
@@ -58,7 +60,7 @@ function structEntries(
 }
 
 /** Common own-property projection for Object keys, values, entries and assign. */
-export function ownObjectEntries(context: ObjectStaticContext, owner: Value, node: ts.Node): Array<[string, Value]> | undefined {
+export function ownObjectEntries(context: OwnObjectContext, owner: Value, node: ts.Node): Array<[string, Value]> | undefined {
     if (owner.kind === "record") return Object.entries(owner.recordProperties ?? {});
     if (owner.kind === "data" && owner.dataType?.kind === "struct")
         return structEntries(context, owner, owner.dataType, node);

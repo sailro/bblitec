@@ -46,6 +46,45 @@ test("typed dynamic record reads preserve string and enum keys and nullable resu
     `, t);
 });
 
+test("dynamic object spread snapshots native record fields and retains nested aliases", t => {
+    nativeCheck("native-record-spread", `
+        interface Settings { enabled:boolean; weight:number; nested:{score:number}; }
+        const defaults:Settings={enabled:true,weight:2,nested:{score:3}};
+        let calls=0;
+        function read():Settings {calls++;return defaults;}
+        const override=JSON.parse('{"enabled":false,"extra":7}');
+        const result={...read(),...override};
+        if(calls!==1||result.enabled!==false||result.weight!==2||result.extra!==7)
+            throw new Error("spread fields and override");
+        defaults.weight=8;
+        defaults.nested.score=9;
+        if(result.weight!==2||result.nested.score!==9)throw new Error("shallow spread aliases");
+        const again={...defaults,...JSON.parse('{}')};
+        if(again===result||again.nested!==result.nested||again.weight!==8)throw new Error("fresh root shared child");
+        function later():unknown {defaults.weight=10;return JSON.parse('{"enabled":false}');}
+        const snapshot={...defaults,...later() as object};
+        if(snapshot.weight!==8||defaults.weight!==10||snapshot.enabled!==false)
+            throw new Error("source before later spread effects");
+    `, t);
+});
+
+test("JSON serialization orders index keys before other object properties", t => {
+    const input = '{"tail":8,"10":10,"2":2,"01":1,"4294967295":5,"4294967294":4,"-0":6,"0":0}';
+    const expected = JSON.stringify(JSON.parse(input));
+    nativeCheck("serialized-property-order", `
+        const parsed=JSON.parse(${JSON.stringify(input)});
+        parsed.missing=undefined;
+        if(JSON.stringify(parsed)!==${JSON.stringify(expected)})throw new Error("parsed key order");
+        const spread={...parsed};
+        if(JSON.stringify(spread)!==${JSON.stringify(expected)})throw new Error("dynamic dictionary key order");
+        const keys:string[]=${JSON.stringify(Object.keys(JSON.parse(input)).reverse())};
+        const dictionary:Record<string,number>={};
+        for(const key of keys)dictionary[key]=parsed[key];
+        if(JSON.stringify(dictionary)!==${JSON.stringify(JSON.stringify(Object.fromEntries(Object.entries(JSON.parse(input)).reverse())))})
+            throw new Error("typed dictionary key order");
+    `, t);
+});
+
 test("dynamic property keys preserve numeric spelling and receiver evaluation order", t => {
     nativeCheck("property-key-order", `
         let current=JSON.parse('{"name":1,"1":4,"-1.5":5,"true":6,"null":7,"undefined":8}');

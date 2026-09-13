@@ -8,6 +8,76 @@ dependencies will not be present in a fresh clone.
 
 ## Read this first
 
+**Current unit, 1054/1055.** Native record fields can now feed dynamic spreads via
+the existing ownObjectEntries projection, without boxing an unowned root. A source
+is evaluated once; nested aliases survive, scalar fields are copied, and later
+spreads override. hasDynamicObjectSpread checks the unwrapped source type, so an
+`as object` assertion does not hide a dynamic source. The unchanged custom-settings
+loader now generates in 0.49s and builds/runs all eight complete JavaScript output
+comparisons (custom1054-native.log), including malformed/scalar/array overrides.
+That comparison caught numeric-key JSON ordering: js_json.hpp now shares the
+existing index-key rules across own_keys and serialization of parsed objects and
+dictionaries. Parsed-object serialization sorts entry pointers rather than doing
+quadratic name lookups. Two new neutral native fixtures pass (spread1054-focused).
+Regression run spread1055 passed 715/716; its only failure was an old generated-code
+assertion still expecting numeric `.at()` before the earlier retained-receiver/key
+conversion change. Updated that assertion to connect the captured receiver to its
+converted key read; storage suite rerun spread1056-storage passes 16/16. Both
+sessions are closed. Staged TypeScript and private-name checks also pass.
+The first TODO remains open: this shallow spread does not solve general record
+ownership, optional presence or mutation through every erased object view.
+
+**Next startup frontier is already probed.** probe-startup1053.mjs invokes the
+unchanged config loader, custom-settings loader, settings/features resolvers and
+AA planner in the worker realm. Generation refuses after 4.7s at startup1053.ts11:
+resolveQualitySettings receives actual dynamic JSON while its native function
+signature expects a fixed record. NativeFunctionLowerer.compileArgument uses the
+checker-only signature; argumentPreservesObjectIdentity currently ignores actual
+JSON representation. Preserve the original dynamic object by selecting the inline
+path or a dynamic specialization; do not copy into a narrower record. This is the
+next main359 family, exposed without another full-entry run. Full1047 coverage
+below is the latest whole-app measurement and is not updated by focused probes.
+
+**Latest full result / next task.** Rebase and handoff commit **075146c5** are
+pushed. PR247 remains draft/main; its body was refreshed using pr1048.json.
+compile1047 finished (session88684 closed) in **171.26 seconds**, versus baseline
+1036's 512.45s, and advanced past quality selection. Coverage is now **547 successful
+bodies / 548 observed**, 92 modules, 22,161 unobserved bodies. Entry frontier moved
+from **statement39 to42/294**, main line356 (custom settings load), still before
+createEngine at402. The terminal refusal is core/quality.ts119, spreading the
+typed default record into parsed settings: `Dynamic object storage requires an
+owned reference.` This overlaps the first TODO, but do not call all ownership
+work complete when this one spread is fixed.
+
+application-inventory1049.json captures the new main frontier. application-run1047.json
+records the latest stage/duration/blocker and prior baseline for comparisons.
+render-application-progress.mjs now accepts that optional fourth argument; the
+APPLICATION_PROGRESS.md report has been refreshed with the latest counts and
+39→42 /546→547 /512→171 comparison. All outputs remain ignored. No compiler,
+test or native build is active; dist matches the rebased committed compiler.
+
+**Next implementation direction (no code edited yet):** getCustomQuality returns
+`{...typedDefaults,...JSON.parse(raw)}` plus fresh-default fallback spreads. The
+dynamic dictionary spread in DataLowerer.openRecordLiteral currently boxes its
+whole source before json_spread_into. An unowned native root struct cannot be
+boxed, but JavaScript spread only copies its own fields; retaining the root
+object is unnecessary. Reuse **ownObjectEntries** in compiler/object-statics.ts
+(already the shared Object keys/values/entries/assign projection) for native
+`data`/`struct` spread sources. It reads declared live fields, retains nested
+reference storage and handles known own keys; unknown optional presence refuses.
+Snapshot the source once before enumerating, then insert each field through the
+existing JSON sink; later spread/property effects must not reevaluate the source.
+Keep the existing dynamic path for JSON/dictionaries and the existing refused
+method/getter boundary for unrepresented records. Narrow ownObjectEntries and its
+structEntries helper's context to dataTypes/dataLowerer/fail for reuse (current
+ObjectStaticContext is unnecessarily broad). Add native tests for shallow scalar
+copies, retained nested aliases, overrides, unknown fields and one source call.
+Then build/test the unchanged custom-settings helper and the next startup
+helpers: resolveQualitySettings from content/glade-config, resolveNamedQualityFeatures
+from core/quality, and resolveSceneAaPlan from render/post/scene-aa. Their imports
+and calls are visible in main351–402. This is a reusable shallow-spread operation;
+global promotion of every unowned record is a separate, harder ownership issue.
+
 **PR250 rebase is complete.** Rebased all 118 branch commits onto origin/main
 9265afa7 without conflicts. Backup branch is
 codex/external-project-support-before-pr250 at 81f4d0e5f8da1bb615f1cb7b39375458b7411169.

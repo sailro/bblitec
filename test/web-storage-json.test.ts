@@ -301,7 +301,10 @@ test("JSON.parse answers a dynamic document the source's guards decide over", ()
     assert.match(result.cpp, /std::isfinite\(\w+\.to_number\(\)\)/);
     // `.length === n` and the indexed reads inside the guard.
     assert.match(result.cpp, /\.length\(\)/);
-    assert.match(result.cpp, /\.get\("s"\)\.at\(0\.0\)\.to_number\(\)/);
+    const receivers = [...result.cpp.matchAll(/const auto (\w+) = [^;\n]+\.get\("s"\);/g)];
+    assert.ok(receivers.some(([, name]) => result.cpp.includes(
+        `${name}.get(bbl::js::number_to_string(0.0)).to_number()`,
+    )), "indexed reads use the retained receiver and JavaScript property-key conversion");
     // The optional `sh` is a strict comparison over a possibly-absent key.
     assert.match(result.cpp, /\.get\("sh"\)\.strict_equals\(1\.0\)/);
 });

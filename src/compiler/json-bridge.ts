@@ -273,7 +273,7 @@ export function hasDynamicObjectSpread(
     return literal.properties.some(property => {
         if (!ts.isSpreadAssignment(property)) return false;
         if (isJsonRootedExpression(context, property.expression)) return true;
-        const type = context.checker.getTypeAtLocation(property.expression);
+        const type = context.checker.getTypeAtLocation(context.unwrap(property.expression));
         return (type.flags & ts.TypeFlags.Any) !== 0 || context.dataTypes.dynamicJsonType(type) !== undefined;
     });
 }

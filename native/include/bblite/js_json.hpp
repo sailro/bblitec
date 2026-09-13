@@ -6,7 +6,8 @@
 // Neither half knows any application. `JSON.stringify` writes through
 // `json_write` overloads -- one per plain-data container here, one per
 // reached generated struct emitted beside the struct itself -- so the key
-// order is the record's own declaration order and nothing sorts it. The
+// order follows JavaScript's own enumerable properties. Index keys precede
+// other keys, which retain insertion order. The
 // bytes are observable (they are what a save round-trips and what a debug
 // capture shows), which is why nlohmann's `std::map`-backed object is not
 // the writer.
@@ -213,6 +214,33 @@ inline void json_write(JsonWriter& writer, const JsonValue& value);
     return number_to_string(key);
 }
 
+[[nodiscard]] inline std::optional<std::uint32_t> json_property_index(std::string_view name) {
+    if (name.empty() || (name.size()>1 && name.front()=='0')) return std::nullopt;
+    std::uint32_t index = 0;
+    const auto parsed = std::from_chars(name.data(), name.data()+name.size(), index);
+    if (parsed.ec != std::errc{} || parsed.ptr != name.data()+name.size() ||
+        index == std::numeric_limits<std::uint32_t>::max()) return std::nullopt;
+    return index;
+}
+
+[[nodiscard]] inline bool json_property_key_less(std::string_view left, std::string_view right) {
+    const auto a = json_property_index(left), b = json_property_index(right);
+    return a && (!b || *a < *b);
+}
+
+/** Sort references, avoiding repeated linear lookups in parsed object storage. */
+template<typename Entries, typename Visitor>
+inline void json_for_each_object_entry(const Entries& entries, Visitor&& visitor) {
+    using Entry = std::remove_cvref_t<decltype(*entries.begin())>;
+    std::vector<const Entry*> ordered;
+    ordered.reserve(entries.size());
+    for (const auto& entry : entries) ordered.push_back(&entry);
+    std::stable_sort(ordered.begin(), ordered.end(), [](const Entry* left, const Entry* right) {
+        return json_property_key_less(json_object_key(left->first), json_object_key(right->first));
+    });
+    for (const Entry* entry : ordered) visitor(entry->first, entry->second);
+}
+
 template <typename T>
 inline void json_write(JsonWriter& writer, const Array<T>& values) {
     writer.begin_array();
@@ -262,19 +290,19 @@ inline void json_write(JsonWriter& writer, const Ref<T>& value) {
 
 /**
  * A `Map` is the lowering of a JavaScript record/index signature, and its
- * storage is insertion-ordered, so the written keys keep the order the
- * source inserted them in.
+ * storage is insertion-ordered. Serialization orders its property keys as
+ * JavaScript does, without changing the dictionary's storage.
  */
 template <typename K, typename V>
 inline void json_write(JsonWriter& writer, const Map<K, V>& entries) {
     writer.begin_object();
-    for (const auto& entry : entries) {
+    json_for_each_object_entry(entries, [&](const K& key, const V& value) {
         if constexpr (std::is_same_v<V, JsonValue>) {
-            if (entry.second.is_undefined()) continue;
+            if (value.is_undefined()) return;
         }
-        writer.key(json_object_key(entry.first));
-        json_write(writer, entry.second);
-    }
+        writer.key(json_object_key(key));
+        json_write(writer, value);
+    });
     writer.end_object();
 }
 
@@ -485,7 +513,7 @@ class JsonValue {
     [[nodiscard]] JsonValue get(std::string_view key) const {
         if (is_array() || is_string()) {
             if (key == "length") return from_number(is_array() ? length() : static_cast<double>(string_code_units(string_).size()));
-            const auto index = property_index(key);
+            const auto index = json_property_index(key);
             if (!index) return {};
             if (is_array()) return at(static_cast<double>(*index));
             const auto units = string_code_units(string_);
@@ -502,9 +530,9 @@ class JsonValue {
     template<typename Visitor>
     void for_each_entry(Visitor&& visitor) const {
         if (native_) {
-            for (const auto& key : native_->own_keys()) visitor(key, native_->get(key));
+            for (const auto& key : own_keys()) visitor(key, native_->get(key));
         } else if (kind_ == Kind::object) {
-            for (const auto& entry : *object_) visitor(entry.first, entry.second);
+            json_for_each_object_entry(*object_, std::forward<Visitor>(visitor));
         }
     }
 
@@ -528,10 +556,7 @@ class JsonValue {
         } else if (is_object()) {
             if (native_) result = native_->own_keys();
             else for (const auto& entry : *object_) result.push_back(entry.first);
-            std::stable_sort(result.begin(), result.end(), [](const std::string& left, const std::string& right) {
-                const auto a = property_index(left), b = property_index(right);
-                return a && (!b || *a < *b);
-            });
+            std::stable_sort(result.begin(), result.end(), json_property_key_less);
         }
         return result;
     }
@@ -554,7 +579,7 @@ class JsonValue {
             for (const auto& entry : *object_) if (entry.first == key) return true;
         } else if (is_array() || is_string()) {
             if (key == "length") return true;
-            const auto index = property_index(key);
+            const auto index = json_property_index(key);
             return index && *index < (is_array() ? array_size() : string_code_units(string_).size());
         }
         return false;
@@ -673,14 +698,6 @@ class JsonValue {
   private:
     [[nodiscard]] std::size_t array_size() const { return native_array_ ? native_array_->size() : array_->size(); }
     [[nodiscard]] const void* array_identity() const { return native_array_ ? native_array_->identity() : array_.get(); }
-    [[nodiscard]] static std::optional<std::uint32_t> property_index(std::string_view name) {
-        if (name.empty() || (name.size()>1 && name.front()=='0')) return std::nullopt;
-        std::uint32_t index = 0;
-        const auto parsed = std::from_chars(name.data(), name.data()+name.size(), index);
-        if (parsed.ec != std::errc{} || parsed.ptr != name.data()+name.size() ||
-            index == std::numeric_limits<std::uint32_t>::max()) return std::nullopt;
-        return index;
-    }
     Kind kind_ = Kind::undefined;
     bool boolean_ = false;
     double number_ = 0.0;
