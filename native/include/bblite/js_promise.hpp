@@ -79,13 +79,17 @@ template <typename T> class Promise {
         if (state_->resolving) return;
         state_->resolving = true;
         if (get() == other.get()) { settle(std::make_exception_ptr(std::runtime_error("Promise cannot resolve to itself"))); return; }
-        other.observe(
-            make_closure(std::tuple{*this, std::move(convert)}, [](auto& environment, const U& value) {
-                try { std::get<0>(environment).settle(std::get<1>(environment)(value)); }
-                catch (const pal::WorkerTerminated&) { throw; }
-                catch (...) { std::get<0>(environment).settle(std::current_exception()); }
-            }),
-            make_closure(std::tuple{*this}, [](auto& environment, std::exception_ptr error) { std::get<0>(environment).settle(error); }));
+        // Resolution locks immediately; invoking the adopted promise's then
+        // protocol is a separate job, even when it is already fulfilled.
+        state_->loop->queue_microtask([result = *this, other, convert = std::move(convert)]() mutable {
+            other.observe(
+                make_closure(std::tuple{result, std::move(convert)}, [](auto& environment, const U& value) {
+                    try { std::get<0>(environment).settle(std::get<1>(environment)(value)); }
+                    catch (const pal::WorkerTerminated&) { throw; }
+                    catch (...) { std::get<0>(environment).settle(std::current_exception()); }
+                }),
+                make_closure(std::tuple{result}, [](auto& environment, std::exception_ptr error) { std::get<0>(environment).settle(error); }));
+        });
     }
     void reject(std::exception_ptr error) const {
         state_->require_owner();

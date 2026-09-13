@@ -11,6 +11,8 @@ import { compileMapInitializer } from "./collection-methods.js";
 import { dataUnionEquality } from "./data-comparisons.js";
 import { compileDateNew } from "./dates.js";
 import { httpResponseProperty } from "./http.js";
+import { thrownMessage } from "./error-values.js";
+import { renderClosure } from "./closure-captures.js";
 import { cppIdentifierPattern } from "../cpp-literals.js";
 import { sceneRelativeSourceLabel } from "../source-location.js";
 import { staticNumberValue } from "./option-helpers.js";
@@ -165,6 +167,7 @@ export interface DataLoweringContext
         | "popScope"
         | "allocateBlockPrefix"
         | "compileCallbackWithValues"
+        | "captureManagedClosureLines"
         | "withRecordScopes"
         | "compileRecordSetterValue"
         | "compilePredicateWithValues"
@@ -312,6 +315,36 @@ export class DataLowerer {
         ), expression, this.context.checker.getNonNullableType(
             this.context.checker.getTypeAtLocation(expression.right),
         ) === this.context.checker.getTypeAtLocation(expression.right));
+    }
+
+    /** Resolving functions share promise state even when a callback retains them. */
+    public compilePromiseSettlement(callback: Value, values: readonly Value[], node: ts.Node): Value {
+        this.context.useNativeValue(callback);
+        const settlement = callback.nativePromiseSettlement;
+        if (!settlement) this.context.fail(node, "Expected an owned promise resolving function.");
+        const value = values[0] ?? {kind:"void", cpp:""};
+        let cpp: string;
+        if (settlement.mode === "reject") {
+            const message = thrownMessage(value);
+            if (!message) this.context.fail(node, "Promise rejection requires a represented Error or string reason.");
+            cpp = `${callback.cpp}.reject(std::make_exception_ptr(std::runtime_error(${this.compileKnownValueForSink(message, {kind:"string"}, node)})))`;
+        } else if (value.kind === "promise") {
+            if (value.promiseType !== settlement.type) this.context.fail(node, "Promise resolver adoption requires matching represented result types.");
+            cpp = `${callback.cpp}.resolve(${value.cpp})`;
+        } else {
+            const result = settlement.result;
+            let argument: string;
+            if (result?.kind === "void") {
+                if (value.kind !== "void" && value.kind !== "json-null") this.context.fail(node, "A void promise resolver requires undefined or a void promise.");
+                this.context.emitDiscardedValue(value);
+                argument = "bbl::js::PromiseVoid{}";
+            } else {
+                if (!result?.dataType) this.context.fail(node, "Promise resolver requires an owned result type.");
+                argument = this.compileKnownValueForSink(value, result.dataType, node);
+            }
+            cpp = `${callback.cpp}.resolve(${argument})`;
+        }
+        return {kind:"void", cpp};
     }
 
     /** Invoke an already evaluated callback with the values supplied by an API. */
@@ -5227,6 +5260,15 @@ export class DataLowerer {
         dataType: DataType,
         node: ts.Node,
     ): string {
+        if (value.nativePromiseSettlement && dataType.kind === "function") {
+            if (dataType.result) this.context.fail(node, "Promise resolving functions return void.");
+            const parameters = dataType.parameters.map(type => ({type, name:this.context.allocateTemporaryCppName("resolver_argument")}));
+            const compiled = this.context.captureManagedClosureLines(() => {
+                const arguments_ = parameters.map(({type,name}) => ({...this.leafValue(name,type), nativeCaptures:[this.context.registerNativeBinding(name)]}));
+                this.context.emitDiscardedValue(this.compilePromiseSettlement(value, arguments_, node));
+            });
+            return renderClosure(compiled, parameters.map(({type,name}) => `[[maybe_unused]] ${this.context.dataTypes.cppType(type)} ${name}`).join(", "));
+        }
         if (dataType.kind === "handle" && dataType.handle === "engine" && value.kind === "engine") {
             this.context.useNativeValue(value);
             return `&(${value.cpp})`;

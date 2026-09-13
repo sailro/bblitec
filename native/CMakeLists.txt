@@ -279,7 +279,7 @@ endif()
 # unreferenced object and the static registrations it carries.
 set(
     BBLITE_PAL_COMMON_PATTERN
-    "/src/(pal|pal_sdl|pal_ui_rml|pal_audio_labsound|pal_physics_bullet|pal_physics_debug|pal_navigation_recast|pal_file|pal_storage|pal_text_layout)\\.cpp$"
+    "/src/(pal|pal_sdl|pal_image|pal_ui_rml|pal_audio_labsound|pal_physics_bullet|pal_physics_debug|pal_navigation_recast|pal_file|pal_storage|pal_text_layout)\\.cpp$"
 )
 set(BBLITE_PAL_COMMON_SOURCES ${BBLITE_RUNTIME_SOURCES})
 list(FILTER BBLITE_PAL_COMMON_SOURCES INCLUDE REGEX "${BBLITE_PAL_COMMON_PATTERN}")

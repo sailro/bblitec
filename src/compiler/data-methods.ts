@@ -21,6 +21,7 @@ import {
 import type { DataLowerer } from "./data-lowering.js";
 import { isJsonValue } from "./json-bridge.js";
 import { commonResourceValue, runtimeMeshValue, type Value } from "./types.js";
+import { declarationInDefaultLibrary } from "./symbols.js";
 import { replacementCallback } from "./string-replacement.js";
 
 /**
@@ -171,7 +172,18 @@ export const storingDataMethods: ReadonlySet<string> = new EmissionSet([
 ]);
 
 /** Syntactic retention proof used conservatively by the alias analyses. */
-export function isStoringDataCall(node: ts.Node): node is ts.CallExpression | ts.NewExpression {
+export function isStoringDataCall(node: ts.Node, checker: ts.TypeChecker): node is ts.CallExpression | ts.NewExpression {
+    if (ts.isCallExpression(node)) {
+        const signature = checker.getResolvedSignature(node)?.declaration;
+        // Resolver signatures originate in the default library constructor,
+        // including when the source renames or forwards its executor parameter.
+        const parameter = signature?.parent;
+        const executor = parameter?.parent?.parent;
+        const constructor = executor?.parent;
+        if (signature && declarationInDefaultLibrary(signature) && parameter && ts.isParameter(parameter) &&
+            executor && ts.isParameter(executor) && constructor && ts.isConstructSignatureDeclaration(constructor) &&
+            ts.isInterfaceDeclaration(constructor.parent) && constructor.parent.name.text === "PromiseConstructor") return true;
+    }
     return (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression) &&
         storingDataMethods.has(node.expression.name.text)) ||
         (ts.isNewExpression(node) && ts.isIdentifier(node.expression) &&

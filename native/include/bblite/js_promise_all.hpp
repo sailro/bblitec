@@ -77,4 +77,28 @@ Promise<Array<T>> promise_all(const Array<Promise<T>>& inputs) {
     return state->result;
 }
 
+/** Observing every competitor also handles rejections after the race has settled. */
+template <typename T> void observe_race(const Promise<T>& input, const Promise<T>& result) {
+    input.observe(make_closure(std::tuple{result}, [](auto& environment, const T& value) { std::get<0>(environment).resolve(value); }),
+        make_closure(std::tuple{result}, [](auto& environment, std::exception_ptr error) { std::get<0>(environment).reject(error); }));
+}
+
+template <typename T, typename... Inputs> Promise<T> promise_race_tuple(const std::tuple<Inputs...>& inputs) {
+    Promise<T> result;
+    std::apply([&](const auto&... input) { (observe_race(input, result), ...); }, inputs);
+    return result;
+}
+
+template <typename T> Promise<T> promise_race(const Array<Promise<T>>& inputs) {
+    Promise<T> result;
+    for (const auto& input : inputs) observe_race(input, result);
+    return result;
+}
+
+template <typename T> Promise<T> promise_race(const Array<T>& inputs) {
+    Promise<T> result;
+    for (const auto& input : inputs) observe_race(Promise<T>::resolved(input), result);
+    return result;
+}
+
 } // namespace bbl::js

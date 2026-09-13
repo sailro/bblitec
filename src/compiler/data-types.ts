@@ -805,7 +805,7 @@ export class DataTypeRegistry {
         const [resolvedType] = this.checker.getTypeArguments(reference);
         if (!resolvedType) return undefined;
         if (this.asynchronous) {
-          if ((resolvedType.flags & ts.TypeFlags.Void) !== 0) return {kind:"promise"};
+          if ((resolvedType.flags & (ts.TypeFlags.Void | ts.TypeFlags.Undefined | ts.TypeFlags.Never)) !== 0) return {kind:"promise"};
           const result = this.fromStoredTsType(resolvedType, node);
           return result ? {kind:"promise", result:this.markStoredObjectReferences(result)} : undefined;
         }
@@ -947,7 +947,7 @@ export class DataTypeRegistry {
       return undefined;
     }
     const signatureResult = this.checker.getReturnTypeOfSignature(signature);
-    const resultType = this.asynchronous && (signatureResult.flags & ts.TypeFlags.Void) === 0 ? signatureResult : nativeReturnTsType(
+    const resultType = this.asynchronous && (signatureResult.flags & (ts.TypeFlags.Void | ts.TypeFlags.Undefined)) === 0 ? signatureResult : nativeReturnTsType(
       this.checker,
       signatureResult,
       signature.declaration,

@@ -3927,7 +3927,8 @@ class Compiler
                     ) {
                         return true;
                     }
-                    if (isStoringDataCall(node) && node.arguments?.some(scan.containsAlias)) return true;
+                    if ((ts.isCallExpression(node) || ts.isNewExpression(node)) && node.arguments?.some(scan.containsAlias) &&
+                        isStoringDataCall(node, this.checker)) return true;
                     if (ts.isCallExpression(node)) {
                         const retainedTarget = retainedNativeMutationTarget(this.symbols, node);
                         if (retainedTarget && isAlias(scan, retainedTarget)) {
@@ -5275,6 +5276,21 @@ class Compiler
             return { ...owner, uiDataset: true };
         }
         if (owner.kind === "ui-element" && !owner.uiDataset) {
+            if (this.options.workers && ["complete", "naturalWidth", "naturalHeight"].includes(property)) {
+                if (owner.uiTag && owner.uiTag !== "img") this.fail(expression, "Image readiness requires an img element.");
+                const method = property === "complete" ? "complete" : property === "naturalWidth" ? "natural_width" : "natural_height";
+                return this.dataLowerer.leafValue(`bbl::ui_image_${method}(${this.requireEngine(owner, expression)}, ${owner.cpp})`, {kind:property === "complete" ? "boolean" : "number"});
+            }
+            if (this.options.workers && property === "decode") {
+                if (owner.uiTag && owner.uiTag !== "img") this.fail(expression, "Image decoding requires an img element.");
+                const engine = this.requireEngine(owner, expression);
+                const compiled = this.captureManagedClosureLines(() => {
+                    this.useNativeValue(owner);
+                    this.emit(`return bbl::ui_decode_image(${engine}, ${owner.cpp});`);
+                });
+                const type: DataType = {kind:"function", parameters:[], result:{kind:"promise"}};
+                return this.dataLowerer.leafValue(`${this.dataTypes.cppType(type)}{${renderClosure(compiled, "")}}`, type);
+            }
             if (property === "lang") return {kind:"string",
                 cpp:`bbl::ui_get_attribute(${this.requireEngine(owner, expression)}, ${owner.cpp}, "lang")`, dataType:{kind:"string"}};
             const attribute = this.ui.booleanAttribute(owner, property, expression);
@@ -10960,6 +10976,10 @@ class Compiler
                         callback,
                     );
                 }
+                if (bound.nativePromiseSettlement) {
+                    this.emitDiscardedValue(this.dataLowerer.compilePromiseSettlement(bound, values, callback));
+                    return;
+                }
                 if (
                     bound.kind === "callback" &&
                     !bound.callbackDeclaration &&
@@ -11190,6 +11210,7 @@ class Compiler
         declaration: ts.VariableDeclaration,
         cppName: string,
     ): boolean {
+        if (this.options.workers) return false;
         if (!declaration.initializer) return false;
         const target = this.browserErasure.escapingResolveTarget(
             declaration.initializer,

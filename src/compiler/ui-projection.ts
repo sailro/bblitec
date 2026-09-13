@@ -12,6 +12,7 @@ import { nativeHostUiStyleRules, uiStyleSelector, uiStyleSelectorCppKind, uiStyl
 import { validateFileAccept } from "./browser-file.js";
 import { CompileError } from "./compile-error.js";
 import { documentEngine } from "./window-events.js";
+import { registerUiImageAsset } from "./assets.js";
 import { browserGlobalNamed } from "./browser-erasure.js";
 import type { LoweringServices } from "./lowering-services.js";
 import { argumentAt } from "./syntax.js";
@@ -105,6 +106,7 @@ interface UiUnknownAttributeMutation {
 }
 
 interface UiProjectionContext extends Pick<LoweringServices,
+    "assets" | "assetPayloads" |
     "lookupIdentifierValue" |
     "allocateTemporaryCppName" | "sourceFile" |
     "checker" |
@@ -147,6 +149,10 @@ interface UiProjectionContext extends Pick<LoweringServices,
 
 export class UiProjection {
     public constructor(private readonly context: UiProjectionContext) {}
+
+    public registerImageSource(source: string): void {
+        if (source) registerUiImageAsset(this.context, source, source);
+    }
 
     public documentEngine(node: ts.Node): string {
         return documentEngine(this.context, node) ?? this.context.requireDefaultEngine(node);
@@ -5193,6 +5199,7 @@ export class UiProjection {
                     ids.add(sourceValue);
                 }
                 const value = this.lowerUiAttributeLiteral(name, sourceValue);
+                if (element.tag === "img" && name === "src") this.registerImageSource(value);
                 emitted.push(
                     `${indent}bbl::ui_set_attribute(${engine}, ${handle}, ` +
                         `${this.context.cppString(name)}, ${this.context.cppString(value)});`,

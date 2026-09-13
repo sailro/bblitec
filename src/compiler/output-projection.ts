@@ -31,7 +31,7 @@ export const featureSources: Record<Feature, string[]> = {
     "platform:http": ["src/pal_http.cpp"],
     "platform:packaged-fetch": [],
     "platform:window": ["src/pal_window_realm.cpp", "src/pal_media_query.cpp"],
-    "backend:sdl": ["src/pal_sdl.cpp"],
+    "backend:sdl": ["src/pal_sdl.cpp", "src/pal_image.cpp"],
     "engine:device-recovery": [],
     // Browser Gamepad polling maps to SDL's standard gamepad API in the
     // platform translation unit already selected by backend:sdl.
@@ -268,7 +268,7 @@ export const featureSources: Record<Feature, string[]> = {
     "browser:file": ["src/pal_file.cpp"],
     // The generated scene talks only to bblite's retained UI IR. RmlUi and
     // its SDL_GPU adapter remain an optional PAL implementation detail.
-    "ui:rml": ["src/pal_ui_rml.cpp"],
+    "ui:rml": ["src/pal_ui_rml.cpp", "src/pal_image.cpp"],
     // Selects the SVG-enabled pinned RmlUi artifact; rendering remains in the
     // same UI PAL translation unit.
     "ui:inline-svg": [],

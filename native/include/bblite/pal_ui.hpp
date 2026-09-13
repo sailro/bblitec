@@ -1,6 +1,9 @@
 #pragma once
 
 #include <bblite/runtime.hpp>
+#if defined(BBLITE_WORKERS) && BBLITE_WORKERS
+#include <bblite/js_promise.hpp>
+#endif
 
 #include <algorithm>
 #include <cstdint>
@@ -19,6 +22,12 @@ namespace bbl {
 enum class UiDocumentPart { Html, Head, Body };
 UiElementHandle ui_document_root(Engine& engine, UiDocumentPart part);
 UiElementHandle ui_create_element(Engine& engine, std::string_view tag);
+#if defined(BBLITE_WORKERS) && BBLITE_WORKERS
+bool ui_image_complete(Engine&, UiElementHandle);
+double ui_image_natural_width(Engine&, UiElementHandle);
+double ui_image_natural_height(Engine&, UiElementHandle);
+js::Promise<js::PromiseVoid> ui_decode_image(Engine&, UiElementHandle);
+#endif
 UiElementHandle ui_create_text_node(Engine& engine, std::string text);
 // An invalid parent denotes the document root.
 void ui_append_text(Engine& engine, UiElementHandle parent, std::string text);

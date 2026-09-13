@@ -25,9 +25,9 @@ each small edit. Keep focused checks during a batch; use the unchanged entry and
 broader regression checks at useful batch boundaries. Unknown requirements stay
 visible; do not invent an overall completion percentage from static counts.
 
-**The external application does not fully compile yet.** Its latest attempt
-stopped during TypeScript-to-C++ generation. Its native build and application
-runtime have never been reached. A green sweep validates the registered corpus;
+**The external application does not fully compile yet.** The unchanged entry now generates its no-GPU fallback only; the intended
+scene has no generated renderer. Its native build and application runtime have
+never been reached. A green sweep validates the registered corpus;
 it does not establish that this external application compiles or runs.
 
 | Item | Saved state |
@@ -36,7 +36,7 @@ it does not establish that this external application compiles or runs.
 | Branch | `codex/external-project-support` |
 | Remote | `https://github.com/sailro/bblitec.git` |
 | Branch base used in this session | `3474e835` on `main` |
-| Latest executable-code/test unit | Owned asynchronous startup; prior savepoints `f699ad6b` (promise cleanup), `059bfbca` (generic/nested/defaulted destructuring), `bdce7a97` (captured lexical initialization), `bc21486a` (scheduled audio events), `95b04043` (async control flow), `e5ea2607` (async collections), `24281f2c` (promise caches/reactions), `53ba4164` (recursive async and hardened validation) and `f5cd2061` (AudioBuffer surface) |
+| Latest executable-code/test unit | Owned image/promise startup readiness; prior savepoints `8af15082` (asynchronous startup), `f699ad6b` (promise cleanup), `059bfbca` (generic/nested/defaulted destructuring), `bdce7a97` (captured lexical initialization), `bc21486a` (scheduled audio events), `95b04043` (async control flow), `e5ea2607` (async collections), `24281f2c` (promise caches/reactions), `53ba4164` (recursive async and hardened validation) and `f5cd2061` (AudioBuffer surface) |
 | Draft PR | [#247 — Extend generic application compilation and retained UI support](https://github.com/sailro/bblitec/pull/247) |
 | External checkout | `C:/Dev/_prototypes/external-native-app` |
 | External source revision | `d7c477a6d5963680c55249dceb93cb6e4ab9ce56` |
@@ -44,10 +44,13 @@ it does not establish that this external application compiles or runs.
 | External generated output | `generated/external-app` (ignored; not a successful complete generation) |
 | Session diagnostics | `artifacts/external-integration` (ignored) |
 
-Latest complete-entry diagnostic: `compile658` passed the startup await boundary
-and stopped on the decode property of an HTML image. The timed attempt took
-129 seconds; `compile653` previously stopped outside an async activation.
-Generation, native build and application runtime remain incomplete.
+Latest complete-entry attempt: `compile677` completes generation in 132.5 seconds,
+but ONLY the no-GPU fallback: its manifest has no scene renderer. This is not full
+application compilation or integration. `navigator.gpu` is currently represented
+as absent, so the scene branch is pruned. Next batch must represent native GPU
+availability and reach the intended engine/scene. Do not build/test the fallback
+and report application success. `compile675` had stopped on undefined recovery
+from image decoding; undefined promise results now have a void representation.
 
 `emitEntryBody` detects entry-level awaits in realm-backed entries, skips nested
 function bodies, and emits one owned coroutine with a native return frame. It
@@ -75,13 +78,40 @@ passes the existing query/selector fixture on both backends. The ignored
 an async main with Promise.resolve awaits before/after its body; it reuses the
 same build configuration, replay and completion marker rather than delaying input.
 
-Next batch: startup readiness gates. The source following the reached image
-decode also constructs promises around RAF/timers and races their completion;
-assess these together. `startup-gates661` is a fixed twelve-probe generation
-baseline, 0/12 accepted: decode presence/call, complete/natural dimensions, five
-constructor forms (value, void, timer, rejection, promise adoption), and four
-race forms (values, promises, void, empty). No readiness-gate implementation has
-started. Use owned native promise settlement and existing image/asset facilities.
+Startup readiness gates are implemented as a coordinated generic batch. The fixed
+`startup-gates661` baseline is 0/12 generation accepted. `startup-gates677` accepts
+12/12; `startup-gates677-native` passes all nine core promise probes. The three
+image forms are included in `image-window677`, which passes SDL_GPU and Dawn
+with valid/broken/empty/replaced image checks, repeated decoding, natural sizes,
+nested RAF/timer racing and the unchanged DOM input replay/completion assertions.
+
+Promise constructors use a synchronous borrowed executor closure, while resolver
+values retain owned promise state through the shared callback capture/sink paths.
+The old frame-handshake latch is bypassed in realm builds. Async executors share
+the owned activation lowerer; their return promise is discarded as in JavaScript.
+First settlement locks immediately; adoption observes its input in a queued job.
+The JavaScript oracle caught early adoption and resolver record rematerialization;
+both are fixed. Default-library resolver signatures participate in shared alias
+retention, after checking whether an argument actually contains an alias. Direct
+resolver calls explicitly refuse extra arguments. Homogeneous value/promise races
+observe every competitor, including losers, and empty races stay pending.
+
+Image requests stay on the source realm and are stripped from document snapshots.
+Source mutation invalidates pending requests. Packaged decoding runs in a realm
+microtask and retains dimensions/pixels; empty/broken requests reject. The existing
+image decoder moved unchanged from pal_sdl.cpp to pal_image.cpp, selected by both
+scene and UI feature projections, so Window startup needs no scene engine. Static
+image attributes use the logical-path asset registrar. Distinct DOMException,
+network/responsive sources and load/error events remain TODOs.
+
+`regressions675` passes 910/916: the six failures were the centralized-library
+identity architecture rule, four source-list expectations and the moved decoder's
+old fixture include. All fixed; `regressions677` passes 916/916 without skips.
+`startup-gates678` passes six native constructor/cleanup/startup checks after adding
+async executor coverage. `population675` generates all 288 entries and completes
+scene41's native bootstrap. Image build670 caught missing decoder linkage; run671
+caught a bad fixture PNG CRC. Shared decoder linkage and a pngjs-generated fixture
+fixed both; runs673 and677 pass both backends. All these checks have finished.
 
 IMPORTANT INTEGRATION CHECK: after this startup gate, the unchanged entry tests
 `navigator.gpu` before engine creation. `browser-erasure.ts` currently represents

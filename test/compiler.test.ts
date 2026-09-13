@@ -62,6 +62,7 @@ test("compiles the Babylon Lite primitives example", () => {
     assert.deepEqual(result.manifest.runtimeSources, [
         "src/pal.cpp",
         "src/pal_sdl.cpp",
+        "src/pal_image.cpp",
         "src/pal_sdl_gpu.cpp",
     ]);
     assert.deepEqual(
@@ -15046,6 +15047,7 @@ test("compiles pinned Scene 1 BoomBox parity", () => {
     assert.deepEqual(result.manifest.runtimeSources, [
         "src/pal.cpp",
         "src/pal_sdl.cpp",
+        "src/pal_image.cpp",
         "src/pal_sdl_gpu.cpp",
     ]);
     assert.deepEqual(
@@ -15133,6 +15135,7 @@ test("compiles Babylon Lite scene 10 PBR rough sphere", () => {
     assert.deepEqual(result.manifest.runtimeSources, [
         "src/pal.cpp",
         "src/pal_sdl.cpp",
+        "src/pal_image.cpp",
         "src/pal_sdl_gpu.cpp",
     ]);
     assert.deepEqual(result.manifest.assets, []);
@@ -16699,6 +16702,7 @@ test("compiles a scene-less uniform-effect frame graph without the scene rendere
     assert.deepEqual(result.manifest.runtimeSources, [
         "src/pal.cpp",
         "src/pal_sdl.cpp",
+        "src/pal_image.cpp",
         "src/pal_sdl_gpu_frame_graph.cpp",
     ]);
     assert.ok(

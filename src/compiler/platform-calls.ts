@@ -972,6 +972,13 @@ export class PlatformCalls {
                     };
             }
         }
+        if (element && callee.name.text === "decode") {
+            if (!this.context.options.workers) this.context.fail(call, "Image decoding requires an asynchronous realm.");
+            this.context.expectArgumentCount(call, 0, 0);
+            if (element.uiTag && element.uiTag !== "img") this.context.fail(call, "Image decoding requires an img element.");
+            return {kind:"promise", cpp:`bbl::ui_decode_image(${this.context.requireEngine(element, call)}, ${element.cpp})`,
+                promiseType:"bbl::js::PromiseVoid", promiseResult:{kind:"void", cpp:""}};
+        }
         if (element && callee.name.text === "focus") {
             this.context.expectArgumentCount(call, 0, 0);
             const engine = this.context.requireEngine(element, call);
@@ -1140,6 +1147,7 @@ export class PlatformCalls {
                 };
             }
             const staticValue = this.ui.tryUiStaticString(argumentAt(call, 1));
+            if (element.uiTag === "img" && name === "src" && staticValue !== undefined) this.ui.registerImageSource(staticValue);
             const value = staticValue !== undefined
                 ? this.context.cppString(this.ui.lowerUiAttributeLiteral(name, staticValue, argumentAt(call, 1)))
                 : this.ui.uiStringCpp(argumentAt(call, 1), "UI setAttribute value");

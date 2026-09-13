@@ -6,6 +6,7 @@
 #endif
 #include <bblite/js_data.hpp>
 #include <bblite/pal.hpp>
+#include <bblite/pal_image.hpp>
 #include <bblite/pal_system_fonts.hpp>
 
 #include <RmlUi/Core.h>
@@ -59,6 +60,12 @@
 #include <vector>
 
 namespace bbl {
+struct UiImageRequest {
+    std::string source;
+    bool complete = false;
+    bool invalidated = false;
+    std::shared_ptr<const pal::DecodedImage> image;
+};
 namespace pal {
 namespace {
 Rml::ColourbPremultiplied canvas_color(std::string_view source);
@@ -576,6 +583,57 @@ std::string ui_escape_rml(std::string_view text) {
     return escaped;
 }
 
+#if defined(BBLITE_WORKERS) && BBLITE_WORKERS
+namespace {
+std::shared_ptr<UiImageRequest> image_request(Engine& engine, UiElementHandle element) {
+    auto& record = ui_element(engine, element);
+    if (record.tag != "img") throw std::runtime_error("Image readiness requires an img element.");
+    if (record.image_request) return record.image_request;
+    auto request = std::make_shared<UiImageRequest>();
+    request->source = ui_get_attribute(engine, element, "src");
+    record.image_request = request;
+    if (request->source.empty()) request->complete = true;
+    else pal::EventLoop::current().queue_microtask([request] {
+        if (request->invalidated) return;
+        try {
+#if BBLITE_HAS_IMAGE_DECODER
+            std::string path = request->source;
+            while (!path.empty() && path.front() == '/') path.erase(path.begin());
+            if (path.find(':') != std::string::npos || path.find('\\') != std::string::npos ||
+                path == ".." || path.starts_with("../") || path.ends_with("/..") || path.find("/../") != std::string::npos)
+                throw std::runtime_error("Image source is outside packaged assets.");
+            const auto bytes = pal::read_binary_file(asset_path(path));
+            request->image = std::make_shared<const pal::DecodedImage>(pal::decode_image(js::ArrayBuffer(bytes)));
+#endif
+        } catch (const pal::WorkerTerminated&) { throw; }
+        catch (const std::exception&) { /* A broken request has zero natural dimensions. */ }
+        request->complete = true;
+    });
+    return request;
+}
+}
+
+bool ui_image_complete(Engine& engine, UiElementHandle element) { return image_request(engine, element)->complete; }
+double ui_image_natural_width(Engine& engine, UiElementHandle element) {
+    const auto request = image_request(engine, element);
+    return request->image ? request->image->width : 0;
+}
+double ui_image_natural_height(Engine& engine, UiElementHandle element) {
+    const auto request = image_request(engine, element);
+    return request->image ? request->image->height : 0;
+}
+js::Promise<js::PromiseVoid> ui_decode_image(Engine& engine, UiElementHandle element) {
+    const auto request = image_request(engine, element);
+    js::Promise<js::PromiseVoid> result;
+    pal::EventLoop::current().queue_microtask([request, result] {
+        if (request->invalidated || !request->image)
+            result.reject(std::make_exception_ptr(std::runtime_error("EncodingError: image data could not be decoded")));
+        else result.resolve(js::PromiseVoid{});
+    });
+    return result;
+}
+#endif
+
 void ui_set_attribute(
     Engine& engine,
     UiElementHandle element,
@@ -601,7 +659,14 @@ void ui_set_attribute(
         record.style_properties.clear();
         record.style_property_order.clear();
     }
+#if defined(BBLITE_WORKERS) && BBLITE_WORKERS
+    const bool updates_image = record.tag == "img" && name == "src";
+    if (updates_image && record.image_request) { record.image_request->invalidated = true; record.image_request.reset(); }
+#endif
     record.attributes.insert_or_assign(std::move(name), std::move(value));
+#if defined(BBLITE_WORKERS) && BBLITE_WORKERS
+    if (updates_image) static_cast<void>(image_request(engine, element));
+#endif
     mark_ui_changed(engine);
 }
 
@@ -618,6 +683,9 @@ void ui_remove_attribute(Engine& engine, UiElementHandle element, std::string_vi
         throw std::runtime_error("Removing the type of a native file input is not represented.");
 #endif
     bool changed = record.attributes.erase(normalized) != 0;
+#if defined(BBLITE_WORKERS) && BBLITE_WORKERS
+    if (changed && normalized == "src" && record.image_request) { record.image_request->invalidated = true; record.image_request.reset(); }
+#endif
     if (normalized == "style") {
         changed = changed || !record.style_properties.empty();
         record.style_properties.clear();

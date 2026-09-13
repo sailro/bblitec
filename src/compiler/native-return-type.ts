@@ -25,7 +25,7 @@ export function nativeReturnTsType(
     ) {
         return undefined;
     }
-    if ((type.flags & ts.TypeFlags.Void) !== 0) return undefined;
+    if ((type.flags & (ts.TypeFlags.Void | ts.TypeFlags.Undefined)) !== 0) return undefined;
     if (options.unwrapPromise === false) return type;
     if (checker.typeToString(type) === "Promise<void>") return undefined;
     const promised = (
@@ -34,5 +34,5 @@ export function nativeReturnTsType(
         }
     ).getAwaitedType(type);
     const resolved = promised && promised !== type ? promised : type;
-    return (resolved.flags & ts.TypeFlags.Void) !== 0 ? undefined : resolved;
+    return (resolved.flags & (ts.TypeFlags.Void | ts.TypeFlags.Undefined)) !== 0 ? undefined : resolved;
 }

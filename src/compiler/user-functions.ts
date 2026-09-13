@@ -339,7 +339,8 @@ export function parameterIsMutated(
                 ) {
                     return true;
                 }
-                if (isStoringDataCall(node) && node.arguments?.some(scan.containsAlias)) return true;
+                if ((ts.isCallExpression(node) || ts.isNewExpression(node)) && node.arguments?.some(scan.containsAlias) &&
+                    isStoringDataCall(node, checker)) return true;
                 if (!ts.isCallExpression(node)) return false;
                 const called = checker.getResolvedSignature(node)?.declaration;
                 if (!isSupportedFunction(called)) return false;
@@ -1346,6 +1347,11 @@ export class UserFunctionLowerer {
         evaluatedArguments?: readonly Value[],
     ): Value | undefined {
         context.useNativeValue(bound);
+        if (bound.nativePromiseSettlement) {
+            if (call.arguments.length > 1) context.fail(call, "Promise resolving functions accept at most one represented argument.");
+            const values = evaluatedArguments ?? call.arguments.map(argument => context.compileValue(argument));
+            return context.dataLowerer.compilePromiseSettlement(bound, values, call);
+        }
         const parameterTypes = bound.nativeCallbackParameterTypes;
         const declaration = bound.callbackDeclaration;
         if (!declaration) {
@@ -2225,6 +2231,7 @@ export class UserFunctionLowerer {
         body?: {coroutine: true},
     ): Value {
         const bound = ts.isIdentifier(declaration) ? context.lookupOptional(declaration) : undefined;
+        if (bound?.nativePromiseSettlement) return context.dataLowerer.compilePromiseSettlement(bound, arguments_, callNode);
         if (bound?.dataType?.kind === "function") {
             const result = context.dataLowerer.compileFunctionValueCall(bound, arguments_, callNode);
             if (!discardReturn) return result;

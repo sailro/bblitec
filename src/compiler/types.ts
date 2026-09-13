@@ -1906,6 +1906,8 @@ export interface ValueFields {
   nativeCallbackStaticArguments?: (Value | undefined)[];
   /** Undefined is also the native void return type. */
   nativeCallbackReturnType?: DataType;
+  /** An owned promise's resolving function; cpp names its retained settlement state. */
+  nativePromiseSettlement?: {mode: "resolve" | "reject"; type: string; result: Value};
   /** Scope-carrying record a function-valued property was read from. */
   callbackRecordOwner?: Value;
   /** The function/object expression is re-evaluated by emitted native code. */

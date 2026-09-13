@@ -192,6 +192,16 @@ source changes, live styles, resizing and display scaling update the painted ima
 This follows [CSS object sizing](https://www.w3.org/TR/css-images-3/#the-object-fit).
 `object-position` remains unsupported; retained Canvas2D currently accepts `fill` only.
 
+Realm-backed images expose `decode()`, `complete`, `naturalWidth` and `naturalHeight`.
+Static image sources are packaged at their logical paths. Decoding uses the shared native
+image decoder on a realm microtask, including for detached elements. Empty or broken images
+have zero natural dimensions and reject decoding; changing/removing a source invalidates
+its outstanding request. Repeated decoding preserves readiness and dimensions. Native
+rejections carry an EncodingError message through the existing Error representation.
+The [HTML image readiness contract](https://html.spec.whatwg.org/multipage/embedded-content.html#dom-img-decode)
+is represented for packaged raster data; network loading, responsive source selection,
+load/error events and a distinct DOMException value remain unimplemented.
+
 Selectors compose tags, IDs, classes, attribute presence/equality and
 hover/active/focus/focus-visible/focus-within/disabled/checked states with descendant, child,
 adjacent-sibling and following-sibling relationships. CSS text and host UI rules

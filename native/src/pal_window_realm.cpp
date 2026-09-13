@@ -145,6 +145,7 @@ std::unique_ptr<DocumentSnapshot> snapshot_document(const Engine& engine) {
     snapshot->listeners.reserve(engine.ui_elements.size());
     for (const auto& source : engine.ui_elements) {
         auto& native = snapshot->elements.emplace_back(source);
+        native.image_request.reset();
         ListenerNames names;
         names.click = !native.click_callbacks.empty();
         for (const auto& [name, callbacks] : native.event_callbacks) if (!callbacks.empty()) names.events.push_back(name);

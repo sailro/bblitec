@@ -95,6 +95,7 @@ export class AsyncLowerer {
             const binding = context.registerNativeBinding(temporary);
             return { ...this.resultAt(awaited.promiseResult!, temporary), nativeCaptures: [binding] };
         }
+        if (ts.isNewExpression(node) && browserGlobalNamed(context, node.expression)?.text === "Promise") return this.compileConstructor(node);
         if (!ts.isCallExpression(node)) return undefined;
         const callee = context.unwrap(node.expression);
         if (ts.isPropertyAccessExpression(callee) && browserGlobalNamed(context, callee.expression)?.text === "Promise" && callee.name.text === "resolve") {
@@ -104,6 +105,7 @@ export class AsyncLowerer {
         if (ts.isPropertyAccessExpression(callee) && browserGlobalNamed(context, callee.expression)?.text === "Promise" && callee.name.text === "all") {
             return this.compileAll(node);
         }
+        if (ts.isPropertyAccessExpression(callee) && browserGlobalNamed(context, callee.expression)?.text === "Promise" && callee.name.text === "race") return this.compileRace(node);
         if (this.isPromiseMethod(callee)) {
             const rejection = callee.name.text === "catch";
             const cleanup = callee.name.text === "finally";
@@ -188,6 +190,8 @@ export class AsyncLowerer {
                 context.withOwnedCallbackBody(() => context.captureManagedClosureLines(() => {
                     const callable = ts.isFunctionDeclaration(callback) ? callback.name ?? context.fail(callback, "Async function requires a name.") : callback;
                     result.value = context.compileCallbackWithValues(callable, values, node, false, {coroutine:true});
+                    const signature = context.checker.getSignatureFromDeclaration(declaration);
+                    if (signature) result.value = this.normalizeUndefined(result.value, context.checker.getReturnTypeOfSignature(signature));
                     if (result.value.kind === "void" && result.value.cpp) context.emit(`${result.value.cpp};`);
                     if (!rejectsOnly && !result.value.abruptCompletion) context.emit(`co_return ${result.value.kind === "void" ? "bbl::js::PromiseVoid{}" : this.resultCpp(result.value, node)};`);
                 })));
@@ -210,6 +214,68 @@ export class AsyncLowerer {
         // when earlier statements suspend. No unreachable epilogue is emitted.
         const cpp = renderCoroutineInvocation(compiled, `bbl::js::Promise<${cppType}>`);
         return { kind: "promise", cpp, promiseResult: output, promiseType: cppType };
+    }
+
+    private compileConstructor(node: ts.NewExpression): Value {
+        const context = this.context;
+        if (node.arguments?.length !== 1) context.fail(node, "Promise construction requires one executor.");
+        const callback = context.unwrap(argumentAt(node, 0));
+        if (!ts.isIdentifier(callback) && !ts.isArrowFunction(callback) && !ts.isFunctionExpression(callback))
+            return context.fail(callback, "Promise executor requires a represented local function.");
+        const declaration = ts.isIdentifier(callback) ? tryResolveFunctionDeclaration(context.checker, callback) : callback;
+        const asynchronous = declaration && ts.getModifiers(declaration)?.some(modifier => modifier.kind === ts.SyntaxKind.AsyncKeyword);
+        const type = context.dataLowerer.dataTypeAt(node);
+        if (type?.kind !== "promise") return context.fail(node, "Promise construction requires a concrete owned result type.");
+        const output = type.result ? context.dataLowerer.leafValue("", context.dataTypes.markStoredObjectReferences(type.result)) : {kind:"void", cpp:""} satisfies Value;
+        const cppType = this.cppType(output, node);
+        const name = context.allocateTemporaryCppName("constructed_promise");
+        context.emit({kind:"declaration", type:`bbl::js::Promise<${cppType}>`, name, initializer:"", initialization:"default"});
+        const binding = context.registerNativeBinding(name);
+        const resolver = (nativePromiseSettlement: "resolve" | "reject"): Value => ({kind:"callback", cpp:name,
+            nativePromiseSettlement:{mode:nativePromiseSettlement, type:cppType, result:output}, nativeCaptures:[binding], truthinessCpp:"true", callbackEvaluationIdentity:{}});
+        // The executor runs synchronously; only resolving functions and the
+        // callbacks it registers escape. Its writes address the calling scope.
+        const compiled = context.captureManagedClosureLines(() => {
+            const values = [resolver("resolve"), resolver("reject")];
+            context.emitDiscardedValue(asynchronous ? this.activate(callback, declaration!, values, node)
+                : context.compileCallbackWithValues(callback, values, node));
+        }, true);
+        context.emit(`try { (${renderClosure(compiled, "")})(); }`);
+        context.emit(`catch (const bbl::pal::WorkerTerminated&) { throw; }`);
+        context.emit(`catch (...) { ${name}.reject(std::current_exception()); }`);
+        return {kind:"promise", cpp:name, promiseResult:output, promiseType:cppType, nativeCaptures:[binding]};
+    }
+
+    private compileRace(call: ts.CallExpression): Value {
+        const context = this.context;
+        if (call.arguments.length !== 1) context.fail(call, "Promise.race requires one represented iterable.");
+        const argument = unwrapExpression(argumentAt(call, 0));
+        const pin = (value: Value, source: ts.Node = call): Value => {
+            const promise = this.asPromise(value, source);
+            const name = context.allocateTemporaryCppName("race_input");
+            context.emit({kind:"declaration", type:"auto", name, initializer:promise.cpp});
+            return {...promise, cpp:name, nativeCaptures:[context.registerNativeBinding(name)]};
+        };
+        let promises: Value[];
+        if (ts.isArrayLiteralExpression(argument)) promises = argument.elements.map(element => {
+            if (ts.isSpreadElement(element)) return context.fail(element, "Promise.race literal spreads require a represented array first.");
+            return pin(ts.isOmittedExpression(element) ? {kind:"void", cpp:""} : context.compileValue(element), element);
+        });
+        else {
+            const value = context.compileValue(argument);
+            if (value.kind === "tuple") promises = (value.tupleElements ?? []).map(value => pin(value));
+            else {
+                if (value.dataType?.kind !== "vector") return context.fail(argument, "Promise.race requires an array or a represented tuple.");
+                const element = value.dataType.element;
+                return context.dataLowerer.leafValue(`bbl::js::promise_race(${value.cpp})`,
+                    element.kind === "promise" ? element : {kind:"promise", result:element});
+            }
+        }
+        const output = this.withoutConstants(promises[0]?.promiseResult ?? {kind:"void", cpp:""});
+        const cppType = this.cppType(output, call);
+        if (promises.some(promise => promise.promiseType !== cppType)) return context.fail(call, "Promise.race inputs require a common represented settlement type.");
+        return {kind:"promise", cpp:`bbl::js::promise_race_tuple<${cppType}>(std::tuple{${promises.map(value => value.cpp).join(", ")}})`,
+            promiseType:cppType, promiseResult:output, nativeCaptures:promises.flatMap(value => value.nativeCaptures ?? [])};
     }
 
     private compileAll(call: ts.CallExpression): Value {
@@ -281,6 +347,7 @@ export class AsyncLowerer {
             result.value = stored ? context.dataLowerer.compileFunctionValueCall(stored, inputs, node)
                 : asynchronous ? this.activate(inline!, declaration!, inputs, node)
                 : context.compileCallbackWithValues(inline!, inputs, node);
+            if (signature) result.value = this.normalizeUndefined(result.value, context.checker.getReturnTypeOfSignature(signature));
             if (cleanup && result.value.kind !== "promise") {
                 this.refuseThenable(result.value, callback);
                 context.emitDiscardedValue(result.value);
@@ -335,8 +402,14 @@ export class AsyncLowerer {
         const {staticString, staticNumber, staticBoolean, staticElements, staticStrings, ...runtime} = value;
         return runtime.kind === "tuple" ? {...runtime, tupleElements:(runtime.tupleElements ?? []).map(element => this.withoutConstants(element))} : runtime;
     }
+    private normalizeUndefined(value: Value, type: ts.Type): Value {
+        const result = this.context.checker.getAwaitedType(type) ?? type;
+        return value.kind === "json-null" && (result.flags & ts.TypeFlags.Undefined) !== 0
+            ? {kind:"void", cpp:value.cpp === "std::nullopt" ? "" : value.cpp} : value;
+    }
     private asPromise(value: Value, node: ts.Node): Value {
         if (value.kind === "promise") return value;
+        value = this.normalizeUndefined(value, this.context.checker.getTypeAtLocation(node));
         this.refuseThenable(value, node);
         if (value.kind === "record") {
             const declared = this.context.dataLowerer.dataTypeAt(node);

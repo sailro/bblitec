@@ -33,6 +33,7 @@ namespace bbl {
 
 struct Engine;
 struct DomInput;
+struct UiImageRequest;
 /** The first OS language preference, with a hyphenated region when available. */
 [[nodiscard]] std::string preferred_language();
 [[nodiscard]] std::string native_platform();
@@ -3339,6 +3340,8 @@ struct UiStyleRule {
  * allowing another backend to consume the same tree later.
  */
 struct UiElementRecord {
+    /** Readiness belongs to the application realm, not the rendered snapshot. */
+    std::shared_ptr<UiImageRequest> image_request;
     struct CanvasPoint {
         double x = 0.0;
         double y = 0.0;

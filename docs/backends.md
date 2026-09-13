@@ -113,6 +113,9 @@ fences prevent overwriting sampled images. Normal presentation samples GPU
 textures; screenshots use readback.
 The first document snapshot follows initialization's microtasks, so initial input
 sees DOM content and listeners created during awaited startup.
+Image readiness stays on the application realm and is removed from document snapshots.
+`pal_image.cpp` provides the shared decoder independently of the scene renderer, so a Window
+can finish image startup before constructing an engine. Both presenter backends use this path.
 
 Display-paced RAF notifications run on each realm loop; busy realms coalesce
 notifications independently and do not accumulate catch-up frames.

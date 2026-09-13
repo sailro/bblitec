@@ -99,6 +99,13 @@ forEach, reduction and Array.from, including tuple mapping. Iteration remains sy
 each callback owns its suspension; predicate promises are truthy without awaiting fulfillment.
 Promise-settled records preserve identity across aliases and aggregation.
 `Promise.resolve` retains plain object identity and owns fresh record literals.
+Realm-backed `new Promise<T>` runs its executor synchronously and owns resolving functions
+retained by timers, RAF callbacks and typed function slots. First settlement wins; executor
+throws reject an unsettled promise, and represented promises are adopted through a queued job.
+Resolvers preserve stored record identity. Rejection reasons use the existing Error/string
+representation. `Promise.race` observes every competitor and supports homogeneous represented
+arrays/tuples of values or promises, including void promises; an empty race remains pending.
+These boundaries follow the [Promise constructor and race algorithms](https://tc39.es/ecma262/2025/multipage/control-abstraction-objects.html#sec-promise-constructor).
 Record getters can execute statements and capture locals before their final value return;
 early returns from getters remain unsupported.
 Engine contexts
