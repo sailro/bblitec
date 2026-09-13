@@ -1511,9 +1511,6 @@ export class DataLowerer {
     ): Value {
         if (value.dataType?.kind === "json") {
             const narrowed = this.dataTypeAt(expression);
-            if (narrowed && (narrowed.kind === "vector" || narrowed.kind === "span") && narrowed.element.kind === "json") {
-                return this.leafValue(`${value.cpp}.array_value()`, {kind:"vector", element:{kind:"json"}});
-            }
             if (narrowed && ["string", "number", "boolean", "enum"].includes(narrowed.kind)) {
                 const cpp = compileDataValueSink(narrowed, this, value, expression);
                 if (cpp !== undefined) return this.leafValue(cpp, narrowed);
@@ -8200,7 +8197,6 @@ export class DataLowerer {
                 container: {
                     kind: "data",
                     cpp: `${value.cpp}.elements()`,
-                    dataType: { kind: "span", element: { kind: "json" } },
                 },
                 element: { kind: "json" },
             };

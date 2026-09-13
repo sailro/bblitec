@@ -578,7 +578,7 @@ export class DataTypeRegistry {
         const inner = this.markStoredObjectReferences(dataType.inner);
         return inner.kind === "struct" && this.isReferenceStruct(inner.name)
           ? inner
-          : { kind: "optional", inner };
+          : { ...dataType, inner };
       }
       case "vector":
       case "span": {
@@ -601,7 +601,7 @@ export class DataTypeRegistry {
         };
       case "map":
         return {
-          kind: "map",
+          ...dataType,
           key: this.markStoredObjectReferences(dataType.key),
           value: this.markStoredObjectReferences(dataType.value),
         };
@@ -1379,7 +1379,8 @@ export class DataTypeRegistry {
       else if (!members.some(member => dataTypesEqual(member, type))) members.push(type);
     };
     elements.map(element => this.markStoredObjectReferences(element)).forEach(append);
-    return {kind: "vector", element: {kind: "optional", inner: members.length === 1 ? members[0]! : {kind: "union", members}}};
+    const undefinedOnly = elements.every(element => element.kind !== "optional" || element.undefinedOnly) ? true : undefined;
+    return {kind: "vector", element: {kind: "optional", ...(undefinedOnly ? {undefinedOnly} : {}), inner: members.length === 1 ? members[0]! : {kind: "union", members}}};
   }
 
   private fromStructType(type: ts.Type, node: ts.Node): DataType | undefined {
@@ -2087,6 +2088,7 @@ export class DataTypeRegistry {
       ? {
           kind: "map",
           key: { kind: stringIndex ? "string" : "number" },
+          dictionary: true,
           value: this.markStoredObjectReferences(value),
         }
       : undefined;
@@ -2121,6 +2123,7 @@ export class DataTypeRegistry {
       return {
         kind: "map",
         key: stringValue ? { kind: "string" } : { kind: "number" },
+        dictionary: true,
         value: this.markStoredObjectReferences(element),
       };
     }
@@ -2133,6 +2136,7 @@ export class DataTypeRegistry {
       return {
         kind: "map",
         key: this.markStoredObjectReferences(key),
+        dictionary: true,
         value: this.markStoredObjectReferences(element),
       };
     }
@@ -2606,8 +2610,16 @@ export class DataTypeRegistry {
       return `bblscene::json_value(${cpp})`;
     }
     if (type.kind === "struct") this.markJsonBoxed(type, node);
-    else if (!["json", "string", "number", "boolean"].includes(type.kind) &&
-        !(type.kind === "vector" && type.element.kind === "json")) return undefined;
+    else if (type.kind === "vector") {
+      if (this.jsonValueCpp(type.element, "value", node) === undefined) return undefined;
+    } else if (type.kind === "optional") {
+      if (!type.undefinedOnly || this.jsonValueCpp(type.inner, "value", node) === undefined) return undefined;
+    } else if (type.kind === "union") {
+      if (type.members.some(member => this.jsonValueCpp(member, "value", node) === undefined)) return undefined;
+    } else if (type.kind === "map") {
+      if (!type.dictionary || type.key.kind !== "string" || this.jsonValueCpp(type.value, "value", node) === undefined) return undefined;
+    }
+    else if (!["json", "string", "number", "boolean", "tuple"].includes(type.kind)) return undefined;
     return `bbl::js::json_value(${cpp})`;
   }
 
@@ -2621,7 +2633,7 @@ export class DataTypeRegistry {
       if (field.optionalProperty || field.uncheckedProperty || field.type.kind === "optional")
         this.fail(node, "Dynamic object views require represented own-property presence for optional fields.");
       if (this.jsonValueCpp(field.type, "value", node) === undefined)
-        this.fail(node, `Dynamic object field '${field.sourceName}' has no retained value view.`);
+        this.fail(node, `Dynamic object field '${field.sourceName}' has no retained value view for ${field.type.kind}.`);
     }
   }
 

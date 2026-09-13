@@ -616,10 +616,11 @@ function compileKnownDataMethod(
     // nothing about the callback protocol changes.
     let narrowed = narrowedOwner;
     if (isJsonValue(narrowedOwner)) {
+        const mutable = mutatingArrayMethods.has(method);
         narrowed = {
             kind: "data",
-            cpp: `${narrowedOwner.cpp}.elements()`,
-            dataType: { kind: "span", element: { kind: "json" } },
+            cpp: `${narrowedOwner.cpp}.${mutable ? "array_value" : "elements"}()`,
+            dataType: { kind: mutable ? "vector" : "span", element: { kind: "json" } },
         };
     } else if (narrowedOwner.dataType?.kind === "tuple" &&
         (method === "some" || method === "every")) {
@@ -926,7 +927,8 @@ function compileArrayFlat({ lowerer, call, narrowed, dataType }: ArrayMethodStat
     const requested = call.arguments[0] ? staticNumberValue(lowerer.context, call.arguments[0]) : 1;
     if (requested === undefined) return lowerer.context.fail(call, "Array.flat requires a generation-known depth.");
     const depth = Number.isNaN(requested) ? 0 : Math.max(0, Math.trunc(requested));
-    const resultType = lowerer.dataTypeAt(call);
+    const resultType = lowerer.dataTypeAt(call) ?? (dataType.element.kind === "json"
+        ? {kind:"vector" as const, element:{kind:"json" as const}} : undefined);
     if (resultType?.kind !== "vector") return lowerer.context.fail(call, "Array.flat result must belong to the native data model.");
     const output = lowerer.context.allocateTemporaryCppName("flat_result");
     lowerer.context.emit({ kind: "declaration", type: lowerer.context.dataTypes.cppType(resultType), name: output, initializer: "{}" });
@@ -1457,7 +1459,10 @@ function compileArrayPush(state: ArrayMethodState): Value {
                 return `${receiver}.insert(${receiver}.end(), ${source}.begin(), ${source}.end())`;
             }
             let source: string;
-            if (spread.kind === "handle-collection" &&
+            if (isJsonValue(spread) && dataType.element.kind === "json") {
+                source = `${spread.cpp}.elements()`;
+            }
+            else if (spread.kind === "handle-collection" &&
                 spread.handleCollection &&
                 dataType.element.kind === "handle" &&
                 spread.handleCollection.elementKind ===
@@ -1478,7 +1483,7 @@ function compileArrayPush(state: ArrayMethodState): Value {
             const copy = lowerer.context.allocateTemporaryCppName("push_spread");
             const selected = lowerer.context.allocateTemporaryCppName("push_iterable");
             lowerer.context.emit({kind: "declaration", type: "const auto", name: selected, initializer: source});
-            lowerer.context.emit(`${lowerer.context.dataTypes.cppType(dataType)} ${copy}(${selected}.begin(), ${selected}.end());`);
+            lowerer.context.emit(`auto ${copy} = bbl::js::array_from_iterable<${lowerer.context.dataTypes.cppType(dataType.element)}>(${selected});`);
             return `${receiver}.insert(${receiver}.end(), ${copy}.begin(), ${copy}.end())`;
         }
         if (pushedValues &&

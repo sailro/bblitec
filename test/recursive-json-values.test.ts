@@ -19,6 +19,57 @@ function nativeCheck(name: string, source: string, t: test.TestContext): void {
     assert.equal(execFileSync(executable, {encoding: "utf8", timeout: 10000}), "");
 }
 
+test("typed arrays and tuples retain live storage across dynamic calls", t => {
+    nativeCheck("typed-arrays", `
+        function retain(value:unknown,depth:number):unknown { return depth>0 ? retain(value,depth-1) : value; }
+        const values:number[]=[1,2];
+        const boxed=retain(values,1);
+        values.push(3);
+        if(!Array.isArray(boxed)||boxed.length!==3||boxed[2]!==3||boxed!==retain(values,2)) throw new Error("array identity");
+        const rows:Array<{size:number}>=[{size:1}];
+        const records=retain(rows,1);
+        rows[0]!.size=2;
+        if((records as Array<{size:number}>)[0]!.size!==2) throw new Error("record element alias");
+        const row:[number,string]=[1,"before"];
+        const mixed=retain(row,1);
+        row[1]="after";
+        if((mixed as unknown[])[1]!=="after") throw new Error("tuple alias");
+        const config={color:[0.2,0.4,0.6] as const, nested:[{size:1}] as const, empty:{}};
+        const defaults=retain(config,1) as {color:unknown[],nested:Array<{size:number}>};
+        if(defaults.color!==defaults.color || defaults.color.length!==3 || defaults.color[1]!==0.4)
+            throw new Error("fixed tuple identity");
+        config.nested[0].size=4;
+        if(defaults.nested[0]!.size!==4) throw new Error("tuple nested record alias");
+        const names=Object.keys(defaults);names.push("extra");
+        if(Object.keys(defaults).length!==3) throw new Error("own keys snapshot");
+        let count=0;
+        for(const entry of boxed) { count++; if(entry===1) values.push(4); }
+        if(count!==4) throw new Error("live iteration length");
+        const filtered=boxed.filter(value=>value!==2);
+        if(filtered.length!==3||filtered[2]!==4) throw new Error("typed array filter");
+        const nested=retain([[1,2],[3]],1);
+        if(!Array.isArray(nested)||nested.flat().length!==3) throw new Error("typed array flatten");
+    `, t);
+});
+
+test("native exhaustive switch helpers compile with defined fallthrough", t => {
+    nativeCheck("exhaustive-switch", `
+        type Kind="first"|"second";
+        export function select(kind:Kind):number {switch(kind) {case "first":return 3;case "second":return 7;}}
+        const keys:Kind[]=["first","second"];
+        let result=0;for(const key of keys)result+=select(key);
+        if(result!==10)throw new Error("exhaustive switch");
+    `, t);
+});
+
+test("dynamic array views refuse ambiguous absence and Map object entries", () => {
+    const retain = `function retain(value:unknown,depth:number):unknown {return depth>0 ? retain(value,depth-1) : value;}`;
+    assert.throws(() => compileSource(retain + `const row:[number|null,string]=[null,"text"];const boxed=retain(row,1);row[1]="after";`),
+        /does not match the expected data json/);
+    assert.throws(() => compileSource(retain + `const rows:Array<{items:Map<string,number>}>= [{items:new Map([["first",1]])}];retain(rows,1);`),
+        /no retained value view for map/);
+});
+
 test("recursive unknown boundaries retain parsed trees and returned scalar kinds", t => {
     nativeCheck("trees", `
         const count = (value: unknown): number => {

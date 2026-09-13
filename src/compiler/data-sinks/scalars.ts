@@ -4,7 +4,7 @@ import { type DataType } from "../data-types.js";
 import type { Value } from "../types.js";
 import { isJsonValue } from "../json-bridge.js";
 import {eventTargetCpp} from "../dom-targets.js";
-import {compileJsonRecordView} from "../json-record-views.js";
+import {compileJsonRecordView, compileJsonTupleView} from "../json-record-views.js";
 
 import type { DataSinkHost, DataSinkOperations } from "./contracts.js";
 
@@ -42,10 +42,7 @@ function valueJson(_dataType: DataType<"json">, lowerer: DataSinkHost, value: Va
         const view = compileJsonRecordView(lowerer, value, node);
         if (view !== undefined) return view;
     }
-    if (value.dataType?.kind === "map" && value.dataType.key.kind === "string" &&
-        lowerer.context.checker.getIndexTypeOfType(lowerer.context.checker.getTypeAtLocation(node), ts.IndexKind.String) &&
-        lowerer.context.dataTypes.jsonValueCpp(value.dataType.value, "value", node) !== undefined)
-        return `bbl::js::JsonValue::from_native(${value.cpp})`;
+    if (value.kind === "tuple" && !value.cpp) return compileJsonTupleView(lowerer, value, node);
     const type = value.dataType ?? (value.kind === "number" || value.kind === "boolean" || value.kind === "string"
         ? {kind: value.kind} : undefined);
     return type ? lowerer.context.dataTypes.jsonValueCpp(type, value.cpp, node) : undefined;

@@ -70,6 +70,8 @@ export interface DataKinds {
     };
     "optional": {
         kind: "optional";
+        /** The absent state is known to be undefined, including resized tuple lanes. */
+        undefinedOnly?: true;
         inner: DataType;
     };
     "union": {
@@ -82,6 +84,8 @@ export interface DataKinds {
     };
     "map": {
         kind: "map";
+        /** Source object index signature; a JavaScript Map has no enumerable entries. */
+        dictionary?: true;
         key: DataType;
         value: DataType;
     };

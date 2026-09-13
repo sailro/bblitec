@@ -7,6 +7,34 @@ import type {DataSinkHost} from "./data-sinks/contracts.js";
 // Record aliases share this table even when an inline call renames the value.
 const views = new EmissionWeakMap<object, Value>();
 
+export function compileJsonTupleView(lowerer: DataSinkHost, tuple: Value, node: ts.Node): string | undefined {
+    const elements = tuple.tupleElements;
+    if (tuple.kind !== "tuple" || !elements || tuple.cpp) return undefined;
+    const context = lowerer.context;
+    const previous = views.get(elements);
+    if (previous) { context.useNativeValue(previous); return previous.cpp; }
+    const values = elements.map(value => {
+        const nested = compileJsonRecordView(lowerer, value, node) ?? compileJsonTupleView(lowerer, value, node);
+        return nested ? lowerer.leafValue(nested, {kind:"json"}) : value;
+    });
+    const index = context.allocateTemporaryCppName("dynamic_index");
+    const body = context.captureManagedClosureLines(() => {
+        context.registerNativeBinding(index);
+        values.forEach((value, slot) => {
+            const cpp = lowerer.compileKnownValueForSink(value, {kind:"json"}, node);
+            context.emit(`if (${index} == ${slot}) return ${cpp};`);
+        });
+        context.emit("return {};");
+    });
+    const cpp = context.allocateTemporaryCppName("dynamic_tuple_view");
+    context.emit({kind:"declaration", type:"auto", name:cpp,
+        initializer:`bbl::js::JsonValue::from_tuple_view(${renderClosure(body, `[[maybe_unused]] std::size_t ${index}`, "bbl::js::JsonValue")}, ${values.length})`});
+    const result = {...lowerer.leafValue(cpp, {kind:"json"}), nativeCaptures:[context.registerNativeBinding(cpp)]};
+    views.set(elements, result);
+    context.useNativeValue(result);
+    return cpp;
+}
+
 /** A fixed plain record keeps its existing cells behind an observing view. */
 export function compileJsonRecordView(lowerer: DataSinkHost, record: Value, node: ts.Node): string | undefined {
     const properties = record.recordProperties;
@@ -20,7 +48,7 @@ export function compileJsonRecordView(lowerer: DataSinkHost, record: Value, node
     // Supplying a source expression here could instead construct a second record.
     context.materializeEscapingValue(record, "dynamic_record");
     const fields = Object.entries(properties).map(([name, value]) => {
-        const nested = value.kind === "record" ? compileJsonRecordView(lowerer, value, node) : undefined;
+        const nested = compileJsonRecordView(lowerer, value, node) ?? compileJsonTupleView(lowerer, value, node);
         return {name, value: nested ? lowerer.leafValue(nested, {kind:"json"}) : value};
     });
     const key = context.allocateTemporaryCppName("dynamic_key");
@@ -34,7 +62,7 @@ export function compileJsonRecordView(lowerer: DataSinkHost, record: Value, node
     });
     const cpp = context.allocateTemporaryCppName("dynamic_record_view");
     context.emit({kind:"declaration", type:"auto", name:cpp,
-        initializer:`bbl::js::JsonValue::from_record_view(${renderClosure(body, `std::string_view ${key}`, "bbl::js::JsonValue")}, ` +
+        initializer:`bbl::js::JsonValue::from_record_view(${renderClosure(body, `[[maybe_unused]] std::string_view ${key}`, "bbl::js::JsonValue")}, ` +
             `bbl::js::Array<std::string>{${fields.map(field => context.cppString(field.name)).join(", ")}})`});
     const result = {...lowerer.leafValue(cpp, {kind:"json"}), nativeCaptures:[context.registerNativeBinding(cpp)]};
     views.set(properties, result);

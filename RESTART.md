@@ -8,6 +8,35 @@ dependencies will not be present in a fresh clone.
 
 ## Read this first
 
+**Typed arrays and actual validator generation:** the working unit adds retained
+native array/numeric tuple views and fixed compiler-tuple getters. Typed cohort
+`typed-values886` admits 6/8 (up from 3/8): scalar arrays, object arrays and mixed
+tuples now generate. Optional records and class-held arrays still refuse in that
+cohort. `arrays890-focused` executes the new alias/iteration/flatten native check;
+`arrays891-focused` passes 41/41; `arrays892-regressions` passes 922/922 without
+skips in 162.7 seconds. Later review fixes and exhaustive-switch checks need their
+focused rerun: `arrays894-focused` now passes 29/29, and `validator894-native`
+confirms all eight parsed-default validator cases still match JavaScript.
+The simplify review covered reuse, simplification, altitude and
+efficiency (three reviewer tasks plus root): remove redundant sequence forwarding
+and identity fallback, use the mutating-method classification, and centralize
+dictionary boxing through retained source metadata. Native object key snapshots
+must be fresh rather than exposing a fixed getter's key table.
+
+`typed-validator890` generates the unchanged validator with its ACTUAL typed
+defaults in 2.25 seconds. Native build exposed unused empty-record getter
+parameters, missing value-function fallthrough guards and the COFF section limit.
+The current fixes mark those parameters, share the existing method guard with
+namespace functions, and enable `/bigobj` on MSVC builds. `typed-validator893`
+generates and builds, then executes into a REAL runtime error: Set.has converts a
+wider string enum into its narrower enum before lookup and throws for a key that
+should simply return false. Next reproduce and fix generic collection lookup
+conversion. `check-typed-validator891.mjs` builds/runs the generated probe; its
+latest log is `typed-validator893-native.log`. The full application still has not
+generated, built or run; do not retry it until this fast typed validator executes.
+All previous full-entry/cohort counts remain as recorded below. Arrays with mixed
+null/undefined and mutations through erased typed storage remain bounded gaps.
+
 **macOS rebase:** rebased all 94 commits onto `32cab018` (PR #249).
 Backup branch `codex/external-project-support-before-macos` retains `fd343d90`.
 Conflicts preserve both the macOS number-formatting adapter and dynamic-value

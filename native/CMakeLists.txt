@@ -981,7 +981,7 @@ if(
 endif()
 
 if(MSVC)
-    target_compile_options(bblite_features INTERFACE /W4 /WX /permissive- /EHsc)
+    target_compile_options(bblite_features INTERFACE /W4 /WX /permissive- /EHsc /bigobj)
 else()
     target_compile_options(bblite_features INTERFACE -Wall -Wextra -Wpedantic -Werror)
 endif()

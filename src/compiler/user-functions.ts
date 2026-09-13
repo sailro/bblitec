@@ -1711,7 +1711,7 @@ export class UserFunctionLowerer {
                       declaration,
                   );
             const mappedReturnType = returnTsType
-                ? context.dataTypes.fromSharedReturnType(returnTsType, declaration) ?? context.dataTypes.dynamicJsonType(returnTsType)
+                ? context.dataTypes.dynamicJsonType(returnTsType) ?? context.dataTypes.fromSharedReturnType(returnTsType, declaration)
                 : undefined;
             const returnType = mappedReturnType?.kind === "struct" && context.dataTypes.carriesHandle(mappedReturnType)
                 ? context.dataTypes.markStoredObjectReferences(mappedReturnType)
@@ -1726,10 +1726,10 @@ export class UserFunctionLowerer {
             const arrayStorage = returnsArray ? arrayReturnStorage(this.checker, declaration) : undefined;
             const parameterTypes = ir.parameters.map(
                 ({ type, declaration: parameter }) => {
-                    let mapped = context.dataTypes.fromTsType(
+                    let mapped = context.dataTypes.dynamicJsonType(type) ?? context.dataTypes.fromTsType(
                         type,
                         parameter,
-                    ) ?? context.dataTypes.dynamicJsonType(type);
+                    );
                     const freshMatchingArray = arrayStorage === "fresh" &&
                         mapped?.kind === "span" && returnType?.kind === "vector" && dataTypesEqual(mapped.element, returnType.element);
                     if (mapped && returnsArray && !freshMatchingArray) {

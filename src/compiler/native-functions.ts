@@ -1505,18 +1505,7 @@ export class NativeFunctionLowerer {
                 signature.parameters,
                 signature.returnType,
                 () => {
-                    const terminated = emitReachableStatements(this.context, body.statements);
-                    if (
-                        signature.returnType &&
-                        !terminated
-                    ) {
-                        // The value lambda the inline path emits ends
-                        // with the same guard; here it also keeps a
-                        // fall-off-the-end body from tripping C4715.
-                        this.context.emit(
-                            'throw std::runtime_error("Native value function fell through without returning.");',
-                        );
-                    }
+                    this.emitValueBody(body.statements, !!signature.returnType);
                 },
                 {
                     bindLeading: () =>
@@ -2012,10 +2001,19 @@ export class NativeFunctionLowerer {
                 signature.parameters,
                 signature.returnType,
                 () => {
-                    emitReachableStatements(this.context, body.statements);
+                    this.emitValueBody(body.statements, !!signature.returnType);
                 },
             ),
         );
+    }
+
+    private emitValueBody(statements: readonly ts.Statement[], returnsValue: boolean): void {
+        const terminated = emitReachableStatements(this.context, statements);
+        if (returnsValue && !terminated) {
+            // An exhaustive source switch may lower to a native if/else chain.
+            // Keep the impossible fallthrough defined on all native compilers.
+            this.context.emit('throw std::runtime_error("Native value function fell through without returning.");');
+        }
     }
 
     /**

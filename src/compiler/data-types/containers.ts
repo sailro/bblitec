@@ -26,8 +26,8 @@ export const containerKinds: DataKindOperations<
     optional: {
         cpp: (type, context) => type.inner.kind === "struct" && context.isReferenceStruct(type.inner.name)
             ? context.cppType(type.inner) : `bbl::js::Nullable<${context.cppType(type.inner)}>`,
-        key: (type, key) => `o(${key(type.inner)})`,
-        equal: (left, right, equal) => equal(left.inner, right.inner),
+        key: (type, key) => `${type.undefinedOnly ? "u" : "o"}(${key(type.inner)})`,
+        equal: (left, right, equal) => left.undefinedOnly === right.undefinedOnly && equal(left.inner, right.inner),
         children: type => [type.inner], byReference: false,
     },
     vector: {
@@ -38,8 +38,8 @@ export const containerKinds: DataKindOperations<
     },
     map: {
         cpp: (type, context) => `bbl::js::Map<${context.cppType(type.key)}, ${context.cppType(type.value)}>`,
-        key: (type, key) => `map(${key(type.key)},${key(type.value)})`,
-        equal: (left, right, equal) => equal(left.key, right.key) && equal(left.value, right.value),
+        key: (type, key) => `${type.dictionary ? "dictionary" : "map"}(${key(type.key)},${key(type.value)})`,
+        equal: (left, right, equal) => left.dictionary === right.dictionary && equal(left.key, right.key) && equal(left.value, right.value),
         children: type => [type.key, type.value], byReference: true,
     },
     set: {
