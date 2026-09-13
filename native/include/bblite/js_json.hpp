@@ -368,6 +368,9 @@ class JsonValue {
     template <typename T>
     [[nodiscard]] static JsonValue from_native(T value);
 
+    template <typename Getter>
+    [[nodiscard]] static JsonValue from_record_view(Getter getter, bbl::js::Array<std::string> keys);
+
     [[nodiscard]] static JsonValue from_array_reference(const bbl::js::Array<JsonValue>& elements) {
         JsonValue value;
         value.kind_ = Kind::array;
@@ -661,11 +664,22 @@ inline void json_flatten_into(bbl::js::Array<JsonValue>& output, const JsonValue
     } else output.push_back(value);
 }
 
-[[nodiscard]] inline JsonValue json_value_property(const Map<std::string, JsonValue>& value, std::string_view key) {
+[[nodiscard]] inline JsonValue json_value(const JsonValue& value) { return value; }
+[[nodiscard]] inline JsonValue json_value(double value) { return JsonValue::from_number(value); }
+[[nodiscard]] inline JsonValue json_value(bool value) { return JsonValue::from_boolean(value); }
+[[nodiscard]] inline JsonValue json_value(const std::string& value) { return JsonValue::from_string(value); }
+[[nodiscard]] inline JsonValue json_value(const char* value) { return JsonValue::from_string(value); }
+[[nodiscard]] inline JsonValue json_value(const bbl::js::Array<JsonValue>& value) { return JsonValue::from_array_reference(value); }
+template <typename T>
+[[nodiscard]] JsonValue json_value(const Ref<T>& value) { return value ? JsonValue::from_native(value) : JsonValue::null_value(); }
+
+template <typename T>
+[[nodiscard]] JsonValue json_value_property(const Map<std::string, T>& value, std::string_view key) {
     const std::string name(key);
-    return value.has(name) ? value.at(name) : JsonValue{};
+    return value.has(name) ? json_value(value.at(name)) : JsonValue{};
 }
-[[nodiscard]] inline bbl::js::Array<std::string> json_value_keys(const Map<std::string, JsonValue>& value) {
+template <typename T>
+[[nodiscard]] bbl::js::Array<std::string> json_value_keys(const Map<std::string, T>& value) {
     return map_keys(value);
 }
 
@@ -691,14 +705,25 @@ JsonValue JsonValue::from_native(T source) {
     return value;
 }
 
-[[nodiscard]] inline JsonValue json_value(const JsonValue& value) { return value; }
-[[nodiscard]] inline JsonValue json_value(double value) { return JsonValue::from_number(value); }
-[[nodiscard]] inline JsonValue json_value(bool value) { return JsonValue::from_boolean(value); }
-[[nodiscard]] inline JsonValue json_value(const std::string& value) { return JsonValue::from_string(value); }
-[[nodiscard]] inline JsonValue json_value(const char* value) { return JsonValue::from_string(value); }
-[[nodiscard]] inline JsonValue json_value(const bbl::js::Array<JsonValue>& value) { return JsonValue::from_array_reference(value); }
-template <typename T>
-[[nodiscard]] JsonValue json_value(const Ref<T>& value) { return value ? JsonValue::from_native(value) : JsonValue::null_value(); }
+template<typename Getter>
+struct JsonRecordView final : JsonNativeObject {
+    mutable Getter getter;
+    bbl::js::Array<std::string> keys;
+    JsonRecordView(Getter read, bbl::js::Array<std::string> names) : getter(std::move(read)), keys(std::move(names)) {}
+    JsonValue get(std::string_view key) const override { return getter(key); }
+    bbl::js::Array<std::string> own_keys() const override { return keys; }
+    const std::type_info& type() const override { return typeid(JsonRecordView); }
+    const void* identity() const override { return this; }
+    void gc_trace(const TraceVisitor& visitor) const override { visitor(getter); visitor(keys); }
+};
+
+template<typename Getter>
+JsonValue JsonValue::from_record_view(Getter getter, bbl::js::Array<std::string> keys) {
+    JsonValue value;
+    value.kind_ = Kind::object;
+    value.native_ = make_gc_shared<JsonRecordView<Getter>>(std::move(getter), std::move(keys));
+    return value;
+}
 
 inline void json_write(JsonWriter& writer, const JsonValue& value) {
     switch (value.kind()) {

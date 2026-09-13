@@ -122,3 +122,34 @@ test("default array sorting uses UTF-16 text order and comparator ties stay stab
         }
     `, t);
 });
+
+test("typed dictionaries retain scalar, enum and record aliases through dynamic boundaries", t => {
+    nativeCheck("typed-dictionaries", `
+        function retain(value: unknown, depth: number): unknown {
+            return depth > 0 ? retain(value, depth - 1) : value;
+        }
+        const numbers: Record<string, number> = {first: 1};
+        const boxedNumbers = retain(numbers, 1) as Record<string, unknown>;
+        numbers.first = 2;
+        numbers.second = 3;
+        if (boxedNumbers.first !== 2 || Object.keys(boxedNumbers).length !== 2 ||
+            retain(numbers, 1) !== boxedNumbers) throw new Error("number dictionary alias");
+        const tags: Record<string, "open" | "closed"> = {first: "open"};
+        const boxedTags = retain(tags, 1) as Record<string, unknown>;
+        tags.first = "closed";
+        if (boxedTags.first !== "closed") throw new Error("enum dictionary alias");
+        const records: Record<string, {size: number}> = {first: {size: 1}};
+        const boxedRecords = retain(records, 1) as Record<string, unknown>;
+        records.first!.size = 3;
+        if ((boxedRecords.first as {size: number}).size !== 3)
+            throw new Error("record dictionary alias");
+        function retainTyped(value: {nested: {size: number}}, depth: number): unknown {
+            return depth > 0 ? retainTyped(value, depth - 1) : value;
+        }
+        const typed = {nested: {size: 5}};
+        const first = retainTyped(typed, 1);
+        typed.nested.size = 7;
+        if (first !== retainTyped(typed, 1) || (first as {nested:{size:number}}).nested.size !== 7)
+            throw new Error("captured record keeps caller storage and identity");
+    `, t);
+});

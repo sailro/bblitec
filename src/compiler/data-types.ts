@@ -526,6 +526,7 @@ export class DataTypeRegistry {
    */
   private readonly jsonSerializedStructs = new EmissionSet<string>();
   private readonly jsonBoxedStructs = new EmissionMap<string, ts.Node>();
+  private readonly jsonBoxedEnums = new EmissionSet<string>();
   private readonly jsonSerializedEnums = new EmissionSet<string>();
   private readonly partialRecords = new EmissionSet<ts.Symbol | ts.Type | string>();
 
@@ -2599,8 +2600,11 @@ export class DataTypeRegistry {
 
   /** One conversion contract for dynamic sinks and reflected native fields. */
   public jsonValueCpp(type: DataType, cpp: string, node: ts.Node): string | undefined {
-    if (type.kind === "enum")
-      return `bbl::js::json_value(${this.enumToStringCpp(type, cpp, node)})`;
+    if (type.kind === "enum") {
+      this.enumToStringCpp(type, cpp, node);
+      this.jsonBoxedEnums.add(type.name);
+      return `bblscene::json_value(${cpp})`;
+    }
     if (type.kind === "struct") this.markJsonBoxed(type, node);
     else if (!["json", "string", "number", "boolean"].includes(type.kind) &&
         !(type.kind === "vector" && type.element.kind === "json")) return undefined;
@@ -2751,6 +2755,9 @@ export class DataTypeRegistry {
           "}",
           "",
         );
+      }
+      if (this.jsonBoxedEnums.has(definition.name)) {
+        lines.push(`inline bbl::js::JsonValue json_value(${definition.name} value) { return bbl::js::json_value(${definition.name}_to_string(value)); }`, "");
       }
       if (this.jsonSerializedEnums.has(definition.name)) {
         lines.push(

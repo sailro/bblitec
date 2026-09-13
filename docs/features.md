@@ -212,12 +212,15 @@ of removed values. `Array.of`, `Array.from(arrayOrSet)`, and length-only
 require a local function or function literal and omit `thisArg`.
 
 Recursive unknown-value parameters and returns can retain parsed values, scalars,
-arrays of dynamic values, string-keyed unknown dictionaries and owned class views.
+arrays of dynamic values, string-keyed dictionaries with represented values and owned class views.
 Array and object aliases preserve storage and identity; class views read live fields
 and retain `instanceof`. Class fields currently require scalar, dynamic-value,
 dynamic-array or owned-record storage; optional field presence and other field
-representations refuse. This boundary does not convert arbitrary native objects or
-compile-time configuration records into dynamic values. Stored `Array.isArray`
+representations refuse. Fixed plain configuration records use observing views over
+their existing cells; recursive calls retain those views in their caller's storage.
+Methods, accessors, platform-owned records, array fields with unrepresented element
+types and changes to the fixed property set are outside this view contract.
+This boundary does not convert arbitrary native objects. Stored `Array.isArray`
 callbacks preserve library function identity and accept these represented values.
 Object key enumeration orders numeric index keys before other insertion-ordered
 keys. Conditional Set, Map and dynamic-value construction evaluates only the

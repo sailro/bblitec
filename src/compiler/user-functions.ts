@@ -1788,6 +1788,19 @@ export class UserFunctionLowerer {
         const rootEntry = entryByDeclaration.get(root.declaration)!;
         root.parameters.forEach((parameter, index) => {
             const argument = rootArguments[index];
+            if (rootEntry.returnType?.kind === "json" && argument?.kind === "record" &&
+                rootEntry.parameterTypes[index]?.kind !== "json") {
+                // A captured record may be returned through the dynamic boundary.
+                // Give its view a caller-owned home before emitting the callee.
+                try {
+                    context.probeEmission(() => context.dataLowerer.compileKnownValueForSink(
+                        argument, {kind:"json"}, argumentExpressions[index] ?? call));
+                } catch (error) {
+                    // A function may only return a scalar from an otherwise
+                    // unrepresentable record. Its reached return still decides.
+                    if (!(error instanceof CompileError)) throw error;
+                }
+            }
             const symbol = ts.isIdentifier(parameter.name) ? this.checker.getSymbolAtLocation(parameter.name) : undefined;
             const loopBound = argument?.staticNumber !== undefined && symbol && root.declaration.body &&
                 someAnalysisNode(root.declaration.body, node => ts.isForStatement(node) && node.condition !== undefined &&
@@ -1795,7 +1808,7 @@ export class UserFunctionLowerer {
             const tupleFacts = argument && rootEntry.argumentFacts.length > 0 &&
                 rootEntry.parameterTypes[index]?.kind === "tuple" &&
                 (argument.tupleElements || argument.staticElementsOwner?.staticElements || argument.staticElements);
-            if (argument?.kind === "record" || tupleFacts || (argument && rootEntry.parameterReadOnly[index] &&
+            if ((argument?.kind === "record" && rootEntry.parameterTypes[index]?.kind !== "json") || tupleFacts || (argument && rootEntry.parameterReadOnly[index] &&
                 (argument.staticString !== undefined || argument.staticBoolean !== undefined || loopBound))) {
                 rootEntry.parameterTypes[index] = undefined;
                 rootEntry.captured[index] = argument;

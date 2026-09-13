@@ -4,6 +4,7 @@ import { type DataType } from "../data-types.js";
 import type { Value } from "../types.js";
 import { isJsonValue } from "../json-bridge.js";
 import {eventTargetCpp} from "../dom-targets.js";
+import {compileJsonRecordView} from "../json-record-views.js";
 
 import type { DataSinkHost, DataSinkOperations } from "./contracts.js";
 
@@ -30,14 +31,20 @@ function expressionJson(dataType: DataType<"json">, lowerer: DataSinkHost, _expr
 }
 
 function valueJson(_dataType: DataType<"json">, lowerer: DataSinkHost, value: Value, node: ts.Node): string | undefined {
+    lowerer.context.reachJson();
     if (isJsonValue(value)) {
         lowerer.markEscaped(value);
         return value.cpp;
     }
     if (value.kind === "json-null") return value.cpp === "std::nullopt"
         ? "bbl::js::JsonValue{}" : "bbl::js::JsonValue::null_value()";
-    if (value.dataType?.kind === "map" && value.dataType.key.kind === "string" && value.dataType.value.kind === "json" &&
-        lowerer.context.checker.getIndexTypeOfType(lowerer.context.checker.getTypeAtLocation(node), ts.IndexKind.String))
+    if (value.kind === "record" && !value.cpp) {
+        const view = compileJsonRecordView(lowerer, value, node);
+        if (view !== undefined) return view;
+    }
+    if (value.dataType?.kind === "map" && value.dataType.key.kind === "string" &&
+        lowerer.context.checker.getIndexTypeOfType(lowerer.context.checker.getTypeAtLocation(node), ts.IndexKind.String) &&
+        lowerer.context.dataTypes.jsonValueCpp(value.dataType.value, "value", node) !== undefined)
         return `bbl::js::JsonValue::from_native(${value.cpp})`;
     const type = value.dataType ?? (value.kind === "number" || value.kind === "boolean" || value.kind === "string"
         ? {kind: value.kind} : undefined);

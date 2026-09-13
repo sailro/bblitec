@@ -8,6 +8,38 @@ dependencies will not be present in a fresh clone.
 
 ## Read this first
 
+**Latest follow-up: typed dictionaries and fixed record views.**
+Savepoint `ebca2403` is committed and pushed; PR #247's description is now updated
+successfully (`pr873.json`, verified GET contains 914/914). The old GitHub server
+failure has cleared. Fixed `typed-values873` probes initially admitted 2/8; typed
+dictionaries bring admission to 3/8 in `typed-values874`. These are generation-only
+counts. Public tests exercise native scalar/enum/record dictionary aliases and the
+existing recursive cases (`typed880-focused`:5/5; `typed882-focused`:1/1 adds typed
+captured-record return identity). `typed883-regressions` passes 915/915 without
+skips. Fixed views reject platform-owned records with pre-existing identity.
+
+The new `json-record-views.ts` keeps compiler record aliases keyed by their shared
+property table and uses `materializeEscapingValue` without a source expression to
+retain existing cells rather than creating a second record. Native JsonRecordView
+traces a minimal getter environment and fixed own keys. Nested views are created
+before capturing the outer getter. JSON-valued recursive parameters no longer
+erase record arguments into compile-time captures. A captured typed record that
+can return dynamically is prepared in the caller through a transactional probe;
+otherwise cells created only inside the callee would leave the caller with invalid
+references. Unsupported records can still provide scalar returns after rollback.
+Enum boxing emits its ADL native converter; JSON sinks demand the JSON header even
+when the source has no JSON.parse call.
+
+`typed-validator881` now passes the outer record boundary and refuses a compile-time
+tuple field inside the actual typed defaults. Next: retained array/tuple views,
+including native typed arrays of scalar/record elements, with live length/index
+reads, iteration, flattening and identity. Do not serialize or shallow-copy these
+objects to bypass aliasing. The eight-case typed cohort includes scalar arrays,
+object arrays, mixed tuples, optional fields and a class holding an array. The
+current five native tests are not proof of those still-refused cases. Full-entry
+generation remains `compile842`; use the three-second typed validator probe until
+the whole typed boundary works, then resume full application generation/build/run.
+
 **Latest batch: retained dynamic values and recursive native invokers.**
 The isolated unchanged validator now generates, compiles with MSVC and passes
 eight cases against its JavaScript implementation (`check-validator854.mjs`,
