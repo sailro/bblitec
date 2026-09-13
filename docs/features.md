@@ -237,6 +237,10 @@ Dictionary metadata distinguishes source object properties from JavaScript Map
 entries. Mixed tuple absence is admitted only when it represents undefined;
 ambiguous null/undefined storage refuses at this boundary. Fixed record key
 enumeration returns a fresh snapshot.
+Optional scalar results with only undefined absence retain that state when boxed
+into dynamic values. Dynamic object serialization omits undefined properties while
+own-property queries still see them. Serialization follows represented storage,
+including values returned through erased generic signatures.
 Object key enumeration orders numeric index keys before other insertion-ordered
 keys. Conditional Set, Map and dynamic-value construction evaluates only the
 selected branch, including any array operations needed to build it.

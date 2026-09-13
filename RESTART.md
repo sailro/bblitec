@@ -8,6 +8,35 @@ dependencies will not be present in a fresh clone.
 
 ## Read this first
 
+**Loader milestone: unchanged configuration loader builds and runs.** Copy unit
+`d9b1f389` is committed/pushed. The working optional unit preserves undefined-only
+metadata for checker unions, allows optional comparisons/sinks to reuse matching
+inner storage without dereferencing absent values, and serializes the actual
+represented value. Native dynamic object/dictionary serialization omits undefined
+properties while Object.hasOwn retains their presence.
+`optional925-focused` passed three native/refusal checks. Broad optional926 ran
+933 checks (925 pass, eight failures including parent/subtest counts): six generation
+failures shared the optional-comparison metadata mismatch; string-indexing's native
+failure came from dereferencing a missing optional while adapting its metadata.
+`optional928-focused` passed the first six after the comparison correction, and
+`optional929-focused` passes all four final native/refusal checks after the sink fix.
+The two remaining typed-value cohort forms still refuse (`typed-values930`, 6/8):
+optional records need owned/presence storage and class arrays need earlier demand.
+Do not mark those TODO items complete.
+
+`merge924-native` built and ran the unchanged loader with actual defaults.
+`reference-loader926.mjs` uses Node's registerHooks and TypeScript transpilation
+to execute the unchanged JS modules. Seven cases cover defaults, valid/invalid
+pixel budgets, invalid boolean settings and companion-distance corrections.
+`check-loader926.mjs` compares COMPLETE serialized native output with those JS
+results and checks the live defaults remain unchanged after EVERY call.
+`loader927-native` passes all seven. The defaults view uses the generic retained
+unknown-value boundary because direct native enum-map serialization is not supported;
+it observes the original defaults and does not serialize/reparse them into inputs.
+Actual JSON and private source stay in ignored artifacts. Do not track them.
+Next retry the full entry (last previous compile900), then isolate its next blocker.
+Final whole-branch validation and scene sweep remain pending.
+
 **Latest unit: typed branches copied from dynamic values.** `72a1fe73` is committed
 and pushed. hasDynamicObjectSpread is shared between expression and declaration
 lowering: runtime JSON-rooted sources and unknown/any spreads choose fresh dynamic

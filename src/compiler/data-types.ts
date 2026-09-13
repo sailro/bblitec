@@ -621,7 +621,7 @@ export class DataTypeRegistry {
       const present = type.types.filter(member =>
         (member.flags & (ts.TypeFlags.Void | ts.TypeFlags.Null | ts.TypeFlags.Undefined)) === 0);
       const inner = present.length === 1 ? this.fromTsType(present[0]!, node) : undefined;
-      return inner ? this.nullableType(inner) : undefined;
+      return inner ? this.nullableType(inner, !type.types.some(member => (member.flags & ts.TypeFlags.Null) !== 0)) : undefined;
     }
     if (
       (type.flags & ts.TypeFlags.Union) !== 0 &&
@@ -638,16 +638,16 @@ export class DataTypeRegistry {
       if (!inner) {
         return undefined;
       }
-      return this.nullableType(inner);
+      return this.nullableType(inner, !(type as ts.UnionType).types.some(member => (member.flags & ts.TypeFlags.Null) !== 0));
     }
     return this.fromNonNullableType(type, node);
   }
 
   /** Callbacks and shared objects already carry their own absent state. */
-  public nullableType(inner: DataType): DataType {
+  public nullableType(inner: DataType, undefinedOnly = false): DataType {
     return inner.kind === "optional" || inner.kind === "function" ||
       (inner.kind === "struct" && this.isReferenceStruct(inner.name))
-      ? inner : { kind: "optional", inner };
+      ? inner : { kind: "optional", inner, ...(undefinedOnly ? {undefinedOnly: true} : {}) };
   }
 
   public requireFromTsType(

@@ -7966,8 +7966,8 @@ export class DataLowerer {
             }
             if (
                 value.kind !== "data" ||
-                !value.dataType ||
-                !dataTypesEqual(value.dataType, expected)
+                value.dataType?.kind !== "optional" ||
+                !dataTypesEqual(value.dataType.inner, expected.inner)
             ) {
                 this.context.fail(
                     operand,
@@ -8717,8 +8717,8 @@ export class DataLowerer {
             return "std::nullopt";
         }
         if (optional?.kind === "data" &&
-            optional.dataType &&
-            dataTypesEqual(optional.dataType, dataType)) {
+            optional.dataType?.kind === "optional" &&
+            dataTypesEqual(optional.dataType.inner, dataType.inner)) {
             return optional.cpp;
         }
         // A handle the expression already produced IS the value

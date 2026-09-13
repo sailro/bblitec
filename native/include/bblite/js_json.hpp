@@ -269,6 +269,9 @@ template <typename K, typename V>
 inline void json_write(JsonWriter& writer, const Map<K, V>& entries) {
     writer.begin_object();
     for (const auto& entry : entries) {
+        if constexpr (std::is_same_v<V, JsonValue>) {
+            if (entry.second.is_undefined()) continue;
+        }
         writer.key(json_object_key(entry.first));
         json_write(writer, entry.second);
     }
@@ -863,6 +866,7 @@ inline void json_write(JsonWriter& writer, const JsonValue& value) {
     }
     writer.begin_object();
     value.for_each_entry([&](const std::string& key, const JsonValue& entry) {
+        if (entry.is_undefined()) return;
         writer.key(key);
         json_write(writer, entry);
     });

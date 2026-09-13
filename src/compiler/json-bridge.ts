@@ -138,7 +138,8 @@ function compileStringify(
         indent = Math.min(staticNumber, 10);
     }
     const argument = argumentAt(call, 0);
-    const dataType = context.dataLowerer.dataTypeAt(argument);
+    const represented = context.compileValue(argument);
+    const dataType = represented.dataType ?? context.dataLowerer.dataTypeAt(argument);
     if (!dataType) {
         context.fail(
             argument,
@@ -149,7 +150,7 @@ function compileStringify(
     context.reachJson();
     context.reachJsData();
     context.dataTypes.markJsonSerialized(dataType, argument);
-    const value = context.dataLowerer.compileForSink(argument, dataType);
+    const value = context.dataLowerer.compileKnownValueForSink(represented, dataType, argument);
     return {
         kind: "data",
         cpp:

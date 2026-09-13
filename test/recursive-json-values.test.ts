@@ -120,6 +120,19 @@ test("dynamic object spread copies outer properties and retains nested identity"
     `, t);
 });
 
+test("optional scalar returns retain undefined in dynamic records", t => {
+    nativeCheck("optional-return", `
+        function positive(value:unknown):number|undefined {
+            return typeof value==="number"&&Number.isFinite(value)&&value>0?value:undefined;
+        }
+        const present={...JSON.parse('{}'),budget:positive(JSON.parse('4'))};
+        const absent={...JSON.parse('{}'),budget:positive(JSON.parse('"wrong"'))};
+        if(present.budget!==4||absent.budget!==undefined||!Object.hasOwn(absent,"budget"))
+            throw new Error("optional result kind and presence");
+        if(JSON.stringify(absent)!=="{}")throw new Error("undefined property serialization");
+    `,t);
+});
+
 test("recursive unknown boundaries retain parsed trees and returned scalar kinds", t => {
     nativeCheck("trees", `
         function retain<T>(value:T, depth:number):T {return depth>0 ? retain(value,depth-1) : value;}
