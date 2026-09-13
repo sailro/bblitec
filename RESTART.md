@@ -8,6 +8,32 @@ dependencies will not be present in a fresh clone.
 
 ## Read this first
 
+**User steering: audit RmlUi reuse before further UI implementation.** The user
+questioned selectors, flexbox, shadows and animations. We checked the unpatched
+pin's Element.h/StyleSheetFactory.cpp, installed API, maintained patches, docs and
+our call sites. The pin already has QuerySelector/All, Matches, Closest, combinators,
+attributes, positional selectors and negation. Our functional-selector patch adds
+is/where/has. Authored DOM queries use records before rendering and while detached;
+the same custom matcher also runs on RmlUi's live tree for private cascade metadata.
+That latter use duplicates library capability. Matches reparses every call; no
+benchmark proves our duplication necessary. A TODO now records cached library reuse.
+Do not blindly replace hot-loop matching with reparsing or delete authored-tree
+support. docs/ui.md now distinguishes library ownership from compiler/host work.
+Flexbox and animations already use RmlUi engines. Shadows use RmlUi effects with our
+required renderer hooks. Our easing/steps translation is approximate. No selector
+or renderer implementation changed during this audit; no new agents were spawned.
+
+**Full1087 finished, next frontier main440:** window.addEventListener("pagehide",
+callback,{once:true}) refuses. This passes the engine and resize-observer setup.
+Surface compatibility is committed/pushed as **98f8e3dd**. Engine1086 cohort independently
+finds unsupported engine._renderFn reads in the unchanged heartbeat wrapper, and
+the blanket worker/window device-recovery refusal. Both still need real native
+support. Recovery callbacks are deferred until engine startup; verify the coroutine
+startup path emits them with owned captures when enabling realm recovery. Realm
+renderers borrow the Window's shared GPU device, so removing the admission guard
+alone is unsafe. Native frame coordination is pal_frame_conductor.hpp and
+pal_frame_driver.hpp; ordinary/realm dispatch is pal_sdl.cpp. All sessions closed.
+
 **Surface compatibility unit (1085), ready to commit.** MSAA is committed/pushed as
 **a17212a4**. enableSurfaceResizeObserver now admits the primary engine (the pin's
 EngineContext extends SurfaceContext) as well as auxiliary surfaces. Native loops

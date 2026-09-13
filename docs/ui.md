@@ -4,6 +4,35 @@ The bounded DOM/CSS/Canvas2D projection uses retained typed operations and
 RmlUi. SDL_GPU and Dawn consume the same UI draw frame. This page owns the UI
 surface and its compatibility limits.
 
+## RmlUi ownership and integration gaps
+
+RmlUi already supplies CSS layout, a stylesheet selector engine, animations and
+transitions, and native form widgets. Its supported surface is broader than this
+compiler's admitted browser projection. A compiler refusal alone does not establish
+a missing RmlUi capability. Check the [pinned revision](../upstream/rmlui.json), its
+unpatched implementation, our maintained patches and the render-interface hooks
+before adding another implementation.
+
+| Area | Existing authority | Work owned by this integration |
+| --- | --- | --- |
+| Flexbox | RmlUi's `FlexFormattingContext` | Browser shorthand/alignment differences and anonymous text items; the flex patch extends the existing engine. |
+| Animation/transition | RmlUi's animation engine | Source CSS admission, shared time and timing-vocabulary translation. The `steps()` and easing translations are approximations, not new animation engines. |
+| Shadows/filters/gradients | RmlUi's effects and decorators | The SDL_GPU/Dawn render interface implements required masks, layers, saved textures, filters and shaders. RmlUi's feature availability depends on these host hooks. |
+| Selectors | The unpatched pin already has `QuerySelector`, `QuerySelectorAll`, `Matches`, `Closest`, combinators, attributes, positional selectors and `:not()` | Source grammar/proofs and authored DOM queries; patches extend functional selectors and generated-content semantics. The separate matcher on the live RmlUi tree overlaps with the library. |
+| Controls | RmlUi's input, textarea and select widgets | Browser-facing types, values, events, ownership and styling must be mapped before the compiler can admit each form. |
+
+The selector matcher currently serves two trees: authored records, which can be
+queried synchronously while detached or before rendering, and the projected RmlUi
+tree, where it also selects private adaptation metadata. The second use is a reuse
+candidate. `Element::Matches` parses a selector on each call; replacing the compiled
+matcher with that call inside every layout loop needs a measured comparison or a
+cached library matcher, plus checks for generated nodes and interaction states.
+No performance comparison currently establishes that the duplicate matcher is needed.
+
+The upstream [element API](https://mikke89.github.io/RmlUiDoc/pages/cpp_manual/elements.html)
+and [render-interface feature table](https://mikke89.github.io/RmlUiDoc/pages/cpp_manual/interfaces/render.html)
+describe the library/host boundary; the pinned source remains the version authority.
+
 ## Integration
 
 Build switches for RmlUi, FreeType and LunaSVG are in
