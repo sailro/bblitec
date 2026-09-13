@@ -2420,7 +2420,7 @@ export interface ValueFields {
     | { kind: "search-params"; search: string }
     | { kind: "string"; value: string };
   cameraKind?: "arc-rotate" | "free" | "geospatial";
-  msaaSamples?: 1 | 4;
+  msaaSamples?: 1 | 4 | "runtime";
   directMorphCompatible?: boolean;
   morphTarget?: {
     positionsCpp: string;

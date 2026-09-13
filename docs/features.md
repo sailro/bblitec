@@ -486,6 +486,13 @@ one conductor. Scene, SpriteRenderer, EffectRenderer and scene-less FrameGraphCo
 independently. Immutable engine aliases retain identity; rebinding them or [creating multiple engines](../src/compiler.ts)
 within one entry point refuses.
 
+Engine `msaaSamples` accepts a runtime value: numeric `1` selects one sample and other
+represented values select four, following the pinned strict comparison. The option is
+evaluated once. Engine reads, default scene targets, authored targets using
+`engine.msaaSamples`, and standalone effect/frame-graph surfaces share that engine's
+selection. Constant `1`/`4` options retain compile-time specialization; other explicit
+numeric constants refuse.
+
 Device-loss scene recovery retains CPU owners and rebuilds GPU resources on SDL_GPU and Dawn.
 Registration must be unconditional before startup; resource observations support one registered scene.
 Loss/recovered callbacks take no arguments; failure callbacks expose `Error.message`. Worker/offscreen

@@ -140,6 +140,8 @@ struct EngineOptions {
     std::string title = "Babylon Lite Native";
     int width = 1280;
     int height = 720;
+    /** Zero retains the generated default; source runtime choices store one or four. */
+    std::uint32_t msaa_samples = 0;
 };
 
 /** Browser-neutral keyboard data delivered by the platform event loop. */

@@ -91,7 +91,7 @@ public:
         // 4`), not a re-typed 4.
         samples = frame_options.single_sample
             ? 1u
-            : upstream::preferred_sample_count();
+            : upstream::preferred_sample_count(engine.options.msaa_samples);
 
         recreate_msaa_target();
 

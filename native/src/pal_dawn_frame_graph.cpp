@@ -532,7 +532,7 @@ public:
         context = engine.registered_frame_graph_contexts.front();
         state.samples = frame_options.single_sample
             ? 1u
-            : upstream::preferred_sample_count();
+            : upstream::preferred_sample_count(engine.options.msaa_samples);
         const DeviceOptions device_options = frame_device_options(frame_options);
         create_dawn_device(engine.options, device_options, state);
         sync_engine_canvas_size(state.window, engine);

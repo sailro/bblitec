@@ -8437,7 +8437,7 @@ public:
 #endif
         if (
             !frame_options.single_sample &&
-            upstream::preferred_sample_count() >= 4 &&
+            upstream::preferred_sample_count(engine.options.msaa_samples) >= 4 &&
             SDL_GPUTextureSupportsSampleCount(
                 state.device,
                 swapchain_format,

@@ -508,7 +508,7 @@ public:
         context = engine.registered_frame_graph_contexts.front();
         state.samples = frame_options.single_sample
             ? SDL_GPU_SAMPLECOUNT_1
-            : gpu_sample_count_from(upstream::preferred_sample_count());
+            : gpu_sample_count_from(upstream::preferred_sample_count(engine.options.msaa_samples));
         const DeviceOptions device_options = frame_device_options(frame_options);
         create_sdl_gpu_device(engine.options, device_options, state.gpu);
         sync_engine_canvas_size(state.gpu.window, engine);

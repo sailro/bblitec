@@ -12378,7 +12378,7 @@ public:
         // surface formats this backend renders to, where SDL_GPU must ask.
         state.sample_count = frame_options.single_sample
             ? 1u
-            : upstream::preferred_sample_count();
+            : upstream::preferred_sample_count(engine.options.msaa_samples);
 
 
         DeviceOptions device_options = frame_device_options(frame_options);

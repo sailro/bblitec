@@ -14719,16 +14719,14 @@ test("rejects unsupported dynamic engine and scene options", () => {
             `),
         /supports explicit msaaSamples: 1 or 4 only/,
     );
-    assert.throws(
-        () =>
-            compileSource(`
-                import { createEngine } from "@babylonjs/lite";
-                async function main(msaaSamples: 1 | 4) {
-                    await createEngine({}, { msaaSamples });
-                }
-            `),
-        /supports explicit msaaSamples: 1 or 4 only/,
-    );
+    const runtimeSamples = compileSource(`
+        import { createEngine } from "@babylonjs/lite";
+        async function main() {
+            const msaaSamples = JSON.parse("1");
+            await createEngine({}, { msaaSamples });
+        }
+    `);
+    assert.equal(runtimeSamples.manifest.engineMsaaSamples, undefined);
     const staticSceneOption = compileSource(`
         import {
             createEngine,

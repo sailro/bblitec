@@ -1,5 +1,6 @@
 import type { LoweringServices } from "../lowering-services.js";
 import ts from "typescript";
+import { engineSampleCountCpp } from "../engine-samples.js";
 import { argumentAt } from "../syntax.js";
 import {
     postProcessComposite,
@@ -136,7 +137,7 @@ export function compileEngineIntrinsic(
                 ...(engine.surfaceCanvas ? { surfaceCanvas: true as const } : {}),
                 cpp: defaultRenderTask && samples === 4
                     ? create
-                    : `bbl::configure_scene_render_defaults(${create}, ${defaultRenderTask}, ${samples}u)`,
+                    : `bbl::configure_scene_render_defaults(${create}, ${defaultRenderTask}, ${engineSampleCountCpp(engine)})`,
                 sceneEnvironmentState: {
                     rotationSet: false,
                     hasTexturedSkybox: false,

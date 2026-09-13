@@ -138,6 +138,7 @@ import {
 import { compileSpriteAtlasRecord } from "./compiler/sprite-atlas-record.js";
 import { readPngDimensionsSync } from "./compiler/asset-bytes-sync.js";
 import type {AssetDecoderConfiguration} from "./asset-decoders.js";
+import { engineSampleCountCpp } from "./compiler/engine-samples.js";
 import { createCompilerProgram } from "./compiler/program.js";
 import { nativeReturnTsType } from "./compiler/native-return-type.js";
 import { readProperty } from "./compiler/properties.js";
@@ -8031,7 +8032,20 @@ class Compiler
         cppName: string,
     ): Value {
         this.expectArgumentCount(call, 1, 2);
-        let msaaSamples: 1 | 4 = 4;
+        let canvasArgument = "";
+        if (this.options.workers) {
+            const canvas = this.compileValue(argumentAt(call, 0));
+            if (canvas.kind !== "offscreen-canvas" && canvas.kind !== "ui-element") this.fail(argumentAt(call, 0), "The realm engine requires a native canvas context.");
+            const snapshot = this.allocateTemporaryCppName("engine_canvas");
+            this.emit({
+                kind: "declaration", type: "const auto", name: snapshot,
+                initializer: canvas.kind === "ui-element"
+                    ? `bbl::pal::window_canvas(${canvas.cpp})` : canvas.cpp,
+            });
+            canvasArgument = `, ${snapshot}`;
+        }
+        let msaaSamples: 1 | 4 | "runtime" = 4;
+        let sampleOverride: string | undefined;
         let highPrecisionMatrix = false;
         let floatingOrigin = false;
         if (call.arguments[1]) {
@@ -8059,15 +8073,27 @@ class Compiler
                 compileEnginePrecisionPolicy(this, options));
             const samples = this.objectProperty(options, "msaaSamples");
             if (samples) {
-                const staticSamples = selectedStaticNumberValue(this, samples);
-                if (staticSamples !== 1 && staticSamples !== 4) {
-                    this.fail(
-                        samples,
-                        "Native engine lowering supports explicit msaaSamples: 1 or 4 only.",
+                const value = this.compileValue(samples);
+                const staticSamples = value.staticNumber ?? this.probeEmission(
+                    () => selectedStaticNumberValue(this, samples), () => false,
+                );
+                if (staticSamples !== undefined) {
+                    if (staticSamples !== 1 && staticSamples !== 4)
+                        this.fail(samples, "Native engine lowering supports explicit msaaSamples: 1 or 4 only.");
+                    this.emitDiscardedValue(value);
+                    msaaSamples = staticSamples;
+                    this.engineMsaaSamples = staticSamples;
+                } else {
+                    const represented = this.dataLowerer.compileKnownValueForSink(
+                        value, { kind: "json" }, samples,
                     );
+                    sampleOverride = this.allocateTemporaryCppName("engine_samples");
+                    this.emit({
+                        kind: "declaration", type: "const std::uint32_t", name: sampleOverride,
+                        initializer: `(${represented}).strict_equals(1.0) ? 1u : 4u`,
+                    });
+                    msaaSamples = "runtime";
                 }
-                msaaSamples = staticSamples;
-                this.engineMsaaSamples = staticSamples;
             }
             const limits = this.objectProperty(options, "requiredLimits");
             if (limits) {
@@ -8080,13 +8106,7 @@ class Compiler
                 "The prototype currently supports one engine per entry point.",
             );
         }
-        let canvasArgument = "";
-        if (this.options.workers) {
-            const canvas = this.compileValue(argumentAt(call, 0));
-            if (canvas.kind !== "offscreen-canvas" && canvas.kind !== "ui-element") this.fail(argumentAt(call, 0), "The realm engine requires a native canvas context.");
-            canvasArgument = `, ${canvas.kind === "ui-element" ? `bbl::pal::window_canvas(${canvas.cpp})` : canvas.cpp}`;
-        }
-        this.emit({ kind: "declaration", type: "auto", name: cppName, initializer: `${this.options.workers ? "bbl::pal::create_realm_engine" : "bbl::create_engine"}(bbl::EngineOptions{${this.cppString(this.options.title)}, ${this.options.width}, ${this.options.height}}${canvasArgument})` });
+        this.emit({ kind: "declaration", type: "auto", name: cppName, initializer: `${this.options.workers ? "bbl::pal::create_realm_engine" : "bbl::create_engine"}(bbl::EngineOptions{${this.cppString(this.options.title)}, ${this.options.width}, ${this.options.height}${sampleOverride ? `, ${sampleOverride}` : ""}}${canvasArgument})` });
         this.engineCreationInsertion = this.body.length;
         if (this.options.workers) this.engineCreationExecution = {
             callback: this.frameCallbackDepth, control: this.runtimeControlFlowDepth,
@@ -11955,6 +11975,9 @@ class Compiler
             };
         }
         if (owner.kind === "engine" && expression.name.text === "msaaSamples") {
+            if (owner.msaaSamples === "runtime") return {
+                kind: "number", cpp: engineSampleCountCpp(owner), dataType: { kind: "number" },
+            };
             return {
                 kind: "number",
                 cpp: `${owner.msaaSamples ?? 4}.0f`,

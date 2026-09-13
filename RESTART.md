@@ -8,6 +8,35 @@ dependencies will not be present in a fresh clone.
 
 ## Read this first
 
+**Runtime engine MSAA unit (1083), validated and ready to commit.** Decoder unit
+is committed/pushed as **7d2855f3**. EngineOptions now carries a per-engine sample
+override; zero preserves the existing generated default. Runtime source choices
+use the pin's strict numeric-one selection, evaluated once. The metadata's
+`msaaSamples: "runtime"` follows engine aliases and scene/frame-graph values;
+engine-samples.ts supplies one C++ read for properties and target/default options.
+The pinned surface header overload handles overrides, and all six scene/effect/
+frame-graph backend units use it. Worker canvas evaluation precedes option effects.
+Literal 1/4 paths preserve prior specialization; invalid numeric constants still
+refuse. No process-global sample policy is introduced.
+
+Validation: samples1077-focused native test covers JSON numeric/string/boolean/
+null/undefined choices, single evaluation and engine/scene defaults. The
+samples1078 engine/worker/upstream/compiler suite passes 747/748; its sole old
+runtime-MSAA-refusal assertion was updated and samples1079-options passes. Native
+samples1082/1083 probes generate, compile shaders, build BOTH, and capture one/four
+sample cases on SDL_GPU and Dawn for scene, effect and standalone frame-graph
+drivers (12 runs). All native sessions are closed. Build alone does not compile
+offline shaders: use process for these neutral probes. Sources changed only in
+formatting/documentation after the validation; staged type checks remain required.
+
+**Full1081 now passes engine creation.** It finishes at main426,
+`enableSurfaceResizeObserver(engine)`: compiler expects surface, received engine.
+558 successful/observed bodies,96 modules,22,151 unobserved;260.07s. No whole-app
+generation/build/run yet. Earlier main402 MSAA frontier below is historical.
+Next: fix generic engine/surface compatibility, then inspect the nearby recovery/
+frame-wrapper setup as a cohort before another full compile. Full1081 session is
+closed; ordinary dist has MSAA implementation before formatting-only edits.
+
 **Current decoder unit (1075), ready to commit.** Ownership unit is committed and
 pushed as **b75429e6**. setKtx2DecoderUrl and setDracoBaseUrl now lower definite
 bootstrap configuration into manifest metadata. Computed URLs use actual compiled
