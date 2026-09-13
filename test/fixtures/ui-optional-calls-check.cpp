@@ -26,11 +26,15 @@ int run_window_application(WorkerEntry initialize, EngineOptions) {
 int main() {
     assert(generated_main() == 0);
     const auto& engine = bbl::pal::window_document_engine();
-    assert(engine.ui_root_children.empty());
-    assert(engine.ui_elements.size() == 6);
-    assert(engine.ui_elements.at(0).children.size() == 1);
-    assert(engine.ui_elements.at(1).text == "child");
-    assert(engine.ui_elements.at(2).children.size() == 1);
-    assert(engine.ui_elements.at(2).children.at(0).value == 3);
-    assert(engine.ui_elements.at(5).attributes.at("class") == "swatch active");
+    const auto& roots=engine.ui_document_roots;
+    assert(roots.active()&&engine.ui_root_children.size()==1&&engine.ui_root_children.front()==roots.html);
+    assert(engine.ui_elements.at(roots.body.value).children.empty());
+    std::vector<const bbl::UiElementRecord*> authored;
+    for(std::size_t index=0;index<engine.ui_elements.size();++index){
+        if(index!=roots.html.value&&index!=roots.head.value&&index!=roots.body.value)authored.push_back(&engine.ui_elements.at(index));
+    }
+    assert(authored.size()==6);
+    assert(authored[0]->children.size()==1&&authored[1]->text=="child");
+    assert(authored[2]->children.size()==1 && &engine.ui_elements.at(authored[2]->children.front().value)==authored[3]);
+    assert(authored[5]->attributes.at("class")=="swatch active");
 }

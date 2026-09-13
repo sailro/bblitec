@@ -5,11 +5,17 @@
 #undef main
 #include "pal_ui_rml.cpp"
 #include <cassert>
+#include <fstream>
 
 namespace bbl {
 std::string asset_path(const std::string& path) { return "artifacts/ui-attributes/" + path; }
 }
 namespace bbl::pal {
+std::vector<std::uint8_t> read_binary_file(const std::string& path) {
+    std::ifstream stream(path,std::ios::binary);
+    if(!stream) throw std::runtime_error("Unable to read fixture image: "+path);
+    return {std::istreambuf_iterator<char>(stream),std::istreambuf_iterator<char>()};
+}
 std::string environment_variable(const char*) { return {}; }
 double performance_milliseconds() { return 0; }
 Engine& window_document_engine() { static Engine document; return document; }
@@ -27,6 +33,10 @@ int main() {
     assert(SDL_Init(SDL_INIT_VIDEO));
     SDL_Window* window = SDL_CreateWindow("Attribute fixture", 640, 480, SDL_WINDOW_HIDDEN);
     assert(window && generated_main() == 0);
+    pal::EventLoop loop;
+    std::exception_ptr failure;
+    loop.on_error([&](std::exception_ptr error){failure=error;loop.close();});
+    loop.run([&] {
     {
         auto& engine = pal::window_document_engine();
         const auto panel = ui_get_element_by_id(engine, "panel");
@@ -66,6 +76,9 @@ int main() {
         assert(ui_get_style_property(engine, panel, "height").empty());
         assert(!raw_panel->HasAttribute("style"));
     }
+        loop.queue_microtask([&]{loop.close();});
+    });
+    if(failure)std::rethrow_exception(failure);
     SDL_DestroyWindow(window);
     SDL_Quit();
 }

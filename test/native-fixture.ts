@@ -105,6 +105,7 @@ export function runRmlUiFixture(t: TestContext, name: string, options: {imageDec
         `/external:I${join(rml, "include")}`, `/external:I${join(rml, "Backends")}`,
         `/external:I${join(nativeFixtureVcpkgRoot, "include")}`, "/external:W0",
         `test/fixtures/${name}-check.cpp`, "native/src/pal_system_fonts.cpp",
+        ...(options.imageDecoder ? ["native/src/pal_image.cpp"] : []),
         join(rml, "Backends/RmlUi_Platform_SDL.cpp"), "/link", "/OPT:REF",
         join(rml, "lib/rmlui.lib"), join(nativeFixtureVcpkgRoot, "lib/freetype.lib"),
         join(nativeFixtureVcpkgRoot, "lib/lunasvg.lib"), join(nativeFixtureVcpkgRoot, "lib/SDL3.lib"),
