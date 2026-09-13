@@ -1635,6 +1635,24 @@ export class UserFunctionLowerer {
         return escapes;
     }
 
+    /** An assertion to T does not convert an unknown runtime value into T's
+     * native storage. Retain its dynamic kind and source object identity. */
+    private hasDynamicReturnSource(context: UserFunctionContext, declaration: SupportedFunction): boolean {
+        const dynamic = (expression: ts.Expression): boolean => {
+            const value = unwrapExpression(expression);
+            if (ts.isConditionalExpression(value)) return dynamic(value.whenTrue) || dynamic(value.whenFalse);
+            const type = this.checker.getTypeAtLocation(value);
+            return (type.flags & ts.TypeFlags.TypeParameter) === 0 && context.dataTypes.dynamicJsonType(type) !== undefined;
+        };
+        if (!declaration.body) return false;
+        if (!ts.isBlock(declaration.body)) return dynamic(declaration.body);
+        let found = false;
+        forEachReturn(declaration.body.statements, statement => {
+            if (statement.expression && dynamic(statement.expression)) found = true;
+        });
+        return found;
+    }
+
     private lowerRecursiveGroup(
         context: UserFunctionContext,
         root: UserFunctionIr,
@@ -1710,7 +1728,9 @@ export class UserFunctionLowerer {
                       this.checker.getReturnTypeOfSignature(signature),
                       declaration,
                   );
-            const mappedReturnType = returnTsType
+            const dynamicGenericReturn = returnTsType && (returnTsType.flags & ts.TypeFlags.TypeParameter) !== 0 &&
+                this.hasDynamicReturnSource(context, declaration);
+            const mappedReturnType = dynamicGenericReturn ? {kind:"json"} as const : returnTsType
                 ? context.dataTypes.dynamicJsonType(returnTsType) ?? context.dataTypes.fromSharedReturnType(returnTsType, declaration)
                 : undefined;
             const returnType = mappedReturnType?.kind === "struct" && context.dataTypes.carriesHandle(mappedReturnType)
@@ -1730,7 +1750,8 @@ export class UserFunctionLowerer {
             const arrayStorage = returnsArray ? arrayReturnStorage(this.checker, declaration) : undefined;
             const parameterTypes = ir.parameters.map(
                 ({ type, declaration: parameter }) => {
-                    let mapped = context.dataTypes.dynamicJsonType(type) ?? context.dataTypes.fromTsType(
+                    let mapped = dynamicGenericReturn && type === returnTsType ? {kind:"json"} as const :
+                        context.dataTypes.dynamicJsonType(type) ?? context.dataTypes.fromTsType(
                         type,
                         parameter,
                     );

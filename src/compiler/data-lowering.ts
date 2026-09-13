@@ -1509,13 +1509,6 @@ export class DataLowerer {
         assertedNonNull = false,
         expectedType?: DataType,
     ): Value {
-        if (value.dataType?.kind === "json") {
-            const narrowed = this.dataTypeAt(expression);
-            if (narrowed && ["string", "number", "boolean", "enum"].includes(narrowed.kind)) {
-                const cpp = compileDataValueSink(narrowed, this, value, expression);
-                if (cpp !== undefined) return this.leafValue(cpp, narrowed);
-            }
-        }
         if (value.kind === "data" && value.dataType?.kind === "union") {
             const narrowed = expectedType ?? this.dataTypeAt(expression);
             const index = this.narrowedUnionMemberIndex(value.dataType, narrowed);
@@ -2021,7 +2014,8 @@ export class DataLowerer {
             dataType.kind === "map" &&
             dataType.key.kind === "string"
         ) {
-            return this.mapPropertyValue(owner.cpp, this.context.cppString(property), dataType.value);
+            return this.mapPropertyValue(owner.cpp, this.context.cppString(property), dataType.value,
+                {kind:"optional", inner:dataType.value});
         }
         if (dataType.kind === "u8array" || dataType.kind === "dataview" || dataType.kind === "bufferview") {
             if (property === "buffer") {
@@ -3214,14 +3208,15 @@ export class DataLowerer {
         });
     }
 
-    private mapPropertyValue(owner: string, key: string, type: DataType): Value {
+    private mapPropertyValue(owner: string, key: string, type: DataType,
+        lookupType = this.context.dataTypes.nullableType(type)): Value {
         this.context.reachJsData();
         const lookup = `${owner}.get(${key})`;
         if (type.kind === "json") {
             this.context.reachJson();
             return this.leafValue(`bbl::js::json_value(${lookup})`, type);
         }
-        return {...this.leafValue(lookup, this.context.dataTypes.nullableType(type)), preserveUncheckedLookup: true};
+        return {...this.leafValue(lookup, lookupType), preserveUncheckedLookup: true};
     }
 
     public leafValue(
@@ -7777,6 +7772,7 @@ export class DataLowerer {
                     isNullish(other),
                     (value) =>
                         this.compileForSink(value, { kind: "string" }),
+                    (value, node) => this.compileKnownValueForSink(value, {kind:"json"}, node),
                 );
                 if (compare !== undefined) {
                     return negated ? `!(${compare})` : compare;

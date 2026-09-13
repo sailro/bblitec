@@ -303,6 +303,7 @@ export function compileJsonStrictComparison(
     other: ts.Expression,
     otherIsNullish: boolean,
     compileString: (expression: ts.Expression) => string,
+    retainValue: (value: Value, expression: ts.Expression) => string,
 ): string | undefined {
     if (otherIsNullish) {
         return other.kind === ts.SyntaxKind.NullKeyword
@@ -321,6 +322,10 @@ export function compileJsonStrictComparison(
     }
     if (isJsonValue(value)) {
         return `${documentCpp}.strict_equals(${value.cpp})`;
+    }
+    if (value.kind === "record" || value.kind === "tuple" || value.kind === "data") {
+        const retained = retainValue(value, other);
+        return `${documentCpp}.strict_equals(${retained})`;
     }
     return undefined;
 }

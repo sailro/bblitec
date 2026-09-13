@@ -83,6 +83,13 @@ test("dynamic object spread copies outer properties and retains nested identity"
         const result=merge(base,JSON.parse('{"branch":{"size":3}}')) as Record<string,unknown>;
         if((result.branch as {size:number}).size!==3||result.keep!==(base as Record<string,unknown>).keep||result===base)
             throw new Error("merge identity");
+        const typed={branch:{size:1},keep:{value:2}};
+        const changed=merge(typed,JSON.parse('{"branch":{"size":5}}'));
+        if(changed.branch.size!==5||changed.keep!==typed.keep||changed===typed)throw new Error("typed merge identity");
+        typed.keep.value=7;
+        if(changed.keep.value!==7||typed.branch.size!==1)throw new Error("typed merge aliases");
+        const scalar=merge(2,JSON.parse('"text"'));
+        if((scalar as unknown)!=="text")throw new Error("dynamic generic scalar kind");
         const copy:Record<string,unknown>={...(base as Record<string,unknown>),extra:4};
         copy.branch=2;
         if((base as {branch:{size:number}}).branch.size!==1||copy.extra!==4||copy.missing!==undefined||copy['missing']!==undefined)

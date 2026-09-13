@@ -8,6 +8,30 @@ dependencies will not be present in a fresh clone.
 
 ## Read this first
 
+**Latest unit: erased generic return values.** Spread unit `8530ab83` is committed
+and pushed. Generic return analysis now detects unknown/dictionary return sources
+under assertions and conditional arms when the declared result is T. That return
+and matching T parameters use JsonValue; ordinary generic identity signatures
+remain typed. Removed scalar coercion from narrowOptional's JSON arm: an assertion
+or inferred annotation must not change runtime kind before a real scalar operation.
+Strict dynamic/native object comparisons retain the other object's existing view.
+Native merge coverage now checks typed input, fresh changed branches, shared untouched
+branches, later mutations and a scalar whose runtime kind differs from asserted T.
+`merge917-focused` passes. `merge918-regressions` passed 937/938; the sole failure
+caught changed reference-dictionary property fallback evaluation in the preceding
+spread unit. Preserve the property's optional lookup representation in mapPropertyValue
+(the indexed path has its existing nullableType policy). `merge919-focused` passes
+all five affected checks after that correction. `typed-validator919-native` confirms
+the actual-default validator still builds and executes after removing JSON coercion.
+
+`merge918-loader` now passes the generic merge and refuses the next unchanged source
+operation: a fresh copy of a statically typed branch whose represented owner is JSON.
+The mutable object declaration chooses emitSpreadStructDeclaration from its inferred
+TypeScript shape. Next route fresh literals with runtime JSON-rooted spreads to the
+dynamic dictionary path, including inferred mutable declarations. Do not implicitly
+convert/copy a JSON value into native typed record storage. Probe unchanged loader
+with probe-merge900.mjs; no full-entry retry since compile900 yet.
+
 **Latest unit: shallow dynamic object spread.** Generic-signature unit `1bbd416f`
 is committed and pushed. The working spread unit adds explicit JSON spread into
 fresh Map<string,JsonValue> storage, with retained children, numeric-key ordering,
