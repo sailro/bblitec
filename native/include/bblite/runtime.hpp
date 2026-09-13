@@ -3288,6 +3288,7 @@ enum class UiStyleSelectorKind : std::uint8_t {
 };
 
 enum class UiScrollbarPart : std::uint8_t { None, Scrollbar, Thumb, Track, Button, Corner };
+enum class UiRangePart : std::uint8_t { None, Thumb, Track };
 enum class UiMotionPreference : std::uint8_t { Any, Reduce, NoPreference };
 
 enum class UiSelectorTestKind : std::uint8_t {
@@ -3330,6 +3331,7 @@ struct UiStyleRule {
     std::vector<UiSelectorStep> sequence{};
     UiGeneratedPart generated = UiGeneratedPart::None;
     std::optional<UiGeneratedContent> content{};
+    UiRangePart range = UiRangePart::None;
 };
 
 /**

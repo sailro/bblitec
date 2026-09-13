@@ -54,9 +54,29 @@ reading layer zero; both scene and Window presenters now share that predicate.
 Rebuilding the unchanged pinned RmlUi dependency with build-rmlui.ps1 refreshes
 two patch receipts whose bytes changed from CRLF to LF on checkout. No patch,
 pin or receipt verification was bypassed. shadows-window778 passes both backends
-and unchanged DPWCDWMK input replay. population778 is running at this savepoint.
-The rebased branch has not yet been pushed; use an explicit force-with-lease
-against df7967fd74010f92c8b87e24f4ef586f04eb2f9e, the last verified remote tip.
+and unchanged DPWCDWMK input replay. population778 generates all 288 entries and
+passes native bootstrap. Rebased history and compatibility fix 849ca174 are pushed;
+the explicit lease against the old remote tip succeeded. PR #247 remains draft.
+
+The range unit now passes 924/924 checks without skips (range785-regressions).
+range-window785 passes both backends and unchanged DPWCDWMK replay. Captures are
+identical between backends; the fixed 145x50 browser comparison has RGB MAE
+1.48/255, not exact parity. Chromium discards Gecko-only range selector lists;
+those rules now follow that behavior rather than styling the same native control.
+WebKit thumb/track selectors target typed anonymous native parts and preserve
+owner/part state, dimensions, gradients, shadows and appearance. The seventeenth
+patch, rmlui-range-layout.patch, retains the same RmlUi commit. It centers tracks,
+derives auto height from the thumb margin box and uses InputTypeRange::OnLayout
+to reformat part changes even when the input size does not change. Initial tests
+caught that missing invalidation; range784 passes after the correction.
+range785 includes native hover, keyboard, value endpoints, resizing, disabled
+state, theme suppression and sheet-removal checks. imported-styles783 passes the
+reduced options installer range rules and stops on overscroll-behavior-y. The
+same 169-rule cohort is now 155 admitted / 12 refused / two keyframes unassessed;
+three of the admitted rules are Gecko-only and intentionally absent from the
+Chromium cascade. This is not a full application generation result. Continue
+scroll behavior and media declarations together, then general grid/container work.
+GitHub's open issue list is empty; remaining core-library/TODO gaps stay open.
 
 Historical complete-entry attempt: `compile764` passes the imported stylesheet constant
 and reaches generated-content inset-outline decoration (225.2 seconds). The
@@ -69,7 +89,7 @@ generated decoration, vendor range parts, media overrides, explicit grids and
 container queries. Counts include independent rules and do not prove whole-sheet
 or native support. Continue with grouped capability work and reduced import probes.
 
-The next shadow unit is in progress. imported-styles771 passes the reduced
+Historical shadow-unit development notes: imported-styles771 passes the reduced
 application installer's complete shadow declarations and reaches vendor range-thumb
 selectors. This is not a fresh full-entry result. The recorder now supports inverse
 masks on geometry/composites and saved layer textures, replaying only the captured

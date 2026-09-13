@@ -189,7 +189,18 @@ lengths and auto margins. Supported max-width rules can override logical spacing
 Vertical writing and right-to-left logical box mapping remain unsupported.
 `appearance:auto/none` and its `-webkit-appearance` alias retain control input and
 authored styles. On ranges, none removes the native track while retaining the
-independently themed thumb. Custom thumb appearance/selectors remain unsupported.
+independently themed thumb. `::-webkit-slider-thumb` and
+`::-webkit-slider-runnable-track` style the range's anonymous native parts;
+originating selectors and part hover/active states retain the stylesheet cascade.
+Thumb `appearance:none` removes its separate theme. Authored size, margins,
+borders, gradients and shadows retain native control input, live resizing and
+stylesheet removal. Horizontal tracks center in the input; an automatic track
+takes the thumb's margin-box height. Vertical ranges and private layout adaptations
+on anonymous parts remain unsupported.
+The control reference is Chromium: Gecko-only `::-moz-range-thumb`, `-track` and
+`-progress` invalidate their whole selector list, including any other selectors in
+that list. Their declarations do not enter the native cascade. This preserves
+separate vendor stylesheets; it does not implement Firefox's control theme.
 Text presentation supports normal/italic font style, none/uppercase/lowercase/capitalize transforms,
 and clip/ellipsis overflow. Native font shaping and casing remain the limits of the text projection.
 Literal transform origins accept a single keyword/length or horizontal then vertical components,
@@ -321,6 +332,7 @@ native range painting follows browser geometry and control states.
 | `rmlui-fragment-root.patch` | Parse inline fragments under a custom document tag without an XML handler |
 | `rmlui-generated-content.patch` | Originating-element styles for generated boxes; preserve authored query, serialization and structural-selector semantics |
 | `rmlui-selector-functions.patch` | Selector-list/relative matching and invalidation; widget-owned placeholder text styles |
+| `rmlui-range-layout.patch` | Center horizontal input tracks using explicit or thumb-derived heights; reformat styled parts when the input's own size is unchanged |
 | `rmlui-flex-layout.patch` | Flex shorthand defaults, unordered flow resets and start/end alignment under reversal |
 | `rmlui-solid-background-clip.patch` | Solid border/padding/content-box clipping and invalidation after style changes |
 | `rmlui-textured-borders.patch` | Stretch raster border slices, live widths and CSS overlap reduction |

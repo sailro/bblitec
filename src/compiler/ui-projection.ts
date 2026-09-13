@@ -8,7 +8,7 @@ import {findUiCssSyntax, stripUiCssComments, uiCssBlockEnd, uiCssSyntaxIndices} 
 import {isUiGeneratedPart, parseUiGeneratedContent, uiGeneratedContentCpp, uiGeneratedPartCpp, type UiGeneratedContent, type UiGeneratedPart} from "../ui-generated-content.js";
 import {parseUiSelectorSequence, splitUiSelectorList, uiSelectorSequenceCss, uiSelectorSequenceSpecificity, uiSelectorSequenceCpp, uiSelectorSequenceTests, uiSelectorSequenceNeedsAuthoredTree, type UiSelectorStep} from "../ui-selector.js";
 import { isUiLayoutProperty, supportedUiLayoutValue, uiLogicalSpacingProperties } from "../ui-layout.js";
-import { nativeHostUiStyleRules, uiStyleSelector, uiStyleSelectorCppKind, uiStyleSelectorDescriptor, uiStyleInteractionStateCount, uiStyleRuleNeedsRuntimeMatch, uiStyleRuleHasMedia, uiMotionPreferenceCpp, isUiScrollbarPart, uiScrollbarPartCpp, type UiStyleSelectorShape, type UiStyleSelectorKind } from "../ui-style-rule.js";
+import { nativeHostUiStyleRules, uiStyleSelector, uiStyleSelectorCppKind, uiStyleSelectorDescriptor, uiStyleInteractionStateCount, uiStyleRuleNeedsRuntimeMatch, uiStyleRuleHasMedia, uiMotionPreferenceCpp, isUiScrollbarPart, uiScrollbarPartCpp, isUiRangePart, uiRangePartCpp, type UiStyleSelectorShape, type UiStyleSelectorKind } from "../ui-style-rule.js";
 import { validateFileAccept } from "./browser-file.js";
 import { CompileError } from "./compile-error.js";
 import { documentEngine } from "./window-events.js";
@@ -2352,7 +2352,7 @@ export class UiProjection {
         return false;
     }
 
-    private validateUiGeneratedStyle(style: string, part: UiGeneratedPart, site?: ts.Node): void {
+    private validateUiPartStyle(style: string, part: UiGeneratedPart | "range", site?: ts.Node): void {
         UiProjection.forEachUiStyleDeclaration(style, declaration => {
             if (!declaration.trim()) return;
             const property = declaration.slice(0,declaration.indexOf(":")).trim();
@@ -2402,7 +2402,7 @@ export class UiProjection {
                 `Retained stylesheet selector '${selector}' is not ` +
                 "lowered: retained sheets accept tag/id/class compounds, attribute presence/equality, " +
                 "descendant/child/sibling chains and hover/active/focus/focus-visible/disabled/checked states, " +
-                "scrollbar/track/thumb/button/corner pseudo-elements, " +
+                "scrollbar and range thumb/track pseudo-elements, " +
                 "'@media (max-width:Npx)', '@media (prefers-reduced-motion:reduce|no-preference)', and '@keyframes' blocks.";
             if (site) this.context.fail(site, message);
             this.context.failAtFile(message);
@@ -2452,6 +2452,14 @@ export class UiProjection {
                     refuseSelector(header);
                 }
 
+                // Chromium, our control reference, discards an entire selector
+                // list containing these Gecko-only pseudo-elements. Do this before
+                // declaration admission: those declarations never enter its cascade.
+                const selectors = splitUiSelectorList(header);
+                if (selectors.some(selector => {
+                    const foreign = /^(.*?)::-moz-range-(?:thumb|track|progress)(?::(?:hover|active))?$/.exec(selector);
+                    return foreign && parseUiSelectorSequence(foreign[1] || "*");
+                })) continue;
                 const sourceStyle = body.trim();
                 if (inheritedMaxWidth !== undefined) {
                     const mediaProperties = new EmissionSet([
@@ -2505,7 +2513,6 @@ export class UiProjection {
                         "the structural grid substitution is not accepted inside a media query",
                     );
                 }
-                const selectors = splitUiSelectorList(header);
                 for (const selector of selectors) {
                     if (
                         parseUiSelectorSequence(selector.replace(/::(?:before|after|placeholder)$/, ""))?.at(-1)?.tests.some(test => test.kind === "tag" && (test.name === "path" || test.name === "rect"))
@@ -2524,7 +2531,8 @@ export class UiProjection {
                         UiProjection.parseUiSelector(selector, style) ??
                         refuseSelector(selector);
                     if (content && rule.pseudo !== "before" && rule.pseudo !== "after") this.uiStyleRefusal(site, "content", "text content lists require a before/after pseudo-element");
-                    if (rule.pseudo) this.validateUiGeneratedStyle(style,rule.pseudo,site);
+                    if (rule.pseudo) this.validateUiPartStyle(style,rule.pseudo,site);
+                    if (rule.range) this.validateUiPartStyle(style,"range",site);
                     if (content) rule.content = content;
                     if (inheritedMaxWidth !== undefined) {
                         rule.maxWidth = inheritedMaxWidth;
@@ -2535,7 +2543,7 @@ export class UiProjection {
                     if (grid) {
                         if (
                             uiStyleRuleNeedsRuntimeMatch(rule) ||
-                            rule.scrollbar ||
+                            rule.scrollbar || rule.range ||
                             rule.pseudo ||
                             (rule.kind !== "class" && rule.kind !== "id")
                         ) {
@@ -2548,7 +2556,7 @@ export class UiProjection {
                         rule.grid = grid;
                     }
                     if (
-                        !rule.scrollbar && (
+                        !rule.scrollbar && !rule.range && (
                         rule.kind === "class-descendant-tag" ||
                         rule.kind === "id-descendant-class")
                     ) {
@@ -2556,9 +2564,9 @@ export class UiProjection {
                     }
                     if (!style && !content) continue;
                     rules.push(rule);
-                    // Anonymous scrollbar controls cannot affect static proofs
+                    // Anonymous control parts cannot affect static proofs
                     // over the authored element tree.
-                    if (!rule.scrollbar) this.uiStyleRules.push(rule);
+                    if (!rule.scrollbar && !rule.range) this.uiStyleRules.push(rule);
                 }
             }
         };
@@ -2603,7 +2611,7 @@ export class UiProjection {
         element: UiStaticElement,
         classes: ReadonlySet<string>,
     ): boolean {
-        if (rule.scrollbar || rule.pseudo) return false;
+        if (rule.scrollbar || rule.range || rule.pseudo) return false;
         switch (rule.kind) {
             case "sequence":
                 return this.uiSequenceMayMatch(rule, element, classes);
@@ -2642,11 +2650,19 @@ export class UiProjection {
             return {kind:"sequence", primary:uiSelectorSequenceCss(sequence), sequence, hover:false, style,
                 pseudo:generated[2] === "before" ? "before" : generated[2] === "after" ? "after" : "placeholder", selector};
         }
+        const range = /^(.*?)::-webkit-slider-(thumb|runnable-track)(?::(hover|active))?$/.exec(selector);
+        if (range) {
+            const origin = range[1]!;
+            const sequence = parseUiSelectorSequence(!origin || /[\s>+~]$/.test(origin) ? origin + "*" : origin);
+            if (!sequence) return undefined;
+            return {kind:"sequence", primary:uiSelectorSequenceCss(sequence), sequence, style, selector,
+                range:range[2] === "thumb" ? "thumb" : "track", hover:range[3] === "hover", active:range[3] === "active"};
+        }
         const scrollbar = selector.match(/^(.*?)::-webkit-scrollbar(?:-(thumb|track|button|corner))?(:hover)?$/);
         if (scrollbar) {
             const owner = UiProjection.parseUiSelector(scrollbar[1]!, style);
             const part = scrollbar[2] ?? "scrollbar";
-            if (!owner || owner.pseudo || owner.scrollbar || uiStyleInteractionStateCount(owner) > 0 || !isUiScrollbarPart(part)) return undefined;
+            if (!owner || owner.pseudo || owner.range || owner.scrollbar || uiStyleInteractionStateCount(owner) > 0 || !isUiScrollbarPart(part)) return undefined;
             return { ...owner, scrollbar: part, hover: scrollbar[3] !== undefined, selector };
         }
         const state = /:(hover|active|focus-visible)$/i.exec(selector);
@@ -2654,7 +2670,7 @@ export class UiProjection {
             const owner = UiProjection.parseUiSelector(selector.slice(0, -state[0].length), style);
             const property = state[1]!.toLowerCase() === "focus-visible" ? "focusVisible" :
                 state[1]!.toLowerCase() === "active" ? "active" : "hover";
-            if (!owner || owner[property] || owner.scrollbar || owner.pseudo) return undefined;
+            if (!owner || owner[property] || owner.scrollbar || owner.range || owner.pseudo) return undefined;
             return { ...owner, [property]: true, selector };
         }
         const identifier = "[A-Za-z_][A-Za-z0-9_-]*";
@@ -4849,7 +4865,7 @@ export class UiProjection {
                         if (
                             (rule.kind === "class" || rule.kind === "id") &&
                             !uiStyleRuleNeedsRuntimeMatch(rule) &&
-                            !rule.scrollbar &&
+                            !rule.scrollbar && !rule.range &&
                             !rule.pseudo &&
                             !uiStyleRuleHasMedia(rule)
                         ) {
@@ -4872,8 +4888,8 @@ export class UiProjection {
                                     `, bbl::UiScrollbarPart::${uiScrollbarPartCpp(rule.scrollbar)}, ` +
                                     `${rule.focusVisible ? "true" : "false"}, ${rule.active ? "true" : "false"}, ` +
                                     `bbl::UiMotionPreference::${uiMotionPreferenceCpp(rule.reducedMotion)}` +
-                                    `${rule.sequence || rule.pseudo ? `, ${uiSelectorSequenceCpp(rule.sequence ?? [], value => this.context.cppString(value))}` : ""}` +
-                                    `${rule.pseudo ? `, bbl::UiGeneratedPart::${uiGeneratedPartCpp(rule.pseudo)}, ${uiGeneratedContentCpp(rule.content, value => this.context.cppString(value))}` : ""});`,
+                                    `${rule.sequence || rule.pseudo || rule.range ? `, ${uiSelectorSequenceCpp(rule.sequence ?? [], value => this.context.cppString(value))}` : ""}` +
+                                    `${rule.pseudo || rule.range ? `, bbl::UiGeneratedPart::${uiGeneratedPartCpp(rule.pseudo)}, ${uiGeneratedContentCpp(rule.content, value => this.context.cppString(value))}` : ""}${rule.range ? `, bbl::UiRangePart::${uiRangePartCpp(rule.range)}` : ""});`,
                             );
                         }
                     }
@@ -5174,10 +5190,13 @@ export class UiProjection {
             if (rule.scrollbar !== undefined && !isUiScrollbarPart(rule.scrollbar)) {
                 this.context.failAtFile("Native host UI rule has an unsupported scrollbar part.");
             }
+            if (rule.range !== undefined && (!isUiRangePart(rule.range) || rule.scrollbar !== undefined || rule.pseudo !== undefined))
+                this.context.failAtFile("Native host UI range rule requires an exclusive thumb or track target.");
             if (rule.pseudo !== undefined && (!isUiGeneratedPart(rule.pseudo) || rule.scrollbar !== undefined))
                 this.context.failAtFile("Native host UI generated content requires a before/after target without a scrollbar part.");
             const {style: declarations, content} = this.lowerUiRuleDeclarations(rule.style);
-            if (rule.pseudo) this.validateUiGeneratedStyle(declarations,rule.pseudo);
+            if (rule.range) this.validateUiPartStyle(declarations,"range");
+            if (rule.pseudo) this.validateUiPartStyle(declarations,rule.pseudo);
             if (content && rule.pseudo !== "before" && rule.pseudo !== "after") this.context.failAtFile("Native host UI content lists require a before/after target.");
             if (UiProjection.fractionalUiGridTracks(rule.style)) {
                 this.context.failAtFile("Fractional host grids require inline tracks beside their complete child list.");
@@ -5216,7 +5235,7 @@ export class UiProjection {
                     "Native host UI style maxWidth must be a positive finite number.",
                 );
             }
-            const selected = rule.pseudo ? UiProjection.parseUiSelector(uiStyleSelector(rule), declarations) : rule;
+            const selected = rule.pseudo || rule.range ? UiProjection.parseUiSelector(uiStyleSelector(rule), declarations) : rule;
             if (!selected) this.context.failAtFile("Native host UI pseudo-element has an unsupported originating selector.");
             const selectedSequence = selected.sequence ?? sequence;
             emitted.push(
@@ -5231,8 +5250,8 @@ export class UiProjection {
                     `, ${selected.focusVisible ? "true" : "false"}, ${selected.active ? "true" : "false"}, ` +
                     `bbl::UiScrollbarPart::${uiScrollbarPartCpp(rule.scrollbar)}, ` +
                     `bbl::UiMotionPreference::${uiMotionPreferenceCpp(rule.reducedMotion)}` +
-                    `${selectedSequence || rule.pseudo ? `, ${uiSelectorSequenceCpp(selectedSequence ?? [], value => this.context.cppString(value))}` : ""}` +
-                    `${rule.pseudo ? `, bbl::UiGeneratedPart::${uiGeneratedPartCpp(rule.pseudo)}, ${uiGeneratedContentCpp(content, value => this.context.cppString(value))}` : ""});`,
+                    `${selectedSequence || rule.pseudo || rule.range ? `, ${uiSelectorSequenceCpp(selectedSequence ?? [], value => this.context.cppString(value))}` : ""}` +
+                    `${rule.pseudo || rule.range ? `, bbl::UiGeneratedPart::${uiGeneratedPartCpp(rule.pseudo)}, ${uiGeneratedContentCpp(content, value => this.context.cppString(value))}` : ""}${rule.range ? `, bbl::UiRangePart::${uiRangePartCpp(rule.range)}` : ""});`,
             );
         }
 

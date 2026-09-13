@@ -82,6 +82,15 @@ export function uiScrollbarPartCpp(part: UiScrollbarPart | undefined): string {
     return part === undefined ? "None" : UI_SCROLLBAR_PARTS[part];
 }
 
+const UI_RANGE_PARTS = {thumb: "Thumb", track: "Track"} as const;
+export type UiRangePart = keyof typeof UI_RANGE_PARTS;
+export function isUiRangePart(value: unknown): value is UiRangePart {
+    return typeof value === "string" && Object.hasOwn(UI_RANGE_PARTS, value);
+}
+export function uiRangePartCpp(part: UiRangePart | undefined): string {
+    return part === undefined ? "None" : UI_RANGE_PARTS[part];
+}
+
 export interface UiStyleSelectorShape {
     kind: UiStyleSelectorKind;
     primary: string;
@@ -91,6 +100,7 @@ export interface UiStyleSelectorShape {
     focusVisible?: boolean;
     active?: boolean;
     scrollbar?: UiScrollbarPart;
+    range?: UiRangePart;
     pseudo?: UiGeneratedPart;
     /** Parsed compiler metadata; external host inputs supply the selector text. */
     sequence?: readonly UiSelectorStep[];
@@ -153,7 +163,8 @@ export function uiStyleSelectorCppKind(kind: UiStyleSelectorKind): string {
 
 export function uiStyleSelector(rule: UiStyleSelectorShape): string {
     const base = uiStyleSelectorDescriptor(rule.kind).css(rule) +
-        (rule.scrollbar ? `::-webkit-scrollbar${rule.scrollbar === "scrollbar" ? "" : `-${rule.scrollbar}`}` : "");
+        (rule.scrollbar ? `::-webkit-scrollbar${rule.scrollbar === "scrollbar" ? "" : `-${rule.scrollbar}`}` : "") +
+        (rule.range ? `::-webkit-slider-${rule.range === "thumb" ? "thumb" : "runnable-track"}` : "");
     return (
         base +
         (rule.hover ? ":hover" : "") +

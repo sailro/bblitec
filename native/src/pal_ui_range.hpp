@@ -21,7 +21,7 @@ namespace bbl::pal {
 // default light control palette. RmlUi still owns slider layout and input.
 class UiRangeDecorator final : public Rml::Decorator {
     struct Data {
-        std::tuple<int, int, float, int, bool> key{};
+        std::tuple<int, int, float, int, bool, bool> key{};
         float opacity = 0;
         Rml::CallbackTexture texture;
         Rml::Geometry geometry;
@@ -45,7 +45,7 @@ class UiRangeDecorator final : public Rml::Decorator {
         }
         return area / samples;
     }
-    static std::vector<Rml::byte> pixels(int width, int height, float thumb, int state, bool themed_track) {
+    static std::vector<Rml::byte> pixels(int width, int height, float thumb, int state, bool themed_track, bool themed_thumb) {
         const std::array<unsigned, 3> accent = state == 3 ? std::array<unsigned,3>{203,203,203}
             : state == 2 ? std::array<unsigned,3>{55,147,255} : state == 1 ? std::array<unsigned,3>{0,92,200} : std::array<unsigned,3>{0,117,255};
         const unsigned fill = state == 1 ? 229 : state == 2 ? 245 : 239;
@@ -65,7 +65,7 @@ class UiRangeDecorator final : public Rml::Decorator {
                 const float inner = coverage(x, y, 2, track_top + 1, width - 2.f, track_bottom - 1, 3);
                 over({border,border,border}, (outer - inner) * 128.f / 255.f);
             }
-            over(accent, coverage(x, y, thumb - 7.5f, center - 7.5f, thumb + 7.5f, center + 7.5f, 7.5f));
+            if (themed_thumb) over(accent, coverage(x, y, thumb - 7.5f, center - 7.5f, thumb + 7.5f, center + 7.5f, 7.5f));
             for (unsigned channel = 0; channel < 4; ++channel)
                 result[(static_cast<std::size_t>(y) * width + x) * 4 + channel] = static_cast<Rml::byte>(std::clamp(std::lround(color[channel]), 0l, 255l));
         }
@@ -83,6 +83,8 @@ public:
         for (int child = 0; child < element->GetNumChildren(true); ++child)
             if (element->GetChild(child)->GetTagName() == "sliderbar") { bar = element->GetChild(child); break; }
         if (!bar) return;
+        const bool themed_thumb = bar->GetProperty<int>("appearance") == 0;
+        if (!themed_track && !themed_thumb) return;
         const auto origin = element->GetAbsoluteOffset(Rml::BoxArea::Content);
         const auto size = element->GetBox().GetSize(Rml::BoxArea::Content);
         const int width = static_cast<int>(std::lround(size.x)), height = static_cast<int>(std::lround(size.y));
@@ -90,12 +92,12 @@ public:
         const float thumb = bar->GetAbsoluteOffset(Rml::BoxArea::Border).x - origin.x + bar->GetBox().GetSize(Rml::BoxArea::Border).x * .5f;
         const int state = element->IsPseudoClassSet("disabled") ? 3 : element->IsPseudoClassSet("active") ? 2 : element->IsPseudoClassSet("hover") ? 1 : 0;
         const float opacity = element->GetComputedValues().opacity();
-        const auto key = std::tuple{width, height, thumb, state, themed_track};
+        const auto key = std::tuple{width, height, thumb, state, themed_track, themed_thumb};
         const bool geometry_changed = !data.initialized || width != std::get<0>(data.key) ||
             height != std::get<1>(data.key) || opacity != data.opacity;
         auto& manager = element->GetContext()->GetRenderManager();
         if (!data.initialized || key != data.key) {
-            data.texture = manager.MakeCallbackTexture([bytes = pixels(width, height, thumb, state, themed_track), width, height](const Rml::CallbackTextureInterface& out) {
+            data.texture = manager.MakeCallbackTexture([bytes = pixels(width, height, thumb, state, themed_track, themed_thumb), width, height](const Rml::CallbackTextureInterface& out) {
                 return out.GenerateTexture(bytes, {width, height});
             });
         }

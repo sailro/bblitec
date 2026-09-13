@@ -879,7 +879,8 @@ void ui_add_style_rule(
     UiMotionPreference motion,
     std::vector<UiSelectorStep> sequence,
     UiGeneratedPart generated,
-    std::optional<UiGeneratedContent> content) {
+    std::optional<UiGeneratedContent> content,
+    UiRangePart range) {
     UiElementRecord& owner = ui_element(engine, stylesheet);
     if (owner.tag != "style") {
         throw std::runtime_error(
@@ -900,7 +901,7 @@ void ui_add_style_rule(
         focus_visible,
         active,
         scrollbar,
-        motion, std::move(sequence), generated, std::move(content)});
+        motion, std::move(sequence), generated, std::move(content), range});
     mark_ui_changed(engine, owner);
 }
 
@@ -919,7 +920,8 @@ void ui_add_host_style_rule(
     UiMotionPreference motion,
     std::vector<UiSelectorStep> sequence,
     UiGeneratedPart generated,
-    std::optional<UiGeneratedContent> content) {
+    std::optional<UiGeneratedContent> content,
+    UiRangePart range) {
     if (primary.empty() || (style.empty() && !content)) {
         throw std::runtime_error(
             "A native host UI style rule must have a target and declarations.");
@@ -935,7 +937,7 @@ void ui_add_host_style_rule(
         focus_visible,
         active,
         scrollbar,
-        motion, std::move(sequence), generated, std::move(content)});
+        motion, std::move(sequence), generated, std::move(content), range});
     ++engine.ui_style_revision;
     mark_ui_changed(engine);
 }
@@ -2101,7 +2103,7 @@ bool ui_style_rule_matches(
     const Engine& engine,
     UiElementHandle handle,
     const UiStyleRule& rule) {
-    if (rule.scrollbar != UiScrollbarPart::None) return false;
+    if (rule.scrollbar != UiScrollbarPart::None || rule.range != UiRangePart::None) return false;
     if (handle.value >= engine.ui_elements.size()) return false;
     const UiElementRecord& record = handle_at(engine.ui_elements, handle);
     switch (rule.selector) {
@@ -2189,6 +2191,8 @@ std::string ui_style_rule_selector(const UiStyleRule& rule) {
     }
     const std::string states = std::string(rule.hover ? ":hover" : "") +
         (rule.focus_visible ? ":focus-visible" : "") + (rule.active ? ":active" : "");
+    if (rule.range != UiRangePart::None) return selector + ":where(input[type=range]) > " +
+        (rule.range == UiRangePart::Thumb ? "sliderbar" : "slidertrack") + states;
     if (rule.generated != UiGeneratedPart::None) return selector + states +
         (rule.generated == UiGeneratedPart::Before ? "::before" : rule.generated == UiGeneratedPart::After ? "::after" : "::placeholder");
     if (rule.scrollbar == UiScrollbarPart::None) return selector + states;
@@ -3833,7 +3837,7 @@ struct UiRmlRuntime {
         std::size_t source_order = 0;
         for_each_active_style_rule([&](const UiStyleRule& rule) {
             const std::size_t rule_order = source_order++;
-            if (rule.generated != UiGeneratedPart::None) return;
+            if (rule.generated != UiGeneratedPart::None || rule.range != UiRangePart::None) return;
             const bool hovered =
                 handle.value < projected_elements.size() &&
                 handle_at(projected_elements, handle).element &&

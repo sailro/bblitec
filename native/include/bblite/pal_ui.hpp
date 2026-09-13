@@ -117,7 +117,8 @@ void ui_add_style_rule(
     UiMotionPreference motion = UiMotionPreference::Any,
     std::vector<UiSelectorStep> sequence = {},
     UiGeneratedPart generated = UiGeneratedPart::None,
-    std::optional<UiGeneratedContent> content = std::nullopt);
+    std::optional<UiGeneratedContent> content = std::nullopt,
+    UiRangePart range = UiRangePart::None);
 void ui_add_host_style_rule(
     Engine& engine,
     UiStyleSelectorKind selector,
@@ -133,7 +134,8 @@ void ui_add_host_style_rule(
     UiMotionPreference motion = UiMotionPreference::Any,
     std::vector<UiSelectorStep> sequence = {},
     UiGeneratedPart generated = UiGeneratedPart::None,
-    std::optional<UiGeneratedContent> content = std::nullopt);
+    std::optional<UiGeneratedContent> content = std::nullopt,
+    UiRangePart range = UiRangePart::None);
 js::Array<UiElementHandle> ui_query_class(
     Engine& engine,
     UiElementHandle root,

@@ -1,0 +1,73 @@
+--- a/Source/Core/Elements/WidgetSlider.cpp
++++ b/Source/Core/Elements/WidgetSlider.cpp
+@@ -218,6 +218,7 @@
+ void WidgetSlider::FormatElements(const Vector2f containing_block, float slider_length)
+ {
+ 	int length_axis = orientation == VERTICAL ? 1 : 0;
++	const bool input_range = orientation == HORIZONTAL && parent->GetTagName() == "input";
+ 
+ 	// Build the box for the containing slider element.
+ 	Box parent_box;
+@@ -240,6 +241,19 @@
+ 	if (orientation == HORIZONTAL && content.y < 0)
+ 		content.y = parent_box.GetSize().y;
+ 
++	// A horizontal input's anonymous track is centered in its content box.
++	// An auto track takes the thumb's margin-box height; explicit track heights
++	// retain their own size. Other slider owners keep their existing geometry.
++	if (input_range && track->GetComputedValues().height().type == Style::Height::Auto)
++	{
++		Box thumb_box;
++		ElementUtilities::BuildBox(thumb_box, parent_box.GetSize(), bar);
++		Vector2f thumb_content = thumb_box.GetSize();
++		if (thumb_content.y < 0) thumb_content.y = parent_box.GetSize().y;
++		thumb_box.SetContent(thumb_content);
++		content.y = Math::Max(0.f, thumb_box.GetSize(BoxArea::Margin).y);
++	}
++
+ 	// Now we size the arrows.
+ 	for (int i = 0; i < 2; i++)
+ 	{
+@@ -284,6 +298,7 @@
+ 		offset.x += arrows[0]->GetBox().GetSize(BoxArea::Border).x + arrows[0]->GetBox().GetEdge(BoxArea::Margin, BoxEdge::Right) +
+ 			track->GetBox().GetEdge(BoxArea::Margin, BoxEdge::Left);
+ 		offset.y = track->GetBox().GetEdge(BoxArea::Margin, BoxEdge::Top);
++		if (input_range) offset.y += .5f * (parent_box.GetSize().y - track->GetBox().GetSize(BoxArea::Margin).y);
+ 		track->SetOffset(offset, parent);
+ 
+ 		offset.x += track->GetBox().GetSize(BoxArea::Border).x + track->GetBox().GetEdge(BoxArea::Margin, BoxEdge::Right) +
+@@ -561,7 +576,8 @@
+ 		const float traversable_track_length = track_dimensions.x - bar_dimensions.x - edge_left - edge_right;
+ 		const Vector2f offset = {
+ 			track->GetRelativeOffset().x + edge_left + traversable_track_length * bar_position,
+-			bar->GetBox().GetEdge(BoxArea::Margin, BoxEdge::Top),
++			bar->GetBox().GetEdge(BoxArea::Margin, BoxEdge::Top) +
++				(parent->GetTagName() == "input" ? track->GetRelativeOffset().y : 0.f),
+ 		};
+ 		bar->SetOffset(offset.Round(), parent);
+ 	}
+--- a/Source/Core/Elements/InputTypeRange.h
++++ b/Source/Core/Elements/InputTypeRange.h
+@@ -24,6 +24,7 @@
+ 
+ 	/// Called every time the host element's size changes.
+ 	void OnResize() override;
++	void OnLayout() override;
+ 
+ 	/// Checks for necessary functional changes in the control as a result of changed attributes.
+ 	/// @param[in] changed_attributes The list of changed attributes.
+--- a/Source/Core/Elements/InputTypeRange.cpp
++++ b/Source/Core/Elements/InputTypeRange.cpp
+@@ -28,6 +28,12 @@
+ 
+ void InputTypeRange::OnResize()
+ {
++	widget->FormatElements();
++}
++
++void InputTypeRange::OnLayout()
++{
++	// Part styles may change while the input's own dimensions stay fixed.
+ 	widget->FormatElements();
+ }
+ 

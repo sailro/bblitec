@@ -12,6 +12,7 @@ import {isUiGeneratedPart} from "./ui-generated-content.js";
 import {
     isUiStyleSelectorKind,
     isUiScrollbarPart,
+    isUiRangePart,
     nativeHostUiStyleRules,
     type NativeHostUiStyleRule,
 } from "./ui-style-rule.js";
@@ -184,6 +185,8 @@ export function readNativeHostUi(path: string): NativeHostUi {
         if (item.scrollbar !== undefined && !isUiScrollbarPart(item.scrollbar)) {
             throw new Error(`${location}.scrollbar must name a supported scrollbar part.`);
         }
+        if (item.range !== undefined && !isUiRangePart(item.range))
+            throw new Error(`${location}.range must name a thumb or track.`);
         if (item.pseudo !== undefined && !isUiGeneratedPart(item.pseudo))
             throw new Error(`${location}.pseudo must be before, after or placeholder.`);
         if (item.maxWidth !== undefined && typeof item.maxWidth !== "number") {
@@ -204,6 +207,7 @@ export function readNativeHostUi(path: string): NativeHostUi {
             ...(item.focusVisible !== undefined ? { focusVisible: item.focusVisible } : {}),
             ...(item.active !== undefined ? { active: item.active } : {}),
             ...(item.reducedMotion !== undefined ? { reducedMotion: item.reducedMotion } : {}),
+            ...(item.range !== undefined ? {range:item.range} : {}),
             ...(item.scrollbar !== undefined ? { scrollbar: item.scrollbar } : {}),
             ...(item.pseudo !== undefined ? { pseudo: item.pseudo } : {}),
             ...(item.maxWidth !== undefined
