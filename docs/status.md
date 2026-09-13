@@ -1,17 +1,13 @@
 # Current status
 
 Published full-image / foreground MAD against pinned browser references.
-Poses and gates live in `src/scene-registry.ts`; `npm run status:verify` checks
-these rows against available reports. Values do not certify an unvalidated
-working tree. Interpretation belongs in [fidelity](fidelity.md#what-is-measured-the-full-page).
+Registry poses/gates and repeatability exceptions remain authoritative.
+Values describe saved reports, not the current working tree. Verify with `npm run status:verify`.
 
 ## Curated parity scenes
 
-Pinned numbered scenes. A coverage cell leads with the registry name; commentary follows a
-semicolon. Plain cells are below 0.5; a row with any value at or above 0.5 is coloured per
-value (green below 0.5, yellow at or above 0.5, red at or above 1). Scene-specific registry
-gates remain authoritative. Rows named in the wobble allowlist of `src/scene-neutrality.ts`
-keep their published value while the newest report lies inside the recorded band.
+Numbered scene coverage starts with its registry name. Colors: below 0.5 green,
+0.5–1 yellow, 1+ red. Repeatability-exempt rows retain their published values.
 
 | Scene | Preview | SDL_GPU | Dawn | Coverage |
 | ---: | :---: | ---: | ---: | --- |
@@ -301,7 +297,7 @@ Repository fixtures running against pinned Babylon Lite. These measure contracts
 | nav-crowd | <img src="images/scenes/regression-nav-crowd.png" alt="Navigation crowd step rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Navigation Crowd Step |
 | nav-obstacles | <img src="images/scenes/regression-nav-obstacles.png" alt="Navigation obstacle removal rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Navigation Obstacle Removal |
 | mesh-flags | <img src="images/scenes/regression-mesh-flags.png" alt="Mesh visible and pickable rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Mesh Visible and Pickable |
-| physics-aggregate-options | <img src="images/scenes/regression-physics-aggregate-options.png" alt="Physics aggregate options rendering" width="160"> | 0.047 / 0.074 | 0.047 / 0.074 | Physics Aggregate Options; 0.053 / 0.083 before the physics family gates: with the constraints family compiled out the cylinder's landing moves by a float ulp, deterministic on both backends |
+| physics-aggregate-options | <img src="images/scenes/regression-physics-aggregate-options.png" alt="Physics aggregate options rendering" width="160"> | 0.047 / 0.074 | 0.047 / 0.074 | Physics Aggregate Options |
 | physics-floating-origin | <img src="images/scenes/regression-physics-floating-origin.png" alt="Physics floating origin rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Physics Floating Origin Regions |
 | material-falloff | <img src="images/scenes/regression-material-falloff.png" alt="Material falloff write rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Material Falloff Write |
 | compiler-state | <img src="images/scenes/regression-compiler-state.png" alt="Compiler state rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Compiler State |

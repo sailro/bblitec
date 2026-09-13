@@ -3,124 +3,65 @@
 ## Pipeline
 
 ```text
-TypeScript entry + reached modules
-  -> resolved symbols and bounded typed values
-  -> asset materialization and pinned composition
-  -> AST lowerers and generated adapters
-  -> C++20 + WGSL + assets + provenance
-  -> SDL3 platform services + SDL_GPU or Dawn
+TypeScript + reached modules → typed lowering + asset/shader composition
+→ C++20 + WGSL + assets + provenance → SDL3 + SDL_GPU/Dawn
 ```
 
-The pin is defined by `upstream/babylon-lite.json`.
-`upstream-source.ts` reconstructs TypeScript from package source maps;
-`pinned-wgsl-build.ts` applies the package shader transform.
+The source pin is [upstream/babylon-lite.json](../upstream/babylon-lite.json).
+`upstream-source.ts` reads package source maps; `pinned-wgsl-build.ts` applies the shader transform.
 
 ## Ownership
 
-| Layer | Owns | Source |
+| Layer | Source | Responsibility |
 | --- | --- | --- |
-| Entry compiler | User-code semantics, typed values, reach and main emission | `src/compiler.ts`, `src/compiler/` |
-| Pipeline | Assets, composition and output | `src/cli.ts`, `compose-pipeline.ts`, `upstream-lower.ts` |
-| Pinned execution | Actual producers/loaders/composers with recording seams | `src/pinned-*.ts`, `executed-module-assets.ts` |
-| Lowerers | Pinned AST translation and structural contracts | `src/lowering/` |
-| Runtime data | Handles, JS identities, scene state, scheduling | `native/include/bblite/` |
-| Shared PAL | OS services and backend-neutral transport | `native/src/pal*.hpp` |
-| GPU PALs | Device resources, bindings, encoding, presentation | `pal_sdl_gpu*`, `pal_dawn*` |
-| Subsystem PALs | Library adaptation | UI, audio, physics and navigation PALs |
+| Entry compiler | `src/compiler.ts`, `src/compiler/` | TypeScript semantics, reach, storage, entry emission |
+| Pipeline | `cli.ts`, `compose-pipeline.ts`, `upstream-lower.ts` | Composition, assets, output |
+| Pinned execution | `pinned-*.ts`, `executed-module-assets.ts` | Source producers and recording adapters |
+| Lowerers | `src/lowering/` | Pinned AST translation |
+| Runtime | `native/include/bblite/` | Handles, JS identities, scene state, scheduling |
+| Shared PAL | `native/src/pal*.hpp` | Platform services and transport |
+| GPU PALs | `pal_sdl_gpu*`, `pal_dawn*` | Resources, bindings, encoding, presentation |
+| Subsystem PALs | UI, audio, physics, navigation | Library adaptation |
 
-Generate Babylon semantics; handwrite platform/library adaptation. Structural
-transcriptions still need explicit source contracts. A C++ string emitter is
-not proof of AST translation. [Fidelity](fidelity.md) owns adaptations and the
-generated evidence inventory.
+Babylon behavior comes from pinned source; PAL owns platform adaptation.
+Semantic substitutions are listed in [fidelity](fidelity.md).
 
 ## Compiler architecture
 
-`compiler/program.ts` owns the TypeScript program; `symbols.ts` resolves
-intrinsics. Expression/statement/assignment/property modules dispatch constructs.
-Static evaluation folds proven values; `intrinsics/` separates API families.
-`lowering-services.ts` declares shared compiler operations; each module selects the members it uses.
-`ui-projection.ts` owns retained UI, HTML/CSS projection and host companions;
-`platform-calls.ts` lowers DOM calls, timers and event registration.
+| Module | Responsibility |
+| --- | --- |
+| `program.ts`, `symbols.ts` | TypeScript program and intrinsic resolution |
+| Expressions, statements, assignments, `intrinsics/` | Source lowering |
+| `data-types.ts`, `data-lowering.ts`, `values/` | Storage types, typed sinks, value metadata |
+| `native-functions.ts`, `user-functions.ts`, `classes.ts` | Native functions, specialization, classes |
+| `module-initializers.ts` | Ordered initialization and shared mutable bindings |
+| `emission-transaction.ts` | Rollback on declined or failed lowering |
+| `analysis-walk.ts`, `lowering-services.ts` | Shared traversal, scope and compiler interface |
+| `ui-projection.ts`, `platform-calls.ts` | Retained UI and platform calls |
 
-`emission-transaction.ts` commits successful probes and restores compiler state
-on decline or exception. Collection journals preserve aliases and iteration
-order; AST nodes, checker objects and compile options remain shared inputs.
-
-`analysis-walk.ts` shares traversal boundaries and branch-local state across
-mutation, capture, reach and control-flow queries. Binding identity uses symbols.
-
-Closure environments contain referenced native bindings. Deferred entry parts
-share invocation-owned storage for locals read after a yield; other locals stay
-automatic. Direct recursive groups use automatic callables, while escaping
-groups retain traced callback storage.
-
-`data-types.ts` defines storage; `data-lowering.ts` handles typed sinks.
-`values/` selects metadata payloads by value kind. `native-functions.ts` emits
-data functions; `user-functions.ts` specializes resource helpers by arguments,
-receiver and lexical dependencies. Dedicated modules own classes, module
-initialization, closures and collections.
-Dynamic record and tuple views intern equivalent getter definitions through the
-same native-function registry while retaining separate traced capture environments.
-Module initialization planning summarizes eager mutations once per module,
-tracking alias origins and called bodies, then intersects those facts with
-observed storage as dependency reach grows.
-When a reached record assignment requires dynamic storage, the compiler records
-that source binding and replays emission against the same parsed frontend. The
-demand set only grows; initializers and earlier aliases then share the selected
-representation. Each replay rebuilds compiler-owned emission state; unrelated
-refusals retain their existing typed fallback paths.
-Materialized immutable numeric bindings retain proven constant results on their
-stored values, so later imports do not need to re-evaluate their initializers.
-
-Definite generation-dependent helper calls replay compiler metadata and intern
-equivalent native definitions using explicit local bindings. Each call retains
-its own capture tuple and resource identities. Failed shared-return probes roll
-back before inline lowering. Array-return storage follows fresh allocation or
-proven static-table lifetime; other escapes use owning storage.
-
-Use `lowerPinnedFunction` for whole functions and `lowerPinnedBody` for selected
-statement sequences. Storage initializers and specialized guards retain source
-contracts; numeric lowering, vector bindings and header framing are shared.
-Numeric bodies, UBO writers and glTF interpolation share arithmetic rendering
-with explicit literal, remainder and parenthesis policies.
-Custom WGSL uses typed IR/parser or strict reflected-source
-contracts. Extend those boundaries before adding text recognizers.
+Dynamic storage demands replay emission against the same parsed program. Earlier aliases and
+initializers use the selected representation. Equivalent definitions share code; invocations retain
+distinct captures and resource identities. Pinned functions use `lowerPinnedFunction`; selected bodies
+use `lowerPinnedBody`. WGSL uses typed IR or explicit reflected-source contracts.
 
 ## Scene orchestration
 
-`scene-command.ts` resolves IDs/paths through the registry. Registry data owns
-poses, thresholds and diagnostics. Generated default task graphs belong to shared
-scene identity and materialize once per enabled scene. Dedicated scene/sprite/
-effect/frame-graph drivers run contexts in registration order.
-
-Property and glTF animation have separate generated runtimes with shared scene
-seeking. Loaders retain local deformation data and required world bounds.
-Generated composition selects mesh-feature variants; PALs transport their bytes.
+`scene-command.ts` resolves registry IDs and paths. The registry owns poses, thresholds and diagnostics.
+Scene, sprite, effect and frame-graph drivers run registered contexts in order. Default task graphs
+belong to scene identity. Property and glTF animation retain separate playback contracts.
 
 ## Runtime and memory
 
-Typed handles index engine records. RAII owns local values; `bbl::js::Ref<T>`
-and shared container storage preserve JS identities. Non-atomic JS references
-stay on their owning frame/realm thread. Resolve handles again after operations
-that can grow backing storage; do not retain invalidated vector references.
-
-Managed records, containers and explicit callback environments expose ownership
-edges to cycle collection at frame boundaries and scope teardown. Acyclic values
-release immediately. Opaque native owners remain conservative roots. Structural
-mutation must preserve or refuse outstanding aliases.
-
-Physics worlds, navigation plugins/crowds and audio sessions own resources
-independently. Audio data can outlive retired graph membership. Borrowed events
-exist for one dispatch; retained state must copy owned values. GPU lifetimes
-follow each backend's in-flight ownership rules. Worker realms and offscreen
-surfaces are described in [backends](backends.md#workers-and-offscreen-surfaces).
+- Handles index engine records; resolve them again after storage growth.
+- RAII owns locals. Shared containers and `bbl::js::Ref<T>` preserve JS identity.
+- Closures retain referenced cells; suspended calls own their live locals.
+- Traced records, containers and callbacks participate in cycle collection at frame boundaries and teardown.
+- Non-atomic JS references stay on their owning realm. Borrowed events last one dispatch.
+- Physics, navigation and audio owners are independent of renderer lifetime.
+- GPU resources remain alive through their in-flight submissions.
 
 ## Renderer
 
-Generated tables and writers determine layouts, uniforms and fixed-function
-state. GPU objects stay in their backend; shared transport contains no foreign
-API handles. Scene and standalone renderers share frame orchestration through
-`pal_frame_conductor.hpp`; each backend selects its surface-acquisition phase.
-The OS window survives renderer rebuilds. Live topology/uploads
-must preserve in-flight resources; synchronization is specific to the affected
-path, not a universal GPU-idle rule. See [backends](backends.md).
+Generated tables own layouts, uniforms and fixed-function state. `pal_frame_conductor.hpp` shares frame
+phases; GPU objects and acquisition order remain backend-specific. The OS window survives renderer
+rebuilds. See [backends](backends.md), including [worker ownership](backends.md#workers-and-offscreen-surfaces).

@@ -1,142 +1,94 @@
 # Diagnosing a scene
 
-Locate rendering differences with source and captured data. A small MAD alone
-does not explain a residual. Keep corpus inputs and goldens unchanged.
-
-Set `BBLITE_CHECKED_HANDLES=1` before a scene build to check native record
-indices. Invalid handles report the index, record count and C++ source location.
-Direct CMake builds use `-DBBLITE_CHECKED_HANDLES=ON`; the default is off.
+Preserve corpus inputs, goldens and thresholds. Match source/module hashes, query, pose, UI and
+[build identity](development.md#build-identity). Backend agreement does not exclude shared defects.
 
 ## The ladder
 
-Commands follow `npm run scene --`; `diagnose <id>` combines differential
-parity, paired captures and asset composition.
+Commands follow `npm run scene --`. `diagnose <id>` combines parity, captures and composition.
 
-| Need | Command |
+| Command | Purpose |
 | --- | --- |
-| Check both renderers and payload | `parity <id> --differential` |
-| Attribute scene draws and triangle clusters | `parity <id> --attribute [--differential]` |
-| Compare draws, uniforms, palettes, shaders | `diff <id> [--backend dawn]` |
-| Record browser uploads/draws | `capture <id>` |
-| Decode candidate uniform layouts | `uniforms <id> --size N [--module <substring>]` |
-| Compare attachments | `geometry <id>` |
-| Inspect asset material variants | `compose <id\|all>` |
-| Measure repeatability | `stability <id> --backend dawn --runs N` |
-| Check sustained memory | `memory <id\|all> --replay-file <tape>` |
-| Isolate ground/background | `parity <id> --without ground\|background` |
-| Measure image bounds/color | `measure <png> [--background r,g,b]` |
+| parity <id> --differential | Both backends/reference |
+| parity <id> --attribute [--differential] | Instrumented draw/triangle attribution |
+| diff <id> [--backend dawn] | Draws, uniforms, palettes, shaders |
+| capture <id> | Browser uploads/draws |
+| uniforms <id> --size N [--module text] | Candidate uniform layouts |
+| geometry <id> / compose <id\|all> | Attachments / asset variants |
+| stability <id> --backend dawn --runs N | Repeatability |
+| memory <id\|all> --replay-file <tape> | Sustained memory |
+| parity <id> --without ground\|background | Diagnostic isolation |
+| measure <png> [--background r,g,b] | Image bounds/color |
 
-`diff` refreshes missing/stale captures; `--recapture` forces refresh. Match
-source, module, query, pose, UI and [build identity](development.md#build-identity).
-`--seek <t>` requires an intentional reference recapture (`--recapture-reference`)
-for gated comparisons.
-`--no-fail`, suppressed features and changed poses are diagnostic-only.
-`--differential` accepts `--gpu-debug` and `--attribute` alongside it.
-`--attribute` builds an instrumented scene-renderer twin, copies its reference
-and writes separate reports under `artifacts/parity-attribution/<id>/`.
-
-If both backends differ alike, inspect shared inputs/behavior. Otherwise inspect
-translation, uploads, slots and backend state. Repeat browser captures too.
-`stability --single-sample` isolates MSAA variation; comparison with an MSAA
-golden is not an integration gate. Change the neutrality allowlist only with
-repeated measurements and a cause.
+Diff refreshes stale captures; --recapture forces refresh. Changed seek poses need explicit reference
+recapture. --no-fail, suppressed features and single-sample comparisons against MSAA goldens are diagnostic.
+Shared residuals point to common inputs/behavior; backend-specific residuals to translation or transport.
 
 ## Captured state and its limits
 
-`diff` matches values through captured WGSL/generated layouts; matching values
-do not establish draw/binding identity. Standard native captures reconstruct CPU
-blocks rather than intercept GPU uploads. Effective main-draw worlds include
-late root transforms; other passes need their own observations. The palette
-summary covers two matrices; use the full deformation dump for more.
+| Evidence | Boundary |
+| --- | --- |
+| Ordinary native captures | Reconstructed CPU blocks, not intercepted GPU uploads |
+| Browser capture | Shaders, buffers, textures, bundles and draws |
+| SDL .slots | Compiled bindings after dead declarations disappear |
+| compose | Asset materials; excludes scene-created materials/later writes |
+| textGpu | Writes joined to draws; pushedUniformBytes are actual SDL inputs |
+| nodeGpu | Opt-in upload/attribute/per-view/uniform receipts; bytes outside writtenRanges lack evidence |
+| retainedDataFile | CPU splat bytes, not texture uploads |
+| Palette summary | Two matrices; full dumps needed for wider deformation |
 
-`capture` records browser shaders, buffers, textures, bundles and draws.
-`--skip-draw <indexCount>` filters draws; `--seek-bracket` captures neighboring
-poses. Inspect generated shader `.slots` for SDL bindings: Tint can remove
-unused WGSL declarations. Asset-only `compose` does not validate scene-created
-materials or later setters.
-
-Text `textGpu` receipts join writes to draws. SDL `pushedUniformBytes` are actual
-draw inputs; `uniform-shadow` is CPU storage. Enable `BBLITE_NODE_GPU_CAPTURE=1`
-with `BBLITE_RENDER_CAPTURE` for node vertex/index uploads, attributes, per-view
-bindings and uniform uploads/pushes. These captures can be large. SDL group ID
-zero means no native bind-group object. Bytes outside `writtenRanges` are
-unobserved.
-
-`scene -- check scene149-transport` joins the native `nodeGpu` receipts of one
-canonical frame against the saved browser identity observation and instrumented
-buffer capture under `artifacts/scene149-reference`, checking attributes, indices,
-texture sharing and bindings. It rejects stale stamps and numerical world
-differences; signed-zero differences are reported separately. Retained splat
-`retainedDataFile` sidecars contain CPU bytes, not texture uploads.
-
-`probe-variants <id> --shader <stem> --term <text> --with <text>` temporarily
-changes/restores deployed Dawn WGSL. Turn useful results into source fixes.
-SDL probes need offline shader compilation.
+Enable BBLITE_NODE_GPU_CAPTURE with BBLITE_RENDER_CAPTURE for node receipts. Scene149-transport joins
+those receipts to browser buffers and checks stamps, bindings and numeric worlds; signed zero is separate.
+Probe-variants temporarily changes/restores deployed Dawn WGSL; SDL changes need offline compilation.
+Set BBLITE_CHECKED_HANDLES=1 before building (CMake: BBLITE_CHECKED_HANDLES=ON) for checked indices.
 
 ## Before calling a scene done
 
-Run [checkpoint validation](development.md#validation), then the scene's declared
-interaction check on both backends:
+Run [validation](development.md#validation), then declared interaction checks on both backends:
 
 ```powershell
-npm run scene -- observe <check-id>   # when the check declares a browser observation
+npm run scene -- observe <check-id>
 npm run scene -- check <check-id> [--backend sdl_gpu|dawn] [--phase <id>] [--keep]
 ```
 
-A check is `checks/<check-id>.json`: the native phases (frame window, input tape,
-environment), a typed expectation vocabulary (`capture-path`, `capture-same`,
-`capture-differs`, `capture-compare`, `camera-delta`, `image-mad`, `viewport`,
-`golden-mad`, `backends-agree`, `log-match`, `plugin`) and the browser observation
-the expectations compare against; `checks/plugins/*.mjs` hold scene-specific
-arithmetic. The driver spreads the registry `nativeEnvironment` before the phase
-window, so a check measures at parity's pose unless it declares another clock. A
-check declaring `twin: true` first generates and builds the byte-identical no-query
-copy into `generated/<id>-live` and `native/build-<id>-live-release`. Outputs land
-in `artifacts/check/<check-id>/` (`report.json`, per-phase
-`<backend>-<phase>.{png,json,log}`, `browser/observations.json`). Check significant
-state numerically when a missing small object or changed buffer could pass an image gate.
+Checks live in checks/<id>.json; plugins hold scene-specific arithmetic. Phases define frames/input/env;
+expectations compare captures, state, images and logs. A twin builds the unchanged no-query source.
+Results are in artifacts/check/<id>/. Use numeric checks where small missing objects could pass image gates.
 
-| Control | Check |
+| Area | Check IDs |
 | --- | --- |
-| Morph/skeleton picking | `scene114`: four markers against the browser picks; idle holds. `test/fixtures/morph-picking-standard.ts` covers immediate update/pick. |
-| Splat updates | `scene121`: the retained buffer through idle and orbit against the browser digest and the source's raw SPLAT asset. |
-| TAA | `scene261` (frozen words against the browser), `scene261-live` (twin: reset, recovery, resize). |
-| Text | `scene275`: native text GPU receipts against the browser's WebGPU receipts; idle, input, resize. |
-| Node geometry | `scene149`: orbit/resize against the browser observation (a live browser resize throws Babylon error #84, so the resized comparison is an unchanged-module startup at 960x600); `scene149-transport` for the GPU receipts. |
-| Local cubemaps | `scene186`: camera, idle and resize captures; eight faces and four reflective ORM replacements. |
-| Live text | `scene181` (edit/clear/regrow, textarea/window resize, orbit, zoom) and `scene180` (weight, colour, rotation, opacity, drag, scale, resizes); glyph/palette receipts against the browser. |
-| Shared-engine canvases | `scene227`, `scene228`: left/right drags, divider crossing, idle isolation, geometry after resize. |
-| Worker windows | `offscreen`: held presses, worker progress, resize; `offscreen-cadence` measures Window/Worker rates in a headed browser without correcting runtime speed. |
-| Physics timing | `break-meshes-60`, `break-meshes-240`, `break-meshes-live`: fixed overrides and live timing (headed browser). |
-| Heightfields | `scene47` (twin): free-fall, terrain contact, live viewer poses, unhandled input, resize. |
-| Constraints | `scene46` (twin): seven groups, pivot/axis/limit state, unhandled input, resize. |
-| Debug viewer / queries | `scene41` (twin): seven retained overlays, clone geometry, fixed camera; `scene49` (twin): Havok proximity/cast markers, gizmo drags, orbit, resize. |
-| Animation manager / emitter | `scene153`, `scene153-live`, `scene302`, `scene302-live`: frozen registry tree against the live twin; `scene231`, `scene241`: palette/texture animation and orbit. |
-| Device recovery | `scene164`: dataset handshake, resize, input, dispose; the recovery tape (`Dataset@key=value`, `GlobalCall@name`, `DeviceLoss`). |
-| KHR_interactivity | `calculator`, `scene304`: press control, "7" then "x" taps at the golden pose; display digits and dispatched nodes by name. |
-| Split-screen surfaces | `antigravity-racer`: the menu's two-player selection; the run-time second canvas has no layout rectangle, so both equal panes must present. |
+| Picking / splats | scene114 / scene121 |
+| TAA | scene261, scene261-live |
+| Text / live text | scene275 / scene180, scene181 |
+| Node geometry / GPU transport | scene149 / scene149-transport |
+| Local cubemaps | scene186 |
+| Shared canvases | scene227, scene228, antigravity-racer |
+| Workers / repaint rates | offscreen, offscreen-cadence |
+| Physics timing | break-meshes-60, break-meshes-240, break-meshes-live |
+| Heightfields / constraints | scene47 / scene46 |
+| Viewer / queries | scene41 / scene49 |
+| Animation / emitters | scene153, scene153-live, scene302, scene302-live, scene231, scene241 |
+| Recovery | scene164 |
+| Interactivity | calculator, scene304 |
 
-Tape spellings: `-` is an idle frame (`UiIdle@0:0` is the retained-UI spelling of the
-same); `UiWheelUp|UiWheelDown` queue SDL wheel packets at the canvas centre and
-`WheelUp|WheelDown` dispatch a browser-sized notch (`native/src/pal_platform_events.hpp`);
-`"<entry>*<n>"` repeats an entry in a check file.
+Scene149 browser live resize throws error #84; its resized reference uses unchanged-module startup at
+960x600. Input tape `-`/UiIdle@0:0 is idle; UiWheelUp/Down uses SDL packets, WheelUp/Down a browser notch.
+`<entry>*<n>` repeats entries. Recovery tapes include Dataset, GlobalCall and DeviceLoss.
 
-`memory` defaults to 6,000 frames and 32 MB post-warm-up growth; `all` selects
-applications. Override with `--frames`, `--max-growth-mb`, `--backend` and one
-replay source. Missing samples fail as unmeasured; scene-less loops lack samples.
-Working-set stability does not establish object/GPU resource reclamation.
-The report includes live GC nodes and allocations after warm-up; these counts do not affect the working-set gate.
+Memory defaults: 6,000 frames, 32 MB growth after warm-up; all selects applications. Missing samples
+fail. Working-set stability does not prove object/GPU reclamation. GC node/allocation counts are additional data.
 
 ## Artifacts
 
 | Directory | Contents |
 | --- | --- |
-| `artifacts/parity/<id>/` | Backend/differential reports, images, diffs, hotspots, geometry/stability outputs |
-| `artifacts/parity-canvas/` | UI-free attribution |
-| `artifacts/capture/<id>/` | Browser/native captures, byte sidecars, shaders, metadata, diff/compose reports |
-| `artifacts/memory/` | Verdicts, samples and raw traces |
+| artifacts/parity/<id>/ | Backend reports/images/diffs, geometry, stability |
+| artifacts/parity-attribution/<id>/ | Instrumented attribution |
+| artifacts/parity-canvas/ | UI-free attribution |
+| artifacts/capture/<id>/ | Captures, bytes, shaders, diff/composition |
+| artifacts/memory/ | Verdicts, samples, traces |
 
-Artifact suffix `gpu` means SDL_GPU; CLI values are `sdl_gpu|dawn`.
+Artifact suffix gpu means SDL_GPU; CLI values are sdl_gpu/dawn.
 
 ## Runtime switches
 
