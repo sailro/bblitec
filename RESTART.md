@@ -26,7 +26,7 @@ broader regression checks at useful batch boundaries. Unknown requirements stay
 visible; do not invent an overall completion percentage from static counts.
 
 **The external application does not fully compile yet.** Native graphics availability now opens the intended startup branch; generation
-stops on conditional asynchronous composition. Its native build and intended
+stops on newly reached retained CSS visibility. Its native build and intended
 application runtime have never been reached. A green sweep validates the registered corpus;
 it does not establish that this external application compiles or runs.
 
@@ -36,7 +36,7 @@ it does not establish that this external application compiles or runs.
 | Branch | `codex/external-project-support` |
 | Remote | `https://github.com/sailro/bblitec.git` |
 | Branch base used in this session | `3474e835` on `main` |
-| Latest executable-code/test unit | Native graphics availability; prior savepoints `613d52b6` (image/promise startup readiness), `8af15082` (asynchronous startup), `f699ad6b` (promise cleanup), `059bfbca` (generic/nested/defaulted destructuring), `bdce7a97` (captured lexical initialization), `bc21486a` (scheduled audio events), `95b04043` (async control flow), `e5ea2607` (async collections), `24281f2c` (promise caches/reactions), `53ba4164` (recursive async and hardened validation) and `f5cd2061` (AudioBuffer surface) |
+| Latest executable-code/test unit | Owned asynchronous methods and lazy promise conditionals; prior savepoints `0bdfc5b1` (native graphics availability), `613d52b6` (image/promise startup readiness), `8af15082` (asynchronous startup), `f699ad6b` (promise cleanup), `059bfbca` (generic/nested/defaulted destructuring), `bdce7a97` (captured lexical initialization), `bc21486a` (scheduled audio events), `95b04043` (async control flow), `e5ea2607` (async collections), `24281f2c` (promise caches/reactions), `53ba4164` (recursive async and hardened validation) and `f5cd2061` (AudioBuffer surface) |
 | Draft PR | [#247 — Extend generic application compilation and retained UI support](https://github.com/sailro/bblitec/pull/247) |
 | External checkout | `C:/Dev/_prototypes/external-native-app` |
 | External source revision | `d7c477a6d5963680c55249dceb93cb6e4ab9ce56` |
@@ -44,11 +44,12 @@ it does not establish that this external application compiles or runs.
 | External generated output | `generated/external-app` (ignored; not a successful complete generation) |
 | Session diagnostics | `artifacts/external-integration` (ignored) |
 
-Latest complete-entry attempt: `compile685` reaches the graphics-enabled startup
-branch and stops on a conditional whose native arms are void and promise, after
-214.9 seconds. Next batch must assess asynchronous method calls and conditional
-promise composition together. The earlier `compile677` generated only the no-GPU
-fallback (132.5 seconds, no scene renderer); it was never full application success.
+Latest complete-entry attempt: `compile693` passes conditional async startup and
+stops on retained CSS `visibility` in a newly reached stylesheet, after 184.5
+seconds. Next batch must assess the styles as a group, including visibility and
+its transition behavior. `styles693/sheet-7.css` captures the newly reached sheet.
+The earlier `compile677` generated only the no-GPU fallback (132.5 seconds, no
+scene renderer); it was never full application success.
 
 Native GPU availability uses the optional HostServices graphics identity. Window
 services expose their existing device; child workers inherit those services.
@@ -65,6 +66,25 @@ and Dawn with the unchanged DOM replay/completion checks. `regressions685` passe
 completes scene41's native bootstrap. An independently found dynamic typeof to
 inferred string-literal enum field conversion gap remains visible in TODO.md;
 explicitly string-typed message fields work.
+
+Async method composition now routes object/class methods, callback fields and
+literal-key invocations through the existing owned async activation. The body
+entry bypasses the activation gate to avoid wrapping itself recursively. Async
+receivers allocate mutable record fields before invocation; arguments retain
+call-order snapshots. Promise conditionals use the shared conditional data sink
+so argument effects and coroutine activation stay within the selected branch.
+
+The fixed `async-methods688-native` baseline passes 4/12; `async-methods693-native`
+passes all twelve. These fixed conditional probes specialize literal loop values;
+the stronger permanent `async-methods.test.ts` uses runtime condition reads and
+compares native execution with JavaScript. That oracle exposed untaken-branch
+argument effects in `691`; the shared sink fix passes `692`, including argument
+order, independent receiver mutations, rejection, void callbacks, class methods
+and managed-node cleanup. Three existing async-control/recursion/constructor
+checks pass in `691`. `regressions693` passes 922/922 without skips; `population693` generates all
+288 entries and completes the native bootstrap. `compile693` reaches the next CSS
+boundary described above. Open GitHub issues are empty; the remaining variadic
+core-library and broader Promise TODOs do not become closed by this batch.
 
 `emitEntryBody` detects entry-level awaits in realm-backed entries, skips nested
 function bodies, and emits one owned coroutine with a native return frame. It

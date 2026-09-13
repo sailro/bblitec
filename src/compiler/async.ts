@@ -157,15 +157,23 @@ export class AsyncLowerer {
             : ts.isArrowFunction(callee) || ts.isFunctionExpression(callee) ? callee : undefined;
         if (!declaration || !ts.getModifiers(declaration)?.some(modifier => modifier.kind === ts.SyntaxKind.AsyncKeyword)) return undefined;
         if (context.isBrowserOnlyLocalCall(node)) return undefined;
-        const values = node.arguments.map(argument => {
-            const value = context.compileValue(argument);
-            if (!value.cpp || value.kind === "engine") return value;
-            const temporary = context.allocateTemporaryCppName("async_argument");
-            context.emit({ kind: "declaration", type: "auto", name: temporary, initializer: value.cpp, attributes: "[[maybe_unused]] " });
-            const binding = context.registerNativeBinding(temporary);
-            return { ...this.resultAt(value, temporary), nativeCaptures: [binding] };
-        });
+        const values = node.arguments.map(argument => this.pinArgument(context.compileValue(argument)));
         return this.activate(ts.isIdentifier(callee) ? callee : declaration, declaration, values, node);
+    }
+
+    compileCall(declaration: SupportedFunction, arguments_: readonly Value[], node: ts.Node): Value | undefined {
+        if (!ts.getModifiers(declaration)?.some(modifier => modifier.kind === ts.SyntaxKind.AsyncKeyword)) return undefined;
+        const values = arguments_.map(value => this.pinArgument(value));
+        return this.activate(declaration, declaration, values, node);
+    }
+
+    private pinArgument(value: Value): Value {
+        const context = this.context;
+        if (!value.cpp || value.kind === "engine") return value;
+        const temporary = context.allocateTemporaryCppName("async_argument");
+        context.emit({ kind: "declaration", type: "auto", name: temporary, initializer: value.cpp, attributes: "[[maybe_unused]] " });
+        const binding = context.registerNativeBinding(temporary);
+        return { ...this.resultAt(value, temporary), nativeCaptures: [binding] };
     }
 
     private activate(callback: ts.Identifier | SupportedFunction, declaration: SupportedFunction, values: readonly Value[], node: ts.Node): Value {

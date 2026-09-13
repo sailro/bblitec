@@ -76,6 +76,10 @@ such as `Pick<Controller, "dispose">` retain the original receiver. Optional sto
 before evaluating arguments and skip those arguments when the receiver or callback is absent. Stored callbacks
 may omit trailing optional/default parameters from their exposed signature; source defaults run at invocation.
 In asynchronous realms, stored async callbacks return retained promises and own their suspended captures.
+Object and class async methods use the same owned activation, including named/arrow callback fields,
+literal-key method calls and detached callbacks that do not use `this`. Receiver fields and argument
+snapshots survive suspension. Promise-valued conditionals evaluate their condition once and keep each
+branch's argument preparation and activation inside that branch.
 Recursive local callbacks and mutually recursive groups share traced function cells across suspension,
 including timers and calls that outlive their declaring scope. Their signatures require owned data types.
 Async returns adopt represented promises; conditional and short-circuit condition branches keep awaits lazy

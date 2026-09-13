@@ -1,0 +1,67 @@
+import assert from "node:assert/strict";
+import {spawnSync} from "node:child_process";
+import {mkdirSync,writeFileSync} from "node:fs";
+import {join,resolve} from "node:path";
+import test from "node:test";
+import {runInNewContext} from "node:vm";
+import ts from "typescript";
+import {compileSource} from "../src/compiler.js";
+import {optionalNativeFixtureTools,runNativeFixtureCompiler} from "./native-fixture.js";
+
+test("async methods preserve activation timing, receivers and conditional evaluation",async t=>{
+    const directory=resolve("artifacts/async-methods");mkdirSync(directory,{recursive:true});
+    writeFileSync(join(directory,"worker.ts"),"self.close();");
+    const body=`(async()=>{
+        const order:string[]=[];
+        function create(initial:number){return {
+            value:initial,
+            async add(left:number,right:number){order.push("start");await Promise.resolve();this.value+=left+right;order.push("end");return this.value;},
+            async flush(){await Promise.resolve();order.push("flush");},
+            async fail():Promise<number>{await Promise.resolve();throw new Error("expected");}
+        };}
+        const first=create(1),second=create(10);
+        let argument=2;
+        const pending=first.add(argument,argument++);
+        if(argument!==3||first.value!==1||order.join(",")!=="start")throw new Error("argument order or early suspension");
+        argument=20;
+        if(await pending!==5||first.value!==5)throw new Error("parameter snapshot or receiver mutation");
+        if(await second["add"](1,2)!==13||first.value!==5)throw new Error("independent receivers");
+        const flags:boolean[]=[false,true];
+        let conditions=0,argumentsRead=0;
+        function condition(value:boolean){conditions++;return value;}
+        function next(){argumentsRead++;return 1;}
+        for(const enabled of flags){
+            const selected=condition(enabled)?first.add(next(),next()):Promise.resolve(first.value);
+            const value=await selected;
+            if(value!==(enabled?7:5)||argumentsRead!==(enabled?2:0))throw new Error("conditional branch effects");
+            const completion=condition(enabled)?first.flush():Promise.resolve();await completion;
+        }
+        if(conditions!==4||order.join(",")!=="start,end,start,end,start,end,flush")throw new Error("conditional activation order");
+        const recovered=await first.fail().catch(error=>{if(error.message!=="expected")throw error;return 17;});
+        if(recovered!==17)throw new Error("method rejection");
+        let count=0;
+        async function named(){await Promise.resolve();count++;}
+        const callbacks={named,arrow:async()=>{await Promise.resolve();count++;},async literal(){await Promise.resolve();count++;}};
+        const a=callbacks.named(),b=callbacks.arrow(),c=callbacks.literal();
+        if(count!==0)throw new Error("separate activations");await a;await b;await c;
+        const alias=callbacks.literal;await alias();if(count!==4)throw new Error("callback alias");
+        class Counter{value=0;async add(left:number,right:number){await Promise.resolve();this.value+=left+right;return this.value;}}
+        const counter=new Counter();let input=3;const result=counter.add(input,input++);input=100;
+        if(await result!==6||counter.value!==6)throw new Error("class argument snapshots");
+        globalThis.close();
+    })();`;
+    let closed=false;
+    await runInNewContext(ts.transpile(body,{target:ts.ScriptTarget.ES2022}),{close:()=>{closed=true;}});
+    assert.equal(closed,true,"JavaScript oracle completed");
+    const prefix='const worker=new Worker(new URL("./worker.ts",import.meta.url),{type:"module"});worker.terminate();';
+    const result=compileSource(prefix+body,{fileName:join(directory,"entry.ts")});
+    const tools=optionalNativeFixtureTools(false);if(!tools){t.skip("Native fixture compiler unavailable.");return;}
+    const cpp=join(directory,"check.cpp"),exe=join(directory,"check.exe");
+    writeFileSync(cpp,`#define main generated_main\n${result.cpp}\n#undef main\n`+
+        `int main(){const auto baseline=bbl::js::managed_node_count();const int result=generated_main();`+
+        `bbl::js::collect_cycles();if(bbl::js::managed_node_count()!=baseline)throw std::runtime_error("async method ownership leak");return result;}\n`);
+    runNativeFixtureCompiler(tools,["/nologo","/std:c++20","/W4","/WX","/EHsc","/MD","/DBBLITE_WORKERS=1",
+        "/I","native/include",`/Fo:${directory}/`,`/Fe:${exe}`,cpp]);
+    const execution=spawnSync(exe,{encoding:"utf8",timeout:10000});
+    assert.equal(execution.stdout,"");assert.equal(execution.stderr,"");assert.ifError(execution.error);assert.equal(execution.status,0);
+});

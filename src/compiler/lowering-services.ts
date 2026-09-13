@@ -19,7 +19,7 @@ import type { NativeFunctionLowerer } from "./native-functions.js";
 import type { CompilerSymbols } from "./symbols.js";
 import type { StaticEvaluator } from "./static-evaluator.js";
 import type { HandleCollections, HandleCollectionTarget } from "./handle-collections.js";
-import type { UserFunctionLowerer } from "./user-functions.js";
+import type { SupportedFunction, UserFunctionLowerer } from "./user-functions.js";
 import type {
     CompileAsset,
     DefaultRenderTaskEmission,
@@ -73,6 +73,7 @@ export interface NativeFunctionBodyOptions {
 /** Shared compiler operations; each lowering module selects its required services. */
 export interface LoweringServices {
     withAsyncActivation<T>(work: () => T): T;
+    compileAsyncCall(declaration: SupportedFunction, arguments_: readonly Value[], node: ts.Node): Value | undefined;
     compileAsyncReturn(expression: ts.Expression, type: DataType | undefined): string;
     emitNativeThrow(errorCpp: string, node?: ts.ThrowStatement): void;
     isInFrameCallback(): boolean;

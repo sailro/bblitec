@@ -813,6 +813,7 @@ export interface UserFunctionContext
     Pick<LoweringServices,
         | "options"
         | "withAsyncActivation"
+        | "compileAsyncCall"
         | "compileAsyncReturn"
         | "withOwnedCallbackBody"
         | "checker"
@@ -1124,6 +1125,8 @@ export class UserFunctionLowerer {
             argumentValues,
         );
         return this.withCallTypeArguments(context, call, ir.declaration, () => {
+            const asynchronous = inBodyScope(() => context.compileAsyncCall(ir.declaration, argumentValues, call));
+            if (asynchronous) return asynchronous;
             const recursiveGroup = this.recursiveGroup(ir.declaration);
             if (recursiveGroup) {
                 return this.lowerRecursiveGroup(
@@ -1330,7 +1333,8 @@ export class UserFunctionLowerer {
         // scope the callback closed over.
         const argumentValues = this.argumentValues(context, call, ir);
         return this.withCallTypeArguments(context, call, ir.declaration, () =>
-            inBodyScope(() => this.trySharedCall(context, ir, call, argumentValues) ??
+            inBodyScope(() => context.compileAsyncCall(ir.declaration, argumentValues, call) ??
+                this.trySharedCall(context, ir, call, argumentValues) ??
                 this.lower(context, ir, argumentValues, call, ts.isExpressionStatement(call.parent))));
     }
 
@@ -2278,6 +2282,14 @@ export class UserFunctionLowerer {
             );
         }
         const values = arguments_.slice(0, ir.parameters.length);
+        if (!body?.coroutine) {
+            const asynchronous = context.compileAsyncCall(ir.declaration, values, callNode);
+            if (asynchronous) {
+                if (!discardReturn) return asynchronous;
+                context.emitDiscardedValue(asynchronous);
+                return {kind:"void", cpp:""};
+            }
+        }
         // The frame driver already retains and invokes this callback. Its
         // self-scheduling source edge is not an immediate recursive call.
         const frameCallback = callNode === declaration && context.isInFrameCallback();
@@ -3244,7 +3256,8 @@ export class UserFunctionLowerer {
         ir: UserFunctionIr,
     ): Value[] {
         const rest = restParameterIndex(ir.declaration);
-        const pinArguments = requiresDefaultParameterBinding(this.checker, ir.declaration, call);
+        const pinArguments = requiresDefaultParameterBinding(this.checker, ir.declaration, call) ||
+            (context.options.workers && ts.getModifiers(ir.declaration)?.some(modifier => modifier.kind === ts.SyntaxKind.AsyncKeyword));
         const values: Value[] = [];
         const expanded: Value[] = [];
         call.arguments.forEach((argument, index) => {

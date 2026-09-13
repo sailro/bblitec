@@ -4803,6 +4803,10 @@ class Compiler
         return this.asyncLowerer.withActivation(work);
     }
 
+    public compileAsyncCall(declaration: SupportedFunction, arguments_: readonly Value[], node: ts.Node): Value | undefined {
+        return this.options.workers ? this.asyncLowerer.compileCall(declaration, arguments_, node) : undefined;
+    }
+
     public compileAsyncReturn(expression: ts.Expression, type: DataType | undefined): string {
         return this.asyncLowerer.compileReturn(expression, type);
     }

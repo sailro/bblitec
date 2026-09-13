@@ -68,6 +68,8 @@ function accessorsOf(declaration: ts.ClassDeclaration): {
 interface ClassLoweringContext
     extends Pick<LoweringServices,
         | "checker"
+        | "options"
+        | "compileAsyncCall"
         | "dataTypes"
         | "nativeFunctions"
         | "functionEmissionScope"
@@ -974,6 +976,16 @@ export class ClassLowerer {
                 method,
                 `Reached method '${methodName}' requires a body.`,
             );
+        }
+        if (this.context.options.workers && method.modifiers?.some(modifier => modifier.kind === ts.SyntaxKind.AsyncKeyword)) {
+            const arguments_ = this.compileClassArguments(method, call.arguments, "method");
+            const previousThis = this.context.activeThis();
+            this.context.defineThis(instance);
+            try {
+                return this.context.compileAsyncCall(method, arguments_, call)!;
+            } finally {
+                this.context.defineThis(previousThis);
+            }
         }
         const activeRecursive = this.activeRecursiveMethods.get(method);
         if (activeRecursive) {

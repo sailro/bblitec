@@ -162,6 +162,7 @@ export interface ExpressionContext
         | "registerClassInstance"
         | "classOf"
         | "withRecordScopes"
+        | "materializeEscapingValue"
         | "captureRecordScopes"
         | "probeEmission"
         | "recordAccessor"
@@ -2301,6 +2302,17 @@ export class ExpressionLowerer {
         }
         if (ts.isElementAccessExpression(callee)) {
             let callable = this.compileValue(call.expression);
+            if (callable.kind === "callback" && callable.callbackDeclaration) {
+                const native = this.context.userFunctions.compileNativeCallbackCall(this.context, call, callable);
+                if (native) return native;
+                const declaration = callable.callbackDeclaration;
+                const owner = callable.callbackRecordOwner;
+                const inBodyScope = <T>(work: () => T): T => owner
+                    ? this.context.withRecordScopes(owner, work, declaration) : work();
+                return ts.isIdentifier(declaration)
+                    ? this.context.userFunctions.compile(this.context, call, declaration, inBodyScope)!
+                    : this.context.userFunctions.compileCallbackCall(this.context, call, declaration, inBodyScope);
+            }
             if (
                 hasNonNullAssertion(call.expression) &&
                 callable.kind === "data"
@@ -3359,6 +3371,8 @@ export class ExpressionLowerer {
             }
             const value = owner.recordProperties?.[property];
             if (!value) {
+                const method = owner.recordMethods?.[property];
+                if (method) return {kind:"callback", cpp:"", callbackDeclaration:method, callbackRecordOwner:owner};
                 this.context.fail(unwrapped.argumentExpression, `Compile-time record has no property '${property}'.`);
             }
             return value;
@@ -3476,6 +3490,7 @@ export class ExpressionLowerer {
             : inferred?.kind === "enum" ? {kind:"string" as const} : inferred;
         if (conditionalType?.kind === "string" ||
             conditionalType?.kind === "number" ||
+            conditionalType?.kind === "promise" ||
             conditionalType?.kind === "union" ||
             conditionalType?.kind === "product" ||
             conditionalType?.kind === "vector" ||
@@ -3677,7 +3692,7 @@ export class ExpressionLowerer {
             Object.keys(getters).length > 0 ||
             Object.keys(setters).length > 0;
         const evaluationIdentity = this.context.callbackEvaluationIdentity();
-        return {
+        const record: Value = {
             kind: "record",
             cpp: "",
             recordProperties: properties,
@@ -3703,6 +3718,11 @@ export class ExpressionLowerer {
                 }
                 : {}),
         };
+        // A coroutine method can retain its receiver after the creating scope
+        // returns. Allocate its mutable fields before either branch calls it.
+        const asyncReceiver = this.context.options.workers && Object.values(methods).some(method =>
+            !ts.isIdentifier(method) && ts.getModifiers(method)?.some(modifier => modifier.kind === ts.SyntaxKind.AsyncKeyword));
+        return asyncReceiver ? this.context.materializeEscapingValue(record, "async_receiver") : record;
     }
 
     private compilePropertyCall(callee: ts.PropertyAccessExpression, call: ts.CallExpression): Value | undefined {
