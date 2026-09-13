@@ -125,7 +125,7 @@ import {
 } from "./compiler/data-types.js";
 import { ExpressionLowerer, PURE_NUMBER_FORMATTERS } from "./compiler/expressions.js";
 import { NativeFunctionLowerer, captureDataFunctionBody } from "./compiler/native-functions.js";
-import { emitReachableStatements } from "./compiler/loop-control.js";
+import { emitReachableStatements, firstReturn } from "./compiler/loop-control.js";
 import {
     collectReboundSymbols,
     isModuleInitializerStatement,
@@ -8914,20 +8914,23 @@ class Compiler
         accessor: ts.GetAccessorDeclaration,
     ): Value {
         const statements = accessor.body?.statements ?? [];
-        const [only] = statements;
+        const only = statements.at(-1);
         if (
-            statements.length !== 1 ||
             !only ||
             !ts.isReturnStatement(only) ||
             !only.expression
         ) {
             this.fail(
                 accessor,
-                `Getter '${accessor.name.getText()}' must be a single return statement.`,
+                `Getter '${accessor.name.getText()}' requires a final value return.`,
             );
         }
         const expression = only.expression;
+        const leading = statements.slice(0, -1);
+        const earlyReturn = firstReturn(leading);
+        if (earlyReturn) this.fail(earlyReturn, "A getter with early returns requires a represented result flow.");
         return this.withRecordScopes(owner, () => {
+            if (leading.length) this.pushScope(this.allocateUserFunctionPrefix());
             const previousThis = this.activeThis();
             // A getter's `this` is its receiver for both class instances and
             // object-literal accessors. The record may have crossed a return
@@ -8935,12 +8938,14 @@ class Compiler
             // identity in classInstances is not a reliable dispatch guard.
             this.defineThis(owner);
             try {
+                emitReachableStatements(this, leading);
                 // A getter is an evaluation, even when its return happens
                 // to lower to a field read. Optional chains must consume it
                 // once and keep any nested method calls behind their guard.
                 return { ...this.compileValue(expression), impure: true };
             } finally {
                 this.defineThis(previousThis);
+                if (leading.length) this.popScope();
             }
         });
     }

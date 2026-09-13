@@ -3724,8 +3724,8 @@ test("keeps an early return inside the invoked setter", () => {
     );
 });
 
-test("a record getter must be a single return", () => {
-    assert.throws(
+test("record getters admit local statements before their final return", () => {
+    assert.doesNotThrow(
         () =>
             compileSource(`
                 const api = {
@@ -3736,8 +3736,9 @@ test("a record getter must be a single return", () => {
                 };
                 const read = api.total;
             `),
-        /must be a single return statement/,
     );
+    assert.throws(() => compileSource(`const api={get value(){if(Math.random()>0.5)return 1;return 2;}};const read=api.value;`),
+        /early returns requires a represented result flow/);
 });
 
 test("compiles record method arguments in the caller's scope", () => {

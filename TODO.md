@@ -8,7 +8,8 @@ status. One line per item: the gap, where it is, its size (S < 1 h, M < half day
 
 - [ ] Stored variadic Math functions (min/max/hypot) need a variable-argument function representation (math-intrinsics.ts); fixed signatures share the direct-call table. M; reusable numeric callbacks.
 - [ ] Destructuring defaults over combined null/undefined elements need distinct absence states; generic nullable defaults also refuse when the source type cannot distinguish them (data-lowering.ts, js_data.hpp). M; nullable collection transforms.
-- [ ] Promise.finally needs owned cleanup reactions preserving fulfillment/rejection and adopting async cleanup results (async.ts, js_promise.hpp). M; asynchronous resource cleanup.
+- [ ] Custom thenables need an owned resolution protocol; callable/getter `then` properties explicitly refuse (async.ts). M; interoperability with promise-like objects.
+- [ ] Record getters with early returns need represented result flow; statements and local captures before a final return are supported (compiler.ts). M; conditional accessors.
 - [ ] Promise.all still refuses literal spreads, non-array iterables, stored void/value-only arrays and recovery/rebinding with a different tuple representation (async.ts). M; reusable aggregation.
 - [ ] Await inside catch/finally blocks needs suspended exception/cleanup completion; these forms explicitly refuse (async.ts, statements.ts). M; asynchronous recovery and cleanup.
 - [ ] Self-referencing record initializers need a representable recursive record/function type; initializer captures with owned data types share lexical cells (compiler.ts, data-types.ts). M; retained state factories.

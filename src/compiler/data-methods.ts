@@ -164,6 +164,7 @@ export const storingDataMethods: ReadonlySet<string> = new EmissionSet([
     "fill",
     "of",
     "push",
+    "resolve",
     "set",
     "splice",
     "unshift",

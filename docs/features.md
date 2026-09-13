@@ -86,7 +86,7 @@ work; their promises are discarded without discarding the activation. Await insi
 finally block still refuses.
 Callbacks returning `Promise<T> | void` retain either the promise or an absent result.
 Bare returns, fallthrough and void-returning expressions preserve their effects; present promises
-support `typeof` checks of their `then` and `catch` methods.
+support `typeof` checks of their `then`, `catch` and `finally` methods.
 Promise reactions and microtasks share mutable outer bindings, including through called helpers.
 Local and nullable promise bindings can be replaced or cached in collections while aliases retain
 promise identity. Async reactions own their suspended arguments; stored callbacks and callback
@@ -96,6 +96,9 @@ Collection callbacks returning promises use retained function invocation for map
 forEach, reduction and Array.from, including tuple mapping. Iteration remains synchronous while
 each callback owns its suspension; predicate promises are truthy without awaiting fulfillment.
 Promise-settled records preserve identity across aliases and aggregation.
+`Promise.resolve` retains plain object identity and owns fresh record literals.
+Record getters can execute statements and capture locals before their final value return;
+early returns from getters remain unsupported.
 Engine contexts
 can be stored in records and collections as references to the entry engine. Empty asserted output records
 retain absent fields until initialized; aliases observe subsequent writes. Loose `== null` and `!= null`
@@ -139,6 +142,13 @@ microtasks and reported in a subsequent task; application listeners are describe
 `then` accepts fulfillment and rejection callbacks that settle to the same admitted result type,
 including returned promises. The rejection callback handles the original outcome; exceptions from
 either callback reject the returned promise. Mixed callback result types remain unsupported.
+`finally` snapshots its callback at registration and invokes it without arguments. Fulfilled
+cleanup preserves the original value or rejection; thrown or rejected cleanup replaces it.
+Returned promises delay settlement, while ordinary returned values are ignored. Missing, null
+and undefined handlers pass through to a new promise. Cleanup uses the same traced reactions
+and microtask queue as `then`, following the
+[ECMAScript cleanup algorithm](https://tc39.es/ecma262/multipage/control-abstraction-objects.html#sec-promise.prototype.finally).
+Custom thenable assimilation remains unsupported and refuses explicitly.
 Direct async function expressions and IIFEs own their suspended captures; mutable outer bindings
 remain shared. `Promise.all` observes every input, preserves result order and rejects on the first
 failure. It accepts represented literal tuples of promises/values and stored arrays of value promises,

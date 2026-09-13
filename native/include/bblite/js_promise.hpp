@@ -122,6 +122,21 @@ template <typename T> class Promise {
         return next;
     }
 
+    Promise finally() const {
+        return then([](const T& value) { return value; });
+    }
+    template <typename F> Promise finally(F callback) const {
+        auto fulfilled = make_closure(std::tuple{callback}, [](auto& environment, const T& value) {
+            return cleanup_result(std::get<0>(environment)).then(
+                make_closure(std::tuple{value}, [](auto& saved, const auto&) { return std::get<0>(saved); }));
+        });
+        auto rejected = make_closure(std::tuple{std::move(callback)}, [](auto& environment, std::exception_ptr error) {
+            return cleanup_result(std::get<0>(environment)).then(
+                make_closure(std::tuple{error}, [](auto& saved, const auto&) -> T { std::rethrow_exception(std::get<0>(saved)); }));
+        });
+        return then(std::move(fulfilled), std::move(rejected));
+    }
+
     struct promise_type {
         Promise result;
         pal::EventLoop* loop = &pal::EventLoop::current();
@@ -161,6 +176,16 @@ template <typename T> class Promise {
     Awaiter operator co_await() const { state_->require_owner(); return Awaiter{state_}; }
 
   private:
+    template <typename F> static auto cleanup_result(F& callback) {
+        using Returned = std::invoke_result_t<F&>;
+        using U = promise_detail::ResultType<Returned>;
+        if constexpr (std::is_void_v<Returned>) {
+            callback();
+            return Promise<PromiseVoid>::resolved({});
+        } else if constexpr (std::is_same_v<Returned, Promise<U>>) return callback();
+        else return Promise<U>::resolved(callback());
+    }
+
     template <typename Argument, typename F, typename U>
     static auto settling_reaction(F callback, Promise<U> next) {
         return make_closure(std::tuple{std::move(callback), next}, [](auto& environment, Argument value) {

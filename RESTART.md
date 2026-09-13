@@ -36,7 +36,7 @@ it does not establish that this external application compiles or runs.
 | Branch | `codex/external-project-support` |
 | Remote | `https://github.com/sailro/bblitec.git` |
 | Branch base used in this session | `3474e835` on `main` |
-| Latest executable-code/test unit | Generic/nested/defaulted destructuring assignments; prior savepoints `bdce7a97` (captured lexical initialization), `bc21486a` (scheduled audio events), `95b04043` (async control flow), `e5ea2607` (async collections), `24281f2c` (promise caches/reactions), `53ba4164` (recursive async and hardened validation) and `f5cd2061` (AudioBuffer surface) |
+| Latest executable-code/test unit | Owned promise cleanup reactions; prior savepoints `059bfbca` (generic/nested/defaulted destructuring), `bdce7a97` (captured lexical initialization), `bc21486a` (scheduled audio events), `95b04043` (async control flow), `e5ea2607` (async collections), `24281f2c` (promise caches/reactions), `53ba4164` (recursive async and hardened validation) and `f5cd2061` (AudioBuffer surface) |
 | Draft PR | [#247 — Extend generic application compilation and retained UI support](https://github.com/sailro/bblitec/pull/247) |
 | External checkout | `C:/Dev/_prototypes/external-native-app` |
 | External source revision | `d7c477a6d5963680c55249dceb93cb6e4ab9ce56` |
@@ -44,9 +44,50 @@ it does not establish that this external application compiles or runs.
 | External generated output | `generated/external-app` (ignored; not a successful complete generation) |
 | Session diagnostics | `artifacts/external-integration` (ignored) |
 
-Latest complete-entry diagnostic: `compile645` passed generic indexed swapping
-and stopped at `Promise.prototype.finally` on an owned pending promise.
+Latest complete-entry diagnostic: `compile653` passed promise cleanup and stopped
+at an await in the entry's startup body before engine creation: "This await needs
+an asynchronous realm activation." The timed attempt took 130 seconds.
 Generation, native build and application runtime remain incomplete.
+
+Promise cleanup now shares `compileReaction` capture/invocation and native
+`Promise::then` observation/adoption. Native cleanup invokes the callback with no
+arguments, normalizes its result to a promise, then restores the original value
+or rethrows the original exception. Thrown/rejected cleanup replaces that
+settlement. Missing/noncallable handlers pass through to a fresh promise; stored
+optional callbacks are snapshotted and their presence is tested at registration.
+Ordinary cleanup results are evaluated/discarded; promise results are adopted.
+The shared retention analysis treats `resolve` as storing its arguments, keeping
+record identity, and resolving fresh record literals uses the existing owned
+struct sink. Custom thenables explicitly refuse. Record getters now allow local
+statements before a final return, using a local scope and ordinary statement
+emission. Early returns still refuse. All changes are generic.
+
+`promise-finally647` is the fixed twelve-probe baseline, 0/12 generation accepted.
+`promise-finally648-native` passes 10/12, exposing record resolution and getter
+statements; `promise-finally649-native` passes all twelve. `promise-cleanup650`
+passes the JavaScript-oracle/native fixture; `promise-cleanup651` passes all five
+cleanup/reaction/cache/recursion checks. The stronger `promise-cleanup652` checks
+microtask order, callback arguments, value/error identity, asynchronous cleanup,
+getter locals, optional callbacks and pending cleanup cycles. The generated
+program returns to its starting managed-node count. Stdout/stderr must be empty.
+`regressions653` passes 908/909: the sole failure is the obsolete test asserting
+getters must contain only one statement. Its updated acceptance and early-return
+refusal pass `regressions654` (653 compiler/cleanup tests, no skips).
+`population654` generates all 288 entries and completes scene41's native bootstrap.
+Staged type/privacy/whitespace checks pass. All these checks have finished.
+
+Next batch: asynchronous application startup before engine creation. Inspect the
+entry/startEngine extraction and owned application activation boundaries; the
+reached await is outside AsyncLowerer's activation depth. Assess direct,
+conditional and rejected startup awaits with neutral entries. `startup-awaits655-native`
+is the fixed eight-probe baseline: only an ordinary named async function and an
+async IIFE generate/build/run (2/8). Async main (direct, conditional, helper,
+recovery and early-return forms) and module-level awaits all refuse. The compiler
+selects main.body.statements in `entryStatements`, then emits them at depth zero;
+output-projection supplies a synchronous initialization callback. Inspect the
+startEngine split before choosing the owned startup frame so rendering lifetime
+and generation-dependent engine metadata remain correct. No startup code has
+changed at this savepoint. Preserve the unchanged private entry.
 
 Destructuring now takes concrete generic RHS types from evaluated bound values;
 each RHS expression runs once before target references. Nested arrays, rest,
@@ -70,16 +111,9 @@ after the final literal/owner extensions, `destructuring646` passes seven focuse
 native/array-loading/table checks. `population646` generates all 288 registered
 entries and completes scene41's native bootstrap. Open GitHub issues remain empty.
 
-Next batch: promise cleanup reactions. `promise-finally647` is a fixed baseline
-of twelve generation probes, all refused: fulfillment/rejection preservation,
-throwing/async cleanup, void and ignored results, getter/stored callbacks, new
-promise identity, missing and null handlers. Use the shared managed reaction
-compiler and `js_promise.hpp` observation/adoption, not a second async callback
-implementation. The source requires callback evaluation at registration, no
-arguments at delivery, and original settlement after fulfilled cleanup; thrown
-or rejected cleanup replaces it. Read the ECMAScript finally algorithm and keep
-native GC ownership and microtask ordering covered. No promise cleanup code has
-been changed at this savepoint.
+The previous `compile645` diagnostic was `Promise.prototype.finally`; the cleanup
+batch above now passes it. Its protocol follows the ECMAScript finally algorithm,
+linked from Features, and reuses the existing managed scheduler and callbacks.
 
 Lexical bindings captured inside their own initializer now receive a traced
 `LexicalBinding<T>` cell before lowering the initializer. Ordinary typed sinks
