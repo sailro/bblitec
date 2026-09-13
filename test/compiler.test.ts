@@ -857,6 +857,7 @@ test("keeps auxiliary surfaces distinct from their owning engine", () => {
             createSurface,
             createSceneContext,
             disposeSurface,
+            enableSurfaceResizeObserver,
         } from "@babylonjs/lite";
 
         async function main() {
@@ -864,6 +865,10 @@ test("keeps auxiliary surfaces distinct from their owning engine", () => {
             const canvas = document.createElement("canvas");
             document.body.appendChild(canvas);
             const surface = createSurface(engine, canvas);
+            const cancelPrimary = enableSurfaceResizeObserver(engine);
+            const cancelAuxiliary = enableSurfaceResizeObserver(surface);
+            cancelPrimary();
+            cancelAuxiliary();
             const scene = createSceneContext(surface);
             const primary = createSceneContext(surface.engine);
             disposeSurface(surface);

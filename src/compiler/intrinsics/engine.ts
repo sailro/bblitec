@@ -29,6 +29,7 @@ export interface EngineIntrinsicContext
         | "noteTextSceneLifecycle"
         | "noteTemporalRecordBoundary"
         | "emit"
+        | "emitDiscardedValue"
         | "fail"
         | "expectSameEngine"
         | "requireDefaultEngine"
@@ -108,7 +109,13 @@ export function compileEngineIntrinsic(
         case "enableSurfaceResizeObserver": {
             context.expectArgumentCount(call, 1, 1);
             const surface = context.compileValue(argumentAt(call, 0));
-            context.expectKind(surface, "surface", argumentAt(call, 0));
+            if (surface.kind !== "engine") {
+                context.expectKind(surface, "surface", argumentAt(call, 0));
+            }
+            // Native frame loops already refresh canvas extents. Installing or
+            // cancelling the browser's layout cache does not change that policy,
+            // but evaluating the surface expression still has source effects.
+            context.emitDiscardedValue(surface);
             return {
                 kind: "callback",
                 cpp: "std::function<void()>{[]() {}}",

@@ -8,6 +8,17 @@ dependencies will not be present in a fresh clone.
 
 ## Read this first
 
+**Surface compatibility unit (1085), ready to commit.** MSAA is committed/pushed as
+**a17212a4**. enableSurfaceResizeObserver now admits the primary engine (the pin's
+EngineContext extends SurfaceContext) as well as auxiliary surfaces. Native loops
+already own extent refresh; its cache disposer keeps the existing no-op adaptation.
+The argument is now emitted as a discarded value so inline surface construction
+is not lost. The focused auxiliary-surface fixture also checks both disposer calls;
+surface1085-regressions passes all6 recovery/surface cases without skips.
+The engine1085 ignored cohort extracts the actual nearby heartbeat declarations,
+with worker/window mode, to expose further setup issues before a full compile.
+Latest inventory1083: main426 is statement62/294. Full1081/report are current.
+
 **Runtime engine MSAA unit (1083), validated and ready to commit.** Decoder unit
 is committed/pushed as **7d2855f3**. EngineOptions now carries a per-engine sample
 override; zero preserves the existing generated default. Runtime source choices

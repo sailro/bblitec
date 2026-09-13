@@ -40,6 +40,9 @@ label an unexplained residual a precision floor or intentional divergence.
 | Physics/audio | Bullet replaces Havok; LabSound replaces browser audio |
 
 Primary-canvas datasets with source readback remain live; write-only instrumentation erases.
+`enableSurfaceResizeObserver` accepts the primary engine or an auxiliary surface. Native
+frame loops already refresh their canvas extents, so installing or cancelling the browser's
+layout cache leaves that native resize policy unchanged; the argument is still evaluated.
 The harness-ready gate shares this storage. Recovery global disposal hooks remain live. Closed Promise/RAF predicates
 resume through engine frame boundaries. `drawCallCount` measures native GPU draw commands, including
 transport passes; browser context accounting can differ.
