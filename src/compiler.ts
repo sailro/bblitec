@@ -3363,7 +3363,10 @@ class Compiler
                 : this.checker.getTypeAtLocation(name),
             typeSite,
         );
-        if (annotated?.kind === "struct" || (annotated?.kind === "optional" && annotated.inner.kind === "struct")) {
+        // Inferred locals already follow compileValue's actual representation.
+        // Only an explicit record annotation needs this storage choice; probing
+        // inferred factory calls would compile their entire bodies twice.
+        if (declaration.type && (annotated?.kind === "struct" || (annotated?.kind === "optional" && annotated.inner.kind === "struct"))) {
             const source = declaration.initializer;
             const value = this.probeEmission(() => {
                 try { return this.compileValue(source); }

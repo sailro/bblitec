@@ -8,6 +8,57 @@ dependencies will not be present in a fresh clone.
 
 ## Read this first
 
+**Global measurement and next unit (2026-09-13).** User explicitly needs a global
+view, not selected-probe percentages. application-progress.mjs inventories the
+entry's real import graph (application src root, excludes tests/declarations and
+external dependencies): **1,343 modules, 22,709 function bodies, 392,310 lines**.
+Full compile1033 failed after **601.17 seconds** in the startup quality helper's
+chained nullish fallback (optional enum must widen to optional string). It reached
+main statement **39/294**, line 351; createEngine is line 402 and startEngine 3263.
+This is early startup integration, BEFORE engine creation. Do not describe the
+statement fraction or body coverage as overall engineering completion.
+
+compile-with-progress.mjs wraps UserFunctionLowerer.lower/lowerRecursiveGroup/
+compileStoredDataFunction, NativeFunctionLowerer.emitDefinition/emitMethodDefinition
+and ClassLowerer.construct/compileMethodCall. It reports unique AST body ids with
+successful attempts, failed attempts and unobserved bodies; speculative failures
+are not automatically blockers, and successful lowering is not native validation.
+The instrumented full baseline compile1036 is still active in exec session 10032,
+using normal dist at f8db96a6. Its JSON is application-progress1036.json; inventory
+is application-inventory1035.json. render-application-progress.mjs renders these
+into APPLICATION_PROGRESS.md and application-module-progress.json, all under the
+ignored artifacts/external-integration directory. Refresh the Markdown after each
+measurement. The report was opened in the user's panel. At 392.9 seconds this run
+had 544 bodies successfully lowered, 545 observed, across 92 modules; use the live
+JSON for fresh counts. None of the four whole-app gates has completed.
+
+A live inspector sample of compile1033 confirmed only ONE dynamic-binding replay,
+then work in the actual music arrangement callbacks. Its ten-second CPU sample
+(compile1033-live.cpuprofile) is dominated by emission transaction capture and GC,
+with visitScopedValues another hotspot. The original run is finished. Inspector
+was resumed/closed after each sample; no debugger remains attached.
+
+**Performance savepoint pending:** only explicitly annotated record initializers
+need the new dynamic-storage probe. Inferred locals already follow compileValue;
+probing them compiled complete factory bodies twice. The one-site gate in
+compiler.ts is tested in isolated fast1037-dist so baseline1036 remains untouched.
+fast1037-focused passes 18/18 native dynamic/storage cases; fast1039-regressions
+passes 660/660 compiler/transaction cases. The unchanged loader/setter/audio probe
+audio1037 generates in 14.68s versus audio1031's 18.75s and its C++ is BYTE IDENTICAL
+(SHA256 3AFBC954DEE9329A828D77A0184749B8785989350AE476988F9A880B556C82D3).
+Do not attribute the entire full-entry compile cost to this one probe.
+
+**Next correctness unit is UNCOMMITTED:** probe-selection1038.mjs reproduces the
+actual getQuality + recommendation setter failure in about one second, using the
+worker realm. compileOptionalSink was handing optional enum storage directly to
+the nonoptional string sink when optional inner types differed. It now reuses the
+existing known-value optional conversion. A new core-library test exposed the same
+widening requirement in optional comparisons; bindOptional now uses the common
+sink too. These last changes are NOT YET built/tested (selection1040 was the prior
+failure). Build to a new isolated output while baseline1036 runs. The test covers
+absent/present/cleared values, chained lazy fallbacks and empty strings. Continue
+with actual selection probe, broad regressions, native cases and next full entry.
+
 **Working unit: dynamic property reads and nullish fallback.** The macOS/Linux
 rebase and getter-sharing commit `c202115e` are pushed. Current uncommitted changes
 share compileJsonPropertyKey/compileJsonElementRead between the JSON bridge and
