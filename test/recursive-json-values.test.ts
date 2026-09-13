@@ -164,6 +164,19 @@ test("optional scalar returns retain undefined in dynamic records", t => {
     `,t);
 });
 
+test("dynamic values retain JavaScript template and concatenation strings", t => {
+    nativeCheck("dynamic-concat", `
+        const values=JSON.parse('[null,true,3.25,"text",[1,null,2],{}]');
+        const expected=["value:null","value:true","value:3.25","value:text","value:1,,2","value:[object Object]"];
+        let index=0;
+        for(const value of values){
+            const actual=\`value:\${value}\`;
+            if(actual!==expected[index]||("value:"+value)!==actual)throw new Error("dynamic string conversion");
+            index++;
+        }
+    `,t);
+});
+
 test("recursive unknown boundaries retain parsed trees and returned scalar kinds", t => {
     nativeCheck("trees", `
         function retain<T>(value:T, depth:number):T {return depth>0 ? retain(value,depth-1) : value;}

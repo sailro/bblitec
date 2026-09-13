@@ -8,6 +8,26 @@ dependencies will not be present in a fresh clone.
 
 ## Read this first
 
+**Latest unit: dynamic string interpolation.** Find unit `ceb4a1b4` is committed
+and pushed. `input943-native` now builds/runs all six unchanged input-normalization
+cases with actual locale/storage PAL services and isolated preferences.
+Full `compile944` advanced to the music-manifest parser's diagnostic interpolation
+and refused a JSON value in stringConcatPart after 50.63 seconds. The working fix
+uses JsonValue.to_string() at template/concatenation conversion, preserving scalar,
+array and ordinary object forms. `concat945-focused` passes its native regression;
+`concat947-regressions` passes all 36 core-library/dynamic-value checks without skips.
+
+The unchanged parser is isolated by probe-manifest945.mjs (generation 0.47 seconds).
+check-manifest946.mjs executes the unchanged JavaScript module as the reference,
+creates ten neutral valid/invalid manifests, and generates a native comparison.
+`manifest946-native` passes all ten COMPLETE serialized-output/error-message cases.
+Build it through check-generated-native.mjs artifacts/external-integration/manifest946/check.cpp.
+No private sources or fixtures are tracked. Next full retry follows this commit.
+PR #247 metadata was refreshed with pr944.json; it is still a draft against main.
+The full application has not yet completed generation/build/run, and final sweep
+and full branch review are still pending. Broad string933 remains 940/940 green;
+subsequent string937 passed 666 and find940/concat947 passed 35/36 focused checks.
+
 **Current unit: Array.find result storage.** String unit `22193c6a` is committed
 and pushed. compileArrayFind now passes the selected source element through the
 normal known-value sink for its result type. This converts a widened string-table

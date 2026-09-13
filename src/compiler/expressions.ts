@@ -244,6 +244,7 @@ export function stringConcatPart(
 ): string {
     const constant = staticStringCoercion(value);
     if (constant !== undefined) return context.cppString(constant);
+    if (isJsonValue(value)) return `${value.cpp}.to_string()`;
     if (value.nativeError && value.recordProperties?.name && value.recordProperties.message) {
         return `bbl::js::error_to_string(bbl::js::concat(${stringConcatPart(context, value.recordProperties.name, node)}), bbl::js::concat(${stringConcatPart(context, value.recordProperties.message, node)}))`;
     }

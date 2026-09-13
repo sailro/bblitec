@@ -301,6 +301,8 @@ Stored string-literal unions expose the same string methods, indexed reads and l
 Guarded dynamic string methods use a checked string receiver; assertions do not
 coerce other runtime kinds. Shared string comparisons embed known constant strings
 while mutable captured bindings remain live.
+Template interpolation and string concatenation convert represented dynamic values
+with JavaScript scalar, array and plain-object string forms.
 
 `Object.freeze`, `seal` and `preventExtensions` are the identity over their argument.
 `Object.entries`, `assign`, `fromEntries`, `hasOwn` and `is` lower over compile-time
