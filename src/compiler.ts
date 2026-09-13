@@ -2378,6 +2378,17 @@ class Compiler
             cppName,
         );
         let value = this.compileValue(declaration.initializer);
+        if (value.kind === "number" && value.staticNumber === undefined &&
+            ts.isVariableDeclarationList(declaration.parent) &&
+            ts.isVariableStatement(declaration.parent.parent) &&
+            ts.isSourceFile(declaration.parent.parent.parent) &&
+            (declaration.parent.flags & ts.NodeFlags.Const) !== 0) {
+            // Materialized modules cannot revisit their initializers. Keep a
+            // proven numeric snapshot on the immutable binding itself. Local
+            // loop facts remain owned by the existing specialization analysis.
+            const numeric = this.evaluator.staticNumberValue(declaration.initializer);
+            if (numeric !== undefined) value = { ...value, staticNumber: numeric };
+        }
         if (value.kind === "promise") {
             const type = this.dataLowerer.dataTypeAt(declaration.name);
             if (type?.kind === "promise") {

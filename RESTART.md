@@ -89,6 +89,27 @@ reproduces it by importing only the stylesheet installer, avoiding another compl
 entry retry; the two neutral imported arithmetic-template controls pass. Trace the
 remaining difference in that reduced import path before the next CSS unit.
 
+The template unit is committed/pushed as d025ccf9; PR #247 is updated with pr759.json.
+imported-strings758 proves that the materialized module's computed numeric constant
+has native storage but no numeric fact. Its closed string helpers all succeed.
+The smaller module-constants759 cohort has three pure constant cases (one passes)
+and a separate mutable-input snapshot (refuses an unbound scalar). 760 passes all
+three pure cases by preserving proven const numeric results on the stored binding;
+it does not fold live canvas dimensions or re-run effectful initializers. The
+mutable-input case remains refused and is now an explicit module-planner TODO.
+imported-styles760 gets past the real imported installer to generated-content
+inset-outline decoration; this reduced import takes seconds instead of a full entry.
+module761 passes eight string/module checks including a permanent multi-module
+stylesheet fixture. The shared native Window template fixture now imports a computed
+constant from a module with mutable state and checks both numeric layout and calls.
+module762-regressions passes 851/851; templates-window762 passes both backends.
+population762 generates 287/288 but exposes excessive local-loop specialization
+in antigravity-racer after numeric facts were attached to all const declarations.
+The fix now applies to module-level immutable bindings only. Local loop facts stay
+with the existing specialization analysis. module763 passes all eight focused
+checks, and antigravity-racer generates successfully with its unchanged expansion
+budget. The preceding d025ccf9 population755 generated all 288 and passed bootstrap.
+
 Control/spacing support uses native property/shorthand registration without another
 RmlUi patch (still sixteen). appearance:auto/none and the prefixed alias share one
 property. The initial native implementation suppressed the whole range theme;

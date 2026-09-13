@@ -1557,6 +1557,17 @@ export class StaticEvaluator {
         return this.castNumber(value, precision);
     }
 
+    /** Fold current numeric facts without treating live canvas size as constant. */
+    public staticNumberValue(expression: ts.Expression): number | undefined {
+        return staticNumberValue({
+            isDefaultLibraryIdentifier: this.isDefaultLibraryIdentifier,
+            resolveStaticExpression: (value: ts.Expression) => this.resolveStaticExpression(value),
+            lookup: (identifier: ts.Identifier) => this.lookup(identifier),
+            lookupOptional: (identifier: ts.Identifier) => this.lookupOptional(identifier),
+            fail: (node: ts.Node, message: string): never => this.fail(node, message),
+        }, expression);
+    }
+
     public staticTextValue(
         expression: ts.Expression,
     ): string | undefined {
@@ -1573,14 +1584,7 @@ export class StaticEvaluator {
         if (ts.isNumericLiteral(unwrapped)) {
             return String(Number(unwrapped.text));
         }
-        const staticContext = {
-            isDefaultLibraryIdentifier: this.isDefaultLibraryIdentifier,
-            resolveStaticExpression: (value: ts.Expression) => this.resolveStaticExpression(value),
-            lookup: (identifier: ts.Identifier) => this.lookup(identifier),
-            lookupOptional: (identifier: ts.Identifier) => this.lookupOptional(identifier),
-            fail: (node: ts.Node, message: string): never => this.fail(node, message),
-        };
-        const numeric = staticNumberValue(staticContext, unwrapped);
+        const numeric = this.staticNumberValue(unwrapped);
         if (numeric !== undefined) return String(numeric);
         if (
             ts.isCallExpression(unwrapped) &&
@@ -1592,13 +1596,11 @@ export class StaticEvaluator {
             ) &&
             unwrapped.arguments.length <= 1
         ) {
-            const number = staticNumberValue(
-                staticContext,
+            const number = this.staticNumberValue(
                 unwrapped.expression.expression,
             );
             const digits = unwrapped.arguments[0]
-                ? staticNumberValue(
-                      staticContext,
+                ? this.staticNumberValue(
                       unwrapped.arguments[0],
                   )
                 : undefined;

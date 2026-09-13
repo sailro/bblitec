@@ -80,6 +80,42 @@ test("unknown explicit formatting precision cannot fold as omitted precision", (
     }
 });
 
+test("materialized modules retain computed constant facts across imports", () => {
+    const directory = resolve("artifacts/static-string-module-constants");
+    mkdirSync(directory, { recursive: true });
+    writeFileSync(join(directory, "dimensions.ts"), `
+        const edge = 7;
+        export const width: number = 2 * (edge + 3);
+        let calls = 0;
+        export function next(): number { calls++; return width + calls; }
+        next();
+    `);
+    writeFileSync(join(directory, "styles.ts"), `
+        import { width, next } from "./dimensions";
+        const height = width / 2;
+        function unit(): string { return "px"; }
+        const css = \`.module-panel { width: \${width}\${unit()}; height: \${height}px; }\`;
+        export function install(): void {
+            next();
+            const sheet = document.createElement("style");
+            sheet.textContent = css;
+            document.head.appendChild(sheet);
+        }
+    `);
+    writeFileSync(join(directory, "worker.ts"), "self.close();");
+    const entry = join(directory, "entry.ts");
+    const source = `
+        import { install } from "./styles";
+        const worker = new Worker(new URL("./worker.ts", import.meta.url), {type:"module"});
+        worker.terminate();
+        install();
+        globalThis.close();
+    `;
+    writeFileSync(entry, source);
+    const result = compileSource(source, { fileName: entry });
+    assert.match(result.cpp, /ui_add_class_style[^\n]*"module-panel"[^\n]*width: 20px; height: 10px/);
+});
+
 test("enum-indexed constant palettes preserve strings through nested stylesheet helpers", () => {
     const result = compileSource(`
         import { createEngine } from "@babylonjs/lite";
