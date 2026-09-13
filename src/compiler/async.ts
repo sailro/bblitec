@@ -84,6 +84,9 @@ export class AsyncLowerer {
         }
         if (ts.isAwaitExpression(node)) {
             if (!this.depth) return context.fail(node, "This await needs an asynchronous realm activation.");
+            for (let parent: ts.Node | undefined = node.parent; parent && !ts.isFunctionLike(parent); parent = parent.parent) {
+                if (ts.isCatchClause(parent)) return context.fail(node, "Await in catch requires suspended exception handling.");
+            }
             const erasedVoid = context.isBrowserOnlyExpression(node.expression) &&
                 ((context.checker.getAwaitedType(context.checker.getTypeAtLocation(node.expression))?.flags ?? 0) & ts.TypeFlags.Void) !== 0;
             const awaited = this.asPromise(erasedVoid ? { kind: "void", cpp: "" } : context.compileValue(node.expression), node);
@@ -165,7 +168,7 @@ export class AsyncLowerer {
             compiled = this.withActivation(() =>
                 context.withOwnedCallbackBody(() => context.captureManagedClosureLines(() => {
                     const callable = ts.isFunctionDeclaration(callback) ? callback.name ?? context.fail(callback, "Async function requires a name.") : callback;
-                    result.value = context.compileCallbackWithValues(callable, values, node);
+                    result.value = context.compileCallbackWithValues(callable, values, node, false, {coroutine:true});
                     if (result.value.kind === "void" && result.value.cpp) context.emit(`${result.value.cpp};`);
                     if (!rejectsOnly && !result.value.abruptCompletion) context.emit(`co_return ${result.value.kind === "void" ? "bbl::js::PromiseVoid{}" : this.resultCpp(result.value, node)};`);
                 })));

@@ -80,6 +80,10 @@ Recursive local callbacks and mutually recursive groups share traced function ce
 including timers and calls that outlive their declaring scope. Their signatures require owned data types.
 Async returns adopt represented promises; conditional and short-circuit condition branches keep awaits lazy
 inside the current activation.
+Direct async bodies keep early value returns and loop exits in that activation, including rejection
+recovery and synchronous finally effects. Timer and microtask callbacks can start retained async
+work; their promises are discarded without discarding the activation. Await inside a catch or
+finally block still refuses.
 Callbacks returning `Promise<T> | void` retain either the promise or an absent result.
 Bare returns, fallthrough and void-returning expressions preserve their effects; present promises
 support `typeof` checks of their `then` and `catch` methods.

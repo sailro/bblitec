@@ -7109,6 +7109,20 @@ class Compiler
         retainCaptures = false,
     ): string {
         const unwrapped = this.unwrap(expression);
+        const asyncType = this.dataLowerer.promiseCallbackType(unwrapped);
+        if (asyncType) {
+            const noArguments = signature === "void" || signature === "interval";
+            if (asyncType.parameters.length > (noArguments ? 0 : 1))
+                this.fail(expression, "Deferred async callback declares more parameters than its scheduler supplies.");
+            const callback = this.dataLowerer.prepareCallbackValue(unwrapped, "deferred_async")!;
+            const parameter = noArguments ? undefined : this.allocateTemporaryCppName("frame_delta");
+            const compiled = this.captureManagedClosureLines(() => {
+                const arguments_: Value[] = parameter ? [{kind:"number", cpp:parameter,
+                    nativeCaptures:[this.registerNativeBinding(parameter)]}] : [];
+                this.emitDiscardedValue(this.dataLowerer.compileFunctionValueCall(callback, arguments_, expression));
+            });
+            return renderClosure(compiled, parameter ? `[[maybe_unused]] ${signature === "timestamp" ? "double" : "float"} ${parameter}` : "");
+        }
         if (ts.isIdentifier(unwrapped)) {
             if (signature === "void") {
                 const bound = this.lookupOptional(unwrapped);
@@ -12928,6 +12942,7 @@ class Compiler
         arguments_: readonly Value[],
         callNode: ts.Node,
         discardReturn = false,
+        body?: {coroutine: true},
     ): Value {
         const callable = ts.isFunctionDeclaration(declaration)
             ? (declaration.name ??
@@ -12942,6 +12957,7 @@ class Compiler
             arguments_,
             callNode,
             discardReturn,
+            body,
         );
     }
 

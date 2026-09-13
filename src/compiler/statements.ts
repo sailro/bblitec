@@ -1220,6 +1220,8 @@ export class StatementLowerer {
             this.emitTryBody(context, statement);
             return;
         }
+        if (context.workerCheckpointCpp() && someAnalysisNode(statement.finallyBlock, ts.isAwaitExpression, {functions:"skip"}))
+            context.fail(statement.finallyBlock, "Await in finally requires asynchronous cleanup completion.");
         // Lower in source order so generation-only bindings and cleanup see
         // the try body's effects. Native cleanup still precedes the captured
         // body as a scope guard, covering early returns and exceptions.
@@ -3788,6 +3790,13 @@ function terminatesFlow(statement: ts.Statement): boolean {
     if (ts.isBlock(statement)) {
         const last = statement.statements.at(-1);
         return last ? terminatesFlow(last) : false;
+    }
+    if (ts.isIfStatement(statement)) {
+        return !!statement.elseStatement && terminatesFlow(statement.thenStatement) && terminatesFlow(statement.elseStatement);
+    }
+    if (ts.isTryStatement(statement)) {
+        return (!!statement.finallyBlock && terminatesFlow(statement.finallyBlock)) ||
+            (terminatesFlow(statement.tryBlock) && (!statement.catchClause || terminatesFlow(statement.catchClause.block)));
     }
     return false;
 }

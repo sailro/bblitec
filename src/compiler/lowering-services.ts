@@ -484,7 +484,7 @@ export interface LoweringServices {
     materializeEscapingValue(value: Value, label: string, node?: ts.Expression): Value;
     pinValueToTemporary(value: Value, label: string, node?: ts.Expression): Value;
     bindDataTuple(value: Value, arity: number, label?: string): string;
-    compileCallbackWithValues(declaration: ts.Identifier | ts.FunctionDeclaration | ts.ArrowFunction | ts.FunctionExpression | ts.MethodDeclaration, arguments_: readonly Value[], callNode: ts.Node, discardReturn?: boolean): Value;
+    compileCallbackWithValues(declaration: ts.Identifier | ts.FunctionDeclaration | ts.ArrowFunction | ts.FunctionExpression | ts.MethodDeclaration, arguments_: readonly Value[], callNode: ts.Node, discardReturn?: boolean, body?: {coroutine: true}): Value;
     compileStoredDataFunction(expression: ts.Identifier | ts.FunctionDeclaration | ts.ArrowFunction | ts.FunctionExpression | ts.MethodDeclaration, dataType: DataType & {
         kind: "function";
     }, owner?: Value): string;

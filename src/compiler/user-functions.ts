@@ -2222,6 +2222,7 @@ export class UserFunctionLowerer {
         arguments_: readonly Value[],
         callNode: ts.Node,
         discardReturn = false,
+        body?: {coroutine: true},
     ): Value {
         const bound = ts.isIdentifier(declaration) ? context.lookupOptional(declaration) : undefined;
         if (bound?.dataType?.kind === "function") {
@@ -2241,7 +2242,7 @@ export class UserFunctionLowerer {
                 return {kind:"void", cpp:""};
             }
             if (target !== declaration) {
-                const invoke = () => this.compileCallbackWithValues(context, target, arguments_, callNode, discardReturn);
+                const invoke = () => this.compileCallbackWithValues(context, target, arguments_, callNode, discardReturn, body);
                 return bound.callbackRecordOwner ? context.withRecordScopes(bound.callbackRecordOwner, invoke) : invoke();
             }
         }
@@ -2289,6 +2290,7 @@ export class UserFunctionLowerer {
             values,
             callNode,
             discardReturn,
+            body,
         );
     }
 
@@ -2638,6 +2640,7 @@ export class UserFunctionLowerer {
         arguments_: readonly Value[],
         callNode: ts.Node,
         discardReturn = false,
+        body?: {coroutine: true},
     ): Value {
         if (this.active.has(ir.declaration)) {
             context.fail(
@@ -2661,6 +2664,24 @@ export class UserFunctionLowerer {
                 );
             });
             if (ir.needsValueLambda) {
+                if (body?.coroutine) {
+                    // The caller owns this coroutine frame. Its early returns
+                    // must not enter a synchronous value-function wrapper.
+                    const type = this.valueLambdaReturnType(context, ir, callNode);
+                    if (type.kind !== "promise") context.fail(callNode, "Async control flow requires an owned promise result.");
+                    context.beginNativeFunctionBody(type.result, false, {coroutine:true});
+                    try {
+                        const terminated = emitReachableStatements(context, ir.statements);
+                        if (!terminated) {
+                            if (!type.result) context.emit("co_return bbl::js::PromiseVoid{};");
+                            else if (type.result.kind === "optional") context.emit("co_return std::nullopt;");
+                            else context.fail(callNode, "Async value function can fall through without returning.");
+                        }
+                    } finally {
+                        context.endNativeFunctionBody();
+                    }
+                    return {kind:"void", cpp:"", abruptCompletion:true};
+                }
                 const specialized = context.probeEmission(
                     () => this.lowerStaticReturnPath(context, ir, discardReturn),
                     value => value !== undefined,

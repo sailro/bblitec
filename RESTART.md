@@ -36,7 +36,7 @@ it does not establish that this external application compiles or runs.
 | Branch | `codex/external-project-support` |
 | Remote | `https://github.com/sailro/bblitec.git` |
 | Branch base used in this session | `3474e835` on `main` |
-| Latest executable-code/test unit | Owned async collection invocation; prior savepoints `24281f2c` (promise caches/reactions), `53ba4164` (recursive async and hardened validation), `f5cd2061` (AudioBuffer surface) and `310e61dc` (Math and forwarded callbacks) |
+| Latest executable-code/test unit | Async control flow and deferred callbacks; prior savepoints `e5ea2607` (async collections), `24281f2c` (promise caches/reactions), `53ba4164` (recursive async and hardened validation) and `f5cd2061` (AudioBuffer surface) |
 | Draft PR | [#247 — Extend generic application compilation and retained UI support](https://github.com/sailro/bblitec/pull/247) |
 | External checkout | `C:/Dev/_prototypes/external-native-app` |
 | External source revision | `d7c477a6d5963680c55249dceb93cb6e4ab9ce56` |
@@ -44,11 +44,35 @@ it does not establish that this external application compiles or runs.
 | External generated output | `generated/external-app` (ignored; not a successful complete generation) |
 | Session diagnostics | `artifacts/external-integration` (ignored) |
 
-Latest complete-entry diagnostic: `compile613` passed the inline async record
-mapper and stopped at an early null return inside its calling async function.
-Direct async bodies with multiple value-return paths still use the synchronous
-value-lambda protocol and attempt to store the returned value as a promise.
+Latest complete-entry diagnostic: `compile619` passed async early-return paths
+and stopped at an audio source's `addEventListener("ended", ...)` call.
 Generation, native build and application runtime remain incomplete.
+
+Direct async bodies now pass a coroutine-body mode through the shared callback
+lowerer. Multiple runtime returns use the caller's native coroutine return frame,
+preserving specialized arguments and return-promise/return-await catch boundaries.
+The common flow-completion analysis recognizes terminating if/try branches.
+Timer/microtask callbacks returning promises reuse retained function preparation.
+The fixed twelve-probe control-flow baseline (`async-control615`) builds and runs
+3/12; `async-control617-native` passes 11/12. Await in finally remains explicitly
+refused; await in catch also receives a direct diagnostic, rather than producing
+a co_await inside a native exception handler. Neither is established as reached
+by the application's latest attempt.
+`control618` passes four focused async fixtures. `regressions619` passes all 835
+compiler/control-flow/language/callback/async/fetch/worker checks without skips.
+`population620` generated all 288 registered corpus entries. `control621` passes
+all four focused fixtures after the final diagnostic guards, without skips.
+
+Next: generic scheduled-audio-source event ownership. Existing LabSound nodes
+already install setOnEnded in `create_node`, marking AudioSourceState.completed.
+`collect_audio_graph` pumps LabSound dispatchEvents on the control thread before
+graph collection; it is currently reached from the renderer frame boundary.
+Do not invoke user callbacks while iterating contexts/graphs or holding render/
+graph locks: an ended callback may disconnect nodes or close its context.
+AudioNodeHandle owns AudioNodeRecord with a plain shared_ptr; introducing retained
+JS callbacks also requires traced ownership, since listeners can capture their
+source. EventLoop::Inbox accepts native ExternalEvent data only, and the existing
+CompletionEvent/retained-completion mechanism may provide the realm dispatch seam.
 
 Async collections now reuse one callback preparation helper and typed stored
 coroutines across vector/tuple mapping, predicates, forEach, reduce and Array.from.
