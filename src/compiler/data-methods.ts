@@ -10,6 +10,7 @@ import { captureArrayReceiver, compileArrayValueMethod } from "./array-methods.j
 import { compileStringValueMethod } from "./string-methods.js";
 import { compileDateMethod, compileDateTimeFormatMethod } from "./dates.js";
 import { compileHttpResponseMethod } from "./http.js";
+import { compileSearchParamsMethod } from "./search-params.js";
 import { compileCollectionForEach } from "./collection-methods.js";
 
 import {
@@ -365,6 +366,7 @@ export function compileDataMethodCall(
                 : undefined;
     if (dynamicOwner?.dataType?.kind === "date") return compileDateMethod(lowerer, call, dynamicOwner, method);
     if (dynamicOwner?.dataType?.kind === "http-response") return compileHttpResponseMethod(lowerer, call, dynamicOwner, method);
+    if (dynamicOwner?.dataType?.kind === "search-params") return compileSearchParamsMethod(lowerer, call, dynamicOwner, method);
     if (dynamicOwner?.dataType?.kind === "date-time-format") return compileDateTimeFormatMethod(lowerer, call, dynamicOwner, method);
     const tupleOwnerElements: Value[] | undefined =
         dynamicOwner?.kind === "tuple"

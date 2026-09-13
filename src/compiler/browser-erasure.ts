@@ -498,7 +498,7 @@ export class BrowserErasure {
                 unwrapped.expression,
             )
         ) {
-            return true;
+            return this.evaluateBrowserValue(unwrapped) !== undefined;
         }
         if (
             ts.isPropertyAccessExpression(unwrapped) ||
@@ -864,6 +864,7 @@ export class BrowserErasure {
             const over = argument
                 ? this.evaluateBrowserValue(argument)
                 : undefined;
+            if (argument && over?.kind !== "string") return undefined;
             return {
                 kind: "search-params",
                 search: over?.kind === "string" ? over.value : "",
@@ -1155,9 +1156,12 @@ export class BrowserErasure {
                     if (key?.kind !== "string") return undefined;
                     const parameters = new URLSearchParams(owner.search);
                     if (method === "has") {
+                        const valueArgument = unwrapped.arguments[1];
+                        const value = valueArgument ? this.evaluateBrowserValue(valueArgument) : undefined;
+                        if (valueArgument && value?.kind !== "string") return undefined;
                         return {
                             kind: "boolean",
-                            value: parameters.has(key.value),
+                            value: value?.kind === "string" ? parameters.has(key.value, value.value) : parameters.has(key.value),
                         };
                     }
                     const found = parameters.get(key.value);

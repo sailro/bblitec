@@ -129,7 +129,11 @@ function valueString(_dataType: DataType<"string">, lowerer: DataSinkHost, value
     return undefined;
 }
 
-export const scalarsSinks: DataSinkOperations<"event-target" | "http-response" | "promise" | "storage" | "date" | "date-time-format" | "number" | "boolean" | "string" | "json" | "borrowed-platform-event"> = {
+export const scalarsSinks: DataSinkOperations<"event-target" | "search-params" | "http-response" | "promise" | "storage" | "date" | "date-time-format" | "number" | "boolean" | "string" | "json" | "borrowed-platform-event"> = {
+    "search-params": {
+        expression: (type, lowerer, _expression, unwrapped) => lowerer.compileKnownValueForSink(lowerer.context.compileValue(unwrapped), type, unwrapped),
+        value: (_type, _lowerer, value) => value.dataType?.kind === "search-params" ? value.cpp : undefined,
+    },
     "event-target": {
         expression: (type, lowerer, expression) => lowerer.compileKnownValueForSink(lowerer.context.compileValue(expression), type, expression),
         value: (_type, lowerer, value, node) => eventTargetCpp(lowerer.context, value, node),

@@ -4,6 +4,7 @@ export type TypedArrayKind = "u8array" | "i8array" | "f64array" | "f32array" | "
 export interface DataKinds {
     "event-target": {kind:"event-target"};
     "http-response": {kind:"http-response"};
+    "search-params": {kind:"search-params"};
     "promise": { kind: "promise"; result?: DataType; };
     "storage": { kind: "storage"; };
     "date": { kind: "date"; };

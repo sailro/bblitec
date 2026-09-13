@@ -48,6 +48,7 @@ import { compileErrorConstruction, errorConstructor } from "./error-values.js";
 import { OBJECT_STATIC_HANDLERS, compileObjectPrototypeCall, ownObjectEntries } from "./object-statics.js";
 import { compileWindowIdentity } from "./window-events.js";
 import { compileDateTimeFormat } from "./dates.js";
+import { compileSearchParams } from "./search-params.js";
 import { compileHttpFunction, compileHttpCall } from "./http.js";
 import { compileWindowServiceCall } from "./window-events.js";
 import { CompileError } from "./compile-error.js";
@@ -631,6 +632,8 @@ export class ExpressionLowerer {
             return property;
         }
         if (ts.isNewExpression(unwrapped)) {
+            const query = this.context.evaluateBrowserValue(unwrapped) ? undefined : compileSearchParams(this.context.dataLowerer, unwrapped);
+            if (query) return query;
             const audio = compileAudioConstructor(this.context, unwrapped);
             if (audio) return audio;
             const browserFile = compileBrowserFileConstructor(

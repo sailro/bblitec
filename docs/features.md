@@ -58,6 +58,13 @@ string projections.
 
 Native generation uses production client constants for `import.meta.env`: `MODE` is `"production"`,
 `PROD` is true, and `DEV`/`SSR` are false. `BASE_URL` follows the configured deployment URL.
+
+Runtime string-initialized `URLSearchParams` supports `get` and `has`, including
+the optional value filter for `has`. Reads preserve duplicate order, empty versus
+absent values, percent decoding, plus signs and Unicode replacement according to
+the [URL query parser](https://url.spec.whatwg.org/#urlencoded-parsing). Aliases
+retain query identity. Fixed deployment queries still fold during generation;
+runtime mutations and other constructor forms remain unsupported.
 Custom environment fields are explicit string inputs (`--env NAME=value`, repeatable, or
 `CompileOptions.environment`). Missing custom keys read as undefined; empty strings stay empty.
 Built-in constants cannot be overridden. Host environment variables and dotenv files are not read implicitly.

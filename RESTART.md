@@ -8,7 +8,30 @@ dependencies will not be present in a fresh clone.
 
 ## Read this first
 
-**Current unit: runtime query parameters.** Promise unit `3d1d126a` is committed
+**Current unit: dynamic module record assignment.** Native query support is
+implemented and validated. quality1008-build uses the real Clang Window/UI PAL;
+quality1008-native passes all six URL/preference branches against JavaScript and
+the actual no-bridge desktop callback. query1008-regressions passes 698/698 with
+no skips. Public search-params tests compare all UTF-16 units for 88 query/key
+combinations, including malformed percent/UTF-8, duplicate keys, absent/empty
+values and surrogate replacement. They retain alias identity and single argument
+evaluation; fixed-query has now respects its optional value filter as well.
+
+Native SearchParams is an opaque retained data type, with ordered parsed entries
+and get/has reads; unsupported dynamic methods explicitly refuse. The browser
+evaluator no longer treats an unknown constructor input as an empty query. A
+separate embedded-NUL literal truncation surfaced when encoding the test oracle;
+TODO.md records it, and the query comparison validates complete code units without
+depending on that broken literal boundary. Clang binding fix is `b682d985`.
+
+probe-setting1009.mjs reproduces the next application failure in about five
+seconds, preserving workers, the unchanged configuration loader, public assets
+and the unchanged sound-settings setter. It fails in emitLocalDataAssignment:
+represented JSON assigned to a previously declared typed module record. Use this
+probe and neutral alias/rebinding fixtures before another full-entry retry.
+The application has not fully generated, built or run. Continue without asking.
+
+**Completed unit: runtime query parameters.** Promise unit `3d1d126a` is committed
 and pushed. Full compile998 advanced to the sound-effects configuration setter:
 JSON-backed data assigned to a previously typed module record (78.25 seconds).
 That is the next full-entry blocker and overlaps the first dynamic-value TODO.

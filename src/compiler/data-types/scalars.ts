@@ -13,11 +13,12 @@ function typedArray(kind: TypedArrayKind) {
 }
 
 export const scalarKinds: DataKindOperations<
-    "http-response" | "storage" | "date" | "date-time-format" | "number" | "boolean" | "string" | "arraybuffer" | "dataview" | "bufferview" | "numberindex" | "json" |
+    "search-params" | "http-response" | "storage" | "date" | "date-time-format" | "number" | "boolean" | "string" | "arraybuffer" | "dataview" | "bufferview" | "numberindex" | "json" |
     "event-target" | "borrowed-platform-event" | "handle" | TypedArrayKind
 > = {
     "event-target": leaf("bbl::DomEventTargetValue", "event-target"),
     "http-response": {...leaf("bbl::pal::HttpResponse", "http-response", true), opaqueReference:true},
+    "search-params": {...leaf("bbl::js::SearchParams", "search-params", true), opaqueReference:true},
     storage: {...leaf("bbl::js::Storage", "storage", true), opaqueReference:true},
     date: { ...leaf("bbl::js::Date", "date", true), opaqueReference: true },
     "date-time-format": { ...leaf("bbl::js::DateTimeFormat", "dateformat", true), opaqueReference: true },

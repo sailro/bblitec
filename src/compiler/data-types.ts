@@ -731,6 +731,7 @@ export class DataTypeRegistry {
     }
     if (type.symbol?.name === "Storage" && declaredInDomLibrary(type.symbol)) return {kind:"storage"};
     if (type.symbol?.name === "Response" && declaredInDomLibrary(type.symbol)) return {kind:"http-response"};
+    if (type.symbol?.name === "URLSearchParams" && declaredInDomLibrary(type.symbol)) return {kind:"search-params"};
     if (type.symbol?.name === "Date" && type.symbol.declarations?.some(
       declaration => ts.isInterfaceDeclaration(declaration) && isDefaultLibraryIdentifier(this.checker, declaration.name),
     )) return {kind:"date"};
