@@ -383,7 +383,7 @@ int run_window_application(WorkerEntry initialize, EngineOptions options) {
             create_ui_rml_runtime(display, window.get(), options.width, options.height), &destroy_ui_rml_runtime);
         std::atomic<bool> finished = false;
         std::exception_ptr application_error;
-        std::jthread application([&] {
+        std::thread application([&] {
             try {
                 const js::RealmScope state;
                 EventLoop loop(services->inbox);
@@ -414,7 +414,16 @@ int run_window_application(WorkerEntry initialize, EngineOptions options) {
             } catch (...) { application_error = std::current_exception(); }
             finished = true;
         });
-        struct Stop { std::shared_ptr<WindowServices> services; ~Stop() { services->stop(); } } stop{services};
+        // Shutdown uses the realm inbox rather than a C++ stop token. Keep
+        // the join exception-safe without requiring libc++'s newer jthread.
+        struct Stop {
+            std::shared_ptr<WindowServices> services;
+            std::thread& application;
+            ~Stop() {
+                services->stop();
+                if (application.joinable()) application.join();
+            }
+        } stop{services, application};
         std::unordered_map<std::uint32_t, OffscreenFrame> latest;
         PlatformInputReplay input_replay;
         LayoutSnapshot next_layout;

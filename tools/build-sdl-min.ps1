@@ -10,7 +10,7 @@ param(
 # packages. The version tracks the vcpkg-installed SDL3 so the trimmed
 # library stays ABI-identical to the one SDL3_image was compiled
 # against. The engine initializes only SDL_INIT_VIDEO|SDL_INIT_EVENTS
-# and renders through SDL_GPU (D3D12 on Windows, Vulkan on Linux).
+# and renders through SDL_GPU (D3D12 on Windows, Vulkan on Linux, Metal on macOS).
 # Unreached joystick/HIDAPI, haptic, sensor, camera, power, misc, locale,
 # GL plumbing and the SDL_Renderer core are compiled out entirely.
 # SDL's portable dialog subsystem remains available for browser:file scenes;
@@ -97,6 +97,8 @@ $patches = @(
     (Join-Path $root "native\vcpkg-overlay-ports\sdl3\sdl-multisample-read.patch"),
     (Join-Path $root "native\vcpkg-overlay-ports\sdl3\d3d12-multisample-lines.patch"),
     (Join-Path $root "native\vcpkg-overlay-ports\sdl3\d3d12-descriptor-heaps.patch"),
+    (Join-Path $root "native\vcpkg-overlay-ports\sdl3\metal-storage-buffer-sizes.patch"),
+    (Join-Path $root "native\vcpkg-overlay-ports\sdl3\metal-fence-query.patch"),
     (Join-Path $root "tools\patches\sdl-static-no-dynapi.patch")
 )
 foreach ($patch in $patches) {
@@ -146,6 +148,7 @@ $sdlOptions = [ordered]@{
     SDL_OPENGL = "OFF"
     SDL_OPENGLES = "OFF"
     SDL_VULKAN = $(if ($IsLinux) { "ON" } else { "OFF" })
+    SDL_METAL = $(if ($IsMacOS) { "ON" } else { "OFF" })
     SDL_RENDER_GPU = "OFF"
     SDL_GPU = "ON"
     SDL_RENDER = "OFF"
@@ -164,7 +167,7 @@ if ($IsWindows) {
         '-DCMAKE_C_FLAGS_MINSIZEREL=/O1 /Ob1 /DNDEBUG /Gw'
     )
 } else {
-    $configureArguments += @(Get-LinuxCompilerArguments)
+    $configureArguments += @(Get-PosixCompilerArguments)
     $configureArguments += @(
         "-G", "Ninja", "-DCMAKE_INSTALL_LIBDIR=lib",
         "-DCMAKE_C_FLAGS_MINSIZEREL=-Os -DNDEBUG -ffunction-sections -fdata-sections",
@@ -221,6 +224,7 @@ Copy-Item (Join-Path $source "LICENSE.txt") (Join-Path $output "LICENSE.txt") -F
     "set(BBLITE_SDL_GAMEPAD $gamepadSetting)"
     "set(BBLITE_SDL_DIALOG ON)"
     "set(BBLITE_SDL_VULKAN $($sdlOptions.SDL_VULKAN))"
+    "set(BBLITE_SDL_METAL $($sdlOptions.SDL_METAL))"
 ) -join "`n" |
     Set-Content (Join-Path $output "bblite-sdl-features.cmake") -Encoding Ascii
 
@@ -231,6 +235,7 @@ Copy-Item (Join-Path $source "LICENSE.txt") (Join-Path $output "LICENSE.txt") -F
     patches = @($patches | ForEach-Object { Split-Path -Leaf $_ })
     variant = "static, MinSizeRel, $($variantFeatures -join '+') only"
     vulkan = $IsLinux
+    metal = $IsMacOS
     staticRuntime = $IsWindows
     builtAt = (Get-Date).ToUniversalTime().ToString("o")
 } | ConvertTo-Json | Set-Content (Join-Path $output "provenance.json")

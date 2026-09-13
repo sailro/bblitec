@@ -21,7 +21,7 @@ npm run scene -- process scene1
 npm run scene -- parity scene1 --differential
 ```
 
-See [development](docs/development.md#setup) for Windows and Linux prerequisites
+See [development](docs/development.md#setup) for Windows, Linux and macOS prerequisites
 and the Windows CMake path. A built scene requires a GPU.
 
 ## Documentation

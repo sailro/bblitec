@@ -4,6 +4,7 @@
   "builtin-baseline": "ea1a7396b05637a53bf23c078647ecc0edee4b80",
   "dependencies": [
     "nlohmann-json",
+    { "name": "boost-charconv", "platform": "osx" },
     { "name": "sdl3", "platform": "!linux" },
     { "name": "sdl3", "platform": "linux", "features": ["vulkan", "alsa"] }
   ],

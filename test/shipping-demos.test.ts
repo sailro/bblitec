@@ -20,8 +20,8 @@ test("shipping selects host shader payloads and trims unreached SVG on both plat
     const script = readFileSync("tools/package-demo.ps1", "utf8");
     const start = script.indexOf("$shaderPatterns ="), end = script.indexOf("if (-not $shaderFiles)", start);
     assert.ok(start >= 0 && end > start);
-    const payload = script.slice(start, end).replaceAll("$IsWindows", "$windowsHost");
-    for (const name of ["a.vert.dxil", "a.vert.spv", "a.vert.slots", "a.vert.native.wgsl", "a.vert.hlsl"]) {
+    const payload = script.slice(start, end).replaceAll("$IsWindows", "$windowsHost").replaceAll("$IsMacOS", "$macHost");
+    for (const name of ["a.vert.dxil", "a.vert.spv", "a.vert.msl", "a.vert.slots", "a.vert.native.wgsl", "a.vert.hlsl"]) {
         writeFileSync(join(directory, name), "");
     }
     const rml = readFileSync("tools/build-rmlui.ps1", "utf8");
@@ -34,9 +34,10 @@ $shaderSource = $PSScriptRoot
 foreach ($case in @(
     @{ Windows = $true; Backend = 'SDL_GPU'; Expected = 'a.vert.dxil,a.vert.slots' },
     @{ Windows = $false; Backend = 'SDL_GPU'; Expected = 'a.vert.slots,a.vert.spv' },
+    @{ Windows = $false; Mac = $true; Backend = 'SDL_GPU'; Expected = 'a.vert.msl,a.vert.slots' },
     @{ Windows = $true; Backend = 'DAWN'; Expected = 'a.vert.native.wgsl' }
 )) {
-    $windowsHost = $case.Windows; $backend = $case.Backend
+    $windowsHost = $case.Windows; $macHost = $case.Mac; $backend = $case.Backend
     ${payload}
     if (($shaderFiles.Name | Sort-Object) -join ',' -ne $case.Expected) { throw 'Wrong shader payload' }
 }
@@ -57,7 +58,8 @@ foreach ($StaticRuntime in @($false, $true)) {
 test("Linux shipping selects static host libraries and Vulkan-compatible native configuration", () => {
     assert.equal(shippingPlatform("linux", "x64"), "linux");
     assert.equal(shippingPlatform("win32", "x64"), "win32");
-    assert.throws(() => shippingPlatform("darwin", "x64"));
+    assert.equal(shippingPlatform("darwin", "x64"), "darwin");
+    assert.throws(() => shippingPlatform("freebsd", "x64"));
     assert.throws(() => shippingPlatform("linux", "arm64"));
     const plan = shippingPlan(process.cwd(), [{ scene: sample, reached: core }], undefined, "linux");
     const scene = plan.scenes[0]!;
@@ -70,6 +72,9 @@ test("Linux shipping selects static host libraries and Vulkan-compatible native 
         "-DBBLITE_VISUAL_CAPTURE=OFF", "-DBBLITE_AUDIO_CAPTURE=OFF"]) assert.ok(args.includes(required), required);
     assert.ok(!args.some(arg => arg.includes("MSVC") || arg.includes("windows-static")));
     assert.match(packageSizeReport([], "linux"), /SDL_GPU \/ Vulkan/);
+    const mac = shippingPlan(process.cwd(), [{ scene: sample, reached: core }], undefined, "darwin");
+    assert.equal(mac.profiles[0]!.triplet, "x64-osx");
+    assert.match(packageSizeReport([], "darwin"), /SDL_GPU \/ Metal/);
 });
 
 test("shipping selects all application registry entries and refuses paths or duplicate IDs", () => {

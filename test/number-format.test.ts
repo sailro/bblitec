@@ -2,11 +2,14 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import test from "node:test";
+import { developmentTriplet } from "../src/build-options.js";
+import { discoverDevelopmentTools } from "../src/development-tools.js";
 import { nativeFixtureVcpkgRoot, optionalNativeFixtureTools, runNativeFixtureCompiler } from "./native-fixture.js";
 
 test("native numeric strings, concatenation and JSON match JavaScript across binary64 values", t => {
     const tools = optionalNativeFixtureTools();
-    if (!tools) { t.skip("Native fixture compiler unavailable."); return; }
+    const unixCompiler = process.platform !== "win32" ? discoverDevelopmentTools().cxx : undefined;
+    if (!tools && !unixCompiler) { t.skip("Native fixture compiler unavailable."); return; }
     const directory = resolve("artifacts/number-format-check");
     mkdirSync(directory, { recursive: true });
     const bits = new DataView(new ArrayBuffer(8));
@@ -35,8 +38,16 @@ test("native numeric strings, concatenation and JSON match JavaScript across bin
     });
     const input = join(directory, "cases.tsv"), executable = join(directory, "check.exe");
     writeFileSync(input, cases.join("\n") + "\n");
-    runNativeFixtureCompiler(tools, ["/nologo", "/std:c++20", "/W4", "/WX", "/permissive-", "/EHsc", "/MD",
-        "/I", "native/include", "/I", join(nativeFixtureVcpkgRoot, "include"),
-        `/Fo:${directory}/`, `/Fe:${executable}`, "test/fixtures/number-format-check.cpp"]);
+    if (tools) {
+        runNativeFixtureCompiler(tools, ["/nologo", "/std:c++20", "/W4", "/WX", "/permissive-", "/EHsc", "/MD",
+            "/I", "native/include", "/I", join(nativeFixtureVcpkgRoot, "include"),
+            `/Fo:${directory}/`, `/Fe:${executable}`, "test/fixtures/number-format-check.cpp"]);
+    } else {
+        const dependencies = resolve("artifacts/vcpkg-installed/development-full", developmentTriplet());
+        execFileSync(unixCompiler!, ["-std=c++20", "-Wall", "-Wextra", "-Werror",
+            "-I", "native/include", "-I", join(dependencies, "include"),
+            "test/fixtures/number-format-check.cpp", "-o", executable,
+            ...(process.platform === "darwin" ? [join(dependencies, "lib/libboost_charconv.a")] : [])], { stdio: "pipe" });
+    }
     execFileSync(executable, [input], { stdio: "pipe" });
 });

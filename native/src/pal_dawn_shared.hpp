@@ -361,9 +361,13 @@ inline void create_dawn_device(
 #endif
         acquire_run_window(
         engine_options,
-        options.hidden_test_pass
+        (options.hidden_test_pass
             ? SDL_WINDOW_RESIZABLE | SDL_WINDOW_NOT_FOCUSABLE
-            : SDL_WINDOW_RESIZABLE);
+            : SDL_WINDOW_RESIZABLE)
+#if defined(__APPLE__)
+            | SDL_WINDOW_METAL
+#endif
+        );
     if (!state.window) {
         dawn_error(std::string("SDL_CreateWindow: ") + SDL_GetError());
     }
@@ -413,6 +417,13 @@ inline void create_dawn_device(
     surface_source.hinstance = hinstance;
     surface_source.hwnd = hwnd;
     surface_descriptor.nextInChain = &surface_source.chain;
+#elif defined(__APPLE__)
+    state.metal_view = SDL_Metal_CreateView(state.window);
+    if (!state.metal_view) dawn_error(std::string("SDL_Metal_CreateView: ") + SDL_GetError());
+    WGPUSurfaceSourceMetalLayer metal_source = WGPU_SURFACE_SOURCE_METAL_LAYER_INIT;
+    metal_source.layer = SDL_Metal_GetLayer(state.metal_view);
+    if (!metal_source.layer) dawn_error("SDL Metal view exposes no CAMetalLayer.");
+    surface_descriptor.nextInChain = &metal_source.chain;
 #elif defined(__linux__)
     const auto window_properties = SDL_GetWindowProperties(state.window);
     WGPUSurfaceSourceXlibWindow xlib_source = WGPU_SURFACE_SOURCE_XLIB_WINDOW_INIT;
@@ -457,6 +468,8 @@ inline void create_dawn_device(
     adapter_options.powerPreference = WGPUPowerPreference_HighPerformance;
 #if defined(_WIN32)
     adapter_options.backendType = WGPUBackendType_D3D12;
+#elif defined(__APPLE__)
+    adapter_options.backendType = WGPUBackendType_Metal;
 #elif defined(__linux__)
     adapter_options.backendType = WGPUBackendType_Vulkan;
 #endif

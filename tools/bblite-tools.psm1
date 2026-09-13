@@ -154,14 +154,18 @@ function Read-CMakeCache([string]$Path) {
     return $cache
 }
 
-# Match Linux scene builds; explicit CC/CXX remain available for GCC checks.
-function Get-LinuxCompilerArguments {
-    if (-not $IsLinux) { return @() }
+# Match Unix scene builds; explicit CC/CXX select a compatible host toolchain.
+function Get-PosixCompilerArguments {
+    if (-not $IsLinux -and -not $IsMacOS) { return @() }
     $ccName = if ($env:CC) { $env:CC } else { "clang" }
     $cxxName = if ($env:CXX) { $env:CXX } else { "clang++" }
     $ccTool = Get-Command $ccName -CommandType Application -ErrorAction Stop | Select-Object -First 1
     $cxxTool = Get-Command $cxxName -CommandType Application -ErrorAction Stop | Select-Object -First 1
-    return @("-DCMAKE_C_COMPILER=$($ccTool.Source)", "-DCMAKE_CXX_COMPILER=$($cxxTool.Source)")
+    $arguments = @("-DCMAKE_C_COMPILER=$($ccTool.Source)", "-DCMAKE_CXX_COMPILER=$($cxxTool.Source)")
+    if ($IsMacOS) {
+        $arguments += @("-DCMAKE_OBJC_COMPILER=$($ccTool.Source)", "-DCMAKE_OBJCXX_COMPILER=$($cxxTool.Source)")
+    }
+    return $arguments
 }
 
 function Get-BuildParallelArguments([int]$Jobs = 0) {
@@ -182,5 +186,5 @@ Export-ModuleMember -Function @(
     "Sync-PinnedCheckout",
     "Read-CMakeCache"
     "Get-BuildParallelArguments"
-    "Get-LinuxCompilerArguments"
+    "Get-PosixCompilerArguments"
 )

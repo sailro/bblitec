@@ -1,0 +1,35 @@
+Expose Metal storage-buffer byte lengths for Tint robust accesses.
+The compiler remaps its length indices to SDL storage slots.
+
+--- a/src/gpu/metal/SDL_gpu_metal.m
++++ b/src/gpu/metal/SDL_gpu_metal.m
+@@ -2712,6 +2712,14 @@
+ 
+     if (commandBuffer->needVertexStorageBufferBind) {
+         if (graphicsPipeline->header.num_vertex_storage_buffers > 0) {
++            // Tint's robust storage accesses consume uint4-packed byte lengths.
++            // Buffer 30 follows SDL's vertex-buffer range (14..29) and is not
++            // used by the ordinary uniform/storage-buffer binding ranges.
++            Uint32 sizes[((MAX_STORAGE_BUFFERS_PER_STAGE + 3) / 4) * 4] = { 0 };
++            for (Uint32 i = 0; i < graphicsPipeline->header.num_vertex_storage_buffers; i += 1) {
++                sizes[i] = (Uint32)[commandBuffer->vertexStorageBuffers[i] length];
++            }
++            [commandBuffer->renderEncoder setVertexBytes:sizes length:sizeof(sizes) atIndex:30];
+             [commandBuffer->renderEncoder setVertexBuffers:commandBuffer->vertexStorageBuffers
+                                                    offsets:offsets
+                                                  withRange:NSMakeRange(graphicsPipeline->header.num_vertex_uniform_buffers,
+@@ -2761,6 +2769,14 @@
+ 
+     if (commandBuffer->needFragmentStorageBufferBind) {
+         if (graphicsPipeline->header.num_fragment_storage_buffers > 0) {
++            // Tint's robust storage accesses consume uint4-packed byte lengths.
++            // Buffer 30 follows SDL's vertex-buffer range (14..29) and is not
++            // used by the ordinary uniform/storage-buffer binding ranges.
++            Uint32 sizes[((MAX_STORAGE_BUFFERS_PER_STAGE + 3) / 4) * 4] = { 0 };
++            for (Uint32 i = 0; i < graphicsPipeline->header.num_fragment_storage_buffers; i += 1) {
++                sizes[i] = (Uint32)[commandBuffer->fragmentStorageBuffers[i] length];
++            }
++            [commandBuffer->renderEncoder setFragmentBytes:sizes length:sizeof(sizes) atIndex:30];
+             [commandBuffer->renderEncoder setFragmentBuffers:commandBuffer->fragmentStorageBuffers
+                                                      offsets:offsets
+                                                    withRange:NSMakeRange(graphicsPipeline->header.num_fragment_uniform_buffers,

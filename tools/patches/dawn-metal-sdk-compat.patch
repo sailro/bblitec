@@ -1,0 +1,15 @@
+--- a/src/dawn/native/metal/PhysicalDeviceMTL.mm
++++ b/src/dawn/native/metal/PhysicalDeviceMTL.mm
+@@ -55,6 +55,12 @@
+ 
+ namespace {
+ 
++#if DAWN_PLATFORM_IS(MACOS) && __MAC_OS_X_VERSION_MAX_ALLOWED < 140000
++// Preserve Apple9 detection when building with a pre-macOS 14 SDK.
++// Public value: apple/metal-cpp, Metal/MTLDevice.hpp (GPUFamilyApple9).
++constexpr ::MTLGPUFamily MTLGPUFamilyApple9 = static_cast<::MTLGPUFamily>(1009);
++#endif
++
+ struct PCIIDs {
+     uint32_t vendorId;
+     uint32_t deviceId;

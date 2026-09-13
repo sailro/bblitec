@@ -1,0 +1,13 @@
+SDL_QueryGPUFence reports completion, not pending GPU work.
+
+--- a/src/gpu/metal/SDL_gpu_metal.m
++++ b/src/gpu/metal/SDL_gpu_metal.m
+@@ -3627,7 +3627,7 @@
+     SDL_GPUFence *fence)
+ {
+     MetalFence *metalFence = (MetalFence *)fence;
+-    return METAL_INTERNAL_IsFenceBusy(metalFence);
++    return !METAL_INTERNAL_IsFenceBusy(metalFence);
+ }
+ 
+ // Window and Swapchain Management

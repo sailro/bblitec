@@ -11,7 +11,7 @@ in [fidelity](fidelity.md), and commands in [development](development.md).
 | Shaders | Offline Tint/target binaries | Deployed WGSL compiled by Dawn |
 | Binding authority | Compiled `.slots` sidecars | WGSL and generated layout tables |
 | Uniforms | Push/uniform and storage API | Queue writes and retained bind groups |
-| Platform coverage | Windows D3D12; Linux Vulkan | Windows D3D12; Linux Vulkan with X11/Wayland surfaces |
+| Platform coverage | Windows D3D12; Linux Vulkan; macOS Metal | Windows D3D12; Linux Vulkan with X11/Wayland surfaces; macOS Metal with a Cocoa layer |
 | Resource ownership | SDL device objects/fences | WebGPU objects/submission retention |
 
 Backend agreement does not exclude a shared input or implementation defect.
@@ -44,6 +44,20 @@ Vulkan binaries use combined image/sampler descriptors for SDL's sampled
 texture slots; integer and multisampled texture loads retain separate image descriptors.
 The SPIR-V adapter preserves Tint's TEXCOORD indices as explicit Vulkan
 locations, including gaps in vertex attributes and interstage varyings.
+
+Metal maps Tint's flattened resource indices to the same SDL sidecars, with
+uniforms before storage buffers and sampled textures before storage textures.
+Sampler bindings follow their sampled textures after unused samplers disappear.
+Each generated MSL stage exports `main0`, so Tint's renaming of reserved WGSL
+entry-point names does not affect loading.
+Tint's robust runtime-array access remains enabled: the maintained SDL Metal
+patch supplies buffer byte lengths at reserved buffer index 30, and the compiler
+maps Tint's length entries to SDL storage slots.
+The Metal fence patch restores SDL's completed-fence query contract, allowing
+the worker-window presenter to retire submitted frames.
+
+Composed material pipelines use each render task's attachment sample count;
+their caches distinguish it from the main window's multisampling state.
 
 Local PBR probes bind the pin's recorded cube array, grid and material fields. Each retained probe set
 owns its GPU resources; single local environments override the cube independently per material.

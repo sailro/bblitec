@@ -151,6 +151,47 @@ function fixtureRoot(t: { after: (cleanup: () => void) => void }): string {
     return root;
 }
 
+test("Metal uses SDL buffer slots and preserves bounds checks across reordered runtime arrays", { skip: !tools.tint }, t => {
+    const root = fixtureRoot(t);
+    const directory = shaderDirectory(root, "metal-bindings", `
+@group(2) @binding(7) var<storage, read> later: array<vec4f>;
+@group(3) @binding(2) var<uniform> second: vec4f;
+@group(2) @binding(0) var<storage, read> fixed: array<vec4f, 4>;
+@group(2) @binding(3) var<storage, read> earlier: array<vec4f>;
+@group(3) @binding(0) var<uniform> first: vec4f;
+@fragment fn main(@builtin(position) position: vec4f) -> @location(0) vec4f {
+    let index = u32(position.x);
+    return later[index] + second + fixed[index] + earlier[index] + first;
+}`);
+    compileOfflineShaders({ repositoryRoot: root, directories: [directory], tools, target: "metal" });
+    const msl = readFileSync(join(directory, "simple.frag.msl"), "utf8");
+    for (const [name, index] of [["first", 0], ["second", 1], ["fixed", 2], ["earlier", 3], ["later", 4]] as const) {
+        assert.ok(msl.includes(`${name} [[buffer(${index})]]`), `${name} must occupy SDL buffer ${index}`);
+    }
+    assert.match(msl, /tint_storage_buffer_sizes \[\[buffer\(30\)\]\]/);
+    assert.match(msl, /tint_storage_buffer_sizes\)\[0u\]\.z/);
+    assert.match(msl, /tint_storage_buffer_sizes\)\[0u\]\.y/);
+    assert.doesNotMatch(msl, /tint_storage_buffer_sizes\)\[0u\]\.x/);
+    assert.match(msl, /min\(/, "runtime and fixed-array access retain Tint bounds checks");
+    assert.match(msl, /^fragment\s+\w+\s+main0\(/m, "Tint's renamed WGSL main uses the SDL entry point");
+});
+
+test("Metal sampler slots follow sampled textures after textureLoad removes an earlier sampler", { skip: !tools.tint }, t => {
+    const root = fixtureRoot(t);
+    const directory = shaderDirectory(root, "metal-samplers", `
+@group(2) @binding(0) var depth: texture_depth_2d;
+@group(2) @binding(1) var color: texture_2d<f32>;
+@group(2) @binding(2) var colorSampler: sampler;
+@fragment fn main() -> @location(0) vec4f {
+    return textureSample(color, colorSampler, vec2f(0.5)) * textureLoad(depth, vec2i(0), 0);
+}`);
+    compileOfflineShaders({ repositoryRoot: root, directories: [directory], tools, target: "metal" });
+    const msl = readFileSync(join(directory, "simple.frag.msl"), "utf8");
+    assert.match(msl, /depth \[\[texture\(0\)\]\]/);
+    assert.match(msl, /color \[\[texture\(1\)\]\]/);
+    assert.match(msl, /colorSampler \[\[sampler\(1\)\]\]/);
+});
+
 test("directory checkpoints isolate edits, ignore unchanged writes, and repair missing or changed products", { skip: !tools.tint }, t => {
     const root = fixtureRoot(t);
     const directories = [shaderDirectory(root, "first"), shaderDirectory(root, "second")];

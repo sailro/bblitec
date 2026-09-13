@@ -19,15 +19,15 @@ Import-Module (Join-Path $PSScriptRoot "bblite-tools.psm1") -Force
 Import-Module (Join-Path $PSScriptRoot "image-codecs.psm1") -Force
 Import-Module (Join-Path $PSScriptRoot "package-output.psm1") -Force
 $root = Get-RepositoryRoot
-if ((-not $IsWindows -and -not $IsLinux) -or
+if ((-not $IsWindows -and -not $IsLinux -and -not $IsMacOS) -or
     [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture -ne 'X64') {
-    throw "Minimal packaging supports Windows and Linux x64."
+    throw "Minimal packaging supports Windows, Linux and macOS x64."
 }
-$platformName = if ($IsWindows) { "windows" } else { "linux" }
-$gpuDriver = if ($IsWindows) { "direct3d12" } else { "vulkan" }
-$graphicsApi = if ($IsWindows) { "D3D12" } else { "Vulkan" }
+$platformName = if ($IsWindows) { "windows" } elseif ($IsMacOS) { "macos" } else { "linux" }
+$gpuDriver = if ($IsWindows) { "direct3d12" } elseif ($IsMacOS) { "metal" } else { "vulkan" }
+$graphicsApi = if ($IsWindows) { "D3D12" } elseif ($IsMacOS) { "Metal" } else { "Vulkan" }
 $exeExtension = if ($IsWindows) { ".exe" } else { "" }
-$expectedTriplet = if ($IsWindows) { "x64-windows-static" } else { "x64-linux" }
+$expectedTriplet = if ($IsWindows) { "x64-windows-static" } elseif ($IsMacOS) { "x64-osx" } else { "x64-linux" }
 $pathComparison = if ($IsWindows) { [StringComparison]::OrdinalIgnoreCase } else { [StringComparison]::Ordinal }
 $pathComparer = if ($IsWindows) { [StringComparer]::OrdinalIgnoreCase } else { [StringComparer]::Ordinal }
 if ($Scene -notmatch '^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$') {
@@ -62,7 +62,7 @@ if ($backend -eq "BOTH") {
 if ($ExpectBackend -and $backend -ne $ExpectBackend) {
     throw "Build directory $BuildDirectory was configured with BBLITE_BACKEND=$backend, not $ExpectBackend."
 }
-if ($IsLinux -and $backend -ne "SDL_GPU") { throw "Linux shipping currently requires SDL_GPU with Vulkan." }
+if (-not $IsWindows -and $backend -ne "SDL_GPU") { throw "$platformName shipping requires SDL_GPU with $graphicsApi." }
 $minSize = $cache["BBLITE_MINSIZE"]
 if ($minSize -ne "ON") {
     throw "Shipping requires BBLITE_MINSIZE=ON; configure the exact mini build before packaging."
@@ -190,13 +190,18 @@ $licenses = Join-Path $packageDirectory "licenses"
 New-Item -ItemType Directory -Path $assets, $shaders, $licenses -Force | Out-Null
 
 Copy-Item $executable (Join-Path $packageDirectory $exeName)
-if ($IsLinux) {
+if (-not $IsWindows) {
     $strip = $cache["CMAKE_STRIP"]
     if (-not $strip -or -not (Test-Path -LiteralPath $strip)) { throw "CMAKE_STRIP must name the native strip tool." }
-    & $strip --strip-unneeded (Join-Path $packageDirectory $exeName)
+    $stripOption = if ($IsMacOS) { "-x" } else { "--strip-unneeded" }
+    & $strip $stripOption (Join-Path $packageDirectory $exeName)
     if ($LASTEXITCODE -ne 0) { throw "Unable to strip the staged executable." }
     & chmod 755 (Join-Path $packageDirectory $exeName)
     if ($LASTEXITCODE -ne 0) { throw "Unable to set the executable permission." }
+    if ($IsMacOS) {
+        & codesign --force --sign - (Join-Path $packageDirectory $exeName)
+        if ($LASTEXITCODE -ne 0) { throw "Unable to ad-hoc sign the staged executable." }
+    }
 }
 # Statically linked builds carry SDL (and Windows Dawn) inside the executable.
 # Windows also links the CRT statically; Linux retains host system libraries.
@@ -212,13 +217,13 @@ if (Test-Path $assetSource) {
 }
 
 # The runtime reads only its compiled backend's shader formats: the trimmed
-# SDL uses the host GPU driver, so SDL_GPU loads offline .dxil/.spv
+# SDL uses the host GPU driver, so SDL_GPU loads .dxil/.spv or Metal .msl
 # plus the .slots sidecars naming each pinned variant's register order (the
 # PAL binds by that file, never by the WGSL); Dawn compiles the .native.wgsl
-# text in-process. Text intermediates (.hlsl, .msl, reflection dumps, tool
+# text in-process. Other intermediates (.hlsl, reflection dumps, tool
 # manifests) are development artifacts.
 $shaderPatterns = switch ($backend) {
-    "SDL_GPU" { @($(if ($IsWindows) { "*.dxil" } else { "*.spv" }), "*.slots") }
+    "SDL_GPU" { @($(if ($IsWindows) { "*.dxil" } elseif ($IsMacOS) { "*.msl" } else { "*.spv" }), "*.slots") }
     "DAWN" { @("*.native.wgsl") }
 }
 $shaderFiles = Get-ChildItem $shaderSource -File |
@@ -252,6 +257,7 @@ $licensePackages = @{
     "SDL3.txt" = "sdl3"
     "nlohmann-json.txt" = "nlohmann-json"
 }
+if ($IsMacOS) { $licensePackages["Boost.Charconv.txt"] = "boost-charconv" }
 foreach ($license in $imageCodecLicenses.GetEnumerator()) {
     $licensePackages[$license.Key] = $license.Value
 }
@@ -366,9 +372,12 @@ $fxcNote = if ($backend -eq "DAWN") {
 }
 
 $runInstructions = if ($IsWindows) { "Double-click $exeName. Its console window shows startup errors." } else { "Run ./$exeName from a terminal in this directory." }
-$requirements = if ($IsWindows) { "Windows 10/11 and a Direct3D 12 GPU" } else { "Linux x64 with a Vulkan GPU/driver and an X11 or Wayland session" }
+$requirements = if ($IsWindows) { "Windows 10/11 and a Direct3D 12 GPU" } elseif ($IsMacOS) { "macOS x64 with a Metal GPU and an active desktop session" } else { "Linux x64 with a Vulkan GPU/driver and an X11 or Wayland session" }
 $linuxNote = if ($IsLinux) {
     "`n  - Built for the host Linux system ABI; see RUNTIME-LIBRARIES.txt for linked system libraries.`n  - Install Fontconfig and fonts for text/UI. Audio requires a working host audio service."
+} else { "" }
+$macNote = if ($IsMacOS) {
+    "`n  - Built for the configured macOS deployment target; see RUNTIME-LIBRARIES.txt for system frameworks/libraries.`n  - Ad-hoc signed for local use; this package is not Developer ID signed or notarized."
 } else { "" }
 @"
 bblitec $Scene shipping demo ($platformName x64)
@@ -389,7 +398,7 @@ Troubleshooting:
   - Requires $requirements. bblitec renders only
     on a GPU; there is no software path, so a device that cannot be
     brought up is an error rather than a slower picture.
-  - Keep the assets and shaders directories beside the executable.$fxcNote$linuxNote
+  - Keep the assets and shaders directories beside the executable.$fxcNote$linuxNote$macNote
 
 $($fidelitySection)Compiler source:
   https://github.com/sailro/bblitec
@@ -500,6 +509,15 @@ if ($IsLinux) {
         $env:LD_PRELOAD = $oldPreload
         $env:LC_ALL = $oldLocale
     }
+} elseif ($IsMacOS) {
+    $dependencies = & otool -L (Join-Path $packageDirectory $exeName) 2>&1
+    if ($LASTEXITCODE -ne 0) { throw "Unable to inspect Mach-O dependencies: $dependencies" }
+    foreach ($line in $dependencies | Select-Object -Skip 1) {
+        if ($line.Trim() -notmatch '^(?:/usr/lib/|/System/Library/)') {
+            throw "Shipping requires static project libraries and system frameworks, but imports: $line"
+        }
+    }
+    $dependencies | Set-Content (Join-Path $packageDirectory "RUNTIME-LIBRARIES.txt")
 } else {
     $staged = Get-ChildItem $packageDirectory -Filter *.dll -File
     $staged += Get-ChildItem $packageDirectory -Filter *.exe -File
@@ -546,6 +564,11 @@ if ($IsLinux) {
     [void]$smokeStart.Environment.Remove("LD_LIBRARY_PATH")
     [void]$smokeStart.Environment.Remove("LD_PRELOAD")
 }
+if ($IsMacOS) {
+    foreach ($name in @($smokeStart.Environment.Keys | Where-Object { $_ -like 'DYLD_*' })) {
+        [void]$smokeStart.Environment.Remove($name)
+    }
+}
 $smokeStart.Environment["SDL_ASSERT"] = "abort"
 $smoke = [System.Diagnostics.Process]::Start($smokeStart)
 if (-not $smoke.WaitForExit(120000)) {
@@ -557,14 +580,14 @@ if ($smoke.ExitCode -ne 0) {
 }
 Write-Output "Smoke run: $exeName rendered $smokeFrames frames and exited 0."
 
-if ($IsLinux) {
+if (-not $IsWindows) {
     # libarchive records Unix executable permissions in ZIP metadata; the
     # PowerShell Compress-Archive implementation does not preserve them.
     $cmake = Find-CMake
     Push-Location $outputPlan.Staging
     try {
         & $cmake -E tar cf $archivePath --format=zip $packageName
-        if ($LASTEXITCODE -ne 0) { throw "Linux package archive creation failed." }
+        if ($LASTEXITCODE -ne 0) { throw "$platformName package archive creation failed." }
     } finally { Pop-Location }
 } else {
     Compress-Archive -Path $packageDirectory -DestinationPath $archivePath -CompressionLevel Optimal

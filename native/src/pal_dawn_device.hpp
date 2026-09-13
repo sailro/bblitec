@@ -5,6 +5,9 @@
 #include <atomic>
 #include <string>
 #include <utility>
+#if defined(__APPLE__)
+#include <SDL3/SDL_metal.h>
+#endif
 
 namespace bbl::pal {
 
@@ -28,11 +31,17 @@ struct DawnDevice {
         if (auto value = std::exchange(device, nullptr)) wgpuDeviceRelease(value);
         if (auto value = std::exchange(adapter, nullptr)) wgpuAdapterRelease(value);
         if (auto value = std::exchange(instance, nullptr)) wgpuInstanceRelease(value);
+#if defined(__APPLE__)
+        if (auto value = std::exchange(metal_view, nullptr)) SDL_Metal_DestroyView(value);
+#endif
         if (auto* value = std::exchange(window, nullptr); value && owns_window) release_run_window(value);
         if (std::exchange(sdl_initialized, false)) quit_run_sdl();
     }
 
     SDL_Window* window = nullptr;
+#if defined(__APPLE__)
+    SDL_MetalView metal_view = nullptr;
+#endif
     WGPUInstance instance = nullptr;
     WGPUAdapter adapter = nullptr;
     WGPUDevice device = nullptr;

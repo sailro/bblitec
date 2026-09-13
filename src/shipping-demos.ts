@@ -5,7 +5,7 @@ import { availableParallelism, totalmem } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { discoverDevelopmentTools, discoverWindowsBuildTools, type WindowsBuildTools } from "./development-tools.js";
-import { hostOfflineShaderTarget } from "./build-options.js";
+import { developmentTriplet, hostOfflineShaderTarget } from "./build-options.js";
 import { holdDistLock } from "./dist-lock.js";
 import { applicationScenes, type SceneDefinition } from "./scene-registry.js";
 import { runConcurrently } from "./run-concurrently.js";
@@ -13,11 +13,11 @@ import { flagNumber, isMainModule, parseFlags } from "./tooling/flags.js";
 import { installVcpkgManifest, type VcpkgManifestInstall } from "./vcpkg-install.js";
 import { writeJsonRecord } from "./validation-resume.js";
 
-export type ShippingPlatform = "win32" | "linux";
+export type ShippingPlatform = "win32" | "linux" | "darwin";
 
 export function shippingPlatform(platform: NodeJS.Platform = process.platform, arch: string = process.arch): ShippingPlatform {
-    if ((platform !== "win32" && platform !== "linux") || arch !== "x64") {
-        throw new Error("Minimal demo shipping supports Windows and Linux x64.");
+    if ((platform !== "win32" && platform !== "linux" && platform !== "darwin") || arch !== "x64") {
+        throw new Error("Minimal demo shipping supports Windows, Linux and macOS x64.");
     }
     return platform;
 }
@@ -74,7 +74,7 @@ export function shippingPlan(
     installRoot = resolve(root, "artifacts/vcpkg-installed"),
     platform: ShippingPlatform = shippingPlatform(),
 ): { scenes: ShippingScene[]; profiles: VcpkgManifestInstall[] } {
-    const triplet = platform === "win32" ? "x64-windows-static" : "x64-linux";
+    const triplet = platform === "win32" ? "x64-windows-static" : developmentTriplet(platform, "x64");
     const profiles = new Map<string, VcpkgManifestInstall>();
     const scenes = inputs.map(({ scene, reached }) => {
         if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(scene.id)) throw new Error(`Invalid shipping scene ID '${scene.id}'.`);
@@ -155,7 +155,7 @@ export function packageSizeReport(receipts: readonly PackageSize[], platform: Sh
         "# Minimal application packages", "",
         platform === "win32"
             ? "Windows x64, MSVC, static CRT, SDL_GPU / Direct3D 12, BBLITE_MINSIZE. Capture is disabled."
-            : "Linux x64, SDL_GPU / Vulkan, static project libraries, BBLITE_MINSIZE. Capture is disabled.", "",
+            : `${platform === "darwin" ? "macOS x64, SDL_GPU / Metal" : "Linux x64, SDL_GPU / Vulkan"}, static project libraries, BBLITE_MINSIZE. Capture is disabled.`, "",
         "Each package passed its five-frame GPU-validation startup check. Previous packages are retained under `.replaced/`; exact bytes and SHA-256 hashes are in the package JSON receipts.", "",
         "Changes compare with the packages replaced by this run; any separate `@previous/` comparison baseline remains untouched.", "",
         "| Demo | EXE MiB | EXE change | ZIP MiB | ZIP change |",
@@ -203,7 +203,7 @@ async function main(): Promise<void> {
     const { cmake, vcpkg, vcpkgToolchain, powershell } = tools;
     if (!cmake || !vcpkg || !vcpkgToolchain || !powershell) throw new Error("Shipping requires CMake, vcpkg and PowerShell; run npm run doctor.");
     const windows = platform === "win32" ? discoverWindowsBuildTools("msvc") : undefined;
-    if (!windows && (!tools.cxx || !tools.ninja)) throw new Error("Linux shipping requires Clang and Ninja; run npm run doctor.");
+    if (!windows && (!tools.cxx || !tools.ninja)) throw new Error("Unix shipping requires Clang and Ninja; run npm run doctor.");
     const toolchain = windows ?? { compiler: tools.cxx!, ninja: tools.ninja! };
     holdDistLock("shipping-demos");
     const environment = { ...process.env, ...windows?.environment,
@@ -297,7 +297,7 @@ async function main(): Promise<void> {
     for (const scene of plan.scenes) {
         await run("package", scene.id, powershell, ["-NoProfile", "-File", resolve("tools/package-demo.ps1"),
             "-Scene", scene.id, "-BuildDirectory", scene.buildDirectory, "-ExpectBackend", "SDL_GPU", "-OutputRoot", output]);
-        receipts.push(readPackageSize(join(output, `bblitec-${scene.id}-sdl-gpu-${platform === "win32" ? "windows" : "linux"}-x64.json`)));
+        receipts.push(readPackageSize(join(output, `bblitec-${scene.id}-sdl-gpu-${platform === "win32" ? "windows" : platform === "darwin" ? "macos" : "linux"}-x64.json`)));
     }
     const report = packageSizeReport(receipts, platform);
     const reportPath = join(output, "SIZE-COMPARISON.md");

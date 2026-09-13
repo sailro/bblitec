@@ -654,7 +654,7 @@ inline OwnedSdlShader load_shader(
     } else {
         throw std::runtime_error("SDL_GPU backend has no supported bblitec shader format.");
     }
-    if (entrypoint_override) {
+    if (entrypoint_override && format != SDL_GPU_SHADERFORMAT_MSL) {
         entrypoint = entrypoint_override;
     }
     const std::string shader_override =
@@ -677,7 +677,10 @@ inline OwnedSdlShader load_shader(
     info.num_storage_buffers = storage_buffers;
     info.num_storage_textures = storage_textures;
     SDL_GPUShader* shader = SDL_CreateGPUShader(device, &info);
-    if (!shader) gpu_error("SDL_CreateGPUShader");
+    if (!shader) {
+        throw std::runtime_error(std::string("SDL_CreateGPUShader ") + base_name +
+            extension + " (" + entrypoint + "): " + SDL_GetError());
+    }
     return {shader, {device}};
 }
 
