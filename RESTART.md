@@ -8,7 +8,20 @@ dependencies will not be present in a fresh clone.
 
 ## Read this first
 
-**Current unit: generic optional promise results.** Coroutine unit `8dba6d4b`
+**Current unit: runtime query parameters.** Promise unit `3d1d126a` is committed
+and pushed. Full compile998 advanced to the sound-effects configuration setter:
+JSON-backed data assigned to a previously typed module record (78.25 seconds).
+That is the next full-entry blocker and overlaps the first dynamic-value TODO.
+The immediate private helper probe builds after applying maybe_unused to typed
+declarations (quality1000-build, Clang and real Window/UI PAL). All 666 checks in
+unused1001-regressions pass. Its native execution exposes a separate behavioral
+bug: URLSearchParams silently treats a non-static constructor argument as empty.
+quality1000-native reports the wrong recommendation for an explicit URL choice;
+it does not pass. Implement native runtime query parsing and preserve generation
+folding only for genuinely known strings. The six-case JavaScript comparison
+in check-quality996.mjs must pass before declaring this helper validated.
+
+**Completed unit: generic optional promise results.** Coroutine unit `8dba6d4b`
 is committed/pushed. The branch already includes main's Linux and macOS PRs.
 The application is still incomplete; continue without asking to continue.
 The current uncommitted change preserves T substitutions through nullable unions,

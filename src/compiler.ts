@@ -3620,7 +3620,7 @@ class Compiler
                     ? { kind: "declaration", type: "auto", name: cppName, initializer: `bbl::js::make_gc_shared<${this.dataTypes.cppType(annotated)}>(${initializerCpp})` }
                     : selfReferentialBinding
                       ? `(*${cppName}) = ${initializerCpp};`
-                      : { kind: "declaration", type: this.dataTypes.cppType(annotated), name: cppName, initializer: initializerCpp },
+                      : { kind: "declaration", type: this.dataTypes.cppType(annotated), name: cppName, initializer: initializerCpp, attributes: "[[maybe_unused]] " },
             );
         }
         if (
