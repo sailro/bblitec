@@ -175,6 +175,7 @@ import {
     ClosureCaptures,
     nativeCompanionKeys,
     renderClosure,
+    renderCoroutineInvocation,
     type CapturedClosure,
     type NativeCaptureBinding,
 } from "./compiler/closure-captures.js";
@@ -796,9 +797,7 @@ class Compiler
         this.emitImportedModuleInitializers();
         const entry = this.entryStatements();
         this.emitEntryModuleState(entry);
-        emitReachableStatements(this, entry);
-        this.emitDeferredPhysicsCallbacks();
-        this.emitNativeHostUi();
+        this.emitEntryBody(entry);
         if (this.features.has("engine:device-recovery")) {
             if (this.features.has("platform:workers") || this.features.has("platform:window")) this.fail(this.sourceFile,
                 "Device recovery does not represent shared worker/offscreen device ownership.");
@@ -1277,6 +1276,32 @@ class Compiler
         )) {
             if (!emitted.has(statement)) this.emitStatement(statement);
         }
+    }
+
+    private emitEntryBody(entry: readonly ts.Statement[]): void {
+        const emitBody = (): boolean => {
+            const terminated = emitReachableStatements(this, entry);
+            this.emitDeferredPhysicsCallbacks();
+            this.emitNativeHostUi();
+            return terminated;
+        };
+        const suspends = this.options.workers && entry.some(statement =>
+            someAnalysisNode(statement, ts.isAwaitExpression, {functions:"skip"}));
+        if (!suspends) { emitBody(); return; }
+        // Startup executes once, preserving construction metadata. Its locals
+        // belong to the coroutine, so retained callbacks cannot borrow them as
+        // entry-stack values after the initialization callback has returned.
+        this.pushScope(this.allocateUserFunctionPrefix());
+        let closure: CapturedClosure;
+        try {
+            closure = this.withAsyncActivation(() => this.captureManagedClosureLines(() => {
+                this.beginNativeFunctionBody(undefined, false, {coroutine:true});
+                try {
+                    if (!emitBody()) this.emit("co_return bbl::js::PromiseVoid{};");
+                } finally { this.endNativeFunctionBody(); }
+            }));
+        } finally { this.popScope(); }
+        this.emit(`static_cast<void>(${renderCoroutineInvocation(closure, "bbl::js::Promise<bbl::js::PromiseVoid>")});`);
     }
 
     private entryStatements(): readonly ts.Statement[] {

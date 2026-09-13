@@ -111,6 +111,8 @@ owns a device/queue and OS window. Each producer owns an engine, scene, encoders
 and resources. A three-image pool provides a latest-frame mailbox; consumer
 fences prevent overwriting sampled images. Normal presentation samples GPU
 textures; screenshots use readback.
+The first document snapshot follows initialization's microtasks, so initial input
+sees DOM content and listeners created during awaited startup.
 
 Display-paced RAF notifications run on each realm loop; busy realms coalesce
 notifications independently and do not accumulate catch-up frames.

@@ -10,6 +10,9 @@ status. One line per item: the gap, where it is, its size (S < 1 h, M < half day
 - [ ] Destructuring defaults over combined null/undefined elements need distinct absence states; generic nullable defaults also refuse when the source type cannot distinguish them (data-lowering.ts, js_data.hpp). M; nullable collection transforms.
 - [ ] Custom thenables need an owned resolution protocol; callable/getter `then` properties explicitly refuse (async.ts). M; interoperability with promise-like objects.
 - [ ] Record getters with early returns need represented result flow; statements and local captures before a final return are supported (compiler.ts). M; conditional accessors.
+- [ ] Startup gates need owned Promise constructor resolvers and Promise.race (async.ts, js_promise.hpp); both currently refuse. M; timer/RAF completion and readiness races.
+- [ ] HTMLImageElement.decode, complete and natural dimensions need owned image readiness/decoding (ui-projection.ts, platform-calls.ts); they currently refuse. M; image readiness before scene initialization.
+- [ ] Native graphics capability guards need a represented navigator.gpu surface; it currently reports absence even when a Window device exists (browser-erasure.ts). M; entry guards must reach rendering rather than a no-GPU fallback.
 - [ ] Promise.all still refuses literal spreads, non-array iterables, stored void/value-only arrays and recovery/rebinding with a different tuple representation (async.ts). M; reusable aggregation.
 - [ ] Await inside catch/finally blocks needs suspended exception/cleanup completion; these forms explicitly refuse (async.ts, statements.ts). M; asynchronous recovery and cleanup.
 - [ ] Self-referencing record initializers need a representable recursive record/function type; initializer captures with owned data types share lexical cells (compiler.ts, data-types.ts). M; retained state factories.

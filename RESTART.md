@@ -36,7 +36,7 @@ it does not establish that this external application compiles or runs.
 | Branch | `codex/external-project-support` |
 | Remote | `https://github.com/sailro/bblitec.git` |
 | Branch base used in this session | `3474e835` on `main` |
-| Latest executable-code/test unit | Owned promise cleanup reactions; prior savepoints `059bfbca` (generic/nested/defaulted destructuring), `bdce7a97` (captured lexical initialization), `bc21486a` (scheduled audio events), `95b04043` (async control flow), `e5ea2607` (async collections), `24281f2c` (promise caches/reactions), `53ba4164` (recursive async and hardened validation) and `f5cd2061` (AudioBuffer surface) |
+| Latest executable-code/test unit | Owned asynchronous startup; prior savepoints `f699ad6b` (promise cleanup), `059bfbca` (generic/nested/defaulted destructuring), `bdce7a97` (captured lexical initialization), `bc21486a` (scheduled audio events), `95b04043` (async control flow), `e5ea2607` (async collections), `24281f2c` (promise caches/reactions), `53ba4164` (recursive async and hardened validation) and `f5cd2061` (AudioBuffer surface) |
 | Draft PR | [#247 — Extend generic application compilation and retained UI support](https://github.com/sailro/bblitec/pull/247) |
 | External checkout | `C:/Dev/_prototypes/external-native-app` |
 | External source revision | `d7c477a6d5963680c55249dceb93cb6e4ab9ce56` |
@@ -44,10 +44,52 @@ it does not establish that this external application compiles or runs.
 | External generated output | `generated/external-app` (ignored; not a successful complete generation) |
 | Session diagnostics | `artifacts/external-integration` (ignored) |
 
-Latest complete-entry diagnostic: `compile653` passed promise cleanup and stopped
-at an await in the entry's startup body before engine creation: "This await needs
-an asynchronous realm activation." The timed attempt took 130 seconds.
+Latest complete-entry diagnostic: `compile658` passed the startup await boundary
+and stopped on the decode property of an HTML image. The timed attempt took
+129 seconds; `compile653` previously stopped outside an async activation.
 Generation, native build and application runtime remain incomplete.
+
+`emitEntryBody` detects entry-level awaits in realm-backed entries, skips nested
+function bodies, and emits one owned coroutine with a native return frame. It
+uses the existing capture renderer and async activation without treating the
+one-time startup body as a deferred callback: construction metadata must remain
+available. A local scope prevents callback captures from borrowing coroutine
+locals as lifetime-long entry-stack variables. Post-entry native UI/deferred
+physics emission remains inside the startup frame. Realm engines already use
+`start_realm_engine`; the synchronous frame conductor split is separate.
+
+`startup-awaits655-native` passes 2/8 at baseline; `startup-awaits656-native`
+passes all eight. The permanent `startup657` fixture passes three native checks:
+main, module and worker startup; callbacks observe changes made after awaits and
+outlive initialization, and the main realm returns to its starting managed-node
+count. `regressions658` passes 912/912 without skips. `population660` generates all
+288 registered entries and completes scene41's native bootstrap.
+
+The initial `startup-window658` build succeeded but its unchanged input sequence
+saw only the keyboard event: the Window host published an empty document before
+the initialization microtask checkpoint. The first `tick_document` now uses
+`EventLoop::after_microtasks`. `startup-window659` passes both SDL_GPU and Dawn
+with the original DPWCDWMK input/layout assertions. `queries-window660` also
+passes the existing query/selector fixture on both backends. The ignored
+`run-dom-window.mjs --startup` harness wraps the ordinary DOM input fixture in
+an async main with Promise.resolve awaits before/after its body; it reuses the
+same build configuration, replay and completion marker rather than delaying input.
+
+Next batch: startup readiness gates. The source following the reached image
+decode also constructs promises around RAF/timers and races their completion;
+assess these together. `startup-gates661` is a fixed twelve-probe generation
+baseline, 0/12 accepted: decode presence/call, complete/natural dimensions, five
+constructor forms (value, void, timer, rejection, promise adoption), and four
+race forms (values, promises, void, empty). No readiness-gate implementation has
+started. Use owned native promise settlement and existing image/asset facilities.
+
+IMPORTANT INTEGRATION CHECK: after this startup gate, the unchanged entry tests
+`navigator.gpu` before engine creation. `browser-erasure.ts` currently represents
+that property as absent (also documented in UI), despite a Window GPU device.
+Simply compiling a no-GPU fallback and returning is NOT application integration.
+Model the generic native graphics capability appropriately and validate that the
+intended scene is reached, rendered and interactive before declaring success.
+This concrete gap is now tracked in TODO alongside image and promise readiness.
 
 Promise cleanup now shares `compileReaction` capture/invocation and native
 `Promise::then` observation/adoption. Native cleanup invokes the callback with no
@@ -76,18 +118,9 @@ refusal pass `regressions654` (653 compiler/cleanup tests, no skips).
 `population654` generates all 288 entries and completes scene41's native bootstrap.
 Staged type/privacy/whitespace checks pass. All these checks have finished.
 
-Next batch: asynchronous application startup before engine creation. Inspect the
-entry/startEngine extraction and owned application activation boundaries; the
-reached await is outside AsyncLowerer's activation depth. Assess direct,
-conditional and rejected startup awaits with neutral entries. `startup-awaits655-native`
-is the fixed eight-probe baseline: only an ordinary named async function and an
-async IIFE generate/build/run (2/8). Async main (direct, conditional, helper,
-recovery and early-return forms) and module-level awaits all refuse. The compiler
-selects main.body.statements in `entryStatements`, then emits them at depth zero;
-output-projection supplies a synchronous initialization callback. Inspect the
-startEngine split before choosing the owned startup frame so rendering lifetime
-and generation-dependent engine metadata remain correct. No startup code has
-changed at this savepoint. Preserve the unchanged private entry.
+The previous startup refusal came from selecting main.body.statements and
+emitting them at depth zero under a synchronous initialization callback. The
+startup unit above fixes that boundary while preserving construction metadata.
 
 Destructuring now takes concrete generic RHS types from evaluated bound values;
 each RHS expression runs once before target references. Nested arrays, rest,

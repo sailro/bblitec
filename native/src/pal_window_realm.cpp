@@ -497,7 +497,12 @@ int run_window_application(WorkerEntry initialize, EngineOptions options) {
                             for (const auto& callback : callbacks) EventLoop::current().dispatch_callback([&] { callback(event->mouse); });
                         }
                     });
-                    loop.run([&] { initialize(realm); tick_document(); });
+                    loop.run([&] {
+                        initialize(realm);
+                        // The initial document includes startup's microtasks,
+                        // before presentation begins consuming Window input.
+                        loop.after_microtasks(tick_document);
+                    });
                 } catch (const WorkerTerminated&) {
                 } catch (...) { application_error = std::current_exception(); }
                 finished = true;

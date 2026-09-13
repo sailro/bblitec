@@ -84,6 +84,8 @@ Direct async bodies keep early value returns and loop exits in that activation, 
 recovery and synchronous finally effects. Timer and microtask callbacks can start retained async
 work; their promises are discarded without discarding the activation. Await inside a catch or
 finally block still refuses.
+Realm-backed main bodies, module entries and worker modules can await during startup.
+Their coroutine owns suspended locals, and callbacks retain captured bindings after startup returns.
 Callbacks returning `Promise<T> | void` retain either the promise or an absent result.
 Bare returns, fallthrough and void-returning expressions preserve their effects; present promises
 support `typeof` checks of their `then`, `catch` and `finally` methods.
