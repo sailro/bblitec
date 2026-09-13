@@ -1279,6 +1279,7 @@ export class StatementLowerer {
                 for (const child of statement.tryBlock
                     .statements) {
                     this.emit(context, child);
+                    if (this.terminatesAfterLowering(child) || this.staticIterationCompleted()) break;
                 }
             } finally {
                 context.popScope();
@@ -1321,6 +1322,7 @@ export class StatementLowerer {
                 for (const child of statement.catchClause
                     .block.statements) {
                     this.emit(context, child);
+                    if (this.terminatesAfterLowering(child) || this.staticIterationCompleted()) break;
                 }
             } finally {
                 context.popScope();

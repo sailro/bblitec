@@ -221,6 +221,9 @@ Generic helpers that return an unknown value asserted as `T` retain a dynamic
 return and matching `T` parameters. Assertions preserve runtime kinds; they do not
 coerce a returned value or copy an object into the asserted native shape. Comparisons
 with represented objects use retained identity.
+Native value functions whose early returns contain represented dynamic objects
+keep dynamic return storage, including immediately lowered async helpers.
+Compatible fixed-record fallback paths retain their existing observing views.
 `Array.find` over stored literal tuples preserves the selected literal domain;
 found records retain their source identity and shared writes.
 Array and object aliases preserve storage and identity; class views read live fields

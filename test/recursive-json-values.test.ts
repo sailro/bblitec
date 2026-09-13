@@ -70,6 +70,36 @@ test("dynamic array views refuse ambiguous absence and Map object entries", () =
         /no retained value view for map/);
 });
 
+test("native value functions preserve dynamic results and fallback aliases", t => {
+    nativeCheck("dynamic-returns", `
+        interface Config {branch:{size:number};keep:{value:number}}
+        const defaults={branch:{size:1},keep:{value:2}};
+        let effects=0;
+        function parse(source:unknown):Config {
+            effects++;
+            return {...(source as Record<string,unknown>),keep:defaults.keep} as unknown as Config;
+        }
+        async function load(source:unknown,fail:boolean):Promise<Config> {
+            try {
+                if(fail)throw new Error("fallback");
+                if(source===null)return defaults;
+                return parse(source);
+            } catch {return defaults;}
+        }
+        const flags:boolean[]=[false,true];
+        const loaded=await load(JSON.parse('{"branch":{"size":3}}'),flags[0]!);
+        const empty=await load(JSON.parse('null'),flags[0]!);
+        const literal=await load(null,flags[0]!);
+        const failed=await load(JSON.parse('{}'),flags[1]!);
+        if(loaded.branch.size!==3||loaded.keep!==defaults.keep||loaded===defaults||effects!==1)
+            throw new Error("dynamic result or return effects");
+        if(empty!==defaults||literal!==defaults||failed!==defaults)throw new Error("fallback identity");
+        defaults.keep.value=7;
+        if(loaded.keep.value!==7||empty.keep.value!==7||failed.keep.value!==7)
+            throw new Error("return aliases");
+    `, t);
+});
+
 test("dynamic object spread copies outer properties and retains nested identity", t => {
     nativeCheck("dynamic-spread", `
         function plain(value:unknown):value is Record<string,unknown>{return typeof value==="object"&&value!==null&&!Array.isArray(value);}

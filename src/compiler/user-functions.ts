@@ -808,6 +808,9 @@ interface UserFunctionIr {
 /** A value record cannot represent an alias into a retained native object. */
 class SharedReturnRequiresInline extends Error {}
 
+/** A represented dynamic result must keep its storage across every return path. */
+class DynamicReturnRequiresStorage extends Error {}
+
 export interface UserFunctionContext
     extends PositiveIntegerContext,
     Pick<LoweringServices,
@@ -2764,25 +2767,15 @@ export class UserFunctionLowerer {
                     ir,
                     callNode,
                 );
-                const result = `bbl_fn_${context.allocateUserFunctionPrefix()}result`;
-                context.emit(
-                    `${returnType ? `[[maybe_unused]] const auto ${result} = ` : ""}[&]() -> ${returnType ? context.dataTypes.cppType(returnType) : "void"} {`,
-                );
-                context.increaseIndent();
-                context.beginNativeFunctionBody(returnType, discardReturn);
-                try {
-                    const terminated = emitReachableStatements(context, ir.statements);
-                    if (!terminated && returnType) {
-                        context.emit(
-                            'throw std::runtime_error("Native value function fell through without returning.");',
-                        );
+                if (returnType?.kind === "struct") {
+                    try {
+                        return context.probeEmission(() => this.lowerValueLambda(context, ir, returnType, discardReturn));
+                    } catch (error) {
+                        if (!(error instanceof DynamicReturnRequiresStorage)) throw error;
                     }
-                } finally {
-                    context.endNativeFunctionBody();
-                    context.decreaseIndent();
+                    return this.lowerValueLambda(context, ir, {kind:"json"}, discardReturn);
                 }
-                context.emit("}();");
-                return returnType ? context.dataValue(result, returnType) : {kind:"void", cpp:""};
+                return this.lowerValueLambda(context, ir, returnType, discardReturn);
             }
             if (ir.needsWrapper) {
                 context.emit("do {");
@@ -2813,6 +2806,42 @@ export class UserFunctionLowerer {
             this.active.delete(ir.declaration);
             this.invocations.delete(ir.declaration);
         }
+    }
+
+    private lowerValueLambda(
+        context: UserFunctionContext,
+        ir: UserFunctionIr,
+        returnType: DataType | undefined,
+        discardReturn: boolean,
+    ): Value {
+        if (returnType?.kind === "struct") context.dataTypes.markStoredObjectReferences(returnType);
+        const result = `bbl_fn_${context.allocateUserFunctionPrefix()}result`;
+        context.emit(
+            `${returnType ? `[[maybe_unused]] const auto ${result} = ` : ""}[&]() -> ${returnType ? context.dataTypes.cppType(returnType) : "void"} {`,
+        );
+        context.increaseIndent();
+        context.beginNativeFunctionBody(returnType, discardReturn, returnType?.kind === "struct" ? {
+            compileReturn: (expression, type) => {
+                const value = context.compileValue(expression);
+                const represented = value.dataType;
+                if (represented?.kind === "json" || (represented?.kind === "map" &&
+                    represented.dictionary && represented.value.kind === "json")) {
+                    throw new DynamicReturnRequiresStorage();
+                }
+                return context.dataLowerer.compileKnownValueForSink(value, type, expression);
+            },
+        } : {});
+        try {
+            const terminated = emitReachableStatements(context, ir.statements);
+            if (!terminated && returnType) {
+                context.emit('throw std::runtime_error("Native value function fell through without returning.");');
+            }
+        } finally {
+            context.endNativeFunctionBody();
+            context.decreaseIndent();
+        }
+        context.emit("}();");
+        return returnType ? context.dataValue(result, returnType) : {kind:"void", cpp:""};
     }
 
     /** Keep generation-known branch returns as values, including shader composition records. */
@@ -3200,9 +3229,7 @@ export class UserFunctionLowerer {
                 `Function '${ir.name}' uses early value returns but its return type is outside the native data model.`,
             );
         }
-        return type.kind === "struct"
-            ? context.dataTypes.markStoredObjectReferences(type)
-            : context.dataTypes.ownReturnedArray(type);
+        return context.dataTypes.ownReturnedArray(type);
     }
 
     /**

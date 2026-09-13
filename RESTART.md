@@ -8,6 +8,35 @@ dependencies will not be present in a fresh clone.
 
 ## Read this first
 
+**Current unit: native dynamic return storage.** Interpolation unit `42269d47`
+is committed/pushed. Full `compile948` stopped after 69.21 seconds at the
+asynchronous configuration loader returning an open JSON dictionary into its
+declared fixed record. The application still has not completed generation/build/run.
+The actual path is the immediate native value lambda, not a realm coroutine.
+probe-async952.mjs isolates the unchanged loader with its actual public directory
+and http://localhost deployment base; async952 reproduces in 2.81 seconds.
+The working change transactionally emits record-returning value lambdas and
+retries with JSON storage when a returned value is already JSON or a JSON
+dictionary. It preserves the original dynamic graph rather than projecting it
+into copied record fields. `async953` generates in 4.29 seconds. The neutral
+dynamic-returns test checks success/default/catch returns, aliases and effects.
+`returns958-focused` passes the native regression. `returns959-regressions`
+passes 945/945 checks without skips in 170.6 seconds. A follow-up stops emitting
+unreachable statements after specialized returns in try/catch, matching the
+existing finally-body rule; returns961 covers this and literal-null fallbacks.
+Reference-record promotion now happens INSIDE the emission transaction so a
+declined typed return does not change prior record declarations. Pre-existing
+unowned typed record boxing remains refused and belongs to the first TODO.
+
+Actual-loader CPP async949.cpp generates but async954-native exposed an rvalue
+Array.pop receiver from string.split. Next unit handles pop/shift receivers.
+check-async960.mjs now runs the unchanged async loader against the actual public
+configuration in JavaScript and generates a COMPLETE native output/defaults
+comparison in async960.cpp (4.35 seconds). Native verification waits for that
+receiver fix. `returns961-regressions` passes all 33 async/recursive/transaction
+checks without skips, including literal-null fallback and catch return flow.
+This return unit is ready to commit.
+
 **Latest unit: dynamic string interpolation.** Find unit `ceb4a1b4` is committed
 and pushed. `input943-native` now builds/runs all six unchanged input-normalization
 cases with actual locale/storage PAL services and isolated preferences.
