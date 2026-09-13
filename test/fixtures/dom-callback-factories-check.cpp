@@ -27,4 +27,6 @@ int main() {
     auto& engine = bbl::pal::window_document_engine();
     const auto log = bbl::ui_get_element_by_id(engine, "factory-log");
     assert(bbl::handle_at(engine.ui_elements, log).text == "complete");
+    const auto note = bbl::ui_get_element_by_id(engine, "void-note");
+    assert(bbl::handle_at(engine.ui_elements, note).text == "label-2");
 }

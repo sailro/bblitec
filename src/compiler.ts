@@ -1878,6 +1878,17 @@ class Compiler
         const storedLocalFunctions = new EmissionSet<ts.Symbol>();
         const localFunctions = new EmissionMap<ts.Symbol, ts.FunctionLikeDeclaration>();
         const localFunctionNames = new EmissionSet<string>();
+        const forwardedParameters = new EmissionSet<ts.Symbol>();
+        if (isSupportedFunction(owner)) {
+            for (const parameter of owner.parameters) {
+                if (!ts.isIdentifier(parameter.name)) continue;
+                const symbol = this.symbols.valueSymbol(parameter.name);
+                if (symbol) {
+                    localFunctionNames.add(parameter.name.text);
+                    forwardedParameters.add(symbol);
+                }
+            }
+        }
         const roots: ts.FunctionLikeDeclaration[] = [];
         const rootSet = new EmissionSet<ts.Node>();
         const isClosure = (
@@ -1991,10 +2002,16 @@ class Compiler
             ? depth + 1 : depth, { includeRoot: false });
         // A local function referenced anywhere but as a direct callee is a
         // value the program keeps: passed by name, assigned, pushed, returned
-        // or captured.
+        // or captured. A parameter used as a value may likewise escape through
+        // a container or another helper, so its caller must retain the callback's
+        // environment. Direct calls alone do not require that ownership.
         forEachAnalysisNode(owner, (node) => {
             if (ts.isShorthandPropertyAssignment(node)) {
-                if (localFunctionNames.has(node.name.text)) storeNamed(node.name);
+                if (localFunctionNames.has(node.name.text)) {
+                    storeNamed(node.name);
+                    const symbol = this.symbols.valueSymbol(node.name);
+                    if (symbol && forwardedParameters.has(symbol)) captured.add(symbol);
+                }
             } else if (ts.isIdentifier(node) && localFunctionNames.has(node.text)) {
                 const parent = node.parent;
                 const declared =
@@ -2008,6 +2025,8 @@ class Compiler
                 if (!declared && !callee && !member) {
                     const symbol = this.symbols.valueSymbol(node);
                     if (symbol && localFunctions.has(symbol)) storeNamed(node);
+                    if (symbol && forwardedParameters.has(symbol) &&
+                        !(ts.isParameter(parent) && parent.name === node)) captured.add(symbol);
                 }
             }
         });

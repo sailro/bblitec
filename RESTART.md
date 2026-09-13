@@ -8,6 +8,23 @@ dependencies will not be present in a fresh clone.
 
 ## Read this first
 
+**Current unit: stored void callbacks and forwarded capture ownership.**
+Container savepoint `e47e41f6` is committed and pushed. Concise stored callbacks
+whose signature returns void now emit their body as a statement, matching inline
+callbacks and avoiding an unnecessary getter read after a DOM text assignment.
+The native regression also exposed an ownership gap: callback parameters used
+as values (for example, stored in an array) must retain their caller's mutable
+environment, including variables accessed through a helper called by that callback.
+The shared-closure analysis now recognizes forwarded parameter values.
+`callback836-focused` passes 23/23 without skips; `compile836` is the current
+full-entry retry. The general value-used assignment/getter TODO remains open.
+
+PR metadata updates currently fail with GitHub HTTP 500 and an empty response,
+confirmed in `pr833-response.log`; this is not an authorization refusal. Source
+pushes and PR GET requests work. The pending body is saved in ignored
+`pr833.json` and `pr833-body.md`; the published body still predates grid/container
+completion. Retry after useful work, and verify the returned/current body.
+
 **Latest integration batch: container queries.** Grid savepoint `f6402459` is
 committed and pushed. Native inline-size containment and unnamed maximum-width
 queries now pass source/host admission and focused layout tests. The same native

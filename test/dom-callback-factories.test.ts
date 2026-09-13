@@ -39,6 +39,16 @@ test("callbacks passed through helpers keep per-evaluation identity and removal"
         second();
         target.click();
         if (calls !== "122") throw new Error("remove second identity");
+        const note = document.createElement("div");
+        note.id = "void-note";
+        document.body.appendChild(note);
+        let labels = 0;
+        function label(): string { labels++; return "label-" + labels; }
+        const updates: Array<() => void> = [];
+        function observe(callback: () => void): void { updates.push(callback); callback(); }
+        observe(() => note.textContent = label());
+        updates[0]!();
+        if (labels !== 2) throw new Error("discarded assignment must evaluate its right side once per call");
         log.textContent = "complete";
         globalThis.close();
     `, {fileName:join(directory,"entry.ts")});

@@ -2477,10 +2477,7 @@ export class UserFunctionLowerer {
                     if (asynchronous) {
                         context.emit(`co_return ${context.compileAsyncReturn(ir.returnExpression, bodyResult)};`);
                     } else if (!bodyResult) {
-                        const discarded = context.compileValue(
-                            ir.returnExpression,
-                        );
-                        context.emitDiscardedValue(discarded);
+                        context.emitExpressionAsStatement(ir.returnExpression);
                     } else {
                         context.emit(
                             `return ${context.compileForDataSink(ir.returnExpression, bodyResult)};`,
