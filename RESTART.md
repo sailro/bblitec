@@ -26,7 +26,7 @@ broader regression checks at useful batch boundaries. Unknown requirements stay
 visible; do not invent an overall completion percentage from static counts.
 
 **The external application does not fully compile yet.** Native graphics availability now opens the intended startup branch; generation
-stops on a stylesheet helper argument without a static string. Its native build and intended
+stops on inset-outline decoration on generated content. Its native build and intended
 application runtime have never been reached. A green sweep validates the registered corpus;
 it does not establish that this external application compiles or runs.
 
@@ -36,7 +36,7 @@ it does not establish that this external application compiles or runs.
 | Branch | `codex/external-project-support` |
 | Remote | `https://github.com/sailro/bblitec.git` |
 | Branch base used in this session | `3474e835` on `main` |
-| Latest executable-code/test unit | Control appearance/logical spacing/input types (`ac616c41`); prior savepoints `a25c5eea` (implicit grids/unmarked lists), 1fe43c54 (CSS presentation/visibility), `a81992d4` (owned async methods and promise selection), `0bdfc5b1` (native graphics availability), `613d52b6` (image/promise startup readiness), `8af15082` (asynchronous startup), `f699ad6b` (promise cleanup), `059bfbca` (generic/nested/defaulted destructuring), `bdce7a97` (captured lexical initialization), `bc21486a` (scheduled audio events), `95b04043` (async control flow), `e5ea2607` (async collections), `24281f2c` (promise caches/reactions), `53ba4164` (recursive async and hardened validation) and `f5cd2061` (AudioBuffer surface) |
+| Latest executable-code/test unit | Immutable module numeric facts (`df7967fd`), numeric templates/parameter snapshots (`d025ccf9`), control appearance/logical spacing/input types (`ac616c41`); prior savepoints `a25c5eea` (implicit grids/unmarked lists), 1fe43c54 (CSS presentation/visibility), `a81992d4` (owned async methods and promise selection), `0bdfc5b1` (native graphics availability), `613d52b6` (image/promise startup readiness), `8af15082` (asynchronous startup), `f699ad6b` (promise cleanup), `059bfbca` (generic/nested/defaulted destructuring), `bdce7a97` (captured lexical initialization), `bc21486a` (scheduled audio events), `95b04043` (async control flow), `e5ea2607` (async collections), `24281f2c` (promise caches/reactions), `53ba4164` (recursive async and hardened validation) and `f5cd2061` (AudioBuffer surface) |
 | Draft PR | [#247 — Extend generic application compilation and retained UI support](https://github.com/sailro/bblitec/pull/247) |
 | External checkout | `C:/Dev/_prototypes/external-native-app` |
 | External source revision | `d7c477a6d5963680c55249dceb93cb6e4ab9ce56` |
@@ -44,11 +44,44 @@ it does not establish that this external application compiles or runs.
 | External generated output | `generated/external-app` (ignored; not a successful complete generation) |
 | Session diagnostics | `artifacts/external-integration` (ignored) |
 
-Latest complete-entry attempt: `compile741` passes all eight captured stylesheets
-and stops at the stylesheet helper's css argument, bound as data without a static
-string (213.4 seconds). Next trace the argument's caller/origin and assess helper
-specialization, rather than guessing another CSS property. Full intended application
-generation, native build and runtime remain incomplete.
+Latest complete-entry attempt: `compile764` passes the imported stylesheet constant
+and reaches generated-content inset-outline decoration (225.2 seconds). The
+module-constant unit is committed and pushed as df7967fd. population764 generates
+all 288 registered entries and passes native bootstrap with the module-only guard.
+Full intended application generation, native build and runtime remain incomplete.
+The isolated style-contexts765 audit of the newly captured sheet records 150
+accepted rules, 17 refused rules and two keyframes not assessed. Refusals expose
+generated decoration, vendor range parts, media overrides, explicit grids and
+container queries. Counts include independent rules and do not prove whole-sheet
+or native support. Continue with grouped capability work and reduced import probes.
+
+The next shadow unit is in progress. imported-styles771 passes the reduced
+application installer's complete shadow declarations and reaches vendor range-thumb
+selectors. This is not a fresh full-entry result. The recorder now supports inverse
+masks on geometry/composites and saved layer textures, replaying only the captured
+subgraph with the shared filter plan. Captured commands and unused layer counts are
+removed before GPU submission; RmlUi owns texture caching. Four coverage samples
+preserve rounded edges. CSS shadow lists and color variables now reach the native
+shadow implementation; the former inset-border substitution is removed.
+shadows772-regressions passes 956/956 without skips. After adding coverage samples,
+shadows773 passes all thirteen focused shadow/generated/filter/backdrop/media checks.
+The motion test continues testing a private property using the existing crosshair
+marker after inset metadata was retired. New fixtures check capture ownership,
+cropped origins, blending, blur, live colors/sizes and generated hover/removal.
+shadows-window773 passes SDL_GPU and Dawn with unchanged DPWCDWMK replay;
+population773 generates all 288 entries and passes native bootstrap. The Window
+pixel comparison exposed thin numerical fragments on adjacent mask-triangle edges.
+A distance-based degeneracy check removes them; the permanent rounded-box fixture
+now checks the entire central area. shadows775 passes all thirteen checks;
+shadows-window775 passes both backends. Their images are identical, with zero
+nonwhite interior pixels; browser RGB mean absolute error over the fixed region is
+4.07/255 (raster/color differences remain, not exact parity). style-contexts773 is
+151 accepted / 16 refused / two keyframes unassessed, the same cohort as 765.
+Final shadow validation also preserves case-sensitive custom-property color names. A neutral browser reference is shadows772-browser.html/.png. The user has now authorized rebasing onto the newly landed Linux support.
+origin/main is a7b1504d (PR #248, commits 4dd147e4/c993ab62/b554c7cd).
+Finish and commit this unit, then rebase onto origin/main, read its changed support
+docs and rerun affected checks before continuing range/control and media/grid/container
+requirements. Do not stop at the savepoint.
 
 The control/spacing unit is committed and pushed as ac616c41; draft PR #247 was
 updated with pr744.json. Staged TypeScript/privacy/whitespace checks pass, along

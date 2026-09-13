@@ -17,6 +17,12 @@ int main() {
     assert(std::abs(area(intersect_ui_masks(a, b)) - 25) < 0.001);
     assert(std::abs(area(intersect_ui_masks(a, a)) - 100) < 0.001);
     assert(intersect_ui_masks(a, ui_rect_mask(20, 20, 30, 30)).empty());
+    assert(std::abs(area(subtract_ui_masks(a, b)) - 75) < 0.001);
+    assert(subtract_ui_masks(a, a).empty());
+    assert(std::abs(area(subtract_ui_masks(a, ui_rect_mask(2, 2, 8, 8))) - 64) < 0.001);
+    assert(std::abs(area(subtract_ui_masks(a, ui_rect_mask(20, 20, 30, 30))) - 100) < 0.001);
+    const std::vector<UiClipTriangle> reversed{{{{8, 8}, {8, 2}, {2, 2}}}, {{{8, 8}, {2, 2}, {2, 8}}}};
+    assert(std::abs(area(subtract_ui_masks(a, reversed)) - 64) < 0.001);
     for (const float sigma : {0.1f, 1.0f, 3.0f, 8.0f, 18.0f, 40.0f}) {
         UiRenderFrame frame;
         frame.width = 1280;

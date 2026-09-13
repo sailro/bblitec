@@ -1,3 +1,6 @@
+import {splitUiCssList as splitUiSelectorList} from "./ui-css-syntax.js";
+export {splitUiCssList as splitUiSelectorList} from "./ui-css-syntax.js";
+
 /** Compound selector chains admitted by the retained CSS projection. The same
  * parsed terms drive native matching, serialization and conservative proofs. */
 export const UI_SELECTOR_STATES = {
@@ -185,21 +188,4 @@ export function uiSelectorSequenceCpp(steps: readonly UiSelectorStep[], quote: (
     return `{${steps.map(step => `{bbl::UiSelectorRelation::${UI_SELECTOR_RELATIONS[step.relation]}, {${step.tests.map(test =>
         `{bbl::UiSelectorTestKind::${UI_SELECTOR_TESTS[test.kind]}, ${quote(test.name)}, ${quote(test.value)}` +
         `${test.alternatives || test.a !== undefined ? `, {${test.alternatives?.map(alternative => uiSelectorSequenceCpp(alternative,quote)).join(", ") ?? ""}}, ${test.a ?? 0}, ${test.b ?? 0}` : ""}}`).join(", ")}}}`).join(", ")}}`;
-}
-
-/** Commas inside quoted attributes or functional selectors do not split a list. */
-export function splitUiSelectorList(source: string): string[] {
-    const result: string[] = [];
-    let start = 0, depth = 0, quote = "";
-    for (let index = 0; index < source.length; index++) {
-        const token = source[index]!;
-        if (token === "\\") { index++; continue; }
-        if (quote) { if (token === quote) quote = ""; }
-        else if (token === '"' || token === "'") quote = token;
-        else if (token === "[" || token === "(") depth++;
-        else if (token === "]" || token === ")") depth--;
-        else if (token === "," && depth === 0) { result.push(source.slice(start,index).trim()); start = index + 1; }
-    }
-    result.push(source.slice(start).trim());
-    return result;
 }

@@ -82,6 +82,7 @@ int main() {
         ui_set_attribute(engine,note,"placeholder","Changed"); update(); placeholder(note,"Changed");
         assert(box(panel,Pseudo::Before));
         assert(box(panel,Pseudo::Before)->GetBox().GetSize().y==11);
+        assert(box(panel,Pseudo::Before)->GetProperty(Rml::PropertyId::BoxShadow)->Get<Rml::BoxShadowList>().size()==2);
         assert(text(box(item,Pseudo::Before))=="ID:Ready");
         assert(text(box(item,Pseudo::After))=="End");
         assert(text(box(tail,Pseudo::Before))=="/* keep */ @keyframes literal { }");
@@ -104,6 +105,9 @@ int main() {
         ui_set_attribute(engine,item,"id","item"); update();
         raw(panel)->SetPseudoClass("hover",true); update();
         color(0x44,0x55,0x66);
+        const auto& shadows=box(panel,Pseudo::Before)->GetProperty(Rml::PropertyId::BoxShadow)->Get<Rml::BoxShadowList>();
+        assert(shadows.size()==1 && shadows[0].inset && shadows[0].spread_distance.number==3);
+        static_cast<void>(pal::record_ui_rml_frame(runtime,640,480));
         assert(text(box(item,Pseudo::Before))=="ID:Ready");
         ui_set_attribute(engine,item,"data-label","<em>Now</em>"); update();
         assert(text(box(item,Pseudo::Before))=="ID:<em>Now</em>");

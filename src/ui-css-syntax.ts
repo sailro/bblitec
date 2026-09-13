@@ -48,3 +48,38 @@ export function uiCssBlockEnd(source: string, opening: number): number | undefin
     }
     return undefined;
 }
+
+/** Commas inside quotes or nested functions/attributes do not split a CSS list. */
+export function splitUiCssList(source: string): string[] {
+    const result: string[] = [];
+    let start = 0, depth = 0, quote = "";
+    for (let index = 0; index < source.length; index++) {
+        const token = source[index]!;
+        if (token === "\\") { index++; continue; }
+        if (quote) { if (token === quote) quote = ""; }
+        else if (token === '"' || token === "'") quote = token;
+        else if (token === "[" || token === "(") depth++;
+        else if (token === "]" || token === ")") depth--;
+        else if (token === "," && depth === 0) { result.push(source.slice(start,index).trim()); start = index + 1; }
+    }
+    result.push(source.slice(start).trim());
+    return result;
+}
+
+/** Whitespace separates value tokens only outside balanced functions. */
+export function uiCssValueTokens(source: string): string[] | undefined {
+    const result: string[] = [];
+    let start = 0, depth = 0;
+    for (const index of uiCssSyntaxIndices(source)) {
+        const token = source[index]!;
+        if (token === "(") depth++;
+        else if (token === ")" && --depth < 0) return undefined;
+        else if (/\s/.test(token) && depth === 0) {
+            if (index > start) result.push(source.slice(start,index));
+            start = index + 1;
+        }
+    }
+    if (depth) return undefined;
+    if (start < source.length) result.push(source.slice(start));
+    return result;
+}

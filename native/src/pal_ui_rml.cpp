@@ -33,6 +33,7 @@
 #include "pal_runtime_trace.hpp"
 #include "pal_ui_backdrop.hpp"
 #include "pal_ui_filter.hpp"
+#include "pal_ui_snapshot.hpp"
 #include "pal_ui_canvas.hpp"
 #include "pal_ui_defaults.hpp"
 #include "pal_ui_form.hpp"
@@ -2349,11 +2350,10 @@ std::string take_crosshair_color(std::string& style) {
     return take_css_declaration(style, "--bbl-crosshair");
 }
 
-std::string take_inset_outline(std::string& style) {
+void take_projected_outlines(std::string& style) {
     // Outside outlines are projected after layout, without altering the box.
     take_css_declaration(style, "--bbl-outline");
     take_css_declaration(style, "--bbl-outline-offset");
-    return take_css_declaration(style, "--bbl-inset-outline");
 }
 
 bool is_inline_level(Rml::Style::Display display) {
@@ -2385,13 +2385,6 @@ std::vector<GradientTextColor> gradient_text_colors(
         }
     }
     return result;
-}
-
-bool project_rml_style_property(std::string_view name) {
-    // RmlUi box-shadow additionally needs saved layer textures and inverse
-    // masks. Keep dynamic writes consistent with the static CSS omission
-    // until the recorder supports those operations.
-    return name != "box-shadow";
 }
 
 Rml::ColourbPremultiplied canvas_color(std::string_view source) {
@@ -2721,10 +2714,7 @@ struct ProjectedUiElement {
     std::vector<UiElementHandle> child_order;
     std::string intrinsic_min_width;
     std::string crosshair_color;
-    std::string inset_outline;
     std::optional<float> form_spacing;
-    Rml::Element* inset_outline_element = nullptr;
-    bool inset_outline_positioned_parent = false;
     bool text_wrapped = false;
     bool intrinsic_width_applied = false;
     std::uint8_t interaction_states = 0;
@@ -2829,7 +2819,9 @@ public:
         }
         if (operation == Rml::ClipMaskOperation::Set) clip_mask = std::move(triangles);
         else if (operation == Rml::ClipMaskOperation::Intersect) clip_mask = intersect_ui_masks(clip_mask, triangles);
-        else throw std::runtime_error("Inverse retained UI masks are not implemented.");
+        else if (operation == Rml::ClipMaskOperation::SetInverse)
+            clip_mask = subtract_ui_masks(ui_rect_mask(0, 0, float(frame.width), float(frame.height)), triangles);
+        else throw std::runtime_error("Unknown retained UI mask operation.");
     }
 
     Rml::CompiledFilterHandle CompileFilter(const Rml::String& name, const Rml::Dictionary& parameters) override {
@@ -2854,9 +2846,9 @@ public:
 
     Rml::LayerHandle PushLayer() override {
         const auto id = static_cast<std::uint32_t>(layers.size() + 1);
+        layers.push_back({id, frame.draws.size(), {}, UiFrameCheckpoint(frame)});
         frame.layer_count = std::max(frame.layer_count, id);
         frame.operations.push_back({UiRenderOperation::Kind::ResetLayer, static_cast<std::uint32_t>(frame.draws.size()), id});
-        layers.push_back({id, frame.draws.size(), {}});
         return static_cast<Rml::LayerHandle>(id);
     }
 
@@ -2967,6 +2959,8 @@ public:
             frame.indices.push_back(
                 base_vertex + static_cast<std::uint32_t>(index));
         }
+
+        if (clip_mask_enabled) clip_ui_geometry(frame, base_vertex, first_index, clip_mask);
 
         std::uint64_t texture_id = 0;
         if (texture_handle) {
@@ -3171,6 +3165,20 @@ public:
             source.begin(),
             source.end());
         return reinterpret_cast<Rml::TextureHandle>(texture.release());
+    }
+
+    Rml::TextureHandle SaveLayerAsTexture() override {
+        if (layers.empty()) throw std::runtime_error("Saving a retained UI texture requires an owned layer.");
+        const auto region = scissor.Intersect(Rml::Rectanglei::FromSize({static_cast<int>(frame.width), static_cast<int>(frame.height)}));
+        if (region.Width() <= 0 || region.Height() <= 0) return {};
+        const auto& layer = layers.back();
+        const auto pixels = snapshot_ui_layer(frame, layer.checkpoint, layer.id, region.Left(), region.Top(),
+            static_cast<std::uint32_t>(region.Width()), static_cast<std::uint32_t>(region.Height()));
+        const auto texture = GenerateTexture(pixels, region.Size());
+        // The saved texture now owns these draws. Do not submit them again or
+        // retain references to scratch textures in the completed GPU frame.
+        layer.checkpoint.restore(frame);
+        return texture;
     }
 
     void ReleaseTexture(Rml::TextureHandle handle) override {
@@ -3443,7 +3451,7 @@ private:
     bool scissor_enabled = false;
     bool nearest_sampling = false;
     struct BackdropLayer { Rml::Rectanglei region{}; float sigma = 0; };
-    struct Layer { std::uint32_t id; std::size_t first_draw; std::optional<BackdropLayer> backdrop; };
+    struct Layer { std::uint32_t id; std::size_t first_draw; std::optional<BackdropLayer> backdrop; UiFrameCheckpoint checkpoint; };
     std::vector<Layer> layers;
     std::vector<UiClipTriangle> clip_mask;
     std::vector<UiBlurKernel> blur_kernels;
@@ -3723,8 +3731,8 @@ struct UiRmlRuntime {
         const bool checked = name == "object-fit" || name == "filter" || name == "overflow-wrap" || name == "word-break" ||
             name == "flex" || name.starts_with("flex-") || name == "align-self" || name == "align-content" ||
             name == "row-gap" || name == "column-gap" || name.starts_with("padding-") ||
-            name == "margin-left" || name == "margin-right";
-        const bool accepted = element.SetProperty(name, project_css(checked ? js::string_lower(value) : value));
+            name == "margin-left" || name == "margin-right" || name == "box-shadow";
+        const bool accepted = element.SetProperty(name, project_css(checked && name != "box-shadow" ? js::string_lower(value) : value));
         if (checked && !accepted)
             throw std::runtime_error("Unsupported retained UI " + name + " value: " + value);
     }
@@ -4194,61 +4202,6 @@ struct UiRmlRuntime {
         projected.crosshair_color = color;
     }
 
-    void sync_inset_outline(
-        ProjectedUiElement& projected,
-        Rml::Element& parent,
-        const std::string& outline) {
-        std::string position_probe = projected.resolved_style;
-        const bool authored_position =
-            !take_css_declaration(position_probe, "position").empty() ||
-            projected.style_properties.contains("position");
-        if (
-            projected.inset_outline_positioned_parent &&
-            (outline.empty() || authored_position)) {
-            parent.RemoveProperty("position");
-            projected.inset_outline_positioned_parent = false;
-            if (const auto authored =
-                    projected.style_properties.find("position");
-                authored != projected.style_properties.end()) {
-                parent.SetProperty(
-                    "position",
-                    project_css(authored->second));
-            }
-        }
-        if (
-            !outline.empty() &&
-            !authored_position &&
-            !projected.inset_outline_positioned_parent) {
-            parent.SetProperty("position", "relative");
-            projected.inset_outline_positioned_parent = true;
-        }
-        if (
-            projected.inset_outline == outline &&
-            (outline.empty() ||
-             (projected.inset_outline_element &&
-              projected.inset_outline_element->GetParentNode() == &parent))) {
-            return;
-        }
-        if (projected.inset_outline_element) {
-            Rml::Element* element = projected.inset_outline_element;
-            if (element->GetParentNode() == &parent) {
-                Rml::ElementPtr removed = parent.RemoveChild(element);
-            }
-            projected.inset_outline_element = nullptr;
-        }
-        projected.inset_outline = outline;
-        if (outline.empty()) return;
-
-        Rml::ElementPtr element =
-            document->CreateElement("bbl-inset-outline");
-        projected.inset_outline_element = element.get();
-        projected.inset_outline_element->SetAttribute(
-            "style",
-            "position:absolute;top:0;right:0;bottom:0;left:0;"
-            "pointer-events:none;border:" + outline + ";");
-        parent.AppendChild(std::move(element));
-    }
-
     void attach_listeners(
         ProjectedUiElement& projected,
         UiElementHandle handle) {
@@ -4416,13 +4369,11 @@ struct UiRmlRuntime {
             take_css_declaration(projected.resolved_style, "--bbl-fr-grid-tracks");
         projected.crosshair_color =
             take_crosshair_color(projected.resolved_style);
-        projected.inset_outline =
-            take_inset_outline(projected.resolved_style);
+        take_projected_outlines(projected.resolved_style);
         if (!projected.resolved_style.empty()) {
             raw->SetAttribute("style", projected.resolved_style);
         }
         for (const auto& name : record.style_property_order) {
-            if (!project_rml_style_property(name)) continue;
             set_projected_property(*raw, name, record.style_properties.at(name));
         }
         if (!record.inner_rml.empty()) {
@@ -4491,10 +4442,6 @@ struct UiRmlRuntime {
         }
         std::string unused_track;
         if (fractional_tracks >> unused_track) throw std::runtime_error("Fractional UI grid has fewer children than tracks.");
-        sync_inset_outline(
-            projected,
-            *raw,
-            projected.inset_outline);
         parent.AppendChild(std::move(element));
     }
 
@@ -4654,8 +4601,7 @@ struct UiRmlRuntime {
             take_crosshair_color(resolved_style);
         const bool crosshair_changed =
             projected.crosshair_color != crosshair_color;
-        const std::string inset_outline =
-            take_inset_outline(resolved_style);
+        take_projected_outlines(resolved_style);
         const bool resolved_style_changed =
             projected.resolved_style != resolved_style ||
             (!projected.style_properties.empty() && record.style_properties.empty());
@@ -4721,8 +4667,7 @@ struct UiRmlRuntime {
             }
             for (; first != last; ++first) {
                 const auto& name = *first;
-                if (project_rml_style_property(name))
-                    set_projected_property(raw, name, record.style_properties.at(name));
+                set_projected_property(raw, name, record.style_properties.at(name));
             }
         }
         projected.style_properties = record.style_properties;
@@ -4744,7 +4689,6 @@ struct UiRmlRuntime {
             projected.grid_children_style.clear();
             clear_markup_descendants(handle);
             while (raw.GetNumChildren() > 0) {
-                projected.inset_outline_element = nullptr;
                 Rml::ElementPtr removed = raw.RemoveChild(raw.GetChild(0));
             }
             if (!record.inner_rml.empty()) {
@@ -4797,7 +4741,6 @@ struct UiRmlRuntime {
             sync_child_order(children_parent, record.children);
             projected.child_order = record.children;
         }
-        sync_inset_outline(projected, raw, inset_outline);
     }
 
     void sync_tree() {

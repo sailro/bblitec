@@ -195,6 +195,17 @@ and clip/ellipsis overflow. Native font shaping and casing remain the limits of 
 Literal transform origins accept a single keyword/length or horizontal then vertical components,
 with an optional depth length. Visibility collapse, oblique fonts, custom overflow strings and
 vertical-first origin pairs remain unsupported.
+Box shadows retain ordered inset and outer layers, signed pixel offsets/spread,
+nonnegative pixel blur, rounded corners, and explicit supported colors. Color
+custom properties use the normal inherited `var()` cascade, including fallbacks.
+They paint on authored and generated boxes without changing layout; state,
+stylesheet, inline, size and color-variable changes invalidate the native cache.
+The recorder supplies inverse masks and owned layer textures to RmlUi's shared
+[shadow geometry](https://www.w3.org/TR/css-backgrounds-3/#shadow-shape), with four
+coverage samples and the same filter pass plan used by both graphics backends.
+Omitted/currentColor shadow colors, non-pixel shadow lengths and arbitrary
+mask-image sources remain unsupported. Cached shadow textures retain RmlUi's
+viewport-size limit. Blur/radius rasterization can differ from browser pixels.
 Physical border sides accept none, zero or a literal solid width/color; width and color longhands
 retain independent edges. Border widths accept nonnegative px/em/rem lengths and zero.
 Flex containers support wrapping and reversed directions, item grow/shrink/basis,
@@ -258,8 +269,8 @@ specificity and sheet removal update their content and styles. `none`/`normal`
 remove the box; an empty string retains it. Generated boxes and their text remain
 outside authored DOM queries, serialization and positional/empty selector counts.
 Replaced elements do not generate these child boxes. Counters, images, typed
-attribute fallbacks, and decorations/layout substitutions requiring an authored
-retained handle refuse; generated content beside projected grids also refuses.
+attribute fallbacks, outlines/gradient-text adaptations and layout substitutions
+requiring an authored retained handle refuse; generated content beside projected grids also refuses.
 `::placeholder` styles the existing input/textarea placeholder text with color and
 opacity, preserving the control's own style and restoring normal value text when
 filled. Placeholder font/layout/decorative properties remain unsupported.
@@ -355,10 +366,9 @@ marker values, counters and marker images remain unsupported.
 
 - No general selectors/traversal/observers, full browser form semantics,
   multiple pointer identities or arbitrary events.
-- Supported inset outlines become borders; other shadows/font-variant-numeric
-  can degrade. General grid and unsupported text-shadow forms refuse.
+- Font-variant-numeric can degrade. General grid and unsupported text-shadow forms refuse.
 - The reviewed difference-blend crosshair degrades; other unsupported blend
-  modes refuse. Saved layer textures and general mask-image filters are unsupported.
+  modes refuse. General mask-image filters remain unsupported.
 - blur(px)/none are supported; other reached backdrop functions can degrade.
 - will-change, touch-action, user-select and image-rendering are accepted hints.
   `-webkit-user-drag:none` keeps the native image default of no drag initiation; other values refuse.

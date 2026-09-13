@@ -1,3 +1,5 @@
+import {splitUiCssList, uiCssValueTokens} from "./ui-css-syntax.js";
+
 /** The ordinary CSS filters implemented by the retained layer compositor. */
 export function supportedUiFilter(value: string): boolean {
     const text = value.trim().toLowerCase();
@@ -43,4 +45,37 @@ export function supportedUiFilter(value: string): boolean {
         while (/\s/.test(text[cursor] ?? "")) cursor++;
     }
     return count > 0;
+}
+
+/** Literal pixel shadows share filter colors and keep each layer's source order. */
+export function supportedUiBoxShadow(value: string): boolean {
+    const text = value.trim().toLowerCase();
+    if (text === "none") return true;
+    const shadowColor = (token: string): boolean => {
+        if (supportedUiFilter(`drop-shadow(0 0 ${token})`)) return true;
+        if (!token.startsWith("var(") || !token.endsWith(")")) return false;
+        const parts = splitUiCssList(token.slice(4,-1));
+        return /^--[a-z0-9_-]+$/i.test(parts[0] ?? "") && parts.length <= 2 &&
+            (parts.length === 1 || shadowColor(parts[1]!));
+    };
+    return splitUiCssList(text).every(shadow => {
+        const tokens = uiCssValueTokens(shadow);
+        if (!tokens) return false;
+        const lengths: number[] = [];
+        let inset = false, color = false, endedLengths = false;
+        for (const token of tokens) {
+            if (/^[+-]?(?:\d+(?:\.\d*)?|\.\d+)px$|^[+-]?0$/.test(token)) {
+                if (endedLengths) return false;
+                const number = Number.parseFloat(token);
+                if (!Number.isFinite(Math.fround(number))) return false;
+                lengths.push(number);
+            } else {
+                if (lengths.length) endedLengths = true;
+                if (token === "inset" && !inset) inset = true;
+                else if (!color && shadowColor(token)) color = true;
+                else return false;
+            }
+        }
+        return color && lengths.length >= 2 && lengths.length <= 4 && (lengths[2] ?? 0) >= 0;
+    });
 }

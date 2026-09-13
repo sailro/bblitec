@@ -8691,7 +8691,7 @@ test("lowers static retained UI innerHTML to RmlUi markup", () => {
     assert.match(result.cpp, /CONTROLS/);
     assert.match(result.cpp, /display:block/);
     assert.doesNotMatch(result.cpp, /innerHTML/);
-    assert.doesNotMatch(result.cpp, /box-shadow/);
+    assert.match(result.cpp, /box-shadow:0 0 2px #000/);
 });
 
 test("lowers dynamic retained UI innerHTML substitutions", () => {
@@ -9344,7 +9344,7 @@ test("preserves known Map UI identity and guards unknown geometry mutations", ()
         1,
     );
     assert.match(safe.cpp, /UiStyleSelectorKind::CompoundClass/);
-    assert.match(safe.cpp, /--bbl-inset-outline:2px blue;/);
+    assert.match(safe.cpp, /box-shadow:inset 0 0 0 2px blue;/);
 });
 
 test("rejects jointly activating unknown-target grid geometry classes", () => {
@@ -10540,7 +10540,7 @@ test("refuses retained style properties outside the reviewed surface", () => {
     // The refusal names the accepted sets so the boundary is discoverable.
     assert.throws(
         () => compileSource(withCss("clip-path:circle(4px);")),
-        /accepted with a recorded degradation: .*backdrop-filter.*box-shadow/,
+        /accepted with a recorded degradation: .*backdrop-filter.*font-variant-numeric/,
     );
     // Gradient-text consumables refuse outside their combination instead of
     // silently dropping.
@@ -10620,9 +10620,9 @@ test("records reached degraded style properties in the UI adaptation", () => {
     assert.equal(adaptation.category, "platform");
     assert.match(
         adaptation.nativeSemantics,
-        /box-shadow, font-variant-numeric/,
+        /font-variant-numeric/,
     );
-    assert.doesNotMatch(adaptation.nativeSemantics, /backdrop-filter/);
+    assert.doesNotMatch(adaptation.nativeSemantics, /backdrop-filter|box-shadow/);
     assert.match(result.cpp, /backdrop-filter:blur\(3px\)/);
     assert.match(adaptation.nativeSemantics, /RmlUi/);
     assert.match(adaptation.nativeSemantics, /element\.animate\(\)/);
@@ -10663,7 +10663,7 @@ test("emits the UI adaptation for a companion-only scene with its degradations",
         ({ id }) => id === "substituted-ui-runtime",
     );
     assert.ok(adaptation);
-    assert.doesNotMatch(adaptation.nativeSemantics, /backdrop-filter/);
+    assert.doesNotMatch(adaptation.nativeSemantics, /backdrop-filter|box-shadow/);
     assert.match(result.cpp, /backdrop-filter:blur\(14px\)/);
 });
 

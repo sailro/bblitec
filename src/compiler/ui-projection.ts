@@ -3,7 +3,7 @@ import { emissionArray, EmissionSet, EmissionMap, EmissionWeakMap } from "./emis
 import ts from "typescript";
 import { doubleLiteral } from "../cpp-literals.js";
 import { parseUiBorderImage, renderUiBorderImage } from "../ui-border-image.js";
-import { supportedUiFilter } from "../ui-filters.js";
+import { supportedUiBoxShadow, supportedUiFilter } from "../ui-filters.js";
 import {findUiCssSyntax, stripUiCssComments, uiCssBlockEnd, uiCssSyntaxIndices} from "../ui-css-syntax.js";
 import {isUiGeneratedPart, parseUiGeneratedContent, uiGeneratedContentCpp, uiGeneratedPartCpp, type UiGeneratedContent, type UiGeneratedPart} from "../ui-generated-content.js";
 import {parseUiSelectorSequence, splitUiSelectorList, uiSelectorSequenceCss, uiSelectorSequenceSpecificity, uiSelectorSequenceCpp, uiSelectorSequenceTests, uiSelectorSequenceNeedsAuthoredTree, type UiSelectorStep} from "../ui-selector.js";
@@ -944,6 +944,7 @@ export class UiProjection {
         "border-image",
         "border-radius",
         "box-sizing",
+        "box-shadow",
         "bottom",
         "color",
         "column-gap",
@@ -1059,17 +1060,8 @@ export class UiProjection {
     private static readonly DEGRADED_UI_STYLE_PROPERTIES = new EmissionSet<string>([
         "-webkit-backdrop-filter",
         "backdrop-filter",
-        "box-shadow",
         "font-variant-numeric",
     ]);
-
-
-    private static insetOutlineBorder(value: string): string | undefined {
-        const match = value.match(
-            /^inset\s+0(?:px)?\s+0(?:px)?\s+0(?:px)?\s+([0-9]+(?:\.[0-9]*)?px)\s+(.+)$/i,
-        );
-        return match ? `${match[1]} ${match[2]!.trim()}` : undefined;
-    }
 
 
     private static supportedBackdropFilter(value: string): boolean {
@@ -1627,11 +1619,9 @@ export class UiProjection {
                 this.uiDegradedStyleProperties.add(property);
                 return;
             }
-            if (
-                property === "box-shadow" &&
-                UiProjection.insetOutlineBorder(literalValue) !== undefined
-            ) {
-                return;
+            if (property === "box-shadow") {
+                if (supportedUiBoxShadow(literalValue)) return;
+                this.uiStyleRefusal(site, property, "only none or pixel shadow lists with literal or custom-property colors and nonnegative blur are represented");
             }
             if (
                 (property === "backdrop-filter" ||
@@ -2172,12 +2162,6 @@ export class UiProjection {
                     ? `backdrop-filter:${String(filter).trim()};` : "")
             .replace(/\boutline-offset\s*:\s*([^;]+)\s*;?/gi, "--bbl-outline-offset:$1;")
             .replace(/\boutline\s*:\s*([^;]+)\s*;?/gi, "--bbl-outline:$1;")
-            .replace(/\bbox-shadow\s*:\s*([^;]+)\s*;?/gi, (_match, shadow) => {
-                const border = UiProjection.insetOutlineBorder(
-                    String(shadow).trim(),
-                );
-                return border ? `--bbl-inset-outline:${border};` : "";
-            })
             .replace(/\bmix-blend-mode\s*:[^;]*;?/gi, "")
             // RmlUi's border shorthand is `width color`; it deliberately
             // omits CSS border-style because every non-zero border is solid.

@@ -37,12 +37,13 @@ test("generated before and after boxes preserve content, cascade and authored ch
     writeFileSync(join(directory, "worker.ts"), "self.close();");
     const css = `
         .panel{display:block;width:240px}
-        .panel::before{content:"";display:block;width:30px;height:11px;background-color:#123456}
+        .panel::before{content:"";display:block;width:30px;height:11px;background-color:#123456;box-shadow:inset 0 0 0 2px red, 2px 3px 4px blue}
         .panel > .item::before{content:"<b>{" attr(data-label) "}";color:#112233}
         #item::before{content:"ID:" attr(data-label)}
         .item::before{content:"later"}
         .panel > .item::after{content:"End";display:flex;width:40px;height:15px}
         .panel:hover > .item::before{color:#445566}
+        .panel:hover::before{box-shadow:inset 0 0 0 3px green}
         .panel > .item.off::before{content:none}
         #item.off::before{content:none}
         .panel > .item:empty{background-color:#abcdef}
