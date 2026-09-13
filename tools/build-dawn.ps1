@@ -28,12 +28,14 @@ New-Item -ItemType Directory -Path $workspacePath, $output -Force |
 Sync-PinnedCheckout $source $pin.repository $pin.commit "Dawn"
 $patches = @()
 if ($IsMacOS) {
-    $patch = Join-Path $root "tools/patches/dawn-metal-sdk-compat.patch"
-    & git -C $source apply --check $patch
-    if ($LASTEXITCODE -ne 0) { throw "Dawn Metal SDK compatibility patch does not apply." }
-    & git -C $source apply $patch
-    if ($LASTEXITCODE -ne 0) { throw "Dawn Metal SDK compatibility patch failed." }
-    $patches += @{ file = "dawn-metal-sdk-compat.patch"; sha256 = (Get-FileHash $patch -Algorithm SHA256).Hash.ToLowerInvariant() }
+    foreach ($name in @("dawn-metal-sdk-compat.patch", "dawn-metal-primitive-index.patch")) {
+        $patch = Join-Path $root "tools/patches/$name"
+        & git -C $source apply --check $patch
+        if ($LASTEXITCODE -ne 0) { throw "Dawn patch $name does not apply." }
+        & git -C $source apply $patch
+        if ($LASTEXITCODE -ne 0) { throw "Dawn patch $name failed." }
+        $patches += @{ file = $name; sha256 = (Get-FileHash $patch -Algorithm SHA256).Hash.ToLowerInvariant() }
+    }
 }
 
 # We consume the C API. The pin's module probe accepts GCC 13 even though

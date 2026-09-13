@@ -4689,6 +4689,7 @@ SDL_GPUTexture* upload_compressed_texture(
     SdlCopyPass copy{SDL_BeginGPUCopyPass(command)};
     std::vector<OwnedSdlTransfer> transfers;
     transfers.reserve(compressed.mips.size());
+    const bool metal = SDL_strcmp(SDL_GetGPUDeviceDriver(device), "metal") == 0;
     for (std::size_t level = 0; level < compressed.mips.size(); ++level) {
         const CompressedMipLevel& mip = compressed.mips[level];
         const CompressedMipCopy geometry =
@@ -4704,16 +4705,16 @@ SDL_GPUTexture* upload_compressed_texture(
         if (!mapped) gpu_error("SDL_MapGPUTransferBuffer");
         std::memcpy(mapped, mip.bytes.data(), mip.bytes.size());
         SDL_UnmapGPUTransferBuffer(device, transfer);
-        // SDL takes both in pixels and divides by the format's block size
-        // itself, so the padded extent is what it needs here too.
+        // Transfer strides stay block-aligned. Metal's destination extent
+        // must fit the logical mip, including tail levels smaller than a block.
         SDL_GPUTextureTransferInfo source{
             transfer, 0, geometry.width, geometry.height};
         SDL_GPUTextureRegion destination{
             texture,
             static_cast<Uint32>(level),
             0, 0, 0, 0,
-            geometry.width,
-            geometry.height,
+            metal ? mip.width : geometry.width,
+            metal ? mip.height : geometry.height,
             1};
         SDL_UploadToGPUTexture(copy, &source, &destination, false);
     }
@@ -9451,12 +9452,11 @@ public:
                 SDL_GPU_BUFFERUSAGE_GRAPHICS_STORAGE_READ,
                 zero_delta.data(),
                 sizeof(zero_delta));
-            const std::array<std::uint32_t, 4> zero_header{};
             state.empty_morph_weights = upload_buffer(
                 state.device,
                 SDL_GPU_BUFFERUSAGE_GRAPHICS_STORAGE_READ,
-                zero_header.data(),
-                sizeof(zero_header));
+                empty_morph_weight_data.data(),
+                sizeof(empty_morph_weight_data));
         }
 #endif
         sampler_info.address_mode_u =
