@@ -67,8 +67,16 @@
 #include <string>
 #include <bblite/js_data.hpp>
 #include <bblite/pal_audio_types.hpp>
+#include <bblite/js_callback.hpp>
 
 namespace bbl::pal {
+
+#if defined(BBLITE_WORKERS) && BBLITE_WORKERS
+/** Scheduled-source callbacks run through their owning realm's event queue. */
+void audio_add_ended_listener(AudioNodeHandle node, std::size_t identity,
+    js::Callback<void()> callback, bool capture = false, bool once = false);
+void audio_remove_ended_listener(AudioNodeHandle node, std::size_t identity, bool capture = false);
+#endif
 
 /** Context ownership follows the generated engine, including failed startup. */
 class AudioSession {

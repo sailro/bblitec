@@ -586,7 +586,13 @@ inline MeshHandle bind_scene_mesh_profile(Engine&, MeshHandle mesh, std::uint32_
         (features.includes("platform:window") ? "#include <bblite/pal_window_realm.hpp>\n" : "") +
         (features.includes("backend:sdl") ? "#include <bblite/pal_async_engine.hpp>\n" : "") : "";
     const workerNamespace = projection.workers?.namespace;
-    const entryBody = `${projection.audioSessionReached ? "        auto bbl_audio_session = std::make_shared<bbl::pal::AudioSession>();\n" : ""}${seedRandom}${body.join("\n")}`;
+    // A module's initialization returns before timers and native completions.
+    // Its direct audio contexts live until the owning realm is torn down.
+    const audioSession = projection.audioSessionReached
+        ? "        auto bbl_audio_session = std::make_shared<bbl::pal::AudioSession>();\n" +
+          (projection.workers ? "        bbl::pal::EventLoop::current().defer_cleanup([bbl_audio_session] { static_cast<void>(bbl_audio_session); });\n" : "")
+        : "";
+    const entryBody = `${audioSession}${seedRandom}${body.join("\n")}`;
     const workerEntry = workerNamespace
         ? `namespace ${workerNamespace} {\n${preamble}\nvoid initialize([[maybe_unused]] bbl::pal::WorkerRealm& realm) {\n${entryBody}\n}\n}\n`
         : projection.workers?.windowOptions

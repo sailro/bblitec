@@ -5,6 +5,7 @@
 #include <mutex>
 #include <stdexcept>
 #include <vector>
+#include <bblite/js_gc.hpp>
 
 namespace bbl::pal::audio_handles {
 
@@ -57,6 +58,7 @@ class Registry {
         Owner(std::shared_ptr<T> object, std::shared_ptr<State> registry, std::uint32_t slot)
             : value(std::move(object)), state(std::move(registry)), index(slot) {}
         ~Owner() { state->release(index); }
+        void gc_trace(const js::TraceVisitor& visitor) const { visitor(value); }
     };
 
 public:
@@ -76,7 +78,7 @@ public:
             state_->slots.emplace_back();
         } else state_->free = state_->slots[index].next;
         try {
-            auto owner = std::make_shared<Owner>(value, state_, index);
+            auto owner = js::make_gc_shared<Owner>(value, state_, index);
             std::shared_ptr<T> identity(owner, value.get());
             state_->slots[index].value = identity;
             return {index, std::move(identity)};

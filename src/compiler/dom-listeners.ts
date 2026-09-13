@@ -19,7 +19,8 @@ const pointerNames = new Set([
     "wheel", "focus", "blur", "contextmenu", "resize",
 ]);
 
-function listenerOptions(context: Context, expression: ts.Expression | undefined, removing: boolean): {capture:string; once:string; passive:string} {
+export function listenerOptions(context: Pick<Context, "unwrap" | "checker" | "compileCondition" | "compileValue" | "allocateTemporaryCppName" | "emit" | "dataTypes" | "dataLowerer" | "fail">,
+    expression: ts.Expression | undefined, removing: boolean): {capture:string; once:string; passive:string} {
     const result = {capture: "false", once: "false", passive: "false"};
     if (!expression) return result;
     const source = context.unwrap(expression);

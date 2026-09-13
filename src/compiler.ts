@@ -2965,7 +2965,13 @@ class Compiler
             }
         });
         visit(callback.body);
-        if (!recursive) return;
+        if (!recursive) {
+            // Realm callbacks can outlive initialization. Retain their lexical
+            // owner so later reads from nested callbacks keep identity. The
+            // frame-only emitter still specializes these declarations on reach.
+            if (this.options.workers) this.defineVariable(name, this.compileValue(callback));
+            return;
+        }
         if (this.options.workers && ts.getModifiers(callback)?.some(modifier => modifier.kind === ts.SyntaxKind.AsyncKeyword)) {
             const type = this.dataTypes.fromTsType(this.checker.getTypeAtLocation(callback), callback);
             if (type?.kind !== "function") this.fail(callback, "Recursive async callback requires an owned function signature.");
@@ -10735,7 +10741,7 @@ class Compiler
         return this.platform.emitPlatformEventListener(call);
     }
 
-    private platformEventCallbackIdentity(
+    public platformEventCallbackIdentity(
         callback: Value,
         node: ts.Node,
     ): string {
@@ -10812,7 +10818,9 @@ class Compiler
         captureByValue = true,
         assignIdentity = true,
     ): { cpp: string; identity: string } {
-        const stored = this.probeEmission(() => {
+        const asynchronous = this.dataLowerer.promiseCallbackType(callback)
+            ? this.dataLowerer.prepareCallbackValue(callback, "platform_async") : undefined;
+        const stored = asynchronous ?? this.probeEmission(() => {
             const value = this.compileValue(callback);
             return value.kind === "data" && value.dataType?.kind === "function" ? value : undefined;
         });

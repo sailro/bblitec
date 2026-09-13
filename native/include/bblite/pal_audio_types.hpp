@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <bblite/js_gc.hpp>
 
 namespace bbl::pal {
 
@@ -18,6 +19,7 @@ struct AudioNodeHandle {
     std::uint32_t value = 0;
     std::shared_ptr<AudioNodeRecord> ownership;
     bool operator==(const AudioNodeHandle&) const = default;
+    void gc_trace(const js::TraceVisitor& visitor) const { visitor(ownership); }
 };
 
 struct AudioBufferRecord;
@@ -41,6 +43,7 @@ struct AudioParamHandle {
     AudioNodeHandle node;
     AudioParamName name = AudioParamName::Gain;
     bool operator==(const AudioParamHandle&) const = default;
+    void gc_trace(const js::TraceVisitor& visitor) const { visitor(node); }
     [[nodiscard]] std::uint64_t identity() const {
         return (static_cast<std::uint64_t>(node.value) << 32) | static_cast<std::uint32_t>(name);
     }

@@ -9,6 +9,7 @@ import { argumentAt } from "./syntax.js";
 import { readProperty, type PropertyContext } from "./properties.js";
 import type { Feature, Value } from "./types.js";
 import { domAudioHandleKind } from "./data-types.js";
+import { listenerOptions } from "./dom-listeners.js";
 
 /**
  * What resolving a receiver needs, and nothing more. `PropertyContext`
@@ -49,6 +50,13 @@ interface AudioCallContext
         | "registerAsset"
         | "dataLowerer"
         | "options"
+        | "compileCondition"
+        | "compileStringLiteral"
+        | "dataTypes"
+        | "hoistForwardCallbackBindings"
+        | "compilePlatformCallback"
+        | "platformEventCallbackIdentity"
+        | "pinValueToTemporary"
     > {}
 
 const AUDIO_KINDS = new EmissionSet<string>([
@@ -410,6 +418,40 @@ export function compileAudioMethodCall(
 
     if (receiver.kind === "audio-node") {
         switch (method) {
+            case "addEventListener":
+            case "removeEventListener": {
+                context.expectArgumentCount(call, 2, 3);
+                if (!context.options.workers) context.fail(call, "Audio event listeners require an asynchronous application realm.");
+                const selected = {...receiver};
+                delete selected.nativeBinding;
+                const target = context.pinValueToTemporary(selected, "audio_event_target", callee.expression);
+                const type = context.compileStringLiteral(argumentAt(call, 0));
+                if (type !== "ended") context.fail(call, "Only scheduled audio source ended listeners are represented.");
+                const callback = argumentAt(call, 1);
+                context.hoistForwardCallbackBindings(callback, call.pos);
+                const removing = method === "removeEventListener";
+                const callbackType = context.checker.getTypeAtLocation(callback);
+                const absent = (callbackType.flags & (ts.TypeFlags.Null | ts.TypeFlags.Undefined)) !== 0;
+                let identity = "0u", listener = "";
+                if (!absent) {
+                    if (removing) {
+                        const value = {...context.compileValue(callback)};
+                        delete value.nativeBinding;
+                        const snapshot = value.kind === "data" ? context.pinValueToTemporary(value, "audio_event_callback", callback) : value;
+                        identity = context.platformEventCallbackIdentity(snapshot, callback);
+                    } else {
+                        if (callbackType.getCallSignatures().some(signature => signature.parameters.length > 0))
+                            context.fail(callback, "Audio ended event payloads are not represented yet.");
+                        const compiled = context.compilePlatformCallback(callback, undefined, []);
+                        identity = compiled.identity;
+                        listener = compiled.cpp;
+                    }
+                }
+                const options = listenerOptions(context, call.arguments[2], removing);
+                return {kind:"void", cpp:absent ? "" :
+                    `bbl::pal::audio_${removing ? "remove" : "add"}_ended_listener(${target.cpp}, ${identity}, ` +
+                    `${removing ? options.capture : `${listener}, ${options.capture}, ${options.once}`})`};
+            }
             case "connect": {
                 if (call.arguments.length !== 1) {
                     context.fail(

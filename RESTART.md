@@ -36,7 +36,7 @@ it does not establish that this external application compiles or runs.
 | Branch | `codex/external-project-support` |
 | Remote | `https://github.com/sailro/bblitec.git` |
 | Branch base used in this session | `3474e835` on `main` |
-| Latest executable-code/test unit | Async control flow and deferred callbacks; prior savepoints `e5ea2607` (async collections), `24281f2c` (promise caches/reactions), `53ba4164` (recursive async and hardened validation) and `f5cd2061` (AudioBuffer surface) |
+| Latest executable-code/test unit | Scheduled audio events and realm ownership; prior savepoints `95b04043` (async control flow), `e5ea2607` (async collections), `24281f2c` (promise caches/reactions), `53ba4164` (recursive async and hardened validation) and `f5cd2061` (AudioBuffer surface) |
 | Draft PR | [#247 — Extend generic application compilation and retained UI support](https://github.com/sailro/bblitec/pull/247) |
 | External checkout | `C:/Dev/_prototypes/external-native-app` |
 | External source revision | `d7c477a6d5963680c55249dceb93cb6e4ab9ce56` |
@@ -44,9 +44,45 @@ it does not establish that this external application compiles or runs.
 | External generated output | `generated/external-app` (ignored; not a successful complete generation) |
 | Session diagnostics | `artifacts/external-integration` (ignored) |
 
-Latest complete-entry diagnostic: `compile619` passed async early-return paths
-and stopped at an audio source's `addEventListener("ended", ...)` call.
+Latest complete-entry diagnostic: `compile629` passed scheduled-source ended
+listeners and stopped at a callback's reference to the timer being initialized.
 Generation, native build and application runtime remain incomplete.
+
+Scheduled audio events use shared listener identity/options and the native
+PlatformEventListeners registry. Started sources with listeners retain a realm
+completion handler; LabSound posts only a native completion ID, and an eight-ms
+realm timer pumps its event queue without requiring rendering. Automatic pulling
+advances disconnected sources. Delivery occurs outside graph locks and iterators;
+context close cancels delivery, and listeners can close contexts or disconnect.
+Node/parameter handles and the registry's aliasing Owner now expose GC edges.
+The fixture proves unstarted cycles disappear and the realm returns to its managed
+allocation baseline. Direct module audio sessions remain owned until realm teardown.
+The stronger native fixture also exposed/fixed mono playback selecting an in-place
+bus before the queued buffer installed its channel count. Buffers can be reused
+across contexts through their existing owned storage.
+
+`audio-events622` is the fixed twelve-probe generation baseline: 0/12 accepted.
+`audio-events628-native` generates/builds/runs 9/12 with stdout/stderr checked.
+Remaining refusals are event payloads, onended properties and nullable buffer
+assignment in the original escape probe. Independently, the permanent fixture
+checks escaped listeners, nested removal, async callbacks and disconnected sources.
+`audio628` passes all five focused audio checks without skips. The broad
+`regressions629` run passes 895/900: five frame-only emitter regressions came from
+binding nonrecursive function literals eagerly. The owner snapshot is now limited
+to asynchronous realms; frame-only declaration specialization is unchanged.
+`population629` generated 286/288; the same regression affected racer and
+regression-timer-callback-cells. Follow-up compiler/audio and full generation
+results: `regressions630` passes all 714 compiler/audio checks without skips after
+that correction. `population630` generates all 288 entries and completes its
+scene41 native physics bootstrap successfully.
+
+Next batch: timer bindings referenced from callbacks in their own initializer.
+`assess-timer-bindings.mjs` saves eight independent probes. `timer-bindings629`
+accepts only the already-declared mutable binding (1/8 generation, native not yet
+assessed); self-timeouts/intervals, helper callbacks, nested timers, returned cleanup
+and microtask ordering refuse. Some module-scope forms recurse to a stack overflow;
+helper forms diagnose an unknown timer variable. Reuse declaration/closure storage
+and the existing timer scheduler rather than adding a special private helper path.
 
 Direct async bodies now pass a coroutine-body mode through the shared callback
 lowerer. Multiple runtime returns use the caller's native coroutine return frame,
@@ -62,17 +98,6 @@ by the application's latest attempt.
 compiler/control-flow/language/callback/async/fetch/worker checks without skips.
 `population620` generated all 288 registered corpus entries. `control621` passes
 all four focused fixtures after the final diagnostic guards, without skips.
-
-Next: generic scheduled-audio-source event ownership. Existing LabSound nodes
-already install setOnEnded in `create_node`, marking AudioSourceState.completed.
-`collect_audio_graph` pumps LabSound dispatchEvents on the control thread before
-graph collection; it is currently reached from the renderer frame boundary.
-Do not invoke user callbacks while iterating contexts/graphs or holding render/
-graph locks: an ended callback may disconnect nodes or close its context.
-AudioNodeHandle owns AudioNodeRecord with a plain shared_ptr; introducing retained
-JS callbacks also requires traced ownership, since listeners can capture their
-source. EventLoop::Inbox accepts native ExternalEvent data only, and the existing
-CompletionEvent/retained-completion mechanism may provide the realm dispatch seam.
 
 Async collections now reuse one callback preparation helper and typed stored
 coroutines across vector/tuple mapping, predicates, forEach, reduce and Array.from.

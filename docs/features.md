@@ -604,7 +604,8 @@ made by later arguments. Dynamic option aliases without native field storage ref
 ## Audio
 
 Direct no-options `new AudioContext()` shares session ownership with contexts created by the audio engine.
-Aliases and helper returns preserve context identity. Asynchronous realms support `resume`, `suspend`
+Aliases and helper returns preserve context identity. Direct contexts in asynchronous modules live
+until realm teardown, including applications without rendering. Asynchronous realms support `resume`, `suspend`
 and `close` promises; closed aliases retain state, sample rate and their stopped clock. Later lifecycle
 operations reject. Constructor options and state-change listeners remain unsupported. Context/prototype
 `typeof` guards report optional `setSinkId`, media-stream factories and media-element sources as absent;
@@ -622,6 +623,17 @@ buffers. `copyFromChannel`/`copyToChannel` support Float32Array views, bounded o
 storage; uncopied samples remain unchanged. Source-node `buffer` reads retain the assigned buffer's
 identity and report absence before assignment. These operations follow the
 [Web Audio buffer contract](https://www.w3.org/TR/webaudio/#AudioBuffer).
+Owned buffers can be assigned across contexts. Buffer channel counts are installed before playback
+selects its output bus.
+
+Asynchronous realms support zero-argument `ended` listeners on buffer sources and oscillators,
+including promise-returning callbacks, registration after start, callback identity, removal, capture
+and once options. The shared listener registry preserves changes during dispatch. Completion runs
+on the realm thread after natural playback or a scheduled stop, including disconnected sources;
+looping sources wait for their stop. Closing the context cancels pending delivery. Listener/source
+cycles are traced, while active native completions retain callbacks until delivery or realm teardown.
+These events follow the [scheduled-source completion contract](https://www.w3.org/TR/webaudio-1.0/#dom-audioscheduledsourcenode-onended).
+Event payloads, `onended` properties and AbortSignal lifetime remain unsupported.
 
 ## Shadows
 

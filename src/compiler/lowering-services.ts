@@ -81,6 +81,7 @@ export interface LoweringServices {
     failAtFile(message: string): never;
     isPrimaryCanvas2DContextCall(call: ts.CallExpression): boolean;
     hoistForwardCallbackBindings(callback: ts.Expression, before: number): void;
+    platformEventCallbackIdentity(callback: Value, node: ts.Node): string;
     compilePlatformCallback(
         callback: ts.Expression,
         parameter: { cppType: string; name: string } | undefined,
