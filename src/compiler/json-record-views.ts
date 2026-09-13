@@ -1,11 +1,24 @@
 import type ts from "typescript";
 import {EmissionWeakMap} from "./emission-transaction.js";
-import {renderClosure} from "./closure-captures.js";
+import type {CapturedClosure} from "./closure-captures.js";
 import type {Value} from "./types.js";
 import type {DataSinkHost} from "./data-sinks/contracts.js";
 
 // Record aliases share this table even when an inline call renames the value.
 const views = new EmissionWeakMap<object, Value>();
+
+function sharedGetter(lowerer: DataSinkHost, body: CapturedClosure, parameter: string, parameterType: string): string {
+    const context = lowerer.context;
+    const name = context.allocateTemporaryCppName("dynamic_view_getter");
+    const shared = context.registerSharedNativeFunction(name, [
+        `struct ${name} {`,
+        "    template<typename Environment>",
+        `    bbl::js::JsonValue operator()([[maybe_unused]] Environment& ${body.environment}, [[maybe_unused]] ${parameterType} ${parameter}) const {`,
+        ...body.lines.map(line => `        ${line}`),
+        "    }", "};",
+    ], [...body.localBindings, body.environment, parameter]);
+    return `bbl::js::make_closure(${body.initializer}, bblscene::${shared}{})`;
+}
 
 export function compileJsonTupleView(lowerer: DataSinkHost, tuple: Value, node: ts.Node): string | undefined {
     const elements = tuple.tupleElements;
@@ -28,7 +41,7 @@ export function compileJsonTupleView(lowerer: DataSinkHost, tuple: Value, node: 
     });
     const cpp = context.allocateTemporaryCppName("dynamic_tuple_view");
     context.emit({kind:"declaration", type:"auto", name:cpp,
-        initializer:`bbl::js::JsonValue::from_tuple_view(${renderClosure(body, `[[maybe_unused]] std::size_t ${index}`, "bbl::js::JsonValue")}, ${values.length})`});
+        initializer:`bbl::js::JsonValue::from_tuple_view(${sharedGetter(lowerer, body, index, "std::size_t")}, ${values.length})`});
     const result = {...lowerer.leafValue(cpp, {kind:"json"}), nativeCaptures:[context.registerNativeBinding(cpp)]};
     views.set(elements, result);
     context.useNativeValue(result);
@@ -62,7 +75,7 @@ export function compileJsonRecordView(lowerer: DataSinkHost, record: Value, node
     });
     const cpp = context.allocateTemporaryCppName("dynamic_record_view");
     context.emit({kind:"declaration", type:"auto", name:cpp,
-        initializer:`bbl::js::JsonValue::from_record_view(${renderClosure(body, `[[maybe_unused]] std::string_view ${key}`, "bbl::js::JsonValue")}, ` +
+        initializer:`bbl::js::JsonValue::from_record_view(${sharedGetter(lowerer, body, key, "std::string_view")}, ` +
             `bbl::js::Array<std::string>{${fields.map(field => context.cppString(field.name)).join(", ")}})`});
     const result = {...lowerer.leafValue(cpp, {kind:"json"}), nativeCaptures:[context.registerNativeBinding(cpp)]};
     views.set(properties, result);

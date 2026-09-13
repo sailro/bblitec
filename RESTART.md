@@ -8,6 +8,43 @@ dependencies will not be present in a fresh clone.
 
 ## Read this first
 
+**Working unit: shared dynamic-view getters.** Dynamic binding support is
+committed/pushed as `ac33ee27`. Full compile1019 advances past the settings setter
+and fails after 107.86 seconds at the sound helper's string-key access into the
+dynamic cue table. probe-audio1022.mjs reproduces this exact refusal in 9.37s:
+DataLowerer.elementRead's JSON arm always calls compileNumber for its key.
+Next fix should share property-key conversion between that arm and
+compileJsonRead, respecting string/enum keys and single evaluation. The following
+typed local initialized from that dynamic read may also need to retain JSON.
+
+The current two-file performance change uses registerSharedNativeFunction for
+record/tuple view getters; each view keeps its own traced environment and identity.
+For the unchanged loader/setter probe, 1,952 views now use 253 shared getter
+definitions. C++ falls from 3,912,488 bytes / 29,237 lines to 2,192,193 bytes /
+16,633 lines (44% fewer bytes). The original C++ is saved as setting1014-main.cpp;
+setting1014-build-baseline.json records its main translation unit's 478.78-second
+Clang compile, measured from the observed process creation to object completion.
+setting1021-build completed in 495.46 seconds including configuration/linking;
+setting1021-native passed. The source-size reduction did NOT demonstrate a native
+build-time improvement: optimization remains about eight minutes. Do not describe
+this cleanup as a measured compile speedup.
+
+views1020-focused passes 34/34 dynamic/recursive/storage/sharing tests;
+views1023-regressions passes 662/662 compiler/coroutine/transaction tests. Native
+build/run of the unchanged loader/setter passed through the normal CMake/Clang
+route (setting1021-build/time/native logs). A complete JavaScript comparison of
+the actual coroutine loader ALSO PASSED through
+check-async977.mjs and check-generated-native.mjs --pal --workers --asset-support
+--large-stack (views1023-reference/native logs). All tests and builds are complete.
+probe-keys1024.mjs reproduces the enum-key variant in a neutral stored callback
+with the same worker realm. The helper reads parsed.cues[id] into an explicitly
+typed optional record. Its current refusal is in compileJsonRead, while the actual
+sound helper refuses in DataLowerer.elementRead. Share one key conversion across
+both paths. An initial version of this probe used a typed native function argument
+and hit a DIFFERENT record/JSON argument boundary; do not use that discarded shape
+as the model for the current application's callback.
+No new subagents were used. The full application is still incomplete; continue.
+
 **Working unit: demanded dynamic binding storage.** Query unit `a5d1fead` is
 committed/pushed. A reached typed-record assignment from represented JSON now
 requests dynamic storage for its exact source declaration. compileSource retains

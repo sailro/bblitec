@@ -59,6 +59,8 @@ groups retain traced callback storage.
 data functions; `user-functions.ts` specializes resource helpers by arguments,
 receiver and lexical dependencies. Dedicated modules own classes, module
 initialization, closures and collections.
+Dynamic record and tuple views intern equivalent getter definitions through the
+same native-function registry while retaining separate traced capture environments.
 Module initialization planning summarizes eager mutations once per module,
 tracking alias origins and called bodies, then intersects those facts with
 observed storage as dependency reach grows.

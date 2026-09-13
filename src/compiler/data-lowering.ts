@@ -140,6 +140,7 @@ export interface DataLoweringContext
         | "isDefaultLibraryIdentifier"
         | "useNativeValue"
         | "registerNativeBinding"
+        | "registerSharedNativeFunction"
         | "checker"
         | "lookup"
         | "lookupOptional"
