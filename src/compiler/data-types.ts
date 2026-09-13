@@ -631,10 +631,13 @@ export class DataTypeRegistry {
           (member.flags & (ts.TypeFlags.Null | ts.TypeFlags.Undefined)) !== 0,
       )
     ) {
-      const inner = this.fromNonNullableType(
-        this.checker.getNonNullableType(type),
-        node,
-      );
+      // Keep a lone T available to the active call substitution. The checker's
+      // NonNullable<T> intersection can otherwise discard that binding.
+      const present = (type as ts.UnionType).types.filter(member =>
+        (member.flags & (ts.TypeFlags.Null | ts.TypeFlags.Undefined)) === 0);
+      const inner = present.length === 1
+        ? this.fromTsType(present[0]!, node)
+        : this.fromNonNullableType(this.checker.getNonNullableType(type), node);
       if (!inner) {
         return undefined;
       }

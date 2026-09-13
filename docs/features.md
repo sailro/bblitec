@@ -95,7 +95,11 @@ Bare returns, fallthrough and void-returning expressions preserve their effects;
 support `typeof` checks of their `then`, `catch` and `finally` methods.
 Promise reactions and microtasks share mutable outer bindings, including through called helpers.
 Local and nullable promise bindings can be replaced or cached in collections while aliases retain
-promise identity. Async reactions own their suspended arguments; stored callbacks and callback
+promise identity. Generic helpers returning `Promise<T | undefined>` preserve the active type
+argument. Widening represented promise results to optional storage retains the original promise,
+its rejection state and subscription order; it does not add an adoption job. Awaited absent results
+remain undefined, including in direct conditions and comparisons.
+Async reactions own their suspended arguments; stored callbacks and callback
 properties are read at registration after the receiver. Async returns adopt wider nullable results
 and preserve rejection when their fulfillment value is discarded by a void callback signature.
 Collection callbacks returning promises use retained function invocation for mapping, predicates,

@@ -94,6 +94,7 @@ export class AsyncLowerer {
             const temporary = context.allocateTemporaryCppName("await_result");
             context.emit({ kind: "declaration", type: "auto", name: temporary, initializer: `co_await ${awaited.cpp}`, attributes: "[[maybe_unused]] " });
             const binding = context.registerNativeBinding(temporary);
+            if (awaited.promiseResult?.kind === "void") return {kind:"json-null", cpp:"std::nullopt"};
             return { ...this.resultAt(awaited.promiseResult!, temporary), nativeCaptures: [binding] };
         }
         if (ts.isNewExpression(node) && browserGlobalNamed(context, node.expression)?.text === "Promise") return this.compileConstructor(node);
@@ -413,7 +414,7 @@ export class AsyncLowerer {
     }
     private normalizeUndefined(value: Value, type: ts.Type): Value {
         const result = this.context.checker.getAwaitedType(type) ?? type;
-        return value.kind === "json-null" && (result.flags & ts.TypeFlags.Undefined) !== 0
+        return value.kind === "json-null" && (value.cpp === "std::nullopt" || (result.flags & ts.TypeFlags.Undefined) !== 0)
             ? {kind:"void", cpp:value.cpp === "std::nullopt" ? "" : value.cpp} : value;
     }
     private asPromise(value: Value, node: ts.Node): Value {

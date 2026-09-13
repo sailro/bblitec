@@ -8,7 +8,36 @@ dependencies will not be present in a fresh clone.
 
 ## Read this first
 
-**Current unit: coroutine dynamic returns.** Precision unit `652d3fc0` is
+**Current unit: generic optional promise results.** Coroutine unit `8dba6d4b`
+is committed/pushed. The branch already includes main's Linux and macOS PRs.
+The application is still incomplete; continue without asking to continue.
+The current uncommitted change preserves T substitutions through nullable unions,
+widens promise result storage with identity-preserving native views, and keeps
+promise metadata on annotated variables. Direct awaited conditions/data reads
+retain the await; specialized undefined async results remain undefined.
+Promise views register observations directly on the original state, retaining
+identity, rejection handling and microtask order without an adoption job. Tests
+also cover suspended observation, live roots and unreachable view cycles.
+
+promise994-focused passes 5 native checks. promise995-regressions passes 969/969
+without skips in 171.3 seconds. quality994 generates the unchanged startup helper
+with its real desktop callback in 0.45 seconds. check-quality996.mjs compares six
+URL/stored-preference branches to JavaScript plus the real no-bridge desktop
+callback. Generation succeeds in 0.57 seconds. Its bare MSVC runner omitted UI
+feature flags and therefore cannot build this Window-realm probe: use the real
+scene build, not substitute Window services. quality997-build is currently
+processing artifacts/external-integration/quality996/quality-probe.ts through
+the ordinary scene CLI, with CMAKE_COMMAND set to the documented VS fallback.
+This rebuilt the SDL overlay affected by the platform rebase, then used the
+full Window/UI/storage PAL. Clang compilation exposes an unrelated generated
+unused module-record local (-Werror,-Wunused-variable) that needs the ordinary
+maybe_unused declaration policy. Generated output is generated/quality-probe;
+native/build-quality-probe-release is the native build directory.
+Full compile998 is in progress after the green compiler/worker regressions.
+Promise TODOs about constructor adoption, race unions and aggregation are still
+open; optional storage does not complete those broader requirements.
+
+**Completed unit: coroutine dynamic returns.** Precision unit `652d3fc0` is
 committed/pushed. Full compile970 still stopped at the same loader return after
 67.27 seconds: the application contains workers, so usesWorkers selects native
 coroutines; prior isolated loader probes used immediate async lowering. Always
@@ -22,7 +51,7 @@ Promise adoption shares the same result conversion callback. async973 generates
 the unchanged worker-enabled loader. async975-focused passes 6 native/metadata
 checks; async976-regressions passes 63 coroutine/promise/closure/dynamic checks.
 The neutral native test covers suspension, promise adoption, default identity,
-shared writes and single evaluation. This unit is not yet committed.
+shared writes and single evaluation. This unit is committed as `8dba6d4b`.
 
 check-async977.mjs compares COMPLETE loader output/defaults against JavaScript
 with native coroutines and actual packaged configuration (generation 3.76s).

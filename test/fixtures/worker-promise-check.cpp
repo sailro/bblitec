@@ -16,6 +16,59 @@ js::Promise<double> compute(js::Promise<double> input, std::vector<int>* order) 
     co_return value * 2;
 }
 
+js::Promise<js::PromiseVoid> await_result_view(js::Promise<std::optional<double>> input, std::vector<int>* order) {
+    require(co_await input == std::optional<double>{7}, "Promise view lost its awaited result");
+    order->push_back(3);
+    co_return js::PromiseVoid{};
+}
+
+void result_views_preserve_protocol() {
+    for (const bool settled : {false, true}) {
+        const js::RealmScope realm;
+        pal::EventLoop loop;
+        std::vector<int> order;
+        loop.run([&] {
+            auto source = settled ? js::Promise<double>::resolved(7) : js::Promise<double>{};
+            auto view = js::Promise<std::optional<double>>::view(source, [](double value) { return std::optional<double>{value}; });
+            require(source == view && source.pending() == view.pending(), "Promise view changed identity or settlement");
+            source.then([&](double) { order.push_back(1); });
+            view.then([&](std::optional<double> value) { require(value == 7, "Promise view conversion failed"); order.push_back(2); });
+            await_result_view(view, &order);
+            source.then([&](double) { order.push_back(4); loop.close(); });
+            js::collect_cycles();
+            if (!settled) source.resolve(7);
+        });
+        require(order == std::vector<int>{1, 2, 3, 4}, "Promise view changed microtask registration order");
+    }
+    const js::RealmScope realm;
+    pal::EventLoop loop;
+    int completed = 0, unhandled = 0;
+    loop.on_unhandled_rejection([&](std::exception_ptr) { ++unhandled; });
+    loop.run([&] {
+        auto absent = js::Promise<js::PromiseVoid>::resolved({});
+        auto view = js::Promise<std::optional<double>>::view(absent, [](const js::PromiseVoid&) { return std::optional<double>{}; });
+        require(view == absent, "Undefined promise view changed identity");
+        auto done = [&] { if (++completed == 2) loop.close(); };
+        view.then([done](std::optional<double> value) { require(!value, "Undefined promise acquired a value"); done(); });
+        auto rejected = js::Promise<double>::rejected(std::make_exception_ptr(std::runtime_error("failure")));
+        auto failure = js::Promise<std::optional<double>>::view(rejected, [](double value) { return std::optional<double>{value}; });
+        failure.catch_error([done](std::exception_ptr error) {
+            require(js::promise_error_message(error) == "failure", "Promise view replaced its rejection");
+            done(); return std::optional<double>{};
+        });
+        std::weak_ptr<int> released;
+        {
+            auto token = std::make_shared<int>(1); released = token;
+            js::Promise<double> source;
+            auto cycle = js::Promise<std::optional<double>>::view(source, [](double value) { return std::optional<double>{value}; });
+            source.observe(js::make_closure(std::tuple{cycle, token}, [](auto&, double) {}), [](std::exception_ptr) {});
+        }
+        js::collect_cycles();
+        require(released.expired(), "Promise result view retained an unreachable cycle");
+    });
+    require(completed == 2 && unhandled == 0, "Promise view lost completion or rejection handling");
+}
+
 void ordering_and_recovery() {
     const js::RealmScope realm;
     pal::EventLoop loop;
@@ -159,6 +212,7 @@ void renderer_tasks_yield_and_retire() {
 int main() {
     try {
         ordering_and_recovery();
+        result_views_preserve_protocol();
         aggregate_promises();
         shutdown_releases_suspended_activations();
         unhandled_rejections_reach_the_realm_error_handler();

@@ -49,6 +49,24 @@ function valueJson(_dataType: DataType<"json">, lowerer: DataSinkHost, value: Va
     return type ? lowerer.context.dataTypes.jsonValueCpp(type, cpp, node) : undefined;
 }
 
+function valuePromise(type: DataType<"promise">, lowerer: DataSinkHost, value: Value, node: ts.Node): string | undefined {
+    if (value.kind !== "promise") return undefined;
+    const types = lowerer.context.dataTypes;
+    const result = type.result;
+    const expected = result ? types.cppType(result) : "bbl::js::PromiseVoid";
+    if (value.promiseType === expected) return value.cpp;
+    let converted: string | undefined;
+    if (value.promiseResult?.kind === "void" && result &&
+        (result.kind === "optional" || result.kind === "function" || result.kind === "json" ||
+            (result.kind === "struct" && types.isReferenceStruct(result.name)))) {
+        converted = `${expected}{}`;
+    } else if (result?.kind === "optional" && value.promiseType === types.cppType(result.inner)) {
+        converted = `${expected}{value}`;
+    }
+    if (!converted) return lowerer.context.fail(node, `Promise storage requires ${expected}, received ${value.promiseType}.`);
+    return `bbl::js::Promise<${expected}>::view(${value.cpp}, []([[maybe_unused]] const ${value.promiseType}& value) -> ${expected} { return ${converted}; })`;
+}
+
 function valueNumber(_dataType: DataType<"number">, lowerer: DataSinkHost, value: Value, _node: ts.Node): string | undefined {
     // A parsed document coerces at the sink, which is where
     // JavaScript coerces one: `Number(document)`.
@@ -122,12 +140,7 @@ export const scalarsSinks: DataSinkOperations<"event-target" | "http-response" |
     },
     promise: {
         expression: (type, lowerer, _expression, unwrapped) => lowerer.compileKnownValueForSink(lowerer.context.compileValue(unwrapped), type, unwrapped),
-        value: (type, lowerer, value, node) => {
-            if (value.kind !== "promise") return undefined;
-            const expected = type.result ? lowerer.context.dataTypes.cppType(type.result) : "bbl::js::PromiseVoid";
-            if (value.promiseType !== expected) lowerer.context.fail(node, `Promise storage requires ${expected}, received ${value.promiseType}.`);
-            return value.cpp;
-        },
+        value: valuePromise,
     },
     storage: {
         expression: (type, lowerer, _expression, unwrapped) => lowerer.compileKnownValueForSink(lowerer.context.compileValue(unwrapped), type, unwrapped),

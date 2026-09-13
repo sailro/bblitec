@@ -660,7 +660,7 @@ export class DataLowerer {
         expression: ts.Expression,
         mode: "read" | "write",
     ): Value | undefined {
-        const unwrapped = this.context.unwrap(expression);
+        const unwrapped = this.context.options.workers ? unwrapExpression(expression) : this.context.unwrap(expression);
         if (ts.isIdentifier(unwrapped)) {
             const bound =
                 this.context.lookupIdentifierValue(

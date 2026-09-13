@@ -1,4 +1,4 @@
-import { assetRootMutationStates, nativeDataMetadata, valueForKind } from "./compiler/types.js";
+import { assetRootMutationStates, nativeDataMetadata, valueForKind, withNativeMetadata } from "./compiler/types.js";
 import { forEachAnalysisNode, findAnalysisNodeWithState, someAnalysisNode } from "./compiler/analysis-walk.js";
 import { emissionArray, EmissionMap, EmissionSet, EmissionTransaction, EmissionWeakMap, EmissionWeakSet } from "./compiler/emission-transaction.js";
 import type { LoweringServices, NativeFunctionBodyOptions, NativeReturnValueCompiler } from "./compiler/lowering-services.js";
@@ -3700,10 +3700,12 @@ class Compiler
                 ? { staticElements }
                 : {}),
         };
+        const represented = annotated.kind === "promise"
+            ? withNativeMetadata(this.dataValue(boundCpp, annotated), boundValue) : boundValue;
         if (selfReferentialBinding) {
-            this.rebindVariable(name, boundValue);
+            this.rebindVariable(name, represented);
         } else {
-            this.defineVariable(name, boundValue);
+            this.defineVariable(name, represented);
         }
         return true;
     }
@@ -6767,7 +6769,12 @@ class Compiler
     }
 
     public compileCondition(expression: ts.Expression): string {
-        const unwrapped = this.unwrap(expression);
+        const unwrapped = this.options.workers ? unwrapExpression(expression) : this.unwrap(expression);
+        if (this.options.workers && ts.isAwaitExpression(unwrapped)) {
+            const value = this.compileValue(unwrapped);
+            if (value.kind === "void") { this.emitDiscardedValue(value); return "false"; }
+            return this.dataLowerer.conditionFromValue(value) ?? this.fail(unwrapped, "Awaited result has no represented truthiness.");
+        }
         if (
             ts.isBinaryExpression(unwrapped) &&
             (unwrapped.operatorToken.kind ===

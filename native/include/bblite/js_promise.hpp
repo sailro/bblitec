@@ -53,20 +53,52 @@ template <typename T> using ResultType = typename Result<T>::type;
 
 /** Realm-local promise state. Every reaction, including a settled one, is a microtask. */
 template <typename T> class Promise {
+    template <typename> friend class Promise;
     using State = promise_detail::State<T>;
     using Reaction = typename State::Reaction;
+    struct View {
+        virtual ~View() = default;
+        virtual const void* get() const noexcept = 0;
+        virtual void require_owner() const = 0;
+        virtual pal::EventLoop* event_loop() const = 0;
+        virtual bool pending() const = 0;
+        virtual T result() const = 0;
+        virtual void observe(typename State::Fulfilled, typename State::Rejected) const = 0;
+        virtual void gc_trace(const TraceVisitor&) const = 0;
+    };
+    template <typename U, typename Convert> struct ResultView final : View {
+        Promise<U> source;
+        Convert convert;
+        ResultView(Promise<U> input, Convert conversion) : source(std::move(input)), convert(std::move(conversion)) {}
+        const void* get() const noexcept override { return source.get(); }
+        void require_owner() const override { source.require_owner(); }
+        pal::EventLoop* event_loop() const override { return source.event_loop(); }
+        bool pending() const override { return source.pending(); }
+        T result() const override { return convert(source.result_value()); }
+        void observe(typename State::Fulfilled fulfilled, typename State::Rejected rejected) const override {
+            source.observe(make_closure(std::tuple{convert, std::move(fulfilled)}, [](auto& environment, const U& value) {
+                std::get<1>(environment)(std::get<0>(environment)(value));
+            }), std::move(rejected));
+        }
+        void gc_trace(const TraceVisitor& visitor) const override { visitor(source); visitor(convert); }
+    };
   public:
     Promise() : state_(make_gc_shared<State>()) {}
-    const void* get() const noexcept { return state_.get(); }
+    const void* get() const noexcept { return view_ ? view_->get() : state_.get(); }
     template <typename U> bool operator==(const Promise<U>& other) const noexcept { return get() == other.get(); }
-    void gc_trace(const TraceVisitor& visitor) const { visitor(state_); }
-    bool pending() const { state_->require_owner(); return std::holds_alternative<std::monostate>(state_->outcome); }
+    void gc_trace(const TraceVisitor& visitor) const { visitor(state_); visitor(view_); }
+    bool pending() const { require_owner(); return view_ ? view_->pending() : std::holds_alternative<std::monostate>(state_->outcome); }
+
+    /** Change only the native result view; identity and reaction registration stay on the original promise. */
+    template <typename U, typename Convert> static Promise view(Promise<U> source, Convert convert) {
+        return Promise({}, make_gc_shared<ResultView<U, Convert>>(std::move(source), std::move(convert)));
+    }
 
     static Promise resolved(T value) { Promise promise; promise.resolve(std::move(value)); return promise; }
     static Promise rejected(std::exception_ptr error) { Promise promise; promise.reject(error); return promise; }
 
     void resolve(T value) const {
-        state_->require_owner();
+        require_resolver();
         if (state_->resolving) return;
         state_->resolving = true;
         settle(std::move(value));
@@ -75,7 +107,7 @@ template <typename T> class Promise {
         adopt(other, [](const T& value) { return value; });
     }
     template <typename U, typename Convert> void adopt(const Promise<U>& other, Convert convert) const {
-        state_->require_owner();
+        require_resolver();
         if (state_->resolving) return;
         state_->resolving = true;
         if (get() == other.get()) { settle(std::make_exception_ptr(std::runtime_error("Promise cannot resolve to itself"))); return; }
@@ -92,13 +124,14 @@ template <typename T> class Promise {
         });
     }
     void reject(std::exception_ptr error) const {
-        state_->require_owner();
+        require_resolver();
         if (state_->resolving) return;
         state_->resolving = true;
         settle(error);
     }
     void observe(typename State::Fulfilled fulfilled, typename State::Rejected rejected) const {
-        state_->require_owner();
+        require_owner();
+        if (view_) { view_->observe(std::move(fulfilled), std::move(rejected)); return; }
         state_->handled = true;
         Reaction reaction{std::move(fulfilled), std::move(rejected)};
         if (std::holds_alternative<std::monostate>(state_->outcome)) state_->reactions.push_back(std::move(reaction));
@@ -165,19 +198,20 @@ template <typename T> class Promise {
     };
     struct Awaiter {
         std::shared_ptr<State> state;
+        std::shared_ptr<View> view;
         bool await_ready() const noexcept { return false; }
         template <typename P> void await_suspend(std::coroutine_handle<P> continuation) {
             const auto id = continuation.promise().continuation;
-            auto* loop = state->loop;
-            Promise(state).observe([loop, id](const T&) { loop->resume_continuation(id); },
-                                   [loop, id](std::exception_ptr) { loop->resume_continuation(id); });
+            const Promise source(state, view);
+            auto* loop = source.event_loop();
+            source.observe([loop, id](const T&) { loop->resume_continuation(id); },
+                           [loop, id](std::exception_ptr) { loop->resume_continuation(id); });
         }
         T await_resume() const {
-            if (const auto* error = std::get_if<std::exception_ptr>(&state->outcome)) std::rethrow_exception(*error);
-            return std::get<T>(state->outcome);
+            return Promise(state, view).result_value();
         }
     };
-    Awaiter operator co_await() const { state_->require_owner(); return Awaiter{state_}; }
+    Awaiter operator co_await() const { require_owner(); return Awaiter{state_, view_}; }
 
   private:
     template <typename F> static auto cleanup_result(F& callback) {
@@ -204,7 +238,18 @@ template <typename T> class Promise {
         });
     }
 
-    explicit Promise(std::shared_ptr<State> state) : state_(std::move(state)) {}
+    explicit Promise(std::shared_ptr<State> state, std::shared_ptr<View> view = {}) : state_(std::move(state)), view_(std::move(view)) {}
+    void require_owner() const { if (view_) view_->require_owner(); else state_->require_owner(); }
+    void require_resolver() const {
+        require_owner();
+        if (view_) throw std::logic_error("A promise result view does not expose a resolver.");
+    }
+    pal::EventLoop* event_loop() const { return view_ ? view_->event_loop() : state_->loop; }
+    T result_value() const {
+        if (view_) return view_->result();
+        if (const auto* error = std::get_if<std::exception_ptr>(&state_->outcome)) std::rethrow_exception(*error);
+        return std::get<T>(state_->outcome);
+    }
     template <typename Outcome> void settle(Outcome value) const {
         if (!std::holds_alternative<std::monostate>(state_->outcome)) return;
         state_->outcome = std::move(value);
@@ -226,6 +271,7 @@ template <typename T> class Promise {
         });
     }
     std::shared_ptr<State> state_;
+    std::shared_ptr<View> view_;
 };
 
 inline std::string promise_error_message(std::exception_ptr error) {
