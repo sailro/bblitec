@@ -8,6 +8,26 @@ dependencies will not be present in a fresh clone.
 
 ## Read this first
 
+**Latest unit: typed branches copied from dynamic values.** `72a1fe73` is committed
+and pushed. hasDynamicObjectSpread is shared between expression and declaration
+lowering: runtime JSON-rooted sources and unknown/any spreads choose fresh dynamic
+dictionary storage even when the inferred result has a static record type.
+Inferred mutable declarations bypass the typed struct-spread initializer only for
+that fresh dynamic spread. Dictionary assignment discovery also consults represented
+locals, so writes use Map.set rather than assigning a temporary JSON lookup.
+Dictionary `size` reads/writes are ordinary properties (the Map/Set collection size
+branch now excludes source dictionaries). Native regression checks a typed branch
+copy and direct JSON.parse spread. spread922-focused and spread923-regressions pass
+(48 focused checks, no skips).
+
+The unchanged loader now reaches its sanitizer's `number | undefined` result,
+which cannot be boxed because native optional storage lacks undefined-only metadata
+(`merge921-loader`, line 2834). Existing DataType.optional.undefinedOnly supports
+safe boxing but is currently assigned only by tuple storage. Next preserve known
+undefined-only absence from checker unions, without treating null/undefined unions
+as distinguishable storage. Do not weaken the existing ambiguous-absence refusal.
+No full-entry retry since compile900; use probe-merge900.mjs.
+
 **Latest unit: erased generic return values.** Spread unit `8530ab83` is committed
 and pushed. Generic return analysis now detects unknown/dictionary return sources
 under assertions and conditional arms when the declared result is T. That return

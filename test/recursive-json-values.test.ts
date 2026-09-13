@@ -88,6 +88,11 @@ test("dynamic object spread copies outer properties and retains nested identity"
         if(changed.branch.size!==5||changed.keep!==typed.keep||changed===typed)throw new Error("typed merge identity");
         typed.keep.value=7;
         if(changed.keep.value!==7||typed.branch.size!==1)throw new Error("typed merge aliases");
+        const branch={...changed.branch};
+        branch.size=6;
+        if(branch.size!==6||changed.branch.size!==5)throw new Error("typed branch copy");
+        const direct={...JSON.parse('{"first":1}'),last:2};
+        if(direct.first!==1||direct.last!==2)throw new Error("direct parsed spread");
         const scalar=merge(2,JSON.parse('"text"'));
         if((scalar as unknown)!=="text")throw new Error("dynamic generic scalar kind");
         const copy:Record<string,unknown>={...(base as Record<string,unknown>),extra:4};

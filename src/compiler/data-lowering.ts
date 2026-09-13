@@ -2002,7 +2002,7 @@ export class DataLowerer {
         }
         if (
             (dataType.kind === "map" || dataType.kind === "set") &&
-            property === "size"
+            property === "size" && (dataType.kind !== "map" || !dataType.dictionary)
         ) {
             return {
                 kind: "number",
@@ -6396,12 +6396,10 @@ export class DataLowerer {
     private dictionaryEntryTarget(
         left: ts.Expression,
     ): { owner: Value; dataType: DataType & { kind: "map" }; keyCpp: string } | undefined {
-        if (
-            (!ts.isElementAccessExpression(left) && !ts.isPropertyAccessExpression(left)) ||
-            !this.declaredAsDictionary(left.expression)
-        ) {
-            return undefined;
-        }
+        if (!ts.isElementAccessExpression(left) && !ts.isPropertyAccessExpression(left)) return undefined;
+        const root = this.context.unwrap(left.expression);
+        const represented = ts.isIdentifier(root) ? this.context.lookupIdentifierValue(root)?.dataType : undefined;
+        if (represented?.kind !== "map" && !this.declaredAsDictionary(left.expression)) return undefined;
         let owner = this.context.probeEmission(() => {
             const path = this.compileDataPath(left.expression, "read");
             const candidate = path?.kind === "data" ? this.narrowOptional(path, left.expression) : undefined;

@@ -24,7 +24,7 @@ import type { LoweringServices } from "./lowering-services.js";
 // observes.
 import ts from "typescript";
 import {arrayFunctionValue} from "./native-function-values.js";
-import {isJsonValue} from "./json-bridge.js";
+import {hasDynamicObjectSpread, isJsonValue} from "./json-bridge.js";
 import { isHandleKind } from "./data-types.js";
 
 import { doubleLiteral } from "../cpp-literals.js";
@@ -3584,8 +3584,7 @@ export class ExpressionLowerer {
     }
 
     private compileObjectValue(unwrapped: ts.ObjectLiteralExpression): Value | undefined {
-        const dynamicSpread = unwrapped.properties.some(property => ts.isSpreadAssignment(property) &&
-            this.context.dataTypes.dynamicJsonType(this.context.checker.getTypeAtLocation(property.expression)) !== undefined);
+        const dynamicSpread = hasDynamicObjectSpread(this.context, unwrapped);
         if (unwrapped.properties.some(property => ts.isSpreadAssignment(property) &&
             this.context.dataLowerer.dataTypeAt(property.expression)?.kind === "map") || dynamicSpread) {
             const contextual = this.context.checker.getContextualType(unwrapped);

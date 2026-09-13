@@ -6,7 +6,7 @@ import { SharedNativeFunctions } from "./compiler/shared-native-functions.js";
 import { renderNativeDeclaration, type NativeDeclaration } from "./compiler/native-declarations.js";
 import { persistContinuationLocals } from "./compiler/continuation-storage.js";
 import ts from "typescript";
-import {isJsonValue} from "./compiler/json-bridge.js";
+import {hasDynamicObjectSpread, isJsonValue} from "./compiler/json-bridge.js";
 import { resolve } from "node:path";
 import { inferUninitializedHandle } from "./compiler/uninitialized-handle.js";
 import { framePollExecutor } from "./compiler/frame-poll.js";
@@ -3366,6 +3366,7 @@ class Compiler
             ts.isArrayLiteralExpression(this.unwrap(declaration.initializer)) &&
             this.inferredArrayIsMutated(name);
         const initializer = this.unwrap(declaration.initializer);
+        if (ts.isObjectLiteralExpression(initializer) && hasDynamicObjectSpread(this, initializer)) return false;
         const annotatedOpenRecordLiteral =
             declaration.type !== undefined &&
             annotated?.kind === "map" &&

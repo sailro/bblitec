@@ -232,6 +232,20 @@ export function isJsonRootedExpression(
     return false;
 }
 
+/** Fresh spread storage follows the represented source, even when an assertion
+ * or generic signature gives the containing expression a static record type. */
+export function hasDynamicObjectSpread(
+    context: Pick<JsonBridgeContext, "unwrap" | "lookupOptional" | "checker" | "dataTypes">,
+    literal: ts.ObjectLiteralExpression,
+): boolean {
+    return literal.properties.some(property => {
+        if (!ts.isSpreadAssignment(property)) return false;
+        if (isJsonRootedExpression(context, property.expression)) return true;
+        const type = context.checker.getTypeAtLocation(property.expression);
+        return (type.flags & ts.TypeFlags.Any) !== 0 || context.dataTypes.dynamicJsonType(type) !== undefined;
+    });
+}
+
 /**
  * The value a chain rooted in a parsed document produces, or `undefined`
  * when the expression is not one.
