@@ -11,10 +11,15 @@ in [fidelity](fidelity.md), and commands in [development](development.md).
 | Shaders | Offline Tint/target binaries | Deployed WGSL compiled by Dawn |
 | Binding authority | Compiled `.slots` sidecars | WGSL and generated layout tables |
 | Uniforms | Push/uniform and storage API | Queue writes and retained bind groups |
-| Platform coverage | Windows D3D12; Vulkan/Metal gaps | Windows surface integration |
+| Platform coverage | Windows D3D12; Linux Vulkan | Windows D3D12; Linux Vulkan with X11/Wayland surfaces |
 | Resource ownership | SDL device objects/fences | WebGPU objects/submission retention |
 
 Backend agreement does not exclude a shared input or implementation defect.
+
+Shader, node and plugin material bindings share immutable image uploads across
+materials on one device. Image identity includes byte backing and upload flags;
+each binding retains its own sampler and UV state. Weak cache entries release
+GPU images with their last material owner, including renderer rebuilds.
 
 ## Shared frame conductor
 
@@ -35,6 +40,10 @@ slot order and uniform size. Large uniform blocks can become read-only storage
 in SDL-facing artifacts; Dawn keeps their original declarations and bytes.
 SDL places integer texture loads in storage-texture slots between sampled
 textures and storage buffers, with matching allocation usage and shader counts.
+Vulkan binaries use combined image/sampler descriptors for SDL's sampled
+texture slots; integer and multisampled texture loads retain separate image descriptors.
+The SPIR-V adapter preserves Tint's TEXCOORD indices as explicit Vulkan
+locations, including gaps in vertex attributes and interstage varyings.
 
 Local PBR probes bind the pin's recorded cube array, grid and material fields. Each retained probe set
 owns its GPU resources; single local environments override the cube independently per material.
@@ -44,6 +53,8 @@ Dawn uses per-variant layouts. Pipeline keys include format, sample count, depth
 blend, cull, topology and compare. Uniform ownership distinguishes draws with
 different overrides. Request limits from reached layouts; retain resources
 through in-flight use. Surface device errors instead of changing renderers.
+Explicit Dawn device destruction releases its presentation surface first,
+so active and recycled swapchains retire before the Vulkan device's teardown.
 
 Node geometry uses original position/normal/UV/index streams and separate
 per-view mesh uniforms. Material/texture bindings come from generated variant

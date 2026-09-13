@@ -5,6 +5,7 @@
 #define BBLITE_PINNED_MATERIALS 1
 #include "pal_dawn_resources.hpp"
 #include "pal_owned_gpu_record.hpp"
+#include "pal_texture_upload_cache.hpp"
 #include <algorithm>
 #include <array>
 #include <cassert>
@@ -46,8 +47,6 @@ constexpr std::size_t mesh_texture_slots = 3, npos = static_cast<std::size_t>(-1
 constexpr std::uint32_t invalid_handle = 0xffffffffu;
 constexpr std::uint64_t unsynced_bone_palette = static_cast<std::uint64_t>(-1);
 struct DawnSharedShaderGeometry { DawnBuffer vertex_buffer, index_buffer; std::size_t users = 0; };
-struct DawnSharedMaterialTextures { std::vector<DawnSampledTexture> textures; std::size_t users = 0; };
-using DawnSharedShaderMaterialTextures = DawnSharedMaterialTextures;
 struct DawnSharedComposedMaterialTextures {
     std::array<DawnTexture, mesh_texture_slots> textures;
     std::array<DawnTextureView, mesh_texture_slots> views;
@@ -66,6 +65,7 @@ struct DawnState {
     struct ShaderStorageBuffer { WGPUBuffer buffer = nullptr; };
     std::vector<ShaderStorageBuffer> shader_storage_buffers;
     std::vector<std::unique_ptr<DawnSharedShaderGeometry>> shared_shader_geometries;
+    TextureUploadCache<DawnTexture> shared_material_images;
     std::vector<std::unique_ptr<DawnSharedMaterialTextures>> shared_shader_material_textures;
     std::vector<std::unique_ptr<DawnSharedComposedMaterialTextures>> shared_composed_material_textures;
     struct Pipeline { WGPURenderPipeline pipeline = nullptr; };

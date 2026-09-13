@@ -8,11 +8,69 @@ import { computeBuildStamp } from "../src/build-stamp.js";
 import { discoverDevelopmentTools, discoverWindowsBuildTools } from "../src/development-tools.js";
 import { applicationScenes } from "../src/scene-registry.js";
 import { packageSizeReport, preserveShippingPayload, readShippingFeatures, selectShippingScenes,
-    shippingConfigureArguments, shippingPlan, type ShippingFeatures } from "../src/shipping-demos.js";
+    shippingConfigureArguments, shippingPlan, shippingPlatform, type ShippingFeatures } from "../src/shipping-demos.js";
 
 const tools = discoverDevelopmentTools();
 const sample = applicationScenes[0]!;
 const core: ShippingFeatures = { features: [], codecs: [], runtime: [] };
+
+test("shipping selects host shader payloads and trims unreached SVG on both platforms", { skip: !tools.powershell }, t => {
+    const directory = mkdtempSync(join(tmpdir(), "bblite-shipping-policy-"));
+    t.after(() => rmSync(directory, { recursive: true, force: true }));
+    const script = readFileSync("tools/package-demo.ps1", "utf8");
+    const start = script.indexOf("$shaderPatterns ="), end = script.indexOf("if (-not $shaderFiles)", start);
+    assert.ok(start >= 0 && end > start);
+    const payload = script.slice(start, end).replaceAll("$IsWindows", "$windowsHost");
+    for (const name of ["a.vert.dxil", "a.vert.spv", "a.vert.slots", "a.vert.native.wgsl", "a.vert.hlsl"]) {
+        writeFileSync(join(directory, name), "");
+    }
+    const rml = readFileSync("tools/build-rmlui.ps1", "utf8");
+    const rmlStart = rml.indexOf("$minimalBuild ="), rmlEnd = rml.indexOf("$staticSuffix =", rmlStart);
+    assert.ok(rmlStart >= 0 && rmlEnd > rmlStart);
+    const probe = join(directory, "policy.ps1");
+    writeFileSync(probe, `
+$ErrorActionPreference = 'Stop'
+$shaderSource = $PSScriptRoot
+foreach ($case in @(
+    @{ Windows = $true; Backend = 'SDL_GPU'; Expected = 'a.vert.dxil,a.vert.slots' },
+    @{ Windows = $false; Backend = 'SDL_GPU'; Expected = 'a.vert.slots,a.vert.spv' },
+    @{ Windows = $true; Backend = 'DAWN'; Expected = 'a.vert.native.wgsl' }
+)) {
+    $windowsHost = $case.Windows; $backend = $case.Backend
+    ${payload}
+    if (($shaderFiles.Name | Sort-Object) -join ',' -ne $case.Expected) { throw 'Wrong shader payload' }
+}
+foreach ($StaticRuntime in @($false, $true)) {
+    foreach ($MinSize in @($false, $true)) {
+        foreach ($EnableSvg in @($false, $true)) {
+            ${rml.slice(rmlStart, rmlEnd)}
+            $expected = if (($StaticRuntime -or $MinSize) -and -not $EnableSvg) { 'OFF' } else { 'ON' }
+            if ($rmlSvgSetting -ne $expected) { throw 'Wrong SVG capability' }
+        }
+    }
+}
+`);
+    const result = spawnSync(tools.powershell!, ["-NoProfile", "-File", probe], { encoding: "utf8", windowsHide: true });
+    assert.equal(result.status, 0, result.stdout + result.stderr);
+});
+
+test("Linux shipping selects static host libraries and Vulkan-compatible native configuration", () => {
+    assert.equal(shippingPlatform("linux", "x64"), "linux");
+    assert.equal(shippingPlatform("win32", "x64"), "win32");
+    assert.throws(() => shippingPlatform("darwin", "x64"));
+    assert.throws(() => shippingPlatform("linux", "arm64"));
+    const plan = shippingPlan(process.cwd(), [{ scene: sample, reached: core }], undefined, "linux");
+    const scene = plan.scenes[0]!;
+    assert.equal(plan.profiles[0]!.triplet, "x64-linux");
+    assert.equal(scene.triplet, "x64-linux");
+    const args = shippingConfigureArguments(process.cwd(), scene,
+        { compiler: "/usr/bin/clang++", ninja: "/usr/bin/ninja" }, "/opt/vcpkg/scripts/buildsystems/vcpkg.cmake");
+    for (const required of ["-DCMAKE_CXX_COMPILER=/usr/bin/clang++", "-DVCPKG_TARGET_TRIPLET=x64-linux",
+        "-DCMAKE_SKIP_RPATH=ON", "-DBBLITE_MINSIZE=ON", "-DBBLITE_BACKEND=SDL_GPU",
+        "-DBBLITE_VISUAL_CAPTURE=OFF", "-DBBLITE_AUDIO_CAPTURE=OFF"]) assert.ok(args.includes(required), required);
+    assert.ok(!args.some(arg => arg.includes("MSVC") || arg.includes("windows-static")));
+    assert.match(packageSizeReport([], "linux"), /SDL_GPU \/ Vulkan/);
+});
 
 test("shipping selects all application registry entries and refuses paths or duplicate IDs", () => {
     assert.deepEqual(selectShippingScenes(undefined), applicationScenes);
@@ -161,6 +219,8 @@ if ((Get-Content -LiteralPath (Join-Path $plan.Previous "$name.zip")) -ne 'old z
 if ((Get-Content -LiteralPath (Join-Path $root "$name/new.txt")) -ne 'new package') { throw 'new package missing' }
 if ((Get-Content -LiteralPath (Join-Path $root '@previous/baseline.zip')) -ne 'comparison baseline') { throw 'baseline changed' }
 if (@(Get-ChildItem -LiteralPath (Join-Path $root '@previous')).Count -ne 1) { throw 'baseline acquired files' }
+$linuxPlan = New-PackageOutput $root 'bblitec-demo-sdl-gpu-linux-x64'
+if ($linuxPlan.Name -ne 'bblitec-demo-sdl-gpu-linux-x64') { throw 'Linux package name changed' }
 foreach ($invalid in @('../escape', 'bblitec-../escape-windows-x64')) {
     $rejected = $false
     try { New-PackageOutput $root $invalid | Out-Null } catch { $rejected = $true }
@@ -172,7 +232,8 @@ if (-not $rejected) { throw 'escaping path accepted' }
 $outside = Join-Path $root 'external'
 New-Item -ItemType Directory -Path $outside | Out-Null
 $link = Join-Path $root '.staging/link'
-New-Item -ItemType Junction -Path $link -Target $outside | Out-Null
+$linkType = if ($IsWindows) { 'Junction' } else { 'SymbolicLink' }
+New-Item -ItemType $linkType -Path $link -Target $outside | Out-Null
 $rejected = $false
 try { Assert-PackageChild $root (Join-Path $link 'payload') } catch { $rejected = $true }
 if (-not $rejected) { throw 'junction accepted' }

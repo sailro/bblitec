@@ -56,6 +56,7 @@
 #include "pal_dawn_effect.hpp"
 #endif
 #include "pal_gpu_shared.hpp"
+#include "pal_texture_upload_cache.hpp"
 #include "pal_frame_session.hpp"
 #if defined(BBLITE_HAS_TEXT) && BBLITE_HAS_TEXT
 #include "pal_dawn_text.hpp"
@@ -461,7 +462,12 @@ struct DawnSharedShaderGeometry {
 struct DawnSharedMaterialTextures {
     MaterialHandle material{};
     std::vector<DawnSampledTexture> textures;
+    std::vector<std::shared_ptr<DawnTexture>> image_leases;
     std::size_t users = 0;
+    void clear() noexcept {
+        textures.clear();
+        image_leases.clear();
+    }
 };
 
 /** Generated PBR/Standard texture slots uploaded once per material. */
@@ -1237,6 +1243,7 @@ struct DawnState : DawnDevice {
     std::vector<std::vector<DawnMesh>> overlay_meshes;
     std::vector<std::unique_ptr<DawnSharedShaderGeometry>>
         shared_shader_geometries;
+    TextureUploadCache<DawnTexture> shared_material_images;
     std::vector<std::unique_ptr<DawnSharedShaderMaterialTextures>>
         shared_shader_material_textures;
     std::vector<std::unique_ptr<DawnSharedComposedMaterialTextures>>
@@ -1587,15 +1594,16 @@ struct DawnState : DawnDevice {
         prune_unused_shared(
             shared_shader_material_textures,
             [](DawnSharedShaderMaterialTextures& textures) {
-                release_dawn_extra_textures(textures.textures);
+                textures.clear();
             });
 #if BBLITE_HAS_MATERIAL_PLUGIN_TEXTURES
         prune_unused_shared(
             shared_plugin_material_textures,
             [](DawnSharedPluginMaterialTextures& textures) {
-                release_dawn_extra_textures(textures.textures);
+                textures.clear();
             });
 #endif
+        shared_material_images.prune();
     }
 
     void prune_shared_composed_material_textures() {
@@ -1822,13 +1830,13 @@ struct DawnState : DawnDevice {
         release_all_shared(
             shared_shader_material_textures,
             [](DawnSharedShaderMaterialTextures& textures) {
-                release_dawn_extra_textures(textures.textures);
+                textures.clear();
             });
 #if BBLITE_HAS_MATERIAL_PLUGIN_TEXTURES
         release_all_shared(
             shared_plugin_material_textures,
             [](DawnSharedPluginMaterialTextures& textures) {
-                release_dawn_extra_textures(textures.textures);
+                textures.clear();
             });
 #endif
         release_all_shared(
@@ -11038,21 +11046,29 @@ DawnMesh upload_dawn_scene_mesh(
             }
         }
     }
-    const auto upload_shader_textures = [&](std::vector<DawnSampledTexture>& textures) {
+    const auto upload_material_slot_texture = [&](DawnSampledTexture& sampled,
+        const auto& texture, std::vector<std::shared_ptr<DawnTexture>>* leases) {
+        const auto upload = [&] {
+            std::uint32_t mip_count = 1;
+            return DawnTexture{upload_material_texture(state, texture.data, texture.srgb,
+                {255, 255, 255, 255}, mip_count)};
+        };
+        if (leases) {
+            auto image = state.shared_material_images.acquire(texture.data,
+                texture.srgb, {255, 255, 255, 255}, upload);
+            leases->push_back(image);
+            sampled.texture = image->retain();
+        } else {
+            sampled.texture = upload();
+        }
+        sampled.view = create_dawn_texture_view(sampled.texture, nullptr);
+        sampled.sampler = create_texture_sampler(state.device, texture.data.sampler);
+    };
+    const auto upload_shader_textures = [&](std::vector<DawnSampledTexture>& textures,
+        std::vector<std::shared_ptr<DawnTexture>>* leases = nullptr) {
         for (const FileTexture& texture : material->shader_textures) {
-            std::uint32_t shader_mip_count = 1;
             DawnSampledTexture& sampled = textures.emplace_back();
-            sampled.texture = upload_material_texture(
-                state,
-                texture.data,
-                texture.srgb,
-                {255, 255, 255, 255},
-                shader_mip_count);
-            sampled.view =
-                create_dawn_texture_view(sampled.texture, nullptr);
-            sampled.sampler = create_texture_sampler(
-                state.device,
-                texture.data.sampler);
+            upload_material_slot_texture(sampled, texture, leases);
         }
     };
     // A node graph's declared images take the same per-MATERIAL cache
@@ -11074,7 +11090,8 @@ DawnMesh upload_dawn_scene_mesh(
             state.shared_shader_material_textures.push_back(std::move(created));
             mesh.shared_shader_textures = state.shared_shader_material_textures.back().get();
             ++mesh.shared_shader_textures->users;
-            upload_shader_textures(mesh.shared_shader_textures->textures);
+            upload_shader_textures(mesh.shared_shader_textures->textures,
+                &mesh.shared_shader_textures->image_leases);
         } else {
             ++mesh.shared_shader_textures->users;
         }
@@ -11102,19 +11119,9 @@ DawnMesh upload_dawn_scene_mesh(
             for (
                 const MaterialPluginTexture& texture :
                 material->plugin_textures) {
-                std::uint32_t plugin_mip_count = 1;
                 DawnSampledTexture& sampled = mesh.shared_plugin_textures->textures.emplace_back();
-                sampled.texture = upload_material_texture(
-                    state,
-                    texture.data,
-                    texture.srgb,
-                    {255, 255, 255, 255},
-                    plugin_mip_count);
-                sampled.view =
-                    create_dawn_texture_view(sampled.texture, nullptr);
-                sampled.sampler = create_texture_sampler(
-                    state.device,
-                    texture.data.sampler);
+                upload_material_slot_texture(sampled, texture,
+                    &mesh.shared_plugin_textures->image_leases);
             }
         } else {
             ++mesh.shared_plugin_textures->users;
@@ -11904,6 +11911,8 @@ class DawnSceneRun {
     } data_;
 
     struct Frame {
+        // Keep construction explicit while optional inspects this nested type.
+        Frame() {}
         bool yield_when_skipped = false;
 #if BBLITE_OFFSCREEN_SURFACES
         DawnOffscreenImage* offscreen_image = nullptr;
@@ -16376,8 +16385,10 @@ public:
                 handle_at(state.render_targets, copy.target);
             const auto [source_texture, source_view] =
                 source_texture_view(copy.source);
-            const auto surface_pane = target_record.swapchain && !force_full_viewport
-                ? scene_surface_pane(engine, graph_scene, width, height) : std::nullopt;
+            std::optional<PixelViewport> surface_pane;
+            if (target_record.swapchain && !force_full_viewport) {
+                surface_pane = scene_surface_pane(engine, graph_scene, width, height);
+            }
             WGPURenderPassColorAttachment blit_attachment =
                 WGPU_RENDER_PASS_COLOR_ATTACHMENT_INIT;
             blit_attachment.view = target_record.swapchain
@@ -16834,7 +16845,7 @@ public:
 #endif
         report_benchmark(benchmark_samples, "Dawn", "D3D12");
 #if defined(BBLITE_DEVICE_RECOVERY) && BBLITE_DEVICE_RECOVERY
-        if (engine.device_recovery && (engine.device_recovery->requested || engine.device_recovery->disposed)) wgpuDeviceDestroy(state.device);
+        if (engine.device_recovery && (engine.device_recovery->requested || engine.device_recovery->disposed)) state.destroy_device();
 #endif
 #if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI && !(defined(BBLITE_WORKERS) && BBLITE_WORKERS)
         ui_runtime.reset();

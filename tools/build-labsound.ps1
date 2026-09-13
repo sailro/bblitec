@@ -25,6 +25,7 @@ param(
     [string]$Workspace = "",
     [string]$OutputDirectory = "",
     [switch]$StaticRuntime,
+    [switch]$MinSize,
     [switch]$CoreOnly,
     [switch]$EnableCodecs,
     [string]$CMake = $env:CMAKE_COMMAND
@@ -33,8 +34,11 @@ param(
 $ErrorActionPreference = "Stop"
 Import-Module (Join-Path $PSScriptRoot "bblite-tools.psm1") -Force
 $root = Get-RepositoryRoot
+if ($StaticRuntime -and -not $IsWindows) { throw "-StaticRuntime selects the Windows shipping CRT." }
+if ($MinSize -and -not $IsLinux) { throw "-MinSize selects Linux shipping; use -StaticRuntime on Windows." }
+$minimalBuild = $StaticRuntime -or $MinSize
 if (-not $Workspace) {
-    $Workspace = if ($StaticRuntime) {
+    $Workspace = if ($minimalBuild) {
         if ($EnableCodecs) {
             ".cache\labsound-static-codecs"
         } else {
@@ -45,7 +49,7 @@ if (-not $Workspace) {
     }
 }
 if (-not $OutputDirectory) {
-    $OutputDirectory = if ($StaticRuntime) {
+    $OutputDirectory = if ($minimalBuild) {
         if ($EnableCodecs) {
             "artifacts\tools\labsound-static-codecs"
         } else {
@@ -75,7 +79,7 @@ Sync-PinnedCheckout `
     $pin.dependencies.libnyquist.commit `
     "libnyquist"
 
-$coreOnlyBuild = $CoreOnly -or ($StaticRuntime -and -not $EnableCodecs)
+$coreOnlyBuild = $CoreOnly -or ($minimalBuild -and -not $EnableCodecs)
 $decoderPatch = Join-Path $root "tools\patches\labsound-lazy-decoders.patch"
 git -C $source apply --check $decoderPatch
 if ($LASTEXITCODE -ne 0) { throw "The maintained LabSound decoder patch no longer applies to the pin." }
@@ -111,9 +115,20 @@ if ($StaticRuntime) {
         '-DCMAKE_C_FLAGS_RELEASE=/O1 /Ob1 /DNDEBUG /Gw /GL'
     )
 }
-if ($coreOnlyBuild -and -not $StaticRuntime) {
-    $configureArguments += '-DCMAKE_CXX_FLAGS_RELEASE=/O2 /DNDEBUG /DLABSOUND_CORE_ONLY'
+if ($coreOnlyBuild -and -not $minimalBuild) {
+    $configureArguments += if ($IsWindows) {
+        '-DCMAKE_CXX_FLAGS_RELEASE=/O2 /DNDEBUG /DLABSOUND_CORE_ONLY'
+    } else {
+        '-DCMAKE_CXX_FLAGS_RELEASE=-O2 -DNDEBUG -DLABSOUND_CORE_ONLY'
+    }
 }
+if ($MinSize -and $IsLinux) {
+    $cppFlags = '-Os -DNDEBUG -ffunction-sections -fdata-sections'
+    if ($coreOnlyBuild) { $cppFlags += ' -DLABSOUND_CORE_ONLY' }
+    $configureArguments += @("-DCMAKE_CXX_FLAGS_RELEASE=$cppFlags",
+        '-DCMAKE_C_FLAGS_RELEASE=-Os -DNDEBUG -ffunction-sections -fdata-sections')
+}
+$configureArguments += @(Get-LinuxCompilerArguments)
 & $CMake @configureArguments
 if ($LASTEXITCODE -ne 0) {
     throw "LabSound CMake configuration failed."
@@ -121,7 +136,8 @@ if ($LASTEXITCODE -ne 0) {
 
 # The core target alone: the bundled backends are replaced by the SDL3
 # device in this project's own PAL.
-& $CMake --build $build --target LabSound --config Release --parallel
+$parallelArguments = Get-BuildParallelArguments
+& $CMake --build $build --target LabSound --config Release @parallelArguments
 if ($LASTEXITCODE -ne 0) {
     throw "LabSound build failed."
 }
@@ -137,15 +153,17 @@ function Resolve-BuiltLibrary([string[]]$candidates, [string]$label) {
     return $found
 }
 
+$labSoundName = if ($IsWindows) { "LabSound.lib" } else { "libLabSound.a" }
+$nyquistName = if ($IsWindows) { "libnyquist.lib" } else { "liblibnyquist.a" }
 $labSoundLib = Resolve-BuiltLibrary @(
-    (Join-Path $build "bin\LabSound.lib"),
-    (Join-Path $build "bin\Release\LabSound.lib")
+    (Join-Path $build "bin/$labSoundName"),
+    (Join-Path $build "bin/Release/$labSoundName")
 ) "LabSound"
 $libraries = @($labSoundLib)
 if (-not $coreOnlyBuild) {
     $nyquistLib = Resolve-BuiltLibrary @(
-        (Join-Path $build "_deps\libnyquist-build\lib\libnyquist.lib"),
-        (Join-Path $build "_deps\libnyquist-build\lib\Release\libnyquist.lib")
+        (Join-Path $build "_deps/libnyquist-build/lib/$nyquistName"),
+        (Join-Path $build "_deps/libnyquist-build/lib/Release/$nyquistName")
     ) "libnyquist"
     $libraries += $nyquistLib
 }
@@ -161,7 +179,7 @@ Copy-Item -Force (Join-Path $source "LICENSE") (Join-Path $output "LabSound-LICE
 Copy-Item -Force (Join-Path $source "COPYING") (Join-Path $output "LabSound-COPYING.txt")
 if ($coreOnlyBuild) {
     foreach ($obsolete in @(
-        (Join-Path $libOut "libnyquist.lib"),
+        (Join-Path $libOut $nyquistName),
         (Join-Path $output "libnyquist-LICENSE.txt"),
         (Join-Path $output "libnyquist-COPYING.txt")
     )) {
@@ -173,9 +191,10 @@ if ($coreOnlyBuild) {
     Copy-Item -Force (Join-Path $nyquist "COPYING") (Join-Path $output "libnyquist-COPYING.txt")
 }
 
+$minSizeSetting = if ($minimalBuild) { "ON" } else { "OFF" }
 $staticRuntimeSetting = if ($StaticRuntime) { "ON" } else { "OFF" }
 $coreOnlySetting = if ($coreOnlyBuild) { "ON" } else { "OFF" }
-"set(BBLITE_LABSOUND_STATIC_RUNTIME $staticRuntimeSetting)`nset(BBLITE_LABSOUND_CORE_ONLY $coreOnlySetting)`n" |
+"set(BBLITE_LABSOUND_STATIC_RUNTIME $staticRuntimeSetting)`nset(BBLITE_LABSOUND_MINSIZE $minSizeSetting)`nset(BBLITE_LABSOUND_CORE_ONLY $coreOnlySetting)`n" |
     Set-Content (Join-Path $output "bblite-labsound-features.cmake") -Encoding Ascii
 
 Write-Host "LabSound installed to $output (commit $($pin.commit))."

@@ -10,9 +10,9 @@ param(
 # packages. The version tracks the vcpkg-installed SDL3 so the trimmed
 # library stays ABI-identical to the one SDL3_image was compiled
 # against. The engine initializes only SDL_INIT_VIDEO|SDL_INIT_EVENTS
-# and renders through SDL_GPU (D3D12), so joystick, haptic,
-# HIDAPI, sensor, camera, power, misc, locale, the GL/Vulkan
-# plumbing, and the SDL_Renderer core are compiled out entirely.
+# and renders through SDL_GPU (D3D12 on Windows, Vulkan on Linux).
+# Unreached joystick/HIDAPI, haptic, sensor, camera, power, misc, locale,
+# GL plumbing and the SDL_Renderer core are compiled out entirely.
 # SDL's portable dialog subsystem remains available for browser:file scenes;
 # static dead stripping removes it from executables that do not reach the PAL.
 # SDL_RENDER is one of them: bblitec requires a GPU and has no software
@@ -84,7 +84,7 @@ if (-not (Test-Path (Join-Path $source ".git"))) {
 # (multisample reads, line rasterization and descriptor heap rollover).
 # The overlay's fix-freebsd.patch only rewires the FreeBSD
 # pkgconfig install path — vcpkg packaging infrastructure with no effect
-# on this Windows build — so it is deliberately not applied here.
+# on these Windows/Linux builds — so it is deliberately not applied here.
 # Idempotent: a patch that already sits in the working tree (a re-run on
 # a warm workspace) reverse-applies cleanly and is skipped; anything
 # else fails loudly rather than building unpatched sources.
@@ -145,7 +145,7 @@ $sdlOptions = [ordered]@{
     SDL_LOCALE = "OFF"
     SDL_OPENGL = "OFF"
     SDL_OPENGLES = "OFF"
-    SDL_VULKAN = "OFF"
+    SDL_VULKAN = $(if ($IsLinux) { "ON" } else { "OFF" })
     SDL_RENDER_GPU = "OFF"
     SDL_GPU = "ON"
     SDL_RENDER = "OFF"
@@ -155,11 +155,22 @@ $configureArguments = @(
     "-S", $source,
     "-B", $build,
     "-DCMAKE_BUILD_TYPE=MinSizeRel",
-    "-DCMAKE_INSTALL_PREFIX=$output",
-    '-DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded$<$<CONFIG:Debug>:Debug>',
-    '-DCMAKE_CXX_FLAGS_MINSIZEREL=/O1 /Ob1 /DNDEBUG /Gw /Zc:inline',
-    '-DCMAKE_C_FLAGS_MINSIZEREL=/O1 /Ob1 /DNDEBUG /Gw'
+    "-DCMAKE_INSTALL_PREFIX=$output"
 )
+if ($IsWindows) {
+    $configureArguments += @(
+        '-DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded$<$<CONFIG:Debug>:Debug>',
+        '-DCMAKE_CXX_FLAGS_MINSIZEREL=/O1 /Ob1 /DNDEBUG /Gw /Zc:inline',
+        '-DCMAKE_C_FLAGS_MINSIZEREL=/O1 /Ob1 /DNDEBUG /Gw'
+    )
+} else {
+    $configureArguments += @(Get-LinuxCompilerArguments)
+    $configureArguments += @(
+        "-G", "Ninja", "-DCMAKE_INSTALL_LIBDIR=lib",
+        "-DCMAKE_C_FLAGS_MINSIZEREL=-Os -DNDEBUG -ffunction-sections -fdata-sections",
+        "-DCMAKE_CXX_FLAGS_MINSIZEREL=-Os -DNDEBUG -ffunction-sections -fdata-sections"
+    )
+}
 foreach ($option in $sdlOptions.GetEnumerator()) {
     $configureArguments += "-D$($option.Key)=$($option.Value)"
 }
@@ -188,7 +199,8 @@ if ($unexpanded.Count -gt 0) {
     throw "SDL cache entries hold unexpanded script text: $listing"
 }
 
-& $CMake --build $build --config MinSizeRel --parallel
+$parallelArguments = Get-BuildParallelArguments
+& $CMake --build $build --config MinSizeRel @parallelArguments
 if ($LASTEXITCODE -ne 0) {
     throw "SDL minimal build failed."
 }
@@ -208,6 +220,7 @@ Copy-Item (Join-Path $source "LICENSE.txt") (Join-Path $output "LICENSE.txt") -F
     "set(BBLITE_SDL_AUDIO $audioSetting)"
     "set(BBLITE_SDL_GAMEPAD $gamepadSetting)"
     "set(BBLITE_SDL_DIALOG ON)"
+    "set(BBLITE_SDL_VULKAN $($sdlOptions.SDL_VULKAN))"
 ) -join "`n" |
     Set-Content (Join-Path $output "bblite-sdl-features.cmake") -Encoding Ascii
 
@@ -216,7 +229,9 @@ Copy-Item (Join-Path $source "LICENSE.txt") (Join-Path $output "LICENSE.txt") -F
     tag = $tag
     version = $sdlVersion
     patches = @($patches | ForEach-Object { Split-Path -Leaf $_ })
-    variant = "static, MinSizeRel, static CRT, $($variantFeatures -join '+') only"
+    variant = "static, MinSizeRel, $($variantFeatures -join '+') only"
+    vulkan = $IsLinux
+    staticRuntime = $IsWindows
     builtAt = (Get-Date).ToUniversalTime().ToString("o")
 } | ConvertTo-Json | Set-Content (Join-Path $output "provenance.json")
 

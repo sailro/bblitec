@@ -537,9 +537,14 @@ if(BBLITE_BACKEND_DAWN)
         list(
             APPEND BBLITE_RUNTIME_LIBRARIES
             "$<TARGET_FILE:dawn::webgpu_dawn>"
-            "$<TARGET_FILE_DIR:dawn::webgpu_dawn>/dxcompiler.dll"
-            "$<TARGET_FILE_DIR:dawn::webgpu_dawn>/dxil.dll"
         )
+        if(WIN32)
+            list(APPEND BBLITE_RUNTIME_LIBRARIES
+                "$<TARGET_FILE_DIR:dawn::webgpu_dawn>/dxcompiler.dll"
+                "$<TARGET_FILE_DIR:dawn::webgpu_dawn>/dxil.dll")
+        elseif(UNIX AND NOT APPLE)
+            set_property(TARGET bblite_native APPEND PROPERTY BUILD_RPATH "$ORIGIN")
+        endif()
     endif()
     # Whether the installed Dawn carries its built DXC
     # (tools/build-dawn.ps1 deploys dxcompiler.dll and dxil.dll into
@@ -605,18 +610,25 @@ if("ui:rml" IN_LIST BBLITE_RUNTIME_FEATURES)
     # scene reaching inline SVG, the plugin.
     set(BBLITE_RMLUI_BUILD_COMMAND "tools/build-rmlui.ps1")
     if(BBLITE_MINSIZE)
-        string(APPEND BBLITE_RMLUI_BUILD_COMMAND " -StaticRuntime")
+        if(WIN32)
+            string(APPEND BBLITE_RMLUI_BUILD_COMMAND " -StaticRuntime")
+        else()
+            string(APPEND BBLITE_RMLUI_BUILD_COMMAND " -MinSize")
+        endif()
         if("ui:inline-svg" IN_LIST BBLITE_RUNTIME_FEATURES)
             string(APPEND BBLITE_RMLUI_BUILD_COMMAND " -EnableSvg")
         endif()
     endif()
-    if(BBLITE_MINSIZE AND NOT BBLITE_RMLUI_STATIC_RUNTIME)
+    if(BBLITE_MINSIZE AND WIN32 AND NOT BBLITE_RMLUI_STATIC_RUNTIME)
         message(
             FATAL_ERROR
             "A minimal UI build requires the static-CRT RmlUi variant. "
             "Build it with ${BBLITE_RMLUI_BUILD_COMMAND} and point "
             "BBLITE_RMLUI_DIR at that install."
         )
+    endif()
+    if(BBLITE_MINSIZE AND UNIX AND NOT BBLITE_RMLUI_MINSIZE)
+        message(FATAL_ERROR "Minimal UI builds require RmlUi built with -MinSize: ${BBLITE_RMLUI_BUILD_COMMAND}.")
     endif()
     # The artifact records the commit and the patch set (name=sha256, in
     # name order) it was built from; the pin and native/patches say what
@@ -832,7 +844,9 @@ if("audio:engine" IN_LIST BBLITE_RUNTIME_FEATURES)
     else()
         set(BBLITE_AUDIO_DECODE_FILE OFF)
     endif()
-    if(NOT EXISTS "${BBLITE_LABSOUND_DIR}/lib/LabSound.lib")
+    find_library(BBLITE_LABSOUND_LIBRARY NAMES LabSound
+        PATHS "${BBLITE_LABSOUND_DIR}/lib" NO_DEFAULT_PATH NO_CACHE)
+    if(NOT BBLITE_LABSOUND_LIBRARY)
         message(
             FATAL_ERROR
             "This scene reaches audio:engine but no LabSound install was "
@@ -849,7 +863,7 @@ if("audio:engine" IN_LIST BBLITE_RUNTIME_FEATURES)
         include("${BBLITE_LABSOUND_FEATURES}")
     endif()
     if(BBLITE_MINSIZE)
-        if(NOT BBLITE_LABSOUND_STATIC_RUNTIME)
+        if(WIN32 AND NOT BBLITE_LABSOUND_STATIC_RUNTIME)
             message(
                 FATAL_ERROR
                 "A minimal audio build requires the static-CRT LabSound "
@@ -857,6 +871,9 @@ if("audio:engine" IN_LIST BBLITE_RUNTIME_FEATURES)
                 "-StaticRuntime (plus -EnableCodecs for decoded audio) and "
                 "point BBLITE_LABSOUND_DIR at that install."
             )
+        endif()
+        if(UNIX AND NOT BBLITE_LABSOUND_MINSIZE)
+            message(FATAL_ERROR "Minimal audio builds require tools/build-labsound.ps1 -MinSize (plus -EnableCodecs for decoded audio).")
         endif()
     endif()
     if(
@@ -876,18 +893,20 @@ if("audio:engine" IN_LIST BBLITE_RUNTIME_FEATURES)
     target_include_directories(bblite_features SYSTEM INTERFACE "${BBLITE_LABSOUND_DIR}/include"
     )
     target_link_libraries(bblite_features INTERFACE
-            "${BBLITE_LABSOUND_DIR}/lib/LabSound.lib"
+            "${BBLITE_LABSOUND_LIBRARY}"
     )
     if(BBLITE_AUDIO_CAPTURE OR BBLITE_AUDIO_DECODE_FILE)
-        if(NOT EXISTS "${BBLITE_LABSOUND_DIR}/lib/libnyquist.lib")
+        find_library(BBLITE_NYQUIST_LIBRARY NAMES libnyquist
+            PATHS "${BBLITE_LABSOUND_DIR}/lib" NO_DEFAULT_PATH NO_CACHE)
+        if(NOT BBLITE_NYQUIST_LIBRARY)
             message(
                 FATAL_ERROR
                 "Audio capture or decoded-file support requires libnyquist at "
-                "${BBLITE_LABSOUND_DIR}/lib/libnyquist.lib."
+                "${BBLITE_LABSOUND_DIR}/lib."
             )
         endif()
         target_link_libraries(bblite_features INTERFACE
-            "${BBLITE_LABSOUND_DIR}/lib/libnyquist.lib"
+            "${BBLITE_NYQUIST_LIBRARY}"
         )
     endif()
     if(BBLITE_AUDIO_DECODE_FILE AND NOT EXISTS "${BBLITE_LABSOUND_DIR}/include/libnyquist/Decoders.h")
@@ -954,7 +973,7 @@ set(
 set_property(CACHE BBLITE_MAIN_OPT PROPERTY STRINGS "configuration" "O1")
 if(BBLITE_MAIN_OPT STREQUAL "O1")
     if(NOT BBLITE_MINSIZE)
-        if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+        if(MSVC AND CMAKE_CXX_COMPILER_ID MATCHES "Clang")
             set(BBLITE_MAIN_OPT_FLAGS /clang:-O1)
         elseif(MSVC)
             set(BBLITE_MAIN_OPT_FLAGS /O1)
@@ -994,11 +1013,12 @@ if(BBLITE_MINSIZE)
                 PRIVATE /LTCG /OPT:REF /OPT:ICF /INCREMENTAL:NO /MAP
             )
         else()
+            find_program(BBLITE_LLD NAMES ld.lld REQUIRED)
             target_compile_options(bblite_features INTERFACE -Oz -flto -ffunction-sections
                 -fdata-sections
             )
             target_link_options(
-                bblite_native PRIVATE -flto -Wl,--gc-sections
+                bblite_native PRIVATE -flto "-fuse-ld=${BBLITE_LLD}" -Wl,--gc-sections
             )
         endif()
     elseif(MSVC)

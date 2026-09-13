@@ -9,8 +9,8 @@
  * have to carry a decompressor it has no other use for — the reason Draco
  * and meshopt are decoded at generation too. And the format it transcodes
  * INTO is a device question: the pin walks its priority list and takes the
- * first the adapter reports, which is BC7 on any D3D12 adapter and
- * therefore on both the browser reference and both compiled backends.
+ * first the device reports. The bake device enables only compression
+ * families supported by the native upload contract.
  *
  * So generation runs the pin's own loader in the engine the golden runs it
  * in, and bakes what the transcoder produced. What lands beside the
@@ -26,6 +26,7 @@ import {
     pinnedBrowserEntryUrl,
 } from "./capture-suite-reference.js";
 import type { KtxHeaderLayout } from "./lowering/compressed-texture-lowerer.js";
+import { uploadableCompressedFormats } from "./lowering/compressed-texture-lowerer.js";
 import {
     pageBase64Script,
     runPageGlobal,
@@ -114,7 +115,19 @@ function transcodeModule(loader: PinnedTranscodeLoader, url: string): string {
 ${pageBase64Script}
 window.__transcodeBasis = async () => {
     const canvas = document.getElementById("renderCanvas");
-    const engine = await createEngine(canvas);
+    // A Vulkan browser can expose ETC2 even though SDL cannot upload it.
+    // Let the pinned loader choose using the native compression families.
+    const formats = ${JSON.stringify(uploadableCompressedFormats)};
+    const requestDevice = GPUAdapter.prototype.requestDevice;
+    GPUAdapter.prototype.requestDevice = function(options = {}) {
+        return requestDevice.call(this, { ...options,
+            requiredFeatures: Array.from(options.requiredFeatures ?? []).filter(feature =>
+                !feature.startsWith("texture-compression-") ||
+                formats.some(format => format.startsWith(feature.slice("texture-compression-".length)))) });
+    };
+    let engine;
+    try { engine = await createEngine(canvas); }
+    finally { GPUAdapter.prototype.requestDevice = requestDevice; }
     const device = engine._device;
     const queue = device.queue;
     const createTexture = device.createTexture.bind(device);

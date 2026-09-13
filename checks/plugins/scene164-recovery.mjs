@@ -34,8 +34,11 @@ export function check(context) {
         const generations = [...log.matchAll(/recovery generation=(\d+) draws=(\d+)/g)].map((match) => ({ generation: Number(match[1]), draws: Number(match[2]) }));
         assert.deepEqual(generations.map((row) => row.generation), [2, 3], `${backend}: recovery generations`);
         assert.ok(generations.every((row) => row.draws > 0), `${backend}: a recovery generation drew nothing`);
-        const windows = [...log.matchAll(/window (?:create|reuse) id=(\d+) native=(\w+)/g)].map((match) => match.slice(1));
+        // SDL window IDs identify the reused window on every platform; the
+        // runtime additionally reports the native HWND on Windows.
+        const windows = [...log.matchAll(/window (?:create|reuse) id=(\d+)(?: native=(\w+))? position=/g)].map((match) => match.slice(1));
         assert.equal(windows.length, 3, `${backend}: window events`);
+        if (process.platform === "win32") assert.ok(windows.every(([, native]) => native), `${backend}: native window handles`);
         assert.deepEqual(windows, Array(3).fill(windows[0]), `${backend}: the window was not reused`);
         const alphas = [...log.matchAll(/camera frame=\d+.* alpha=([0-9.]+)/g)].map((match) => Number(match[1]));
         assert.ok(alphas.some((alpha) => Math.abs(alpha - alphas[0]) > 0.01), `${backend}: the camera did not move`);

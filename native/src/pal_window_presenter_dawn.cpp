@@ -22,7 +22,7 @@ class DawnWindowPresenter final : public WindowPresenter {
             // leases until the failed device is destroyed, and never throw
             // from cleanup or hide the failure.
             SDL_LogError(SDL_LOG_CATEGORY_RENDER, "Window GPU shutdown: %s", error.what());
-            wgpuDeviceDestroy(state_.device);
+            state_.destroy_device();
         }
         in_flight_.clear();
         bindings_.clear();

@@ -48,6 +48,18 @@ test("numeric conditional preparation runs only in the selected branch", { skip:
         if (taken !== 1 || item.reads !== 1) throw new Error("selected getter count");
         const fromGetter = item.active ? 9 : 0;
         if (fromGetter !== 9 || item.reads !== 2) throw new Error("condition evaluated twice");
+        function sameSign(a: number, b: number): boolean { return a > 0 === b > 0; }
+        function differentSign(a: number, b: number): boolean { return a > 0 !== b > 0; }
+        const signs = new Float64Array([-1, 0, 1]);
+        for (let i = 0; i < signs.length; i++) {
+            for (let j = 0; j < signs.length; j++) {
+                const a = signs[i]!, b = signs[j]!;
+                const expected = (a > 0 ? 1 : 0) === (b > 0 ? 1 : 0);
+                if (sameSign(a, b) !== expected || differentSign(a, b) === expected) {
+                    throw new Error("comparison operands lost grouping");
+                }
+            }
+        }
     `;
     const output = resolve("artifacts/numeric-conditional");
     mkdirSync(output, { recursive: true });

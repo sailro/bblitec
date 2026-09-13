@@ -2288,8 +2288,8 @@ void set_physics_body_mass_properties(
     PhysicsWorldHandle world,
     PhysicsBody body,
     const PhysicsMassPropertyOverrides& properties);
-[[nodiscard]] PhysicsWorld& physics_world_state(PhysicsWorldHandle world);
-[[nodiscard]] PhysicsBody& owning_body_record(PhysicsBody body);
+[[nodiscard]] PhysicsWorld& physics_world_state(const PhysicsWorldHandle& world);
+[[nodiscard]] PhysicsBody& owning_body_record(const PhysicsBody& body);
 [[nodiscard]] double physics_world_step_seconds(PhysicsWorldHandle world);
 [[nodiscard]] std::string physics_body_node_name(PhysicsBody body);
 void remove_physics_body(PhysicsWorldHandle world, PhysicsBody body);
@@ -2375,7 +2375,7 @@ namespace {
 ${mesh.helpers}
 ${container?.helpers ?? ""}
 
-PhysicsWorld& physics_world_record(PhysicsWorldHandle handle) {
+PhysicsWorld& physics_world_record(const PhysicsWorldHandle& handle) {
     const auto world = handle.ownership.lock();
     if (!world || world->handle.value != handle.value) {
         throw std::runtime_error("Physics world has no live engine owner.");
@@ -2943,12 +2943,12 @@ ${trigger ? `void set_physics_shape_is_trigger(
 
 ` : ""}PhysicsBody& physics_body_record(
     PhysicsWorld& world,
-    PhysicsBody body) {
+    const PhysicsBody& body) {
     const auto found = std::find_if(
         world.bodies.begin(),
         world.bodies.end(),
-        [body](const PhysicsBody& candidate) {
-            return candidate.handle.value == body.handle.value;
+        [value = body.handle.value](const PhysicsBody& candidate) {
+            return candidate.handle.value == value;
         });
     if (found == world.bodies.end()) {
         throw std::runtime_error(
@@ -3042,14 +3042,14 @@ void set_physics_shape_material(
  * copy, so the owning world is the one holding a record with the same PAL
  * handle -- the same identity \`physics_body_record\` matches on.
  */
-PhysicsBody& owning_body_record(PhysicsBody body) {
+PhysicsBody& owning_body_record(const PhysicsBody& body) {
     if (const auto world = body.owner.lock()) {
         return physics_body_record(*world, body);
     }
     throw std::runtime_error("Physics body has no live engine owner.");
 }
 
-PhysicsWorld& physics_world_state(PhysicsWorldHandle handle) { return physics_world_record(handle); }
+PhysicsWorld& physics_world_state(const PhysicsWorldHandle& handle) { return physics_world_record(handle); }
 double physics_world_step_seconds(PhysicsWorldHandle handle) { return world_step_seconds(physics_world_record(handle)); }
 std::string physics_body_node_name(PhysicsBody body) {
     const auto& live = owning_body_record(body);

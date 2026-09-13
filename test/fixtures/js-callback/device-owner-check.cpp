@@ -14,6 +14,7 @@ void wgpuAdapterRelease(WGPUAdapter) { released.push_back(4); }
 void wgpuDeviceRelease(WGPUDevice) { released.push_back(5); }
 void wgpuQueueRelease(WGPUQueue) { released.push_back(6); }
 void wgpuSurfaceRelease(WGPUSurface) { released.push_back(7); }
+void wgpuDeviceDestroy(WGPUDevice) { released.push_back(8); }
 
 namespace bbl::pal {
 std::string environment_variable(const char*) { return {}; }
@@ -40,6 +41,18 @@ int main() {
         assert(released.size() == static_cast<std::size_t>(stage));
         for (int i = 0; i < stage; ++i) assert(released[i] == 2 + stage - i);
     }
+    released.clear();
+    {
+        DawnDevice device;
+        device.destroy_device();
+        assert(released.empty());
+        device.device = fake<WGPUDevice>();
+        device.surface = fake<WGPUSurface>();
+        device.destroy_device();
+        assert(!device.surface);
+        assert((released == std::vector<int>{7, 8}));
+    }
+    assert((released == std::vector<int>{7, 8, 5}));
     bbl::EngineOptions options;
     options.width = options.height = 16;
     for (bool claimed : {false, true}) {

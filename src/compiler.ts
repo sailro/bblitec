@@ -12277,6 +12277,16 @@ class Compiler
             }
         }
         const cpp = this.dataLowerer.compileForSink(argument, dataType);
+        if (dataType.kind === "borrowed-platform-event") {
+            // The erased Event view returns itself from get(), so its wrapper
+            // must outlive the inlined parameter reference.
+            const storage = this.allocateTemporaryCppName("event_argument");
+            this.emit({ kind: "declaration", type: "const auto", name: storage, initializer: cpp });
+            return {
+                ...this.dataLowerer.leafValue(storage, dataType),
+                nativeCaptures: [this.registerNativeBinding(storage)],
+            };
+        }
         return this.dataLowerer.leafValue(
             dataType.kind === "optional" && cpp === "std::nullopt"
                 ? `${this.dataTypes.cppType(dataType)}{std::nullopt}`

@@ -60,6 +60,7 @@ class SdlSpriteRun : public FrameSession {
 #if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
     UiRmlRuntime* ui_runtime = nullptr;
     SpriteUiSdlResources ui_resources;
+    UiSdlReadableSurface readable_surface;
 #endif
     SDL_GPUTextureFormat swapchain_format{};
     SDL_GPUTexture* swapchain = nullptr;
@@ -153,6 +154,7 @@ public:
 #if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
         if (device) {
             release_sprite_ui_sdl_resources(device, ui_resources);
+            readable_surface.release(device);
         }
         destroy_ui_rml_runtime(ui_runtime);
         ui_runtime = nullptr;
@@ -331,6 +333,12 @@ public:
 #endif
     }
     void encode() {
+#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
+        const UiRenderFrame& ui_frame = record_ui_rml_frame(*ui_runtime, width, height);
+        auto* present_swapchain = swapchain;
+        swapchain = readable_surface.target(device, swapchain, swapchain_format,
+            width, height, !ui_frame.backdrops.empty() && !(capture_frame && capture_ui));
+#endif
 #if BBLITE_HAS_TEXT_RENDERER
         auto& text_ops = *text_operations;
 #endif
@@ -395,8 +403,6 @@ public:
 #endif
 
 #if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
-        const UiRenderFrame& ui_frame =
-            record_ui_rml_frame(*ui_runtime, width, height);
         const bool ui_in_capture = capture_frame && capture_ui;
         if (ui_in_capture) {
             render_sprite_ui_sdl_frame(
@@ -437,6 +443,7 @@ public:
                 ui_resources,
                 ui_frame);
         }
+        UiSdlReadableSurface::present(command, swapchain, present_swapchain, width, height);
 #endif
     }
     void present() {

@@ -9,10 +9,11 @@ function registerKey(register: Register): string {
     return `${register.kind}:${register.space}:${register.index}`;
 }
 
-/** Integer textures cannot be sampled; SDL binds their Load() SRVs separately. */
-function integerTextureRegisters(source: string): Set<string> {
-    return new Set([...source.matchAll(/Texture\w*<\s*(?:uint|int)\d?\s*>\s+\w+\s*:\s*register\(t(\d+)(?:, space(\d+))?/g)]
-        .map(match => registerKey({ kind: "t", index: Number(match[1]), space: Number(match[2] ?? 0) })));
+/** Integer and multisampled textures use SDL storage-texture slots for Load(). */
+function storageTextureRegisters(source: string): Set<string> {
+    return new Set([...source.matchAll(/(Texture\w*)<\s*([^>]+)>\s+\w+\s*:\s*register\(t(\d+)(?:, space(\d+))?/g)]
+        .filter(match => /MS(?:Array)?$/.test(match[1]!) || /^(?:uint|int)\d?$/.test(match[2]!.trim()))
+        .map(match => registerKey({ kind: "t", index: Number(match[3]), space: Number(match[4] ?? 0) })));
 }
 
 function compactRegisters(source: string, vertex?: boolean): string {
@@ -29,9 +30,9 @@ function compactRegisters(source: string, vertex?: boolean): string {
         storage.add(registerKey({ kind: "t", index: Number(match[1]), space: Number(match[2] ?? 0) }));
     }
     const mapping = new Map<string, number>();
-    const integerTextures = integerTextureRegisters(source);
+    const storageTextures = storageTextureRegisters(source);
     const resourceOrder = (register: Register): number => storage.has(registerKey(register)) ? 2
-        : integerTextures.has(registerKey(register)) ? 1 : 0;
+        : storageTextures.has(registerKey(register)) ? 1 : 0;
     for (const kind of ["b", "t", "s", "u"]) {
         const ordered = [...registers.values()].filter(register => register.kind === kind);
         ordered.sort((left, right) => {
@@ -58,6 +59,60 @@ function compactRegisters(source: string, vertex?: boolean): string {
 
 export function remapPinnedVariantRegisters(source: string, vertex: boolean): string {
     return compactRegisters(source, vertex);
+}
+
+/** SDL Vulkan binds texture/sampler pairs as combined image samplers at tN/sN.
+ * Integer and multisampled Load textures use SDL's storage-texture descriptors.
+ * DXC maps register spaces directly onto Vulkan descriptor sets. */
+export function sdlSpirvSource(source: string, vertex: boolean): string {
+    source = remapPinnedVariantRegisters(source, vertex);
+    // Tint encodes WGSL locations in TEXCOORD indices. DXC otherwise assigns
+    // consecutive Vulkan locations, breaking sparse vertex layouts and varyings.
+    source = source.replace(
+        /^(\s*)([^\r\n;{}]+:\s*TEXCOORD(\d+)\s*;)/gm,
+        "$1[[vk::location($3)]] $2",
+    );
+    const storageTextures = storageTextureRegisters(source);
+    const samplers = new Map([...source.matchAll(/(Sampler\w*State)\s+(\w+)\s*:\s*register\(s\d+, space\d+\)/g)]
+        .map(match => [match[2]!, match[1]!]));
+    const textures = new Map<string, { index: number; space: number; paired: string; used: Set<string> }>();
+    // Float textureLoad paths still occupy SDL sampler-pair descriptors, even
+    // when Tint eliminates the unused sampler. DXC requires both declarations
+    // to form the combined type; the added sampler is never sampled.
+    for (const match of source.matchAll(/Texture\w*(?:<[^>]+>)?\s+(\w+)\s*:\s*register\(t(\d+), space(\d+)\)/g)) {
+        const texture = match[1]!, index = Number(match[2]), space = Number(match[3]);
+        if (storageTextures.has(registerKey({ kind: "t", index, space }))) continue;
+        textures.set(texture, { index, space, paired: `bblite_spirv_sampler_${space}_${index}`, used: new Set() });
+    }
+    const pair = (call: string, prefix: string, texture: string, sampler: string): string => {
+        const binding = textures.get(texture);
+        if (!binding) return call;
+        binding.used.add(sampler);
+        return `${prefix}${binding.paired}`;
+    };
+    // One HLSL sampler can serve several textures. Vulkan's combined
+    // descriptors need a declaration and matching use for each texture.
+    source = source.replace(/(\b(\w+)\.(?:Sample\w*|Gather\w*|CalculateLevelOfDetail\w*)\(\s*)(\w+)/g, pair);
+    // Tint can pass a texture/sampler pair through an HLSL helper. Match
+    // only sampler arguments so earlier arguments do not consume a texture.
+    if (samplers.size) source = source.replace(new RegExp(`(\\b(\\w+)\\s*,\\s*)(${[...samplers.keys()].join("|")})\\b`, "g"), pair);
+    const pairedSamplers: string[] = [];
+    for (const [texture, { index, space, paired, used }] of textures) {
+        if (used.size > 1) throw new Error(`SDL Vulkan cannot bind multiple samplers for texture ${texture}.`);
+        const sampler = [...used][0];
+        if (sampler !== undefined && !samplers.has(sampler)) throw new Error(`Unknown HLSL sampler ${sampler} for texture ${texture}.`);
+        pairedSamplers.push(`${sampler === undefined ? "SamplerState" : samplers.get(sampler)} ${paired} : register(s${index}, space${space});`);
+    }
+    source = pairedSamplers.join("\n") + "\n" + source.replace(/Sampler\w*State\s+\w+\s*:\s*register\(s\d+, space\d+\)\s*;/g, "");
+    return source.replace(
+        /(?:Texture\w*(?:<[^>]+>)?|Sampler\w*State)\s+\w+\s*:\s*register\(([ts])(\d+)(?:, space(\d+))?\)\s*;/g,
+        (declaration: string, kind: string, index: string, space: string | undefined) => {
+            if (kind === "t" && storageTextures.has(registerKey({ kind, index: Number(index), space: Number(space ?? 0) }))) {
+                return declaration;
+            }
+            return `[[vk::combinedImageSampler]] ${declaration}`;
+        },
+    );
 }
 
 /** Position declarations and their aggregate values move together. */
@@ -100,11 +155,11 @@ export interface ShaderSlot {
 export function shaderStageSlots(hlsl: string): ShaderSlot[] {
     const sampledBySpace = new Map<number, number>();
     const texturesBySpace = new Map<number, number>();
-    const integerTextures = integerTextureRegisters(hlsl);
+    const storageTextures = storageTextureRegisters(hlsl);
     for (const match of hlsl.matchAll(/Texture\w*(?:<[^>]+>)?\s+\w+\s*:\s*register\(t(\d+)(?:, space(\d+))?/g)) {
         const space = Number(match[2] ?? 0);
         texturesBySpace.set(space, 1 + (texturesBySpace.get(space) ?? 0));
-        if (!integerTextures.has(registerKey({ kind: "t", index: Number(match[1]), space }))) {
+        if (!storageTextures.has(registerKey({ kind: "t", index: Number(match[1]), space }))) {
             sampledBySpace.set(space, 1 + (sampledBySpace.get(space) ?? 0));
         }
     }
@@ -112,11 +167,11 @@ export function shaderStageSlots(hlsl: string): ShaderSlot[] {
     for (const match of hlsl.matchAll(/(?:cbuffer\s+cbuffer_(\w+)|(?:Texture\w*(?:<[^>]+>)?|Sampler\w*State)\s+(\w+)|(?:RW)?(?:ByteAddress|Structured)Buffer(?:<[^>]+>)?\s+(\w+))\s*:\s*register\(([tsb])(\d+)(?:, space(\d+))?/g)) {
         const storage = match[3] !== undefined;
         const space = Number(match[6] ?? 0);
-        const integer = match[4] === "t" && integerTextures.has(registerKey({ kind: "t", index: Number(match[5]), space }));
+        const storageTexture = match[4] === "t" && storageTextures.has(registerKey({ kind: "t", index: Number(match[5]), space }));
         slots.push({
-            kind: storage ? "r" : integer ? "i" : match[4]!,
+            kind: storage ? "r" : storageTexture ? "i" : match[4]!,
             index: Number(match[5]) - (storage ? (texturesBySpace.get(space) ?? 0)
-                : integer ? (sampledBySpace.get(space) ?? 0) : 0),
+                : storageTexture ? (sampledBySpace.get(space) ?? 0) : 0),
             name: (match[1] ?? match[3] ?? match[2])!,
         });
     }

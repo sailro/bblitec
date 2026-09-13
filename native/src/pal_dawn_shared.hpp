@@ -397,6 +397,8 @@ inline void create_dawn_device(
     state.instance = wgpuCreateInstance(&instance_descriptor);
     if (!state.instance) dawn_error("wgpuCreateInstance failed.");
 
+    WGPUSurfaceDescriptor surface_descriptor{};
+#if defined(_WIN32)
     void* hwnd = SDL_GetPointerProperty(
         SDL_GetWindowProperties(state.window),
         SDL_PROP_WINDOW_WIN32_HWND_POINTER,
@@ -410,8 +412,28 @@ inline void create_dawn_device(
         WGPU_SURFACE_SOURCE_WINDOWS_HWND_INIT;
     surface_source.hinstance = hinstance;
     surface_source.hwnd = hwnd;
-    WGPUSurfaceDescriptor surface_descriptor{};
     surface_descriptor.nextInChain = &surface_source.chain;
+#elif defined(__linux__)
+    const auto window_properties = SDL_GetWindowProperties(state.window);
+    WGPUSurfaceSourceXlibWindow xlib_source = WGPU_SURFACE_SOURCE_XLIB_WINDOW_INIT;
+    WGPUSurfaceSourceWaylandSurface wayland_source = WGPU_SURFACE_SOURCE_WAYLAND_SURFACE_INIT;
+    const char* video_driver = SDL_GetCurrentVideoDriver();
+    if (video_driver && SDL_strcmp(video_driver, "x11") == 0) {
+        xlib_source.display = SDL_GetPointerProperty(window_properties, SDL_PROP_WINDOW_X11_DISPLAY_POINTER, nullptr);
+        xlib_source.window = static_cast<uint64_t>(SDL_GetNumberProperty(window_properties, SDL_PROP_WINDOW_X11_WINDOW_NUMBER, 0));
+        if (!xlib_source.display || !xlib_source.window) dawn_error("SDL window exposes no X11 surface.");
+        surface_descriptor.nextInChain = &xlib_source.chain;
+    } else if (video_driver && SDL_strcmp(video_driver, "wayland") == 0) {
+        wayland_source.display = SDL_GetPointerProperty(window_properties, SDL_PROP_WINDOW_WAYLAND_DISPLAY_POINTER, nullptr);
+        wayland_source.surface = SDL_GetPointerProperty(window_properties, SDL_PROP_WINDOW_WAYLAND_SURFACE_POINTER, nullptr);
+        if (!wayland_source.display || !wayland_source.surface) dawn_error("SDL window exposes no Wayland surface.");
+        surface_descriptor.nextInChain = &wayland_source.chain;
+    } else {
+        dawn_error("Dawn on Linux requires an SDL X11 or Wayland window.");
+    }
+#else
+    dawn_error("Dawn surface integration is unavailable on this platform.");
+#endif
     state.surface =
         wgpuInstanceCreateSurface(state.instance, &surface_descriptor);
     if (!state.surface) dawn_error("wgpuInstanceCreateSurface failed.");
@@ -433,7 +455,11 @@ inline void create_dawn_device(
     adapter_options.nextInChain = &toggles.chain;
 #endif
     adapter_options.powerPreference = WGPUPowerPreference_HighPerformance;
+#if defined(_WIN32)
     adapter_options.backendType = WGPUBackendType_D3D12;
+#elif defined(__linux__)
+    adapter_options.backendType = WGPUBackendType_Vulkan;
+#endif
     adapter_options.compatibleSurface = state.surface;
     WGPURequestAdapterCallbackInfo adapter_callback =
         WGPU_REQUEST_ADAPTER_CALLBACK_INFO_INIT;
@@ -459,7 +485,7 @@ inline void create_dawn_device(
             &adapter_options,
             adapter_callback));
     if (!state.adapter) {
-        dawn_error("no D3D12 adapter: " + state.uncaptured_error);
+        dawn_error("no compatible GPU adapter: " + state.uncaptured_error);
     }
 
     WGPUDeviceDescriptor device_descriptor = WGPU_DEVICE_DESCRIPTOR_INIT;

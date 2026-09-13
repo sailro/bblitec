@@ -2,11 +2,16 @@
 
 export const DEVELOPMENT_VCPKG_INSTALL = "development-full";
 
-/** The pinned Dawn development install is currently a Windows D3D12 build. */
+/** Platforms with both native renderers use the differential development build. */
 export function defaultDevelopmentBackend(
     platform: NodeJS.Platform,
 ): "SDL_GPU" | "BOTH" {
-    return platform === "win32" ? "BOTH" : "SDL_GPU";
+    return platform === "win32" || platform === "linux" ? "BOTH" : "SDL_GPU";
+}
+
+export function developmentTriplet(platform: NodeJS.Platform = process.platform, arch = process.arch): string {
+    const target = platform === "win32" ? "windows" : platform === "darwin" ? "osx" : platform;
+    return `${arch}-${target}`;
 }
 
 export function selectedCompiledBackend(): ReturnType<typeof canonicalCompiledBackend> {

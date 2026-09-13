@@ -339,11 +339,13 @@ function requestedCacheConfiguration(
     return requested;
 }
 
-function sameCachePath(left: string, right: string): boolean {
-    return (
-        resolve(left).replaceAll("\\", "/").toLowerCase() ===
-        resolve(right).replaceAll("\\", "/").toLowerCase()
-    );
+export function sameCachePath(left: string, right: string): boolean {
+    if (left === right) return true;
+    const leftPath = resolve(left);
+    const rightPath = resolve(right);
+    return process.platform === "win32"
+        ? leftPath.toLowerCase() === rightPath.toLowerCase()
+        : leftPath === rightPath;
 }
 
 /**

@@ -1808,13 +1808,13 @@ void physics_world_step(PhysicsWorldHandle world, double seconds) {
 }
 
 const std::vector<PhysicsCollisionEvent>& physics_world_collision_events(
-    PhysicsWorldHandle world) {
+    const PhysicsWorldHandle& world) {
     return world_at(world).collision_events;
 }
 
 #if BBLITE_HAS_PHYSICS_TRIGGER
 const std::vector<PhysicsTriggerEvent>& physics_world_trigger_events(
-    PhysicsWorldHandle world) {
+    const PhysicsWorldHandle& world) {
     return world_at(world).trigger_events;
 }
 #endif
@@ -2251,14 +2251,16 @@ PhysicsShapeHandle record_debug_inputs(PhysicsShapeHandle handle, const char* ty
 #if defined(BBLITE_PHYSICS_VIEWER) && BBLITE_PHYSICS_VIEWER
     auto& descriptor = handle.ownership->debug_descriptor;
     descriptor.type = type;
-    const auto append = [&](const auto& self, const auto& value) -> void {
-        if constexpr (std::is_arithmetic_v<std::decay_t<decltype(value)>>) {
-            const float lane = static_cast<float>(value);
-            if (!std::isfinite(lane)) throw std::runtime_error("Physics debug constructor inputs must be finite.");
-            descriptor.parameters.push_back(lane);
-        } else { for (const auto& item : value) self(self, item); }
-    };
-    (append(append, inputs), ...);
+    if constexpr (sizeof...(Inputs) > 0) {
+        const auto append = [&](const auto& self, const auto& value) -> void {
+            if constexpr (std::is_arithmetic_v<std::decay_t<decltype(value)>>) {
+                const float lane = static_cast<float>(value);
+                if (!std::isfinite(lane)) throw std::runtime_error("Physics debug constructor inputs must be finite.");
+                descriptor.parameters.push_back(lane);
+            } else { for (const auto& item : value) self(self, item); }
+        };
+        (append(append, inputs), ...);
+    }
 #else
     static_cast<void>(type);
     (static_cast<void>(inputs), ...);

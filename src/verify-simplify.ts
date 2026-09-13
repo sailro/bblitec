@@ -21,6 +21,7 @@ import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync, mkdirSync } from "node:fs";
 import { dirname, join, posix } from "node:path";
+import { fileURLToPath } from "node:url";
 import { isMainModule, parseFlags } from "./tooling/flags.js";
 
 /** Where a record lives, relative to the repository root. */
@@ -285,7 +286,7 @@ function main(): void {
         { boolean: ["--path"] },
         "verify-simplify",
     );
-    const root = join(dirname(new URL(import.meta.url).pathname.slice(1)), "..", "..");
+    const root = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
     if (parsed.flags.has("--path")) {
         const path = recordPath(root, workHash(root).hash);
         mkdirSync(dirname(path), { recursive: true });

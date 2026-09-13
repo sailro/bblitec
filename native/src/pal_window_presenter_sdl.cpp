@@ -20,7 +20,7 @@ class SdlWindowPresenter final : public WindowPresenter {
         SDL_WaitForGPUIdle(device_.get());
         in_flight_.clear();
         release_sprite_ui_sdl_resources(device_.get(), ui_);
-        composite_.reset();
+        composite_.release(device_.get());
         SDL_ReleaseWindowFromGPUDevice(device_.get(), window_);
     }
     OffscreenDevice& device() override { return shared_; }
@@ -37,12 +37,8 @@ class SdlWindowPresenter final : public WindowPresenter {
         if (!command.acquire_swapchain(window_, &swapchain, &width, &height)) gpu_error("SDL_WaitAndAcquireGPUSwapchainTexture Window");
         if (!swapchain || width == 0 || height == 0) return false;
         const auto format = SDL_GetGPUSwapchainTextureFormat(device_.get(), window_);
-        if (!capture.empty() && (!composite_ || width_ != width || height_ != height)) {
-            width_ = width; height_ = height;
-            composite_ = Texture(create_frame_texture(device_.get(), format, SDL_GPU_SAMPLECOUNT_1, width, height,
-                SDL_GPU_TEXTUREUSAGE_COLOR_TARGET | SDL_GPU_TEXTUREUSAGE_SAMPLER), {device_.get()});
-        }
-        auto* destination = capture.empty() ? swapchain : composite_.get();
+        auto* destination = composite_.target(device_.get(), swapchain, format,
+            width, height, !capture.empty() || !ui.backdrops.empty());
         SDL_GPUColorTargetInfo target{};
         target.texture = destination;
         target.load_op = SDL_GPU_LOADOP_CLEAR;
@@ -62,13 +58,8 @@ class SdlWindowPresenter final : public WindowPresenter {
             return image->texture;
         };
         render_sprite_ui_sdl_frame(device_.get(), command, destination, format, ui_, ui, external_texture);
+        UiSdlReadableSurface::present(command, destination, swapchain, width, height);
         if (!capture.empty()) {
-            SDL_GPUBlitInfo blit{};
-            blit.source = {destination, 0, 0, 0, 0, width, height};
-            blit.destination = {swapchain, 0, 0, 0, 0, width, height};
-            blit.load_op = SDL_GPU_LOADOP_DONT_CARE;
-            blit.filter = SDL_GPU_FILTER_NEAREST;
-            SDL_BlitGPUTexture(command, &blit);
             save_texture_png(device_.get(), command, destination, format, width, height, capture);
         } else {
             Fence fence(command.submit_with_fence(), {device_.get()});
@@ -79,16 +70,14 @@ class SdlWindowPresenter final : public WindowPresenter {
     }
   private:
     using Device = std::unique_ptr<SDL_GPUDevice, decltype(&SDL_DestroyGPUDevice)>;
-    using Texture = std::unique_ptr<SDL_GPUTexture, SdlGpuDeleter<SDL_GPUTexture, SDL_ReleaseGPUTexture>>;
     using Fence = std::unique_ptr<SDL_GPUFence, SdlGpuDeleter<SDL_GPUFence, SDL_ReleaseGPUFence>>;
     struct InFlight { Fence fence; std::vector<WindowCanvasFrame> leases; };
     SDL_Window* window_;
     Device device_;
     SdlOffscreenDevice shared_;
     SpriteUiSdlResources ui_;
-    Texture composite_{nullptr, {nullptr}};
+    UiSdlReadableSurface composite_;
     std::deque<InFlight> in_flight_;
-    Uint32 width_ = 0, height_ = 0;
 };
 } // namespace
 std::shared_ptr<WindowPresenter> create_window_sdl_presenter(SDL_Window* window) { return std::make_shared<SdlWindowPresenter>(window); }

@@ -34,18 +34,27 @@ inline bool wait_sdl_fence(SDL_GPUDevice* device, SDL_GPUFence* fence) {
 /** A device-owned texture list; each entry can be populated in allocation order. */
 class SdlSampledTextures {
     SDL_GPUDevice* device_;
+    std::vector<std::shared_ptr<OwnedSdlTexture>> shared_images_;
 public:
     std::vector<SDL_GPUTextureSamplerBinding> bindings;
     explicit SdlSampledTextures(SDL_GPUDevice* device) noexcept : device_(device) {}
     SdlSampledTextures(const SdlSampledTextures&) = delete;
     SdlSampledTextures& operator=(const SdlSampledTextures&) = delete;
     ~SdlSampledTextures() { clear(); }
+    SDL_GPUTextureSamplerBinding& append_shared_texture(std::shared_ptr<OwnedSdlTexture> image) {
+        shared_images_.resize(bindings.size());
+        shared_images_.push_back(std::move(image));
+        bindings.push_back({shared_images_.back()->get(), nullptr});
+        return bindings.back();
+    }
     void clear() noexcept {
-        for (const auto& binding : bindings) {
-            if (binding.texture) SDL_ReleaseGPUTexture(device_, binding.texture);
+        for (std::size_t i = 0; i < bindings.size(); ++i) {
+            const auto& binding = bindings[i];
+            if (binding.texture && (i >= shared_images_.size() || !shared_images_[i])) SDL_ReleaseGPUTexture(device_, binding.texture);
             if (binding.sampler) SDL_ReleaseGPUSampler(device_, binding.sampler);
         }
         bindings.clear();
+        shared_images_.clear();
     }
 };
 

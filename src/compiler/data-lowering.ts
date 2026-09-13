@@ -7288,6 +7288,10 @@ export class DataLowerer {
                 `${leftCpp} == (*${rightCpp}))`;
             return negated ? `!${equal}` : equal;
         }
+        const compare = (leftCpp: string, rightCpp: string, type: DataType): string =>
+            type.kind === "boolean"
+                ? `(${leftCpp}) ${negated ? "!=" : "=="} (${rightCpp})`
+                : `${leftCpp} ${negated ? "!=" : "=="} ${rightCpp}`;
         const leftValue = this.comparableOperand(left);
         if (leftValue) {
             const rightValue = this.comparableOperand(right);
@@ -7312,7 +7316,7 @@ export class DataLowerer {
                     `${negated ? "!=" : "=="} std::string(${rightCpp})`
                 );
             }
-            return `${leftValue.cpp} ${negated ? "!=" : "=="} ${rightCpp}`;
+            return compare(leftValue.cpp, rightCpp, leftValue.dataType);
         }
         const rightValue = this.comparableOperand(right);
         if (rightValue) {
@@ -7326,7 +7330,7 @@ export class DataLowerer {
                     `std::string(${rightValue.cpp})`
                 );
             }
-            return `${leftCpp} ${negated ? "!=" : "=="} ${rightValue.cpp}`;
+            return compare(leftCpp, rightValue.cpp, rightValue.dataType);
         }
         const leftObject = this.objectIdentity(left);
         const rightObject = this.objectIdentity(right);

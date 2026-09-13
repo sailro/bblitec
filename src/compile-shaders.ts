@@ -9,7 +9,7 @@ import { discoverDevelopmentTools, type DevelopmentTools } from "./development-t
 import { compiledShaderArtifactExtensions, GeneratedTree } from "./generated-tree.js";
 import { contentDigest, hashEntries, isCompiledShaderOutput, writeJsonRecord } from "./validation-resume.js";
 import { assertReflectedBindings, assertUniformBufferCap, prepareSdlUniformAdaptation, sdlUniformSource,
-    normalizeTintHlslBindings, remapPinnedVariantRegisters, shaderStageSlots, type SdlUniformAdaptation } from "./shader-bindings.js";
+    normalizeTintHlslBindings, remapPinnedVariantRegisters, sdlSpirvSource, shaderStageSlots, type SdlUniformAdaptation } from "./shader-bindings.js";
 import { readShaderComposition, shaderStageConstants, type OfflineShaderStage } from "./shader-composition.js";
 import { isMainModule, parseFlags } from "./tooling/flags.js";
 import { repositoryModuleClosure } from "./bake-cache.js";
@@ -82,11 +82,11 @@ export function generatedShaderDirectories(root: string, scene?: string): string
     return directories.map(name => join(generated, name, "upstream", "shaders")).filter(existsSync);
 }
 
-function runCompiler(executable: string, args: readonly string[], environment: NodeJS.ProcessEnv): { stdout: string; stderr: string } {
+function runCompiler(executable: string, args: readonly string[], environment: NodeJS.ProcessEnv, source = args[0]): { stdout: string; stderr: string } {
     const result = spawnSync(executable, args, { encoding: "utf8", env: environment, windowsHide: true, maxBuffer: 16 * 1024 * 1024 });
     if (result.error) throw result.error;
     if (result.status !== 0) {
-        throw new Error(`${basename(executable)} failed (${result.status ?? result.signal}) for ${args[0]}.\n${result.stderr}${result.stdout}`);
+        throw new Error(`${basename(executable)} failed (${result.status ?? result.signal}) for ${source}.\n${result.stderr}${result.stdout}`);
     }
     return result;
 }
@@ -150,7 +150,7 @@ export function compileOfflineShaders(options: ShaderCompilationOptions): Shader
     const needsDxc = formats.binaries.length > 0;
     if (needsDxc && (!tools.dxc || !existsSync(tools.dxc))) throw new Error(`DXC not found for target ${target}; install tools/shader-compiler or set DXC_PATH.`);
     const dxcFiles = needsDxc && tools.dxc
-        ? [tools.dxc, ...["dxcompiler.dll", "dxil.dll"].map(name => join(dirname(tools.dxc!), name))].filter(existsSync).sort() : [];
+        ? [tools.dxc, ...["dxcompiler.dll", "dxil.dll", "libdxcompiler.so", "libdxil.so"].map(name => join(dirname(tools.dxc!), name))].filter(existsSync).sort() : [];
     const compilerHash = sha256(dxcFiles.map(path => `${basename(path)}:${digestUpper(path)}`).join("|"));
     const tintHash = tools.tint && existsSync(tools.tint) ? digestUpper(tools.tint) : "";
     const dxcHash = needsDxc && tools.dxc ? digestUpper(tools.dxc) : "";
@@ -244,22 +244,29 @@ export function compileOfflineShaders(options: ShaderCompilationOptions): Shader
             const stem = name.slice(0, -".hlsl".length);
             const profile = stem.endsWith(".vert") ? "vs_6_0" : "ps_6_0";
             const entryPoint = stages.get(stem)?.entryPoint ?? "main";
-            assertUniformBufferCap(readFileSync(source, "utf8"), source);
+            const hlsl = readFileSync(source, "utf8");
+            assertUniformBufferCap(hlsl, source);
             let compiled = false;
             for (const format of formats.binaries) {
                 if (!tools.dxc) throw new Error("DXC is required for binary shader formats.");
-                const key = sha256(`${compilerHash}|${format.kind}|${profile}|${entryPoint}|${format.flags.join(",")}|${digestUpper(source)}`);
+                const binarySource = format.kind === "spirv" ? sdlSpirvSource(hlsl, stem.endsWith(".vert")) : hlsl;
+                const key = sha256(`${compilerHash}|${format.kind}|${profile}|${entryPoint}|${format.flags.join(",")}|${format.kind === "spirv" ? sha256(binarySource) : digestUpper(source)}`);
                 const cachePath = join(cacheRoot, `${key}${format.extension}`);
                 let binary = readValidBinary(cachePath, format);
                 if (!binary) {
                     const temporary = `${cachePath}.${process.pid}-${randomUUID()}.tmp`;
+                    const adaptedSource = `${temporary}.hlsl`;
                     try {
+                        if (format.kind === "spirv") writeFileSync(adaptedSource, binarySource);
                         const args = format.kind === "dxil" ? ["-T", profile, "-E", entryPoint, ...format.flags] : [...format.flags, "-T", profile, "-E", entryPoint];
-                        runCompiler(tools.dxc, [...args, "-Fo", temporary, source], environment);
+                        runCompiler(tools.dxc, [...args, "-Fo", temporary, format.kind === "spirv" ? adaptedSource : source], environment, source);
                         binary = readValidBinary(temporary, format);
                         if (!binary) throw new Error(`${format.kind} compiler produced an invalid binary for ${source}.`);
                         renameSync(temporary, cachePath);
-                    } finally { rmSync(temporary, { force: true }); }
+                    } finally {
+                        rmSync(temporary, { force: true });
+                        if (format.kind === "spirv") rmSync(adaptedSource, { force: true });
+                    }
                     compiled = true;
                 }
                 tree.write(`${stem}${format.extension}`, binary);

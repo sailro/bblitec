@@ -2747,7 +2747,8 @@ export class StatementLowerer {
         if (indexed) {
             const indexCpp = indexed.indexCpp;
             const range = context.allocateTemporaryCppName("range");
-            context.emit(`auto&& ${range} = ${target.container.cpp};`);
+            const span = target.container.dataType?.kind === "span";
+            context.emit(`${span ? "auto" : "auto&&"} ${range} = ${span ? `std::span{${target.container.cpp}}` : target.container.cpp};`);
             context.emit(
                 `for (std::size_t ${indexCpp} = 0; ${indexCpp} < ${range}.size(); ++${indexCpp}) {`,
             );
@@ -2760,8 +2761,13 @@ export class StatementLowerer {
             context.emit("}");
             return true;
         }
+        // A span is a borrowed descriptor, so hold that descriptor by value.
+        // Binding the range-for's hidden reference to a returned span makes
+        // GCC 13 incorrectly tie it to temporary arguments of the source call.
+        const span = target.container.dataType?.kind === "span"
+            ? context.allocateTemporaryCppName("range") : undefined;
         context.emit(
-            `for (auto&& ${item} : ${target.container.cpp}) {`,
+            `for (${span ? `auto ${span} = std::span{${target.container.cpp}}; ` : ""}auto&& ${item} : ${span ?? target.container.cpp}) {`,
         );
         context.increaseIndent();
         for (const line of lines) context.emit(line);

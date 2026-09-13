@@ -38,6 +38,7 @@ param(
     # static-triplet FreeType headers it compiles against (see below).
     [string]$Vcpkg = $(if ($env:VCPKG_ROOT) { Join-Path $env:VCPKG_ROOT "vcpkg.exe" } else { "" }),
     [switch]$StaticRuntime,
+    [switch]$MinSize,
     [switch]$EnableSvg,
     [ValidateRange(0, 1024)][int]$Jobs = 0,
     [string]$CMake = $env:CMAKE_COMMAND
@@ -46,20 +47,23 @@ param(
 $ErrorActionPreference = "Stop"
 Import-Module (Join-Path $PSScriptRoot "bblite-tools.psm1") -Force
 $root = Get-RepositoryRoot
+if ($StaticRuntime -and -not $IsWindows) { throw "-StaticRuntime selects the Windows shipping CRT." }
+if ($MinSize -and -not $IsLinux) { throw "-MinSize selects Linux shipping; use -StaticRuntime on Windows." }
+$minimalBuild = $StaticRuntime -or $MinSize
 # Development keeps one complete artifact. Shipping selects SVG only when
 # the generated scene reaches ui:inline-svg.
-$rmlSvgEnabled = -not $StaticRuntime -or $EnableSvg
+$rmlSvgEnabled = -not $minimalBuild -or $EnableSvg
 $rmlSvgSetting = if ($rmlSvgEnabled) { "ON" } else { "OFF" }
 $staticSuffix = if ($EnableSvg) { "-static-svg" } else { "-static" }
 if (-not $Workspace) {
-    $Workspace = if ($StaticRuntime) {
+    $Workspace = if ($minimalBuild) {
         ".cache\rmlui$staticSuffix"
     } else {
         ".cache\rmlui"
     }
 }
 if (-not $OutputDirectory) {
-    $OutputDirectory = if ($StaticRuntime) {
+    $OutputDirectory = if ($minimalBuild) {
         "artifacts\tools\rmlui$staticSuffix"
     } else {
         "artifacts\tools\rmlui"
@@ -110,7 +114,9 @@ if (-not $FreetypeRoot) {
             }
         }
     } else {
-        $FreetypeRoot = Join-Path $installedRoot "development-full\x64-windows"
+        $hostArch = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString().ToLowerInvariant()
+        $triplet = if ($IsWindows) { "x64-windows" } else { "$hostArch-linux" }
+        $FreetypeRoot = Join-Path $installedRoot "development-full/$triplet"
     }
 }
 if (-not (Test-Path (Join-Path $FreetypeRoot "include\ft2build.h"))) {
@@ -184,6 +190,7 @@ $configureArguments = @(
     "-U", "plutovg_DIR",
     "-DCMAKE_BUILD_TYPE=Release",
     "-DCMAKE_INSTALL_PREFIX=$output",
+    "-DCMAKE_INSTALL_LIBDIR=lib",
     "-DCMAKE_PREFIX_PATH=$FreetypeRoot",
     "-DBUILD_SHARED_LIBS=OFF",
     "-DRMLUI_SAMPLES=OFF",
@@ -207,7 +214,7 @@ if ($StaticRuntime) {
 # -StaticRuntime shipping artifact stays on MSVC, the shipping compiler,
 # whose consumers are MSVC-built too.
 $devToolchain = if ($StaticRuntime) { $null } else { Get-DevToolchain }
-$intendedGenerator = if ($devToolchain) { "Ninja" } else { "" }
+$intendedGenerator = if ($devToolchain) { "Ninja" } else { $env:CMAKE_GENERATOR }
 if ($devToolchain) {
     $env:PATH = "$($devToolchain.Path);$env:PATH"
     $env:INCLUDE = $devToolchain.Include
@@ -234,13 +241,19 @@ if (Test-Path $cachePath) {
         Remove-Item -Recurse -Force $build
     }
 }
+if ($MinSize -and $IsLinux) {
+    $configureArguments += @(
+        '-DCMAKE_CXX_FLAGS_RELEASE=-Os -DNDEBUG -ffunction-sections -fdata-sections',
+        '-DCMAKE_C_FLAGS_RELEASE=-Os -DNDEBUG -ffunction-sections -fdata-sections'
+    )
+}
+$configureArguments += @(Get-LinuxCompilerArguments)
 & $CMake @configureArguments
 if ($LASTEXITCODE -ne 0) {
     throw "RmlUi CMake configuration failed."
 }
 
-$buildArguments = @("--build", $build, "--config", "Release", "--parallel")
-if ($Jobs) { $buildArguments += "$Jobs" }
+$buildArguments = @("--build", $build, "--config", "Release") + (Get-BuildParallelArguments $Jobs)
 & $CMake @buildArguments
 if ($LASTEXITCODE -ne 0) {
     throw "RmlUi build failed."
@@ -271,6 +284,7 @@ Copy-Item -Force (Join-Path $source "LICENSE.txt") (Join-Path $output "RmlUi-LIC
 # Native configuration reads this record and refuses the artifact when the
 # pin or a patch moved since it was built. The patch set is "name=sha256"
 # per file, in name order, as CMake recomputes it over native/patches.
+$minSizeSetting = if ($minimalBuild) { "ON" } else { "OFF" }
 $staticRuntimeSetting = if ($StaticRuntime) { "ON" } else { "OFF" }
 $patchRecord = @(
     $patches | ForEach-Object {
@@ -280,6 +294,7 @@ $patchRecord = @(
 ) -join ";"
 @(
     "set(BBLITE_RMLUI_STATIC_RUNTIME $staticRuntimeSetting)"
+    "set(BBLITE_RMLUI_MINSIZE $minSizeSetting)"
     "set(BBLITE_RMLUI_COMMIT `"$($pin.commit)`")"
     "set(BBLITE_RMLUI_PATCHES `"$patchRecord`")"
 ) -join "`n" |

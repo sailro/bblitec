@@ -19,12 +19,14 @@ function Get-RepositoryRoot {
 
 # An absolute path for a repository-relative or already absolute one.
 function Resolve-RepositoryPath([string]$Path) {
+    if (-not $IsWindows) { $Path = $Path.Replace('\', '/') }
     return [System.IO.Path]::GetFullPath($Path, (Get-RepositoryRoot))
 }
 
 # The Visual Studio installation carrying the C++ tools: VSINSTALLDIR when
 # it names one, otherwise the latest vswhere reports.
 function Get-VisualStudioRoot {
+    if (-not $IsWindows) { return $null }
     if ($env:VSINSTALLDIR) {
         $fromEnvironment = $env:VSINSTALLDIR.TrimEnd("\", "/")
         if (Test-Path (Join-Path $fromEnvironment "VC\Tools\MSVC")) {
@@ -152,6 +154,25 @@ function Read-CMakeCache([string]$Path) {
     return $cache
 }
 
+# Match Linux scene builds; explicit CC/CXX remain available for GCC checks.
+function Get-LinuxCompilerArguments {
+    if (-not $IsLinux) { return @() }
+    $ccName = if ($env:CC) { $env:CC } else { "clang" }
+    $cxxName = if ($env:CXX) { $env:CXX } else { "clang++" }
+    $ccTool = Get-Command $ccName -CommandType Application -ErrorAction Stop | Select-Object -First 1
+    $cxxTool = Get-Command $cxxName -CommandType Application -ErrorAction Stop | Select-Object -First 1
+    return @("-DCMAKE_C_COMPILER=$($ccTool.Source)", "-DCMAKE_CXX_COMPILER=$($cxxTool.Source)")
+}
+
+function Get-BuildParallelArguments([int]$Jobs = 0) {
+    if (-not $Jobs -and $env:CMAKE_BUILD_PARALLEL_LEVEL) {
+        $Jobs = [int]$env:CMAKE_BUILD_PARALLEL_LEVEL
+        if ($Jobs -lt 1) { throw "CMAKE_BUILD_PARALLEL_LEVEL must be a positive integer." }
+    }
+    if ($Jobs) { return @("--parallel", "$Jobs") }
+    return @("--parallel")
+}
+
 Export-ModuleMember -Function @(
     "Get-RepositoryRoot",
     "Resolve-RepositoryPath",
@@ -160,4 +181,6 @@ Export-ModuleMember -Function @(
     "Get-DevToolchain",
     "Sync-PinnedCheckout",
     "Read-CMakeCache"
+    "Get-BuildParallelArguments"
+    "Get-LinuxCompilerArguments"
 )

@@ -2394,7 +2394,7 @@ test("materializes constant-expression tuple tables for runtime break", () => {
     `);
 
     assert.match(result.cpp, /inline const std::array/);
-    assert.match(result.cpp, /for \(auto&& v_bblite_item_/);
+    assert.match(result.cpp, /for \([^\n]*auto&& v_bblite_item_/);
 });
 
 test("materializes runtime-valued static maps as native arrays", () => {

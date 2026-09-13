@@ -4,13 +4,64 @@
 
 Requires Node.js 22.12+, CMake 3.24+, Ninja, C++20, vcpkg, PowerShell, a GPU
 and WebGPU-capable Chrome/Edge. Windows development uses clang-cl when
-available, otherwise MSVC; shipping uses MSVC.
+available, otherwise MSVC; shipping uses MSVC. Linux development defaults to Clang.
 
 ```powershell
 npm ci
 npm run dev:setup
 npm run doctor
 ```
+
+### Linux prerequisites
+
+Linux development uses Vulkan on SDL_GPU and Dawn. Install Node.js 22.12+,
+[PowerShell 7](https://learn.microsoft.com/powershell/scripting/install/install-ubuntu),
+and Chrome/Chromium. On Ubuntu 24.04, install the native host prerequisites:
+
+```sh
+sudo apt-get install build-essential clang cmake ninja-build git curl zip unzip \
+  pkg-config python3-venv autoconf autoconf-archive automake libtool ccache \
+  libltdl-dev libx11-dev libx11-xcb-dev libxft-dev libxext-dev libxrandr-dev libxinerama-dev \
+  libxcursor-dev libxi-dev libxfixes-dev libxss-dev libxtst-dev \
+  libwayland-dev wayland-protocols libxkbcommon-dev libegl1-mesa-dev \
+  libibus-1.0-dev libfontconfig1-dev libvulkan-dev mesa-vulkan-drivers \
+  fonts-noto-core fonts-noto-color-emoji
+git clone https://github.com/microsoft/vcpkg.git "$HOME/vcpkg"
+"$HOME/vcpkg/bootstrap-vcpkg.sh" -disableMetrics
+export VCPKG_ROOT="$HOME/vcpkg"
+export CMAKE_GENERATOR=Ninja
+export CMAKE_BUILD_PARALLEL_LEVEL=3
+export VCPKG_MAX_CONCURRENCY=3
+npm ci
+npm run dev:setup
+npm run doctor
+npm run scene -- process scene1
+npm run scene -- parity scene1 --differential
+```
+
+Choose concurrency for available RAM; Dawn/Tint builds can be large. Setup
+uses the host vcpkg triplet, the existing dependency pins and maintained patches.
+Linux ccache comes from the host package manager. Set `CHROME_PATH` if Chromium
+is outside the usual system locations, and `CC`/`CXX` to select another native
+compiler (for example, `CC=gcc CXX=g++ npm run scene -- process scene1`). Scene
+builds recreate their disposable CMake tree when the selected compiler changes.
+Use a fresh dependency workspace when switching compilers for the pinned tools.
+
+Linux browser captures and GPU-assisted generation open Chromium with Vulkan
+enabled. Run them in a graphical session too: headless Chromium may expose
+WebGPU while failing external-image uploads or canvas presentation.
+
+Run scenes inside a graphical session. SDL selects X11 or Wayland;
+`SDL_VIDEODRIVER=x11|wayland` forces that selection. An SSH session needs display
+access (`DISPLAY`/Xauthority for X11, `XDG_RUNTIME_DIR`/`WAYLAND_DISPLAY` for
+Wayland) and permission to use the GPU's render node. No display is provided by
+SSH alone. Minimal shipping supports Windows and Linux x64 as described below.
+
+Linux resolves installed fonts through Fontconfig and renders UI text with
+RmlUi's FreeType engine. Windows additionally uses the custom DirectWrite
+shaping and rasterization engine described in [UI](ui.md#css-layout-and-fonts).
+Font selection, fallback coverage and text metrics can therefore differ;
+successful Linux builds do not imply passing the existing strict visual gates.
 
 Rebuild installed dependencies when their maintained patches change.
 LabSound uses `tools/patches/labsound-lazy-decoders.patch` to keep its optional file-decoder registry lazy.
@@ -115,8 +166,8 @@ use the saved differential reports and the validation sequence above.
 
 ## Native builds
 
-`--backend sdl_gpu|dawn|both` selects renderers; Windows defaults to both and
-requires Dawn. `--compiler auto|clangcl|msvc` selects the Windows compiler.
+`--backend sdl_gpu|dawn|both` selects renderers; Windows and Linux default to both and
+require Dawn. `--compiler auto|clangcl|msvc` selects the Windows compiler.
 `BBLITE_DEV_COMPILER` and `BBLITE_CMAKE_GENERATOR` override compiler/generator.
 
 Dual-backend builds use `native/build-<id>-release`; single-backend builds append
@@ -165,7 +216,7 @@ defaults and coordinate independent workflows. Inspect scheduling with
 `node tools/model-build-scheduling.mjs <workspace> <workers>`.
 Batch shared-header edits before population builds.
 
-Development setup installs pinned ccache. Native builds reuse objects in
+Windows setup installs pinned ccache; Linux uses the host's ccache. Native builds reuse objects in
 `artifacts/native-cache` and skip per-scene PCHs when ccache is active.
 Identical generated backend headers share a directory in that cache.
 `CCACHE_PATH` selects another executable; `BBLITE_NATIVE_CACHE=0` disables it.
@@ -208,8 +259,11 @@ npm run demos:release -- --output artifacts/releases
 `--scene <id,id>` selects application demos; `--workers N` and `--jobs N`
 bound concurrent builds and jobs per build. `--plan` reads existing generated
 features and prints the dependency plan without building or packaging.
-The command generates scenes and D3D12 shaders, prepares reached static
-dependencies once, then builds with MSVC and packages serially. Each image-codec
+The command generates scenes and host shaders, prepares reached static
+dependencies once, builds concurrently, and packages each demo in turn.
+Windows uses MSVC, a static CRT and SDL_GPU/D3D12. Linux uses Clang, LLD and
+SDL_GPU/Vulkan; install `lld` alongside the Linux prerequisites above.
+Linux shipping does not build or package Dawn. Each image-codec
 set has its own vcpkg install, so SDL_image cannot pull unused decoders from a
 shared superset. Fresh CMake caches discard old package paths; stale deployed
 payloads are preserved beside their build tree before deployment.
@@ -220,7 +274,32 @@ preserve prior packages under the output's `.replaced/`; `@previous/` is untouch
 `SIZE-COMPARISON.md` reports executable and ZIP sizes and changes. Package JSON
 receipts contain exact bytes, SHA-256 hashes and the startup-check result.
 
-Use `BBLITE_MINSIZE=ON`, one backend, MSVC, static CRT and
+On Linux, run the same command from a graphical session, for example:
+
+```sh
+npm run demos:release -- --scene tetris --workers 1 --jobs 3
+unzip artifacts/releases/bblitec-tetris-sdl-gpu-linux-x64.zip -d /tmp/bblite-demo
+cd /tmp/bblite-demo/bblitec-tetris-sdl-gpu-linux-x64
+./bblitec-tetris
+```
+
+Linux trims unused native sections with `-Oz`, LTO and linker garbage collection,
+then strips the staged ELF executable. Project dependencies link statically;
+glibc, system libraries and the GPU driver remain host dependencies. Packages
+target the build host's Linux ABI, not every distribution. Their
+`RUNTIME-LIBRARIES.txt` records linked system libraries. ZIPs preserve Unix
+executable permissions. UI needs installed Fontconfig/fonts; audio needs access
+to the host audio service, including when running over SSH.
+
+For a manual Linux build, select `BBLITE_MINSIZE=ON`, `BBLITE_BACKEND=SDL_GPU`,
+`VCPKG_TARGET_TRIPLET=x64-linux` and the matching trimmed SDL artifact. Use
+`build-labsound.ps1 -MinSize` and `build-rmlui.ps1 -MinSize` for reached audio/UI,
+adding `-EnableCodecs` or `-EnableSvg` when reached. The minimal SDL script keeps
+Vulkan and X11/Wayland while removing unused audio/gamepad and renderer code.
+The packager includes only SPIR-V and binding sidecars, checks dynamic library
+resolution without development loader overrides, and forces Vulkan for smoke.
+
+For a manual Windows build, use `BBLITE_MINSIZE=ON`, one backend, MSVC, static CRT and
 `VCPKG_TARGET_TRIPLET=x64-windows-static`. Set `BBLITE_GENERATED_DIR` and
 matching `BBLITE_SDL_DIR`/`BBLITE_DAWN_DIR`, `BBLITE_LABSOUND_DIR`,
 `BBLITE_RMLUI_DIR`. Never mix static and dynamic CRT libraries.

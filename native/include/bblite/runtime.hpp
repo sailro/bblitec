@@ -3300,6 +3300,8 @@ struct UiElementRecord {
         double shadow_blur = 0.0;
     };
     struct CanvasState {
+        // Keep construction explicit while optional inspects this nested type.
+        CanvasState() {}
         double width = 300.0;
         double height = 150.0;
         double scale_x = 1.0;
