@@ -8,6 +8,15 @@ dependencies will not be present in a fresh clone.
 
 ## Read this first
 
+**Current unit: typeof in string sinks.** Variadic Math savepoint `c7eb51e0` is
+committed and pushed. String sinks now admit the existing typeof lowering, so
+conditional String/template expressions and helper parameters preserve its runtime
+result. The four-case `string-sinks842` probe is fully admitted (previously 1/4).
+`string-sinks842-focused` passes 24/24 without skips, including native JSON values,
+lazy conditional branches and operand evaluation counts. `compile842` is the
+current full-entry retry. The separate TODO for inferred string-literal enum
+fields is not closed by this string-typed sink fix.
+
 **Latest unit: variadic Math and stored rest arguments.** Callback savepoint
 `3c55515a` is committed and pushed. The first TODO (stored min/max/hypot) is now
 implemented with a function-type rest index and a fresh owned array at each call.

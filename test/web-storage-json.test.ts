@@ -437,6 +437,34 @@ test("the JSON runtime is included only by the scenes that reach it", () => {
  */
 const nativeTools = optionalNativeFixtureTools();
 
+test("runtime typeof strings survive conditional and parameter sinks", {skip:!nativeTools}, () => {
+    const result = compileSource(`
+        function accept(value: string): string { return value; }
+        function describe(source: string): string {
+            const parsed: unknown = JSON.parse(source);
+            return \`type: \${Array.isArray(parsed) ? "array" : String(parsed === null ? "null" : typeof parsed)}\`;
+        }
+        if(describe("null") !== "type: null" || describe("12") !== "type: number" ||
+            describe("true") !== "type: boolean" || describe('"word"') !== "type: string" ||
+            describe("[]") !== "type: array" || describe("{}") !== "type: object")
+            throw new Error("conditional type description");
+        let calls = 0;
+        function read(): unknown { calls++; return JSON.parse("3"); }
+        if(accept(typeof read()) !== "number" || calls !== 1)
+            throw new Error("typeof operand evaluates once");
+        const condition = calls > 0;
+        if(String(condition ? typeof read() : "absent") !== "number" || calls !== 2)
+            throw new Error("selected typeof branch");
+    `);
+    const directory = resolve("artifacts/json-typeof-sinks");
+    mkdirSync(directory, {recursive:true});
+    const source = join(directory, "check.cpp"), executable = join(directory, "check.exe");
+    writeFileSync(source, result.cpp);
+    runNativeFixtureCompiler(nativeTools!, ["/nologo", "/std:c++20", "/W4", "/WX", "/permissive-", "/EHsc",
+        `/Fo:${directory}\\`, `/Fe:${executable}`, "/I", "native/include", `/I${nativeFixtureVcpkgRoot}/include`, source]);
+    execFileSync(executable, {stdio:"pipe"});
+});
+
 test("JSON serialization preserves string enums at roots and in stored containers", {skip:!nativeTools}, () => {
     const result = compileSource(`
         type Phase = "ready" | "running";

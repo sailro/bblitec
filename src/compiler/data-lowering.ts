@@ -8632,6 +8632,7 @@ export class DataLowerer {
         if (ts.isCallExpression(unwrapped) ||
             ts.isBinaryExpression(unwrapped) ||
             ts.isTemplateExpression(unwrapped) ||
+            ts.isTypeOfExpression(unwrapped) ||
             ts.isPropertyAccessExpression(unwrapped) ||
             ts.isElementAccessExpression(unwrapped)) {
             const computed = this.context.compileValue(unwrapped);
