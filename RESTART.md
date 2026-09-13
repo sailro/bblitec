@@ -8,6 +8,24 @@ dependencies will not be present in a fresh clone.
 
 ## Read this first
 
+**Latest unit: shallow dynamic object spread.** Generic-signature unit `1bbd416f`
+is committed and pushed. The working spread unit adds explicit JSON spread into
+fresh Map<string,JsonValue> storage, with retained children, numeric-key ordering,
+nullish omission and overwrite semantics. Expression lowering chooses this storage
+only for a fresh literal with a dynamic spread; it does not globally turn unknown
+parameters into dictionaries or implicitly copy JSON into typed records.
+Native JsonValue numeric/property reads now handle object numeric keys and
+array/string own properties. Dictionary JSON reads collapse missing lookup storage
+into JsonValue undefined, and the comparison dispatcher recognizes those reads.
+`spread911-focused` passes the native merge/spread/alias/effects regression;
+`spread912-regressions` passes all 48 focused checks without skips.
+`probe-dynamic-merge905.mjs` now admits erased input. Typed input still refuses
+unowned-record return storage; scalar input cannot sink the dictionary return into
+number. Next assess an explicitly dynamic representation for generic T returns
+whose source expressions erase to unknown/dictionaries, with matching T parameters.
+Keep ordinary generic identity helpers typed, and preserve original record aliases.
+The unchanged loader remains unproven; last full-entry attempt is compile900.
+
 **Current uncommitted unit: synchronous generic recursive returns.** Performance
 unit `df203a23` is committed/pushed. NativeReturnTsType now unwraps only actual
 promise layers with the checker's getPromisedTypeOfPromise; it leaves T available

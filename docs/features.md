@@ -293,7 +293,11 @@ Stored string-literal unions expose the same string methods, indexed reads and l
 `Object.entries`, `assign`, `fromEntries`, `hasOwn` and `is` lower over compile-time
 records, structs and string dictionaries. `fromEntries` also accepts projected and
 flattened pair arrays. Dictionary spreads copy entries in source order;
-later properties override earlier entries. A dictionary's `entries` are iterated in a
+later properties override earlier entries. Spreading a represented unknown value
+allocates a fresh dynamic dictionary and retains nested object identities. Nullish
+values contribute no properties; arrays and strings contribute enumerable index
+keys. Dynamic dictionary reads preserve missing values as undefined.
+A dictionary's `entries` are iterated in a
 for...of. Immutable partial record literals enumerate only their initialized keys, in source order;
 optional struct fields without proven own keys refuse enumeration.
 Fixed-key record literals preserve their initialized key order for keys, values and entries, including

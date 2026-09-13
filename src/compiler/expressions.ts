@@ -3584,16 +3584,21 @@ export class ExpressionLowerer {
     }
 
     private compileObjectValue(unwrapped: ts.ObjectLiteralExpression): Value | undefined {
+        const dynamicSpread = unwrapped.properties.some(property => ts.isSpreadAssignment(property) &&
+            this.context.dataTypes.dynamicJsonType(this.context.checker.getTypeAtLocation(property.expression)) !== undefined);
         if (unwrapped.properties.some(property => ts.isSpreadAssignment(property) &&
-            this.context.dataLowerer.dataTypeAt(property.expression)?.kind === "map")) {
+            this.context.dataLowerer.dataTypeAt(property.expression)?.kind === "map") || dynamicSpread) {
             const contextual = this.context.checker.getContextualType(unwrapped);
-            const type = (contextual && this.context.dataTypes.fromTsType(contextual, unwrapped)) ??
+            const type = (contextual && this.context.dataTypes.withDynamicJsonTypes(dynamicSpread,
+                () => this.context.dataTypes.fromTsType(contextual, unwrapped))) ??
                 this.context.dataLowerer.dataTypeAt(unwrapped);
-            if (type?.kind === "map") {
+            if (type?.kind === "map" || dynamicSpread) {
                 const record = this.context.probeEmission(() => this.compileStaticObjectValue(unwrapped, true));
                 if (record) return record;
+                const dictionary: DataType<"map"> = type?.kind === "map" ? type :
+                    {kind:"map", key:{kind:"string"}, value:{kind:"json"}, dictionary:true};
                 return this.context.dataLowerer.leafValue(
-                    this.context.dataLowerer.compileForSink(unwrapped, type), type);
+                    this.context.dataLowerer.compileForSink(unwrapped, dictionary), dictionary);
             }
         }
         return this.compileStaticObjectValue(unwrapped);
@@ -3609,7 +3614,9 @@ export class ExpressionLowerer {
                 const spread = this.compileValue(property.expression);
                 if (spread.kind !== "record" &&
                     spread.recordProperties === undefined) {
-                    if (allowDictionarySpread && spread.dataType?.kind === "map") return undefined;
+                    if (allowDictionarySpread && (spread.dataType?.kind === "map" || isJsonValue(spread) ||
+                        spread.kind === "string" || spread.kind === "number" || spread.kind === "boolean" ||
+                        spread.kind === "void" || spread.kind === "json-null")) return undefined;
                     this.context.fail(property, "Compile-time object spread requires a plain record value or a data record with a complete static property snapshot " +
                         `(received ${spread.kind}${spread.dataType ? ` ${JSON.stringify(spread.dataType)}` : ""}).`);
                 }

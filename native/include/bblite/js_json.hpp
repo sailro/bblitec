@@ -472,6 +472,7 @@ class JsonValue {
     }
 
     [[nodiscard]] JsonValue at(double index) const {
+        if (is_object() || is_string()) return get(bbl::js::number_to_string(index));
         if (kind_ != Kind::array || !(index >= 0.0) || index >= static_cast<double>(array_size())) return {};
         const auto slot = static_cast<std::size_t>(index);
         if (static_cast<double>(slot) != index) return {};
@@ -479,6 +480,14 @@ class JsonValue {
     }
 
     [[nodiscard]] JsonValue get(std::string_view key) const {
+        if (is_array() || is_string()) {
+            if (key == "length") return from_number(is_array() ? length() : static_cast<double>(string_code_units(string_).size()));
+            const auto index = property_index(key);
+            if (!index) return {};
+            if (is_array()) return at(static_cast<double>(*index));
+            const auto units = string_code_units(string_);
+            return *index < units.size() ? from_string(string_char_at(string_, static_cast<double>(*index))) : JsonValue{};
+        }
         if (kind_ != Kind::object) return {};
         if (native_) return native_->get(key);
         for (const Entry& entry : *object_) {
@@ -519,9 +528,7 @@ class JsonValue {
     [[nodiscard]] bbl::js::Array<JsonValue> own_values() const {
         bbl::js::Array<JsonValue> result;
         for (const auto& key : own_keys()) {
-            if (is_array()) result.push_back(at(static_cast<double>(*property_index(key))));
-            else if (is_string()) result.push_back(from_string(string_char_at(string_, static_cast<double>(*property_index(key)))));
-            else result.push_back(get(key));
+            result.push_back(get(key));
         }
         return result;
     }
@@ -695,6 +702,12 @@ class JsonArrayView {
 };
 
 inline JsonArrayView JsonValue::elements() const { return JsonArrayView(*this); }
+
+/** Object spread copies own enumerable properties while retaining nested values. */
+inline void json_spread_into(Map<std::string,JsonValue>& target, const JsonValue& source) {
+    if (source.is_null() || source.is_undefined()) return;
+    for (const auto& key : source.own_keys()) target.set(key, source.get(key));
+}
 
 inline void json_flatten_into(bbl::js::Array<JsonValue>& output, const JsonValue& value, double depth) {
     if (depth > 0 && value.is_array()) {

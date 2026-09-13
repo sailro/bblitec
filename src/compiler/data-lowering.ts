@@ -2021,14 +2021,7 @@ export class DataLowerer {
             dataType.kind === "map" &&
             dataType.key.kind === "string"
         ) {
-            this.context.reachJsData();
-            return {
-                ...this.leafValue(
-                    `${owner.cpp}.get(${this.context.cppString(property)})`,
-                    { kind: "optional", inner: dataType.value },
-                ),
-                preserveUncheckedLookup: true,
-            };
+            return this.mapPropertyValue(owner.cpp, this.context.cppString(property), dataType.value);
         }
         if (dataType.kind === "u8array" || dataType.kind === "dataview" || dataType.kind === "bufferview") {
             if (property === "buffer") {
@@ -2300,14 +2293,7 @@ export class DataLowerer {
                 access.argumentExpression,
                 dataType.key,
             );
-            this.context.reachJsData();
-            return {
-                ...this.leafValue(
-                    `${owner.cpp}.get(${key})`,
-                    this.context.dataTypes.nullableType(dataType.value),
-                ),
-                preserveUncheckedLookup: true,
-            };
+            return this.mapPropertyValue(owner.cpp, key, dataType.value);
         }
         if (dataType.kind === "enummap") {
             // A `Record` is keyed by the union's tag, not by a number,
@@ -3226,6 +3212,16 @@ export class DataLowerer {
             kind: "enum",
             name: enumName,
         });
+    }
+
+    private mapPropertyValue(owner: string, key: string, type: DataType): Value {
+        this.context.reachJsData();
+        const lookup = `${owner}.get(${key})`;
+        if (type.kind === "json") {
+            this.context.reachJson();
+            return this.leafValue(`bbl::js::json_value(${lookup})`, type);
+        }
+        return {...this.leafValue(lookup, this.context.dataTypes.nullableType(type)), preserveUncheckedLookup: true};
     }
 
     public leafValue(
@@ -5713,6 +5709,12 @@ export class DataLowerer {
                 if (ts.isSpreadAssignment(property)) {
                     const source = this.context.compileValue(property.expression);
                     if (source.kind === "json-null") continue;
+                    if (dataType.key.kind === "string" && dataType.value.kind === "json") {
+                        this.context.reachJson();
+                        const value = this.compileKnownValueForSink(source, dataType.value, property);
+                        this.context.emit(`bbl::js::json_spread_into(${result}, ${value});`);
+                        continue;
+                    }
                     const value = this.compileKnownValueForSink(source, dataType, property);
                     const entry = this.context.allocateTemporaryCppName("spread_entry");
                     this.context.emit(`for (const auto& ${entry} : ${value}) ${result}.set(${entry}.first, ${entry}.second);`);

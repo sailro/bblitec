@@ -70,6 +70,44 @@ test("dynamic array views refuse ambiguous absence and Map object entries", () =
         /no retained value view for map/);
 });
 
+test("dynamic object spread copies outer properties and retains nested identity", t => {
+    nativeCheck("dynamic-spread", `
+        function plain(value:unknown):value is Record<string,unknown>{return typeof value==="object"&&value!==null&&!Array.isArray(value);}
+        function merge<T>(base:T,source:unknown):T{
+            if(!plain(base)||!plain(source))return source===undefined?base:source as T;
+            const result:Record<string,unknown>={...(base as unknown as Record<string,unknown>)};
+            for(const key of Object.keys(source))result[key]=plain(result[key])?merge(result[key],source[key]):source[key];
+            return result as unknown as T;
+        }
+        const base:unknown=JSON.parse('{"branch":{"size":1},"keep":{"value":2}}');
+        const result=merge(base,JSON.parse('{"branch":{"size":3}}')) as Record<string,unknown>;
+        if((result.branch as {size:number}).size!==3||result.keep!==(base as Record<string,unknown>).keep||result===base)
+            throw new Error("merge identity");
+        const copy:Record<string,unknown>={...(base as Record<string,unknown>),extra:4};
+        copy.branch=2;
+        if((base as {branch:{size:number}}).branch.size!==1||copy.extra!==4||copy.missing!==undefined||copy['missing']!==undefined)
+            throw new Error("fresh root and missing keys");
+        function spread(value:unknown,depth:number):unknown {
+            if(depth>0)return spread(value,depth-1);
+            return {before:1,...(value as Record<string,unknown>),after:2};
+        }
+        for(const value of JSON.parse('[null,false,4]'))if(Object.keys(spread(value,1) as object).join(',')!=="before,after")
+            throw new Error("primitive spread");
+        const array=spread(JSON.parse('[3,4]'),1) as Record<string,unknown>;
+        if(array[0]!==3||Object.keys(array).join(',')!=="0,1,before,after")throw new Error("array spread");
+        const text=spread("ab",1) as Record<string,unknown>;
+        if(text[0]!=="a"||text[1]!=="b")throw new Error("string spread");
+        if(Object.keys(spread(undefined,1) as object).join(',')!=="before,after")throw new Error("undefined spread");
+        const ordered=spread(JSON.parse('{"after":8,"before":9,"middle":3}'),1) as Record<string,unknown>;
+        if(ordered.before!==9||ordered.after!==2||Object.keys(ordered).join(',')!=="before,after,middle")
+            throw new Error("overwrite order");
+        let effects=0;
+        function source():unknown {effects++;return base;}
+        const once={...(source() as Record<string,unknown>),extra:effects};
+        if(effects!==1||once.extra!==1)throw new Error("spread effects");
+    `, t);
+});
+
 test("recursive unknown boundaries retain parsed trees and returned scalar kinds", t => {
     nativeCheck("trees", `
         function retain<T>(value:T, depth:number):T {return depth>0 ? retain(value,depth-1) : value;}

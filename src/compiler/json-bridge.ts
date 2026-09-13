@@ -224,6 +224,9 @@ export function isJsonRootedExpression(
         ts.isPropertyAccessExpression(unwrapped) ||
         ts.isElementAccessExpression(unwrapped)
     ) {
+        const owner = context.unwrap(unwrapped.expression);
+        const type = ts.isIdentifier(owner) ? context.lookupOptional(owner)?.dataType : undefined;
+        if (type?.kind === "map" && type.value.kind === "json") return true;
         return isJsonRootedExpression(context, unwrapped.expression);
     }
     return false;
