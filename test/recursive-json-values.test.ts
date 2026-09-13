@@ -120,6 +120,37 @@ test("dynamic object spread copies outer properties and retains nested identity"
     `, t);
 });
 
+test("guarded dynamic strings use checked string method receivers", t => {
+    nativeCheck("string-receiver", `
+        function normalize(value:unknown):string|null {
+            if(typeof value!=="string")return null;
+            return value.toLowerCase().trim();
+        }
+        for(const value of JSON.parse('[" ABC ","Def"]')){
+            const result=normalize(value);
+            if(result!=="abc"&&result!=="def")throw new Error("guarded string method");
+        }
+        if(normalize(JSON.parse('4'))!==null)throw new Error("guard rejects number");
+        let caught=false;
+        try {(JSON.parse('4') as string).toLowerCase();}catch {caught=true;}
+        if(!caught)throw new Error("assertion must not coerce receiver");
+    `,t);
+});
+
+test("shared string predicates preserve constant and mutable captures", t => {
+    nativeCheck("string-captures", `
+        const marker="control";
+        export function matches(value:string):boolean {return value===marker;}
+        let active="first";
+        function isActive(value:string):boolean {return value===active;}
+        const values:string[]=["control","other"];
+        if(!matches(values[0]!)||matches(values[1]!))throw new Error("constant comparison capture");
+        if(!isActive("first"))throw new Error("initial mutable capture");
+        active="second";
+        if(isActive("first")||!isActive("second"))throw new Error("updated mutable capture");
+    `,t);
+});
+
 test("optional scalar returns retain undefined in dynamic records", t => {
     nativeCheck("optional-return", `
         function positive(value:unknown):number|undefined {

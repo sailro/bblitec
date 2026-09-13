@@ -8105,7 +8105,8 @@ export class DataLowerer {
             this.context.compileValue(expression);
         if (value?.kind === "string") {
             return {
-                cpp: value.cpp,
+                cpp: value.staticString !== undefined && !value.parameterBinding
+                    ? this.context.cppString(value.staticString) : value.cpp,
                 dataType: { kind: "string" },
                 ...(value.staticString === undefined
                     ? {}

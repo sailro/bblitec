@@ -605,11 +605,17 @@ function compileKnownDataMethod(
 ): Value | undefined {
     const method = callee.name.text;
     const ownerExpression = lowerer.context.unwrap(callee.expression);
-    const narrowedOwner = lowerer.stringReceiver(lowerer.narrowOptional(
+    let narrowedOwner = lowerer.stringReceiver(lowerer.narrowOptional(
         owner,
         callee.expression,
         !ts.isOptionalChain(callee),
     ), callee.expression);
+    if (isJsonValue(narrowedOwner)) {
+        const declared = lowerer.dataTypeAt(callee.expression);
+        if (declared?.kind === "string" || declared?.kind === "enum") {
+            narrowedOwner = lowerer.leafValue(`${narrowedOwner.cpp}.string_value()`, {kind:"string"});
+        }
+    }
     // An array method on a parsed document runs over the document's own
     // elements, each of which is another document. Handing the element
     // view to the ordinary array lowering is the whole adaptation:

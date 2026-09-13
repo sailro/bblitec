@@ -8,6 +8,36 @@ dependencies will not be present in a fresh clone.
 
 ## Read this first
 
+**Current follow-up: guarded string methods and constant captures.** Optional unit
+`24b2c67f` is committed/pushed. Full `compile931` stopped in 12.63 seconds at a
+guarded toLowerCase on a JSON parameter (input-binding normalization), earlier than
+the previous config blocker. Removing scalar coercion from narrowOptional was
+correct for assertions but methods need their own checked string receiver.
+compileKnownDataMethod now adapts a represented JSON receiver when its checked TS
+type is string/enum using the existing throwing string_value(), then shares ordinary
+string-method lowering. The public test verifies guarded values and wrong-type
+assertions; string932-focused passes. string933-regressions is GREEN: 940/940,
+no skips, 170 seconds (it includes all optional corrections).
+
+The isolated input module generates but its native build exposed a separate shared
+predicate referencing a main-local string constant. comparableOperand now emits a
+known static string literal (excluding parameter bindings) so a shared namespace
+function does not refer to caller storage. Native public tests cover constant and
+mutable captures; string936-focused passes both string cases. string937-regressions
+passes all 666 compiler/module/shared-function/dynamic-value checks without skips.
+
+Next native blocker: input936-native reports assignment of a stored string array
+element into Nullable<Enum> inside Array.find. compileArrayFind chooses a narrowed
+checker result type but copies source[index] without the shared sink conversion.
+Reproduce with a readonly literal tuple searched by a runtime predicate and use the
+normal retained value sink for the selected result. The isolated unchanged-module
+probe is probe-input933.mjs. It compares nullable string results by serialization
+because null-only native optional-to-JSON boxing is not yet supported; the source
+module itself is unchanged. check-generated-native.mjs accepts any generated CPP
+path and builds/runs it with /bigobj and the local native fixture tools.
+Do not claim this input module runs yet. No full retry after compile931 yet.
+PR #247 metadata was refreshed successfully using pr931.json (before this string fix).
+
 **Loader milestone: unchanged configuration loader builds and runs.** Copy unit
 `d9b1f389` is committed/pushed. The working optional unit preserves undefined-only
 metadata for checker unions, allows optional comparisons/sinks to reuse matching

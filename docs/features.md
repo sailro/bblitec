@@ -296,6 +296,9 @@ these indexed methods and string length use UTF-16 code units; missing bracket i
 Native storage is UTF-8, with WTF-8 for lone surrogates. RegExp `replaceAll` with
 a string replacement remains unsupported. Supported normalization and collation forms are listed above.
 Stored string-literal unions expose the same string methods, indexed reads and length.
+Guarded dynamic string methods use a checked string receiver; assertions do not
+coerce other runtime kinds. Shared string comparisons embed known constant strings
+while mutable captured bindings remain live.
 
 `Object.freeze`, `seal` and `preventExtensions` are the identity over their argument.
 `Object.entries`, `assign`, `fromEntries`, `hasOwn` and `is` lower over compile-time
