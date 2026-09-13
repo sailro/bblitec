@@ -33,6 +33,8 @@ export interface MathMember {
     readonly variadic?: true;
     /** The C++ call over doubles. */
     readonly cpp: (args: readonly string[]) => string;
+    /** A variadic member over an already evaluated numeric range. */
+    readonly rangeCpp?: (range: string) => string;
     /**
      * The exact generation-time fold. Only the integer-valued members carry
      * one: their result is exact in both engines, so the folded value and
@@ -123,7 +125,8 @@ export const MATH_MEMBERS: ReadonlyMap<string, MathMember> = new EmissionMap<
     // `pinnedNumericMathCallsWithHypot`, and the one spelling `fidelity.md`
     // records as `splat-hypot-approximation` -- so scene code and pinned
     // code agree on it rather than this one call site being the exception.
-    ["hypot", { arity: 2, variadic: true, cpp: pinnedHypotCall, reach: "js-data" }],
+    ["hypot", { arity: 0, variadic: true, cpp: pinnedHypotCall,
+        rangeCpp: range => `bbl::js::hypot_js(${range})`, reach: "js-data" }],
     [
         "random",
         {
@@ -221,7 +224,7 @@ export function mathMemberCall(
     return access ? { name: access.name.text, call: expression } : undefined;
 }
 
-/** A fixed-signature Math function shares the same spelling as a direct call. */
+/** Math callbacks use the native numeric helpers and owned rest-array convention. */
 export function mathFunctionValue(
     context: Pick<LoweringServices, "checker" | "isDefaultLibraryIdentifier" | "dataLowerer" | "dataTypes" | "callbackIdentity" | "reachJsData" | "reachJsRandom" | "fail">,
     expression: ts.Expression,
@@ -229,17 +232,20 @@ export function mathFunctionValue(
     const access = mathMemberAccess(expression, identifier => context.isDefaultLibraryIdentifier(identifier));
     if (!access) return undefined;
     const member = MATH_MEMBERS.get(access.name.text);
-    if (access.name.text === "max" || access.name.text === "min")
-        return context.fail(access, "Stored variadic Math functions require a variable-argument function representation.");
-    if (!member) return undefined;
-    if (member.variadic) return context.fail(access, "Stored variadic Math functions require a variable-argument function representation.");
+    const extreme = access.name.text === "max" || access.name.text === "min";
+    if (!member && !extreme) return undefined;
     const declaration = context.checker.getSymbolAtLocation(access.name)?.valueDeclaration;
     if (!declaration) return context.fail(access, "Math function has no resolved library declaration.");
-    const type: DataType<"function"> = {kind:"function", parameters:Array.from({length:member.arity}, () => ({kind:"number"})),
+    const variadic = extreme || member?.variadic;
+    const type: DataType<"function"> = {kind:"function",
+        parameters:variadic ? [{kind:"vector", element:{kind:"number"}}] : Array.from({length:member!.arity}, () => ({kind:"number"})),
+        ...(variadic ? {restParameter:0} : {}),
         result:{kind:"number"}, identity:true};
     const parameters = type.parameters.map((_, index) => `argument_${index}`);
     context.reachJsData();
-    if (member.reach === "js-random") context.reachJsRandom();
+    if (member?.reach === "js-random") context.reachJsRandom();
+    const body = extreme ? `bbl::js::math_extreme<${access.name.text === "max"}>(argument_0)`
+        : variadic ? member!.rangeCpp!("argument_0") : member!.cpp(parameters);
     return context.dataLowerer.leafValue(`${context.dataTypes.cppType(type)}{${context.callbackIdentity(declaration, undefined)}u, ` +
-        `[](${parameters.map(name => `double ${name}`).join(", ")}) -> double { return ${member.cpp(parameters)}; }}`, type);
+        `[](${parameters.map((name, index) => `${context.dataTypes.cppType(type.parameters[index]!)} ${name}`).join(", ")}) -> double { return ${body}; }}`, type);
 }

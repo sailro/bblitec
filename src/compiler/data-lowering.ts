@@ -357,7 +357,14 @@ export class DataLowerer {
         let runtimeIndex = 0;
         for (let sourceIndex = 0; runtimeIndex < type.parameters.length; sourceIndex++) {
             if (erased.has(sourceIndex)) continue;
+            const rest = runtimeIndex === type.restParameter;
             const parameter = type.parameters[runtimeIndex++]!;
+            if (rest) {
+                if (parameter.kind !== "vector") this.context.fail(node, "A stored rest parameter requires an owned array.");
+                argumentsCpp.push(`${this.context.dataTypes.cppType(parameter)}{${values.slice(sourceIndex)
+                    .map(value => this.compileKnownValueForSink(value, parameter.element, node)).join(", ")}}`);
+                break;
+            }
             const value = values[sourceIndex];
             if (!value && parameter.kind !== "optional") this.context.fail(node, "Callback requires more arguments than the operation supplies.");
             argumentsCpp.push(value ? this.compileKnownValueForSink(value, parameter, node) : "std::nullopt");
@@ -375,7 +382,7 @@ export class DataLowerer {
         const erased = new EmissionSet(functionType.erasedParameters ?? []);
         const sourceParameterCount =
             functionType.parameters.length + erased.size;
-        if (call.arguments.length > sourceParameterCount) {
+        if (functionType.restParameter === undefined && call.arguments.length > sourceParameterCount) {
             this.context.fail(
                 call,
                 `${label} expects at most ${sourceParameterCount} arguments.`,
@@ -410,9 +417,33 @@ export class DataLowerer {
                 }
                 continue;
             }
+            const rest = runtimeIndex === functionType.restParameter;
             const parameter = functionType.parameters[runtimeIndex++]!;
+            if (rest) {
+                if (parameter.kind !== "vector") this.context.fail(call, "A stored rest parameter requires an owned array.");
+                const packed = this.context.allocateTemporaryCppName("rest_arguments");
+                this.context.emit({kind:"declaration", type:this.context.dataTypes.cppType(parameter), name:packed, initializer:"{}"});
+                for (const argument of call.arguments.slice(sourceIndex)) {
+                    if (ts.isSpreadElement(argument)) {
+                        const source = this.context.allocateTemporaryCppName("rest_source");
+                        this.context.emit({kind:"declaration", type:"const auto", name:source,
+                            initializer:this.compileForSink(argument.expression, parameter)});
+                        const item = this.context.allocateTemporaryCppName("rest_item");
+                        this.context.emit(`for (const auto& ${item} : ${source}) ${packed}.push_back(${item});`);
+                    } else {
+                        this.context.emit(`${packed}.push_back(${this.compileForSink(argument, parameter.element)});`);
+                    }
+                }
+                argumentsCpp.push(packed);
+                break;
+            }
             if (argument) {
-                argumentsCpp.push(this.compileForSink(argument, parameter));
+                const value = this.compileForSink(argument, parameter);
+                if (functionType.restParameter !== undefined) {
+                    const name = this.context.allocateTemporaryCppName("call_argument");
+                    this.context.emit({kind:"declaration", type:"const auto", name, initializer:value});
+                    argumentsCpp.push(name);
+                } else argumentsCpp.push(value);
                 continue;
             }
             if (parameter.kind !== "optional") {
@@ -3849,7 +3880,10 @@ export class DataLowerer {
                     `Math.${method} expects ${describeMathArity(member)}.`,
                 );
             }
-            const cpp = member.cpp(numbers());
+            const cpp = member.variadic && member.rangeCpp && call.arguments.some(ts.isSpreadElement)
+                ? member.rangeCpp(this.compileFunctionArguments(call, {kind:"function", restParameter:0,
+                    parameters:[{kind:"vector", element:{kind:"number"}}]})[0]!)
+                : member.cpp(numbers());
             if (member.reach !== undefined) this.context.reachJsData();
             if (member.reach === "js-random") this.context.reachJsRandom();
             return {
@@ -3888,34 +3922,22 @@ export class DataLowerer {
                     this.context.allocateTemporaryCppName(
                         `math_${method}_source`,
                     );
-                const result =
-                    this.context.allocateTemporaryCppName(
-                        `math_${method}_result`,
-                    );
-                const item =
-                    this.context.allocateTemporaryCppName(
-                        `math_${method}_item`,
-                    );
                 this.context.emit({ kind: "declaration", type: "auto&&", name: source, initializer: spread.cpp });
-                this.context.emit(
-                    `double ${result} = ${method === "min" ? "" : "-"}` +
-                        `std::numeric_limits<double>::infinity();`,
-                );
-                this.context.emit(
-                    `for (const double ${item} : ${source}) ${result} = ` +
-                        `std::${method}(${result}, ${item});`,
-                );
+                this.context.reachJsData();
+                const result = this.context.allocateTemporaryCppName(`math_${method}_result`);
+                this.context.emit({kind:"declaration", type:"const double", name:result,
+                    initializer:`bbl::js::math_extreme<${method === "max"}>(${source})`});
                 return {
                     kind: "number",
                     cpp: result,
                     dataType: { kind: "number" },
                 };
             }
-            if (call.arguments.length < 2) {
-                this.context.fail(
-                    call,
-                    `Math.${method} expects at least two arguments.`,
-                );
+            if (call.arguments.some(ts.isSpreadElement)) {
+                const packed = this.compileFunctionArguments(call, {kind:"function", restParameter:0,
+                    parameters:[{kind:"vector", element:{kind:"number"}}]})[0]!;
+                this.context.reachJsData();
+                return this.leafValue(`bbl::js::math_extreme<${method === "max"}>(${packed})`, {kind:"number"});
             }
             const staticParts = call.arguments.map((argument) =>
                 staticNumberValue(this.context, argument),
@@ -3929,22 +3951,13 @@ export class DataLowerer {
                 )
             ) {
                 const folded = Math[method](...staticParts);
-                return {
-                    kind: "number",
-                    cpp: doubleLiteral(folded),
-                    staticNumber: folded,
-                    dataType: { kind: "number" },
-                };
+                return numberConstantValue(folded);
             }
-            // Deliberately not the pinned table's `<double>`-pinned 2-arg
-            // spelling: JS max/min are n-ary, so the compiler folds them
-            // as a chain, and every operand it compiles is already a
-            // double, which makes the bare std:: call unambiguous.
+            // The list evaluates left to right without a rest-array allocation;
+            // stored and direct calls share NaN and signed-zero behavior.
             const parts = numbers();
-            let cpp = parts[0]!;
-            for (const part of parts.slice(1)) {
-                cpp = `std::${method}(${cpp}, ${part})`;
-            }
+            this.context.reachJsData();
+            const cpp = `bbl::js::math_extreme<${method === "max"}>(std::initializer_list<double>{${parts.join(", ")}})`;
             return {
                 kind: "number",
                 cpp,

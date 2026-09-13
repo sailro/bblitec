@@ -921,6 +921,7 @@ export class DataTypeRegistry {
       }
     }
     const erasedParameters: number[] = [];
+    let restParameter: number | undefined;
     const parameters = signature.getParameters().flatMap((parameter, index) => {
       const declaration =
         parameter.valueDeclaration ?? parameter.declarations?.[0];
@@ -938,6 +939,10 @@ export class DataTypeRegistry {
         parameterType,
         declaration ?? node,
       );
+      if (declaration && ts.isParameter(declaration) && declaration.dotDotDotToken) {
+        if (mapped?.kind !== "vector") return [undefined];
+        restParameter = index - erasedParameters.length;
+      }
       // A function passed through another stored function remains the same
       // JavaScript function object. Carry its identity across that native
       // call boundary so an eventual Array/Map/Set comparison can observe it.
@@ -961,6 +966,7 @@ export class DataTypeRegistry {
     }
     return {
       kind: "function",
+      ...(restParameter === undefined ? {} : {restParameter}),
       parameters: (parameters as DataType[]).map(parameter =>
         this.returnsArray(result) ? this.ownReturnedArray(parameter) : parameter),
       ...(result ? { result } : {}),

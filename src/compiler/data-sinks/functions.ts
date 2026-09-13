@@ -28,8 +28,13 @@ function expressionFunction(dataType: DataType<"function">, lowerer: DataSinkHos
             const callback = lowerer.context.compileValue(unwrapped);
             if (callback.kind === "callback" &&
                 callback.callbackDeclaration) {
-                return lowerer.context.compileStoredDataFunction(callback.callbackDeclaration, dataType, callback.callbackRecordOwner);
+                return lowerer.compileKnownValueForSink(callback, dataType, unwrapped);
             }
+        }
+        const nativeType = lowerer.dataTypeAt(unwrapped);
+        if (nativeType?.kind === "function" && nativeType.restParameter !== undefined && dataType.restParameter === undefined) {
+            const cpp = lowerer.context.compileStoredDataFunction(unwrapped, nativeType);
+            return lowerer.compileKnownValueForSink(lowerer.leafValue(cpp, nativeType), dataType, unwrapped);
         }
         return lowerer.context.compileStoredDataFunction(unwrapped, dataType);
     }
@@ -37,10 +42,8 @@ function expressionFunction(dataType: DataType<"function">, lowerer: DataSinkHos
     if (value.kind === "callback") {
         return lowerer.compileKnownValueForSink(value, dataType, unwrapped);
     }
-    if (value.kind === "data" &&
-        value.dataType &&
-        dataTypesEqual(value.dataType, dataType)) {
-        return value.cpp;
+    if (value.kind === "data" && value.dataType?.kind === "function") {
+        return lowerer.compileKnownValueForSink(value, dataType, unwrapped);
     }
     lowerer.context.fail(unwrapped, "Expected a local function with a native data signature.");
 }
@@ -66,21 +69,13 @@ function valueFunction(dataType: DataType<"function">, lowerer: DataSinkHost, va
     }
     if (value.kind === "data" &&
         value.dataType?.kind === "function" &&
-        value.dataType.identity === true &&
-        !dataType.identity &&
-        value.dataType.parameters.length ===
-            dataType.parameters.length &&
-        value.dataType.parameters.every((parameter, index) => dataTypesEqual(parameter, dataType.parameters[index]!)) &&
-        ((value.dataType.result === undefined &&
-            dataType.result === undefined) ||
-            (value.dataType.result !== undefined &&
-                dataType.result !== undefined &&
-                dataTypesEqual(value.dataType.result, dataType.result)))) {
+        dataTypesEqual({...value.dataType, identity:true}, {...dataType, identity:true})) {
         return value.cpp;
     }
     if (value.kind === "callback" &&
         value.cpp.length > 0 &&
         value.nativeCallbackParameterTypes !== undefined &&
+        dataType.restParameter === undefined &&
         !dataType.identity &&
         value.nativeCallbackParameterTypes.length ===
             dataType.parameters.length &&
@@ -95,12 +90,38 @@ function valueFunction(dataType: DataType<"function">, lowerer: DataSinkHost, va
     }
     if (value.kind === "callback" &&
         value.callbackDeclaration) {
+        const nativeType = lowerer.dataTypeAt(value.callbackDeclaration);
+        if (nativeType?.kind === "function" && nativeType.restParameter !== undefined && dataType.restParameter === undefined) {
+            const cpp = lowerer.context.compileStoredDataFunction(value.callbackDeclaration, nativeType, value.callbackRecordOwner);
+            return lowerer.compileKnownValueForSink(lowerer.leafValue(cpp, nativeType), dataType, value.callbackDeclaration);
+        }
         return lowerer.context.compileStoredDataFunction(value.callbackDeclaration, dataType, value.callbackRecordOwner);
     }
     if (value.kind === "data" &&
         value.dataType &&
         dataTypesEqual(value.dataType, dataType)) {
         return value.cpp;
+    }
+    const source = value.dataType;
+    if (source?.kind === "function" && source.restParameter !== undefined &&
+        dataType.restParameter === undefined && !source.erasedParameters?.length &&
+        !dataType.erasedParameters?.length && dataType.parameters.length >= source.restParameter &&
+        (dataType.result === undefined || (source.result && dataTypesEqual(source.result, dataType.result)))) {
+        const rest = source.parameters[source.restParameter];
+        if (rest?.kind !== "vector") return undefined;
+        const parameters = dataType.parameters.map((type, index) => ({
+            type, name:`argument_${index}`,
+        }));
+        if (!parameters.every(({type}, index) => dataTypesEqual(type,
+            index < source.restParameter! ? source.parameters[index]! : rest.element))) return undefined;
+        const values = parameters.map(({name}) => name);
+        const args = values.slice(0, source.restParameter);
+        args.push(`${lowerer.context.dataTypes.cppType(rest)}{${values.slice(source.restParameter).join(", ")}}`);
+        const result = dataType.result ? lowerer.context.dataTypes.cppType(dataType.result) : "void";
+        return `bbl::js::adapt_callback<${lowerer.context.dataTypes.cppType(dataType)}>(${value.cpp}, ` +
+            `[](${lowerer.context.dataTypes.cppType(source)}& callback${parameters.map(({type, name}) =>
+                `, ${lowerer.context.dataTypes.cppType(type)} ${name}`).join("")}) -> ${result} { ` +
+            `${dataType.result ? "return " : "static_cast<void>("}callback(${args.join(", ")})${dataType.result ? "" : ")"}; })`;
     }
     return undefined;
 }

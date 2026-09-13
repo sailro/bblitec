@@ -3561,12 +3561,29 @@ inline void typed_array_set(
  * folds record as `splat-hypot-approximation`. One home rather than one per
  * generated translation unit, for the reason `round_js` below has one.
  */
-[[nodiscard]] inline double hypot_js(std::initializer_list<double> values) {
+template <typename Range>
+[[nodiscard]] inline double hypot_js(const Range& values) {
     double sum = 0.0;
     for (double value : values) {
+        if (std::isinf(value)) return std::numeric_limits<double>::infinity();
         sum += value * value;
     }
     return std::sqrt(sum);
+}
+
+[[nodiscard]] inline double hypot_js(std::initializer_list<double> values) {
+    return hypot_js<std::initializer_list<double>>(values);
+}
+
+template <bool Maximum, typename Range>
+[[nodiscard]] inline double math_extreme(const Range& values) {
+    double result = Maximum ? -std::numeric_limits<double>::infinity() : std::numeric_limits<double>::infinity();
+    for (const double value : values) {
+        if (std::isnan(value)) return value;
+        if ((Maximum ? value > result : value < result) ||
+            (value == 0.0 && result == 0.0 && (Maximum ? !std::signbit(value) : std::signbit(value)))) result = value;
+    }
+    return result;
 }
 
 [[nodiscard]] inline double round_js(double value) {

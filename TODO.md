@@ -6,7 +6,6 @@ status. One line per item: the gap, where it is, its size (S < 1 h, M < half day
 
 ## Compiler
 
-- [ ] Stored variadic Math functions (min/max/hypot) need a variable-argument function representation (math-intrinsics.ts); fixed signatures share the direct-call table. M; reusable numeric callbacks.
 - [ ] Destructuring defaults over combined null/undefined elements need distinct absence states; generic nullable defaults also refuse when the source type cannot distinguish them (data-lowering.ts, js_data.hpp). M; nullable collection transforms.
 - [ ] Custom thenables need an owned resolution protocol; callable/getter `then` properties explicitly refuse (async.ts). M; interoperability with promise-like objects.
 - [ ] Record getters with early returns need represented result flow; statements and local captures before a final return are supported (compiler.ts). M; conditional accessors.

@@ -8,6 +8,29 @@ dependencies will not be present in a fresh clone.
 
 ## Read this first
 
+**Latest unit: variadic Math and stored rest arguments.** Callback savepoint
+`3c55515a` is committed and pushed. The first TODO (stored min/max/hypot) is now
+implemented with a function-type rest index and a fresh owned array at each call.
+Fixed arguments are snapshotted before packing rest arguments; stored callbacks,
+array entries and compatible fixed-signature adapters retain identity. Native
+adapters expose their source callback to GC. Direct and stored extrema now share
+NaN/signed-zero handling; hypot keeps the documented approximation and accepts
+zero/singleton arguments and spreads. Generic stored array-rest functions and
+rest declarations in fixed signatures have native execution coverage. Tuple rest
+signatures and fixed-to-rest conversions still refuse, as documented.
+
+`variadic840-regressions` passed 890/891 checks without skips. Its sole failure was
+an old source assertion requiring std::max for collision heights; it now checks
+the shared numeric helper. `variadic841-focused` passes the corrected assertion
+and both new native rest/Math tests, including effects after a spread read.
+The unchanged full-entry `compile836` passed the callback failure and reached a
+string sink in 265.3 seconds. The neutral `probe-string-sinks840.mjs` reproduces
+three refusals among four cases: typeof through a string parameter or a conditional
+String/template expression. Direct String(typeof value) already compiles. The
+string sink's syntax dispatch omits typeof; fix and validate that next, then
+retry the full application at this batch boundary. Full generation/build/runtime
+is still unachieved. The text getter/compound-assignment TODO remains open.
+
 **Current unit: stored void callbacks and forwarded capture ownership.**
 Container savepoint `e47e41f6` is committed and pushed. Concise stored callbacks
 whose signature returns void now emit their body as a statement, matching inline

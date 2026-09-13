@@ -2292,7 +2292,7 @@ test("reads live moving-sector heights for collision", () => {
     assert.match(result.cpp, /->floorHeight = 12\.0/);
     assert.match(
         result.cpp,
-        /std::max\(v_fn\d+_front->floorHeight, v_fn\d+_back->floorHeight\)/,
+        /bbl::js::math_extreme<true>\(std::initializer_list<double>\{v_fn\d+_front->floorHeight, v_fn\d+_back->floorHeight\}\)/,
     );
     assert.doesNotMatch(result.cpp, /std::max\(-128\.0, -124\.0\)/);
 });

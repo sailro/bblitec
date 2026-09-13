@@ -40,6 +40,8 @@ export interface DataKinds {
     "function": {
         kind: "function";
         parameters: DataType[];
+        /** Native parameter index of the final, freshly packed rest array. */
+        restParameter?: number;
         result?: DataType;
         /**
          * The container this function is stored in observes its JavaScript

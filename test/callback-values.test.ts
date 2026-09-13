@@ -76,7 +76,55 @@ test("forwarded array predicates preserve captured state, truthiness and short c
         throw new Error("tuple parameter binding");
 `,t));
 
-test("stored variadic Math functions refuse a missing calling convention", () => {
-    for(const member of ["max","min","hypot"])
-        assert.throws(()=>compileSource(`const callback=Math.${member};`),/variable-argument function representation/);
-});
+test("variadic Math callbacks retain identity, numeric edge cases and spread order", t => nativeCheck("variadic-math", `
+    const maximum = Math.max, minimum = Math.min, length = Math.hypot;
+    if(maximum() !== -Infinity || minimum() !== Infinity || length() !== 0)
+        throw new Error("empty numeric rest");
+    if(Math.max() !== -Infinity || Math.min() !== Infinity || Math.hypot() !== 0 || Math.hypot(-4) !== 4)
+        throw new Error("direct empty and single numeric calls");
+    if(maximum(-3) !== -3 || minimum(7) !== 7 || length(-4) !== 4)
+        throw new Error("single numeric rest");
+    const values = [3, 4]; values.push(12);
+    if(length(...values) !== 13 || maximum(-1, ...values, 20) !== 20)
+        throw new Error("numeric spread");
+    if(Math.hypot(...values) !== 13 || Math.min(20, ...values, -1) !== -1 ||
+        Math.hypot(NaN, Infinity) !== Infinity || length(Infinity, NaN) !== Infinity)
+        throw new Error("direct spread and infinite norm");
+    if(1 / maximum(-0, 0) !== Infinity || 1 / minimum(0, -0) !== -Infinity ||
+        !Number.isNaN(maximum(1, NaN, 2)) || !Number.isNaN(minimum(NaN, 1)))
+        throw new Error("extreme numeric values");
+    if(1 / Math.max(-0, 0) !== Infinity || 1 / Math.min(0, -0) !== -Infinity ||
+        !Number.isNaN(Math.max(1, NaN, 2))) throw new Error("direct extreme numeric values");
+    const stored: Array<(...items: number[]) => number> = [Math.min, Math.max, Math.hypot];
+    if(stored[0](5, 2, 9) !== 2 || stored[1]() !== -Infinity || stored[2](3, 4) !== 5)
+        throw new Error("stored numeric rest");
+    const fixed: (a: number, b: number) => number = maximum;
+    const functions = new Set<(a: number, b: number) => number>([fixed, Math.max]);
+    if(fixed(2, 8) !== 8 || functions.size !== 1 || !functions.has(Math.max) || functions.has(Math.min))
+        throw new Error("fixed signature adaptation and identity");
+    let step = 0;
+    function next(): number { step++; return step; }
+    if(maximum(next(), next(), next()) !== 3 || step !== 3)
+        throw new Error("argument evaluation count");
+    const changing = [1]; changing.push(2);
+    function clear(): number { changing.length = 0; return 0; }
+    if(Math.max(...changing) + clear() !== 2) throw new Error("spread read before later effects");
+`, t));
+
+test("stored rest parameters own fresh arrays and preserve prefix evaluation", t => nativeCheck("stored-rest", `
+    const callbacks: Array<(...values: number[]) => number> = [
+        (...values: number[]) => { values.push(5); return values.reduce((sum, value) => sum + value, 0); }
+    ];
+    const source = [1, 2]; source.push(3);
+    if(callbacks[0](...source) !== 11 || source.length !== 3 || callbacks[0]() !== 5)
+        throw new Error("rest array ownership");
+    let prefix = "before";
+    const labels: Array<(prefix: string, ...words: string[]) => string> = [
+        (prefix: string, ...words: string[]) => prefix + ":" + words.join(",")
+    ];
+    function mutate(): string { prefix = "after"; return prefix; }
+    if(labels[0](prefix, mutate(), "last") !== "before:after,last")
+        throw new Error("fixed prefix snapshot");
+    const fixed: (a: number, b: number) => number = (...values: number[]) => values[0] + values[1];
+    if(fixed(2, 3) !== 5) throw new Error("rest declaration in a fixed signature");
+`, t));
