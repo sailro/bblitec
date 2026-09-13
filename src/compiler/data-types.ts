@@ -449,8 +449,10 @@ function sanitizeIdentifier(name: string): string {
  */
 export class DataTypeRegistry {
   private readonly structsByKey = new EmissionMap<string, DataStructDefinition>();
+  private readonly structsByName = new EmissionMap<string, DataStructDefinition>();
   private readonly structNames = new EmissionSet<string>();
   private readonly enumsByKey = new EmissionMap<string, DataEnumDefinition>();
+  private readonly enumsByName = new EmissionMap<string, DataEnumDefinition>();
   private readonly enumNames = new EmissionSet<string>();
   /** String-union enums that actually receive a runtime string value. */
   private readonly runtimeEnumParsers = new EmissionSet<string>();
@@ -1172,7 +1174,7 @@ export class DataTypeRegistry {
       this.structTypesByIdentity.set(identity, result);
       return result;
     }
-    this.structsByKey.set(key, { name, fields });
+    this.registerStructDefinition(key, { name, fields });
     const result = { kind: "struct" as const, name };
     this.structTypesByIdentity.set(identity, result);
     return result;
@@ -1332,7 +1334,7 @@ export class DataTypeRegistry {
       this.structTypesByIdentity.set(identity, result);
       return result;
     }
-    this.structsByKey.set(key, { name, fields });
+    this.registerStructDefinition(key, { name, fields });
     const result = { kind: "struct" as const, name };
     this.structTypesByIdentity.set(identity, result);
     return result;
@@ -1729,7 +1731,7 @@ export class DataTypeRegistry {
       };
     }
     const name = provisionalName;
-    this.structsByKey.set(key, { name, fields });
+    this.registerStructDefinition(key, { name, fields });
     return { kind: "struct", name };
   }
 
@@ -1782,7 +1784,7 @@ export class DataTypeRegistry {
     this.classStructNames.set(identity, name);
     this.classStructDeclarations.set(name, { declaration, type });
     this.referenceStructNames.add(name);
-    this.structsByKey.set(`class#${name}`, {
+    this.registerStructDefinition(`class#${name}`, {
       name,
       fields: this.classStructFields(declaration, type),
     });
@@ -2155,9 +2157,7 @@ export class DataTypeRegistry {
    * a `Record` keyed by it are laid out in.
    */
   public enumMembers(name: string): string[] {
-    const definition = [...this.enumsByKey.values()].find(
-      (entry) => entry.name === name,
-    );
+    const definition = this.enumsByName.get(name);
     return definition ? [...definition.members] : [];
   }
 
@@ -2178,10 +2178,9 @@ export class DataTypeRegistry {
         : `Enum${++this.anonymousEnumIndex}`,
       this.enumNames,
     );
-    this.enumsByKey.set(key, {
-      name,
-      members: sorted,
-    });
+    const definition = {name, members:sorted};
+    this.enumsByKey.set(key, definition);
+    this.enumsByName.set(name, definition);
     return { kind: "enum", name };
   }
 
@@ -2194,9 +2193,7 @@ export class DataTypeRegistry {
     literal: string,
     node: ts.Node,
   ): string {
-    const definition = [...this.enumsByKey.values()].find(
-      (entry) => entry.name === dataType.name,
-    );
+    const definition = this.enumsByName.get(dataType.name);
     if (!definition || !definition.members.includes(literal)) {
       this.fail(node, `'${literal}' is not a member of ${dataType.name}.`);
     }
@@ -2258,9 +2255,7 @@ export class DataTypeRegistry {
     node: ts.Node,
     bridge: "from_string" | "find_string" | "to_string",
   ): string {
-    const definition = [...this.enumsByKey.values()].find(
-      (entry) => entry.name === dataType.name,
-    );
+    const definition = this.enumsByName.get(dataType.name);
     if (!definition) {
       this.fail(node, `Unknown enum '${dataType.name}'.`);
     }
@@ -2278,10 +2273,13 @@ export class DataTypeRegistry {
    * than asserting an answer, so it needs no node to blame.
    */
   public structFieldTypes(name: string): DataType[] {
-    const definition = [...this.structsByKey.values()].find(
-      (entry) => entry.name === name,
-    );
+    const definition = this.structsByName.get(name);
     return (definition?.fields ?? []).map((field) => field.type);
+  }
+
+  private registerStructDefinition(key: string, definition: DataStructDefinition): void {
+    this.structsByKey.set(key, definition);
+    this.structsByName.set(definition.name, definition);
   }
 
   /** Whether a data shape contains a stored native closure. */
@@ -2305,9 +2303,7 @@ export class DataTypeRegistry {
     right: Extract<DataType, { kind: "struct" }>,
   ): Extract<DataType, { kind: "struct" }> | undefined {
     if (dataTypesEqual(left, right)) return left;
-    const fieldsFor = (name: string): DataStructField[] =>
-      [...this.structsByKey.values()].find((entry) => entry.name === name)
-        ?.fields ?? [];
+    const fieldsFor = (name: string): DataStructField[] => this.structsByName.get(name)?.fields ?? [];
     const rightFields = new EmissionMap(
       fieldsFor(right.name).map((field) => [field.sourceName, field]),
     );
@@ -2328,7 +2324,7 @@ export class DataTypeRegistry {
       `Record${++this.anonymousStructIndex}`,
       this.structNames,
     );
-    this.structsByKey.set(key, {
+    this.registerStructDefinition(key, {
       name,
       fields: fields.map(({ sourceName, name: fieldName, type }) => ({
         sourceName,
@@ -2345,9 +2341,7 @@ export class DataTypeRegistry {
   }
 
   public structFields(name: string, node: ts.Node): DataStructField[] {
-    const definition = [...this.structsByKey.values()].find(
-      (entry) => entry.name === name,
-    );
+    const definition = this.structsByName.get(name);
     if (!definition) {
       this.fail(node, `Unknown generated struct '${name}'.`);
     }
@@ -2649,7 +2643,7 @@ export class DataTypeRegistry {
       `inline bbl::js::Array<std::string> json_value_keys(const ${name}& value);`,
     ]);
     for (const name of names) {
-      const fields = [...this.structsByKey.values()].find(definition => definition.name === name)!.fields;
+      const fields = this.structsByName.get(name)!.fields;
       lines.push(`inline bbl::js::JsonValue json_value_property(const ${name}& value, std::string_view key) {`);
       for (const field of fields) {
         const property = `value->${field.name}`;
@@ -2684,9 +2678,7 @@ export class DataTypeRegistry {
     );
     lines.push("");
     for (const name of names) {
-      const definition = [...this.structsByKey.values()].find(
-        (candidate) => candidate.name === name,
-      );
+      const definition = this.structsByName.get(name);
       lines.push(
         `inline void json_write(bbl::js::JsonWriter& writer, const ${structName(name)}& value) {`,
         "    writer.begin_object();",
@@ -2852,7 +2844,7 @@ export class DataTypeRegistry {
                 let literal = tag.type.kind === "string" ? JSON.stringify(value) : value;
                 if (tag.type.kind === "enum") {
                   const enumType = tag.type;
-                  const definition = [...this.enumsByKey.values()].find(candidate => candidate.name === enumType.name)!;
+                  const definition = this.enumsByName.get(enumType.name)!;
                   literal = `${enumType.name}::${this.enumMemberIdentifier(definition, value)}`;
                 }
                 return `record.${tag.name} == ${literal}`;
@@ -2907,9 +2899,7 @@ export class DataTypeRegistry {
             return;
           }
           structs.add(dataType.name);
-          const definition = [...this.structsByKey.values()].find(
-            (candidate) => candidate.name === dataType.name,
-          );
+          const definition = this.structsByName.get(dataType.name);
           for (const field of definition?.fields ?? []) {
             visit(field.type);
           }
@@ -2944,9 +2934,7 @@ export class DataTypeRegistry {
       }
     };
     for (const name of this.emittedNamedTypes) {
-      const struct = [...this.structsByKey.values()].find(
-        (candidate) => candidate.name === name,
-      );
+      const struct = this.structsByName.get(name);
       if (struct) {
         visit({ kind: "struct", name });
       } else {

@@ -8,6 +8,25 @@ dependencies will not be present in a fresh clone.
 
 ## Read this first
 
+**Registry lookup performance:** query unit `bce4f7a6` is committed/pushed and
+PR #247 metadata is updated (verified body includes `32cab018`). `compile898`
+passed the typed validator and refused a generic recursive return in the
+configuration loader after 220.4 seconds. Its profile attributed 69.5 seconds of
+snapshot self time to `structFields`, which scanned every registered type.
+Direct transactional name indexes for structs/enums remove those scans while
+retaining the existing definition objects and ordered emission. The actual typed
+validator's C++ SHA-256 is unchanged (`typed-validator899-before-hash`), and
+`registry899-focused` passes 17/17 transaction/native checks. `compile900` reaches
+the SAME refusal in 68.5 seconds (3.2x faster); both profiles are saved locally.
+Full population neutrality still belongs to the final branch validation.
+
+`probe-merge900.mjs` isolates the new unchanged loader refusal in about two
+seconds. `diagnose-merge900.mjs` shows its declared generic return `T` reaches
+mapping as `Awaited<T>`: nativeReturnTsType applies getAwaitedType even to a
+synchronous unconstrained type parameter. Fix the shared return-type unwrapping
+and cover generic recursive scalar/record/array returns before retrying the
+isolated loader. The application still has not completed full generation/build/run.
+
 **Typed validator runtime now passes.** Array/tuple unit `bf246cae` is committed
 and pushed after staged type/privacy checks. The generic enum-query follow-up
 shares a nonthrowing enum lookup with the strict storage parser. Set.has/delete,
