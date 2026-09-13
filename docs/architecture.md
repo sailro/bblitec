@@ -62,6 +62,11 @@ initialization, closures and collections.
 Module initialization planning summarizes eager mutations once per module,
 tracking alias origins and called bodies, then intersects those facts with
 observed storage as dependency reach grows.
+When a reached record assignment requires dynamic storage, the compiler records
+that source binding and replays emission against the same parsed frontend. The
+demand set only grows; initializers and earlier aliases then share the selected
+representation. Each replay rebuilds compiler-owned emission state; unrelated
+refusals retain their existing typed fallback paths.
 Materialized immutable numeric bindings retain proven constant results on their
 stored values, so later imports do not need to re-evaluate their initializers.
 

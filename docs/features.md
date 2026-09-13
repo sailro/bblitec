@@ -113,6 +113,11 @@ Collection callbacks returning promises use retained function invocation for map
 forEach, reduction and Array.from, including tuple mapping. Iteration remains synchronous while
 each callback owns its suspension; predicate promises are truthy without awaiting fulfillment.
 Promise-settled records preserve identity across aliases and aggregation.
+Typed lexical and module record bindings can select dynamically loaded objects
+while earlier aliases retain the old object. Their captured callbacks observe
+later reassignments. Parsed-object property assignment updates the retained
+object, preserving unknown fields and aliases; writes through erased native
+record and array views still require further support.
 `Promise.resolve` retains plain object identity and owns fresh record literals.
 Realm-backed `new Promise<T>` runs its executor synchronously and owns resolving functions
 retained by timers, RAF callbacks and typed function slots. First settlement wins; executor

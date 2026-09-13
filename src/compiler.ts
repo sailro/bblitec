@@ -7,6 +7,7 @@ import { renderNativeDeclaration, type NativeDeclaration } from "./compiler/nati
 import { persistContinuationLocals } from "./compiler/continuation-storage.js";
 import ts from "typescript";
 import {hasDynamicObjectSpread, isJsonValue} from "./compiler/json-bridge.js";
+import {DynamicBindingStorageRequired} from "./compiler/dynamic-binding-storage.js";
 import { resolve } from "node:path";
 import { inferUninitializedHandle } from "./compiler/uninitialized-handle.js";
 import { framePollExecutor } from "./compiler/frame-poll.js";
@@ -453,11 +454,7 @@ export function compileSource(
     const environment = deploymentEnvironment(options);
     const frontend = createCompilerProgram(source, fileName);
     const compile = (input: typeof frontend, workers?: ResolvedCompileOptions["workers"]): CompileResult => {
-    const compiler = new Compiler(
-        input.program,
-        input.sourceFile,
-        input.checker,
-        {
+        const resolved: ResolvedCompileOptions = {
             fileName: workers?.namespace ? input.sourceFile.fileName : fileName,
             title: options.title ?? "Babylon Lite Native",
             width: options.width ?? 1280,
@@ -470,11 +467,21 @@ export function compileSource(
             ...(options.nativeHostUi && !workers?.namespace
                 ? { nativeHostUi: options.nativeHostUi }
                 : {}),
-        },
-    );
-    const result = compiler.compile();
-    result.manifest.inputs = input.localFiles;
-    return result;
+        };
+        // Each demand belongs to a source binding, not its spelling. Reuse the
+        // frontend and rebuild emission so earlier aliases use the same storage.
+        const dynamicBindings = new Set<ts.VariableDeclaration>();
+        for (;;) {
+            const compiler = new Compiler(input.program, input.sourceFile, input.checker, resolved, dynamicBindings);
+            try {
+                const result = compiler.compile();
+                result.manifest.inputs = input.localFiles;
+                return result;
+            } catch (error) {
+                if (!(error instanceof DynamicBindingStorageRequired) || dynamicBindings.has(error.declaration)) throw error;
+                dynamicBindings.add(error.declaration);
+            }
+        }
     };
     return usesWorkers(frontend)
         ? compileWorkerApplication(frontend, compile, (node, message) => {
@@ -742,6 +749,7 @@ class Compiler
         public readonly sourceFile: ts.SourceFile,
         public readonly checker: ts.TypeChecker,
         public readonly options: ResolvedCompileOptions,
+        private readonly dynamicBindings: ReadonlySet<ts.VariableDeclaration>,
     ) {
         this.symbols = new CompilerSymbols(checker);
         this.userFunctions = new UserFunctionLowerer(checker);
@@ -1048,6 +1056,10 @@ class Compiler
      * a shared pointer that requires `record->field`.
      */
     private predeclareStoredObjectReferences(): void {
+        for (const declaration of this.dynamicBindings) {
+            const type = this.dataTypes.fromTsType(this.checker.getTypeAtLocation(declaration.name), declaration);
+            if (type) this.dataTypes.markStoredObjectReferences(type);
+        }
         const visit = (root: ts.Node): void => forEachAnalysisNode(root, (node) => {
             if (ts.isCallExpression(node) && ts.isIdentifier(node.expression)) {
                 // The file adapter stores both its input and result as object
@@ -3310,6 +3322,20 @@ class Compiler
 
         if (!declaration.initializer) {
             return false;
+        }
+        if (this.dynamicBindings.has(declaration)) {
+            const type: DataType = {kind:"json"};
+            const value = this.compileValue(declaration.initializer);
+            const initializer = this.dataLowerer.compileKnownValueForSink(value, type, declaration.initializer);
+            this.reachFeature("data:json", declaration);
+            this.reachJsData();
+            this.emit({kind:"declaration", type:sharedClosureStorage ? "auto" : "bbl::js::JsonValue", name:cppName,
+                initializer:sharedClosureStorage ? `bbl::js::make_gc_shared<bbl::js::JsonValue>(${initializer})` : initializer});
+            const cpp = sharedClosureStorage ? `(*${cppName})` : cppName;
+            this.dataLowerer.registerLocal(cpp, "owned");
+            this.defineVariable(name, {...this.dataLowerer.leafValue(cpp, type),
+                ...(sharedClosureStorage ? {sharedStorageCpp:cppName} : {})});
+            return true;
         }
         const annotatedResource = this.nullableResourceKind(
             name,

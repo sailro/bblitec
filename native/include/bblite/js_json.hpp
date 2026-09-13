@@ -508,6 +508,14 @@ class JsonValue {
         }
     }
 
+    void set(std::string_view key, JsonValue value) const {
+        if (kind_ != Kind::object || native_) throw std::runtime_error("Dynamic property assignment requires an owned object.");
+        for (Entry& entry : *object_) {
+            if (entry.first == key) { entry.second = std::move(value); return; }
+        }
+        object_->emplace_back(key, std::move(value));
+    }
+
     [[nodiscard]] JsonArrayView elements() const;
 
     /** Own enumerable properties: index keys precede other keys in insertion order. */

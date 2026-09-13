@@ -8,6 +8,43 @@ dependencies will not be present in a fresh clone.
 
 ## Read this first
 
+**Working unit: demanded dynamic binding storage.** Query unit `a5d1fead` is
+committed/pushed. A reached typed-record assignment from represented JSON now
+requests dynamic storage for its exact source declaration. compileSource retains
+the parsed frontend, then rebuilds emission with a monotonically growing set of
+binding demands. Initializers and earlier aliases therefore agree on storage;
+only the completed emission runs. Demanded default types are marked as owning
+references before initial emission. Current code is UNCOMMITTED.
+
+setting1010 generates the unchanged loader and settings setter in 6.73 seconds,
+including its replay. storage1012-focused native test passes replacement/default
+identity, retained earlier aliases, unknown fields, loaded-object writes, one
+initialization and coroutine suspension. The test exposed returned-JSON equality
+and parsed-object writes; the working fix snapshots returned comparison values
+and emits JsonValue.set for dynamic plain property assignment. Typed native record
+views and arrays still need their own dynamic mutation protocol; do not claim
+those are complete. Embedded-NUL literals remain a separately recorded TODO.
+
+storage1013-regressions finished with 969/970 passing. It found one regression:
+`stores interface methods for runtime-selected implementations`. The new storage
+probe tried compileValue on a conditional that the existing typed sink supports.
+A fix now declines CompileError from that speculative probe. storage1017-focused
+passes the expanded native test, including a shadowed local binding, an escaping
+callback and writes through the original defaults. storage1018-regressions passes
+656/656 compiler, module-state and closure checks after the fix, with no skips.
+
+setting1014-generate writes generated/setting-probe from the ignored
+artifacts/external-integration/setting-probe.ts, using the actual public directory.
+setting1014-build succeeded through the normal `scene-command build` Clang route.
+setting1014-native also PASSED the real packaged configuration load and setter.
+The optimized build was expensive: 3,912,488 bytes / 29,237 lines of generated C++,
+1,582 record-view closures and 370 tuple-view closures; the largest tuple had 49
+captures. Clang was observed past 456 CPU seconds and 7.6 GB working memory during
+the build. Record-view getter sharing is the next concrete efficiency target.
+The full application still stops at this configuration assignment in compile998;
+retry after this unit's savepoint. PR metadata was refreshed with pr1015.json,
+including the validated coroutine/promise/query progress; it remains draft/main.
+
 **Current unit: dynamic module record assignment.** Native query support is
 implemented and validated. quality1008-build uses the real Clang Window/UI PAL;
 quality1008-native passes all six URL/preference branches against JavaScript and

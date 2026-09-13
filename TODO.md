@@ -6,7 +6,7 @@ status. One line per item: the gap, where it is, its size (S < 1 h, M < half day
 
 ## Compiler
 
-- [ ] Dynamic value boundaries need optional-property presence, class instances created before native storage was demanded, and mutations through erased typed arrays; generic recursive record returns also need promotion of unowned records without losing aliases (data-types.ts, json-record-views.ts, user-functions.ts, js_json.hpp). L; configuration/state helpers.
+- [ ] Dynamic value boundaries need optional-property presence, class instances created before native storage was demanded, and mutations through erased typed records/arrays; generic recursive record returns also need promotion of unowned records without losing aliases (data-types.ts, json-record-views.ts, user-functions.ts, js_json.hpp). L; configuration/state helpers.
 - [ ] String literals containing NUL need length-preserving native string construction at value sinks; C-string conversion currently truncates them (cpp-literals.ts, data-sinks/scalars.ts). S; binary delimiters and control characters.
 - [ ] Runtime URLSearchParams needs non-string constructors, mutation, serialization and iteration; string-backed get/has reads are represented (search-params.ts, js_search_params.hpp). M; reusable query editing.
 - [ ] Destructuring defaults over combined null/undefined elements need distinct absence states; generic nullable defaults also refuse when the source type cannot distinguish them (data-lowering.ts, js_data.hpp). M; nullable collection transforms.

@@ -10,6 +10,8 @@ import { CompilerSymbols } from "./symbols.js";
 import { compileMapInitializer } from "./collection-methods.js";
 import { dataUnionEquality } from "./data-comparisons.js";
 import { compileDateNew } from "./dates.js";
+import { requireDynamicBindingStorage } from "./dynamic-binding-storage.js";
+import { CompileError } from "./compile-error.js";
 import { httpResponseProperty } from "./http.js";
 import { thrownMessage } from "./error-values.js";
 import { renderClosure } from "./closure-captures.js";
@@ -307,10 +309,7 @@ export class DataLowerer {
                 "set",
             ].includes(target.dataType.inner.kind));
         if (!assignable) return undefined;
-        const value = this.compileForSink(
-            expression.right,
-            target.dataType,
-        );
+        const value = this.compileForSink(expression.right, target.dataType);
         return this.narrowOptional(this.leafValue(
             `(${target.cpp} = ${value})`,
             target.dataType,
@@ -6219,10 +6218,14 @@ export class DataLowerer {
                 `'${left.text}' holds a ${kind}; rebinding it would copy in native code where JavaScript would alias, so assign through a field or element instead.`,
             );
         }
-        const value = this.compileForSink(
-            expression.right,
-            target.dataType,
-        );
+        if (target.dataType.kind === "struct") {
+            const incoming = this.context.probeEmission(() => {
+                try { return this.context.compileValue(expression.right); }
+                catch (error) { if (error instanceof CompileError) return undefined; throw error; }
+            }, isJsonValue);
+            if (isJsonValue(incoming)) requireDynamicBindingStorage(this.context.checker, left);
+        }
+        const value = this.compileForSink(expression.right, target.dataType);
         this.context.emit(`${target.cpp} = ${value};`);
         const rebound = this.context.recordDataAssignmentMetadata(
             target,
@@ -6656,6 +6659,17 @@ export class DataLowerer {
             !ts.isElementAccessExpression(left)
         ) {
             return false;
+        }
+        if (isJsonRootedExpression(this.context, left.expression)) {
+            const owner = this.context.pinValueToTemporary(this.context.compileValue(left.expression), "assignment_owner");
+            if (isJsonValue(owner)) {
+                if (operator !== "=") this.context.fail(expression, "Dynamic object properties currently support plain assignment only.");
+                const key = ts.isPropertyAccessExpression(left) ? this.context.cppString(left.name.text) :
+                    this.compileKnownValueForSink(this.context.pinValueToTemporary(this.context.compileValue(left.argumentExpression), "assignment_key"), {kind:"string"}, left.argumentExpression);
+                const value = this.compileForSink(expression.right, {kind:"json"});
+                this.context.emit(`${owner.cpp}.set(${key}, ${value});`);
+                return true;
+            }
         }
         if (
             ts.isPropertyAccessExpression(left) &&
@@ -7744,6 +7758,17 @@ export class DataLowerer {
             );
         };
         if (loose && !isNullish(left) && !isNullish(right)) return undefined;
+        if (!loose && (ts.isCallExpression(left) || ts.isCallExpression(right))) {
+            const dynamic = this.context.probeEmission(() => {
+                const a = this.context.pinValueToTemporary(this.context.compileValue(left), "comparison_left");
+                const b = this.context.pinValueToTemporary(this.context.compileValue(right), "comparison_right");
+                if (!isJsonValue(a) && !isJsonValue(b)) return undefined;
+                const aCpp = this.compileKnownValueForSink(a, {kind:"json"}, left);
+                const bCpp = this.compileKnownValueForSink(b, {kind:"json"}, right);
+                return `${negated ? "!" : ""}(${aCpp}.strict_equals(${bCpp}))`;
+            });
+            if (dynamic !== undefined) return dynamic;
+        }
         // A parsed document compares strictly: it is equal to a scalar
         // only when it holds a value of that very type, and equal to
         // `null` or `undefined` only when it is that one. Nothing here
