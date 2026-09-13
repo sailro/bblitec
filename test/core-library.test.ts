@@ -10,6 +10,18 @@ import { optionalNativeFixtureTools, runNativeFixtureCompiler } from "./native-f
 
 const native = optionalNativeFixtureTools(false);
 
+check("pop and shift consume temporary arrays once and preserve shared receivers", `
+    const texts:string[]=["a,b,c"];
+    let calls=0;
+    function source():string {calls++;return texts[0]!;}
+    if(source().split(",").pop()!=="c"||source().split(",").shift()!=="a"||calls!==2)
+        throw new Error("temporary array receiver");
+    const values:string[]=["first","middle","last"];
+    const alias=values;
+    if(values.pop()!=="last"||alias.length!==2||alias.shift()!=="first"||values[0]!=="middle")
+        throw new Error("shared receiver mutations");
+`);
+
 check("array find adapts retained elements to the selected result storage", `
     const names=["left","right"] as const;
     const weights:Record<typeof names[number],number>={left:1,right:2};

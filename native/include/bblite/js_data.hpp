@@ -2798,6 +2798,13 @@ inline T array_pop(Array<T>& values) {
     return last;
 }
 
+// A temporary wrapper still owns the array being mutated. Reuse the lvalue
+// operation without copying its elements or retaining ordinary receivers again.
+template <typename T>
+inline T array_pop(Array<T>&& values) {
+    return array_pop(values);
+}
+
 // `array.shift()!` — same contract as `array_pop`.
 template <typename T>
 inline T array_shift(Array<T>& values) {
@@ -2808,6 +2815,11 @@ inline T array_shift(Array<T>& values) {
     T first = values.front();
     values.erase(values.begin());
     return first;
+}
+
+template <typename T>
+inline T array_shift(Array<T>&& values) {
+    return array_shift(values);
 }
 
 // `array.unshift(...items)` inserts the arguments at the front in source

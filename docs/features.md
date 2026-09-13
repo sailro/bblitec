@@ -226,6 +226,8 @@ keep dynamic return storage, including immediately lowered async helpers.
 Compatible fixed-record fallback paths retain their existing observing views.
 `Array.find` over stored literal tuples preserves the selected literal domain;
 found records retain their source identity and shared writes.
+`pop` and `shift` accept temporary arrays, including results of string splitting;
+their existing nonempty scalar-array requirement still applies.
 Array and object aliases preserve storage and identity; class views read live fields
 and retain `instanceof`. Observing array views read live length and elements, retain
 their owner during iteration, and share ordinary filter and flatten lowering.

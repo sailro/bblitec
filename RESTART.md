@@ -8,6 +8,17 @@ dependencies will not be present in a fresh clone.
 
 ## Read this first
 
+**Latest unit: temporary array receivers.** Return-storage unit `ff68a671`
+is committed/pushed. Native pop/shift now accept temporary retained-array wrappers
+and delegate to the ordinary lvalue operations. pop962-before reproduces both
+MSVC receiver failures; pop963-regressions passes 39/39 native/core/dynamic checks.
+The actual async loader builds, but its unoptimized isolated fixture exceeded
+Windows' default 1 MiB stack (async964 exit 0xc00000fd). Setting the generated EXE
+reserve to 8 MiB with editbin allowed execution and exposed a COMPLETE-output
+mismatch against JavaScript. This is the next diagnostic; do not claim the loader
+is validated. Native product MINSIZE builds already use an 8 MiB reserve; the
+isolated runner needs an explicit option for this large debug fixture.
+
 **Current unit: native dynamic return storage.** Interpolation unit `42269d47`
 is committed/pushed. Full `compile948` stopped after 69.21 seconds at the
 asynchronous configuration loader returning an open JSON dictionary into its
