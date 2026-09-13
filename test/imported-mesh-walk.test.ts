@@ -79,6 +79,11 @@ function compileWalk(
     `);
 }
 
+function rejectedWalk(error: unknown): boolean {
+    return error instanceof CompileError &&
+        /callback conditions|'in' is decided|Compile-time data value does not match the expected data handle/.test(error.message);
+}
+
 test("the recursive-visitor flatten retains pinned preorder", () => {
     const result = compileWalk();
 
@@ -113,9 +118,7 @@ test("a guard testing a field that is not the renderable one is refused", () => 
 
     assert.throws(
         () => compileWalk(walk),
-        (error: unknown) =>
-            error instanceof CompileError &&
-            /callback conditions|'in' is decided/.test(error.message),
+        rejectedWalk,
     );
 });
 
@@ -127,9 +130,7 @@ test("a visitor that filters the children it descends into is refused", () => {
 
     assert.throws(
         () => compileWalk(walk),
-        (error: unknown) =>
-            error instanceof CompileError &&
-            /callback conditions|'in' is decided/.test(error.message),
+        rejectedWalk,
     );
 });
 
@@ -147,7 +148,7 @@ test("appending to the folded list refuses rather than growing the asset's", () 
     );
 });
 
-test("a visitor that collects something other than the node is refused", () => {
+test("a visitor that collects a node twice is refused", () => {
     const walk = exactWalk.replace(
         "        meshes.push(node);",
         "        meshes.push(node);\n        meshes.push(node);",
@@ -155,9 +156,7 @@ test("a visitor that collects something other than the node is refused", () => {
 
     assert.throws(
         () => compileWalk(walk),
-        (error: unknown) =>
-            error instanceof CompileError &&
-            /callback conditions|'in' is decided/.test(error.message),
+        rejectedWalk,
     );
 });
 

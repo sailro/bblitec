@@ -81,6 +81,11 @@ export function emitDomEventListener(context: Context, call: ts.CallExpression, 
     callbackIdentity: (value:Value, node:ts.Node) => string): boolean {
     const callee = context.unwrap(call.expression);
     if (!ts.isPropertyAccessExpression(callee) || call.arguments.length < 2 || call.arguments.length > 3) return false;
+    const type = context.compileStringLiteral(call.arguments[0]!);
+    const pagehide = type === "pagehide";
+    if (pagehide && !context.options.workers) {
+        context.fail(call, "Page lifecycle listeners require an asynchronous Window application realm.");
+    }
     let target: string | undefined;
     let engine: string | undefined;
     if (element) {
@@ -116,10 +121,12 @@ export function emitDomEventListener(context: Context, call: ts.CallExpression, 
         }
     }
     if (!target || !engine) return false;
-    const type = context.compileStringLiteral(call.arguments[0]!);
+    if (pagehide && target !== "bbl::DomEventTarget::window()") {
+        context.fail(call, "Page lifecycle listeners require an asynchronous Window application realm.");
+    }
     if ((type === "focus" || type === "blur" || type === "resize") && target !== "bbl::DomEventTarget::window()") return false;
     const keyboard = type === "keydown" || type === "keyup";
-    if (!keyboard && !pointerNames.has(type)) return false;
+    if (!keyboard && !pagehide && !pointerNames.has(type)) return false;
     context.reachFeature("input:dom", call);
     const callback = call.arguments[1]!;
     context.hoistForwardCallbackBindings(callback, call.pos);

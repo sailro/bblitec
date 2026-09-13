@@ -504,6 +504,14 @@ int run_window_application(WorkerEntry initialize, EngineOptions options) {
                         // The initial document includes startup's microtasks,
                         // before presentation begins consuming Window input.
                         loop.after_microtasks(tick_document);
+                    }, [&] {
+                        auto& engine = window_document_engine();
+                        if (engine.dom_input) {
+                            const auto event = window_pagehide_event();
+                            engine.dom_input->pointer.dispatch(event, [&](auto& callback, const auto& payload) {
+                                loop.dispatch_callback([&] { callback(payload); });
+                            }, &engine);
+                        }
                     });
                 } catch (const WorkerTerminated&) {
                 } catch (...) { application_error = std::current_exception(); }

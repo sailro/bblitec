@@ -745,13 +745,14 @@ test("stylesheet revisions track rules, text and attachment order independently 
 
 test("window document snapshots preserve stylesheet revisions across ordinary UI updates", { skip: !nativeTools }, () => {
     const source = readFileSync("native/src/pal_window_realm.cpp", "utf8");
-    const declarations = ["struct WindowEvent final", "struct ListenerNames", "struct DocumentSnapshot"]
+    const declarations = ["struct WindowEvent final", "struct WindowDomEvent final", "struct ListenerNames", "struct DocumentSnapshot"]
         .map(signature => `${cppFunction(source, signature)};`).join("\n");
     runCpp("window-style-revision", `
         #define BBLITE_HAS_UI 1
         #define BBLITE_WORKERS 1
         #include <bblite/runtime.hpp>
         #include <bblite/pal_event_loop.hpp>
+        #include <bblite/pal_dom_events.hpp>
         #include <cassert>
         namespace bbl::pal {
         ${declarations}

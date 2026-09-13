@@ -131,7 +131,8 @@ Update registry/corpus membership tests. Fixture generators are in `tools/fixtur
 
 ## Validation
 
-Use focused checks during a batch; completed implementation batches require:
+Use focused checks per unit. Run the full checks below at integration milestones or on explicit request;
+do not repeat them after individual fixes:
 
 ```powershell
 npm run simplify:verify

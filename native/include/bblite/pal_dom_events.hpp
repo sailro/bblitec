@@ -177,6 +177,23 @@ template <typename Event>
     return payload;
 }
 
+/** HTML page-transition dispatch uses the legacy Document target override.
+ * Native Window teardown discards the page; no session-history cache retains it. */
+[[nodiscard]] inline PlatformMouseEvent window_pagehide_event() {
+    auto event = dom_event(PlatformMouseEvent{}, "pagehide", {DomEventTarget::window()});
+    event.dom->target_override = DomEventTarget::document();
+    event.dom->persisted = false;
+    event.dom->composed = false;
+    return event;
+}
+
+template <typename Event>
+[[nodiscard]] js::Nullable<bool> dom_event_persisted(const Event& event) {
+    const auto persisted = dom_event_state(event).persisted;
+    if (!persisted.has_value()) return std::nullopt;
+    return *persisted;
+}
+
 inline void dispatch_dom_pointer(Engine& engine, const PlatformMouseEvent& event) {
     if (!engine.dom_input) return;
     if (engine.dom_input->pointer_sink) engine.dom_input->pointer_sink(event);

@@ -19,7 +19,7 @@ Read [canonical documentation](README.md#documentation) before feature work.
 | --- | --- |
 | Checkout | C:/Dev/babylonlite |
 | Branch | codex/external-project-support |
-| Compiler baseline | 904a5e4d; pushed |
+| Compiler baseline | Current branch; pagehide stabilization |
 | Draft PR | [247](https://github.com/sailro/bblitec/pull/247) |
 | Main integrated through | 9265afa7 |
 | External source / assets | C:/Dev/_prototypes/external-native-app/src / public |
@@ -28,17 +28,20 @@ Read [canonical documentation](README.md#documentation) before feature work.
 
 ## Application state
 
-Complete generation stops at main.ts:440, the pagehide listener. Native build, launch and intended-scene
-validation are blocked by generation. Inventory: 1,343 modules, 22,709 bodies, 392,310 lines.
+The latest full generation attempt stopped at main.ts:440 (pagehide); that capability now passes its
+native fixture. The full application has not been retried. Native build, launch and intended-scene
+validation remain blocked by complete generation. Inventory: 1,343 modules, 22,709 bodies, 392,310 lines.
 Function lowering observations: 558 bodies in 96 modules; 28 modules have observations for every body,
 68 have partial observations. These are not whole-module native compilation results.
 
-## Paused implementation
+## Completed unit
 
-Pagehide changes are uncommitted in event-loop/DOM headers, Window dispatch, compiler event lowering
-and two new fixtures. Generation succeeds; native build fails in nullable_truthy, and application-errors
-fails an optional comparison. Do not treat this as a completed feature.
-Backup: artifacts/external-integration/paused-pagehide1092/.
+Window pagehide uses shared listener dispatch before owner cleanup. Native event optionals preserve
+absent/false values, and error-event targets compare through their represented DOM identities.
+Interrupted-task microtasks are discarded before the closing turn. Native pagehide passes on both backends.
+Validation: focused regressions and close/reload/host-shutdown runs. The broad test run was stopped at
+the user's request; no scene sweep was run. Evidence: artifacts/external-integration/pagehide1101-focused.log
+and pagehide1100-runtime.json / pagehide1100-lifecycle/results.json.
 
 Other confirmed setup gaps: engine._renderFn wrapping and shared Window/worker device recovery.
 Realm engines borrow the Window GPU device; recovery requires coordinated ownership.
@@ -70,8 +73,9 @@ coverage and dependencies must validate. Dispatch/literal/probe acceptance alone
 
 ## Next actions
 
-1. Follow APPLICATION_AUDIT.md: core/data cohorts first; full application retries at batch boundaries.
-2. Update acceptance evidence and recalculate the same metric when a group closes or reopens.
+Stop after the stabilization commit and push, as requested. On a new instruction to resume:
+follow APPLICATION_AUDIT.md, starting with core/data cohorts. Retry the full application at batch boundaries;
+update acceptance evidence and recalculate the same metric when a group closes or reopens.
 
 ## Local commands
 

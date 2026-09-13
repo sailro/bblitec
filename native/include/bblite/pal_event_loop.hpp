@@ -132,9 +132,9 @@ class EventLoop {
     }
 
     void checkpoint() const {
-        if (inbox_->terminated()) throw WorkerTerminated{};
+        if (inbox_->terminated() && !closing_) throw WorkerTerminated{};
     }
-    bool aborting() const { return discarding_ || inbox_->terminated(); }
+    bool aborting() const { return discarding_ || (inbox_->terminated() && !closing_); }
 
     using ContinuationId = std::uint64_t;
     ContinuationId own_continuation(std::coroutine_handle<> continuation, std::shared_ptr<ContinuationContext> context = {}) {
@@ -273,19 +273,31 @@ class EventLoop {
     }
 
     /** Run module initialization, then service tasks until close or termination. */
-    void run(Task initialize = {}) {
+    void run(Task initialize = {}, Task closing = {}) {
         require_owner();
         Activation active(*this);
+        std::exception_ptr failure;
         try {
             if (initialize) turn(std::move(initialize));
             while (dispatch_one(true)) {}
         } catch (const WorkerTerminated&) {
             // Termination is not reported as an application error.
+            microtasks_.clear();
+            rejection_checks_.clear();
         } catch (...) {
-            discard();
-            throw;
+            failure = std::current_exception();
+        }
+        // A host's final lifecycle event runs on its owning realm, while
+        // suspended source activations and native owners still exist. Only
+        // this synchronous closing turn may execute after external termination.
+        if (closing) {
+            closing_ = true;
+            try { turn(std::move(closing)); }
+            catch (...) { if (!failure) failure = std::current_exception(); }
+            closing_ = false;
         }
         discard();
+        if (failure) std::rethrow_exception(failure);
     }
 
     /** Embedding hosts can service this realm without blocking their own loop. */
@@ -496,6 +508,7 @@ class EventLoop {
     unsigned timer_nesting_ = 0;
     bool draining_microtasks_ = false;
     bool discarding_ = false;
+    bool closing_ = false;
     ContinuationId next_continuation_ = 1;
     std::map<ContinuationId, Continuation> continuations_;
     std::vector<Task> cleanups_;

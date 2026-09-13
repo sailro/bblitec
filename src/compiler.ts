@@ -5484,12 +5484,16 @@ class Compiler
                     this.fail(expression, "This event view does not expose relatedTarget.");
                 this.reachFeature("input:dom", expression);
                 this.reachJsData();
-                const field = property === "target" ? "target" : property === "currentTarget" ? "current_target" : "related_target";
+                const field = property === "target" ? "exposed_target()" : property === "currentTarget" ? "current_target" : "related_target";
                 const value = this.dataLowerer.leafValue(`bbl::dom_target_value(bbl::dom_event_owner(${owner.cpp}), bbl::dom_event_state(${owner.cpp}).${field})`,
                     property === "target" ? {kind:"event-target"} : {kind:"optional", inner:{kind:"event-target"}});
                 return value;
             }
             if (property === "defaultPrevented") return {kind: "boolean", cpp: `${owner.cpp}.${owner.platformEventBase ? "is_default_prevented()" : "default_prevented"}`};
+            if (property === "persisted") return this.dataLowerer.leafValue(
+                `bbl::dom_event_persisted(${owner.cpp})`,
+                { kind: "optional", inner: { kind: "boolean" }, undefinedOnly: true },
+            );
             if (property === "type") return {kind: "string", cpp: `bbl::dom_event_state(${owner.cpp}).type`};
             if (property === "eventPhase") return {kind: "number", cpp: `bbl::dom_event_state(${owner.cpp}).phase`};
             const booleanField = DOM_EVENT_FLAGS.get(property);

@@ -85,7 +85,7 @@ Open gaps only. [Features](docs/features.md) owns support; [fidelity](docs/fidel
 - [ ] ArrayBuffer/MessagePort transfer and Date/Map/Set/typed-view cloning (`workers.ts`, `pal_structured_clone.hpp`).
 - [ ] Wider worker listener options and worker-scope error/rejection dispatch (`workers.ts`).
 - [ ] ResizeObserver entries and worker draw-count transport (`pal_window_realm.cpp`).
-- [ ] Pagehide/beforeunload lifecycle; AbortSignal, explicit pointer capture and coalesced events (`dom-listeners.ts`).
+- [ ] Beforeunload lifecycle; AbortSignal, explicit pointer capture and coalesced events (`dom-listeners.ts`).
 - [ ] Explicit SharedArrayBuffer/Atomics contract (`expressions.ts`).
 - [ ] DPR-only backing-store resize and MediaQueryList lifetime (`pal_window_realm.cpp`, `pal_canvas.hpp`).
 - [ ] Native compression streams and broader MessageChannel/browser service calls (`platform-calls.ts`).

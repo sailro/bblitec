@@ -10,6 +10,13 @@ if (!ledgerPath || process.argv.length > 4) {
 }
 const ledger = JSON.parse(readFileSync(ledgerPath, "utf8"));
 const root = dirname(resolve(ledgerPath));
+const evidenceDigests = new Map();
+function evidenceDigest(path) {
+    const absolute = resolve(root, path);
+    if (!evidenceDigests.has(absolute)) evidenceDigests.set(absolute,
+        createHash("sha256").update(readFileSync(absolute)).digest("hex"));
+    return evidenceDigests.get(absolute);
+}
 const fail = message => { throw new Error(`Invalid progress ledger: ${message}`); };
 if (ledger.schemaVersion !== 1 || !Array.isArray(ledger.packages) || !ledger.packages.length) fail("expected nonempty version 1 packages");
 if (typeof ledger.baseline !== "string" || !ledger.baseline.trim()) fail("baseline name is required");
@@ -24,7 +31,7 @@ for (const item of ledger.packages) {
         for (const check of item.acceptance) {
             if (check.status !== "passed" || !check.evidence?.length) fail(`${item.id}: completion lacks passing evidence`);
             for (const evidence of check.evidence) {
-                const digest = createHash("sha256").update(readFileSync(resolve(root, evidence.path))).digest("hex");
+                const digest = evidenceDigest(evidence.path);
                 if (digest !== evidence.sha256) fail(`${item.id}: evidence changed: ${evidence.path}`);
             }
         }
@@ -55,10 +62,10 @@ if (ledger.inventory) {
     const bytes = readFileSync(resolve(root, ledger.inventory.path));
     if (createHash("sha256").update(bytes).digest("hex") !== ledger.inventory.sha256) fail("requirements inventory changed");
     const requirements = JSON.parse(bytes).requirements;
-    const owners = new Map();
+    const owners = new Set();
     for (const item of packages.values()) for (const id of item.requirementIds ?? []) {
         if (owners.has(id)) fail(`requirement assigned twice: ${id}`);
-        owners.set(id, item.id);
+        owners.add(id);
     }
     if (requirements.length !== owners.size || requirements.some(row => !owners.has(row.id))) fail("requirements inventory is not fully assigned");
 }

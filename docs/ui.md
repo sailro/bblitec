@@ -63,6 +63,10 @@ Event flags, phases, modifiers, pointer IDs/types and target/currentTarget/relat
 Copy owned fields before dispatch ends. Optional element calls snapshot the receiver and skip arguments
 when absent. Window input waits for callbacks while servicing layout requests.
 
+Window pagehide runs before realm cleanup on close/reload, with Document target and Window currentTarget.
+It uses shared listener ordering and microtask checkpoints, with the [HTML page-transition flags](https://html.spec.whatwg.org/multipage/nav-history-apis.html#the-pagetransitionevent-interface).
+Beforeunload and page-history caching are unsupported; native pagehide has persisted=false.
+
 Attribute names use HTML ASCII casing. Removal updates retained/rendered state; text/markup replacement
 removes prior children. Source append arguments finish before insertion. Canvas backing dimensions are
 drawable pixels; client dimensions are CSS pixels. Synchronous rectangle reads flush pending layout.

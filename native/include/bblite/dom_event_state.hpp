@@ -37,6 +37,9 @@ inline DomEventTargetValue dom_target_value(Engine& engine, DomEventTarget targe
 struct DomEventState {
     std::string type;
     DomEventTarget target;
+    /** Window page-transition events expose the associated Document as target. */
+    std::optional<DomEventTarget> target_override;
+    std::optional<bool> persisted;
     std::optional<DomEventTarget> related_target;
     std::optional<DomEventTarget> current_target;
     /** Target first; detached nodes have no Document or Window ancestors. */
@@ -53,6 +56,7 @@ struct DomEventState {
     /** Set only while the owning realm invokes listeners; never transported. */
     Engine* dispatch_engine = nullptr;
 
+    [[nodiscard]] DomEventTarget exposed_target() const { return target_override.value_or(target); }
     void stop_propagation() noexcept { propagation_stopped = true; }
     void stop_immediate_propagation() noexcept {
         propagation_stopped = true;

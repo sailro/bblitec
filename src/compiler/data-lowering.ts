@@ -7920,7 +7920,11 @@ export class DataLowerer {
                 // Flow narrowing changes checker types, while nullable storage
                 // keeps its declared element representation (including enums).
                 return this.context.probeEmission(() => {
-                    const value = this.compileDataPath(unwrapped, "read");
+                    // The event adapter can expose an absent persisted field even
+                    // through a PageTransitionEvent view whose checker type is bool.
+                    const eventField = ts.isPropertyAccessExpression(unwrapped) && unwrapped.name.text === "persisted";
+                    const value = this.compileDataPath(unwrapped, "read") ??
+                        (eventField ? this.context.compileValue(unwrapped) : undefined);
                     return value?.kind === "data" && optionalComparable(value.dataType)
                         ? value : undefined;
                 });
@@ -7970,7 +7974,9 @@ export class DataLowerer {
             }
             const concreteType: DataType | undefined =
                 value.dataType ??
-                (value.kind === "number"
+                (value.domEventTargetCpp !== undefined
+                    ? { kind: "event-target" }
+                    : value.kind === "number"
                     ? { kind: "number" }
                     : value.kind === "boolean"
                       ? { kind: "boolean" }
