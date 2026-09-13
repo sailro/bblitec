@@ -193,9 +193,12 @@ order is preserved. `push`, `pop`, `shift`, `unshift` and `splice` share ordinar
 empty mixed-tuple `pop`/`shift` return undefined. Length writes truncate; sparse length growth refuses.
 Tuple rest bindings in declarations, destructured parameters and iteration create fresh shallow
 arrays, including empty tails. Destructuring assignments support typed identifiers, stored fields,
-dictionary entries, array/typed-array elements, omitted lanes and a final rest target. They finish
-the source (including an await) before evaluating references and storing values from left to right.
-Nested/defaulted patterns and accessor targets remain unsupported.
+dictionary entries, array/typed-array elements, omitted lanes, nested arrays, represented setters
+and a final rest target. Generic sources use their bound element representation and preserve
+object identity. They finish the source (including an await) before evaluating references and
+storing values from left to right. Defaults run lazily after their target reference; retained
+array owners and keys survive growth during a default. Null-only source elements stay null;
+defaults over storage combining null and undefined refuse because those states are not distinct.
 Map/Set `forEach` observes insertion order, deletion and appended entries,
 and receives the original collection as its third argument.
 `Set.entries()` yields fresh `[value, value]` pairs in direct `for...of`, spreads

@@ -7,7 +7,8 @@ status. One line per item: the gap, where it is, its size (S < 1 h, M < half day
 ## Compiler
 
 - [ ] Stored variadic Math functions (min/max/hypot) need a variable-argument function representation (math-intrinsics.ts); fixed signatures share the direct-call table. M; reusable numeric callbacks.
-- [ ] Stored-array destructuring assignments still refuse nested/defaulted patterns, accessor targets and generic RHS elements whose concrete type lives in a bound value (data-lowering.ts); identifiers, stored members, indexed targets and a final rest are represented. S/M; collection transforms use destructuring.
+- [ ] Destructuring defaults over combined null/undefined elements need distinct absence states; generic nullable defaults also refuse when the source type cannot distinguish them (data-lowering.ts, js_data.hpp). M; nullable collection transforms.
+- [ ] Promise.finally needs owned cleanup reactions preserving fulfillment/rejection and adopting async cleanup results (async.ts, js_promise.hpp). M; asynchronous resource cleanup.
 - [ ] Promise.all still refuses literal spreads, non-array iterables, stored void/value-only arrays and recovery/rebinding with a different tuple representation (async.ts). M; reusable aggregation.
 - [ ] Await inside catch/finally blocks needs suspended exception/cleanup completion; these forms explicitly refuse (async.ts, statements.ts). M; asynchronous recovery and cleanup.
 - [ ] Self-referencing record initializers need a representable recursive record/function type; initializer captures with owned data types share lexical cells (compiler.ts, data-types.ts). M; retained state factories.

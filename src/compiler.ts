@@ -3855,8 +3855,11 @@ class Compiler
                 aliasingInitializer: (initializer, scan) =>
                     isAlias(scan, initializer),
                 mutates: (node, scan) => {
-                    if (ts.isVariableDeclaration(node) && node.type && node.initializer && scan.containsAlias(node.initializer)) {
-                        const type = this.dataTypes.fromTsType(this.checker.getTypeFromTypeNode(node.type), node.type);
+                    if (ts.isVariableDeclaration(node) && node.initializer && scan.containsAlias(node.initializer) &&
+                        (node.type || (ts.isIdentifier(node.name) && ts.isArrayLiteralExpression(this.unwrap(node.initializer)) &&
+                            this.inferredArrayIsMutated(node.name)))) {
+                        const type = this.dataTypes.fromTsType(node.type ? this.checker.getTypeFromTypeNode(node.type)
+                            : this.checker.getTypeAtLocation(node.name), node.type ?? node.name);
                         // A typed native array retains this object's identity,
                         // including when a later dynamic tuple read mutates it.
                         if (type?.kind === "vector" || type?.kind === "product") return true;

@@ -166,6 +166,7 @@ export interface DataLoweringContext
         | "allocateBlockPrefix"
         | "compileCallbackWithValues"
         | "withRecordScopes"
+        | "compileRecordSetterValue"
         | "compilePredicateWithValues"
         | "compileStoredDataFunction"
         | "compileSpriteAtlasRecord"
@@ -2148,6 +2149,7 @@ export class DataLowerer {
         ownerValue: Value,
         access: ts.ElementAccessExpression,
         mode: "read" | "write" = "read",
+        preparedIndex?: Value,
     ): Value | undefined {
         let owner = this.stringReceiver(this.narrowOptional(
             ownerValue,
@@ -2165,7 +2167,7 @@ export class DataLowerer {
         if (dataType.kind === "product") {
             const receiver = this.context.allocateTemporaryCppName("indexed_tuple");
             this.context.emit(`const auto ${receiver} = ${owner.cpp};`);
-            const index = this.context.compileValue(access.argumentExpression);
+            const index = preparedIndex ?? this.context.compileValue(access.argumentExpression);
             if (index.staticNumber !== undefined) {
                 if (mode === "read" && (!Number.isInteger(index.staticNumber) || index.staticNumber < 0 || index.staticNumber >= dataType.elements.length))
                     return {kind: "json-null", cpp: "std::nullopt"};
@@ -2354,7 +2356,8 @@ export class DataLowerer {
         const retainedIndexOwner = ownedRead || typedIndexRunsCode;
         let index = "";
         const compileIndex = (): void => {
-            index = this.context.compileNumber(access.argumentExpression, "double");
+            index = preparedIndex ? this.compileKnownValueForSink(preparedIndex, {kind:"number"}, access.argumentExpression)
+                : this.context.compileNumber(access.argumentExpression, "double");
         };
         const indexLines = retainedIndexOwner
             ? this.context.captureEmittedLines(compileIndex)
@@ -7022,32 +7025,49 @@ export class DataLowerer {
     public emitArrayDestructuringAssignment(expression: ts.BinaryExpression): boolean {
         const left = this.context.unwrap(expression.left);
         if (!ts.isArrayLiteralExpression(left)) return false;
-        const targets: {name: ts.Expression; index: number; rest: boolean}[] = [];
-        for (const [index, element] of left.elements.entries()) {
-            if (ts.isOmittedExpression(element)) continue;
+        const names: ts.Expression[] = [];
+        const accepts = (pattern: ts.ArrayLiteralExpression): boolean => pattern.elements.every((element, index) => {
+            if (ts.isOmittedExpression(element)) return true;
             const rest = ts.isSpreadElement(element);
-            const name = rest ? element.expression : element;
-            if ((!ts.isIdentifier(name) && !ts.isPropertyAccessExpression(name) && !ts.isElementAccessExpression(name)) ||
-                (rest && index !== left.elements.length - 1)) return false;
-            const symbol = ts.isPropertyAccessExpression(name) ? this.context.checker.getSymbolAtLocation(name.name)
-                : ts.isElementAccessExpression(name) ? this.context.checker.getSymbolAtLocation(name) : undefined;
-            if (symbol?.declarations?.some(declaration => ts.isGetAccessorDeclaration(declaration) || ts.isSetAccessorDeclaration(declaration)))
-                this.context.fail(name, "Destructuring accessor targets are not represented.");
-            targets.push({name, index, rest});
-        }
+            let name = rest ? element.expression : element;
+            if (rest && index !== pattern.elements.length - 1) return false;
+            if (ts.isBinaryExpression(name) && name.operatorToken.kind === ts.SyntaxKind.EqualsToken && !rest) name = name.left;
+            if (ts.isArrayLiteralExpression(name)) return accepts(name);
+            if (!ts.isIdentifier(name) && !ts.isPropertyAccessExpression(name) && !ts.isElementAccessExpression(name)) return false;
+            names.push(name);
+            return true;
+        });
+        if (!accepts(left)) return false;
         // Pre-render resource tuples also transfer generation-time composition
         // metadata. Keep those on the existing resource assignment path.
-        if (!this.context.options.workers && targets.some(({name}) => ts.isIdentifier(name) &&
+        if (!this.context.options.workers && names.some(name => ts.isIdentifier(name) &&
             this.context.lookupIdentifierValue(name)?.optionalStorageCpp)) return false;
         let value: Value;
         const right = unwrapExpression(expression.right);
-        if (ts.isArrayLiteralExpression(right) && right.elements.every(element => !ts.isSpreadElement(element) && !ts.isOmittedExpression(element))) {
+        if (ts.isArrayLiteralExpression(right) && right.elements.every(element => !ts.isSpreadElement(element))) {
             const type = this.dataTypeAt(right);
             value = {kind: "tuple", cpp: "", tupleElements: right.elements.map((element, index) => {
-                const elementType = type?.kind === "vector" ? type.element : type?.kind === "tuple" ? {kind: "number" as const}
+                if (ts.isOmittedExpression(element)) return {kind:"json-null", cpp:"std::nullopt"};
+                let elementType = type?.kind === "vector" ? type.element : type?.kind === "tuple" ? {kind: "number" as const}
                     : type?.kind === "product" ? type.elements[index] : this.dataTypeAt(element);
+                // A generic AST can still say T after its argument has an owned
+                // native representation. Read that value once to obtain its type.
+                const node = this.context.unwrap(element);
+                const absence = node.kind === ts.SyntaxKind.NullKeyword ||
+                    (ts.isIdentifier(node) && node.text === "undefined" && !this.context.lookupIdentifierValue(node));
+                const compiled = !elementType || absence ? this.context.compileValue(element) : undefined;
+                if (compiled?.kind === "json-null") return compiled;
+                if (compiled?.kind === "void") {
+                    this.context.emitDiscardedValue(compiled);
+                    return {kind:"json-null", cpp:"std::nullopt"};
+                }
+                elementType ??= compiled?.dataType ?? (compiled &&
+                    (compiled.kind === "number" || compiled.kind === "string" || compiled.kind === "boolean") ? {kind:compiled.kind}
+                    : compiled && isHandleKind(compiled.kind) ? {kind:"handle", handle:compiled.kind} : undefined);
                 if (!elementType) this.context.fail(element, "Destructuring source elements require a concrete data type.");
-                const initializer = this.compileForRetainedSink(element, elementType, "a destructuring source");
+                if (compiled) this.context.refuseBorrowedPlatformEventEscape(compiled, element, "a destructuring source");
+                const initializer = compiled ? this.compileKnownValueForSink(compiled, elementType, element)
+                    : this.compileForRetainedSink(element, elementType, "a destructuring source");
                 const cpp = this.context.allocateTemporaryCppName("destructure_value");
                 this.context.emit(`const auto ${cpp} = ${initializer};`);
                 return {...this.leafValue(cpp, elementType), nativeCaptures: [this.context.registerNativeBinding(cpp)]};
@@ -7062,12 +7082,71 @@ export class DataLowerer {
             this.context.emit(`auto ${source} = ${initializer};`);
             value = {...this.leafValue(source, type), nativeCaptures: [this.context.registerNativeBinding(source)]};
         }
-        for (const {name, index, rest} of targets) {
+        this.emitArrayAssignmentPattern(left, value, this.context.checker.getTypeAtLocation(right));
+        return true;
+    }
+
+    private emitArrayAssignmentPattern(pattern: ts.ArrayLiteralExpression, value: Value, sourceType: ts.Type | undefined): void {
+        for (const [index, element] of pattern.elements.entries()) {
+            if (ts.isOmittedExpression(element)) continue;
+            const rest = ts.isSpreadElement(element);
+            const entryPattern = rest ? element.expression : element;
+            const fallback = ts.isBinaryExpression(entryPattern) && entryPattern.operatorToken.kind === ts.SyntaxKind.EqualsToken
+                ? entryPattern.right : undefined;
+            const name = fallback && ts.isBinaryExpression(entryPattern) ? entryPattern.left : entryPattern;
+            const lane = sourceType?.getProperty(String(index));
+            const itemType = lane ? this.context.checker.getTypeOfSymbolAtLocation(lane, name)
+                : sourceType && this.context.checker.getIndexTypeOfType(sourceType, ts.IndexKind.Number);
+            const readItem = (): Value => {
+                if (rest) return this.arrayRestValue(value, index, name);
+                if (value.kind === "tuple") return value.tupleElements?.[index] ?? {kind:"json-null", cpp:"std::nullopt"};
+                if (value.dataType?.kind === "vector") return this.readVectorBindingElement(value, index, name);
+                const type = value.dataType;
+                const length = type?.kind === "tuple" ? type.arity : type?.kind === "product" ? type.elements.length : undefined;
+                if (length === undefined) this.context.fail(name, "Nested array assignments require represented array storage.");
+                return index < length ? this.fixedTupleElement(value, index, name)! : {kind:"json-null", cpp:"std::nullopt"};
+            };
+            const readForTarget = (type: DataType): Value => fallback
+                ? this.destructuringDefault(value, index, itemType, readItem, fallback, type)
+                : readItem();
+            if (ts.isArrayLiteralExpression(name)) {
+                const type = itemType && this.context.dataTypes.fromTsType(this.context.checker.getNonNullableType(itemType), name);
+                const item = fallback && type ? readForTarget(type) : readItem();
+                if (fallback && !type) this.context.fail(name, "A nested destructuring default requires a concrete array type.");
+                const narrowed = this.narrowOptional(item, name);
+                const cpp = this.context.allocateTemporaryCppName("destructure_nested");
+                if (!narrowed.dataType) this.context.fail(name, "Nested array assignments require represented array storage.");
+                this.context.emit(`const auto ${cpp} = ${this.compileKnownValueForSink(narrowed, narrowed.dataType, name)};`);
+                this.emitArrayAssignmentPattern(name, {...this.leafValue(cpp, narrowed.dataType),
+                    nativeCaptures:[this.context.registerNativeBinding(cpp)]}, itemType && this.context.checker.getNonNullableType(itemType));
+                continue;
+            }
+            const symbol = ts.isPropertyAccessExpression(name) ? this.context.checker.getSymbolAtLocation(name.name)
+                : ts.isElementAccessExpression(name) ? this.context.checker.getSymbolAtLocation(name) : undefined;
+            if (symbol?.declarations?.some(declaration => ts.isGetAccessorDeclaration(declaration) || ts.isSetAccessorDeclaration(declaration))) {
+                if (!ts.isPropertyAccessExpression(name) && !ts.isElementAccessExpression(name))
+                    this.context.fail(name, "An accessor assignment requires a member target.");
+                const owner = this.context.compileValue(name.expression);
+                const property = ts.isPropertyAccessExpression(name) ? name.name.text : this.context.compileValue(name.argumentExpression).staticString;
+                const setter = property === undefined ? undefined : owner.recordSetters?.[property];
+                if (!setter || owner.moduleNamespace) this.context.fail(name, "Destructuring accessors require a represented writable setter.");
+                const type = this.dataTypeAt(setter.parameters[0]!);
+                if (!type) this.context.fail(name, "A destructuring setter requires a concrete parameter type.");
+                const item = readForTarget(type);
+                this.context.refuseBorrowedPlatformEventEscape(item, name, "a destructuring assignment");
+                const cpp = this.context.allocateTemporaryCppName("destructure_argument");
+                this.context.emit(`const auto ${cpp} = ${this.compileKnownValueForSink(item, type, name)};`);
+                const argument = {...this.leafValue(cpp, type), nativeCaptures:[this.context.registerNativeBinding(cpp)]};
+                this.context.withRecordScopes(owner, () => this.context.compileRecordSetterValue(owner, setter, name, argument));
+                continue;
+            }
             // Evaluate each reference after the RHS completes, immediately
             // before consuming that element. Earlier stores can change later
             // computed targets. Pin the slot before source reads/conversions.
             const entry = this.dictionaryEntryTarget(name);
-            const target = entry?.owner ?? (ts.isIdentifier(name) ? this.context.lookupIdentifierValue(name) : this.compileDataPath(name, "write"));
+            const indexed = !entry && ts.isElementAccessExpression(name) ? this.prepareArrayAssignmentTarget(name) : undefined;
+            const member = !entry && ts.isPropertyAccessExpression(name) ? this.preparePropertyAssignmentTarget(name) : undefined;
+            const target = entry?.owner ?? indexed ?? member ?? (ts.isIdentifier(name) ? this.context.lookupIdentifierValue(name) : this.compileDataPath(name, "write"));
             if (!target || target.freshData) this.context.fail(name, "Destructuring assignment requires a represented writable target.");
             let targetType = entry?.dataType.value ?? target.dataType ??
                 (target.kind === "number" || target.kind === "string" || target.kind === "boolean" ? {kind: target.kind}
@@ -7078,7 +7157,7 @@ export class DataLowerer {
                 this.context.fail(name, "Destructuring assignment requires reference storage for object targets.");
             let slot = target.optionalStorageCpp ?? target.cpp;
             let key: string | undefined;
-            if (!ts.isIdentifier(name)) {
+            if (!ts.isIdentifier(name) && !indexed) {
                 const temporary = this.context.allocateTemporaryCppName("destructure_target");
                 this.context.emit(`${entry ? "auto" : "auto&&"} ${temporary} = ${slot};`);
                 slot = temporary;
@@ -7087,10 +7166,7 @@ export class DataLowerer {
                 key = this.context.allocateTemporaryCppName("destructure_key");
                 this.context.emit(`const auto ${key} = ${entry.keyCpp};`);
             }
-            const item = rest ? this.arrayRestValue(value, index, name)
-                : value.kind === "tuple" ? value.tupleElements?.[index] ?? {kind: "json-null" as const, cpp: "std::nullopt"}
-                : value.dataType?.kind === "vector" ? this.readVectorBindingElement(value, index, name)
-                : this.fixedTupleElement(value, index, name) ?? {kind: "json-null" as const, cpp: "std::nullopt"};
+            const item = readForTarget(targetType);
             this.context.refuseBorrowedPlatformEventEscape(item, name, "a destructuring assignment");
             let cpp = this.compileKnownValueForSink(item, targetType, name);
             // Legacy nullable resource locals store std::optional, while data
@@ -7104,7 +7180,77 @@ export class DataLowerer {
             const owner = root && this.context.lookupIdentifierValue(root);
             if (owner) this.context.invalidateRecordProperties(owner);
         }
-        return true;
+    }
+
+    /** A default may replace the last owner of the record being assigned. */
+    private preparePropertyAssignmentTarget(access: ts.PropertyAccessExpression): Value | undefined {
+        return this.context.probeEmission(() => {
+            const owner = this.context.compileValue(access.expression);
+            if (owner.dataType?.kind !== "struct" || !this.context.dataTypes.isReferenceStruct(owner.dataType.name)) return undefined;
+            const cpp = this.context.allocateTemporaryCppName("destructure_record");
+            this.context.emit(`const auto ${cpp} = ${owner.cpp};`);
+            return this.compilePropertyFromValue({...owner, cpp, nativeCaptures:[this.context.registerNativeBinding(cpp)]}, access);
+        });
+    }
+
+    /** Keep the array and key, never a vector slot that a default can invalidate. */
+    private prepareArrayAssignmentTarget(access: ts.ElementAccessExpression): Value | undefined {
+        return this.context.probeEmission(() => {
+            const owner = this.context.compileValue(access.expression);
+            const type = owner.dataType;
+            if (!type || (type.kind !== "vector" && type.kind !== "tuple" && type.kind !== "product" && !isTypedArrayType(type))) return undefined;
+            const cpp = this.context.allocateTemporaryCppName("destructure_array");
+            this.context.emit(`auto ${cpp} = ${owner.cpp};`);
+            const index = this.context.compileValue(access.argumentExpression);
+            const key = this.context.allocateTemporaryCppName("destructure_index");
+            this.context.emit(`[[maybe_unused]] const double ${key} = ${this.compileKnownValueForSink(index, {kind:"number"}, access.argumentExpression)};`);
+            return this.elementRead({...owner, cpp, nativeCaptures:[this.context.registerNativeBinding(cpp)]}, access, "write",
+                {kind:"number", cpp:key, ...(index.staticNumber === undefined ? {} : {staticNumber:index.staticNumber}),
+                    nativeCaptures:[this.context.registerNativeBinding(key)]});
+        });
+    }
+
+    /** Defaults evaluate lazily, after the reference and one source read. */
+    private destructuringDefault(source: Value, index: number, sourceType: ts.Type | undefined,
+        read: () => Value, fallback: ts.Expression, type: DataType): Value {
+        const vector = source.dataType?.kind === "vector" ? source.dataType : undefined;
+        let item: Value;
+        let absent: string;
+        const alternatives = sourceType?.isUnion() ? sourceType.types : sourceType ? [sourceType] : [];
+        const hasNull = alternatives.some(part => (part.flags & ts.TypeFlags.Null) !== 0);
+        const hasUndefined = alternatives.some(part => (part.flags & (ts.TypeFlags.Undefined | ts.TypeFlags.Void)) !== 0);
+        if (vector) {
+            const resultType: DataType = vector.element.kind === "optional" ? vector.element : {kind:"optional", inner:vector.element};
+            item = this.leafValue(`bbl::js::array_relative_at<${this.context.dataTypes.cppType(resultType)}>(${source.cpp}, ${index}.0)`, resultType);
+            absent = hasNull ? `${source.cpp}.size() <= ${index}` : "";
+        } else {
+            item = read();
+            if (item.kind === "json-null") return item.cpp === "std::nullopt" ? this.context.compileValue(fallback) : item;
+            absent = "false";
+        }
+        const innerOptional = vector?.element.kind === "optional" || (!vector && item.dataType?.kind === "optional");
+        if ((hasNull && hasUndefined) || (innerOptional && (!sourceType || (sourceType.flags & ts.TypeFlags.TypeParameter) !== 0)))
+            this.context.fail(fallback, "Destructuring defaults require distinguishable null and undefined source elements.");
+        const saved = this.context.allocateTemporaryCppName("destructure_element");
+        this.context.emit(`const auto ${saved} = ${item.cpp};`);
+        item = {...item, cpp:saved, nativeCaptures:[this.context.registerNativeBinding(saved)]};
+        if (vector) absent ||= `!${saved}.has_value()`;
+        else if (hasUndefined && item.dataType?.kind === "optional") absent = `!${saved}.has_value()`;
+        if (vector?.element.kind === "struct" && hasUndefined) absent = `(${absent} || !${saved}.value())`;
+        const present = vector && vector.element.kind !== "optional" ? this.leafValue(`${saved}.value()`, vector.element) : item;
+        if (absent === "false") return present;
+        const cpp = this.context.allocateTemporaryCppName("destructure_default");
+        this.context.emit(`${this.context.dataTypes.cppType(type)} ${cpp}{};`);
+        this.emitGuardedStore(absent, () => {
+            const replacement = this.compileForRetainedSink(fallback, type, "a destructuring default");
+            this.context.emit(`${cpp} = ${replacement};`);
+        });
+        this.context.emit("else {");
+        this.context.increaseIndent();
+        this.context.emit(`${cpp} = ${this.compileKnownValueForSink(present, type, fallback)};`);
+        this.context.decreaseIndent();
+        this.context.emit("}");
+        return {...this.leafValue(cpp, type), nativeCaptures:[this.context.registerNativeBinding(cpp)]};
     }
 
     private emitSwapAssignment(

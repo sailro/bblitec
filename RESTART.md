@@ -36,7 +36,7 @@ it does not establish that this external application compiles or runs.
 | Branch | `codex/external-project-support` |
 | Remote | `https://github.com/sailro/bblitec.git` |
 | Branch base used in this session | `3474e835` on `main` |
-| Latest executable-code/test unit | Captured lexical initialization and timer bindings; prior savepoints `bc21486a` (scheduled audio events), `95b04043` (async control flow), `e5ea2607` (async collections), `24281f2c` (promise caches/reactions), `53ba4164` (recursive async and hardened validation) and `f5cd2061` (AudioBuffer surface) |
+| Latest executable-code/test unit | Generic/nested/defaulted destructuring assignments; prior savepoints `bdce7a97` (captured lexical initialization), `bc21486a` (scheduled audio events), `95b04043` (async control flow), `e5ea2607` (async collections), `24281f2c` (promise caches/reactions), `53ba4164` (recursive async and hardened validation) and `f5cd2061` (AudioBuffer surface) |
 | Draft PR | [#247 — Extend generic application compilation and retained UI support](https://github.com/sailro/bblitec/pull/247) |
 | External checkout | `C:/Dev/_prototypes/external-native-app` |
 | External source revision | `d7c477a6d5963680c55249dceb93cb6e4ab9ce56` |
@@ -44,9 +44,42 @@ it does not establish that this external application compiles or runs.
 | External generated output | `generated/external-app` (ignored; not a successful complete generation) |
 | Session diagnostics | `artifacts/external-integration` (ignored) |
 
-Latest complete-entry diagnostic: `compile636` passed timer initializer captures
-and stopped at generic indexed swapping through array destructuring assignment.
+Latest complete-entry diagnostic: `compile645` passed generic indexed swapping
+and stopped at `Promise.prototype.finally` on an owned pending promise.
 Generation, native build and application runtime remain incomplete.
+
+Destructuring now takes concrete generic RHS types from evaluated bound values;
+each RHS expression runs once before target references. Nested arrays, rest,
+defaults and represented setters share the existing data sinks and setter body
+lowerer. Array/key snapshots delay slot lookup until the store, so a default can
+grow or replace an array without invalidating a retained native reference.
+Reference-backed property owners also remain alive through defaults. Inferred
+native arrays retain their original object entries instead of rematerializing
+compile-time records: the fixed record probe checks both identity and mutation.
+Literal missing/undefined/null sources retain their distinction; native nullable
+storage still combines null and undefined, so defaults over combined or unknown
+nullable element types explicitly refuse. This narrowed gap remains in TODO.
+
+The fixed `assess-destructuring.mjs` baseline `destructuring639-native` passes
+5/12; `destructuring640-native` passes 8/12 (record identity failed despite a
+successful native build). `destructuring641-native` and the final
+`destructuring646-native` pass all twelve. The permanent fixture adds lazy and
+missing defaults, null preservation, literal holes, tuple defaults, array growth
+and setter evaluation order. `regressions645` passes all 907 tests without skips;
+after the final literal/owner extensions, `destructuring646` passes seven focused
+native/array-loading/table checks. `population646` generates all 288 registered
+entries and completes scene41's native bootstrap. Open GitHub issues remain empty.
+
+Next batch: promise cleanup reactions. `promise-finally647` is a fixed baseline
+of twelve generation probes, all refused: fulfillment/rejection preservation,
+throwing/async cleanup, void and ignored results, getter/stored callbacks, new
+promise identity, missing and null handlers. Use the shared managed reaction
+compiler and `js_promise.hpp` observation/adoption, not a second async callback
+implementation. The source requires callback evaluation at registration, no
+arguments at delivery, and original settlement after fulfilled cleanup; thrown
+or rejected cleanup replaces it. Read the ECMAScript finally algorithm and keep
+native GC ownership and microtask ordering covered. No promise cleanup code has
+been changed at this savepoint.
 
 Lexical bindings captured inside their own initializer now receive a traced
 `LexicalBinding<T>` cell before lowering the initializer. Ordinary typed sinks
@@ -70,12 +103,8 @@ and `regressions638` (715 compiler/audio/timer checks, no skips). The separate
 record-initializer probe remains refused. Do not combine the four additional
 initializer probes with the fixed eight-probe timer baseline.
 
-Next batch: generic destructuring assignments. In `data-lowering.ts`, the literal
-RHS path of `emitArrayDestructuringAssignment` asks only checker types for each
-element before compiling it. A generic array's bound native element type can be
-concrete while the original AST still has T. The reached unchanged form swaps
-two indexed array elements using a literal RHS. Assess this together with the
-existing nested/default/accessor TODO before changing shared assignment lowering.
+The previous entry diagnostic `compile636` stopped at generic destructuring;
+the batch above now passes that form and narrows the matching TODO.
 
 Scheduled audio events use shared listener identity/options and the native
 PlatformEventListeners registry. Started sources with listeners retain a realm
