@@ -668,6 +668,8 @@ export class DataTypeRegistry {
   /** A checked recursive boundary may retain a dynamic parsed value. Call sinks
    * still require JSON storage; this does not erase arbitrary native objects. */
   public dynamicJsonType(type: ts.Type): DataType<"json"> | undefined {
+    const substituted = this.substituteTypeParameter(type);
+    if (substituted) return this.dynamicJsonType(substituted);
     if ((type.flags & ts.TypeFlags.Unknown) !== 0) return {kind:"json"};
     const element = this.checker.isArrayType(type)
       ? this.checker.getIndexTypeOfType(type, ts.IndexKind.Number)

@@ -72,6 +72,7 @@ test("dynamic array views refuse ambiguous absence and Map object entries", () =
 
 test("recursive unknown boundaries retain parsed trees and returned scalar kinds", t => {
     nativeCheck("trees", `
+        function retain<T>(value:T, depth:number):T {return depth>0 ? retain(value,depth-1) : value;}
         const count = (value: unknown): number => {
             if(Array.isArray(value)) { let sum=0; for(const child of value) sum+=count(child); return sum; }
             return 1;
@@ -89,6 +90,7 @@ test("recursive unknown boundaries retain parsed trees and returned scalar kinds
             return value;
         }
         const tree: unknown = JSON.parse('[1,[2,[3,4]],5]');
+        if(retain<unknown>(tree,2)!==tree)throw new Error("generic dynamic identity");
         if(count(tree)!==5 || named(tree)!==5 || array(tree as unknown[])!==5)
             throw new Error("recursive tree visits");
         if(first(JSON.parse('[[3]]'))!==3 || first(JSON.parse('[[true]]'))!==true ||

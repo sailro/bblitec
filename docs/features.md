@@ -213,6 +213,10 @@ require a local function or function literal and omit `thisArg`.
 
 Recursive unknown-value parameters and returns can retain parsed values, scalars,
 arrays and tuples of represented values, string-keyed dictionaries and owned class views.
+Generic recursive calls retain their type arguments across specialization and
+unwrap actual promise layers without replacing synchronous `T` with `Awaited<T>`.
+Returning an unowned record through that native boundary currently refuses to
+avoid losing source aliases.
 Array and object aliases preserve storage and identity; class views read live fields
 and retain `instanceof`. Observing array views read live length and elements, retain
 their owner during iteration, and share ordinary filter and flatten lowering.

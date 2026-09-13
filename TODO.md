@@ -6,6 +6,7 @@ status. One line per item: the gap, where it is, its size (S < 1 h, M < half day
 
 ## Compiler
 
+- [ ] Dynamic value boundaries need optional-property presence, class instances created before native storage was demanded, and mutations through erased typed arrays; generic recursive record returns also need promotion of unowned records without losing aliases (data-types.ts, json-record-views.ts, user-functions.ts, js_json.hpp). L; configuration/state helpers.
 - [ ] Destructuring defaults over combined null/undefined elements need distinct absence states; generic nullable defaults also refuse when the source type cannot distinguish them (data-lowering.ts, js_data.hpp). M; nullable collection transforms.
 - [ ] Custom thenables need an owned resolution protocol; callable/getter `then` properties explicitly refuse (async.ts). M; interoperability with promise-like objects.
 - [ ] Record getters with early returns need represented result flow; statements and local captures before a final return are supported (compiler.ts). M; conditional accessors.

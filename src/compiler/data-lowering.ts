@@ -4078,7 +4078,9 @@ export class DataLowerer {
         }
         this.context.reachJsData();
         const argument = argumentAt(call, 0);
-        const value = this.compileLookupKey(this.context.compileValue(argument), element, argument);
+        const value = element.kind === "enum"
+            ? this.compileLookupKey(this.context.compileValue(argument), element, argument)
+            : this.compileForSink(argument, element);
         if (method === "lastIndexOf") {
             const needle = this.context.allocateTemporaryCppName("last_index_needle");
             this.context.emit({ kind: "declaration", type: "const auto", name: needle, initializer: value });

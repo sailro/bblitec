@@ -10,6 +10,26 @@ import { optionalNativeFixtureTools, runNativeFixtureCompiler } from "./native-f
 
 const native = optionalNativeFixtureTools(false);
 
+check("generic recursive returns preserve synchronous type parameters", `
+    function retain<T>(value:T,depth:number):T {return depth>0?retain(value,depth-1):value;}
+    if(retain(3,2)!==3 || retain("value",2)!=="value") throw new Error("generic scalar");
+    const source:number[]=[1,2];
+    const array=retain(source,2);array.push(3);
+    if(source.length!==3) throw new Error("generic array alias");
+    const rows:Array<{size:number}>=[{size:1}];
+    const row=rows[0]!;
+    const record=retain(row,2);record.size=4;
+    if(row.size!==4) throw new Error("generic record alias");
+`);
+
+test("generic recursive records refuse an unowned alias boundary", () => {
+    assert.throws(() => compileSource(`
+        function retain<T>(value:T,depth:number):T {return depth>0?retain(value,depth-1):value;}
+        const source={size:1};const result=retain(source,2);result.size=4;
+        if(source.size!==4)throw new Error("alias");
+    `), /Generic recursive record returns require owned object storage/);
+});
+
 check("collection queries accept strings outside a stored literal union", `
     type Key="first"|"second";
     type Query=Key|"outside";
@@ -37,6 +57,8 @@ check("collection queries accept strings outside a stored literal union", `
     let fromReads=0;
     function from():number {fromReads++;return 1;}
     if(values.lastIndexOf("outside" as Key,from())!==-1||fromReads!==1)throw new Error("missing query still evaluates fromIndex");
+    const records:Array<{size:number}>=[{size:1}];
+    if(records.indexOf(records[0]!)!==0||records.indexOf(records[4]!)!==-1)throw new Error("record query identity and absence");
 `);
 
 function check(name: string, source: string): void {

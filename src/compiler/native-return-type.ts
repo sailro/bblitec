@@ -27,12 +27,18 @@ export function nativeReturnTsType(
     }
     if ((type.flags & (ts.TypeFlags.Void | ts.TypeFlags.Undefined)) !== 0) return undefined;
     if (options.unwrapPromise === false) return type;
-    if (checker.typeToString(type) === "Promise<void>") return undefined;
-    const promised = (
-        checker as ts.TypeChecker & {
-            getAwaitedType(candidate: ts.Type): ts.Type | undefined;
-        }
-    ).getAwaitedType(type);
-    const resolved = promised && promised !== type ? promised : type;
+    const promiseChecker = checker as ts.TypeChecker & {
+        getPromisedTypeOfPromise(candidate: ts.Type): ts.Type | undefined;
+    };
+    let resolved = type;
+    const seen = new Set<ts.Type>();
+    // Awaited<T> is a conditional type when T is still generic. Unwrap only
+    // actual promise layers, leaving T for the active call substitution.
+    while (!seen.has(resolved)) {
+        seen.add(resolved);
+        const promised = promiseChecker.getPromisedTypeOfPromise(resolved);
+        if (!promised) break;
+        resolved = promised;
+    }
     return (resolved.flags & (ts.TypeFlags.Void | ts.TypeFlags.Undefined)) !== 0 ? undefined : resolved;
 }

@@ -1722,6 +1722,10 @@ export class UserFunctionLowerer {
                     "Recursive function return type must be plain data or void.",
                 );
             }
+            if (returnTsType && (returnTsType.flags & ts.TypeFlags.TypeParameter) !== 0 &&
+                returnType?.kind === "struct" && !context.dataTypes.isReferenceStruct(returnType.name)) {
+                context.fail(declaration, "Generic recursive record returns require owned object storage to preserve source aliases.");
+            }
             const returnsArray = context.dataTypes.returnsArray(returnType);
             const arrayStorage = returnsArray ? arrayReturnStorage(this.checker, declaration) : undefined;
             const parameterTypes = ir.parameters.map(
@@ -1834,6 +1838,7 @@ export class UserFunctionLowerer {
             ? { lexical: this.sharedBodyScope, emission: 0, block: 0, continuation: -1 }
             : context.functionEmissionScope();
         const specialization = callSiteEffects ? undefined : this.emittedRecursiveGroups.key(scope, [
+            context.dataTypes.captureTypeArguments(),
             rootEntry.captured,
             declarations.some(declaration => this.readsReceiver(declaration)) ? context.activeThis() : undefined,
             functionDependencies(context, declarations),

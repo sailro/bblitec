@@ -8,6 +8,55 @@ dependencies will not be present in a fresh clone.
 
 ## Read this first
 
+**Current uncommitted unit: synchronous generic recursive returns.** Performance
+unit `df203a23` is committed/pushed. NativeReturnTsType now unwraps only actual
+promise layers with the checker's getPromisedTypeOfPromise; it leaves T available
+for the active call substitution. Recursive specialization keys now include that
+generic environment (otherwise a later array call reused an earlier number
+signature). `generic903-focused` passes scalar/string, shared array and already
+owned record returns, plus an explicit refusal for unowned record aliases.
+The first neutral record test exposed a copy that lost source identity; do NOT
+claim unowned record promotion is solved. It is now refused rather than silently
+copied and is recorded in TODO.md along with the remaining dynamic-value gaps.
+`generic904-regressions` finished 936/937 (including async/promise checks).
+`generic905-focused` passes all 7 focused checks after the object-search correction,
+including generic unknown-return identity. Dynamic JSON type mapping now resolves
+the active type parameter just like the regular mapper. No commit yet for this unit.
+
+The broad run's sole failure: array object-member lookup changed from
+the normal retained sink to a checked indexed read when enum queries reused
+compileValue for every element type. That would throw for an out-of-bounds search
+needle. The working source now limits enum query conversion to enum elements and
+keeps compileForSink for the others; a native regression checks present/missing
+record needles. Those edits are now built and validated by generic905-focused.
+
+`probe-dynamic-merge905.mjs` separates three neutral merge forms. The explicitly
+unknown version now reaches an object-spread refusal: openRecordLiteral tries to
+sink a JsonValue into a native dictionary. Typed input refuses the unowned record
+alias boundary; scalar input also reaches the structurally unreachable spread.
+Next implement explicit shallow JSON object spread into a dynamic-value dictionary
+in openRecordLiteral (never add implicit JSON-to-map copying). Preserve fresh root
+identity, shared nested values, enumeration order, nullish spread behavior and
+overwrite ordering. Then rerun the erased merge before addressing typed returns.
+
+Next design to assess: the generic merge explicitly returns unknown/unknown-valued
+dictionary expressions asserted as T. A native JSON representation for such an
+erased generic return, and its T-valued recursive parameters, could preserve its
+object graph. Ordinary typed returns still use their native representation.
+This is a proposal, not implemented. Map/object spreads and downstream typed
+storage must preserve identity and shallow-copy semantics. Do not bypass the
+failure by copying fields or changing the private module. The runtime supports
+observing typed array views, not general mutable erased typed storage.
+
+The isolated unchanged loader now passes generic return-type resolution and
+refuses a JSON value returning into its typed configuration-record sink:
+`merge901.log` at the generic merge's early return. This is a dynamic-to-typed
+record boundary, not another Awaited<T> problem. Preserve aliases of untouched
+default branches and fresh identity of copied merge branches; neither serializing
+the defaults nor blindly copying typed fields is sufficient. The full entry has
+not been retried after `compile900`; keep using `probe-merge900.mjs` while resolving
+the typed boundary. Native actual-default validator passes at `typed-validator896`.
+
 **Registry lookup performance:** query unit `bce4f7a6` is committed/pushed and
 PR #247 metadata is updated (verified body includes `32cab018`). `compile898`
 passed the typed validator and refused a generic recursive return in the
