@@ -10691,7 +10691,7 @@ public:
         frame_->ui_frame = &record_ui_rml_frame(*data_.resources.ui_runtime, width, height);
         frame_->present_swapchain = swapchain;
         swapchain = state.ui.readable_surface.target(state.device, swapchain,
-            swapchain_format, width, height, !frame_->ui_frame->backdrops.empty() &&
+            swapchain_format, width, height, ui_frame_reads_target(*frame_->ui_frame) &&
                 !(capture_frame && data_.frame_options.capture_ui));
 #endif
         if (frame_->graph) {

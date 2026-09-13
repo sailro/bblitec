@@ -12,6 +12,14 @@ static double area(const std::vector<UiClipTriangle>& triangles) {
 }
 
 int main() {
+    UiRenderFrame target_reads;
+    assert(!ui_frame_reads_target(target_reads));
+    target_reads.composites.emplace_back();
+    assert(ui_frame_reads_target(target_reads));
+    target_reads.composites[0].source = 1;
+    assert(!ui_frame_reads_target(target_reads));
+    target_reads.backdrops.emplace_back();
+    assert(ui_frame_reads_target(target_reads));
     const auto a = ui_rect_mask(0, 0, 10, 10);
     const auto b = ui_rect_mask(5, 3, 15, 8);
     assert(std::abs(area(intersect_ui_masks(a, b)) - 25) < 0.001);

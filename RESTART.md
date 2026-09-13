@@ -26,7 +26,7 @@ broader regression checks at useful batch boundaries. Unknown requirements stay
 visible; do not invent an overall completion percentage from static counts.
 
 **The external application does not fully compile yet.** Native graphics availability now opens the intended startup branch; generation
-stops on inset-outline decoration on generated content. Its native build and intended
+stops on vendor range-thumb selectors after compiling the shadow declarations. Its native build and intended
 application runtime have never been reached. A green sweep validates the registered corpus;
 it does not establish that this external application compiles or runs.
 
@@ -35,7 +35,7 @@ it does not establish that this external application compiles or runs.
 | Compiler checkout | `C:/Dev/babylonlite` |
 | Branch | `codex/external-project-support` |
 | Remote | `https://github.com/sailro/bblitec.git` |
-| Branch base used in this session | `3474e835` on `main` |
+| Branch base used in this session | `a7b1504d` on `main` (Linux PR #248); 82 commits rebased, with pre-rebase history preserved at `codex/external-project-support-before-linux` |
 | Latest executable-code/test unit | Immutable module numeric facts (`df7967fd`), numeric templates/parameter snapshots (`d025ccf9`), control appearance/logical spacing/input types (`ac616c41`); prior savepoints `a25c5eea` (implicit grids/unmarked lists), 1fe43c54 (CSS presentation/visibility), `a81992d4` (owned async methods and promise selection), `0bdfc5b1` (native graphics availability), `613d52b6` (image/promise startup readiness), `8af15082` (asynchronous startup), `f699ad6b` (promise cleanup), `059bfbca` (generic/nested/defaulted destructuring), `bdce7a97` (captured lexical initialization), `bc21486a` (scheduled audio events), `95b04043` (async control flow), `e5ea2607` (async collections), `24281f2c` (promise caches/reactions), `53ba4164` (recursive async and hardened validation) and `f5cd2061` (AudioBuffer surface) |
 | Draft PR | [#247 — Extend generic application compilation and retained UI support](https://github.com/sailro/bblitec/pull/247) |
 | External checkout | `C:/Dev/_prototypes/external-native-app` |
@@ -44,7 +44,21 @@ it does not establish that this external application compiles or runs.
 | External generated output | `generated/external-app` (ignored; not a successful complete generation) |
 | Session diagnostics | `artifacts/external-integration` (ignored) |
 
-Latest complete-entry attempt: `compile764` passes the imported stylesheet constant
+Latest complete-entry attempt: `compile777` reaches vendor range-thumb selectors
+in 229.6 seconds. Shadow support is committed as b8ea4486 after the Linux rebase.
+The pre-rebase shadow commit is 68c77baf; older hashes below refer to the preserved
+history. Range/control and media/grid/container requirements remain the next batch.
+linux777-regressions passes 1,081/1,081 checks without skips. Rebase review found
+that SDL's readable presentation target must also cover general filter composites
+reading layer zero; both scene and Window presenters now share that predicate.
+Rebuilding the unchanged pinned RmlUi dependency with build-rmlui.ps1 refreshes
+two patch receipts whose bytes changed from CRLF to LF on checkout. No patch,
+pin or receipt verification was bypassed. shadows-window778 passes both backends
+and unchanged DPWCDWMK input replay. population778 is running at this savepoint.
+The rebased branch has not yet been pushed; use an explicit force-with-lease
+against df7967fd74010f92c8b87e24f4ef586f04eb2f9e, the last verified remote tip.
+
+Historical complete-entry attempt: `compile764` passes the imported stylesheet constant
 and reaches generated-content inset-outline decoration (225.2 seconds). The
 module-constant unit is committed and pushed as df7967fd. population764 generates
 all 288 registered entries and passes native bootstrap with the module-only guard.
@@ -79,9 +93,10 @@ nonwhite interior pixels; browser RGB mean absolute error over the fixed region 
 151 accepted / 16 refused / two keyframes unassessed, the same cohort as 765.
 Final shadow validation also preserves case-sensitive custom-property color names. A neutral browser reference is shadows772-browser.html/.png. The user has now authorized rebasing onto the newly landed Linux support.
 origin/main is a7b1504d (PR #248, commits 4dd147e4/c993ab62/b554c7cd).
-Finish and commit this unit, then rebase onto origin/main, read its changed support
-docs and rerun affected checks before continuing range/control and media/grid/container
-requirements. Do not stop at the savepoint.
+That unit is now committed and rebased; changed support docs and overlapping
+compiler/native changes have been reviewed. Continue range/control and
+media/grid/container requirements after the post-rebase checks above.
+Do not stop at the savepoint.
 
 The control/spacing unit is committed and pushed as ac616c41; draft PR #247 was
 updated with pr744.json. Staged TypeScript/privacy/whitespace checks pass, along

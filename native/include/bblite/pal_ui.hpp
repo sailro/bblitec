@@ -341,6 +341,13 @@ struct UiRenderFrame {
     std::uint32_t composite_first_index = 0;
 };
 
+/** SDL swapchain textures cannot be sampled or copied for backdrop effects. */
+inline bool ui_frame_reads_target(const UiRenderFrame& frame) {
+    if (!frame.backdrops.empty()) return true;
+    for (const auto& composite : frame.composites) if (composite.source == 0) return true;
+    return false;
+}
+
 inline void append_ui_quad(
     UiRenderFrame& frame,
     float left,
