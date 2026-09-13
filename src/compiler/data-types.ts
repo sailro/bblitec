@@ -6,6 +6,7 @@ export { isHandleKind, handleCppType } from "./data-types/handles.js";
 export { TYPED_ARRAY_KINDS, BUFFER_VIEW_KINDS, isTypedArrayType, typedArrayStem, typedArrayCppType, typedArrayStoreExpression } from "./data-types/typed-arrays.js";
 export { dataTypesEqual, passesByReferenceKind, isOpaqueReference } from "./data-types/operations.js";
 import { EmissionMap, EmissionSet } from "./emission-transaction.js";
+import {NativeRecordStorageRequired, type NativeRecordStorageDemand} from "./native-record-storage.js";
 import ts from "typescript";
 import { createHash } from "node:crypto";
 import { cppIdentifier, doubleLiteral } from "../cpp-literals.js";
@@ -483,6 +484,7 @@ export class DataTypeRegistry {
     DataType & { kind: "struct" }
   >();
   private readonly referenceStructNames = new EmissionSet<string>();
+  private readonly nativeRecordSources = new EmissionMap<string, NativeRecordStorageDemand>();
   /**
    * Local classes that reached a native data position, by the struct name
    * standing for them. The declaration is how a method call on a value read
@@ -574,6 +576,10 @@ export class DataTypeRegistry {
       case "union":
         return { kind: "union", members: dataType.members.map(member => this.markStoredObjectReferences(member)) };
       case "struct":
+        if (!this.referenceStructNames.has(dataType.name) && this.emittedNamedTypes.has(dataType.name)) {
+          const demand = this.nativeRecordSources.get(dataType.name);
+          if (demand) throw new NativeRecordStorageRequired(demand);
+        }
         this.referenceStructNames.add(dataType.name);
         return dataType;
       case "optional": {
@@ -612,11 +618,33 @@ export class DataTypeRegistry {
     }
   }
 
-  /**
-   * Maps a checker type to native data, or undefined for values whose host
-   * representation is opaque here (promises, functions, DOM objects, ...).
-   */
+  /** Resolve ownership demands before any earlier initializer or alias is emitted. */
+  public predeclareOwnedRecord(demand: NativeRecordStorageDemand): void {
+    const apply = (index: number): void => {
+      if (index < demand.frames.length) {
+        this.withTypeArguments(demand.frames[index], () => apply(index + 1));
+        return;
+      }
+      const type = this.fromTsType(demand.type, demand.node);
+      if (type?.kind !== "struct") this.fail(demand.node, "Demanded record no longer has a native object representation.");
+      this.markStoredObjectReferences(type);
+    };
+    apply(0);
+  }
+
+  /** Map a checker type and retain its source for a later ownership demand. */
   public fromTsType(type: ts.Type, node: ts.Node): DataType | undefined {
+    const mapped = this.mapTsType(type, node);
+    if (mapped?.kind === "struct" && !this.nativeRecordSources.has(mapped.name)) {
+      this.nativeRecordSources.set(mapped.name, {
+        identity: this.structIdentity(type), type, node,
+        frames: this.typeArgumentFrames().map(frame => new Map(frame)),
+      });
+    }
+    return mapped;
+  }
+
+  private mapTsType(type: ts.Type, node: ts.Node): DataType | undefined {
     if (type.isUnion() && type.types.some(member => (member.flags & ts.TypeFlags.Void) !== 0)) {
       const present = type.types.filter(member =>
         (member.flags & (ts.TypeFlags.Void | ts.TypeFlags.Null | ts.TypeFlags.Undefined)) === 0);
@@ -2630,7 +2658,11 @@ export class DataTypeRegistry {
 
   /** Native object views retain the original reference and read its live fields. */
   public markJsonBoxed(type: DataType<"struct">, node: ts.Node): void {
-    if (!this.isReferenceStruct(type.name)) this.fail(node, "Dynamic object storage requires an owned reference.");
+    if (!this.isReferenceStruct(type.name)) {
+      const demand = this.nativeRecordSources.get(type.name);
+      if (demand) throw new NativeRecordStorageRequired(demand);
+      this.fail(node, "Dynamic object storage requires an owned reference.");
+    }
     if (this.jsonBoxedStructs.has(type.name)) return;
     this.jsonBoxedStructs.set(type.name, node);
     this.cppType(type);

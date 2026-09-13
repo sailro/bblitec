@@ -141,8 +141,12 @@ stored `Storage` references preserve the native object's identity through nullab
 String-valued `||` and `&&` evaluate their left operand once and keep the right operand lazy.
 Nullable scalar `??` results admit wider string and scalar alternatives, including an optional fallback;
 operand effects run once and fallback preparation runs only on absence.
-Parsed JSON values support guarded scalar reads and nullable conditionals. Fresh `map`/`filter` results
-honor wider string-array annotations, and named array callbacks participate in recursion lowering.
+Parsed JSON values support guarded scalar reads and nullable conditionals. They
+retain dynamic object storage through typed locals, inline function/method arguments and conditional
+record selections. Native record ownership demanded later replays emission with the original source
+type and generic environment, preserving earlier aliases and initializer counts. Recursive generic
+returns retain these owned records; mixed typed/dynamic record serialization keeps actual fields.
+Fresh `map`/`filter` results honor wider string-array annotations, and named array callbacks participate in recursion lowering.
 Readonly constant record tuples support runtime searches through a shared typed array, including
 nullable fields. Stored string tags compare with arbitrary strings without requiring those strings
 to belong to the tag set; guarded nullable tags can flow into ordinary string callbacks.

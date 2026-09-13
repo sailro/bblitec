@@ -8,6 +8,7 @@ import { persistContinuationLocals } from "./compiler/continuation-storage.js";
 import ts from "typescript";
 import {hasDynamicObjectSpread, isJsonValue} from "./compiler/json-bridge.js";
 import {DynamicBindingStorageRequired} from "./compiler/dynamic-binding-storage.js";
+import {NativeRecordStorageRequired, type NativeRecordStorageDemand} from "./compiler/native-record-storage.js";
 import { resolve } from "node:path";
 import { inferUninitializedHandle } from "./compiler/uninitialized-handle.js";
 import { framePollExecutor } from "./compiler/frame-poll.js";
@@ -471,15 +472,19 @@ export function compileSource(
         // Each demand belongs to a source binding, not its spelling. Reuse the
         // frontend and rebuild emission so earlier aliases use the same storage.
         const dynamicBindings = new Set<ts.VariableDeclaration>();
+        const ownedRecords = new Map<NativeRecordStorageDemand["identity"], NativeRecordStorageDemand>();
         for (;;) {
-            const compiler = new Compiler(input.program, input.sourceFile, input.checker, resolved, dynamicBindings);
             try {
+                const compiler = new Compiler(input.program, input.sourceFile, input.checker, resolved, dynamicBindings, ownedRecords);
                 const result = compiler.compile();
                 result.manifest.inputs = input.localFiles;
                 return result;
             } catch (error) {
-                if (!(error instanceof DynamicBindingStorageRequired) || dynamicBindings.has(error.declaration)) throw error;
-                dynamicBindings.add(error.declaration);
+                if (error instanceof DynamicBindingStorageRequired && !dynamicBindings.has(error.declaration)) {
+                    dynamicBindings.add(error.declaration);
+                } else if (error instanceof NativeRecordStorageRequired && !ownedRecords.has(error.demand.identity)) {
+                    ownedRecords.set(error.demand.identity, error.demand);
+                } else throw error;
             }
         }
     };
@@ -750,6 +755,7 @@ class Compiler
         public readonly checker: ts.TypeChecker,
         public readonly options: ResolvedCompileOptions,
         private readonly dynamicBindings: ReadonlySet<ts.VariableDeclaration>,
+        private readonly ownedRecords: ReadonlyMap<NativeRecordStorageDemand["identity"], NativeRecordStorageDemand>,
     ) {
         this.symbols = new CompilerSymbols(checker);
         this.userFunctions = new UserFunctionLowerer(checker);
@@ -1056,6 +1062,7 @@ class Compiler
      * a shared pointer that requires `record->field`.
      */
     private predeclareStoredObjectReferences(): void {
+        for (const demand of this.ownedRecords.values()) this.dataTypes.predeclareOwnedRecord(demand);
         for (const declaration of this.dynamicBindings) {
             const type = this.dataTypes.fromTsType(this.checker.getTypeAtLocation(declaration.name), declaration);
             if (type) this.dataTypes.markStoredObjectReferences(type);
@@ -3363,17 +3370,6 @@ class Compiler
                 : this.checker.getTypeAtLocation(name),
             typeSite,
         );
-        // Inferred locals already follow compileValue's actual representation.
-        // Only an explicit record annotation needs this storage choice; probing
-        // inferred factory calls would compile their entire bodies twice.
-        if (declaration.type && (annotated?.kind === "struct" || (annotated?.kind === "optional" && annotated.inner.kind === "struct"))) {
-            const source = declaration.initializer;
-            const value = this.probeEmission(() => {
-                try { return this.compileValue(source); }
-                catch (error) { if (error instanceof CompileError) return undefined; throw error; }
-            }, isJsonValue);
-            if (isJsonValue(value)) return this.emitDynamicDataBinding(name, cppName, value, source, sharedClosureStorage);
-        }
         if (
             annotated?.kind === "optional" &&
             annotated.inner.kind === "struct"
@@ -3457,6 +3453,18 @@ class Compiler
             !inferredMutableObject
         ) {
             return false;
+        }
+        // Inferred immutable locals already follow compileValue's actual
+        // representation. Only declarations that request native storage need
+        // this probe; immutable factory bodies must not be compiled twice.
+        const objectAnnotation = annotated?.kind === "optional" ? annotated.inner : annotated;
+        if (objectAnnotation && ["struct", "vector", "tuple", "map", "enummap"].includes(objectAnnotation.kind)) {
+            const source = declaration.initializer;
+            const value = this.probeEmission(() => {
+                try { return this.compileValue(source); }
+                catch (error) { if (error instanceof CompileError) return undefined; throw error; }
+            }, isJsonValue);
+            if (isJsonValue(value)) return this.emitDynamicDataBinding(name, cppName, value, source, sharedClosureStorage);
         }
         if (
             inferredMutableArray &&
@@ -12669,6 +12677,7 @@ class Compiler
                 ts.isElementAccessExpression(unwrapped)))
         ) {
             const actual = this.compileValue(unwrapped);
+            if (isJsonValue(actual)) return actual;
             if (collection && actual.kind === "data" && actual.dataType &&
                 this.dataLowerer.spanCompatible(actual.dataType, dataType)) {
                 return actual;

@@ -8971,7 +8971,7 @@ export class DataLowerer {
             ts.isPropertyAccessExpression(unwrapped) ||
             ts.isElementAccessExpression(unwrapped)) {
             const known = this.context.compileValue(unwrapped);
-            if (known.kind === "tuple" ||
+            if ((isJsonValue(known) && dataType.element.kind === "json") || known.kind === "tuple" ||
                 (known.kind === "data" &&
                     known.dataType?.kind === "span" &&
                     dataTypesEqual(known.dataType.element, dataType.element))) {

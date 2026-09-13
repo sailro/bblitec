@@ -33,6 +33,7 @@ export interface NativeFunctionContext
         | "dataLowerer"
         | "sourceFiles"
         | "lookupIdentifierValue"
+        | "knownValueWithoutEvaluation"
         | "compileValue"
         | "probeEmission"
         | "useNativeValue"
@@ -623,6 +624,15 @@ export class NativeFunctionLowerer {
         argument: ts.Expression,
         parameter: DataFunctionParameter,
     ): boolean {
+        // Type annotations do not replace the representation of a parsed
+        // object. Bind that actual value inline instead of materializing a
+        // fixed native shape that would lose fields and object identity.
+        const represented = this.context.knownValueWithoutEvaluation(argument)?.dataType;
+        if (represented?.kind === "json" && parameter.type.kind !== "json") {
+            const target = parameter.type.kind === "optional" ? parameter.type.inner : parameter.type;
+            if (target.kind === "struct" || target.kind === "vector" || target.kind === "tuple" ||
+                target.kind === "map" || target.kind === "enummap") return false;
+        }
         if (parameter.type.kind !== "struct") {
             return true;
         }

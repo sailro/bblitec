@@ -79,6 +79,16 @@ function jsonValue(cpp: string): Value {
     return { kind: "data", cpp, dataType: jsonType };
 }
 
+/** Actual dynamic fields survive a surrounding record or tuple annotation. */
+function containsJsonValue(value: Value, seen = new Set<Value>()): boolean {
+    if (isJsonValue(value)) return true;
+    if (seen.has(value)) return false;
+    seen.add(value);
+    const children = value.kind === "record" ? Object.values(value.recordProperties ?? {})
+        : value.kind === "tuple" ? value.tupleElements ?? [] : [];
+    return children.some(child => containsJsonValue(child, seen));
+}
+
 /** Property keys use JavaScript string conversion, including numeric object keys. */
 export function compileJsonPropertyKey(
     context: Pick<LoweringServices, "castNumber" | "dataTypes" | "cppString" | "fail">,
@@ -170,7 +180,8 @@ function compileStringify(
     }
     const argument = argumentAt(call, 0);
     const represented = context.compileValue(argument);
-    const dataType = represented.dataType ?? context.dataLowerer.dataTypeAt(argument);
+    const dataType = containsJsonValue(represented) ? jsonType
+        : represented.dataType ?? context.dataLowerer.dataTypeAt(argument);
     if (!dataType) {
         context.fail(
             argument,

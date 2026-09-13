@@ -3504,6 +3504,10 @@ export class ExpressionLowerer {
             // The common sink keeps all branch preparation inside the
             // selected arm, including optional Map.get temporaries and
             // array literals that need runtime storage of different sizes.
+            if (["struct", "vector", "map"].includes(conditionalType.kind)) {
+                const dynamic = this.tryCompileJsonConditional(unwrapped, condition);
+                if (dynamic) return dynamic;
+            }
             const cpp = this.inRuntimeControlFlow(() => this.context.dataLowerer.compileConditionalForSink(unwrapped, conditionalType, condition));
             return conditionalType.kind === "string" ? {kind:"string", cpp, dataType:conditionalType}
                 : this.context.dataValue(cpp, conditionalType);
@@ -3531,23 +3535,7 @@ export class ExpressionLowerer {
                 ? unwrapped.whenTrue
                 : unwrapped.whenFalse);
         }
-        const jsonConditional = this.context.probeEmission(() => {
-            let whenTrue!: Value, whenFalse!: Value;
-            const trueLines = this.context.captureEmittedLines(() => {
-                whenTrue = this.inRuntimeControlFlow(() => this.compileValue(unwrapped.whenTrue));
-            });
-            const falseLines = this.context.captureEmittedLines(() => {
-                whenFalse = this.inRuntimeControlFlow(() => this.compileValue(unwrapped.whenFalse));
-            });
-            if (whenTrue.dataType?.kind !== "json" && whenFalse.dataType?.kind !== "json") return undefined;
-            const type = { kind: "json" as const };
-            if (![whenTrue, whenFalse].every(value =>
-                this.context.dataLowerer.knownValueFitsSink(value, type, unwrapped))) return undefined;
-            return this.context.dataValue(this.context.dataLowerer.compileConditionalForSink(unwrapped, type, condition, {
-                whenTrue: { value: whenTrue, lines: trueLines },
-                whenFalse: { value: whenFalse, lines: falseLines },
-            }), type);
-        });
+        const jsonConditional = this.tryCompileJsonConditional(unwrapped, condition);
         if (jsonConditional) return jsonConditional;
         const branch = (expression: ts.Expression, truth: boolean): Value => {
             const value = this.inRuntimeControlFlow(() => this.compileValue(expression));
@@ -3586,6 +3574,24 @@ export class ExpressionLowerer {
             };
         }
         return this.selectValue(condition, whenTrue, whenFalse, unwrapped);
+    }
+
+    private tryCompileJsonConditional(unwrapped: ts.ConditionalExpression, condition: string): Value | undefined {
+        return this.context.probeEmission(() => {
+            let whenTrue!: Value, whenFalse!: Value;
+            const trueLines = this.context.captureEmittedLines(() => {
+                whenTrue = this.inRuntimeControlFlow(() => this.compileValue(unwrapped.whenTrue));
+            });
+            const falseLines = this.context.captureEmittedLines(() => {
+                whenFalse = this.inRuntimeControlFlow(() => this.compileValue(unwrapped.whenFalse));
+            });
+            if (whenTrue.dataType?.kind !== "json" && whenFalse.dataType?.kind !== "json") return undefined;
+            const type = { kind: "json" as const };
+            return this.context.dataValue(this.context.dataLowerer.compileConditionalForSink(unwrapped, type, condition, {
+                whenTrue: { value: whenTrue, lines: trueLines },
+                whenFalse: { value: whenFalse, lines: falseLines },
+            }), type);
+        });
     }
 
     private compileObjectValue(unwrapped: ts.ObjectLiteralExpression): Value | undefined {

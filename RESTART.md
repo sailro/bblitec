@@ -8,6 +8,53 @@ dependencies will not be present in a fresh clone.
 
 ## Read this first
 
+**Latest ownership/boundary unit (1068), ready to commit.** Spread/key-order unit is
+committed and pushed as **6a289051**. The current changes retain actual JSON in
+typed object/array locals, inline arguments and record conditionals; aggregate
+stringification also sees actual dynamic fields. NativeFunctionLowerer declines
+fixed-shape signatures for known JSON object arguments. Class arguments keep the
+actual JSON value; parsed JSON arrays can still alias their underlying JsonValue
+array when a stored class field needs that exact element representation.
+
+**Ownership replay is now implemented for source-backed native records.**
+native-record-storage.ts carries checker type identity, source node and copied
+generic argument frames. DataTypeRegistry remembers those sources and requests a
+replay when boxing an unowned record or promoting one after its native type was
+already emitted. compileSource accumulates demands alongside lexical dynamic
+binding demands, rebuilds the compiler with the same frontend, and predeclares
+owned records before initializers/aliases. Source side effects remain once at
+runtime. A neutral native fixture covers two generic instantiations, recursive
+returns, earlier root/nested aliases and complete mixed typed/dynamic JSON output.
+The first TODO's generic unowned-record-return clause is removed; optional own
+presence, earlier class instances and mutation through erased native views remain.
+
+**Validation:** ownership1066-focused passes 3 native cases; ownership1067-regressions
+passes **718/718**; ownership1068-focused passes the added generic replay case.
+The unchanged config loader + settings/features resolvers + AA planner generate
+20 complete JavaScript comparisons in 7.66s (startup1066-generate.log), then build
+and execute with actual PAL/workers/assets (startup1067-native.log). All sessions
+closed. Compiler sources match ownership1068-dist; ordinary dist predates the final
+late-promotion replay guard and parsed-array sink correction. Rebuild after commit.
+
+**Full compile1065 finished in170.89s:** 558 successful/observed bodies across96
+modules, 22,151 unobserved. Frontier is **statement54/294, main396**, immediately
+before createEngine402, refusing `setKtx2DecoderUrl`. compile1061 was556 bodies/94
+modules, main360,184.34s. Latest inventory is application-inventory1068.json.
+The source graph remains1,343modules/22,709bodies/392,310lines. These are coverage
+counts, not engineering completion percentages. No full-app generation/build/run
+yet. The style wrapper now logs a main.ts sink stack to last-sink-error.log when
+one occurs; it did not occur in1065. All wrappers and private artifacts stay ignored.
+
+**Next decoder configuration cohort:** main396 calls setKtx2DecoderUrl with a
+self-hosted JS URL and nested WASM URL dictionary, followed by setDracoBaseUrl at
+main401. Read node_modules/@babylonjs/lite/lib/texture/ktx2-loader.js and Draco loader,
+src/basis-transcode.ts, the glTF loader/generation pipeline, intrinsic registry,
+docs/features.md compressed-texture contract and docs/fidelity.md adaptations.
+Native packaging currently uses pinned browser decoders at generation. Determine
+how source configuration should affect that packaging; do not silently discard
+custom decoder semantics. Probe both setters and the next engine setup together.
+Continue the unchanged app, regular commits and TODO accounting; do not stop here.
+
 **Current unit, 1054/1055.** Native record fields can now feed dynamic spreads via
 the existing ownObjectEntries projection, without boxing an unowned root. A source
 is evaluated once; nested aliases survive, scalar fields are copied, and later

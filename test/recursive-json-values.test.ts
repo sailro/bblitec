@@ -68,6 +68,23 @@ test("dynamic object spread snapshots native record fields and retains nested al
     `, t);
 });
 
+test("typed function parameters retain dynamic record and array arguments", t => {
+    nativeCheck("dynamic-typed-arguments", `
+        interface Row { score:number; child:{score:number}; }
+        function update(row:Row, value:number):Row {row.score=value;return row;}
+        function updateArray(rows:Row[]):Row {rows[0]!.score=12;return rows[0]!;}
+        class Reader { read(row:Row):number {return row.score;} }
+        const row:Row=JSON.parse('{"score":2,"extra":7,"child":{"score":3}}');
+        const alias=update(row,8);
+        if(alias!==row||row.score!==8||(alias as any).extra!==7)throw new Error("typed argument identity");
+        const reader=new Reader();
+        if(reader.read(row)!==8)throw new Error("typed method argument");
+        const rows:Row[]=JSON.parse('[{"score":4,"extra":9,"child":{"score":5}}]');
+        const item=updateArray(rows);
+        if(item!==rows[0]||item.score!==12||(item as any).extra!==9)throw new Error("typed array argument");
+    `, t);
+});
+
 test("JSON serialization orders index keys before other object properties", t => {
     const input = '{"tail":8,"10":10,"2":2,"01":1,"4294967295":5,"4294967294":4,"-0":6,"0":0}';
     const expected = JSON.stringify(JSON.parse(input));
@@ -82,6 +99,49 @@ test("JSON serialization orders index keys before other object properties", t =>
         for(const key of keys)dictionary[key]=parsed[key];
         if(JSON.stringify(dictionary)!==${JSON.stringify(JSON.stringify(Object.fromEntries(Object.entries(JSON.parse(input)).reverse())))})
             throw new Error("typed dictionary key order");
+    `, t);
+});
+
+test("typed conditional records retain selected identities and lazy branch effects", t => {
+    nativeCheck("dynamic-typed-conditional", `
+        interface Row {score:number;child:{score:number};}
+        const parsed:Row=JSON.parse('{"score":2,"child":{"score":3},"extra":7}');
+        const fixed:Row={score:4,child:{score:5}};
+        let conditions=0, left=0, right=0;
+        function condition(flag:boolean):boolean {conditions++;return flag;}
+        function loaded():Row {left++;return parsed;}
+        function fallback():Row {right++;return fixed;}
+        for(const flag of JSON.parse('[true,false]')){
+            const selected=condition(flag)?loaded():fallback();
+            if(flag){
+                if(selected!==parsed||(selected as any).extra!==7)throw new Error("loaded selection identity");
+            }else{
+                if(selected!==fixed||selected.child!==fixed.child)throw new Error("fixed selection identity");
+            }
+        }
+        if(conditions!==2||left!==1||right!==1)throw new Error("conditional evaluation count");
+    `, t);
+});
+
+test("late native record ownership preserves aliases and generic recursive returns", t => {
+    nativeCheck("late-record-ownership", `
+        interface Row {count:number; child:{count:number};}
+        const source:Row={count:2,child:{count:3}};
+        const alias=source;
+        let initializations=0;
+        function make<T>(value:T):{value:T} {initializations++;return {value};}
+        function retain<T>(value:T,depth:number):unknown {return depth>0?retain(value,depth-1):value;}
+        const number=make(4), text=make("before");
+        const boxed=retain(source,2), boxedNumber=retain(number,2), boxedText=retain(text,2);
+        alias.count=8;alias.child.count=9;number.value=5;text.value="after";
+        if(boxed!==source||(boxed as Row).count!==8||(boxed as Row).child!==source.child)
+            throw new Error("late root and nested aliases");
+        if(boxedNumber!==number||(boxedNumber as {value:number}).value!==5||
+            boxedText!==text||(boxedText as {value:string}).value!=="after"||initializations!==2)
+            throw new Error("generic storage and initializer count");
+        if(JSON.stringify({typed:source,dynamic:boxed})!==
+            '{"typed":{"count":8,"child":{"count":9}},"dynamic":{"count":8,"child":{"count":9}}}')
+            throw new Error("mixed typed and dynamic serialization");
     `, t);
 });
 
