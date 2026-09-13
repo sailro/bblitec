@@ -259,8 +259,20 @@ Stylesheet strings can be assembled by closed helpers over literal scalars and o
 argument effects execute once. Runtime-generated stylesheet text remains unsupported.
 Window `getBoundingClientRect()` publishes pending document edits and waits for their
 layout; the returned fields retain the snapshot taken by that call.
-Only fixed grids with proven equivalent wrapping-flex geometry lower; unknown
-track/class/id changes refuse. Conditional removal of known stylesheets checks
+Grids without explicit tracks use one native auto column and an auto row per
+in-flow child. `place-items`, `justify-items` and `justify-self` admit start, end,
+center and stretch alignment (`justify-self:auto` inherits the container choice).
+Rows retain intrinsic sizes, independent gaps, fractional remaining-space
+distribution and min-height constraints. Text gets an anonymous item; authored
+element parents and structural selectors remain unchanged. Item flex properties
+do not affect grid sizing. Stylesheet and inline alignment writes, viewport sizing
+and child additions/removals update layout. Item alignment can change in supported
+max-width media rules.
+This follows the [implicit grid model](https://www.w3.org/TR/css-grid-2/#implicit-grids).
+
+Explicit fixed grids still need proven equivalent wrapping-flex geometry; unknown
+track/class/id changes refuse. The explicit track projections do not represent
+the new item alignment properties. Conditional removal of known stylesheets checks
 each remaining cascade against the same grid proof. Dynamic sheet reordering,
 contents replacement and fractional-grid removal remain unsupported.
 
@@ -279,6 +291,7 @@ native range painting follows browser geometry and control states.
 | `rmlui-css-box-model.patch` | Solid backgrounds under borders; offset shrink-to-fit sizing |
 | `rmlui-css-declarations.patch` | Preserve quoted/escaped values and nested blocks across declaration boundaries |
 | `rmlui-visibility.patch` | Inherit visibility while retaining visible descendants in paint/input/focus; admit delayed zero-duration transitions |
+| `rmlui-zero-track-grid.patch` | Format one implicit auto column with independent rows, intrinsic sizing and item alignment; preserve authored parents |
 | `rmlui-fragment-root.patch` | Parse inline fragments under a custom document tag without an XML handler |
 | `rmlui-generated-content.patch` | Originating-element styles for generated boxes; preserve authored query, serialization and structural-selector semantics |
 | `rmlui-selector-functions.patch` | Selector-list/relative matching and invalidation; widget-owned placeholder text styles |
@@ -315,6 +328,15 @@ subtrees may contain backdrop blur; canvas-only capture excludes UI filters.
 
 Single-row inline grids support positive px/fr tracks with one element child per track.
 Runtime track replacement and implicit extra rows refuse. Form dimensions support content-box and border-box.
+General grid tracks/placement and intrinsic replaced-item alignment still need
+broader representation. Percentage-dependent item dimensions and grid baseline
+alignment refuse when the native formatter encounters them.
+The implicit-grid checks cover fixed/intrinsic box sizes, auto/stretch items,
+minimum heights, text, margins, content alignment and live child changes.
+
+`list-style:none` and `list-style-type:none` preserve the native absence of markers.
+Lists use block containers/items with default list margins and indentation; other
+marker values, counters and marker images remain unsupported.
 
 - No general selectors/traversal/observers, full browser form semantics,
   multiple pointer identities or arbitrary events.

@@ -10553,7 +10553,7 @@ test("refuses retained style properties outside the reviewed surface", () => {
         /Retained UI style property 'color' is not lowered: color:transparent is consumed only by the gradient-text/,
     );
     assert.throws(
-        () => compileSource(withCss("display:grid;color:#fff;")),
+        () => compileSource(withCss("display:inline-grid;color:#fff;")),
         /Retained UI style property 'display' is not lowered: display:grid lowers only with/,
     );
     assert.throws(

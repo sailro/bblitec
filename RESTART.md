@@ -26,7 +26,7 @@ broader regression checks at useful batch boundaries. Unknown requirements stay
 visible; do not invent an overall completion percentage from static counts.
 
 **The external application does not fully compile yet.** Native graphics availability now opens the intended startup branch; generation
-stops on remaining list/grid CSS presentation. Its native build and intended
+stops on remaining control CSS presentation. Its native build and intended
 application runtime have never been reached. A green sweep validates the registered corpus;
 it does not establish that this external application compiles or runs.
 
@@ -36,7 +36,7 @@ it does not establish that this external application compiles or runs.
 | Branch | `codex/external-project-support` |
 | Remote | `https://github.com/sailro/bblitec.git` |
 | Branch base used in this session | `3474e835` on `main` |
-| Latest executable-code/test unit | Retained CSS presentation/visibility; prior savepoints `a81992d4` (owned async methods and promise selection), `0bdfc5b1` (native graphics availability), `613d52b6` (image/promise startup readiness), `8af15082` (asynchronous startup), `f699ad6b` (promise cleanup), `059bfbca` (generic/nested/defaulted destructuring), `bdce7a97` (captured lexical initialization), `bc21486a` (scheduled audio events), `95b04043` (async control flow), `e5ea2607` (async collections), `24281f2c` (promise caches/reactions), `53ba4164` (recursive async and hardened validation) and `f5cd2061` (AudioBuffer surface) |
+| Latest executable-code/test unit | Native implicit grids/unmarked lists; prior savepoints 1fe43c54 (CSS presentation/visibility), `a81992d4` (owned async methods and promise selection), `0bdfc5b1` (native graphics availability), `613d52b6` (image/promise startup readiness), `8af15082` (asynchronous startup), `f699ad6b` (promise cleanup), `059bfbca` (generic/nested/defaulted destructuring), `bdce7a97` (captured lexical initialization), `bc21486a` (scheduled audio events), `95b04043` (async control flow), `e5ea2607` (async collections), `24281f2c` (promise caches/reactions), `53ba4164` (recursive async and hardened validation) and `f5cd2061` (AudioBuffer surface) |
 | Draft PR | [#247 — Extend generic application compilation and retained UI support](https://github.com/sailro/bblitec/pull/247) |
 | External checkout | `C:/Dev/_prototypes/external-native-app` |
 | External source revision | `d7c477a6d5963680c55249dceb93cb6e4ab9ce56` |
@@ -44,14 +44,68 @@ it does not establish that this external application compiles or runs.
 | External generated output | `generated/external-app` (ignored; not a successful complete generation) |
 | Session diagnostics | `artifacts/external-integration` (ignored) |
 
-Latest complete-entry attempt: `compile706` passes the newly admitted presentation
+Latest complete-entry attempt: `compile721` passes the list/implicit-grid stylesheet
+and reaches another stylesheet, stopping on appearance:none after 252.7 seconds
+while broader checks ran concurrently. The whole new stylesheet also needs
+padding-inline in a max-width rule. Handle those together in the next control/logical
+spacing batch; the application has still never completed intended generation/build/run.
+
+The previous `compile706` passes the newly admitted presentation
 styles and stops on list-style:none after 160.8 seconds. Auditing the ENTIRE newly
 reached stylesheet also identifies implicit display:grid with place-items:center.
-Next batch should cover list-marker suppression and implicit grid layouts together,
-not repeat the full entry after accepting only one more property. The prior
+Those list/grid forms are now handled together as described below. The prior
 `compile704` stopped on -webkit-user-drag:none (196.3 seconds); that hint is now
 admitted. The earlier `compile677` generated only the no-GPU fallback (132.5 seconds,
 no scene renderer); it was never full application success.
+
+The list/grid unit adds a sixteenth patch on the unchanged RmlUi revision:
+rmlui-zero-track-grid.patch. The build applies patches alphabetically, so this patch
+comes after the existing visibility/textured-border changes. The initial 711 build
+used a name that sorted too early and failed patch application; 712/717/724 build
+successfully, with the last including explicit runtime refusal of percentage-dependent
+grid item dimensions and baseline alignment. Other installed static artifacts still
+need rebuilding if used. Regenerate only this incremental patch with
+artifacts/external-integration/save-grid-patch.py and the saved original nine-file
+implicit-grid-rml-before tree; do not rerun the initial mutation scripts.
+
+Native grid formatting reuses intrinsic item sizing and line alignment with one
+auto column and a separate auto row per child. It ignores child flex factors/basis,
+distributes fractional extra row space independently of gaps, respects min-height,
+supports item/content alignment and grows the column for overflowing fixed items.
+No element containers are inserted; text uses the existing anonymous item path.
+Native place-items is a real shorthand, preserving inline writes/removal/cascade.
+Lists have block defaults; list-style:none/list-style-type:none preserve the native
+absence of markers. Other markers, general tracks/placement and broader replaced
+item sizing remain TODOs. The stored variadic Math TODO remains open; GitHub's open
+issue list was empty again during this unit.
+
+The fixed implicit-grid710 baseline refuses all eight declarations; 718 accepts
+8/8. The static CSS body inventory improves from 954/170/77 to 994/130/77; this still
+includes unused code and is not runtime coverage or an application percentage.
+Browser measurements are saved in grid716-browser.json/html. They confirm baseline,
+resize, hidden/self-aligned/live rows, auto margins and overflow geometry. Permanent
+native checks cover text, rendering/input, authored parents/selectors, shorthand
+updates/removal, row stretch, content alignment, minimum height and refusal boundaries.
+The 714 native fixture used a Windows near macro as a variable; renamed. 719's sole
+failure was an incorrect shorthand-removal expectation: removing the shorthand
+clears its inline longhands, which is now asserted. grid725 passes all six focused
+implicit/fractional/fixed-grid checks.
+
+presentation709 completed 780/780. population721 generates all 288 entries and the
+native bootstrap passes. grid721-regressions completes 781/782; its old refusal test
+still expected display:grid to fail and now tests unsupported inline-grid instead.
+grid-window722 used unsupported DOMRect x/y aliases; the fixture now uses the existing
+left/top fields. 723 exposed the old structural grid proof running on native implicit
+grids; uiStaticEffectiveGrid now exits early when no explicit projection can apply,
+preserving all existing explicit-grid proofs. A permanent generation check covers
+inline construction and placeItems mutation. grid-window725 passes both SDL_GPU and
+Dawn, with numeric geometry checks and unchanged DPWCDWMK replay/completion markers.
+grid726-regressions passes 782/782 without skips. A final review also found that
+static grid containers needed block stacking order, and their items needed atomic
+stacking like flex items. grid727 rebuilds that incremental correction; grid728
+passes three checks including overlapping static boxes and visibility. The mistakenly
+named flex path did not select the actual fixture; grid729-flex runs ui-flex.test.js.
+The next fixed control-spacing727 cohort refuses 10/10 declarations at baseline.
 
 Native GPU availability uses the optional HostServices graphics identity. Window
 services expose their existing device; child workers inherit those services.

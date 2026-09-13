@@ -1,0 +1,362 @@
+diff --git a/Include/RmlUi/Core/ComputedValues.h b/Include/RmlUi/Core/ComputedValues.h
+--- a/Include/RmlUi/Core/ComputedValues.h
++++ b/Include/RmlUi/Core/ComputedValues.h
+@@ -266,6 +266,8 @@
+ 		bool              has_local_transform()        const { return rare.has_local_transform; }
+ 		bool              has_local_perspective()      const { return rare.has_local_perspective; }
+ 		AlignContent      align_content()              const { return GetLocalPropertyKeyword(PropertyId::AlignContent, AlignContent::Stretch); }
++		AlignItems        justify_items()              const { return GetLocalPropertyKeyword(PropertyId::JustifyItems, AlignItems::Stretch); }
++		AlignSelf         justify_self()               const { return GetLocalPropertyKeyword(PropertyId::JustifySelf, AlignSelf::Auto); }
+ 		AlignItems        align_items()                const { return GetLocalPropertyKeyword(PropertyId::AlignItems, AlignItems::Stretch); }
+ 		AlignSelf         align_self()                 const { return GetLocalPropertyKeyword(PropertyId::AlignSelf, AlignSelf::Auto); }
+ 		FlexDirection     flex_direction()             const { return GetLocalPropertyKeyword(PropertyId::FlexDirection, FlexDirection::Row); }
+diff --git a/Include/RmlUi/Core/ID.h b/Include/RmlUi/Core/ID.h
+--- a/Include/RmlUi/Core/ID.h
++++ b/Include/RmlUi/Core/ID.h
+@@ -32,6 +32,7 @@
+ 	Flex,
+ 	FlexFlow,
+ 	Nav,
++	PlaceItems,
+ 
+ 	NumDefinedIds,
+ 	FirstCustomId = NumDefinedIds,
+@@ -160,6 +161,8 @@
+ 	RmlUi_Direction,
+ 	BackgroundClip,
+ 	BorderImage,
++	JustifyItems,
++	JustifySelf,
+ 
+ 	NumDefinedIds,
+ 	FirstCustomId = NumDefinedIds,
+diff --git a/Include/RmlUi/Core/StyleTypes.h b/Include/RmlUi/Core/StyleTypes.h
+--- a/Include/RmlUi/Core/StyleTypes.h
++++ b/Include/RmlUi/Core/StyleTypes.h
+@@ -42,7 +42,8 @@
+ 		TableRowGroup,
+ 		TableColumn,
+ 		TableColumnGroup,
+-		TableCell
++		TableCell,
++		Grid
+ 	};
+ 	enum class Position : uint8_t { Static, Relative, Absolute, Fixed };
+ 
+diff --git a/Source/Core/Element.cpp b/Source/Core/Element.cpp
+--- a/Source/Core/Element.cpp
++++ b/Source/Core/Element.cpp
+@@ -2387,7 +2387,7 @@
+ 
+ void Element::AddChildrenToStackingContext(Vector<StackingContextChild>& stacking_children)
+ {
+-	bool is_flex_container = (GetDisplay() == Style::Display::Flex);
++	bool is_flex_container = (GetDisplay() == Style::Display::Flex || GetDisplay() == Style::Display::Grid);
+ 	const int num_children = (int)children.size();
+ 	for (int i = 0; i < num_children; ++i)
+ 	{
+@@ -2451,6 +2451,7 @@
+ 		case Display::FlowRoot:
+ 		case Display::Table:
+ 		case Display::Flex:
++		case Display::Grid:
+ 			order = RenderOrder::Block;
+ 			render_as_atomic_unit = (display == Display::Table || is_flex_item);
+ 			break;
+diff --git a/Source/Core/ElementStyle.cpp b/Source/Core/ElementStyle.cpp
+--- a/Source/Core/ElementStyle.cpp
++++ b/Source/Core/ElementStyle.cpp
+@@ -1350,6 +1350,8 @@
+ 	case PropertyId::FlexShrink:
+ 	case PropertyId::FlexWrap:
+ 	case PropertyId::JustifyContent:
++	case PropertyId::JustifyItems:
++	case PropertyId::JustifySelf:
+ 		break;
+ 	// Navigation properties. Must be manually retrieved with 'GetProperty()'.
+ 	case PropertyId::NavUp:
+diff --git a/Source/Core/Layout/BlockFormattingContext.cpp b/Source/Core/Layout/BlockFormattingContext.cpp
+--- a/Source/Core/Layout/BlockFormattingContext.cpp
++++ b/Source/Core/Layout/BlockFormattingContext.cpp
+@@ -66,6 +66,7 @@
+ 	case Style::Display::Block:
+ 	case Style::Display::FlowRoot:
+ 	case Style::Display::Flex:
++	case Style::Display::Grid:
+ 	case Style::Display::Table: return OuterDisplayType::BlockLevel;
+ 
+ 	case Style::Display::Inline:
+diff --git a/Source/Core/Layout/FlexFormattingContext.cpp b/Source/Core/Layout/FlexFormattingContext.cpp
+--- a/Source/Core/Layout/FlexFormattingContext.cpp
++++ b/Source/Core/Layout/FlexFormattingContext.cpp
+@@ -9,6 +9,7 @@
+ #include <algorithm>
+ #include <float.h>
+ #include <numeric>
++#include <stdexcept>
+ 
+ namespace Rml {
+ 
+@@ -132,6 +133,7 @@
+ 	Size cross;
+ 	float flex_shrink_factor;
+ 	float flex_grow_factor;
++	Style::AlignSelf justify_self; // Implicit-grid inline alignment, independent of flex properties.
+ 	Style::AlignSelf align_self;  // 'Auto' is replaced by container's 'align-items' value
+ 
+ 	float inner_flex_base_size;   // Inner size
+@@ -167,10 +169,10 @@
+ 	Vector<FlexLine> lines;
+ };
+ 
+-static void GetItemSizing(FlexItem::Size& destination, const ComputedAxisSize& computed_size, const float base_value, const bool direction_reverse)
++static void GetItemSizing(FlexItem::Size& destination, const ComputedAxisSize& computed_size, const float base_value, const bool direction_reverse, const float edge_base_value = -1.f)
+ {
+ 	float margin_a, margin_b, padding_border_a, padding_border_b;
+-	LayoutDetails::GetEdgeSizes(margin_a, margin_b, padding_border_a, padding_border_b, computed_size, base_value);
++	LayoutDetails::GetEdgeSizes(margin_a, margin_b, padding_border_a, padding_border_b, computed_size, edge_base_value < 0.f ? base_value : edge_base_value);
+ 
+ 	const float padding_border = padding_border_a + padding_border_b;
+ 	const float margin = margin_a + margin_b;
+@@ -220,14 +222,15 @@
+ 	// For details, see https://drafts.csswg.org/css-flexbox/#layout-algorithm
+ 
+ 	const ComputedValues& computed_flex = element_flex->GetComputedValues();
+-	const Style::FlexDirection direction = computed_flex.flex_direction();
++	const bool implicit_grid = computed_flex.display() == Style::Display::Grid;
++	const Style::FlexDirection direction = implicit_grid ? Style::FlexDirection::Row : computed_flex.flex_direction();
+ 	const Style::LengthPercentage row_gap = computed_flex.row_gap();
+ 	const Style::LengthPercentage column_gap = computed_flex.column_gap();
+ 
+ 	const bool main_axis_horizontal = (direction == Style::FlexDirection::Row || direction == Style::FlexDirection::RowReverse);
+ 	const bool direction_reverse = (direction == Style::FlexDirection::RowReverse || direction == Style::FlexDirection::ColumnReverse);
+-	const bool flex_single_line = (computed_flex.flex_wrap() == Style::FlexWrap::Nowrap);
+-	const bool wrap_reverse = (computed_flex.flex_wrap() == Style::FlexWrap::WrapReverse);
++	const bool flex_single_line = !implicit_grid && (computed_flex.flex_wrap() == Style::FlexWrap::Nowrap);
++	const bool wrap_reverse = !implicit_grid && (computed_flex.flex_wrap() == Style::FlexWrap::WrapReverse);
+ 
+ 	const float main_available_size = (main_axis_horizontal ? flex_available_content_size.x : flex_available_content_size.y);
+ 	const float cross_available_size = (!main_axis_horizontal ? flex_available_content_size.x : flex_available_content_size.y);
+@@ -272,6 +275,16 @@
+ 			flex_container_box->AddRelativeElement(element);
+ 		}
+ 
++		if (implicit_grid) {
++			using namespace Style;
++			if (computed.width().type == LengthPercentageAuto::Percentage || computed.height().type == LengthPercentageAuto::Percentage ||
++				computed.min_width().type == LengthPercentage::Percentage || computed.max_width().type == LengthPercentage::Percentage ||
++				computed.min_height().type == LengthPercentage::Percentage || computed.max_height().type == LengthPercentage::Percentage)
++				throw std::runtime_error("Implicit UI grid percentage-dependent item sizing is not represented.");
++			if (computed.align_self() == AlignSelf::Baseline || computed.justify_self() == AlignSelf::Baseline ||
++				computed_flex.align_items() == AlignItems::Baseline || computed_flex.justify_items() == AlignItems::Baseline)
++				throw std::runtime_error("Implicit UI grid baseline alignment is not represented.");
++		}
+ 		FlexItem item = {};
+ 		item.element = element;
+ 		LayoutDetails::BuildBox(item.box, flex_content_containing_block, element, BuildBoxMode::UnalignedBlock);
+@@ -285,13 +298,16 @@
+ 				!main_axis_horizontal ? LayoutDetails::BuildComputedHorizontalSize(computed) : LayoutDetails::BuildComputedVerticalSize(computed);
+ 
+ 			GetItemSizing(item.main, computed_main_size, main_size_base_value, direction_reverse);
+-			GetItemSizing(item.cross, computed_cross_size, cross_size_base_value, wrap_reverse);
++			GetItemSizing(item.cross, computed_cross_size, cross_size_base_value, wrap_reverse, implicit_grid ? main_size_base_value : -1.f);
+ 
+ 			item_main_size = computed_main_size.size;
+ 		}
+ 
+-		item.flex_shrink_factor = computed.flex_shrink();
+-		item.flex_grow_factor = computed.flex_grow();
++		item.flex_shrink_factor = implicit_grid ? 0.f : computed.flex_shrink();
++		item.flex_grow_factor = implicit_grid ? 0.f : computed.flex_grow();
++		item.justify_self = computed.justify_self();
++		if (item.justify_self == Style::AlignSelf::Auto)
++			item.justify_self = static_cast<Style::AlignSelf>(static_cast<int>(computed_flex.justify_items()) + 1);
+ 		item.align_self = computed.align_self();
+ 
+ 		static_assert(int(Style::AlignSelf::FlexStart) == int(Style::AlignItems::FlexStart) + 1 &&
+@@ -302,12 +318,18 @@
+ 		if (item.align_self == Style::AlignSelf::Auto)
+ 			item.align_self = static_cast<Style::AlignSelf>(static_cast<int>(computed_flex.align_items()) + 1);
+ 
++		if (implicit_grid && element->IsReplaced()) {
++			if (computed.justify_self() == Style::AlignSelf::Auto && !element_flex->GetLocalProperty(PropertyId::JustifyItems))
++				item.justify_self = Style::AlignSelf::Start;
++			if (computed.align_self() == Style::AlignSelf::Auto && !element_flex->GetLocalProperty(PropertyId::AlignItems))
++				item.align_self = Style::AlignSelf::Start;
++		}
+ 		auto GetMainSize = [&](const Box& box) { return box.GetSize()[main_axis_horizontal ? 0 : 1]; };
+ 
+ 		const float sum_padding_border = item.main.sum_edges - (item.main.margin_a + item.main.margin_b);
+ 
+ 		// Find the flex base size (possibly negative when using border box sizing)
+-		if (computed.flex_basis().type != Style::FlexBasis::Auto)
++		if (!implicit_grid && computed.flex_basis().type != Style::FlexBasis::Auto)
+ 		{
+ 			item.inner_flex_base_size = ResolveValue(computed.flex_basis(), main_size_base_value);
+ 			if (computed.box_sizing() == Style::BoxSizing::BorderBox)
+@@ -377,7 +399,7 @@
+ 		{
+ 			cursor += item.hypothetical_main_size;
+ 
+-			if (!line_items.empty() && cursor > main_wrap_size)
++			if (!line_items.empty() && (implicit_grid || cursor > main_wrap_size))
+ 			{
+ 				// Break into new line.
+ 				container.lines.emplace_back(std::move(line_items));
+@@ -425,7 +447,26 @@
+ 			  return a.accumulated_hypothetical_main_size < b.accumulated_hypothetical_main_size;
+ 		  })->accumulated_hypothetical_main_size;
+ 
+-	const float used_main_size = Math::Clamp(used_main_size_unconstrained, main_min_size, main_max_size);
++	float used_main_size = Math::Clamp(used_main_size_unconstrained, main_min_size, main_max_size);
++	float grid_inline_offset = 0.f;
++	if (implicit_grid) {
++		const float intrinsic_column = std::max_element(container.lines.begin(), container.lines.end(), [](const FlexLine& a, const FlexLine& b) {
++			return a.accumulated_hypothetical_main_size < b.accumulated_hypothetical_main_size;
++		})->accumulated_hypothetical_main_size;
++		if (element_flex->GetLocalProperty(PropertyId::JustifyContent)) {
++			const float remaining = used_main_size - intrinsic_column;
++			using Style::JustifyContent;
++			const auto justify = computed_flex.justify_content();
++			if (justify == JustifyContent::Center || justify == JustifyContent::SpaceAround || justify == JustifyContent::SpaceEvenly)
++				grid_inline_offset = remaining * 0.5f;
++			else if (justify == JustifyContent::End || justify == JustifyContent::FlexEnd)
++				grid_inline_offset = remaining;
++			used_main_size = intrinsic_column;
++		} else {
++			// Auto tracks cannot shrink below the largest minimum item contribution.
++			used_main_size = Math::Max(used_main_size, intrinsic_column);
++		}
++	}
+ 
+ 	// -- Determine main size --
+ 	// Resolve flexible lengths to find the used main size of all items.
+@@ -553,7 +594,23 @@
+ 		const float remaining_free_space = used_main_size -
+ 			std::accumulate(line.items.begin(), line.items.end(), 0.f, [](float value, const FlexItem& item) { return value + item.used_main_size; });
+ 
+-		if (remaining_free_space > 0.0f)
++		if (implicit_grid) {
++			// One auto column: each item gets its own auto row. Reuse intrinsic
++			// sizing and row alignment without inserting DOM containers or applying flex.
++			FlexItem& item = line.items.front();
++			if (remaining_free_space > 0.f && (item.main.auto_margin_a || item.main.auto_margin_b)) {
++				const float share = remaining_free_space / float(int(item.main.auto_margin_a) + int(item.main.auto_margin_b));
++				item.main_auto_margin_size_a = item.main.auto_margin_a ? share : 0.f;
++				item.main_auto_margin_size_b = item.main.auto_margin_b ? share : 0.f;
++			} else if (item.justify_self == Style::AlignSelf::Center) {
++				item.main_auto_margin_size_a = remaining_free_space * 0.5f;
++			} else if (item.justify_self == Style::AlignSelf::End || item.justify_self == Style::AlignSelf::FlexEnd) {
++				item.main_auto_margin_size_a = remaining_free_space;
++			} else if (item.justify_self == Style::AlignSelf::Stretch && item.main.auto_size &&
++				!item.main.auto_margin_a && !item.main.auto_margin_b) {
++				item.used_main_size = Math::Clamp(used_main_size - item.main.sum_edges, item.main.min_size, item.main.max_size) + item.main.sum_edges;
++			}
++		} else if (remaining_free_space > 0.0f)
+ 		{
+ 			const int num_auto_margins = std::accumulate(line.items.begin(), line.items.end(), 0,
+ 				[](int value, const FlexItem& item) { return value + int(item.main.auto_margin_a) + int(item.main.auto_margin_b); });
+@@ -642,14 +699,14 @@
+ 			if (direction_reverse)
+ 				item.main_offset = used_main_size - (cursor + item.used_main_size + item.main_auto_margin_size_a - item.main.margin_b);
+ 			else
+-				item.main_offset = cursor + item.main.margin_a + item.main_auto_margin_size_a;
++				item.main_offset = grid_inline_offset + cursor + item.main.margin_a + item.main_auto_margin_size_a;
+ 
+ 			cursor += item.used_main_size + item.main_auto_margin_size_a + item.main_auto_margin_size_b;
+ 		}
+ 	}
+ 
+ 	// Apply cross axis gaps to every item in every line except the last line.
+-	if (cross_gap_size > 0.f)
++	if (!implicit_grid && cross_gap_size > 0.f)
+ 	{
+ 		for (size_t i = 0; i < container.lines.size() - 1; i++)
+ 		{
+@@ -736,20 +793,27 @@
+ 		}
+ 	}
+ 
++	const float grid_gap_total = implicit_grid ? cross_gap_size * float(container.lines.size() - 1) : 0.f;
++	const float grid_intrinsic_height = grid_gap_total + std::accumulate(container.lines.begin(), container.lines.end(), 0.f,
++		[](float value, const FlexLine& line) { return value + line.cross_size; });
++	const float row_stretch_size = implicit_grid
++		? Math::Clamp(cross_available_size >= 0.f ? cross_available_size : grid_intrinsic_height, cross_min_size, cross_max_size)
++		: cross_available_size;
+ 	// Stretch out the lines if we have extra space.
+-	if (cross_available_size >= 0.f && computed_flex.align_content() == Style::AlignContent::Stretch)
+-	{
+-		int remaining_space = static_cast<int>(cross_available_size -
++	if (row_stretch_size >= 0.f && computed_flex.align_content() == Style::AlignContent::Stretch)
++	{
++		float remaining_space = row_stretch_size - grid_gap_total -
+ 			std::accumulate(container.lines.begin(), container.lines.end(), 0.f,
+-				[](float value, const FlexLine& line) { return value + line.cross_size; }));
+-
++				[](float value, const FlexLine& line) { return value + line.cross_size; });
++
++		if (!implicit_grid) remaining_space = float(int(remaining_space));
+ 		if (remaining_space > 0)
+ 		{
+ 			// Here we use integer math to ensure all space is distributed to pixel boundaries.
+ 			const int num_lines = (int)container.lines.size();
+ 			for (int i = 0; i < num_lines; i++)
+ 			{
+-				const int add_space_to_line = remaining_space / (num_lines - i);
++				const float add_space_to_line = implicit_grid ? remaining_space / float(num_lines - i) : float(int(remaining_space) / (num_lines - i));
+ 				remaining_space -= add_space_to_line;
+ 				container.lines[i].cross_size += static_cast<float>(add_space_to_line);
+ 			}
+@@ -863,7 +927,7 @@
+ 		}
+ 	}
+ 
+-	const float accumulated_lines_cross_size = std::accumulate(container.lines.begin(), container.lines.end(), 0.f,
++	const float accumulated_lines_cross_size = grid_gap_total + std::accumulate(container.lines.begin(), container.lines.end(), 0.f,
+ 		[](float value, const FlexLine& line) { return value + line.cross_size; });
+ 
+ 	// If the available cross size is infinite, the used cross size becomes the accumulated line cross size.
+@@ -948,7 +1012,7 @@
+ 			else
+ 				line.cross_offset = cursor + line.cross_spacing_a;
+ 
+-			cursor += line.cross_spacing_a + line.cross_size + line.cross_spacing_b;
++			cursor += line.cross_spacing_a + line.cross_size + line.cross_spacing_b + (implicit_grid ? cross_gap_size : 0.f);
+ 		}
+ 	}
+ 
+diff --git a/Source/Core/Layout/FormattingContext.cpp b/Source/Core/Layout/FormattingContext.cpp
+--- a/Source/Core/Layout/FormattingContext.cpp
++++ b/Source/Core/Layout/FormattingContext.cpp
+@@ -23,7 +23,7 @@
+ 
+ 	auto& computed = element->GetComputedValues();
+ 	const Display display = computed.display();
+-	if (display == Display::Flex || display == Display::InlineFlex)
++	if (display == Display::Flex || display == Display::InlineFlex || display == Display::Grid)
+ 	{
+ 		type = FormattingContextType::Flex;
+ 	}
+diff --git a/Source/Core/StyleSheetSpecification.cpp b/Source/Core/StyleSheetSpecification.cpp
+--- a/Source/Core/StyleSheetSpecification.cpp
++++ b/Source/Core/StyleSheetSpecification.cpp
+@@ -304,7 +304,7 @@
+ 	RegisterShorthand(ShorthandId::BorderRadius, "border-radius", "border-top-left-radius, border-top-right-radius, border-bottom-right-radius, border-bottom-left-radius", ShorthandType::Box);
+ 
+ 	RegisterProperty(PropertyId::Display, "display", "inline", false, true)
+-		.AddParser("keyword", "none, block, inline, inline-block, flow-root, flex, inline-flex, table, inline-table, table-row, table-row-group, table-column, table-column-group, table-cell");
++		.AddParser("keyword", "none, block, inline, inline-block, flow-root, flex, inline-flex, table, inline-table, table-row, table-row-group, table-column, table-column-group, table-cell, grid");
+ 	RegisterProperty(PropertyId::Position, "position", "static", false, true).AddParser("keyword", "static, relative, absolute, fixed");
+ 	RegisterProperty(PropertyId::Top, "top", "auto", false, false).AddParser("keyword", "auto").AddParser("length_percent").SetRelativeTarget(RelativeTarget::ContainingBlockHeight);
+ 	RegisterProperty(PropertyId::Right, "right", "auto", false, false).AddParser("keyword", "auto").AddParser("length_percent").SetRelativeTarget(RelativeTarget::ContainingBlockWidth);
+@@ -420,7 +420,10 @@
+ 
+ 	// Flexbox
+ 	RegisterProperty(PropertyId::AlignContent, "align-content", "stretch", false, true).AddParser("keyword", "flex-start, flex-end, center, space-between, space-around, space-evenly, stretch, start, end");
++	RegisterProperty(PropertyId::JustifyItems, "justify-items", "stretch", false, true).AddParser("keyword", "flex-start, flex-end, center, baseline, stretch, start, end");
++	RegisterProperty(PropertyId::JustifySelf, "justify-self", "auto", false, true).AddParser("keyword", "auto, flex-start, flex-end, center, baseline, stretch, start, end");
+ 	RegisterProperty(PropertyId::AlignItems, "align-items", "stretch", false, true).AddParser("keyword", "flex-start, flex-end, center, baseline, stretch, start, end");
++	RegisterShorthand(ShorthandId::PlaceItems, "place-items", "align-items, justify-items", ShorthandType::Replicate);
+ 	RegisterProperty(PropertyId::AlignSelf, "align-self", "auto", false, true).AddParser("keyword", "auto, flex-start, flex-end, center, baseline, stretch, start, end");
+ 
+ 	RegisterProperty(PropertyId::FlexBasis, "flex-basis", "auto", false, true).AddParser("keyword", "auto").AddParser("length_percent");

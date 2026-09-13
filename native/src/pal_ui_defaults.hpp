@@ -8,6 +8,8 @@ namespace bbl::pal {
 // unbound innerHTML descendants. Keep one sheet for the PAL and layout fixtures.
 inline constexpr std::string_view ui_user_agent_css =
     "div,canvas{display:block;}\n"
+    "ul,ol{display:block;margin:1em 0;padding-left:40px;}\n"
+    "li{display:block;}\n"
     "[hidden]{display:none;}\n"
     "h1{display:block;font-size:2em;font-weight:bold;margin:0.67em 0;}\n"
     "h2{display:block;font-size:1.5em;font-weight:bold;margin:0.83em 0;}\n"

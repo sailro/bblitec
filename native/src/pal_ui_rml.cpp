@@ -4066,7 +4066,7 @@ struct UiRmlRuntime {
         std::string_view resolved_display) const {
         const std::string display =
             normalized_css_keyword(resolved_display);
-        return display == "flex" || display == "inline-flex";
+        return display == "flex" || display == "inline-flex" || display == "grid";
     }
 
     Rml::ElementPtr create_text_content(
@@ -4139,7 +4139,7 @@ struct UiRmlRuntime {
                     created = changed = true;
                 }
                 const auto display = box->GetComputedValues().display();
-                const bool wrapped = display == Rml::Style::Display::Flex || display == Rml::Style::Display::InlineFlex;
+                const bool wrapped = display == Rml::Style::Display::Flex || display == Rml::Style::Display::InlineFlex || display == Rml::Style::Display::Grid;
                 if (created || box->GetAttribute<Rml::String>("bbl-text", "") != text || box->GetAttribute<bool>("bbl-wrapped", false) != wrapped) {
                     while (box->GetNumChildren()) box->RemoveChild(box->GetChild(0));
                     if (!text.empty()) {

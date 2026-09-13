@@ -963,6 +963,8 @@ export class UiProjection {
         "height",
         "inset",
         "justify-content",
+        "justify-items",
+        "justify-self",
         "left",
         "letter-spacing",
         "line-height",
@@ -987,6 +989,7 @@ export class UiProjection {
         "padding-right",
         "padding-top",
         "pointer-events",
+        "place-items",
         "position",
         "right",
         "row-gap",
@@ -1023,12 +1026,18 @@ export class UiProjection {
         ["text-overflow", ["clip", "ellipsis"]],
         ["font-style", ["normal", "italic"]],
         ["-webkit-user-drag", ["none"]],
+        ["list-style", ["none"]],
+        ["list-style-type", ["none"]],
+        ["justify-items", ["start", "end", "center", "stretch"]],
+        ["justify-self", ["auto", "start", "end", "center", "stretch"]],
     ]);
 
     private static readonly INERT_UI_STYLE_PROPERTIES = new EmissionSet<string>([
         "-webkit-user-select",
         "-webkit-user-drag",
         "image-rendering",
+        "list-style",
+        "list-style-type",
         "touch-action",
         "user-select",
         "will-change",
@@ -1547,6 +1556,12 @@ export class UiProjection {
                 .toLowerCase();
             if (property.length === 0) return;
             if (UiProjection.isCustomStyleProperty(property)) return;
+            if ((projectsGrid || fractionalTracks) && (property === "place-items" || property === "justify-items")) {
+                this.uiStyleRefusal(site, property, "item alignment requires the native implicit grid; explicit track projections do not represent it");
+            }
+            if (property === "place-items" && !/^(?:start|end|center|stretch)(?:\s+(?:start|end|center|stretch))?$/.test(literalValue)) {
+                this.uiStyleRefusal(site, property, "only one or two start, end, center or stretch keywords are represented");
+            }
             const keywords = UiProjection.PRESENTATION_KEYWORDS.get(property);
             if (keywords && !keywords.includes(literalValue)) {
                 this.uiStyleRefusal(site, property, `only ${keywords.join(", ")} are represented`);
@@ -1715,7 +1730,8 @@ export class UiProjection {
             if (
                 property === "display" &&
                 /\bgrid\b/.test(literalValue) &&
-                !projectsGrid && !fractionalTracks
+                !projectsGrid && !fractionalTracks &&
+                (literalValue !== "grid" || UiProjection.uiLastStyleProperty(value, "grid-template-columns") !== undefined)
             ) {
                 this.uiStyleRefusal(
                     site,
@@ -2210,7 +2226,9 @@ export class UiProjection {
             }
         }
 
-        // RmlUi 6.4 has no CSS Grid formatting context. Mark the reached
+        // Explicit tracks retain the existing structural projections. The
+        // patched native formatter handles one implicit auto column directly.
+        // Mark the reached
         // regular `repeat(N, px)` surface for the PAL to project as a
         // full-width outer box with a centred wrapping-flex inner box. Keeping
         // those boxes separate matters: in the browser the Tetris preview's
@@ -2444,11 +2462,16 @@ export class UiProjection {
                 const sourceStyle = body.trim();
                 if (inheritedMaxWidth !== undefined) {
                     const mediaProperties = new EmissionSet([
+                        "align-items",
+                        "align-self",
                         "bottom",
                         "content",
                         "font-size",
                         "height",
                         "left",
+                        "justify-items",
+                        "justify-self",
+                        "place-items",
                         "max-height",
                         "max-width",
                         "min-height",
@@ -2470,7 +2493,7 @@ export class UiProjection {
                                 this.uiStyleRefusal(
                                     site,
                                     property,
-                                    "max-width rules are bounded to the reached position, size, and font-size overrides",
+                                    "max-width rules are bounded to the reached position, size, item alignment and font-size overrides",
                                 );
                             }
                         },
@@ -3182,6 +3205,9 @@ export class UiProjection {
             element.styles.some(
                 (style) => this.uiGridFromLoweredStyle(style) !== undefined,
             );
+        // Native implicit grids preserve their authored tree and need no
+        // structural projection proof. Keep this proof for explicit tracks.
+        if (!possibleGrid) return undefined;
         const refuseAlternative = (
             reason: string,
             rule?: LoweredUiStyleRule,
@@ -3726,6 +3752,14 @@ export class UiProjection {
         try {
             for (const [id, element] of this.uiStaticElements) {
                 const tracks = this.uiStaticElementStylePropertyValues(id, "--bbl-fr-grid-tracks");
+                const fixedColumns = this.uiStaticElementStylePropertyValues(id, "--bbl-grid-columns");
+                if ([...tracks, ...fixedColumns].some(value => value !== undefined)) {
+                    for (const property of ["place-items", "justify-items"]) {
+                        if ([...this.uiStaticElementStylePropertyValues(id, property)].some(value => value !== undefined)) {
+                            this.context.failAtFile("Grid item alignment is not represented by the explicit track projections.");
+                        }
+                    }
+                }
                 if ([...tracks].some(value => value !== undefined) &&
                     (tracks.size !== 1 || !this.uiStaticStyleCascadeKnown || this.uiConditionallyRemovedStyles.size > 0)) {
                     this.context.failAtFile("A fractional UI grid requires one stable track list in a statically known style cascade.");
