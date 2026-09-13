@@ -1077,7 +1077,9 @@ function compileArrayFind(state: ArrayMethodState): Value {
         }
         lowerer.context.emit(`if (${matched.cpp}) {`);
         lowerer.context.increaseIndent();
-        lowerer.context.emit(`${result} = ${source}[${index}];`);
+        const selected = lowerer.leafValue(`${source}[${index}]`, dataType.element);
+        const stored = lowerer.compileKnownValueForSink(selected, resultType, call);
+        lowerer.context.emit(`${result} = ${stored};`);
         lowerer.context.emit("break;");
         lowerer.context.decreaseIndent();
         lowerer.context.emit("}");

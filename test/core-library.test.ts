@@ -10,6 +10,23 @@ import { optionalNativeFixtureTools, runNativeFixtureCompiler } from "./native-f
 
 const native = optionalNativeFixtureTools(false);
 
+check("array find adapts retained elements to the selected result storage", `
+    const names=["left","right"] as const;
+    const weights:Record<typeof names[number],number>={left:1,right:2};
+    function selected(weight:number) {return names.find(name=>weights[name]===weight);}
+    const queries=[1,2,3];
+    for(const query of queries){
+        const found=selected(query);
+        if((query===1&&found!=="left")||(query===2&&found!=="right")||(query===3&&found!==undefined))
+            throw new Error("literal tuple find result");
+    }
+    const rows:Array<{name:string;value:number}>=[{name:"first",value:1},{name:"second",value:2}];
+    const found=rows.find(row=>row.value===2);
+    if(!found||found!==rows[1])throw new Error("found record identity");
+    found.value=7;
+    if(rows[1]!.value!==7)throw new Error("found record alias");
+`);
+
 check("generic recursive returns preserve synchronous type parameters", `
     function retain<T>(value:T,depth:number):T {return depth>0?retain(value,depth-1):value;}
     if(retain(3,2)!==3 || retain("value",2)!=="value") throw new Error("generic scalar");

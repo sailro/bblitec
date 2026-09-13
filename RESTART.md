@@ -8,6 +8,24 @@ dependencies will not be present in a fresh clone.
 
 ## Read this first
 
+**Current unit: Array.find result storage.** String unit `22193c6a` is committed
+and pushed. compileArrayFind now passes the selected source element through the
+normal known-value sink for its result type. This converts a widened string-table
+element to the declared nullable enum and retains reference-record aliases.
+`find938-before` reproduces the C++ assignment failure in a neutral readonly tuple
+test. `find939-focused` passes both JavaScript and native assertions after the fix,
+including retained record identity/writes. `find940-regressions` passes 35/35
+core-library and recursive JSON checks without skips.
+
+The unchanged input-module probe now compiles as C++; its remaining standalone
+link dependencies are real locale/storage PAL services. check-generated-native.mjs
+accepts --pal to link pal.cpp, pal_storage.cpp and pal_build_stamp.cpp with SDL3,
+using a generated probe digest header and isolated BBLITE_LOCAL_STORAGE_ROOT.
+input941 lacked the build stamp function; input942 lacked its generated include;
+input943-native is the current attempt with the complete fixture link setup.
+Do not change CPP/PAL inputs while it runs. This is a real-service probe, not a
+substitute implementation of the application module. Next rerun the full entry.
+
 **Current follow-up: guarded string methods and constant captures.** Optional unit
 `24b2c67f` is committed/pushed. Full `compile931` stopped in 12.63 seconds at a
 guarded toLowerCase on a JSON parameter (input-binding normalization), earlier than
