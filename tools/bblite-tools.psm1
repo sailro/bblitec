@@ -155,7 +155,8 @@ function Read-CMakeCache([string]$Path) {
 }
 
 # Match Unix scene builds; explicit CC/CXX select a compatible host toolchain.
-function Get-PosixCompilerArguments {
+function Get-PosixCompilerArguments([ValidateSet('', 'x86_64', 'arm64')][string]$MacArchitecture = '') {
+    if ($MacArchitecture -and -not $IsMacOS) { throw '-MacArchitecture requires macOS.' }
     if (-not $IsLinux -and -not $IsMacOS) { return @() }
     $ccName = if ($env:CC) { $env:CC } else { "clang" }
     $cxxName = if ($env:CXX) { $env:CXX } else { "clang++" }
@@ -164,6 +165,7 @@ function Get-PosixCompilerArguments {
     $arguments = @("-DCMAKE_C_COMPILER=$($ccTool.Source)", "-DCMAKE_CXX_COMPILER=$($cxxTool.Source)")
     if ($IsMacOS) {
         $arguments += @("-DCMAKE_OBJC_COMPILER=$($ccTool.Source)", "-DCMAKE_OBJCXX_COMPILER=$($cxxTool.Source)")
+        if ($MacArchitecture) { $arguments += "-DCMAKE_OSX_ARCHITECTURES=$MacArchitecture" }
     }
     return $arguments
 }
