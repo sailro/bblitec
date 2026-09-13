@@ -925,6 +925,19 @@ export class UiProjection {
         "background-clip",
         "border",
         "border-color",
+        "border-top",
+        "border-right",
+        "border-bottom",
+        "border-left",
+        "border-width",
+        "border-top-width",
+        "border-right-width",
+        "border-bottom-width",
+        "border-left-width",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color",
         "border-image",
         "border-radius",
         "box-sizing",
@@ -944,6 +957,7 @@ export class UiProjection {
         "font",
         "font-family",
         "font-size",
+        "font-style",
         "font-weight",
         "gap",
         "height",
@@ -981,9 +995,13 @@ export class UiProjection {
         "scrollbar-color",
         "text-align",
         "text-shadow",
+        "text-transform",
+        "text-overflow",
         "top",
         "transform",
+        "transform-origin",
         "transition",
+        "visibility",
         "white-space",
         "word-break",
         "word-wrap",
@@ -999,8 +1017,17 @@ export class UiProjection {
      * have, and `image-rendering` is superseded by the sampling intent the
      * retained canvas commands already carry per blit.
      */
+    private static readonly PRESENTATION_KEYWORDS: ReadonlyMap<string, readonly string[]> = new Map([
+        ["visibility", ["visible", "hidden"]],
+        ["text-transform", ["none", "uppercase", "lowercase", "capitalize"]],
+        ["text-overflow", ["clip", "ellipsis"]],
+        ["font-style", ["normal", "italic"]],
+        ["-webkit-user-drag", ["none"]],
+    ]);
+
     private static readonly INERT_UI_STYLE_PROPERTIES = new EmissionSet<string>([
         "-webkit-user-select",
+        "-webkit-user-drag",
         "image-rendering",
         "touch-action",
         "user-select",
@@ -1520,6 +1547,23 @@ export class UiProjection {
                 .toLowerCase();
             if (property.length === 0) return;
             if (UiProjection.isCustomStyleProperty(property)) return;
+            const keywords = UiProjection.PRESENTATION_KEYWORDS.get(property);
+            if (keywords && !keywords.includes(literalValue)) {
+                this.uiStyleRefusal(site, property, `only ${keywords.join(", ")} are represented`);
+            }
+            if (/^border-(?:top|right|bottom|left)$/.test(property) &&
+                !/^(?:none|0|(?:0|\d+(?:\.\d+)?(?:px|em|rem))\s+solid\s+(?:#[0-9a-f]{3,8}|rgba?\([^;]+\)|[a-z]+))$/.test(literalValue)) {
+                this.uiStyleRefusal(site, property, "only none, zero or a literal solid width and color are represented");
+            }
+            if (/^border(?:-(?:top|right|bottom|left))?-width$/.test(property) &&
+                (!/^(?:0|\d+(?:\.\d+)?(?:px|em|rem))(?:\s+(?:0|\d+(?:\.\d+)?(?:px|em|rem))){0,3}$/.test(literalValue) ||
+                    (property !== "border-width" && /\s/.test(literalValue)))) {
+                this.uiStyleRefusal(site, property, "only nonnegative literal border widths are represented");
+            }
+            if (property === "transform-origin" &&
+                !/^(?:(?:left|center|right|top|bottom)|(?:0|[+-]?\d+(?:\.\d+)?(?:px|em|rem|%))|(?:left|center|right|0|[+-]?\d+(?:\.\d+)?(?:px|em|rem|%))\s+(?:top|center|bottom|0|[+-]?\d+(?:\.\d+)?(?:px|em|rem|%))(?:\s+(?:0|[+-]?\d+(?:\.\d+)?(?:px|em|rem)))?)$/.test(literalValue)) {
+                this.uiStyleRefusal(site, property, "only literal horizontal/vertical origins with an optional depth are represented");
+            }
             if (property === "object-fit" && !/^(?:fill|contain|cover|none|scale-down)$/.test(literalValue)) {
                 this.uiStyleRefusal(site, property, "only fill, contain, cover, none and scale-down are represented");
             }
@@ -1965,6 +2009,7 @@ export class UiProjection {
             UiProjection.forEachUiStyleDeclaration(value, declaration => {
                 const colon = declaration.indexOf(":");
                 const property = declaration.slice(0, colon).trim().toLowerCase();
+                if (colon >= 0 && UiProjection.INERT_UI_STYLE_PROPERTIES.has(property)) return;
                 let lowered = declaration;
                 if (colon >= 0 && property === "border-image") {
                     lowered = `border-image:${this.lowerUiBorderImage(declaration.slice(colon + 1), site)}`;
@@ -2114,10 +2159,10 @@ export class UiProjection {
             // Translate the ordinary browser spelling instead of letting the
             // entire declaration be rejected by its shorthand parser.
             .replace(
-                /\bborder\s*:\s*([^;\s]+)\s+solid\s+([^;]+)\s*;?/gi,
-                "border:$1 $2;",
+                /\b(border(?:-(?:top|right|bottom|left))?)\s*:\s*([^;\s]+)\s+solid\s+([^;]+)\s*;?/gi,
+                "$1:$2 $3;",
             )
-            .replace(/\bborder\s*:\s*none\s*;?/gi, "border:0 transparent;")
+            .replace(/\b(border(?:-(?:top|right|bottom|left))?)\s*:\s*none\s*;?/gi, "$1:0 transparent;")
             .replace(/\bborder\s*:/gi, `${UiProjection.uiShorthandResetStyle("border")}border:`)
             .replace(/\bbackground-size\s*:[^;]*;?/gi, "")
             .replace(

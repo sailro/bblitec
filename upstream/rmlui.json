@@ -17,6 +17,7 @@
     "rmlui-selector-functions.patch",
     "rmlui-solid-background-clip.patch",
     "rmlui-textured-borders.patch",
-    "rmlui-transform-key-ownership.patch"
+    "rmlui-transform-key-ownership.patch",
+    "rmlui-visibility.patch"
   ]
 }

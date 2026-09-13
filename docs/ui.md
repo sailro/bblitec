@@ -171,6 +171,19 @@ bounded shorthands, backgrounds, gradients, rounded borders, text effects and
 deterministic CSS animation. Inherited `overflow-wrap` (`word-wrap`) supports `normal`, `break-word`
 and `anywhere`; `word-break` supports `normal`, `break-all` and `break-word`. They use the native
 line breaker and honor `white-space`; browser min-content sizing is not modeled.
+`visibility:visible/hidden` inherits without removing layout. Explicitly visible descendants
+can paint, receive pointer input and take native focus beneath a hidden ancestor; `display:none`
+still removes the whole subtree. Class/stylesheet transitions support delayed zero-duration
+visibility changes, preserving a fade until hiding completes. This follows the
+[CSS visibility model](https://www.w3.org/TR/css-display-3/#visibility).
+Inline style writes update visibility but do not currently initiate transitions.
+Text presentation supports normal/italic font style, none/uppercase/lowercase/capitalize transforms,
+and clip/ellipsis overflow. Native font shaping and casing remain the limits of the text projection.
+Literal transform origins accept a single keyword/length or horizontal then vertical components,
+with an optional depth length. Visibility collapse, oblique fonts, custom overflow strings and
+vertical-first origin pairs remain unsupported.
+Physical border sides accept none, zero or a literal solid width/color; width and color longhands
+retain independent edges. Border widths accept nonnegative px/em/rem lengths and zero.
 Flex containers support wrapping and reversed directions, item grow/shrink/basis,
 numeric `flex` shorthands, `flex-flow`, line/item alignment, and separate row/column gaps.
 `start`/`end` alignment follows the physical axis when flex direction or wrapping reverses.
@@ -265,6 +278,7 @@ native range painting follows browser geometry and control states.
 | --- | --- |
 | `rmlui-css-box-model.patch` | Solid backgrounds under borders; offset shrink-to-fit sizing |
 | `rmlui-css-declarations.patch` | Preserve quoted/escaped values and nested blocks across declaration boundaries |
+| `rmlui-visibility.patch` | Inherit visibility while retaining visible descendants in paint/input/focus; admit delayed zero-duration transitions |
 | `rmlui-fragment-root.patch` | Parse inline fragments under a custom document tag without an XML handler |
 | `rmlui-generated-content.patch` | Originating-element styles for generated boxes; preserve authored query, serialization and structural-selector semantics |
 | `rmlui-selector-functions.patch` | Selector-list/relative matching and invalidation; widget-owned placeholder text styles |
@@ -310,6 +324,7 @@ Runtime track replacement and implicit extra rows refuse. Form dimensions suppor
   modes refuse. Saved layer textures and general mask-image filters are unsupported.
 - blur(px)/none are supported; other reached backdrop functions can degrade.
 - will-change, touch-action, user-select and image-rendering are accepted hints.
+  `-webkit-user-drag:none` keeps the native image default of no drag initiation; other values refuse.
 - Abort signals and explicit pointer-capture lifecycle remain unsupported.
   Focus and form-input callbacks retain their earlier per-element dispatch path.
 - element.animate and removal of listeners outside the shared input dispatch remain no-ops;

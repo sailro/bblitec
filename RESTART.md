@@ -26,7 +26,7 @@ broader regression checks at useful batch boundaries. Unknown requirements stay
 visible; do not invent an overall completion percentage from static counts.
 
 **The external application does not fully compile yet.** Native graphics availability now opens the intended startup branch; generation
-stops on newly reached retained CSS visibility. Its native build and intended
+stops on remaining list/grid CSS presentation. Its native build and intended
 application runtime have never been reached. A green sweep validates the registered corpus;
 it does not establish that this external application compiles or runs.
 
@@ -36,7 +36,7 @@ it does not establish that this external application compiles or runs.
 | Branch | `codex/external-project-support` |
 | Remote | `https://github.com/sailro/bblitec.git` |
 | Branch base used in this session | `3474e835` on `main` |
-| Latest executable-code/test unit | Owned asynchronous methods and lazy promise conditionals; prior savepoints `0bdfc5b1` (native graphics availability), `613d52b6` (image/promise startup readiness), `8af15082` (asynchronous startup), `f699ad6b` (promise cleanup), `059bfbca` (generic/nested/defaulted destructuring), `bdce7a97` (captured lexical initialization), `bc21486a` (scheduled audio events), `95b04043` (async control flow), `e5ea2607` (async collections), `24281f2c` (promise caches/reactions), `53ba4164` (recursive async and hardened validation) and `f5cd2061` (AudioBuffer surface) |
+| Latest executable-code/test unit | Retained CSS presentation/visibility; prior savepoints `a81992d4` (owned async methods and promise selection), `0bdfc5b1` (native graphics availability), `613d52b6` (image/promise startup readiness), `8af15082` (asynchronous startup), `f699ad6b` (promise cleanup), `059bfbca` (generic/nested/defaulted destructuring), `bdce7a97` (captured lexical initialization), `bc21486a` (scheduled audio events), `95b04043` (async control flow), `e5ea2607` (async collections), `24281f2c` (promise caches/reactions), `53ba4164` (recursive async and hardened validation) and `f5cd2061` (AudioBuffer surface) |
 | Draft PR | [#247 — Extend generic application compilation and retained UI support](https://github.com/sailro/bblitec/pull/247) |
 | External checkout | `C:/Dev/_prototypes/external-native-app` |
 | External source revision | `d7c477a6d5963680c55249dceb93cb6e4ab9ce56` |
@@ -44,12 +44,14 @@ it does not establish that this external application compiles or runs.
 | External generated output | `generated/external-app` (ignored; not a successful complete generation) |
 | Session diagnostics | `artifacts/external-integration` (ignored) |
 
-Latest complete-entry attempt: `compile693` passes conditional async startup and
-stops on retained CSS `visibility` in a newly reached stylesheet, after 184.5
-seconds. Next batch must assess the styles as a group, including visibility and
-its transition behavior. `styles693/sheet-7.css` captures the newly reached sheet.
-The earlier `compile677` generated only the no-GPU fallback (132.5 seconds, no
-scene renderer); it was never full application success.
+Latest complete-entry attempt: `compile706` passes the newly admitted presentation
+styles and stops on list-style:none after 160.8 seconds. Auditing the ENTIRE newly
+reached stylesheet also identifies implicit display:grid with place-items:center.
+Next batch should cover list-marker suppression and implicit grid layouts together,
+not repeat the full entry after accepting only one more property. The prior
+`compile704` stopped on -webkit-user-drag:none (196.3 seconds); that hint is now
+admitted. The earlier `compile677` generated only the no-GPU fallback (132.5 seconds,
+no scene renderer); it was never full application success.
 
 Native GPU availability uses the optional HostServices graphics identity. Window
 services expose their existing device; child workers inherit those services.
@@ -85,6 +87,65 @@ checks pass in `691`. `regressions693` passes 922/922 without skips; `population
 288 entries and completes the native bootstrap. `compile693` reaches the next CSS
 boundary described above. Open GitHub issues are empty; the remaining variadic
 core-library and broader Promise TODOs do not become closed by this batch.
+
+The next CSS batch admits physical border sides/width/color longhands, visibility,
+font-style, text-transform, text-overflow and literal transform origins. The fixed
+`css-declarations695` baseline is 0/12 accepted; `697` accepts 7/12. The five remaining
+families are aspect ratio, general grid tracks/placement, independent background
+placement and animation/transition longhands. `css-bodies695` inventories 1,201
+candidate literal rule bodies (including unused code): 861 lower, 263 refuse,
+77 dynamic/unassessed. `697` improves this to 951/173/77. This is a static diagnostic
+inventory, not native coverage or an overall completion percentage.
+
+RmlUi keeps the SAME upstream commit but now has a fifteenth maintained patch,
+`rmlui-visibility.patch`, applied after the previous fourteen. The development
+artifact was rebuilt successfully in `visibility698-build`. Other installed
+static variants still need rebuilding if a final sweep/shipping check uses them.
+The patch makes visibility inherit, keeps hidden ancestors in stacking contexts
+while suppressing their own paint, admits visible descendants in hit testing and
+focus, and handles delayed zero-duration transitions. The initial 697 build found
+a const GetDisplay call; the corrected patch uses computed display. Patch baseline
+copies are ignored in `visibility-rml-before`; regenerate the incremental patch
+with `save-visibility-patch.py`, not a whole checkout diff that includes older patches.
+
+`visibility696-baseline` fails inheritance with the old library. `698` passes
+inheritance/paint but the test omitted pointer-events:auto (the retained div default
+is inert); corrected in 699. The inline fade in 699/700 revealed an existing RmlUi
+limitation: inline style changes do not initiate transitions. That failure is kept
+as `visibility700-inline-check.cpp` and is explicitly recorded in TODO/docs. The
+permanent fixture tests stylesheet/class transitions used by the reached styles;
+`visibility701` passes layout, overrides, native focus/hit testing and delayed hiding.
+
+`presentation702` passes generation and visibility but its border-removal expectation
+was wrong: clearing border-width removes the longhands from the same inline style,
+so the expected width is zero. Corrected, `presentation703` passes both presentation
+checks. `presentation704-regressions`, `population704`, `compile704`
+and `visibility-window704` runs have completed; see corrections below. The Window
+fixture preserves DPWCDWMK and adds an invisible pointer-enabled cover over the input
+button plus a visible descendant away from the clicks; both SDL_GPU and Dawn have
+reported completion in the log. No private CSS/source is copied into tracked fixtures.
+
+`presentation704-regressions` completed 778/780; both failures were older fixture
+contracts, fixed and committed/pushed as `c9e36592`. Decoder-enabled RmlUi fixtures
+now link pal_image.cpp; the image fixture supplies actual file reads and performs
+source changes on an EventLoop. The optional-call fixture retains all six authored
+node/relationship assertions while accounting for the three permanent document
+roots. `presentation705` passes four focused checks. `population704` completed all
+288 entries and scene41's bootstrap; `visibility-window704` passed both backends.
+
+`compile704` stopped on -webkit-user-drag:none in the same newly reached stylesheet
+(196.3 seconds). The native projection already has no default image drag initiation;
+none is now accepted as an inert hint, while other values refuse. Inert hints are
+removed from projected CSS while authored stylesheet text remains available.
+The final `css-bodies706` inventory is 954 lowered / 170 refused / 77 unassessed;
+the twelve-family assessment still accepts 7/12. `presentation706-regressions` finished 779/780; `compile706` finished at the
+list/grid boundary above. The regression run found one new test false-positive:
+its no-drag-hint assertion accidentally inspected authored stylesheet text too.
+The assertion now inspects projected ui_add_* declarations only; `presentation707`
+passes all three presentation/visibility checks after rebuilding. Every failure
+from the broad UI run is resolved; no implementation fix was needed for that
+assertion. The seven admitted fixed declaration families and all twelve original
+CSS family refusals remain visible in the assessment artifacts.
 
 `emitEntryBody` detects entry-level awaits in realm-backed entries, skips nested
 function bodies, and emits one owned coroutine with a native return frame. It
