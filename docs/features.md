@@ -193,7 +193,8 @@ calls, trailing numeric arguments and array spreads; direct and stored calls sha
 native numeric helpers. `min`/`max` preserve NaN and signed zero, and `hypot` retains
 the documented native approximation. Stored functions with a final array rest
 parameter pack a fresh array after evaluating fixed arguments, preserving spread
-order and source-array ownership. Compatible rest functions adapt to fixed numeric
+order and source-array ownership. Direct helpers also copy a spread rest array,
+while keeping its elements' object identities. Compatible rest functions adapt to fixed numeric
 or data signatures while retaining callback identity. Tuple rest signatures and
 fixed-to-rest signature conversions are not represented. Forwarded array predicates
 resolve their bound callback, preserve captures and apply JavaScript truthiness; short-circuited

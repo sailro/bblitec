@@ -127,4 +127,11 @@ test("stored rest parameters own fresh arrays and preserve prefix evaluation", t
         throw new Error("fixed prefix snapshot");
     const fixed: (a: number, b: number) => number = (...values: number[]) => values[0] + values[1];
     if(fixed(2, 3) !== 5) throw new Error("rest declaration in a fixed signature");
+    function collect(...values: number[]): number { values.push(5); return values.length; }
+    if(collect(...source) !== 4 || source.length !== 3) throw new Error("direct rest owns its array");
+    interface Item { value: number; }
+    const items: Item[] = [{value:1}, {value:2}];
+    function edit(...values: Item[]): number { values[0].value = 9; values.pop(); return values.length; }
+    if(edit(...items) !== 1 || items.length !== 2 || items[0].value !== 9)
+        throw new Error("rest copy preserves element identity");
 `, t));

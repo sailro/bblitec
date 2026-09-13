@@ -3244,7 +3244,7 @@ export class UserFunctionLowerer {
     /**
      * The call's arguments as values, with a rest parameter's share packed
      * into one: the compile-time tuple of the trailing arguments, a spread
-     * tuple expanded into it, or a spread native array passed through when
+     * tuple expanded into it, or a fresh copy of a spread native array when
      * it is the rest's only source.
      */
     private argumentValues(
@@ -3253,7 +3253,7 @@ export class UserFunctionLowerer {
         ir: UserFunctionIr,
     ): Value[] {
         const rest = restParameterIndex(ir.declaration);
-        const pinArguments = requiresDefaultParameterBinding(this.checker, ir.declaration, call) ||
+        const pinArguments = rest !== undefined || requiresDefaultParameterBinding(this.checker, ir.declaration, call) ||
             (context.options.workers && ts.getModifiers(ir.declaration)?.some(modifier => modifier.kind === ts.SyntaxKind.AsyncKeyword));
         const values: Value[] = [];
         const expanded: Value[] = [];
@@ -3285,7 +3285,13 @@ export class UserFunctionLowerer {
                     spread.kind === "data" &&
                     (spread.dataType?.kind === "vector" || spread.dataType?.kind === "span")
                 ) {
-                    values.push(spread);
+                    const source = context.allocateTemporaryCppName("rest_source");
+                    context.emit({kind:"declaration", type:"const auto", name:source, initializer:spread.cpp});
+                    const copy = context.allocateTemporaryCppName("rest_arguments");
+                    const type: DataType<"vector"> = {kind:"vector", element:spread.dataType.element};
+                    context.emit({kind:"declaration", type:context.dataTypes.cppType(type), name:copy,
+                        initializer:`${source}.begin(), ${source}.end()`, initialization:"direct"});
+                    values.push(context.dataValue(copy, type));
                     return;
                 }
                 context.fail(

@@ -8,6 +8,32 @@ dependencies will not be present in a fresh clone.
 
 ## Read this first
 
+**Current batch: recursive unknown values.** String savepoint `12d08e2e` is
+committed and pushed. `compile842` passed typeof string sinks and stops at a local
+recursive callback's readonly unknown-array parameter in 271.1 seconds. An ignored
+isolated import probe (`probe-validator843.mjs`) reproduces the exact validator
+failure in about two seconds; use it before another full-entry retry. Independent
+`recursive-values843` has four refused cases: recursive arrow/named unknown
+parameters, readonly unknown arrays and unknown returns. Its fifth case, mixed
+JSON/class values, admits only because the indexed value is statically known;
+it does not establish a runtime unknown representation. The validator also builds
+heterogeneous schemas with a local class, instanceof, unknown arrays/dictionaries
+and recursive unknown returns. Do not pretend these are all plain parsed JSON or
+erase class identity by serializing it. Inspect the existing JsonValue/data-type
+and recursive-call mechanisms before choosing the shared representation.
+
+The generic rest follow-up fixes an independently reproduced native bug in direct
+helpers: a lone spread previously aliased the source array. Direct rest now copies
+the array, preserves element identity and snapshots fixed arguments before later
+effects. `rest843-focused` passes 150/150 without skips, including source-array
+length and shared object-element mutation. The initial failing native probe is
+`probe-rest-ownership843.mjs`. The original capability probes and the fixed callback
+cohort both remain fully admitted (`capabilities842`:24/24, `callbacks842`:13/13).
+
+GitHub PR body updates also fail through a direct GraphQL mutation with a server
+error (`pr843-response.log`); this confirms a service failure, not permission.
+The pending expanded payload is `pr843-graphql.json`. Source pushes still work.
+
 **Current unit: typeof in string sinks.** Variadic Math savepoint `c7eb51e0` is
 committed and pushed. String sinks now admit the existing typeof lowering, so
 conditional String/template expressions and helper parameters preserve its runtime
