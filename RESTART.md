@@ -8,6 +8,39 @@ dependencies will not be present in a fresh clone.
 
 ## Read this first
 
+**Working unit: dynamic property reads and nullish fallback.** The macOS/Linux
+rebase and getter-sharing commit `c202115e` are pushed. Current uncommitted changes
+share compileJsonPropertyKey/compileJsonElementRead between the JSON bridge and
+DataLowerer; numeric keys use JavaScript string spelling and enums use their
+original strings. pinValueToTemporary now snapshots JsonValue receivers before
+key/RHS effects. Typed record initializers retain actual JSON via a shared
+emitDynamicDataBinding helper. Numeric `??` accepts represented JSON results;
+DataLowerer tests null/undefined and captures fallback emission lazily. Static
+nullish folding must not assume a JsonValue identifier is present.
+
+keys1031-focused passed both new native tests (typed optional record/enum keys,
+alias mutation, lazy fallback, scalar key conversion and receiver/key ordering).
+The fallback counter exposed a separate capture gap: explicitly callable local
+variables were stored natively but not treated as escaping roots. The closure
+analysis now includes those roots and their called helpers, preserving shared
+mutable cells. The same worker-realm probe keys1031-native builds/runs successfully.
+The unchanged actual loader/setter/sound-helper probe audio1031 now GENERATES in
+18.75 seconds. Its native build is not yet checked. keys1032-regressions passed
+710/711; only the new test's mixed-array serialization assertion refused. The
+assertion now checks the same four values directly, retaining every falsy/null
+check. keys1034-focused passes both expanded native tests, including dynamic
+identifier nullish identity and key conversion before a mutating assignment RHS.
+The latter requires snapshotting the converted string key before compiling RHS.
+keys1034-staged passes TypeScript and the private-name guard. Full compile1033 is
+still running, using the preceding dist snapshot (before the final key/RHS-only
+fix). Its exec session is 82479; do not rebuild dist underneath it. An isolated
+TypeScript output in artifacts/external-integration/keys1034-dist let the latest
+neutral tests run without changing that live compiler. Native fixture tools use
+the repository working directory; asset-heavy compiler tests may require their
+usual dist layout. No other verification processes remain active. The first
+dynamic-boundaries TODO remains open for typed-view mutation/optional presence.
+The full application has not completed generation/build/run. Continue working.
+
 **Working unit: shared dynamic-view getters.** Dynamic binding support is
 committed/pushed as `ac33ee27`. Full compile1019 advances past the settings setter
 and fails after 107.86 seconds at the sound helper's string-key access into the

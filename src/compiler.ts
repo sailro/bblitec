@@ -1937,6 +1937,11 @@ class Compiler
         const isDataSinkClosure = (node: ts.Node): boolean => {
             if (!isClosure(node)) return false;
             const parent = node.parent;
+            // An explicitly callable local is emitted as a stored callback,
+            // including when every use is a direct call. Its helpers must
+            // share captured mutable bindings with the surrounding scope.
+            if (ts.isVariableDeclaration(parent) && parent.type &&
+                this.checker.getTypeFromTypeNode(parent.type).getCallSignatures().length > 0) return true;
             // Constructors and instance fields can retain the function for
             // the object's lifetime, including a callback supplied as a
             // parameter property. Mutable outer bindings remain shared.
@@ -3312,6 +3317,19 @@ class Compiler
         return false;
     }
 
+    private emitDynamicDataBinding(name: ts.Identifier, cppName: string, value: Value, source: ts.Expression, shared: boolean): true {
+        const type: DataType = {kind:"json"};
+        const initializer = this.dataLowerer.compileKnownValueForSink(value, type, source);
+        this.reachFeature("data:json", source);
+        this.reachJsData();
+        this.emit({kind:"declaration", type:shared ? "auto" : "bbl::js::JsonValue", name:cppName,
+            initializer:shared ? `bbl::js::make_gc_shared<bbl::js::JsonValue>(${initializer})` : initializer});
+        const cpp = shared ? `(*${cppName})` : cppName;
+        this.dataLowerer.registerLocal(cpp, "owned");
+        this.defineVariable(name, {...this.dataLowerer.leafValue(cpp, type), ...(shared ? {sharedStorageCpp:cppName} : {})});
+        return true;
+    }
+
     private emitAnnotatedDataDeclaration(
         declaration: ts.VariableDeclaration,
         cppName: string,
@@ -3324,18 +3342,7 @@ class Compiler
             return false;
         }
         if (this.dynamicBindings.has(declaration)) {
-            const type: DataType = {kind:"json"};
-            const value = this.compileValue(declaration.initializer);
-            const initializer = this.dataLowerer.compileKnownValueForSink(value, type, declaration.initializer);
-            this.reachFeature("data:json", declaration);
-            this.reachJsData();
-            this.emit({kind:"declaration", type:sharedClosureStorage ? "auto" : "bbl::js::JsonValue", name:cppName,
-                initializer:sharedClosureStorage ? `bbl::js::make_gc_shared<bbl::js::JsonValue>(${initializer})` : initializer});
-            const cpp = sharedClosureStorage ? `(*${cppName})` : cppName;
-            this.dataLowerer.registerLocal(cpp, "owned");
-            this.defineVariable(name, {...this.dataLowerer.leafValue(cpp, type),
-                ...(sharedClosureStorage ? {sharedStorageCpp:cppName} : {})});
-            return true;
+            return this.emitDynamicDataBinding(name, cppName, this.compileValue(declaration.initializer), declaration.initializer, sharedClosureStorage);
         }
         const annotatedResource = this.nullableResourceKind(
             name,
@@ -3356,6 +3363,14 @@ class Compiler
                 : this.checker.getTypeAtLocation(name),
             typeSite,
         );
+        if (annotated?.kind === "struct" || (annotated?.kind === "optional" && annotated.inner.kind === "struct")) {
+            const source = declaration.initializer;
+            const value = this.probeEmission(() => {
+                try { return this.compileValue(source); }
+                catch (error) { if (error instanceof CompileError) return undefined; throw error; }
+            }, isJsonValue);
+            if (isJsonValue(value)) return this.emitDynamicDataBinding(name, cppName, value, source, sharedClosureStorage);
+        }
         if (
             annotated?.kind === "optional" &&
             annotated.inner.kind === "struct"
@@ -12782,7 +12797,7 @@ class Compiler
         if (value.kind === "callback") {
             return this.materializeEscapingValue(value, label);
         }
-        if (value.kind === "data" && isOpaqueReference(value.dataType)) {
+        if (isJsonValue(value) || (value.kind === "data" && isOpaqueReference(value.dataType))) {
             const cpp = this.allocateTemporaryCppName(label);
             this.emit({ kind: "declaration", type: "const auto", name: cpp, initializer: value.cpp });
             const pinned = { ...value, cpp, nativeBinding: true as const };

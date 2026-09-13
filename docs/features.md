@@ -242,6 +242,11 @@ keep dynamic return storage, including immediate async lowering and coroutine
 suspension or promise adoption.
 Compatible fixed-record fallback paths retain their existing observing views.
 Fetched numbers retain JavaScript double precision when entering dynamic storage.
+Typed record locals initialized from dynamic reads retain that storage and its
+aliases. Dynamic element reads share property-key conversion for strings, stored
+string-literal unions and represented scalar keys; receiver evaluation precedes
+key effects. Nullish coalescing tests dynamic null/undefined at runtime and
+evaluates its fallback lazily, preserving other falsy values.
 `Array.find` over stored literal tuples preserves the selected literal domain;
 found records retain their source identity and shared writes.
 `pop` and `shift` accept temporary arrays, including results of string splitting;

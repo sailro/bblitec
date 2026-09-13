@@ -19,6 +19,57 @@ function nativeCheck(name: string, source: string, t: test.TestContext, options?
     assert.equal(execFileSync(executable, {encoding: "utf8", timeout: 10000}), "");
 }
 
+test("typed dynamic record reads preserve string and enum keys and nullable results", t => {
+    nativeCheck("typed-property-keys", `
+        type Key="first"|"second"|"zero"|"missing";
+        interface Row { score:number; }
+        const parsed=JSON.parse('{"rows":{"first":{"score":2},"second":{"score":4},"zero":{"score":0}}}');
+        let fallbacks=0;
+        function fallback():number {fallbacks++;return -1;}
+        const read:(id:Key)=>number=id=>{
+            const row:Row|undefined=parsed.rows[id];
+            return row?.score ?? fallback();
+        };
+        const ids:Key[]=["first","second","zero","missing"];
+        if(read(ids[0]!)!==2||read(ids[1]!)!==4||read(ids[2]!)!==0||read(ids[3]!)!==-1||fallbacks!==1)
+            throw new Error("typed key or lazy fallback");
+        const alias:Row=parsed.rows[ids[0]!];
+        alias.score=8;
+        if(parsed.rows.first.score!==8||read(ids[0]!)!==8)throw new Error("typed dynamic alias");
+        const missing=parsed.rows.missing, nil=JSON.parse('null');
+        const chosen=missing??alias;
+        const chosenNull=nil??alias;
+        if(chosen!==alias||chosenNull!==alias)throw new Error("nullish identifier identity");
+        const values=JSON.parse('[0,false,"",null]');
+        if((values[0]??9)!==0||(values[1]??true)!==false||(values[2]??"fallback")!==""||(values[3]??7)!==7)
+            throw new Error("nullish falsy values");
+    `, t);
+});
+
+test("dynamic property keys preserve numeric spelling and receiver evaluation order", t => {
+    nativeCheck("property-key-order", `
+        let current=JSON.parse('{"name":1,"1":4,"-1.5":5,"true":6,"null":7,"undefined":8}');
+        const one=1, negative=-1.5, flag=true;
+        if(current[one]!==4||current[negative]!==5||current[flag as any]!==6||current[null as any]!==7||current[undefined as any]!==8)
+            throw new Error("property key conversion");
+        const array=JSON.parse('[2,3]');
+        if(array[-0]!==2||array[1]!==3||array["01"]!==undefined||array[-1]!==undefined)
+            throw new Error("array index spelling");
+        let calls=0;
+        function key():string {calls++;current=JSON.parse('{"name":2}');return "name";}
+        if(current[key()]!==1||current.name!==2||calls!==1)throw new Error("read receiver order");
+        const target=current;
+        current[key()]=9;
+        if(target.name!==9||current.name!==2||calls!==2)throw new Error("write receiver order");
+        type Name="a"|"b";
+        let name:Name="a";
+        function rhs():number {name="b";return 3;}
+        const row=JSON.parse('{"a":1,"b":2}');
+        row[name]=rhs();
+        if(row.a!==3||row.b!==2)throw new Error("write key before RHS");
+    `, t);
+});
+
 test("fetched numbers keep double precision when retained as dynamic values", t => {
     const directory=resolve("artifacts/recursive-json-values/fetched-numbers");
     mkdirSync(directory,{recursive:true});

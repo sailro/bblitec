@@ -667,7 +667,7 @@ export class StaticEvaluator {
                 // run-time arms; a rung added to the value dispatch
                 // reaches numeric positions without a second copy here.
                 const value = this.resolveValue(unwrapped);
-                if (value.kind === "number") {
+                if (value.kind === "number" || value.dataType?.kind === "number" || isJsonValue(value)) {
                     return this.castNumber(value, precision);
                 }
                 this.fail(
@@ -1192,7 +1192,7 @@ export class StaticEvaluator {
                 return expression.right;
             }
             if (
-                value.optionalFoundCpp !== undefined ||
+                isJsonValue(value) || value.optionalFoundCpp !== undefined ||
                 (value.kind === "data" &&
                     value.dataType?.kind === "optional")
             ) {
@@ -1224,7 +1224,7 @@ export class StaticEvaluator {
                     return expression.right;
                 }
                 if (
-                    property.optionalFoundCpp !== undefined ||
+                    isJsonValue(property) || property.optionalFoundCpp !== undefined ||
                     (property.kind === "data" &&
                         property.dataType?.kind === "optional")
                 ) {

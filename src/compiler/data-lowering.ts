@@ -43,6 +43,8 @@ import {
 import { commonResourceValue, runtimeMeshValue, type Value } from "./types.js";
 import {
     compileJsonStrictComparison,
+    compileJsonElementRead,
+    compileJsonPropertyKey,
     isJsonValue,
     isJsonRootedExpression,
 } from "./json-bridge.js";
@@ -1586,6 +1588,19 @@ export class DataLowerer {
                 expression.right,
             );
         }
+        if (isJsonValue(left)) {
+            const value = this.context.pinValueToTemporary(left, "nullish");
+            const type: DataType = {kind:"json"};
+            let fallback = "";
+            const lines = this.context.captureEmittedLines(() => {
+                this.context.enterRuntimeControlFlow();
+                try { fallback = this.compileForSink(expression.right, type); }
+                finally { this.context.leaveRuntimeControlFlow(); }
+            });
+            if (lines.length > 0)
+                fallback = `([&]() -> bbl::js::JsonValue {\n${lines.join("\n")}\nreturn ${fallback};\n}())`;
+            return this.leafValue(`(${value.cpp}.is_null() || ${value.cpp}.is_undefined() ? ${fallback} : ${value.cpp})`, type);
+        }
         if (
             left.kind === "record" ||
             left.kind === "tuple"
@@ -2273,14 +2288,7 @@ export class DataLowerer {
                 preserveUncheckedLookup: true };
         }
         if (dataType.kind === "json") {
-            // An index past the end, or into something that is not an
-            // array, is `undefined` -- the document answers, it does not
-            // fail.
-            return {
-                kind: "data",
-                cpp: `${owner.cpp}.at(${this.context.compileNumber(access.argumentExpression, "double")})`,
-                dataType: { kind: "json" },
-            };
+            return compileJsonElementRead(this.context, owner, access.argumentExpression);
         }
         if (dataType.kind === "map") {
             const key = this.compileForSink(
@@ -6666,7 +6674,8 @@ export class DataLowerer {
             if (isJsonValue(owner)) {
                 if (operator !== "=") this.context.fail(expression, "Dynamic object properties currently support plain assignment only.");
                 const key = ts.isPropertyAccessExpression(left) ? this.context.cppString(left.name.text) :
-                    this.compileKnownValueForSink(this.context.pinValueToTemporary(this.context.compileValue(left.argumentExpression), "assignment_key"), {kind:"string"}, left.argumentExpression);
+                    this.context.pinValueToTemporary({kind:"string", cpp:compileJsonPropertyKey(this.context,
+                        this.context.compileValue(left.argumentExpression), left.argumentExpression)}, "assignment_key").cpp;
                 const value = this.compileForSink(expression.right, {kind:"json"});
                 this.context.emit(`${owner.cpp}.set(${key}, ${value});`);
                 return true;

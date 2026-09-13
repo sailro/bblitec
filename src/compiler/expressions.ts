@@ -173,6 +173,7 @@ export interface ExpressionContext
         | "meshHasThinInstancePool"
         | "compileCondition"
         | "compileNumber"
+        | "castNumber"
         | "compileBoolean"
         | "compileStringLiteral"
         | "registerAsset"
