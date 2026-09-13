@@ -26,10 +26,11 @@ test("constructed text, password and range controls share native type assignment
     for(const type of ['number','date','checkbox']) assert.throws(()=>compileSource(`import {createEngine} from '@babylonjs/lite';await createEngine({});const input=document.createElement('input');input.type=${JSON.stringify(type)};`),/not represented/);
 });
 
-test("logical spacing cannot evade the fixed-grid geometry proof",()=>{
-    assert.throws(()=>compileSource(`import {createEngine} from '@babylonjs/lite';await createEngine({});
+test("native grid items retain logical padding",()=>{
+    const result=compileSource(`import {createEngine} from '@babylonjs/lite';await createEngine({});
         const grid=document.createElement('div');grid.style.cssText='display:grid;grid-template-columns:repeat(1,20px)';
-        const child=document.createElement('div');child.style.cssText='width:20px;height:20px;padding-inline:2px';grid.appendChild(child);document.body.appendChild(grid);`),/padding-inline|spacing|fixed-grid/);
+        const child=document.createElement('div');child.style.cssText='width:20px;height:20px;padding-inline:2px';grid.appendChild(child);document.body.appendChild(grid);`);
+    assert.match(result.cpp,/padding-inline:2px/);
 });
 
 test("native logical spacing cascades and appearance controls range painting",t=>runRmlUiFixture(t,'ui-control-spacing'));

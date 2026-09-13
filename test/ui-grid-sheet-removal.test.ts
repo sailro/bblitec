@@ -26,7 +26,7 @@ const source = `
     globalThis.close();
 `;
 
-test("known stylesheet removal validates each cascade and updates fixed grids", t => {
+test("stylesheet removal updates native grids while preserving element identity", t => {
     const directory = resolve("artifacts/ui-grid-sheet-removal");
     mkdirSync(directory, {recursive:true});
     writeFileSync(join(directory, "worker.ts"), "self.close();");
@@ -35,7 +35,7 @@ test("known stylesheet removal validates each cascade and updates fixed grids", 
     runRmlUiFixture(t, "ui-grid-sheet-removal");
 });
 
-test("removing a geometry override refuses an invalid remaining fixed grid", () => {
+test("removing a geometry override retains the remaining native grid cascade", () => {
     const unsafe = source.replace(
         'first.addEventListener("click", () => { sheet.remove(); });',
         `const correction = document.createElement("style");
@@ -43,7 +43,9 @@ test("removing a geometry override refuses an invalid remaining fixed grid", () 
          document.head.appendChild(correction);
          first.addEventListener("click", () => { correction.remove(); });`,
     ).replace('.cell{width:24px;height:24px', '.cell{width:32px;height:24px');
-    assert.throws(() => compileSource(unsafe, {
+    const result = compileSource(unsafe, {
         fileName:resolve("artifacts/ui-grid-sheet-removal/entry.ts"),
-    }), /fixed-grid.*width|width.*fixed/i);
+    });
+    assert.match(result.cpp, /width:32px/);
+    assert.match(result.cpp, /ui_remove/);
 });

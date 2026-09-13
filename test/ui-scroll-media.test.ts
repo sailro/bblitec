@@ -15,7 +15,7 @@ test("max-width rules share ordinary retained declaration admission",()=>{
     `);
     assert.match(result.cpp,/false, 480\.0, "flex-wrap:wrap;margin-left:14px;text-align:right;/);
     for(const condition of ['max-width:480px','prefers-reduced-motion:reduce'])
-        assert.throws(()=>compileSheet(`@media(${condition}){.panel{display:grid;grid-template-columns:repeat(2,20px)}}`),/structural grid substitution/);
+        assert.match(compileSheet(`@media(${condition}){.panel{display:grid;grid-template-columns:repeat(2,20px)}}`).cpp,/grid-template-columns:repeat\(2,20px\)/);
     assert.throws(()=>compileSheet('@media(max-width:480px){.panel{unrepresented:1}}'),/style property/);
 });
 

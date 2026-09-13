@@ -8,6 +8,49 @@ dependencies will not be present in a fresh clone.
 
 ## Read this first
 
+**Latest savepoint, 2026-09-13: native grid tracks.** The Linux rebase onto
+`a7b1504d` and compatibility fix are pushed. Grid now uses native row-major
+fixed/auto/fractional tracks, bounded repeat/minmax, inline-grid and live
+cascades, retaining authored DOM parents. The compiler's structural grid
+substitutions and geometry proofs are removed. The same pinned RmlUi revision
+and 19 maintained patches remain; the existing grid patch owns this work.
+`grid818-regressions` passes 933/933 without skips. `grid-tracks-window818`
+passes both backends with the original DPWCDWMK replay. Browser measurements
+match the neutral fixture's track geometry and inline baseline; the browser
+screenshot is JPEG data despite its .png name, so `grid818-pixels.json` is a
+lossy-capture comparison, not an exact browser parity gate.
+
+The final scene180 comparison caught percentage-sized replaced grid items
+retaining their intrinsic minimum. Cyclic percentage widths/maximums now
+compress the minimum contribution while retaining explicit minimums and
+max-content sizing. `rml819` rebuilds all patches; `grid819-focused` passes 9/9.
+Scene180 differential parity passes unchanged gates on both backends at
+0.020/0.455 MAD, canvas-only 0/0, backend difference 0. Scene41 native bootstrap
+also rebuilds (`grid819-bootstrap`). Population generation passed all 288
+entries plus bootstrap in `population813` before the final native-only fixes.
+Range intrinsic size now belongs to UiInputElement (129x16 CSS pixels), with
+auto dimensions in the user-agent sheet. Grid first-line baseline and cyclic
+percentage box sizing are implemented in the maintained native patch.
+
+The full external application still has not generated or run. Its unchanged
+169-rule stylesheet cohort is now 164 admitted / three refused / two keyframes
+unassessed (`style-contexts812`). The three refusals are container queries:
+two `container-type:inline-size` declarations and one maximum-width query.
+The reduced installer (`imported-styles812`) passes grid rules and stops there.
+**Continue container queries next; this savepoint is not a stopping point.**
+The full-entry retry is still `compile777`; retry at a useful capability batch
+boundary. Stored variadic Math callbacks remain the first open TODO and need
+completion when reached. No open GitHub issues matched at the last check.
+
+To extend/rebuild the current grid patch, the ignored working sources are
+`artifacts/external-integration/grid801-rml-{before,after}`;
+`regenerate-grid-patch.py` emits LF patch bytes. Modify the after tree, regenerate,
+then run tools/build-rmlui.ps1 with the documented CMake and Git safe-directory
+environment. Do not edit/reinstall native inputs while builds/tests consume
+them. Commit d38bfdd8 makes patch application stage files in the cached
+dependency checkout, so reset removes files introduced by earlier patch
+versions. No manual cache cleanup is needed on subsequent rebuilds.
+
 **Work resumed on 2026-09-12.** The user explicitly asked to continue. The earlier
 stop-after-green checkpoint is historical; continue the generic integration work
 and save completed units as regular commits.

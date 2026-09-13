@@ -102,7 +102,7 @@ test("generated selector chains share the rendered and private native cascades",
     runRmlUiFixture(t, "ui-selector");
 });
 
-test("conditional selector geometry cannot silently establish a projected grid", () => {
+test("conditional grid geometry retains authored selector relationships", () => {
     const compile = (rule: string) => compileSource(`
         import {createEngine} from "@babylonjs/lite";
         await createEngine({});
@@ -113,6 +113,6 @@ test("conditional selector geometry cannot silently establish a projected grid",
         const cell = document.createElement("div"); cell.className = "cell";
         grid.appendChild(cell); document.body.appendChild(grid);
     `);
-    assert.throws(() => compile('.cell[data-mode="large"]{width:60px}'), /can change direct-child width/);
-    assert.throws(() => compile('.grid > .cell{color:red}'), /cannot be proven across projected grid containers/);
+    assert.match(compile('.cell[data-mode="large"]{width:60px}').cpp, /width:60px/);
+    assert.match(compile('.grid > .cell{color:red}').cpp, /UiSelectorRelation::Child/);
 });

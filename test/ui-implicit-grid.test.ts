@@ -18,7 +18,7 @@ test("implicit grid styles preserve native layout, alignment cascade and marker 
         grid.textContent='Caption';document.body.appendChild(grid);grid.style.placeItems='end start';`);
     assert.match(inline.cpp,/display:grid;place-items:center/);
     assert.match(inline.cpp,/"place-items", "end start"/);
-    for(const declaration of ['list-style:disc','list-style-type:decimal','place-items:baseline','justify-items:legacy','justify-self:safe center','grid-auto-flow:column','grid-template-columns:minmax(0,1fr)'])
+    for(const declaration of ['list-style:disc','list-style-type:decimal','place-items:baseline','justify-items:legacy','justify-self:safe center','grid-auto-flow:column','grid-template-columns:subgrid'])
         assert.throws(()=>compile(`.grid{display:grid;${declaration}}`),/Retained UI style property/);
 });
 

@@ -91,7 +91,7 @@ int main() try {
         ui_set_style_property(engine,grid,"place-items","");update();
         expectNear(offset(first,grid).x,0.f,"shorthand removal clears its inline longhands");
         ui_set_style_property(engine,grid,"place-items","center");
-        ui_set_style_property(engine,first,"width","50%");
+        ui_set_style_property(engine,first,"height","50%");
         bool refused=false;try {update();}catch(const std::runtime_error& error){refused=std::string(error.what()).find("percentage-dependent")!=std::string::npos;}
         check(refused,"unrepresented percentage sizing refuses instead of producing flex geometry");
     }

@@ -24,7 +24,7 @@ inline constexpr std::string_view ui_user_agent_css =
     "text-align:center;tab-index:auto;}\n"
     // Press/release must resolve to the button, not separate label/icon nodes.
     "button *{focus:none;}\n"
-    "input[type=range]{display:inline-block;box-sizing:content-box;width:129px;height:16px;margin:2px;padding:0;"
+    "input[type=range]{display:inline-block;box-sizing:content-box;width:auto;height:auto;margin:2px;padding:0;"
     "border-width:0;tab-index:auto;pointer-events:auto;}\n"
     "input[type=range]{decorator:bbl-native-range();}\n"
     ":where(input[type=range]) > :where(slidertrack){height:auto;margin:0;background-color:transparent;border-width:0;}\n"

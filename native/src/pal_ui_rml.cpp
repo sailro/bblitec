@@ -2282,67 +2282,15 @@ void consider_cascaded_declaration(
 struct ProjectedUiStyleSource {
     std::string private_declarations;
     std::string display;
-    std::string justification;
     bool declares_pointer_events = false;
 };
 
-struct GridMetadata {
-    std::string columns;
-    std::string cell_width;
-    std::string width;
-    std::string gap;
-    std::string row_height;
-    std::string row_count;
-    std::string justification;
-};
-
-GridMetadata take_grid_metadata(std::string& style) {
-    return {
-        take_css_declaration(style, "--bbl-grid-columns"),
-        take_css_declaration(style, "--bbl-grid-cell-width"),
-        take_css_declaration(style, "--bbl-grid-width"),
-        take_css_declaration(style, "--bbl-grid-gap"),
-        take_css_declaration(style, "--bbl-grid-row-height"),
-        take_css_declaration(style, "--bbl-grid-row-count"),
-        take_css_declaration(style, "--bbl-grid-justify-content"),
-    };
-}
-
 ProjectedUiStyleSource project_ui_style_source(std::string_view style) {
     ProjectedUiStyleSource result;
-    result.private_declarations =
-        filter_private_ui_declarations(style, true);
-    std::string private_probe = result.private_declarations;
-    const GridMetadata grid = take_grid_metadata(private_probe);
-    const bool projects_grid = !grid.width.empty();
-    std::string public_probe =
-        filter_private_ui_declarations(style, false);
-    result.declares_pointer_events =
-        !take_css_declaration(public_probe, "pointer-events").empty();
-    result.display = projects_grid
-        ? std::string("grid")
-        : normalized_css_keyword(
-              take_css_declaration(public_probe, "display"));
-    result.justification =
-        projects_grid && !grid.justification.empty()
-            ? normalized_css_keyword(grid.justification)
-            : normalized_css_keyword(take_css_declaration(
-                  public_probe,
-                  "justify-content"));
-    return result;
-}
-
-std::string take_grid_children_style(std::string& style) {
-    const GridMetadata grid = take_grid_metadata(style);
-    if (grid.width.empty()) return {};
-    std::string result =
-        "display:flex;flex-wrap:wrap;width:" + grid.width +
-        ";gap:" + (grid.gap.empty() ? "0dp" : grid.gap) + ";";
-    if (grid.justification == "center") {
-        result += "margin-left:auto;margin-right:auto;";
-    } else if (grid.justification == "end") {
-        result += "margin-left:auto;margin-right:0;";
-    }
+    result.private_declarations = filter_private_ui_declarations(style, true);
+    std::string public_probe = filter_private_ui_declarations(style, false);
+    result.declares_pointer_events = !take_css_declaration(public_probe, "pointer-events").empty();
+    result.display = normalized_css_keyword(take_css_declaration(public_probe, "display"));
     return result;
 }
 
@@ -2705,16 +2653,12 @@ CanvasMesh canvas_text_mesh(
 
 struct ProjectedUiElement {
     Rml::Element* element = nullptr;
-    Rml::Element* children_container = nullptr;
     std::string text;
     std::string inner_rml;
     std::unordered_map<std::string, std::string> attributes;
     std::unordered_map<std::string, std::string> style_properties;
     std::vector<std::string> style_property_order;
     std::string resolved_style;
-    std::string grid_children_style;
-    std::string fractional_grid_tracks;
-    std::vector<UiElementHandle> fractional_grid_children;
     std::vector<UiElementHandle> child_order;
     std::string intrinsic_min_width;
     std::string crosshair_color;
@@ -3486,6 +3430,7 @@ struct UiRmlRuntime {
             initialized = true;
             register_ui_style_properties();
             Rml::Factory::RegisterElementInstancer("button", &button_instancer);
+            Rml::Factory::RegisterElementInstancer("input", &input_instancer);
             scrollbar_properties = register_ui_scrollbar_properties();
             Rml::Factory::RegisterDecoratorInstancer("bbl-native-range", &range_decorator);
 #if defined(_WIN32)
@@ -3945,7 +3890,6 @@ struct UiRmlRuntime {
         };
         std::vector<PrivateRule> private_rules;
         CascadedUiDeclaration display;
-        CascadedUiDeclaration justification;
         bool source_declares_pointer_events = false;
         std::size_t source_order = for_each_matching_style_rule(
             handle,
@@ -3963,11 +3907,6 @@ struct UiRmlRuntime {
             consider_cascaded_declaration(
                 display,
                 std::move(source.display),
-                specificity,
-                rule_order);
-            consider_cascaded_declaration(
-                justification,
-                std::move(source.justification),
                 specificity,
                 rule_order);
             source_declares_pointer_events =
@@ -3996,11 +3935,6 @@ struct UiRmlRuntime {
                 std::move(source.display),
                 inline_specificity,
                 source_order);
-            consider_cascaded_declaration(
-                justification,
-                std::move(source.justification),
-                inline_specificity,
-                source_order);
             append(inline_style->second);
         }
         constexpr std::uint32_t cssom_specificity = 0xffffffffu;
@@ -4013,53 +3947,10 @@ struct UiRmlRuntime {
                 cssom_specificity,
                 source_order + 1);
         }
-        if (const auto dynamic_justification =
-                record.style_properties.find("justify-content");
-            dynamic_justification != record.style_properties.end()) {
-            consider_cascaded_declaration(
-                justification,
-                normalized_css_keyword(dynamic_justification->second),
-                cssom_specificity,
-                source_order + 1);
-        }
         if (resolved_display) {
             *resolved_display = display.value;
         }
 
-        const auto remove_grid_metadata = [&style]() {
-            static_cast<void>(take_grid_metadata(style));
-        };
-        if (!display.value.empty() && display.value != "grid") {
-            remove_grid_metadata();
-        } else if (!display.value.empty()) {
-            static_cast<void>(take_css_declaration(
-                style, "--bbl-grid-justify-content"));
-            std::string resolved_justification =
-                !justification.value.empty()
-                    ? justification.value
-                    : std::string("start");
-            if (
-                resolved_justification == "normal" ||
-                resolved_justification == "flex-start" ||
-                resolved_justification == "left") {
-                resolved_justification = "start";
-            } else if (
-                resolved_justification == "flex-end" ||
-                resolved_justification == "right") {
-                resolved_justification = "end";
-            }
-            if (
-                resolved_justification != "start" &&
-                resolved_justification != "center" &&
-                resolved_justification != "end") {
-                throw std::runtime_error(
-                    "Native fixed-grid justify-content is outside "
-                    "start/center/end.");
-            }
-            append(
-                "--bbl-grid-justify-content:" +
-                resolved_justification + ";");
-        }
         // The retained document covers the viewport, but browser overlays do
         // not replace the scene canvas as an input target. Keep ordinary UI
         // transparent to hit-testing and opt reached listeners back in. An
@@ -4084,7 +3975,7 @@ struct UiRmlRuntime {
         std::string_view resolved_display) const {
         const std::string display =
             normalized_css_keyword(resolved_display);
-        return display == "flex" || display == "inline-flex" || display == "grid";
+        return display == "flex" || display == "inline-flex" || display == "grid" || display == "inline-grid";
     }
 
     Rml::ElementPtr create_text_content(
@@ -4157,7 +4048,7 @@ struct UiRmlRuntime {
                     created = changed = true;
                 }
                 const auto display = box->GetComputedValues().display();
-                const bool wrapped = display == Rml::Style::Display::Flex || display == Rml::Style::Display::InlineFlex || display == Rml::Style::Display::Grid;
+                const bool wrapped = display == Rml::Style::Display::Flex || display == Rml::Style::Display::InlineFlex || display == Rml::Style::Display::Grid || display == Rml::Style::Display::InlineGrid;
                 if (created || box->GetAttribute<Rml::String>("bbl-text", "") != text || box->GetAttribute<bool>("bbl-wrapped", false) != wrapped) {
                     while (box->GetNumChildren()) box->RemoveChild(box->GetChild(0));
                     if (!text.empty()) {
@@ -4264,45 +4155,6 @@ struct UiRmlRuntime {
         return children;
     }
 
-    void sync_grid_children_container(
-        ProjectedUiElement& projected,
-        Rml::Element& raw,
-        const UiElementRecord& record,
-        const std::string& style) {
-        if (projected.grid_children_style == style) return;
-        if (!style.empty() && !projected.children_container) {
-            std::vector<Rml::ElementPtr> children =
-                detach_authored_children(raw, record);
-            Rml::ElementPtr container =
-                document->CreateElement("bbl-grid-children");
-            if (!container) {
-                throw std::runtime_error(
-                    "RmlUi could not create the fixed-grid child container.");
-            }
-            projected.children_container = container.get();
-            projected.children_container->SetAttribute("style", style);
-            for (Rml::ElementPtr& child : children) {
-                projected.children_container->AppendChild(std::move(child));
-            }
-            raw.AppendChild(std::move(container));
-        } else if (style.empty() && projected.children_container) {
-            std::vector<Rml::ElementPtr> children =
-                detach_authored_children(
-                    *projected.children_container,
-                    record);
-            Rml::ElementPtr removed =
-                raw.RemoveChild(projected.children_container);
-            projected.children_container = nullptr;
-            for (Rml::ElementPtr& child : children) {
-                raw.AppendChild(std::move(child));
-            }
-            static_cast<void>(removed);
-        } else if (projected.children_container) {
-            projected.children_container->SetAttribute("style", style);
-        }
-        projected.grid_children_style = style;
-    }
-
     void clear_markup_descendants(UiElementHandle owner) {
         for (const UiElementHandle child :
              ui_element(engine, owner).markup_children) {
@@ -4367,10 +4219,6 @@ struct UiRmlRuntime {
             resolved_style_attribute(handle, record, &resolved_display);
         projected.intrinsic_min_width =
             take_intrinsic_min_width(projected.resolved_style);
-        projected.grid_children_style =
-            take_grid_children_style(projected.resolved_style);
-        projected.fractional_grid_tracks =
-            take_css_declaration(projected.resolved_style, "--bbl-fr-grid-tracks");
         projected.crosshair_color =
             take_crosshair_color(projected.resolved_style);
         take_projected_outlines(projected.resolved_style);
@@ -4414,38 +4262,9 @@ struct UiRmlRuntime {
         projected.style_properties = record.style_properties;
         projected.style_property_order = record.style_property_order;
         attach_listeners(projected, handle);
-        Rml::Element* children_parent = raw;
-        if (!projected.grid_children_style.empty()) {
-            Rml::ElementPtr children_container =
-                document->CreateElement("bbl-grid-children");
-            projected.children_container = children_container.get();
-            projected.children_container->SetAttribute(
-                "style", projected.grid_children_style);
-            raw->AppendChild(std::move(children_container));
-            children_parent = projected.children_container;
-        }
-        std::istringstream fractional_tracks(projected.fractional_grid_tracks);
-        if (!projected.fractional_grid_tracks.empty()) {
-            projected.fractional_grid_children = record.children;
-        }
         for (const UiElementHandle child : record.children) {
-            if (ui_element(engine, child).tag == "style") continue;
-            if (projected.fractional_grid_tracks.empty()) {
-                append_element(*children_parent, child);
-            } else {
-                std::string track;
-                if (!(fractional_tracks >> track)) throw std::runtime_error("Fractional UI grid has more children than tracks.");
-                auto container = document->CreateElement("bbl-grid-track");
-                const auto flex = track.ends_with("fr")
-                    ? track.substr(0, track.size() - 2) + " 0 0px"
-                    : "0 0 " + track;
-                container->SetAttribute("style", "display:flex;flex-direction:column;min-width:0;flex:" + flex + ";");
-                append_element(*container, child);
-                children_parent->AppendChild(std::move(container));
-            }
+            if (ui_element(engine, child).tag != "style") append_element(*raw, child);
         }
-        std::string unused_track;
-        if (fractional_tracks >> unused_track) throw std::runtime_error("Fractional UI grid has fewer children than tracks.");
         parent.AppendChild(std::move(element));
     }
 
@@ -4590,17 +4409,6 @@ struct UiRmlRuntime {
             resolved_style_attribute(handle, record, &resolved_display);
         const std::string intrinsic_min_width =
             take_intrinsic_min_width(resolved_style);
-        const std::string grid_children_style =
-            take_grid_children_style(resolved_style);
-        const auto fractional_grid_tracks = take_css_declaration(resolved_style, "--bbl-fr-grid-tracks");
-        if (fractional_grid_tracks != projected.fractional_grid_tracks) {
-            throw std::runtime_error("Runtime fractional UI grid track replacement is not represented.");
-        }
-        if (!fractional_grid_tracks.empty() &&
-            (record.children != projected.fractional_grid_children ||
-             !record.text.empty() || !record.inner_rml.empty())) {
-            throw std::runtime_error("Runtime fractional UI grid child replacement is not represented.");
-        }
         const std::string crosshair_color =
             take_crosshair_color(resolved_style);
         const bool crosshair_changed =
@@ -4687,10 +4495,7 @@ struct UiRmlRuntime {
             crosshair_changed) {
             // Updating the text prefix or its anonymous flex wrapper must not
             // recreate retained controls appended after it.
-            auto children = detach_authored_children(projected.children_container
-                ? *projected.children_container : raw, record);
-            projected.children_container = nullptr;
-            projected.grid_children_style.clear();
+            auto children = detach_authored_children(raw, record);
             clear_markup_descendants(handle);
             while (raw.GetNumChildren() > 0) {
                 Rml::ElementPtr removed = raw.RemoveChild(raw.GetChild(0));
@@ -4724,11 +4529,8 @@ struct UiRmlRuntime {
         }
         projected.crosshair_color = crosshair_color;
 
-        sync_grid_children_container(projected, raw, record, grid_children_style);
         attach_listeners(projected, handle);
-        Rml::Element& children_parent = projected.children_container
-            ? *projected.children_container
-            : raw;
+        Rml::Element& children_parent = raw;
         for (const UiElementHandle child : record.children) {
             if (ui_element(engine, child).tag == "style") continue;
             sync_element(children_parent, child);
@@ -5569,6 +5371,7 @@ struct UiRmlRuntime {
     UiRenderRecorder render_interface;
     UiRangeDecoratorInstancer range_decorator;
     Rml::ElementInstancerGeneric<UiButtonElement> button_instancer;
+    Rml::ElementInstancerGeneric<UiInputElement> input_instancer;
     Rml::Context* context = nullptr;
     Rml::ElementDocument* document = nullptr;
     Rml::Element* document_head = nullptr;
@@ -5735,8 +5538,8 @@ void update_ui_rml_runtime(
     const bool hover_changed = runtime.sync_hover_states();
     if (hover_changed) {
         // Public :hover declarations are handled by RmlUi itself. Re-run the
-        // private structural projection so fixed-grid metadata and synthetic
-        // intrinsic widths observe the same active selector set.
+        // private projection so intrinsic widths and decorators observe the
+        // same active selector set.
         runtime.sync_tree();
         runtime.context->Update();
     }

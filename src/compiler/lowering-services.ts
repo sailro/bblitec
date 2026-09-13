@@ -160,7 +160,6 @@ export interface LoweringServices {
     isNativeUiValueExpression(expression: ts.Expression): boolean;
     readonly uiDegradedStyleProperties: Set<string>;
     readonly uiScopedSheetSelectors: Set<string>;
-    readonly uiGridSubstitutions: Set<string>;
     emitUiPropertyAssignment(expression: ts.BinaryExpression): boolean;
     compileValue(expression: ts.Expression): Value;
     compileWorkerValue(expression: ts.Expression): Value | undefined;

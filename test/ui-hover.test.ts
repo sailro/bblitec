@@ -49,6 +49,6 @@ test("source CSS shares active and keyboard-focus states with host rules", () =>
     assert.match(rules[1]!, /, false, -1[^\n]*UiScrollbarPart::None, true, false/);
     assert.match(rules[2]!, /, true, -1[^\n]*UiScrollbarPart::None, true, true/);
     for (const state of ["active", "focus-visible"])
-        assert.throws(() => compile(`.entry:${state}{display:grid;grid-template-columns:repeat(2,20px);}`), /one stable/);
+        assert.match(compile(`.entry:${state}{display:grid;grid-template-columns:repeat(2,20px);}`).cpp, /grid-template-columns:repeat\(2,20px\)/);
     assert.throws(() => compile(".entry:active:active{color:red}"), /selector.*not lowered/);
 });

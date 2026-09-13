@@ -8427,7 +8427,7 @@ test("preserves retained UI animations and lowers responsive font shorthands", (
     assert.doesNotMatch(result.cpp, /clamp\(/);
 });
 
-test("adapts fixed retained UI grids and absolute shrink-to-fit blocks", () => {
+test("preserves native grid tracks and absolute shrink-to-fit blocks", () => {
     const result = compileSource(`
         import { createEngine } from "@babylonjs/lite";
 
@@ -8462,18 +8462,10 @@ test("adapts fixed retained UI grids and absolute shrink-to-fit blocks", () => {
     assert.doesNotMatch(result.cpp, /min-width:180px;?width:180px/);
     assert.match(result.cpp, /--bbl-intrinsic-min-width:180px/);
     assert.doesNotMatch(result.cpp, /232\.5/);
-    assert.match(result.cpp, /display:block/);
-    assert.match(
-        result.cpp,
-        /--bbl-grid-columns:4;--bbl-grid-cell-width:18px;--bbl-grid-width:78px;--bbl-grid-gap:2px;--bbl-grid-row-height:18px/,
-    );
-    assert.doesNotMatch(result.cpp, /grid-template/);
-    assert.match(
-        result.manifest.adaptations.find(
-            ({ id }) => id === "substituted-ui-runtime",
-        )?.nativeSemantics ?? "",
-        /repeat\(4, 18px\).*18px children, 2px gap/,
-    );
+    assert.match(result.cpp, /display:grid/);
+    assert.match(result.cpp, /grid-template-rows:repeat\(/i);
+    assert.doesNotMatch(result.cpp, /--bbl-(?:fr-)?grid/);
+    assert.match(result.cpp, /grid-template-columns/i);
 });
 
 test("centres direct text in fixed-height retained flex controls", () => {
@@ -8817,7 +8809,7 @@ test("orders retained UI stylesheets by live root attachment order", () => {
     );
 });
 
-test("attaches head styles and proves grids in reattached stylesheet order", () => {
+test("attaches grid styles in reattached stylesheet order", () => {
     const result = compileUiScene(`
             const first = document.createElement("style");
             document.head.appendChild(first);
@@ -8843,17 +8835,11 @@ test("attaches head styles and proves grids in reattached stylesheet order", () 
             .length,
         4,
     );
-    assert.match(
-        result.manifest.adaptations.find(
-            ({ id }) => id === "substituted-ui-runtime",
-        )?.nativeSemantics ?? "",
-        /repeat\(2, 24px\)/,
-    );
+    assert.match(result.cpp, /grid-template-columns/i);
 });
 
-test("refuses a dynamically ordered fixed-grid stylesheet attachment", () => {
-    assert.throws(
-        () =>
+test("retains dynamically ordered grid stylesheet attachments", () => {
+    assert.doesNotThrow(() =>
             compileUiScene(`
                     const style = document.createElement("style");
                     style.textContent =
@@ -8868,11 +8854,8 @@ test("refuses a dynamically ordered fixed-grid stylesheet attachment", () => {
                     grid.addEventListener("click", () => {
                         document.head.appendChild(style);
                     });
-            `),
-        /requires a statically ordered stylesheet attachment and contents cascade/,
-    );
-    assert.throws(
-        () =>
+            `));
+    assert.doesNotThrow(() =>
             compileUiScene(`
                     const style = document.createElement("style");
                     style.textContent =
@@ -8888,9 +8871,7 @@ test("refuses a dynamically ordered fixed-grid stylesheet attachment", () => {
                         style.textContent = ".grid { display:block; }";
                     });
                     document.body.appendChild(grid);
-            `),
-        /requires a statically ordered stylesheet attachment and contents cascade/,
-    );
+            `));
 });
 
 test("refuses stylesheet selectors outside the reviewed surface by name", () => {
@@ -8943,7 +8924,7 @@ test("keeps scoped and direct class rules distinct in cascade order", () => {
     assert.doesNotMatch(result.cpp, /global class rule/);
 });
 
-test("resolves retained UI grid metadata by CSS specificity before source order", () => {
+test("retains grid declarations and CSS specificity", () => {
     const result = compileSource(`
         import { createEngine } from "@babylonjs/lite";
 
@@ -8978,8 +8959,8 @@ test("resolves retained UI grid metadata by CSS specificity before source order"
         void main();
     `);
 
-    assert.match(result.cpp, /ui_add_id_style[^\n]*--bbl-grid-columns:2/);
-    assert.match(result.cpp, /ui_add_class_style[^\n]*--bbl-grid-columns:3/);
+    assert.match(result.cpp, /ui_add_id_style[^\n]*grid-template-columns:repeat\(2,24px\)/i);
+    assert.match(result.cpp, /ui_add_class_style[^\n]*grid-template-columns:repeat\(3,24px\)/i);
     const projection = palUiRmlSource;
     const resolver = projection.slice(
         projection.indexOf("std::string resolved_style_attribute"),
@@ -9054,16 +9035,7 @@ test("resolves fixed-grid activation and alignment through the complete cascade"
         projection.indexOf("bool text_needs_flex_wrapper"),
     );
     assert.match(resolver, /CascadedUiDeclaration display/);
-    assert.match(resolver, /display\.value != "grid"/);
     assert.match(resolver, /record\.style_properties\.find\("display"\)/);
-    assert.match(
-        resolver,
-        /record\.style_properties\.find\("justify-content"\)/,
-    );
-    assert.match(
-        resolver,
-        /--bbl-grid-justify-content:" \+[\s\S]*resolved_justification/,
-    );
 
     const inheritedAlignment = compileSource(`
         import { createEngine } from "@babylonjs/lite";
@@ -9138,7 +9110,7 @@ test("retains class-tag descendants and hover without leaking to unrelated tags"
     );
 });
 
-test("keeps className and cssText grid proofs on reachable replacement states", () => {
+test("retains className and cssText grid replacement states", () => {
     const source = (childSetup: string): string => `
         import { createEngine } from "@babylonjs/lite";
         async function main(): Promise<void> {
@@ -9161,31 +9133,22 @@ test("keeps className and cssText grid proofs on reachable replacement states", 
         void main();
     `;
 
-    assert.throws(
-        () => compileSource(source(`cell.className = alternate ? "a" : "b";`)),
-        /every child must have fixed 24px width/,
-    );
-    assert.throws(
-        () =>
+    assert.doesNotThrow(() => compileSource(source(`cell.className = alternate ? "a" : "b";`)));
+    assert.doesNotThrow(() =>
             compileSource(
                 source(`
                     cell.style.cssText = "width:24px;height:24px";
                     cell.style.cssText = "color:red";
                 `),
-            ),
-        /every child must have fixed 24px width/,
-    );
-    assert.throws(
-        () =>
+            ));
+    assert.doesNotThrow(() =>
             compileSource(
                 source(`
                     cell.style.cssText = alternate
                         ? "width:24px;height:24px"
                         : "color:red";
                 `),
-            ),
-        /direct-child width differs across reachable className or cssText alternatives/,
-    );
+            ));
     assert.doesNotThrow(() =>
         compileSource(
             source(`cell.className = "cell" + (alternate ? " active" : "");`),
@@ -9246,9 +9209,8 @@ test("lowers compound classes and add remove forced-toggle mutations", () => {
     }
 });
 
-test("preserves known Map UI identity and guards unknown geometry mutations", () => {
-    assert.throws(
-        () =>
+test("preserves Map UI identity across dynamic grid geometry changes", () => {
+    assert.doesNotThrow(() =>
             compileSource(`
                 import { createEngine } from "@babylonjs/lite";
                 async function main(): Promise<void> {
@@ -9270,12 +9232,9 @@ test("preserves known Map UI identity and guards unknown geometry mutations", ()
                     document.body.appendChild(grid);
                 }
                 void main();
-            `),
-        /runtime class rule '\.cell\.compact' can change direct-child width/,
-    );
+            `));
 
-    assert.throws(
-        () =>
+    assert.doesNotThrow(() =>
             compileSource(`
                 import { createEngine } from "@babylonjs/lite";
                 async function main(): Promise<void> {
@@ -9299,9 +9258,7 @@ test("preserves known Map UI identity and guards unknown geometry mutations", ()
                     document.body.appendChild(grid);
                 }
                 void main();
-            `),
-        /class mutation 'compact' has an unknown target.*change direct-child width/,
-    );
+            `));
 
     const safe = compileSource(`
         import { createEngine } from "@babylonjs/lite";
@@ -9347,9 +9304,8 @@ test("preserves known Map UI identity and guards unknown geometry mutations", ()
     assert.match(safe.cpp, /box-shadow:inset 0 0 0 2px blue;/);
 });
 
-test("rejects jointly activating unknown-target grid geometry classes", () => {
-    assert.throws(
-        () =>
+test("retains jointly activating grid geometry classes", () => {
+    assert.doesNotThrow(() =>
             compileSource(
                 `
                     import { createEngine } from "@babylonjs/lite";
@@ -9377,23 +9333,10 @@ test("rejects jointly activating unknown-target grid geometry classes", () => {
                     void main();
                 `,
                 { fileName: "test/joint-grid-classes.ts" },
-            ),
-        (error: unknown) => {
-            assert.ok(error instanceof CompileError);
-            assert.match(
-                error.message,
-                /^test\/joint-grid-classes\.ts:\d+:\d+:/,
-            );
-            assert.match(
-                error.message,
-                /class mutations 'compact', 'tight'.*jointly activate geometry rule '\.compact\.tight'.*max-width/,
-            );
-            return true;
-        },
-    );
+            ));
 });
 
-test("rejects runtime-unknown class and id values that can affect grid proofs", () => {
+test("retains runtime class and id changes affecting grid geometry", () => {
     const mutationSource = (
         selector: string,
         initialAttribute: string,
@@ -9420,31 +9363,24 @@ test("rejects runtime-unknown class and id values that can affect grid proofs", 
         void main();
     `;
 
-    assert.throws(
-        () =>
+    assert.doesNotThrow(() =>
             compileSource(
                 mutationSource(
                     ".grid",
                     'grid.className = "grid";',
                     "grid.className = event.code;",
                 ),
-            ),
-        /runtime-unknown class mutation can change fixed-grid structural rule '\.grid'/,
-    );
-    assert.throws(
-        () =>
+            ));
+    assert.doesNotThrow(() =>
             compileSource(
                 mutationSource(
                     "#palette",
                     'grid.id = "palette";',
                     "grid.id = event.code;",
                 ),
-            ),
-        /runtime-unknown id mutation can change fixed-grid structural rule '#palette'/,
-    );
+            ));
 
-    assert.throws(
-        () =>
+    assert.doesNotThrow(() =>
             compileSource(`
                 import { createEngine } from "@babylonjs/lite";
                 async function main(): Promise<void> {
@@ -9465,12 +9401,10 @@ test("rejects runtime-unknown class and id values that can affect grid proofs", 
                     });
                 }
                 void main();
-            `),
-        /runtime-unknown class mutation can alter fixed-grid child width through rule '\.cell'/,
-    );
+            `));
 });
 
-test("allows runtime-unknown class and id values unrelated to a grid proof", () => {
+test("retains runtime class and id values beside grid layout", () => {
     assert.doesNotThrow(() =>
         compileSource(`
             import { createEngine } from "@babylonjs/lite";
@@ -9620,7 +9554,7 @@ test("switches synthetic intrinsic width with active hover width rules", () => {
     );
 });
 
-test("substitutes only a proven fixed-column retained grid", () => {
+test("retains fixed-column grid declarations without synthetic geometry", () => {
     const result = compileSource(`
         import { createEngine } from "@babylonjs/lite";
 
@@ -9651,16 +9585,8 @@ test("substitutes only a proven fixed-column retained grid", () => {
         void main();
     `);
 
-    assert.match(
-        result.cpp,
-        /width:186px;--bbl-grid-columns:7;--bbl-grid-cell-width:24px;--bbl-grid-width:186px;--bbl-grid-gap:3px/,
-    );
-    assert.match(
-        result.manifest.adaptations.find(
-            ({ id }) => id === "substituted-ui-runtime",
-        )?.nativeSemantics ?? "",
-        /repeat\(7, 24px\).*24px children, 3px gap/,
-    );
+    assert.match(result.cpp, /grid-template-columns/i);
+    assert.match(result.cpp, /grid-template-columns/i);
 });
 
 test("preserves explicit grid rows and equal min/max child constraints", () => {
@@ -9691,12 +9617,11 @@ test("preserves explicit grid rows and equal min/max child constraints", () => {
         }
         void main();
     `);
-    assert.match(result.cpp, /--bbl-grid-row-height:24px/);
-    assert.match(result.cpp, /--bbl-grid-row-count:2/);
-    assert.match(result.cpp, /--bbl-grid-justify-content:center/);
+    assert.match(result.cpp, /grid-template-rows:repeat\(/i);
+    assert.match(result.cpp, /grid-template-rows:repeat\(/i);
+    assert.match(result.cpp, /justify-content:center/i);
 
-    assert.throws(
-        () =>
+    assert.doesNotThrow(() =>
             compileSource(`
                 import { createEngine } from "@babylonjs/lite";
                 async function main(): Promise<void> {
@@ -9717,12 +9642,10 @@ test("preserves explicit grid rows and equal min/max child constraints", () => {
                     document.body.appendChild(grid);
                 }
                 void main();
-            `),
-        /explicit 3-row template does not match the proven 2-row child layout/,
-    );
+            `));
 });
 
-test("refuses hidden and out-of-flow children in explicit grid rows", () => {
+test("admits hidden and positioned children beside explicit grid rows", () => {
     const source = (extra: string): string => `
         import { createEngine } from "@babylonjs/lite";
         async function main(): Promise<void> {
@@ -9745,16 +9668,9 @@ test("refuses hidden and out-of-flow children in explicit grid rows", () => {
         void main();
     `;
 
-    assert.throws(
-        () => compileSource(source("display:none;")),
-        /explicit rows require every counted child to participate in normal flow; child display is 'none'/,
-    );
-    assert.throws(
-        () => compileSource(source("position:absolute;")),
-        /explicit rows require every counted child to participate in normal flow; child position is 'absolute'/,
-    );
-    assert.throws(
-        () =>
+    assert.doesNotThrow(() => compileSource(source("display:none;")));
+    assert.doesNotThrow(() => compileSource(source("position:absolute;")));
+    assert.doesNotThrow(() =>
             compileSource(
                 source("").replace(
                     "document.body.appendChild(grid);",
@@ -9762,12 +9678,10 @@ test("refuses hidden and out-of-flow children in explicit grid rows", () => {
                      cell.style.display = hidden ? "none" : "block";
                      document.body.appendChild(grid);`,
                 ),
-            ),
-        /explicit rows require every counted child to participate in normal flow; child display/,
-    );
+            ));
 });
 
-test("refuses static and responsive min/max grid geometry changes", () => {
+test("retains static and responsive min/max grid geometry changes", () => {
     const source = (extraRule: string): string => `
         import { createEngine } from "@babylonjs/lite";
         async function main(): Promise<void> {
@@ -9787,29 +9701,20 @@ test("refuses static and responsive min/max grid geometry changes", () => {
         }
         void main();
     `;
-    assert.throws(
-        () => compileSource(source("")),
-        /child max-width '20px' is not proven equal to its fixed 24px geometry/,
-    );
+    assert.doesNotThrow(() => compileSource(source("")));
 
     const responsive = (rule: string): string =>
         source(rule).replace("max-width:20px;", "");
-    assert.throws(
-        () =>
+    assert.doesNotThrow(() =>
             compileSource(
                 responsive(".grid button:hover { max-height:20px; }"),
-            ),
-        /hover rule '\.grid button:hover' can change direct-child max-height/,
-    );
-    assert.throws(
-        () =>
+            ));
+    assert.doesNotThrow(() =>
             compileSource(
                 responsive(
                     "@media (max-width:640px) { .cell { min-width:20px; } }",
                 ),
-            ),
-        /max-width rule '\.cell' can change direct-child min-width/,
-    );
+            ));
     assert.doesNotThrow(() =>
         compileSource(
             responsive(
@@ -9820,9 +9725,8 @@ test("refuses static and responsive min/max grid geometry changes", () => {
     );
 });
 
-test("refuses responsive geometry changes on retained UI grid items", () => {
-    assert.throws(
-        () =>
+test("retains responsive geometry changes on grid items", () => {
+    assert.doesNotThrow(() =>
             compileSource(
                 `
                     import { createEngine } from "@babylonjs/lite";
@@ -9851,22 +9755,8 @@ test("refuses responsive geometry changes on retained UI grid items", () => {
                     void main();
                 `,
                 { fileName: "test/retained-grid-media.ts" },
-            ),
-        (error: unknown) => {
-            assert.ok(error instanceof CompileError);
-            assert.match(
-                error.message,
-                /^test\/retained-grid-media\.ts:\d+:\d+:/,
-            );
-            assert.match(
-                error.message,
-                /max-width rule '\.swatch' can change direct-child width/,
-            );
-            return true;
-        },
-    );
-    assert.throws(
-        () =>
+            ));
+    assert.doesNotThrow(() =>
             compileSource(`
                 import { createEngine } from "@babylonjs/lite";
                 async function main(): Promise<void> {
@@ -9886,9 +9776,7 @@ test("refuses responsive geometry changes on retained UI grid items", () => {
                     document.body.appendChild(palette);
                 }
                 void main();
-            `),
-        /runtime class rule '\.swatch\.compact' can change direct-child width/,
-    );
+            `));
 });
 
 test("preserves retained UI grid track alignment", () => {
@@ -9923,18 +9811,10 @@ test("preserves retained UI grid track alignment", () => {
     `);
 
     assert.doesNotMatch(result.cpp, /--bbl-grid-justify-content:start/);
-    assert.match(result.cpp, /--bbl-grid-justify-content:center/);
-    const projection = palUiRmlSource;
-    const gridStyle = projection.slice(
-        projection.indexOf("std::string take_grid_children_style"),
-        projection.indexOf("std::string take_intrinsic_min_width"),
-    );
-    assert.match(gridStyle, /if \(grid\.justification == "center"\)/);
-    assert.match(gridStyle, /margin-left:auto;margin-right:auto/);
-    assert.doesNotMatch(gridStyle, /return[\s\S]{0,160}margin-left:auto/);
+    assert.match(result.cpp, /justify-content:center/i);
 });
 
-test("migrates retained UI children when a runtime class toggles grid", () => {
+test("preserves grid class toggles without projected child containers", () => {
     const result = compileSource(`
         import { createEngine } from "@babylonjs/lite";
         async function main(): Promise<void> {
@@ -9955,19 +9835,9 @@ test("migrates retained UI children when a runtime class toggles grid", () => {
         void main();
     `);
     assert.equal([...result.cpp.matchAll(/ui_toggle_class/g)].length, 2);
-
-    const projection = palUiRmlSource;
-    const migration = projection.slice(
-        projection.indexOf("void sync_grid_children_container"),
-        projection.indexOf("void append_element"),
-    );
-    assert.match(migration, /detach_authored_children/);
-    assert.match(migration, /RemoveChild\(projected\.children_container\)/);
-    assert.match(migration, /projected\.children_container = nullptr/);
-    assert.match(migration, /AppendChild\(std::move\(child\)\)/);
 });
 
-test("validates every mutable-class retained grid shape", () => {
+test("retains mutable-class grid track lists", () => {
     const source = (tightWidth: number): string => `
         import { createEngine } from "@babylonjs/lite";
         async function main(): Promise<void> {
@@ -9990,20 +9860,13 @@ test("validates every mutable-class retained grid shape", () => {
         void main();
     `;
 
-    assert.throws(
-        () => compileSource(source(20)),
-        /every child must have fixed 20px width/,
-    );
+    assert.doesNotThrow(() => compileSource(source(20)));
     const valid = compileSource(source(24));
-    const adaptation =
-        valid.manifest.adaptations.find(
-            ({ id }) => id === "substituted-ui-runtime",
-        )?.nativeSemantics ?? "";
-    assert.match(adaptation, /repeat\(4, 24px\)/);
-    assert.match(adaptation, /repeat\(2, 24px\)/);
+    assert.match(valid.cpp, /grid-template-columns:repeat\(4,24px\)/);
+    assert.match(valid.cpp, /grid-template-columns:repeat\(2,24px\)/);
 });
 
-test("isolates retained UI grid implementation nodes from author selectors", () => {
+test("keeps grid children addressable by authored selectors", () => {
     const result = compileSource(`
         import { createEngine } from "@babylonjs/lite";
         async function main(): Promise<void> {
@@ -10022,13 +9885,6 @@ test("isolates retained UI grid implementation nodes from author selectors", () 
         void main();
     `);
     assert.match(result.cpp, /UiStyleSelectorKind::ClassDescendantTag/);
-    const projection = palUiRmlSource;
-    const gridProjection = projection.slice(
-        projection.indexOf("void sync_grid_children_container"),
-        projection.indexOf("void mark_reachable"),
-    );
-    assert.match(gridProjection, /CreateElement\("bbl-grid-children"\)/);
-    assert.doesNotMatch(gridProjection, /CreateElement\("div"\)/);
     assert.throws(
         () =>
             compileSource(`
@@ -10458,7 +10314,7 @@ test("refuses unsafe or unbounded retained innerHTML", () => {
     );
 });
 
-test("admits unused scoped sheets and empty queries while refusing unproven grid substitutions", () => {
+test("admits scoped sheets, empty queries and dynamic grid children", () => {
     assert.match(
             compileSource(`
                 import { createEngine } from "@babylonjs/lite";
@@ -10487,8 +10343,7 @@ test("admits unused scoped sheets and empty queries while refusing unproven grid
             `).cpp,
         /ui_query_elements[^\n]*UiSelectorTestKind::Class, "missing"/,
     );
-    assert.throws(
-        () =>
+    assert.doesNotThrow(() =>
             compileSource(`
                 import { createEngine } from "@babylonjs/lite";
                 async function main(): Promise<void> {
@@ -10506,9 +10361,7 @@ test("admits unused scoped sheets and empty queries while refusing unproven grid
                     document.body.appendChild(grid);
                 }
                 void main();
-            `),
-        /every child must have fixed 24px width/,
-    );
+            `));
 });
 
 test("refuses retained style properties outside the reviewed surface", () => {
@@ -10552,10 +10405,7 @@ test("refuses retained style properties outside the reviewed surface", () => {
         () => compileSource(withCss("color:transparent;")),
         /Retained UI style property 'color' is not lowered: color:transparent is consumed only by the gradient-text/,
     );
-    assert.throws(
-        () => compileSource(withCss("display:inline-grid;color:#fff;")),
-        /Retained UI style property 'display' is not lowered: display:grid lowers only with/,
-    );
+    assert.match(compileSource(withCss("display:inline-grid;color:#fff;")).cpp, /display:inline-grid/);
     assert.throws(
         () => compileSource(withCss("text-shadow:oops;")),
         /Retained UI style property 'text-shadow' is not lowered: the shadow list 'oops'/,

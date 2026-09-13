@@ -39,12 +39,15 @@ int main() {
         auto* second_raw = runtime.projected_elements.at(second.value).element;
         assert(first_raw->GetClientWidth() == 24.f);
         assert(second_raw->GetAbsoluteOffset().x - first_raw->GetAbsoluteOffset().x == 27.f);
-        assert(runtime.projected_elements.at(root.value).children_container);
+        auto* root_raw = runtime.projected_elements.at(root.value).element;
+        assert(root_raw->GetDisplay() == Rml::Style::Display::Grid);
+        assert(first_raw->GetParentNode() == root_raw && second_raw->GetParentNode() == root_raw);
         ui_click(engine, first);
         pal::update_ui_rml_runtime(runtime, 320, 240);
         assert(runtime.projected_elements.at(first.value).element == first_raw);
         assert(runtime.projected_elements.at(second.value).element == second_raw);
-        assert(!runtime.projected_elements.at(root.value).children_container);
+        assert(root_raw->GetDisplay() == Rml::Style::Display::Block);
+        assert(first_raw->GetParentNode() == root_raw && second_raw->GetParentNode() == root_raw);
     }
     SDL_DestroyWindow(window);
     SDL_Quit();

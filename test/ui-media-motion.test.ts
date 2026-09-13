@@ -25,14 +25,15 @@ test("reduced-motion changes update conditional styles without altering the syst
     runRmlUiFixture(t, "ui-media-motion");
 });
 
-test("media rules refuse structural grid substitutions", () => {
+test("media rules retain native grid tracks", () => {
     for (const columns of ["repeat(2, 40px)", "40px 1fr"]) {
-        assert.throws(() => compileSource(`
+        const result = compileSource(`
             import { createEngine } from "@babylonjs/lite";
             await createEngine({});
             const sheet = document.createElement("style");
             sheet.textContent = "@media (prefers-reduced-motion: reduce){.panel{display:grid;grid-template-columns:${columns};}}";
             document.head.appendChild(sheet);
-        `), /structural grid substitution is not accepted inside a media query/);
+        `);
+        assert.match(result.cpp, /grid-template-columns:[^\n]+UiMotionPreference::Reduce/);
     }
 });

@@ -497,7 +497,6 @@ class Compiler
     private readonly platform = new PlatformCalls(this, this.ui);
     public get uiDegradedStyleProperties(): Set<string> { return this.ui.uiDegradedStyleProperties; }
     public get uiScopedSheetSelectors(): Set<string> { return this.ui.uiScopedSheetSelectors; }
-    public get uiGridSubstitutions(): Set<string> { return this.ui.uiGridSubstitutions; }
     private readonly asyncLowerer = new AsyncLowerer(this);
     public readonly dataTypes: DataTypeRegistry;
     public readonly dataLowerer: DataLowerer;

@@ -26,7 +26,6 @@ export interface AdaptationContext
         | "defaultRenderTaskAdapted"
         | "uiDegradedStyleProperties"
         | "uiScopedSheetSelectors"
-        | "uiGridSubstitutions"
     > {}
 
 export function compileAdaptations(
@@ -788,7 +787,6 @@ function appendUiAdaptations(context: AdaptationContext, features: Feature[], ad
 if (features.includes("ui:rml")) {
     const degraded = [...context.uiDegradedStyleProperties].sort();
     const scoped = [...context.uiScopedSheetSelectors].sort();
-    const grids = [...context.uiGridSubstitutions].sort();
     adaptations.push({
         id: "substituted-ui-runtime",
         category: "platform",
@@ -824,11 +822,6 @@ if (features.includes("ui:rml")) {
                 ? `; the bounded descendant rule(s) ${scoped
                     .map((selector) => `'${selector}'`)
                     .join(", ")} remain scoped in the retained rule IR`
-                : "") +
-            (grids.length > 0
-                ? `; RmlUi has no grid formatting context, so ${grids
-                    .map((grid) => `'${grid}'`)
-                    .join(", ")} use an equivalent fixed-width wrapping-flex child container`
                 : "") +
             (features.includes("ui:inline-svg")
                 ? "; bounded static svg/path/rect markup is rasterized " +

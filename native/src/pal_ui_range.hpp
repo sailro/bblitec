@@ -7,6 +7,7 @@
 #include <RmlUi/Core/Context.h>
 #include <RmlUi/Core/Decorator.h>
 #include <RmlUi/Core/Element.h>
+#include <RmlUi/Core/Elements/ElementFormControlInput.h>
 #include <RmlUi/Core/Geometry.h>
 #include <RmlUi/Core/MeshUtilities.h>
 #include <RmlUi/Core/RenderManager.h>
@@ -17,6 +18,21 @@
 #include <vector>
 
 namespace bbl::pal {
+// Keep intrinsic control dimensions in the same platform adapter as its theme.
+// CSS auto/percentage widths need these dimensions during grid track sizing.
+class UiInputElement final : public Rml::ElementFormControlInput {
+public:
+    explicit UiInputElement(const Rml::String& tag) : Rml::ElementFormControlInput(tag) {}
+    bool GetIntrinsicDimensions(Rml::Vector2f& dimensions, float& ratio) override {
+        if (GetAttribute<Rml::String>("type", "text") != "range")
+            return Rml::ElementFormControlInput::GetIntrinsicDimensions(dimensions, ratio);
+        const auto* context = GetContext();
+        dimensions = Rml::Vector2f(129.f, 16.f) * (context ? context->GetDensityIndependentPixelRatio() : 1.f);
+        ratio = -1.f;
+        return true;
+    }
+};
+
 // Chromium 152 NativeThemeBase::PaintSliderTrack/PaintSliderThumb and the
 // default light control palette. RmlUi still owns slider layout and input.
 class UiRangeDecorator final : public Rml::Decorator {

@@ -3,10 +3,11 @@ import { emissionArray, EmissionSet, EmissionMap, EmissionWeakMap } from "./emis
 import ts from "typescript";
 import { doubleLiteral } from "../cpp-literals.js";
 import { parseUiBorderImage, renderUiBorderImage } from "../ui-border-image.js";
+import {supportedUiGridTracks} from "../ui-grid.js";
 import { supportedUiBoxShadow, supportedUiFilter } from "../ui-filters.js";
 import {findUiCssSyntax, stripUiCssComments, uiCssBlockEnd, uiCssSyntaxIndices} from "../ui-css-syntax.js";
 import {isUiGeneratedPart, parseUiGeneratedContent, uiGeneratedContentCpp, uiGeneratedPartCpp, type UiGeneratedContent, type UiGeneratedPart} from "../ui-generated-content.js";
-import {parseUiSelectorSequence, splitUiSelectorList, uiSelectorSequenceCss, uiSelectorSequenceSpecificity, uiSelectorSequenceCpp, uiSelectorSequenceTests, uiSelectorSequenceNeedsAuthoredTree, type UiSelectorStep} from "../ui-selector.js";
+import {parseUiSelectorSequence, splitUiSelectorList, uiSelectorSequenceCss, uiSelectorSequenceCpp, type UiSelectorStep} from "../ui-selector.js";
 import { isUiLayoutProperty, supportedUiLayoutValue, uiLogicalSpacingProperties } from "../ui-layout.js";
 import { nativeHostUiStyleRules, uiStyleSelector, uiStyleSelectorCppKind, uiStyleSelectorDescriptor, uiStyleInteractionStateCount, uiStyleRuleNeedsRuntimeMatch, uiStyleRuleHasMedia, uiMotionPreferenceCpp, isUiScrollbarPart, uiScrollbarPartCpp, isUiRangePart, uiRangePartCpp, type UiStyleSelectorShape, type UiStyleSelectorKind } from "../ui-style-rule.js";
 import { validateFileAccept } from "./browser-file.js";
@@ -19,22 +20,8 @@ import { argumentAt } from "./syntax.js";
 import type { NativeHostUiElement, Value } from "./types.js";
 
 
-
-interface UiGridProjection {
-    columns: number;
-    cellWidth: number;
-    gap: number;
-    width: number;
-    rowCount?: number;
-    rowHeight?: number;
-    /** Absent means CSS's initial `normal`, projected as start alignment. */
-    authoredJustifyContent?: "start" | "center" | "end";
-}
-
-
 interface LoweredUiStyleRule extends UiStyleSelectorShape {
-    // Source-created sheets participate in static grid proofs. Attribute
-    // selectors are currently admitted only in audited host companions.
+    // Preserve source selector and declaration metadata through native emission.
     kind: Exclude<UiStyleSelectorKind, "tag-attribute">;
     hover: boolean;
     maxWidth?: number;
@@ -43,7 +30,6 @@ interface LoweredUiStyleRule extends UiStyleSelectorShape {
     selector: string;
     site?: ts.Node;
     ownerId?: number;
-    grid?: UiGridProjection;
     sequence?: UiSelectorStep[];
     content?: UiGeneratedContent;
 }
@@ -75,13 +61,6 @@ interface UiStaticElement {
     /** False when known child construction sites can occur a runtime number of times. */
     childCardinalityKnown: boolean;
     childShapeKnown: boolean;
-}
-
-
-interface UiValidationState {
-    activeRules: readonly LoweredUiStyleRule[];
-    parentsByChild: ReadonlyMap<number, readonly number[]>;
-    ancestorsById: Map<number, UiStaticElement[]>;
 }
 
 
@@ -803,10 +782,6 @@ export class UiProjection {
 
     public recordUiStaticAppend(parent: Value, child: Value): void {
         const parentElement = this.uiStaticElement(parent);
-        if (!parentElement || this.uiStaticMutationIsDynamic()) {
-            const childElement = this.uiStaticElement(child);
-            if (!childElement || childElement.tag === "style") this.uiStaticStyleCascadeKnown = false;
-        }
         if (!parentElement) return;
         if (child.uiStaticId === undefined) {
             parentElement.childCardinalityKnown = false;
@@ -853,10 +828,7 @@ export class UiProjection {
         const id = child.uiStaticId;
         const element = this.uiStaticElement(child);
         if (id === undefined || !element || this.uiStaticMutationIsDynamic()) {
-            if (!element || element.tag === "style") {
-                this.uiStaticStyleCascadeKnown = false;
-            }
-            return;
+                return;
         }
         const previous = this.uiStaticRootOrder.indexOf(id);
         if (previous >= 0) this.uiStaticRootOrder.splice(previous, 1);
@@ -875,10 +847,7 @@ export class UiProjection {
         const id = element.uiStaticId;
         const staticElement = this.uiStaticElement(element);
         if (id === undefined || !staticElement) {
-            if (!staticElement || staticElement.tag === "style") {
-                this.uiStaticStyleCascadeKnown = false;
-            }
-            return;
+                return;
         }
         const dynamic = this.uiStaticMutationIsDynamic();
         for (const parent of this.uiStaticElements.values()) {
@@ -950,6 +919,8 @@ export class UiProjection {
         "column-gap",
         "cursor",
         "display",
+        "grid-template-columns",
+        "grid-template-rows",
         "flex",
         "flex-basis",
         "flex-direction",
@@ -1103,60 +1074,6 @@ export class UiProjection {
     private static readonly GRADIENT_TEXT_STROKE_PATTERN =
         /-webkit-text-stroke\s*:\s*([^\s;]+)\s+([^;]+)/i;
 
-
-    /** The reached CSS-grid combination the block projection lowers. */
-    private static readonly GRID_TEMPLATE_COLUMNS_PATTERN =
-        /\bgrid-template-columns\s*:\s*repeat\(\s*(\d+)\s*,\s*([0-9]+(?:\.[0-9]*)?)px\s*\)\s*;?/i;
-
-    private static readonly GRID_TEMPLATE_ROWS_PATTERN =
-        /\bgrid-template-rows\s*:\s*repeat\(\s*(\d+)\s*,\s*([0-9]+(?:\.[0-9]*)?)px\s*\)\s*;?/i;
-
-    private static readonly GRID_GAP_PATTERN =
-        /(?:^|;)\s*gap\s*:\s*([0-9]+(?:\.[0-9]*)?)px\s*(?:;|$)/i;
-
-    private static readonly UI_GRID_CHILD_GEOMETRY_PROPERTIES = [
-        ...uiLogicalSpacingProperties,
-        "width",
-        "height",
-        "min-width",
-        "max-width",
-        "min-height",
-        "max-height",
-        "margin",
-        "margin-left",
-        "margin-right",
-        "margin-top",
-        "margin-bottom",
-        "padding",
-        "padding-left",
-        "padding-right",
-        "padding-top",
-        "padding-bottom",
-        "border",
-        "border-width",
-        "border-left-width",
-        "border-right-width",
-        "border-top-width",
-        "border-bottom-width",
-        "box-sizing",
-    ] as const;
-
-    private static readonly UI_GRID_CHILD_SPACING_PROPERTIES =
-        UiProjection.UI_GRID_CHILD_GEOMETRY_PROPERTIES.filter(
-            (property) =>
-                property === "margin" ||
-                property.startsWith("margin-") ||
-                property === "padding" ||
-                property.startsWith("padding-"),
-        );
-
-    private static readonly UI_GRID_CHILD_BORDER_WIDTH_PROPERTIES =
-        UiProjection.UI_GRID_CHILD_GEOMETRY_PROPERTIES.filter(
-            (property) =>
-                property === "border-width" ||
-                /^border-(?:left|right|top|bottom)-width$/.test(property),
-        );
-
     public static readonly UI_IMPLEMENTATION_TAGS = new EmissionSet([
         "bbl-grid-children",
         "bbl-grid-track",
@@ -1173,146 +1090,6 @@ export class UiProjection {
      *  is the gradient's argument list for the projection's colour reads. */
     private static readonly GRADIENT_TEXT_BACKGROUND_PATTERN =
         /\bbackground\s*:\s*linear-gradient\(([^;]*)\)/i;
-
-
-    /** The `display:grid` half of the grid-projection pairing. */
-    private static readonly DISPLAY_GRID_PATTERN = /\bdisplay\s*:\s*grid\b/i;
-
-
-    private static uiLastStyleProperty(
-        declarations: string,
-        property: string,
-    ): string | undefined {
-        let result: string | undefined;
-        UiProjection.forEachUiStyleDeclaration(declarations, (declaration) => {
-            const colon = declaration.indexOf(":");
-            if (
-                colon >= 0 &&
-                declaration.slice(0, colon).trim().toLowerCase() === property
-            ) {
-                result = declaration.slice(colon + 1).trim();
-            }
-        });
-        return result;
-    }
-
-
-    /** The grid projection's pairing rule, stated once for the audit and
-     *  the projection: `display:grid` lowers only beside the reached
-     *  `grid-template-columns:repeat(N, px)` form in the same list. */
-    private static projectsUiGrid(declarations: string): boolean {
-        return (
-            UiProjection.DISPLAY_GRID_PATTERN.test(declarations) &&
-            UiProjection.GRID_TEMPLATE_COLUMNS_PATTERN.test(declarations)
-        );
-    }
-
-
-    public static fractionalUiGridTracks(declarations: string): string[] | undefined {
-        if (UiProjection.uiLastStyleProperty(declarations, "display") !== "grid") return undefined;
-        const value = UiProjection.uiLastStyleProperty(declarations, "grid-template-columns");
-        const tracks = value?.trim().split(/\s+/);
-        return tracks && tracks.length > 1 && tracks.some(track => track.endsWith("fr")) &&
-            tracks.every(track => /^(?:\d+(?:\.\d+)?|\.\d+)(?:px|fr)$/.test(track) && parseFloat(track) > 0)
-            ? tracks : undefined;
-    }
-
-
-    private static normalizeUiGridJustification(
-        value: string | undefined,
-    ): "start" | "center" | "end" | undefined {
-        const normalized = value?.trim().toLowerCase();
-        if (
-            normalized === undefined ||
-            normalized === "normal" ||
-            normalized === "start" ||
-            normalized === "flex-start" ||
-            normalized === "left"
-        ) {
-            return "start";
-        }
-        if (normalized === "center") return "center";
-        if (
-            normalized === "end" ||
-            normalized === "flex-end" ||
-            normalized === "right"
-        ) {
-            return "end";
-        }
-        return undefined;
-    }
-
-
-    private static uiGridProjection(
-        declarations: string,
-    ): UiGridProjection | undefined {
-        if (!UiProjection.projectsUiGrid(declarations)) return undefined;
-        const columnsValue = UiProjection.uiLastStyleProperty(
-            declarations,
-            "grid-template-columns",
-        );
-        const columns = columnsValue
-            ? `grid-template-columns:${columnsValue};`.match(
-                  UiProjection.GRID_TEMPLATE_COLUMNS_PATTERN,
-              )
-            : undefined;
-        if (!columns) return undefined;
-        const count = Number(columns[1]);
-        const cellWidth = Number(columns[2]);
-        const gapValue = UiProjection.uiLastStyleProperty(declarations, "gap");
-        const gapMatch = gapValue
-            ? `gap:${gapValue};`.match(UiProjection.GRID_GAP_PATTERN)
-            : undefined;
-        if (gapValue !== undefined && !gapMatch) return undefined;
-        const gap = Number(gapMatch?.[1] ?? "0");
-        const rowsValue = UiProjection.uiLastStyleProperty(
-            declarations,
-            "grid-template-rows",
-        );
-        const rows = rowsValue
-            ? `grid-template-rows:${rowsValue};`.match(
-                  UiProjection.GRID_TEMPLATE_ROWS_PATTERN,
-              )
-            : undefined;
-        if (rowsValue !== undefined && !rows) return undefined;
-        const rowCount = rows ? Number(rows[1]) : undefined;
-        const rowHeight = rows ? Number(rows[2]) : undefined;
-        const authoredJustification = UiProjection.uiLastStyleProperty(
-            declarations,
-            "justify-content",
-        )
-            ?.trim()
-            .toLowerCase();
-        const justifyContent = UiProjection.normalizeUiGridJustification(
-            authoredJustification,
-        );
-        if (
-            !Number.isInteger(count) ||
-            count < 1 ||
-            !Number.isFinite(cellWidth) ||
-            cellWidth <= 0 ||
-            !Number.isFinite(gap) ||
-            gap < 0 ||
-            (rowCount !== undefined &&
-                (!Number.isInteger(rowCount) || rowCount < 1)) ||
-            (rowHeight !== undefined &&
-                (!Number.isFinite(rowHeight) || rowHeight <= 0)) ||
-            justifyContent === undefined
-        ) {
-            return undefined;
-        }
-        return {
-            columns: count,
-            cellWidth,
-            gap,
-            width: count * cellWidth + Math.max(0, count - 1) * gap,
-            ...(authoredJustification === undefined
-                ? {}
-                : { authoredJustifyContent: justifyContent }),
-            ...(rowCount === undefined ? {} : { rowCount }),
-            ...(rowHeight === undefined ? {} : { rowHeight }),
-        };
-    }
 
 
     /**
@@ -1368,17 +1145,6 @@ export class UiProjection {
     public readonly uiScopedSheetSelectors = new EmissionSet<string>();
 
 
-    /** Fixed-grid shapes structurally projected through wrapping flex. */
-    public readonly uiGridSubstitutions = new EmissionSet<string>();
-
-    /** True even if a later stylesheet assignment replaces the grid rules. */
-    private uiSawGridDeclaration = false;
-
-
-    /** Every compiler-validated author rule, retained for static proofs. */
-    private readonly uiStyleRules: LoweredUiStyleRule[] = emissionArray([]);
-
-
     /** Construction-site topology used only to prove bounded DOM projections. */
     private readonly uiStaticElements = new EmissionMap<number, UiStaticElement>();
 
@@ -1406,14 +1172,6 @@ export class UiProjection {
     private readonly uiDocumentRootIds = new EmissionMap<string, number>();
     private readonly uiConditionallyRemovedStyles = new EmissionSet<number>();
 
-    private uiValidation: UiValidationState | undefined;
-
-    /**
-     * False once a stylesheet attachment or contents mutation can execute on
-     * a path generation cannot order. A fixed-grid proof may not guess which
-     * cascade the browser will expose.
-     */
-    private uiStaticStyleCascadeKnown = true;
 
     private uiElementIds = 0;
 
@@ -1481,72 +1239,6 @@ export class UiProjection {
             UiProjection.GRADIENT_TEXT_CLIP_PATTERN.test(value);
         const hasGradientBackground =
             UiProjection.GRADIENT_TEXT_BACKGROUND_PATTERN.test(value);
-        const projectsGrid = UiProjection.projectsUiGrid(value);
-        const fractionalTracks = UiProjection.fractionalUiGridTracks(value);
-        const gridProjection = UiProjection.uiGridProjection(value);
-        const finalDisplay = UiProjection.uiLastStyleProperty(value, "display")
-            ?.trim()
-            .toLowerCase();
-        const gridJustification = UiProjection.uiLastStyleProperty(
-            value,
-            "justify-content",
-        )
-            ?.trim()
-            .toLowerCase();
-        if (projectsGrid && finalDisplay !== "grid") {
-            this.uiStyleRefusal(
-                site,
-                "display",
-                "conflicting display declarations in one fixed-grid rule are ambiguous; put the reset in a separate cascade rule",
-            );
-        }
-        if (
-            projectsGrid &&
-            gridJustification !== undefined &&
-            !/^(?:normal|start|flex-start|left|center|end|flex-end|right)$/.test(
-                gridJustification,
-            )
-        ) {
-            this.uiStyleRefusal(
-                site,
-                "justify-content",
-                `the fixed-grid substitution supports start, center, and end track alignment, not '${gridJustification}'`,
-            );
-        }
-        if (projectsGrid && !gridProjection) {
-            this.uiStyleRefusal(
-                site,
-                "grid-template-columns",
-                "the fixed-grid substitution requires repeat(a positive integer, a positive px width) and a non-negative px gap",
-            );
-        }
-        if (
-            projectsGrid &&
-            UiProjection.uiLastStyleProperty(value, "gap") !== undefined &&
-            !/^([0-9]+(?:\.[0-9]*)?)px$/i.test(
-                UiProjection.uiLastStyleProperty(value, "gap")!,
-            )
-        ) {
-            this.uiStyleRefusal(
-                site,
-                "gap",
-                "the fixed-grid substitution requires a static non-negative px gap",
-            );
-        }
-        if (
-            projectsGrid &&
-            UiProjection.uiLastStyleProperty(value, "grid-template-rows") !==
-                undefined &&
-            !/^repeat\(\s*\d+\s*,\s*[0-9]+(?:\.[0-9]*)?px\s*\)$/i.test(
-                UiProjection.uiLastStyleProperty(value, "grid-template-rows")!,
-            )
-        ) {
-            this.uiStyleRefusal(
-                site,
-                "grid-template-rows",
-                "the optional fixed row template must be repeat(integer, px)",
-            );
-        }
         UiProjection.forEachUiStyleDeclaration(value, (declaration) => {
             const colon = declaration.indexOf(":");
             if (colon < 0) {
@@ -1561,9 +1253,6 @@ export class UiProjection {
                 .toLowerCase();
             if (property.length === 0) return;
             if (UiProjection.isCustomStyleProperty(property)) return;
-            if ((projectsGrid || fractionalTracks) && (property === "place-items" || property === "justify-items")) {
-                this.uiStyleRefusal(site, property, "item alignment requires the native implicit grid; explicit track projections do not represent it");
-            }
             if (property === "place-items" && !/^(?:start|end|center|stretch)(?:\s+(?:start|end|center|stretch))?$/.test(literalValue)) {
                 this.uiStyleRefusal(site, property, "only one or two start, end, center or stretch keywords are represented");
             }
@@ -1707,44 +1396,8 @@ export class UiProjection {
                 }
                 return;
             }
-            if (
-                property === "grid-template-columns" ||
-                property === "grid-template-rows"
-            ) {
-                if (property === "grid-template-columns" && fractionalTracks) return;
-                if (
-                    !projectsGrid ||
-                    (property === "grid-template-rows" &&
-                        !/^repeat\(\s*\d+\s*,\s*[0-9]+(?:\.[0-9]*)?px\s*\)$/i.test(
-                            UiProjection.uiLastStyleProperty(
-                                value,
-                                "grid-template-rows",
-                            ) ?? "",
-                        ))
-                ) {
-                    this.uiStyleRefusal(
-                        site,
-                        property,
-                        "the grid projection lowers only display:grid " +
-                            "with grid-template-columns:repeat(N, px) in " +
-                            "the same declaration list",
-                    );
-                }
-                return;
-            }
-            if (
-                property === "display" &&
-                /\bgrid\b/.test(literalValue) &&
-                !projectsGrid && !fractionalTracks &&
-                (literalValue !== "grid" || UiProjection.uiLastStyleProperty(value, "grid-template-columns") !== undefined)
-            ) {
-                this.uiStyleRefusal(
-                    site,
-                    property,
-                    "display:grid lowers only with " +
-                        "grid-template-columns:repeat(N, px) in the same " +
-                        "declaration list",
-                );
+            if ((property === "grid-template-columns" || property === "grid-template-rows") && !supportedUiGridTracks(literalValue)) {
+                this.uiStyleRefusal(site, property, "expected none, auto, non-negative px/fr tracks, minmax(px,fr), or repeat(integer, tracks), at most 256 tracks");
             }
             if (
                 property === "color" &&
@@ -2228,50 +1881,6 @@ export class UiProjection {
             }
         }
 
-        // Explicit tracks retain the existing structural projections. The
-        // patched native formatter handles one implicit auto column directly.
-        // Mark the reached
-        // regular `repeat(N, px)` surface for the PAL to project as a
-        // full-width outer box with a centred wrapping-flex inner box. Keeping
-        // those boxes separate matters: in the browser the Tetris preview's
-        // background spans the panel while only its 4x4 cells are centred.
-        const fractionalTracks = UiProjection.fractionalUiGridTracks(lowered);
-        if (fractionalTracks) {
-            lowered = lowered
-                .replace(/\bdisplay\s*:\s*grid\b/gi, "display:flex")
-                .replace(/\bgrid-template-columns\s*:[^;]+;?/gi, "") +
-                `;--bbl-fr-grid-tracks:${fractionalTracks.join(" ")};`;
-        } else if (UiProjection.projectsUiGrid(lowered)) {
-            this.uiSawGridDeclaration = true;
-            const grid = UiProjection.uiGridProjection(lowered)!;
-            const shrinkToTracks =
-                /\bposition\s*:\s*absolute\b/i.test(lowered) &&
-                !/(?:^|;)\s*width\s*:/i.test(lowered) &&
-                /(?:^|;)\s*left\s*:/i.test(lowered) !==
-                    /(?:^|;)\s*right\s*:/i.test(lowered);
-            lowered =
-                lowered
-                    .replace(/\bdisplay\s*:\s*grid\b/gi, "display:block")
-                    .replace(/\bgrid-template-columns\s*:[^;]+;?/gi, "")
-                    .replace(/\bgrid-template-rows\s*:[^;]+;?/gi, "")
-                    .replace(/\bgap\s*:[^;]+;?/gi, "")
-                    .replace(/\bjustify-content\s*:[^;]+;?/gi, "") +
-                (shrinkToTracks ? `;width:${grid.width}px` : "") +
-                `;--bbl-grid-columns:${grid.columns};` +
-                `--bbl-grid-cell-width:${grid.cellWidth}px;` +
-                `--bbl-grid-width:${grid.width}px;` +
-                `--bbl-grid-gap:${grid.gap}px;` +
-                (grid.authoredJustifyContent === undefined
-                    ? ""
-                    : `--bbl-grid-justify-content:${grid.authoredJustifyContent};`) +
-                (grid.rowHeight === undefined
-                    ? ""
-                    : `--bbl-grid-row-height:${grid.rowHeight}px;`) +
-                (grid.rowCount === undefined
-                    ? ""
-                    : `--bbl-grid-row-count:${grid.rowCount};`);
-        }
-
         if (/\bposition\s*:\s*absolute\b/i.test(lowered)) {
             const hasWidth = /(?:^|;)\s*width\s*:/i.test(lowered);
             const minimum = lowered
@@ -2391,20 +2000,6 @@ export class UiProjection {
         site?: ts.Node,
         ownerId?: number,
     ): LoweredUiStyleRule[] {
-        if (ownerId !== undefined && this.uiStaticMutationIsDynamic()) {
-            this.uiStaticStyleCascadeKnown = false;
-        }
-        if (ownerId !== undefined) {
-            for (
-                let index = this.uiStyleRules.length - 1;
-                index >= 0;
-                index--
-            ) {
-                if (this.uiStyleRules[index]!.ownerId === ownerId) {
-                    this.uiStyleRules.splice(index, 1);
-                }
-            }
-        }
         const rules: LoweredUiStyleRule[] = [];
         const refuseSelector = (selector: string): never => {
             const message =
@@ -2470,15 +2065,6 @@ export class UiProjection {
                     return foreign && parseUiSelectorSequence(foreign[1] || "*");
                 })) continue;
                 const sourceStyle = body.trim();
-                const grid = UiProjection.uiGridProjection(sourceStyle);
-                if ((grid || UiProjection.fractionalUiGridTracks(sourceStyle)) &&
-                    (inheritedMaxWidth !== undefined || inheritedReducedMotion !== undefined)) {
-                    this.uiStyleRefusal(
-                        site,
-                        "display",
-                        "the structural grid substitution is not accepted inside a media query",
-                    );
-                }
                 for (const selector of selectors) {
                     if (
                         parseUiSelectorSequence(selector.replace(/::(?:before|after|placeholder)$/, ""))?.at(-1)?.tests.some(test => test.kind === "tag" && (test.name === "path" || test.name === "rect"))
@@ -2506,21 +2092,6 @@ export class UiProjection {
                     if (inheritedReducedMotion !== undefined) rule.reducedMotion = inheritedReducedMotion;
                     if (site) rule.site = site;
                     if (ownerId !== undefined) rule.ownerId = ownerId;
-                    if (grid) {
-                        if (
-                            uiStyleRuleNeedsRuntimeMatch(rule) ||
-                            rule.scrollbar || rule.range ||
-                            rule.pseudo ||
-                            (rule.kind !== "class" && rule.kind !== "id")
-                        ) {
-                            this.uiStyleRefusal(
-                                site,
-                                "display",
-                                "the structural fixed-grid substitution requires one stable '.class' or '#id' target",
-                            );
-                        }
-                        rule.grid = grid;
-                    }
                     if (
                         !rule.scrollbar && !rule.range && (
                         rule.kind === "class-descendant-tag" ||
@@ -2530,9 +2101,6 @@ export class UiProjection {
                     }
                     if (!style && !content) continue;
                     rules.push(rule);
-                    // Anonymous control parts cannot affect static proofs
-                    // over the authored element tree.
-                    if (!rule.scrollbar && !rule.range) this.uiStyleRules.push(rule);
                 }
             }
         };
@@ -2569,33 +2137,6 @@ export class UiProjection {
         };
         visit(rootId);
         return { elements, markup, complete };
-    }
-
-
-    private uiRuleMatchesDirectWithClasses(
-        rule: LoweredUiStyleRule,
-        element: UiStaticElement,
-        classes: ReadonlySet<string>,
-    ): boolean {
-        if (rule.scrollbar || rule.range || rule.pseudo) return false;
-        switch (rule.kind) {
-            case "sequence":
-                return this.uiSequenceMayMatch(rule, element, classes);
-            case "class":
-                return classes.has(rule.primary);
-            case "id":
-                return element.ids.has(rule.primary);
-            case "compound-class":
-                return (
-                    classes.has(rule.primary) && classes.has(rule.secondary!)
-                );
-            case "tag-class":
-                return element.tag === rule.tag && classes.has(rule.primary);
-            case "class-descendant-tag":
-            case "id-descendant-class":
-            case "tag-child-class":
-                return false;
-        }
     }
 
 
@@ -2713,27 +2254,6 @@ export class UiProjection {
     }
 
 
-    /** Deliberately a possible-match query: relationships and attributes need
-     * runtime evaluation and cannot establish fixed-grid geometry. */
-    private uiSequenceMayMatch(rule: LoweredUiStyleRule, element: UiStaticElement, classes: ReadonlySet<string>): boolean {
-        return rule.sequence!.at(-1)!.tests.every(test => {
-            if (test.kind === "tag") return element.tag === test.name;
-            if (test.kind === "id") return element.ids.has(test.name);
-            if (test.kind === "class") return classes.has(test.name);
-            return true;
-        });
-    }
-
-    private uiRuleMatchesDirect(
-        rule: LoweredUiStyleRule,
-        element: UiStaticElement,
-    ): boolean {
-        return element.classAlternatives.some((classes) =>
-            this.uiRuleMatchesDirectWithClasses(rule, element, classes),
-        );
-    }
-
-
     private uiStaticElementAlwaysHasClass(
         element: UiStaticElement,
         className: string,
@@ -2744,1220 +2264,49 @@ export class UiProjection {
         );
     }
 
-
-    private uiRuleSpecificity(rule: LoweredUiStyleRule): number {
-        const states = uiStyleInteractionStateCount(rule);
-        switch (rule.kind) {
-            case "sequence":
-                return uiSelectorSequenceSpecificity(rule.sequence!) + (Number(rule.hover) + Number(rule.active) + Number(rule.focusVisible === true)) * 0x100;
-            case "class":
-                return (1 + states) * 0x100;
-            case "id":
-                return 0x10000 + states * 0x100;
-            case "compound-class":
-                return (2 + states) * 0x100;
-            case "class-descendant-tag":
-            case "tag-class":
-                return (1 + states) * 0x100 + 1;
-            case "tag-child-class":
-                return (1 + Number(rule.secondary !== undefined) + states) * 0x100 + 1;
-            case "id-descendant-class":
-                return 0x10000 + (1 + states) * 0x100;
-        }
-    }
-
-
-    /**
-     * Scene-created sheets participate only while directly attached to the
-     * document, in that live order. Rule creation/population order is not CSS
-     * source order across sheets.
-     */
-    private uiActiveStyleRulesInCascade(): readonly LoweredUiStyleRule[] {
-        if (this.uiValidation) {
-            return this.uiValidation.activeRules;
-        }
-        const rulesByOwner = new EmissionMap<number, LoweredUiStyleRule[]>();
-        for (const rule of this.uiStyleRules) {
-            if (rule.ownerId === undefined) continue;
-            const owned = rulesByOwner.get(rule.ownerId) ?? [];
-            owned.push(rule);
-            rulesByOwner.set(rule.ownerId, owned);
-        }
-        const active: LoweredUiStyleRule[] = [];
-        const visit = (id: number): void => {
-            active.push(...(rulesByOwner.get(id) ?? []));
-            for (const child of this.uiStaticElements.get(id)?.children ?? []) visit(child);
-        };
-        this.uiStaticRootOrder.forEach(visit);
-        return active;
-    }
-
-
-    private uiStaticAncestors(id: number): UiStaticElement[] {
-        const cached = this.uiValidation?.ancestorsById.get(id);
-        if (cached) return cached;
-        const ancestors: UiStaticElement[] = [];
-        const pending = [id];
-        const visited = new EmissionSet<number>(pending);
-        while (pending.length > 0) {
-            const child = pending.pop()!;
-            const parentIds = this.uiValidation?.parentsByChild.get(child);
-            const candidates = parentIds
-                ? parentIds.map(
-                      (candidateId) =>
-                          [
-                              candidateId,
-                              this.uiStaticElements.get(candidateId)!,
-                          ] as const,
-                  )
-                : [...this.uiStaticElements].filter(([, candidate]) =>
-                      candidate.children.has(child),
-                  );
-            for (const [candidateId, candidate] of candidates) {
-                if (visited.has(candidateId)) continue;
-                visited.add(candidateId);
-                ancestors.push(candidate);
-                pending.push(candidateId);
+    public validateUiStaticProjection(): void {
+        for (const query of this.uiPendingClassQueries) {
+            if (query.root.uiStaticId === undefined) {
+                this.context.fail(
+                    query.site,
+                    "Retained UI querySelectorAll requires a statically-known retained root.",
+                );
             }
-        }
-        this.uiValidation?.ancestorsById.set(id, ancestors);
-        return ancestors;
-    }
-
-
-    private uiRuleMatchesStaticElement(
-        rule: LoweredUiStyleRule,
-        id: number,
-        element: UiStaticElement,
-    ): boolean {
-        return element.classAlternatives.some((classes) =>
-            this.uiRuleMatchesStaticElementWithClasses(
-                rule,
-                id,
-                element,
-                classes,
-            ),
-        );
-    }
-
-
-    private uiStaticParentHasTag(id: number, tag: string): boolean {
-        if (!this.uiDocumentRootIds.has("html") && tag === "body" && this.uiStaticRootOrder.includes(id)) return true;
-        const parents = this.uiValidation?.parentsByChild.get(id);
-        return parents ? parents.some(parent => this.uiStaticElements.get(parent)?.tag === tag)
-            : [...this.uiStaticElements.values()].some(parent => parent.tag === tag && parent.children.has(id));
-    }
-
-    private uiRuleMatchesStaticElementWithClasses(
-        rule: LoweredUiStyleRule,
-        id: number,
-        element: UiStaticElement,
-        classes: ReadonlySet<string>,
-    ): boolean {
-        if (rule.pseudo) return false;
-        if (rule.kind === "tag-child-class") return classes.has(rule.primary) && (!rule.secondary || classes.has(rule.secondary)) && this.uiStaticParentHasTag(id, rule.tag!);
-        if (
-            rule.kind !== "class-descendant-tag" &&
-            rule.kind !== "id-descendant-class"
-        ) {
-            return this.uiRuleMatchesDirectWithClasses(rule, element, classes);
-        }
-        const ancestors = this.uiStaticAncestors(id);
-        return rule.kind === "class-descendant-tag"
-            ? element.tag === rule.tag &&
-                  ancestors.some((ancestor) =>
-                      ancestor.classAlternatives.some((ancestorClasses) =>
-                          ancestorClasses.has(rule.primary),
-                      ),
-                  )
-            : classes.has(rule.secondary!) &&
-                  ancestors.some((ancestor) => ancestor.ids.has(rule.primary));
-    }
-
-
-    private uiRuleDependsOnMutableClass(
-        rule: LoweredUiStyleRule,
-        id: number,
-        element: UiStaticElement,
-    ): boolean {
-        switch (rule.kind) {
-            case "sequence":
-                return [...uiSelectorSequenceTests(rule.sequence!)].some(test => test.kind === "class" &&
-                    [...this.uiStaticElements.values()].some(candidate => candidate.mutableClasses.has(test.name)));
-            case "class":
-                return element.mutableClasses.has(rule.primary);
-            case "id":
-                return false;
-            case "compound-class":
-            case "tag-child-class":
-                return (
-                    element.mutableClasses.has(rule.primary) ||
-                    (rule.secondary !== undefined && element.mutableClasses.has(rule.secondary))
-                );
-            case "tag-class":
-                return (
-                    element.tag === rule.tag &&
-                    element.mutableClasses.has(rule.primary)
-                );
-            case "class-descendant-tag":
-                return this.uiStaticAncestors(id).some((ancestor) =>
-                    ancestor.mutableClasses.has(rule.primary),
-                );
-            case "id-descendant-class":
-                return element.mutableClasses.has(rule.secondary!);
-        }
-    }
-
-
-    private uiRuleMentionsClass(
-        rule: LoweredUiStyleRule,
-        className: string,
-    ): boolean {
-        switch (rule.kind) {
-            case "sequence":
-                return [...uiSelectorSequenceTests(rule.sequence!)].some(test => test.kind === "class" && test.name === className);
-            case "class":
-            case "class-descendant-tag":
-            case "tag-class":
-                return rule.primary === className;
-            case "compound-class":
-            case "tag-child-class":
-                return (
-                    rule.primary === className || rule.secondary === className
-                );
-            case "id-descendant-class":
-                return rule.secondary === className;
-            case "id":
-                return false;
-        }
-    }
-
-
-    private uiRuleCouldMatchGridChildAfterUnknownClassMutation(
-        rule: LoweredUiStyleRule,
-        className: string,
-        childId: number,
-        child: UiStaticElement,
-    ): boolean {
-        switch (rule.kind) {
-            case "sequence":
-                return this.uiRuleMentionsClass(rule, className);
-            case "tag-child-class":
-                return this.uiStaticParentHasTag(childId, rule.tag!) && child.classAlternatives.some(classes =>
-                    (rule.primary === className && (!rule.secondary || classes.has(rule.secondary))) ||
-                    (rule.secondary === className && classes.has(rule.primary)));
-            case "class":
-                return rule.primary === className;
-            case "id":
-                return false;
-            case "compound-class":
-                return (
-                    (rule.primary === className &&
-                        child.classAlternatives.some((classes) =>
-                            classes.has(rule.secondary!),
-                        )) ||
-                    (rule.secondary === className &&
-                        child.classAlternatives.some((classes) =>
-                            classes.has(rule.primary),
-                        ))
-                );
-            case "class-descendant-tag":
-            case "tag-class":
-                return rule.primary === className && child.tag === rule.tag;
-            case "id-descendant-class":
-                return (
-                    rule.secondary === className &&
-                    this.uiStaticAncestors(childId).some((ancestor) =>
-                        ancestor.ids.has(rule.primary),
-                    )
-                );
-        }
-    }
-
-
-    private uiUnknownAttributeCouldAffectRule(
-        mutation: UiUnknownAttributeMutation,
-        rule: LoweredUiStyleRule,
-        elementId: number,
-        element: UiStaticElement,
-    ): boolean {
-        if (rule.kind === "sequence") return [...uiSelectorSequenceTests(rule.sequence!)].some(test => test.kind === mutation.attribute);
-        const sameTarget =
-            mutation.targetId === undefined || mutation.targetId === elementId;
-        const target =
-            mutation.targetId === undefined
-                ? undefined
-                : this.uiStaticElements.get(mutation.targetId);
-        const targetIsAncestor =
-            mutation.targetId === undefined ||
-            (target !== undefined &&
-                this.uiStaticAncestors(elementId).includes(target));
-        if (mutation.attribute === "class") {
-            switch (rule.kind) {
-                case "tag-child-class":
-                    return sameTarget && this.uiStaticParentHasTag(elementId, rule.tag!);
-                case "class":
-                case "compound-class":
-                    return sameTarget;
-                case "tag-class":
-                    return sameTarget && element.tag === rule.tag;
-                case "class-descendant-tag":
-                    return targetIsAncestor && element.tag === rule.tag;
-                case "id-descendant-class":
+            const descendants = this.uiStaticDescendants(
+                query.root.uiStaticId,
+            );
+            const unknownClass = [...descendants.elements].some(
+                (id) => !this.uiStaticElements.get(id)?.classShapeKnown,
+            );
+            const retainedMatches = [...descendants.elements].filter(
+                (id) => {
+                    const element = this.uiStaticElements.get(id);
                     return (
-                        sameTarget &&
-                        this.uiStaticAncestors(elementId).some((ancestor) =>
-                            ancestor.ids.has(rule.primary),
+                        element !== undefined &&
+                        this.uiStaticElementAlwaysHasClass(
+                            element,
+                            query.className,
                         )
                     );
-                case "id":
-                    return false;
-            }
-        }
-        switch (rule.kind) {
-            case "id":
-                return sameTarget;
-            case "id-descendant-class":
-                return (
-                    targetIsAncestor &&
-                    element.classAlternatives.some((classes) =>
-                        classes.has(rule.secondary!),
-                    )
-                );
-            case "class":
-            case "compound-class":
-            case "class-descendant-tag":
-            case "tag-class":
-            case "tag-child-class":
-                return false;
-        }
-    }
-
-
-    private uiGridChildGeometryProperty(
-        rule: LoweredUiStyleRule,
-        includeExplicitRowFlow = false,
-    ): string | undefined {
-        if (includeExplicitRowFlow) {
-            const display = this.uiStaticStyleProperty(rule.style, "display")
-                ?.trim()
-                .toLowerCase();
-            if (display === "none") return "display";
-            const position = this.uiStaticStyleProperty(rule.style, "position")
-                ?.trim()
-                .toLowerCase();
-            if (position === "absolute" || position === "fixed") {
-                return "position";
-            }
-        }
-        return UiProjection.UI_GRID_CHILD_GEOMETRY_PROPERTIES.find(
-            (property) =>
-                this.uiStaticStyleProperty(rule.style, property) !== undefined,
-        );
-    }
-
-
-    private uiStaticStyleProperty(
-        style: string,
-        property: string,
-    ): string | undefined {
-        return UiProjection.uiLastStyleProperty(style, property);
-    }
-
-
-    private uiStaticElementStylePropertyForState(
-        id: number,
-        property: string,
-        classes: ReadonlySet<string>,
-        inlineStyle: string,
-    ): string | undefined {
-        const element = this.uiStaticElements.get(id);
-        if (!element) return undefined;
-        let result: string | undefined;
-        let specificity = -1;
-        let sourceOrder = -1;
-        const activeRules = this.uiActiveStyleRulesInCascade();
-        for (let index = 0; index < activeRules.length; index++) {
-            const rule = activeRules[index]!;
-            if (
-                uiStyleRuleNeedsRuntimeMatch(rule) ||
-                uiStyleRuleHasMedia(rule) ||
-                !this.uiRuleMatchesStaticElementWithClasses(
-                    rule,
-                    id,
-                    element,
-                    classes,
-                )
-            ) {
-                continue;
-            }
-            const value = this.uiStaticStyleProperty(rule.style, property);
-            if (value === undefined) continue;
-            const candidateSpecificity = this.uiRuleSpecificity(rule);
-            if (
-                candidateSpecificity > specificity ||
-                (candidateSpecificity === specificity && index > sourceOrder)
-            ) {
-                result = value;
-                specificity = candidateSpecificity;
-                sourceOrder = index;
-            }
-        }
-        result = this.uiStaticStyleProperty(inlineStyle, property) ?? result;
-        return result;
-    }
-
-
-    private uiStaticElementStylePropertyValues(
-        id: number,
-        property: string,
-    ): Set<string | undefined> {
-        const element = this.uiStaticElements.get(id);
-        if (!element) return new EmissionSet([undefined]);
-        const values = new EmissionSet<string | undefined>();
-        for (const classes of element.classAlternatives) {
-            for (const style of element.styles) {
-                values.add(
-                    this.uiStaticElementStylePropertyForState(
-                        id,
-                        property,
-                        classes,
-                        style,
-                    ),
-                );
-            }
-        }
-        return values;
-    }
-
-
-    private uiStaticEffectiveGrid(
-        id: number,
-        classes: ReadonlySet<string>,
-    ):
-        | {
-              grid: UiGridProjection;
-              label: string;
-              site?: ts.Node;
-          }
-        | undefined {
-        const element = this.uiStaticElements.get(id);
-        if (!element) return undefined;
-        interface CascadedValue<T> {
-            value: T;
-            specificity: number;
-            sourceOrder: number;
-        }
-        let display:
-            | CascadedValue<{
-                  value: string;
-                  grid?: UiGridProjection;
-                  label: string;
-                  site?: ts.Node;
-              }>
-            | undefined;
-        let justification: CascadedValue<string> | undefined;
-        const wins = <T>(
-            current: CascadedValue<T> | undefined,
-            specificity: number,
-            sourceOrder: number,
-        ): boolean =>
-            current === undefined ||
-            specificity > current.specificity ||
-            (specificity === current.specificity &&
-                sourceOrder >= current.sourceOrder);
-        const activeRules = this.uiActiveStyleRulesInCascade();
-        const normalizedKeyword = (
-            value: string | undefined,
-        ): string | undefined => value?.trim().toLowerCase();
-        const possibleGrid =
-            activeRules.some(
-                (rule) =>
-                    rule.grid !== undefined &&
-                    this.uiRuleMatchesStaticElementWithClasses(
-                        rule,
-                        id,
-                        element,
-                        classes,
-                    ),
-            ) ||
-            element.styles.some(
-                (style) => this.uiGridFromLoweredStyle(style) !== undefined,
+                },
             );
-        // Native implicit grids preserve their authored tree and need no
-        // structural projection proof. Keep this proof for explicit tracks.
-        if (!possibleGrid) return undefined;
-        const refuseAlternative = (
-            reason: string,
-            rule?: LoweredUiStyleRule,
-        ): never => {
-            const message =
-                `Retained UI fixed-grid projection on <${element.tag}> ` +
-                `construction site ${id} ${reason}.`;
-            if (rule?.site) this.context.fail(rule.site, message);
-            this.context.failAtFile(message);
-        };
-        if (possibleGrid && !element.styleShapeKnown) {
-            refuseAlternative(
-                "has a runtime cssText replacement whose final declarations are unknown",
+            const markupMatches = descendants.markup.filter((node) =>
+                node.classes.has(query.className),
             );
-        }
-        if (possibleGrid && element.styles.length > 1) {
-            const signatures = element.styles.map((style) =>
-                JSON.stringify({
-                    display: normalizedKeyword(
-                        this.uiStaticStyleProperty(style, "display"),
-                    ),
-                    grid: this.uiGridFromLoweredStyle(style),
-                    justification: normalizedKeyword(
-                        this.uiStaticStyleProperty(style, "justify-content"),
-                    ),
-                }),
-            );
-            if (new EmissionSet(signatures).size > 1) {
-                refuseAlternative(
-                    "depends on mutually exclusive cssText replacement alternatives",
-                );
-            }
-        }
-        const applyCascadeCandidate = (
-            style: string,
-            grid: UiGridProjection | undefined,
-            label: string,
-            specificity: number,
-            sourceOrder: number,
-            site?: ts.Node,
-        ): void => {
-            const displayValue = grid
-                ? "grid"
-                : normalizedKeyword(
-                      this.uiStaticStyleProperty(style, "display"),
-                  );
             if (
-                displayValue !== undefined &&
-                wins(display, specificity, sourceOrder)
+                !descendants.complete ||
+                unknownClass ||
+                retainedMatches.length === 0 ||
+                markupMatches.length > 0
             ) {
-                display = {
-                    value: {
-                        value: displayValue,
-                        ...(grid ? { grid } : {}),
-                        label,
-                        ...(site ? { site } : {}),
-                    },
-                    specificity,
-                    sourceOrder,
-                };
-            }
-            const justifyValue =
-                grid?.authoredJustifyContent ??
-                normalizedKeyword(
-                    this.uiStaticStyleProperty(style, "justify-content"),
-                );
-            if (
-                justifyValue !== undefined &&
-                wins(justification, specificity, sourceOrder)
-            ) {
-                justification = {
-                    value: justifyValue,
-                    specificity,
-                    sourceOrder,
-                };
-            }
-        };
-        for (let index = 0; index < activeRules.length; index++) {
-            const rule = activeRules[index]!;
-            if (
-                uiStyleRuleNeedsRuntimeMatch(rule) ||
-                uiStyleRuleHasMedia(rule) ||
-                !this.uiRuleMatchesStaticElementWithClasses(
-                    rule,
-                    id,
-                    element,
-                    classes,
-                )
-            ) {
-                continue;
-            }
-            applyCascadeCandidate(
-                rule.style,
-                rule.grid,
-                rule.selector,
-                this.uiRuleSpecificity(rule),
-                index,
-                rule.site,
-            );
-        }
-
-        const inlineSpecificity = 0x1000000;
-        for (let index = 0; index < element.styles.length; index++) {
-            const style = element.styles[index]!;
-            const sourceOrder = activeRules.length + index;
-            const grid = this.uiGridFromLoweredStyle(style);
-            applyCascadeCandidate(
-                style,
-                grid,
-                `<${element.tag}> construction site ${id}`,
-                inlineSpecificity,
-                sourceOrder,
-            );
-        }
-
-        if (
-            possibleGrid &&
-            (display?.value.value === "__bbl_dynamic_style_value__" ||
-                justification?.value === "__bbl_dynamic_style_value__")
-        ) {
-            const message =
-                `Retained UI fixed-grid projection '${display?.value.label ?? `<${element.tag}> construction site ${id}`}' ` +
-                "has a runtime structural display or alignment override.";
-            if (display?.value.site) this.context.fail(display.value.site, message);
-            this.context.failAtFile(message);
-        }
-        if (display?.value.value === "grid" && !display.value.grid) {
-            const message =
-                `Retained UI fixed-grid projection '${display.value.label}' ` +
-                "is activated by a separate display:grid override whose " +
-                "track metadata cannot be proven.";
-            if (display.value.site) this.context.fail(display.value.site, message);
-            this.context.failAtFile(message);
-        }
-        if (display?.value.value !== "grid" || !display.value.grid) {
-            return undefined;
-        }
-        const authored = justification?.value.trim().toLowerCase();
-        const normalized = UiProjection.normalizeUiGridJustification(authored);
-        if (normalized === undefined) {
-            const message =
-                `Retained UI fixed-grid projection '${display.value.label}' ` +
-                `cannot preserve justify-content '${authored}'.`;
-            if (display.value.site) this.context.fail(display.value.site, message);
-            this.context.failAtFile(message);
-        }
-        return {
-            grid: {
-                ...display.value.grid,
-                ...(justification === undefined
-                    ? {}
-                    : { authoredJustifyContent: normalized }),
-            },
-            label: display.value.label,
-            ...(display.value.site ? { site: display.value.site } : {}),
-        };
-    }
-
-
-    private uiGridFromLoweredStyle(
-        style: string,
-    ): UiGridProjection | undefined {
-        const columns = Number(
-            this.uiStaticStyleProperty(style, "--bbl-grid-columns"),
-        );
-        const cellWidth = Number.parseFloat(
-            this.uiStaticStyleProperty(style, "--bbl-grid-cell-width") ?? "",
-        );
-        const width = Number.parseFloat(
-            this.uiStaticStyleProperty(style, "--bbl-grid-width") ?? "",
-        );
-        const gap = Number.parseFloat(
-            this.uiStaticStyleProperty(style, "--bbl-grid-gap") ?? "",
-        );
-        const row = this.uiStaticStyleProperty(style, "--bbl-grid-row-height");
-        const rowCount = this.uiStaticStyleProperty(
-            style,
-            "--bbl-grid-row-count",
-        );
-        const justification = this.uiStaticStyleProperty(
-            style,
-            "--bbl-grid-justify-content",
-        );
-        if (
-            !Number.isInteger(columns) ||
-            columns < 1 ||
-            !Number.isFinite(cellWidth) ||
-            !Number.isFinite(width) ||
-            !Number.isFinite(gap) ||
-            (row !== undefined && !Number.isFinite(Number.parseFloat(row))) ||
-            (rowCount !== undefined &&
-                (!Number.isInteger(Number(rowCount)) || Number(rowCount) < 1))
-        ) {
-            return undefined;
-        }
-        return {
-            columns,
-            cellWidth,
-            width,
-            gap,
-            ...(justification === undefined
-                ? {}
-                : {
-                      authoredJustifyContent:
-                          justification === "center" || justification === "end"
-                              ? justification
-                              : "start",
-                  }),
-            ...(row === undefined ? {} : { rowHeight: Number.parseFloat(row) }),
-            ...(rowCount === undefined ? {} : { rowCount: Number(rowCount) }),
-        };
-    }
-
-
-    private validateUiGridProjection(
-        parentId: number,
-        grid: UiGridProjection,
-        label: string,
-        site?: ts.Node,
-    ): void {
-        const fail = (reason: string): never => {
-            const message =
-                `Retained UI fixed-grid projection '${label}' is not ` +
-                `provably equivalent to wrapping flex: ${reason}.`;
-            if (site) this.context.fail(site, message);
-            this.context.failAtFile(message);
-        };
-        const parent =
-            this.uiStaticElements.get(parentId) ??
-            fail("its target construction site is unknown");
-        if (!parent.childShapeKnown || parent.children.size === 0) {
-            fail("its complete direct-child shape is not statically known");
-        }
-        if (grid.rowCount !== undefined) {
-            if (!parent.childCardinalityKnown) {
-                fail(
-                    "its explicit row template requires a statically known child count",
+                this.context.fail(
+                    query.site,
+                    `Retained UI querySelectorAll('.${query.className}') ` +
+                        "requires a complete statically-known retained subtree " +
+                        "with at least one matching retained element and no " +
+                        "matching innerHTML-only node.",
                 );
             }
-            const actualRows = Math.ceil(parent.children.size / grid.columns);
-            if (grid.rowCount !== actualRows) {
-                fail(
-                    `the explicit ${grid.rowCount}-row template does not match ` +
-                        `the proven ${actualRows}-row child layout`,
-                );
-            }
-        }
-        let childHeight: number | undefined;
-        for (const childId of parent.children) {
-            const child = this.uiStaticElements.get(childId)!;
-            if (!child) {
-                fail("a direct child has an unknown construction shape");
-            }
-            if (
-                !child.classShapeKnown &&
-                !this.uiUnknownAttributeMutations.some(
-                    (mutation) =>
-                        mutation.attribute === "class" &&
-                        mutation.targetId === childId,
-                )
-            ) {
-                fail(
-                    "a direct child has an unknown class or construction shape",
-                );
-            }
-            if (!child.styleShapeKnown) {
-                fail("a direct child has an unknown final cssText shape");
-            }
-            const geometryProperties = [
-                ...UiProjection.UI_GRID_CHILD_GEOMETRY_PROPERTIES,
-                ...(grid.rowCount === undefined ? [] : ["display", "position"]),
-            ];
-            const parsePixels = (
-                value: string | undefined,
-            ): number | undefined => {
-                const match = value?.match(/^([0-9]+(?:\.[0-9]*)?)px$/i);
-                return match ? Number(match[1]) : undefined;
-            };
-            const heightValues = this.uiStaticElementStylePropertyValues(
-                childId,
-                "height",
-            );
-            const fixedHeight =
-                heightValues.size === 1
-                    ? parsePixels(heightValues.values().next().value)
-                    : undefined;
-            const geometryValueIsProvenEqual = (
-                property: string,
-                value: string | undefined,
-            ): boolean => {
-                const normalized = value?.trim().toLowerCase();
-                if (property === "display") {
-                    return (
-                        normalized !== "none" &&
-                        normalized !== "__bbl_dynamic_style_value__"
-                    );
-                }
-                if (property === "position") {
-                    return (
-                        normalized !== "absolute" &&
-                        normalized !== "fixed" &&
-                        normalized !== "__bbl_dynamic_style_value__"
-                    );
-                }
-                const expected = /^(?:min-|max-)?width$/.test(property)
-                    ? grid.cellWidth
-                    : /^(?:min-|max-)?height$/.test(property)
-                      ? fixedHeight
-                      : undefined;
-                return (
-                    expected !== undefined && parsePixels(value) === expected
-                );
-            };
-            const activeRules = this.uiActiveStyleRulesInCascade();
-            const changedGeometryProperty = (
-                rule: LoweredUiStyleRule,
-            ): string | undefined =>
-                geometryProperties.find((property) => {
-                    const value = this.uiStaticStyleProperty(
-                        rule.style,
-                        property,
-                    );
-                    return (
-                        value !== undefined &&
-                        !geometryValueIsProvenEqual(property, value)
-                    );
-                });
-            const unknownClassSites = new EmissionMap<string, ts.Node>();
-            for (const mutation of this.uiUnknownClassMutations) {
-                unknownClassSites.set(mutation.className, mutation.site);
-            }
-            for (const rule of activeRules) {
-                if (rule.kind !== "compound-class") continue;
-                const property = changedGeometryProperty(rule);
-                if (!property) continue;
-                const required = new EmissionSet([rule.primary, rule.secondary!]);
-                if (
-                    [...required].every((name) => unknownClassSites.has(name))
-                ) {
-                    const lastMutation = [...this.uiUnknownClassMutations]
-                        .reverse()
-                        .find((mutation) => required.has(mutation.className))!;
-                    this.context.fail(
-                        lastMutation.site,
-                        `Retained UI class mutations '${[...required].join(
-                            "', '",
-                        )}' have unknown targets and can jointly activate ` +
-                            `geometry rule '${rule.selector}', changing ` +
-                            `direct-child ${property}.`,
-                    );
-                }
-            }
-            for (const rule of activeRules) {
-                if (
-                    !this.uiRuleMatchesStaticElement(rule, childId, child) ||
-                    (!uiStyleRuleHasMedia(rule) &&
-                        !uiStyleRuleNeedsRuntimeMatch(rule) &&
-                        !this.uiRuleDependsOnMutableClass(rule, childId, child))
-                ) {
-                    continue;
-                }
-                const property = changedGeometryProperty(rule);
-                if (property) {
-                    const trigger =
-                        uiStyleRuleHasMedia(rule)
-                            ? `${rule.maxWidth !== undefined ? "max-width" : "motion preference"} rule '${rule.selector}'`
-                            : uiStyleRuleNeedsRuntimeMatch(rule)
-                              ? `${rule.hover ? "hover" : "interaction"} rule '${rule.selector}'`
-                              : `runtime class rule '${rule.selector}'`;
-                    fail(`${trigger} can change direct-child ${property}`);
-                }
-            }
-            for (const mutation of this.uiUnknownClassMutations) {
-                const rule = activeRules.find(
-                    (candidate) =>
-                        this.uiRuleCouldMatchGridChildAfterUnknownClassMutation(
-                            candidate,
-                            mutation.className,
-                            childId,
-                            child,
-                        ) && changedGeometryProperty(candidate) !== undefined,
-                );
-                if (rule) {
-                    const property = changedGeometryProperty(rule)!;
-                    fail(
-                        `class mutation '${mutation.className}' has an ` +
-                            `unknown target and rule '${rule.selector}' can ` +
-                            `change direct-child ${property}`,
-                    );
-                }
-            }
-            const singleProperty = (property: string): string | undefined => {
-                const values = this.uiStaticElementStylePropertyValues(
-                    childId,
-                    property,
-                );
-                if (values.size !== 1) {
-                    fail(
-                        `direct-child ${property} differs across reachable ` +
-                            "className or cssText alternatives",
-                    );
-                }
-                return values.values().next().value;
-            };
-            if (grid.rowCount !== undefined) {
-                for (const [property, values] of [
-                    [
-                        "display",
-                        this.uiStaticElementStylePropertyValues(
-                            childId,
-                            "display",
-                        ),
-                    ],
-                    [
-                        "position",
-                        this.uiStaticElementStylePropertyValues(
-                            childId,
-                            "position",
-                        ),
-                    ],
-                ] as const) {
-                    const value = [...values].find(
-                        (candidate) =>
-                            candidate !== undefined &&
-                            !geometryValueIsProvenEqual(property, candidate),
-                    );
-                    if (value !== undefined) {
-                        fail(
-                            `explicit rows require every counted child to ` +
-                                `participate in normal flow; child ${property} ` +
-                                `is '${value}'`,
-                        );
-                    }
-                }
-            }
-            const width = singleProperty("width");
-            const height = singleProperty("height");
-            const widthPixels = parsePixels(width);
-            const heightPixels = parsePixels(height);
-            if (widthPixels !== grid.cellWidth || heightPixels === undefined) {
-                fail(
-                    `every child must have fixed ${grid.cellWidth}px width ` +
-                        "and a fixed px height",
-                );
-            }
-            if (childHeight !== undefined && childHeight !== heightPixels) {
-                fail("direct-child heights are not uniform");
-            }
-            childHeight = heightPixels;
-            for (const [property, expected] of [
-                ["min-width", widthPixels],
-                ["max-width", widthPixels],
-                ["min-height", heightPixels],
-                ["max-height", heightPixels],
-            ] as const) {
-                const value = singleProperty(property);
-                if (value !== undefined && parsePixels(value) !== expected) {
-                    fail(
-                        `child ${property} '${value}' is not proven equal to ` +
-                            `its fixed ${expected}px geometry`,
-                    );
-                }
-            }
-            if (
-                grid.rowHeight !== undefined &&
-                grid.rowHeight !== heightPixels
-            ) {
-                fail(
-                    `the ${grid.rowHeight}px row track does not match the ` +
-                        `${heightPixels}px child height`,
-                );
-            }
-            for (const property of UiProjection.UI_GRID_CHILD_SPACING_PROPERTIES) {
-                const value = singleProperty(property);
-                if (
-                    value !== undefined &&
-                    !/^(?:0(?:px)?)(?:\s+0(?:px)?){0,3}$/i.test(value)
-                ) {
-                    fail(
-                        `child ${property} '${value}' changes the fixed track`,
-                    );
-                }
-            }
-            const border = singleProperty("border");
-            if (
-                border !== undefined &&
-                !/^(?:none|0(?:px)?(?:\s+transparent)?)$/i.test(border)
-            ) {
-                fail(`child border '${border}' changes the fixed track`);
-            }
-            for (const property of UiProjection.UI_GRID_CHILD_BORDER_WIDTH_PROPERTIES) {
-                const value = singleProperty(property);
-                if (value !== undefined && !/^0(?:px)?$/i.test(value)) {
-                    fail(
-                        `child ${property} '${value}' changes the fixed track`,
-                    );
-                }
-            }
-        }
-        this.uiGridSubstitutions.add(
-            `${label}: repeat(${grid.columns}, ${grid.cellWidth}px), ` +
-                `${childHeight}px children, ${grid.gap}px gap` +
-                (grid.rowCount === undefined
-                    ? ""
-                    : `, ${grid.rowCount} explicit rows`),
-        );
-    }
-
-
-    public validateUiStaticProjection(): void {
-        const activeRules = this.uiActiveStyleRulesInCascade();
-        // Removing a known sheet preserves the order of every remaining
-        // sheet. Prove each reachable cascade instead of treating removal as
-        // an unknown reorder. Rules belonging to one sheet disappear together.
-        const owners = [...this.uiConditionallyRemovedStyles].filter(owner =>
-            activeRules.some(rule => rule.ownerId === owner));
-        const validate = (index: number, rules: readonly LoweredUiStyleRule[]): void => {
-            if (index === owners.length) {
-                this.validateUiStyleCascade(rules);
-                return;
-            }
-            validate(index + 1, rules);
-            validate(index + 1, rules.filter(rule => rule.ownerId !== owners[index]));
-        };
-        validate(0, activeRules);
-    }
-
-    private validateUiStyleCascade(activeRules: readonly LoweredUiStyleRule[]): void {
-        const parentsByChild = new EmissionMap<number, number[]>();
-        for (const [parentId, parent] of this.uiStaticElements) {
-            for (const childId of parent.children) {
-                const parents = parentsByChild.get(childId) ?? [];
-                parents.push(parentId);
-                parentsByChild.set(childId, parents);
-            }
-        }
-        this.uiValidation = {
-            activeRules,
-            parentsByChild,
-            ancestorsById: new EmissionMap(),
-        };
-        try {
-            for (const [id, element] of this.uiStaticElements) {
-                const tracks = this.uiStaticElementStylePropertyValues(id, "--bbl-fr-grid-tracks");
-                const fixedColumns = this.uiStaticElementStylePropertyValues(id, "--bbl-grid-columns");
-                if ([...tracks, ...fixedColumns].some(value => value !== undefined)) {
-                    for (const property of ["place-items", "justify-items"]) {
-                        if ([...this.uiStaticElementStylePropertyValues(id, property)].some(value => value !== undefined)) {
-                            this.context.failAtFile("Grid item alignment is not represented by the explicit track projections.");
-                        }
-                    }
-                }
-                if ([...tracks].some(value => value !== undefined) &&
-                    (tracks.size !== 1 || !this.uiStaticStyleCascadeKnown || this.uiConditionallyRemovedStyles.size > 0)) {
-                    this.context.failAtFile("A fractional UI grid requires one stable track list in a statically known style cascade.");
-                }
-                for (const value of tracks) {
-                    if (value === undefined) continue;
-                    const count = value.trim().split(/\s+/).length;
-                    if (!element.childShapeKnown || !element.childCardinalityKnown || element.children.size !== count || element.markupChildren.length) {
-                        this.context.failAtFile("A fractional UI grid requires one statically known element child per track.");
-                    }
-                }
-            }
-            const anyGrid =
-                this.uiSawGridDeclaration ||
-                this.uiStyleRules.some((rule) => rule.grid !== undefined) ||
-                [...this.uiStaticElements.values()].some((element) =>
-                    element.styles.some(
-                        (style) =>
-                            this.uiGridFromLoweredStyle(style) !== undefined,
-                    ),
-                );
-            if (anyGrid) {
-                const structural = activeRules.find(rule => rule.pseudo || (rule.sequence && uiSelectorSequenceNeedsAuthoredTree(rule.sequence)));
-                if (structural) {
-                    const message = `Retained selector '${structural.selector}' requires authored tree relationships that cannot be proven across projected grid containers.`;
-                    if (structural.site) this.context.fail(structural.site, message);
-                    this.context.failAtFile(message);
-                }
-            }
-            if (!this.uiStaticStyleCascadeKnown && anyGrid) {
-                const gridRule = this.uiStyleRules.find(
-                    (rule) => rule.grid !== undefined,
-                );
-                const message =
-                    "Retained UI fixed-grid projection requires a statically " +
-                    "ordered stylesheet attachment and contents cascade.";
-                if (gridRule?.site) this.context.fail(gridRule.site, message);
-                this.context.failAtFile(message);
-            }
-            for (const mutation of this.uiUnknownClassMutations) {
-                const gridRule = activeRules.find(
-                    (rule) =>
-                        rule.grid !== undefined &&
-                        this.uiRuleMentionsClass(rule, mutation.className),
-                );
-                if (gridRule) {
-                    this.context.fail(
-                        mutation.site,
-                        `Retained UI class mutation '${mutation.className}' has ` +
-                            `an unknown target and can activate fixed-grid rule ` +
-                            `'${gridRule.selector}'.`,
-                    );
-                }
-            }
-            const activeGridRules = activeRules.filter(
-                (rule) => rule.grid !== undefined,
-            );
-            for (const rule of activeGridRules) {
-                const hasTarget = [...this.uiStaticElements.values()].some(
-                    (element) => this.uiRuleMatchesDirect(rule, element),
-                );
-                if (!hasTarget) {
-                    if (rule.site) {
-                        this.context.fail(
-                            rule.site,
-                            `Retained UI fixed-grid selector '${rule.selector}' has no statically-known target.`,
-                        );
-                    }
-                    this.context.failAtFile(
-                        `Retained UI fixed-grid selector '${rule.selector}' has no statically-known target.`,
-                    );
-                }
-            }
-            const effectiveGrids = new EmissionMap<
-                number,
-                Array<{
-                    grid: UiGridProjection;
-                    label: string;
-                    site?: ts.Node;
-                }>
-            >();
-            for (const [id, element] of this.uiStaticElements) {
-                for (const classes of element.classAlternatives) {
-                    const effective = this.uiStaticEffectiveGrid(id, classes);
-                    if (effective) {
-                        const states = effectiveGrids.get(id) ?? [];
-                        states.push(effective);
-                        effectiveGrids.set(id, states);
-                    }
-                }
-            }
-            for (const mutation of this.uiUnknownAttributeMutations) {
-                for (const [id, element] of this.uiStaticElements) {
-                    const structuralRule = activeRules.find(
-                        (rule) =>
-                            (rule.grid !== undefined ||
-                                this.uiStaticStyleProperty(
-                                    rule.style,
-                                    "display",
-                                ) !== undefined ||
-                                this.uiStaticStyleProperty(
-                                    rule.style,
-                                    "justify-content",
-                                ) !== undefined) &&
-                            (rule.grid !== undefined ||
-                                effectiveGrids.has(id)) &&
-                            this.uiUnknownAttributeCouldAffectRule(
-                                mutation,
-                                rule,
-                                id,
-                                element,
-                            ),
-                    );
-                    if (structuralRule) {
-                        this.context.fail(
-                            mutation.site,
-                            `Retained UI runtime-unknown ${mutation.attribute} ` +
-                                `mutation can change fixed-grid structural rule ` +
-                                `'${structuralRule.selector}'.`,
-                        );
-                    }
-                }
-            }
-            for (const mutation of this.uiUnknownAttributeMutations) {
-                for (const parentId of effectiveGrids.keys()) {
-                    const parent = this.uiStaticElements.get(parentId)!;
-                    const includesExplicitRows = effectiveGrids
-                        .get(parentId)!
-                        .some(
-                            (effective) =>
-                                effective.grid.rowCount !== undefined,
-                        );
-                    for (const childId of parent.children) {
-                        const child = this.uiStaticElements.get(childId);
-                        if (!child) continue;
-                        const geometryRule = activeRules.find(
-                            (rule) =>
-                                this.uiGridChildGeometryProperty(
-                                    rule,
-                                    includesExplicitRows,
-                                ) !== undefined &&
-                                this.uiUnknownAttributeCouldAffectRule(
-                                    mutation,
-                                    rule,
-                                    childId,
-                                    child,
-                                ),
-                        );
-                        if (geometryRule) {
-                            this.context.fail(
-                                mutation.site,
-                                `Retained UI runtime-unknown ${mutation.attribute} ` +
-                                    `mutation can alter fixed-grid child ` +
-                                    `${this.uiGridChildGeometryProperty(
-                                        geometryRule,
-                                        includesExplicitRows,
-                                    )} ` +
-                                    `through rule '${geometryRule.selector}'.`,
-                            );
-                        }
-                    }
-                }
-            }
-            for (const [id, states] of effectiveGrids) {
-                for (const effective of states) {
-                    this.validateUiGridProjection(
-                        id,
-                        effective.grid,
-                        effective.label,
-                        effective.site,
-                    );
-                }
-            }
-
-            for (const query of this.uiPendingClassQueries) {
-                if (query.root.uiStaticId === undefined) {
-                    this.context.fail(
-                        query.site,
-                        "Retained UI querySelectorAll requires a statically-known retained root.",
-                    );
-                }
-                const descendants = this.uiStaticDescendants(
-                    query.root.uiStaticId,
-                );
-                const unknownClass = [...descendants.elements].some(
-                    (id) => !this.uiStaticElements.get(id)?.classShapeKnown,
-                );
-                const retainedMatches = [...descendants.elements].filter(
-                    (id) => {
-                        const element = this.uiStaticElements.get(id);
-                        return (
-                            element !== undefined &&
-                            this.uiStaticElementAlwaysHasClass(
-                                element,
-                                query.className,
-                            )
-                        );
-                    },
-                );
-                const markupMatches = descendants.markup.filter((node) =>
-                    node.classes.has(query.className),
-                );
-                if (
-                    !descendants.complete ||
-                    unknownClass ||
-                    retainedMatches.length === 0 ||
-                    markupMatches.length > 0
-                ) {
-                    this.context.fail(
-                        query.site,
-                        `Retained UI querySelectorAll('.${query.className}') ` +
-                            "requires a complete statically-known retained subtree " +
-                            "with at least one matching retained element and no " +
-                            "matching innerHTML-only node.",
-                    );
-                }
-            }
-        } finally {
-            this.uiValidation = undefined;
         }
     }
 
@@ -5164,9 +3513,6 @@ export class UiProjection {
             if (rule.range) this.validateUiPartStyle(declarations,"range");
             if (rule.pseudo) this.validateUiPartStyle(declarations,rule.pseudo);
             if (content && rule.pseudo !== "before" && rule.pseudo !== "after") this.context.failAtFile("Native host UI content lists require a before/after target.");
-            if (UiProjection.fractionalUiGridTracks(rule.style)) {
-                this.context.failAtFile("Fractional host grids require inline tracks beside their complete child list.");
-            }
             const identifier = /^[A-Za-z_][A-Za-z0-9_-]*$/;
             const sequence = rule.kind === "sequence" ? parseUiSelectorSequence(rule.primary) : undefined;
             if (rule.kind === "sequence" ? !sequence : !identifier.test(rule.primary)) {
@@ -5235,10 +3581,6 @@ export class UiProjection {
                 this.context.failAtFile(
                     `Native host UI element tag '${element.tag}' is reserved for the retained projection.`,
                 );
-            }
-            const fractionalTracks = UiProjection.fractionalUiGridTracks(element.attributes?.style ?? "");
-            if (fractionalTracks && (element.text || element.children?.length !== fractionalTracks.length)) {
-                this.context.failAtFile("A fractional host grid requires exactly one element child per track.");
             }
             const handle = this.context.allocateTemporaryCppName("host_ui_element");
             emitted.push(

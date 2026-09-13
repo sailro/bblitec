@@ -280,9 +280,8 @@ first/last/only child and of-type forms, integer or An+B nth formulas, and `:emp
 `:has()` follows relative descendant, child and sibling chains from the originating
 element and updates ancestor styles when children change. Nested `:has()` and
 pseudo-elements inside relative lists refuse.
-Conditional selectors cannot establish static grid geometry; general child/sibling
-chains beside projected grids still refuse because their internal containers alter
-tree relationships. Other functional selectors remain unsupported. Reparenting retains
+Grid layout preserves authored parents, so child/sibling chains and conditional
+geometry selectors use the ordinary cascade. Other functional selectors remain unsupported. Reparenting retains
 the rendered element, its listeners and state. `document.documentElement`, `head`
 and `body` expose distinct retained roots with ordinary attributes, styles and
 child attachment. Root handles pass through helpers; `lang` reflects its stored
@@ -296,14 +295,14 @@ remove the box; an empty string retains it. Generated boxes and their text remai
 outside authored DOM queries, serialization and positional/empty selector counts.
 Replaced elements do not generate these child boxes. Counters, images, typed
 attribute fallbacks, outlines/gradient-text adaptations and layout substitutions
-requiring an authored retained handle refuse; generated content beside projected grids also refuses.
+requiring an authored retained handle refuse.
 `::placeholder` styles the existing input/textarea placeholder text with color and
 opacity, preserving the control's own style and restoring normal value text when
 filled. Placeholder font/layout/decorative properties remain unsupported.
 Static selectors/properties are validated; source/sheet order and live max-width rules are retained.
 Max-width rules share ordinary declaration admission, including wrapping, physical
-margins, text alignment and paint. Structural grid substitutions remain refused
-inside media queries, as do properties outside the represented CSS surface.
+margins, text alignment, paint and native grid tracks. Properties outside the
+represented CSS surface still refuse inside media queries.
 Reduced-motion media rules support `reduce` and `no-preference` through the same cascade.
 On Windows, they follow the system [client-area animation preference](https://learn.microsoft.com/en-us/windows/win32/winauto/client-area-animation),
 checked about once per second while the UI runs.
@@ -314,8 +313,19 @@ execute in source order and snapshot mutable reads; argument effects execute onc
 Runtime-generated stylesheet text remains unsupported.
 Window `getBoundingClientRect()` publishes pending document edits and waits for their
 layout; the returned fields retain the snapshot taken by that call.
-Grids without explicit tracks use one native auto column and an auto row per
-in-flow child. `place-items`, `justify-items` and `justify-self` admit start, end,
+`display:grid` and `inline-grid` use native row-major placement. Column and row
+templates accept `none`, `auto`, non-negative pixel/fraction tracks,
+`minmax(px,fr)` (including zero or an automatic minimum), and integer `repeat()`
+of those track lists, up to 256 explicit tracks. Fractional sizing respects item
+minimums and gaps; fractions totaling less than one leave unused space. Empty
+explicit tracks contribute to size and scrolling. Inline grids use intrinsic
+track width and participate in the surrounding inline flow.
+Percentage item widths, min/max widths and spacing resolve against the cell's
+inline size after track sizing. Native range controls share intrinsic dimensions
+with their browser theme, including percentage-sized controls in fractional cells.
+
+Without explicit columns, grids use one auto column. Extra rows are automatic.
+`place-items`, `justify-items` and `justify-self` admit start, end,
 center and stretch alignment (`justify-self:auto` inherits the container choice).
 Rows retain intrinsic sizes, independent gaps, fractional remaining-space
 distribution and min-height constraints. Text gets an anonymous item; authored
@@ -323,13 +333,10 @@ element parents and structural selectors remain unchanged. Item flex properties
 do not affect grid sizing. Stylesheet and inline alignment writes, viewport sizing
 and child additions/removals update layout. Item alignment can change in supported
 max-width media rules.
-This follows the [implicit grid model](https://www.w3.org/TR/css-grid-2/#implicit-grids).
-
-Explicit fixed grids still need proven equivalent wrapping-flex geometry; unknown
-track/class/id changes refuse. The explicit track projections do not represent
-the new item alignment properties. Conditional removal of known stylesheets checks
-each remaining cascade against the same grid proof. Dynamic sheet reordering,
-contents replacement and fractional-grid removal remain unsupported.
+Tracks follow the [non-spanning grid sizing algorithm](https://www.w3.org/TR/css-grid-1/#algo-track-sizing).
+Declarations can come from separate selectors or stylesheets. Class, attribute,
+inline-style, stylesheet order/removal and responsive changes update the same
+native layout; no synthetic track containers or static child-count proof is needed.
 
 Fonts use DirectWrite/CoreText/fontconfig. Generic emoji/ZWJ shaping is limited.
 Linux and macOS UI retain FreeType's PNG decoder for system color-font glyphs,
@@ -346,7 +353,7 @@ native range painting follows browser geometry and control states.
 | `rmlui-css-box-model.patch` | Solid backgrounds under borders; offset shrink-to-fit sizing |
 | `rmlui-css-declarations.patch` | Preserve quoted/escaped values and nested blocks across declaration boundaries |
 | `rmlui-visibility.patch` | Inherit visibility while retaining visible descendants in paint/input/focus; admit delayed zero-duration transitions |
-| `rmlui-zero-track-grid.patch` | Format one implicit auto column with independent rows, intrinsic sizing and item alignment; preserve authored parents |
+| `rmlui-zero-track-grid.patch` | Format row-major fixed/auto/fraction tracks, implicit rows and inline grids with native item alignment and authored parents |
 | `rmlui-fragment-root.patch` | Parse inline fragments under a custom document tag without an XML handler |
 | `rmlui-generated-content.patch` | Originating-element styles for generated boxes; preserve authored query, serialization and structural-selector semantics |
 | `rmlui-selector-functions.patch` | Selector-list/relative matching and invalidation; widget-owned placeholder text styles |
@@ -384,13 +391,11 @@ subtrees may contain backdrop blur; canvas-only capture excludes UI filters.
 
 ## Limits
 
-Single-row inline grids support positive px/fr tracks with one element child per track.
-Runtime track replacement and implicit extra rows refuse. Form dimensions support content-box and border-box.
-General grid tracks/placement and intrinsic replaced-item alignment still need
-broader representation. Percentage-dependent item dimensions and grid baseline
-alignment refuse when the native formatter encounters them.
-The implicit-grid checks cover fixed/intrinsic box sizes, auto/stretch items,
-minimum heights, text, margins, content alignment and live child changes.
+Grid spans, named areas/lines, alternate auto placement, percentage tracks and
+other intrinsic track functions remain unsupported. Percentage-dependent item
+heights and grid item baseline alignment refuse when the native formatter
+encounters them. Intrinsic replaced-item alignment remains bounded.
+Form dimensions support content-box and border-box.
 
 `list-style:none` and `list-style-type:none` preserve the native absence of markers.
 Lists use block containers/items with default list margins and indentation; other
