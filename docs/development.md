@@ -102,12 +102,18 @@ folders by stem and have diagnostic-only comparisons without configured threshol
 
 ```powershell
 node tools/project-requirements.mjs <entry.ts> <ignored-report.json>
+node tools/project-progress.mjs <ignored-acceptance-ledger.json> [ignored-progress.md]
 ```
 
 The scan inventories imports, library members, event shapes and language forms with source hashes/sites.
 It includes potentially unused bodies and does not prove compilation. Group findings by shared capability,
 match TODOs, and run independent source-shape probes before implementation batches. Record generation,
 native build and execution separately. Retry the unchanged entry at batch boundaries.
+
+Progress is closed acceptance groups / fixed baseline groups, with equal credit per group. Every inventoried
+requirement needs one owner. Closure requires passing evidence with file hashes and completed dependencies;
+100% includes full generation, native builds, execution and validation. Document scope additions explicitly.
+This measures verified delivery, not effort or remaining time. Keep private ledgers and reports in artifacts.
 
 | File | Required data |
 | --- | --- |

@@ -58,14 +58,20 @@ All source hashes match the saved inventory. requirements1093.json contains 1,00
 | private-stylesheets1093.json | 11 literal sheets pass, 10 refuse; 36 templates need source bindings |
 | issues1093.json | Open issue snapshot |
 
-Dispatch/literal/probe acceptance does not establish application reach or native semantics.
-The progress calculator exists at tools/project-progress.mjs; a validated application acceptance
-ledger and ordered work-package plan remain required. Do not invent a percentage from task counts.
+**Global progress: 10% verified acceptance (3/30 fixed groups).** Closed: startup configuration,
+decoder configuration, primary engine/surface setup. Equal group credit measures delivery acceptance,
+not effort or time remaining. Partial work earns no group credit. 100% requires all final integration gates.
+All 1,009 requirement groups have one owner; new scope needs a documented denominator change.
+
+Local ledger/report: artifacts/external-integration/application-acceptance.json and APPLICATION_PROGRESS.md.
+APPLICATION_AUDIT.md gives gaps and implementation order; application-audit.json gives source sites.
+Recalculate with `node tools/project-progress.mjs <ledger.json> [report.md]`; evidence hashes, requirement
+coverage and dependencies must validate. Dispatch/literal/probe acceptance alone earns no native credit.
 
 ## Next actions
 
-1. Complete the grouped audit ledger, dependency plan and defensible progress baseline.
-2. Implement capability batches with focused cohorts; full application retries at batch boundaries.
+1. Follow APPLICATION_AUDIT.md: core/data cohorts first; full application retries at batch boundaries.
+2. Update acceptance evidence and recalculate the same metric when a group closes or reopens.
 
 ## Local commands
 
