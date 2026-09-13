@@ -62,6 +62,9 @@ import type { CompiledTextData } from "../pinned-text-data.js";
 
 
 
+/** Convert an already evaluated return value, including adopted promise results. */
+export type NativeReturnValueCompiler = (value: Value, type: DataType, node: ts.Node) => string;
+
 /** Execution facts for one native function body. */
 export interface NativeFunctionBodyOptions {
     coroutine?: boolean;
@@ -74,7 +77,7 @@ export interface NativeFunctionBodyOptions {
 export interface LoweringServices {
     withAsyncActivation<T>(work: () => T): T;
     compileAsyncCall(declaration: SupportedFunction, arguments_: readonly Value[], node: ts.Node): Value | undefined;
-    compileAsyncReturn(expression: ts.Expression, type: DataType | undefined): string;
+    compileAsyncReturn(expression: ts.Expression, type: DataType | undefined, compileResult?: NativeReturnValueCompiler): string;
     emitNativeThrow(errorCpp: string, node?: ts.ThrowStatement): void;
     isInFrameCallback(): boolean;
     hasPresentationHost(): boolean;

@@ -5,8 +5,8 @@ import type { Csg2SolidPlan } from "../../pinned-csg2.js";
 import type { Value } from "./model.js";
 
 interface GenerationValuePayloads {
-    /** The emitted inline body cannot complete normally. */
-    void: { abruptCompletion?: true };
+    /** An emitted body cannot complete normally; coroutine returns retain their represented result. */
+    void: { abruptCompletion?: true; coroutineResult?: Value };
     promise: { promiseResult?: Value; promiseType?: string };
     "text-font": { textFont?: { source: TextFontSource; bytes: Uint8Array } };
     "csg-solid": { csgSolid?: CsgSolidPlan };
@@ -18,7 +18,7 @@ interface GenerationValuePayloads {
 export type ValuePayloads = GenerationValuePayloads & ValueMetadataPayloads;
 
 export const generationPayloadFields = {
-    void: ["abruptCompletion"],
+    void: ["abruptCompletion", "coroutineResult"],
     promise: ["promiseResult", "promiseType"],
     "text-font": ["textFont"],
     "csg-solid": ["csgSolid"],

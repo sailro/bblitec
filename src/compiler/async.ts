@@ -1,4 +1,4 @@
-import type { LoweringServices } from "./lowering-services.js";
+import type { LoweringServices, NativeReturnValueCompiler } from "./lowering-services.js";
 import ts from "typescript";
 import { renderClosure, renderCoroutineInvocation, type CapturedClosure } from "./closure-captures.js";
 import { browserGlobalNamed } from "./browser-erasure.js";
@@ -46,8 +46,9 @@ export class AsyncLowerer {
         return node !== undefined && node === this.terminalThrow?.node ? this.terminalThrow.type : undefined;
     }
 
-    compileReturn(expression: ts.Expression, type: DataType | undefined): string {
+    compileReturn(expression: ts.Expression, type: DataType | undefined, compileResult?: NativeReturnValueCompiler): string {
         const context = this.context;
+        const convert = compileResult ?? ((value, target, node) => context.dataLowerer.compileKnownValueForSink(value, target, node));
         const value = context.compileValue(expression);
         if (value.kind === "promise") {
             const expected = type ? context.dataTypes.cppType(type) : "bbl::js::PromiseVoid";
@@ -55,7 +56,7 @@ export class AsyncLowerer {
             const name = context.allocateTemporaryCppName("adopted_result");
             const conversion = context.captureManagedClosureLines(() => {
                 context.registerNativeBinding(name);
-                const result = type ? context.dataLowerer.compileKnownValueForSink(this.resultAt(value.promiseResult!,name), type, expression)
+                const result = type ? convert(this.resultAt(value.promiseResult!,name), type, expression)
                     : "bbl::js::PromiseVoid{}";
                 context.emit(`return ${result};`);
             });
@@ -65,7 +66,7 @@ export class AsyncLowerer {
             context.emitDiscardedValue(value);
             return "bbl::js::PromiseVoid{}";
         }
-        return context.dataLowerer.compileKnownValueForSink(value, type, expression);
+        return convert(value, type, expression);
     }
 
     compile(expression: ts.Expression): Value | undefined {
@@ -206,7 +207,7 @@ export class AsyncLowerer {
         } finally {
             this.terminalThrow = previousThrow;
         }
-        const output = rejectedOutput ?? (result.value.abruptCompletion ? declaredOutput()
+        const output = rejectedOutput ?? (result.value.abruptCompletion ? result.value.coroutineResult ?? declaredOutput()
             : result.value.kind === "promise" ? result.value.promiseResult! : result.value);
         const cppType = result.value.kind === "promise" ? result.value.promiseType! : this.cppType(output, node);
         if (result.value.abruptCompletion && !rejectsOnly) {

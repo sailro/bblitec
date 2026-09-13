@@ -1,7 +1,7 @@
 import { assetRootMutationStates, nativeDataMetadata, valueForKind } from "./compiler/types.js";
 import { forEachAnalysisNode, findAnalysisNodeWithState, someAnalysisNode } from "./compiler/analysis-walk.js";
 import { emissionArray, EmissionMap, EmissionSet, EmissionTransaction, EmissionWeakMap, EmissionWeakSet } from "./compiler/emission-transaction.js";
-import type { LoweringServices, NativeFunctionBodyOptions } from "./compiler/lowering-services.js";
+import type { LoweringServices, NativeFunctionBodyOptions, NativeReturnValueCompiler } from "./compiler/lowering-services.js";
 import { SharedNativeFunctions } from "./compiler/shared-native-functions.js";
 import { renderNativeDeclaration, type NativeDeclaration } from "./compiler/native-declarations.js";
 import { persistContinuationLocals } from "./compiler/continuation-storage.js";
@@ -4845,8 +4845,8 @@ class Compiler
         return this.options.workers ? this.asyncLowerer.compileCall(declaration, arguments_, node) : undefined;
     }
 
-    public compileAsyncReturn(expression: ts.Expression, type: DataType | undefined): string {
-        return this.asyncLowerer.compileReturn(expression, type);
+    public compileAsyncReturn(expression: ts.Expression, type: DataType | undefined, compileResult?: NativeReturnValueCompiler): string {
+        return this.asyncLowerer.compileReturn(expression, type, compileResult);
     }
 
     public withOwnedCallbackBody<T>(body: () => T): T {
@@ -9821,7 +9821,10 @@ class Compiler
             this.fail(statement, "Return outside a native function.");
         }
         if (coroutine && statement.expression) {
-            this.emit(`co_return ${this.compileAsyncReturn(statement.expression, returnType === "void" ? undefined : returnType)};`);
+            const result = returnType !== "void" && frame.compileReturn
+                ? frame.compileReturn(statement.expression, returnType)
+                : this.compileAsyncReturn(statement.expression, returnType === "void" ? undefined : returnType);
+            this.emit(`co_return ${result};`);
             return;
         }
         if (returnType === "void") {

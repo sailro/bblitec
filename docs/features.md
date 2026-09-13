@@ -222,7 +222,8 @@ return and matching `T` parameters. Assertions preserve runtime kinds; they do n
 coerce a returned value or copy an object into the asserted native shape. Comparisons
 with represented objects use retained identity.
 Native value functions whose early returns contain represented dynamic objects
-keep dynamic return storage, including immediately lowered async helpers.
+keep dynamic return storage, including immediate async lowering and coroutine
+suspension or promise adoption.
 Compatible fixed-record fallback paths retain their existing observing views.
 Fetched numbers retain JavaScript double precision when entering dynamic storage.
 `Array.find` over stored literal tuples preserves the selected literal domain;

@@ -8,6 +8,37 @@ dependencies will not be present in a fresh clone.
 
 ## Read this first
 
+**Current unit: coroutine dynamic returns.** Precision unit `652d3fc0` is
+committed/pushed. Full compile970 still stopped at the same loader return after
+67.27 seconds: the application contains workers, so usesWorkers selects native
+coroutines; prior isolated loader probes used immediate async lowering. Always
+match the real realm mode in follow-up probes. probe-async971.mjs adds a neutral
+worker and reproduces the exact AsyncLowerer.compileReturn failure in 3 seconds.
+
+The working change shares represented-return detection with coroutine bodies,
+transactionally retries their result storage, and carries coroutineResult on the
+void generation payload so AsyncLowerer uses the actual result representation.
+Promise adoption shares the same result conversion callback. async973 generates
+the unchanged worker-enabled loader. async975-focused passes 6 native/metadata
+checks; async976-regressions passes 63 coroutine/promise/closure/dynamic checks.
+The neutral native test covers suspension, promise adoption, default identity,
+shared writes and single evaluation. This unit is not yet committed.
+
+check-async977.mjs compares COMPLETE loader output/defaults against JavaScript
+with native coroutines and actual packaged configuration (generation 3.76s).
+It copies manifest assets to async977/ and emits check.cpp. Native build/run is
+GREEN: check-generated-native.mjs async977/check.cpp --pal --workers
+--asset-support --large-stack. The runner extracts the actual asset_path helper
+from engine-lowerer.ts, links real PAL file reads/SDL, and uses isolated storage.
+async977-native passes the complete output/defaults comparison in coroutine mode.
+Broad async978 regressions are GREEN: 954/954 without skips in 164.9 seconds.
+Full compile979 advanced past the loader and stopped after 76.25 seconds at the
+next startup call: generic quality-recommendation helper with an unrepresented
+early-return type. requestAutomaticQualityRecommendation<T> is in core/quality.ts
+around line 251 in the ignored external checkout. Isolate it next with the real
+worker realm and callback return shape. The full application is still incomplete.
+PR #247 metadata was last refreshed through pr970.json and remains draft/main.
+
 **Current unit: numeric precision at dynamic storage.** Receiver unit `80431171`
 is committed/pushed. async966 captures the complete failing native loader output;
 diagnose-async966.mjs finds 114 differences, ALL exactly Math.fround(expected).

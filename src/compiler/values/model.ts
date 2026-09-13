@@ -37,7 +37,7 @@ export function withNativeMetadata(value: Value, source: Value | undefined): Val
 /** Native data views retain shared metadata, without generation-only payloads. */
 export function nativeDataMetadata(value: Value | undefined): ValueFields {
     if (!value) return { cpp: "" };
-    const { kind, abruptCompletion, promiseResult, promiseType, textFont, csgSolid, csg2Solid,
+    const { kind, abruptCompletion, coroutineResult, promiseResult, promiseType, textFont, csgSolid, csg2Solid,
         executedUrl, animationGroupMask, ...metadata } = value;
     return metadata;
 }

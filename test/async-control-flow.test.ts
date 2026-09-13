@@ -4,7 +4,59 @@ import {mkdirSync,writeFileSync} from "node:fs";
 import {join,resolve} from "node:path";
 import test from "node:test";
 import {compileSource} from "../src/compiler.js";
-import {optionalNativeFixtureTools,runNativeFixtureCompiler} from "./native-fixture.js";
+import {nativeFixtureVcpkgRoot,optionalNativeFixtureTools,runNativeFixtureCompiler} from "./native-fixture.js";
+
+function runNative(result: ReturnType<typeof compileSource>, directory: string, t: test.TestContext): void {
+    const tools=optionalNativeFixtureTools(false);
+    if(!tools){t.skip("Native fixture compiler unavailable.");return;}
+    const cpp=join(directory,"check.cpp"),exe=join(directory,"check.exe");
+    writeFileSync(cpp,result.cpp);
+    runNativeFixtureCompiler(tools,["/nologo","/std:c++20","/W4","/WX","/EHsc","/MD","/DBBLITE_WORKERS=1",
+        "/I","native/include",`/I${nativeFixtureVcpkgRoot}/include`,`/Fo:${directory}/`,`/Fe:${exe}`,cpp]);
+    assert.equal(execFileSync(exe,{encoding:"utf8",timeout:10000}),"");
+}
+
+test("coroutine returns retain dynamic storage through suspension and adoption", t => {
+    const directory=resolve("artifacts/async-dynamic-returns");
+    mkdirSync(directory,{recursive:true});
+    writeFileSync(join(directory,"worker.ts"),"self.close();");
+    const result=compileSource(`
+        const worker=new Worker(new URL("./worker.ts",import.meta.url),{type:"module"});worker.terminate();
+        void(async()=>{
+            interface Config {branch:{size:number};keep:{value:number}}
+            const defaults={branch:{size:1},keep:{value:2}};
+            const flags:boolean[]=[false,true];
+            let effects=0;
+            function parse(source:unknown):Config {
+                effects++;
+                return {...(source as Record<string,unknown>),keep:defaults.keep} as unknown as Config;
+            }
+            async function load(source:unknown,fail:boolean):Promise<Config> {
+                await Promise.resolve();
+                try {
+                    if(fail)throw new Error("fallback");
+                    if(source===null)return defaults;
+                    return parse(source);
+                } catch {return defaults;}
+            }
+            async function forward(source:unknown,fail:boolean):Promise<Config> {
+                if(fail)return load(source,true);
+                return load(source,false);
+            }
+            const loaded=await forward(JSON.parse('{"branch":{"size":3}}'),flags[0]!);
+            const empty=await load(JSON.parse('null'),flags[0]!);
+            const failed=await forward(JSON.parse('{}'),flags[1]!);
+            if(loaded.branch.size!==3||loaded.keep!==defaults.keep||loaded===defaults||effects!==1)
+                throw new Error("dynamic coroutine result");
+            if(empty!==defaults||failed!==defaults)throw new Error("coroutine fallback identity");
+            defaults.keep.value=7;
+            if(loaded.keep.value!==7||empty.keep.value!==7||failed.keep.value!==7)
+                throw new Error("coroutine aliases");
+            globalThis.close();
+        })();
+    `,{fileName:join(directory,"entry.ts")});
+    runNative(result,directory,t);
+});
 
 test("async branches, loops and handlers complete in their owning activation", t => {
     const directory=resolve("artifacts/async-control-flow");
@@ -47,11 +99,5 @@ test("async branches, loops and handlers complete in their owning activation", t
         {fileName:join(directory,"unsupported.ts")}),/Await in finally requires asynchronous cleanup completion/);
     assert.throws(()=>compileSource(prefix+'void(async()=>{try{throw new Error("failure");}catch{await Promise.resolve();}})();',
         {fileName:join(directory,"unsupported.ts")}),/Await in catch requires suspended exception handling/);
-    const tools=optionalNativeFixtureTools(false);
-    if(!tools){t.skip("Native fixture compiler unavailable.");return;}
-    const cpp=join(directory,"check.cpp"),exe=join(directory,"check.exe");
-    writeFileSync(cpp,result.cpp);
-    runNativeFixtureCompiler(tools,["/nologo","/std:c++20","/W4","/WX","/EHsc","/MD","/DBBLITE_WORKERS=1",
-        "/I","native/include",`/Fo:${directory}/`,`/Fe:${exe}`,cpp]);
-    assert.equal(execFileSync(exe,{encoding:"utf8",timeout:10000}),"");
+    runNative(result,directory,t);
 });

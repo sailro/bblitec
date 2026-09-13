@@ -2742,20 +2742,12 @@ export class UserFunctionLowerer {
                 if (body?.coroutine) {
                     // The caller owns this coroutine frame. Its early returns
                     // must not enter a synchronous value-function wrapper.
-                    const type = this.valueLambdaReturnType(context, ir, callNode);
-                    if (type.kind !== "promise") context.fail(callNode, "Async control flow requires an owned promise result.");
-                    context.beginNativeFunctionBody(type.result, false, {coroutine:true});
                     try {
-                        const terminated = emitReachableStatements(context, ir.statements);
-                        if (!terminated) {
-                            if (!type.result) context.emit("co_return bbl::js::PromiseVoid{};");
-                            else if (type.result.kind === "optional") context.emit("co_return std::nullopt;");
-                            else context.fail(callNode, "Async value function can fall through without returning.");
-                        }
-                    } finally {
-                        context.endNativeFunctionBody();
+                        return context.probeEmission(() => this.lowerCoroutineBody(context, ir, callNode));
+                    } catch (error) {
+                        if (!(error instanceof DynamicReturnRequiresStorage)) throw error;
                     }
-                    return {kind:"void", cpp:"", abruptCompletion:true};
+                    return this.lowerCoroutineBody(context, ir, callNode, {kind:"json"});
                 }
                 const specialized = context.probeEmission(
                     () => this.lowerStaticReturnPath(context, ir, discardReturn),
@@ -2821,15 +2813,7 @@ export class UserFunctionLowerer {
         );
         context.increaseIndent();
         context.beginNativeFunctionBody(returnType, discardReturn, returnType?.kind === "struct" ? {
-            compileReturn: (expression, type) => {
-                const value = context.compileValue(expression);
-                const represented = value.dataType;
-                if (represented?.kind === "json" || (represented?.kind === "map" &&
-                    represented.dictionary && represented.value.kind === "json")) {
-                    throw new DynamicReturnRequiresStorage();
-                }
-                return context.dataLowerer.compileKnownValueForSink(value, type, expression);
-            },
+            compileReturn: (expression, type) => this.compileNativeReturnValue(context, context.compileValue(expression), type, expression),
         } : {});
         try {
             const terminated = emitReachableStatements(context, ir.statements);
@@ -2842,6 +2826,39 @@ export class UserFunctionLowerer {
         }
         context.emit("}();");
         return returnType ? context.dataValue(result, returnType) : {kind:"void", cpp:""};
+    }
+
+    private compileNativeReturnValue(context: UserFunctionContext, value: Value, type: DataType, node: ts.Node): string {
+        const represented = value.dataType;
+        if (represented?.kind === "json" || (represented?.kind === "map" &&
+            represented.dictionary && represented.value.kind === "json")) {
+            throw new DynamicReturnRequiresStorage();
+        }
+        return context.dataLowerer.compileKnownValueForSink(value, type, node);
+    }
+
+    private lowerCoroutineBody(context: UserFunctionContext, ir: UserFunctionIr, callNode: ts.Node, resultOverride?: DataType): Value {
+        const type = resultOverride ? {kind:"promise" as const, result:resultOverride} : this.valueLambdaReturnType(context, ir, callNode);
+        if (type.kind !== "promise") context.fail(callNode, "Async control flow requires an owned promise result.");
+        context.beginNativeFunctionBody(type.result, false, {
+            coroutine:true,
+            ...(type.result?.kind === "struct" ? {
+                compileReturn: (expression: ts.Expression, target: DataType) => context.compileAsyncReturn(expression, target,
+                    (value, result, node) => this.compileNativeReturnValue(context, value, result, node)),
+            } : {}),
+        });
+        try {
+            const terminated = emitReachableStatements(context, ir.statements);
+            if (!terminated) {
+                if (!type.result) context.emit("co_return bbl::js::PromiseVoid{};");
+                else if (type.result.kind === "optional") context.emit("co_return std::nullopt;");
+                else context.fail(callNode, "Async value function can fall through without returning.");
+            }
+        } finally {
+            context.endNativeFunctionBody();
+        }
+        const result: Value = type.result ? context.dataLowerer.leafValue("", type.result) : {kind:"void", cpp:""};
+        return {kind:"void", cpp:"", abruptCompletion:true, coroutineResult:result};
     }
 
     /** Keep generation-known branch returns as values, including shader composition records. */
