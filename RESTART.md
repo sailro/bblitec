@@ -25,8 +25,8 @@ each small edit. Keep focused checks during a batch; use the unchanged entry and
 broader regression checks at useful batch boundaries. Unknown requirements stay
 visible; do not invent an overall completion percentage from static counts.
 
-**The external application does not fully compile yet.** Native graphics availability now opens the intended startup branch; generation
-stops on vendor range-thumb selectors after compiling the shadow declarations. Its native build and intended
+**The external application does not fully compile yet.** Native graphics availability now opens the intended startup branch. The last full-entry attempt
+stopped on range selectors; reduced installer probes now pass range, scroll and media declarations and reach grid tracks. Its native build and intended
 application runtime have never been reached. A green sweep validates the registered corpus;
 it does not establish that this external application compiles or runs.
 
@@ -47,7 +47,7 @@ it does not establish that this external application compiles or runs.
 Latest complete-entry attempt: `compile777` reaches vendor range-thumb selectors
 in 229.6 seconds. Shadow support is committed as b8ea4486 after the Linux rebase.
 The pre-rebase shadow commit is 68c77baf; older hashes below refer to the preserved
-history. Range/control and media/grid/container requirements remain the next batch.
+history. Range and scroll/media/gutter support are saved; grid/container requirements remain the next batch.
 linux777-regressions passes 1,081/1,081 checks without skips. Rebase review found
 that SDL's readable presentation target must also cover general filter composites
 reading layer zero; both scene and Window presenters now share that predicate.
@@ -77,6 +77,32 @@ three of the admitted rules are Gecko-only and intentionally absent from the
 Chromium cascade. This is not a full application generation result. Continue
 scroll behavior and media declarations together, then general grid/container work.
 GitHub's open issue list is empty; remaining core-library/TODO gaps stay open.
+
+The scroll/media/gutter unit passes 929/929 checks without skips
+(scroll801-regressions). scroll-window801 passes SDL_GPU and Dawn with the original
+DPWCDWMK input replay, responsive geometry and stable gutter assertions. All 288
+entries generate (population797); scene41 rebuilds against the corrected native
+dependency (bootstrap801). The same 169-rule cohort is now 159 admitted / eight
+refused / two keyframes unassessed (style-contexts797). All eight refusals concern
+grid tracks, inline-grid or container queries; these counts do not establish full
+application compilation. imported-styles793 reaches explicit grid tracks.
+
+The nineteenth maintained patch retains the same RmlUi pin. Scroll containment
+keeps independent axes across wheel, middle-button autoscroll and native touch
+including inertia. Stable gutters reserve layout space separately from scrollbar
+painting. Media declarations share ordinary validation; structural grid
+substitutions still refuse. The broad run caught an overscroll shorthand ID
+collision with place-items; explicit built-in registration fixes it. rml800
+rebuilds all 19 patches, scroll800 passes nine focused checks, and the corrected
+broad run is scroll801. Browser gutter measurements confirm stable geometry;
+native thin scrollbars remain eight pixels versus Chromium's ten-pixel reference.
+
+Continue general native grid tracks and container queries. Eight neutral grid
+probes currently refuse (grid-tracks798-baseline); preserve this cohort. Isolated
+native working files are in grid801-rml-after; grid801-rml-before is the current
+RmlUi state with the last zero-track patch reversed, ready to regenerate that
+patch without changing its order or losing the preceding 18 patches. Those
+directories are ignored artifacts, not installed dependencies.
 
 Historical complete-entry attempt: `compile764` passes the imported stylesheet constant
 and reaches generated-content inset-outline decoration (225.2 seconds). The

@@ -232,6 +232,21 @@ or two literal RGB/hex/named colors and inherits through retained markup. Suppor
 are `::-webkit-scrollbar`, `-thumb`, `-track`, `-button`, and `-corner`, with optional hover;
 non-auto standard width or colors take precedence. Orientation-specific states, track-piece and resizer pseudo-elements are unsupported.
 Native scrollbar geometry and control appearance remain platform adaptations.
+`scrollbar-gutter:auto/stable` uses that same width. In horizontal layout, stable
+reserves the vertical gutter for auto or hidden overflow, including when content
+fits. Content changes preserve its width; the scrollbar paints and accepts input
+only when overflow requires it. Hidden scrollbars reserve no width. Block and
+flex containers share the reservation. Both-edge gutters, vertical writing and
+browser viewport propagation remain unsupported.
+`overscroll-behavior` accepts one or two `auto`, `contain` or `none` keywords;
+its x/y longhands share the normal cascade and live shorthand removal. Containment
+stops an axis at a scroll container even if its content fits, while preserving
+movement on the other axis. Non-scroll containers ignore it. Wheel, native
+middle-button scrolling and the library's touch/inertia path preserve the axis
+restriction. This does not add touch dispatch to the DOM projection.
+RmlUi keeps the nearest overflowing scroll target and clamps at its boundary;
+browser edge handoff, bounce and navigation gestures are not modeled. Consequently
+contain and none share native behavior. See the [overscroll contract](https://www.w3.org/TR/css-overscroll-1/).
 Solid backgrounds support `background-clip:border-box/padding-box/content-box`; image and gradient clipping remain unsupported.
 Static `border-image` raster URLs use packaged assets with stretch slicing and an unpainted center.
 Slices accept numbers or percentages; widths accept border-width multipliers, px, percentages or `auto`.
@@ -286,6 +301,9 @@ requiring an authored retained handle refuse; generated content beside projected
 opacity, preserving the control's own style and restoring normal value text when
 filled. Placeholder font/layout/decorative properties remain unsupported.
 Static selectors/properties are validated; source/sheet order and live max-width rules are retained.
+Max-width rules share ordinary declaration admission, including wrapping, physical
+margins, text alignment and paint. Structural grid substitutions remain refused
+inside media queries, as do properties outside the represented CSS surface.
 Reduced-motion media rules support `reduce` and `no-preference` through the same cascade.
 On Windows, they follow the system [client-area animation preference](https://learn.microsoft.com/en-us/windows/win32/winauto/client-area-animation),
 checked about once per second while the UI runs.
@@ -333,6 +351,8 @@ native range painting follows browser geometry and control states.
 | `rmlui-generated-content.patch` | Originating-element styles for generated boxes; preserve authored query, serialization and structural-selector semantics |
 | `rmlui-selector-functions.patch` | Selector-list/relative matching and invalidation; widget-owned placeholder text styles |
 | `rmlui-range-layout.patch` | Center horizontal input tracks using explicit or thumb-derived heights; reformat styled parts when the input's own size is unchanged |
+| `rmlui-overscroll-axes.patch` | Preserve independent containment axes and shorthand state across wheel, autoscroll and native touch/inertia |
+| `rmlui-scrollbar-gutter.patch` | Reserve stable scrollbar layout space separately from painting and input; track live content and scrollbar width |
 | `rmlui-flex-layout.patch` | Flex shorthand defaults, unordered flow resets and start/end alignment under reversal |
 | `rmlui-solid-background-clip.patch` | Solid border/padding/content-box clipping and invalidation after style changes |
 | `rmlui-textured-borders.patch` | Stretch raster border slices, live widths and CSS overlap reduction |

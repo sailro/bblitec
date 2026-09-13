@@ -987,6 +987,9 @@ export class UiProjection {
         "overflow-x",
         "overflow-y",
         "overflow-wrap",
+        "overscroll-behavior",
+        "overscroll-behavior-x",
+        "overscroll-behavior-y",
         "padding",
         "padding-bottom",
         "padding-left",
@@ -998,6 +1001,7 @@ export class UiProjection {
         "right",
         "row-gap",
         "resize",
+        "scrollbar-gutter",
         "scrollbar-width",
         "scrollbar-color",
         "text-align",
@@ -1029,6 +1033,9 @@ export class UiProjection {
         ["text-transform", ["none", "uppercase", "lowercase", "capitalize"]],
         ["text-overflow", ["clip", "ellipsis"]],
         ["font-style", ["normal", "italic"]],
+        ["scrollbar-gutter", ["auto", "stable"]],
+        ["overscroll-behavior-x", ["auto", "contain", "none"]],
+        ["overscroll-behavior-y", ["auto", "contain", "none"]],
         ["appearance", ["auto", "none"]],
         ["-webkit-appearance", ["auto", "none"]],
         ["-webkit-user-drag", ["none"]],
@@ -1589,6 +1596,8 @@ export class UiProjection {
             if (property === "word-break" && !/^(?:normal|break-word|break-all)$/.test(literalValue)) {
                 this.uiStyleRefusal(site, property, "only normal, break-word and break-all are represented");
             }
+            if (property === "overscroll-behavior" && !/^(?:auto|contain|none)(?:\s+(?:auto|contain|none))?$/.test(literalValue))
+                this.uiStyleRefusal(site, property, "one or two auto, contain or none keywords are represented");
             if (property === "scrollbar-width" && !/^(?:auto|thin|none)$/.test(literalValue)) {
                 this.uiStyleRefusal(site, property, "only auto, thin and none are represented");
             }
@@ -2461,49 +2470,6 @@ export class UiProjection {
                     return foreign && parseUiSelectorSequence(foreign[1] || "*");
                 })) continue;
                 const sourceStyle = body.trim();
-                if (inheritedMaxWidth !== undefined) {
-                    const mediaProperties = new EmissionSet([
-                        ...uiLogicalSpacingProperties,
-                        "align-items",
-                        "align-self",
-                        "bottom",
-                        "content",
-                        "font-size",
-                        "gap",
-                        "row-gap",
-                        "column-gap",
-                        "height",
-                        "left",
-                        "justify-items",
-                        "justify-self",
-                        "place-items",
-                        "max-height",
-                        "max-width",
-                        "min-height",
-                        "min-width",
-                        "right",
-                        "top",
-                        "width",
-                    ]);
-                    UiProjection.forEachUiStyleDeclaration(
-                        sourceStyle,
-                        (declaration) => {
-                            const colon = declaration.indexOf(":");
-                            if (colon < 0) return;
-                            const property = declaration
-                                .slice(0, colon)
-                                .trim()
-                                .toLowerCase();
-                            if (!mediaProperties.has(property)) {
-                                this.uiStyleRefusal(
-                                    site,
-                                    property,
-                                    "max-width rules are bounded to the reached position, size, item alignment and font-size overrides",
-                                );
-                            }
-                        },
-                    );
-                }
                 const grid = UiProjection.uiGridProjection(sourceStyle);
                 if ((grid || UiProjection.fractionalUiGridTracks(sourceStyle)) &&
                     (inheritedMaxWidth !== undefined || inheritedReducedMotion !== undefined)) {

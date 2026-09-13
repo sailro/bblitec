@@ -1,0 +1,129 @@
+--- a/Include/RmlUi/Core/ID.h
++++ b/Include/RmlUi/Core/ID.h
+@@ -115,6 +115,7 @@
+ 	Drag,
+ 	TabIndex,
+ 	ScrollbarMargin,
++	ScrollbarGutter,
+ 	OverscrollBehaviorX,
+ 	OverscrollBehaviorY,
+ 
+--- a/Source/Core/StyleSheetSpecification.cpp
++++ b/Source/Core/StyleSheetSpecification.cpp
+@@ -388,6 +388,7 @@
+ 	RegisterShorthand(ShorthandId::Nav, "nav", "nav-up, nav-right, nav-down, nav-left", ShorthandType::Box);
+ 
+ 	RegisterProperty(PropertyId::ScrollbarMargin, "scrollbar-margin", "0", false, false).AddParser("length");
++	RegisterProperty(PropertyId::ScrollbarGutter, "scrollbar-gutter", "auto", false, true).AddParser("keyword", "auto, stable");
+ 	RegisterProperty(PropertyId::OverscrollBehaviorX, "overscroll-behavior-x", "auto", false, false).AddParser("keyword", "auto, contain, none");
+ 	RegisterProperty(PropertyId::OverscrollBehaviorY, "overscroll-behavior-y", "auto", false, false).AddParser("keyword", "auto, contain, none");
+ 	RegisterShorthand(ShorthandId::OverscrollBehavior, "overscroll-behavior", "overscroll-behavior-x, overscroll-behavior-y", ShorthandType::Replicate);
+--- a/Source/Core/ElementStyle.cpp
++++ b/Source/Core/ElementStyle.cpp
+@@ -1277,6 +1277,8 @@
+ 	case PropertyId::ScrollbarMargin:
+ 		values.scrollbar_margin(ComputeLength(p->GetNumericValue(), font_size, document_font_size, dp_ratio, vp_dimensions));
+ 		break;
++	case PropertyId::ScrollbarGutter:
++		break; // Consumed by the scroll-container formatter.
+ 	case PropertyId::OverscrollBehaviorX:
+ 		values.overscroll_behavior_x((OverscrollBehavior)p->Get<int>());
+ 		break;
+--- a/Include/RmlUi/Core/ElementScroll.h
++++ b/Include/RmlUi/Core/ElementScroll.h
+@@ -29,6 +29,8 @@
+ 	/// Disables and hides one of the scrollbars.
+ 	/// @param[in] orientation Which scrollbar (vertical or horizontal) to disable.
+ 	void DisableScrollbar(Orientation orientation);
++	/// Reserves layout space without painting a scrollbar until it overflows.
++	void ReserveScrollbar(Orientation orientation, float element_width);
+ 
+ 	/// Updates the position of the scrollbar.
+ 	/// @param[in] orientation Which scrollbar (vertical or horizontal) to update).
+@@ -57,6 +59,7 @@
+ 		Element* element = nullptr;
+ 		UniquePtr<WidgetScroll> widget;
+ 		bool enabled = false;
++		bool reserved = false;
+ 		float size = 0;
+ 	};
+ 
+--- a/Source/Core/ElementScroll.cpp
++++ b/Source/Core/ElementScroll.cpp
+@@ -29,6 +29,7 @@
+ 
+ void ElementScroll::EnableScrollbar(Orientation orientation, float element_width)
+ {
++	scrollbars[orientation].reserved = false;
+ 	if (!scrollbars[orientation].enabled)
+ 	{
+ 		CreateScrollbar(orientation);
+@@ -55,6 +56,7 @@
+ 
+ void ElementScroll::DisableScrollbar(Orientation orientation)
+ {
++	scrollbars[orientation].reserved = false;
+ 	if (scrollbars[orientation].enabled)
+ 	{
+ 		scrollbars[orientation].element->SetProperty(PropertyId::Visibility, Property(Style::Visibility::Hidden));
+@@ -63,6 +65,13 @@
+ 		if (corner)
+ 			corner->SetProperty(PropertyId::Visibility, Property(Style::Visibility::Hidden));
+ 	}
++}
++
++void ElementScroll::ReserveScrollbar(Orientation orientation, float element_width)
++{
++	EnableScrollbar(orientation, element_width);
++	DisableScrollbar(orientation);
++	scrollbars[orientation].reserved = true;
+ }
+ 
+ void ElementScroll::UpdateScrollbar(Orientation orientation)
+@@ -101,7 +110,7 @@
+ 
+ float ElementScroll::GetScrollbarSize(Orientation orientation)
+ {
+-	if (!scrollbars[orientation].enabled)
++	if (!scrollbars[orientation].enabled && !scrollbars[orientation].reserved)
+ 		return 0;
+ 
+ 	return scrollbars[orientation].size;
+@@ -114,6 +123,16 @@
+ 
+ 	for (int i = 0; i < 2; i++)
+ 	{
++		if (scrollbars[i].reserved)
++		{
++			const bool vertical = i == VERTICAL;
++			const auto& values = element->GetComputedValues();
++			const auto overflow = vertical ? values.overflow_y() : values.overflow_x();
++			const float extent = vertical ? element->GetScrollHeight() - element->GetClientHeight() : element->GetScrollWidth() - element->GetClientWidth();
++			scrollbars[i].enabled = overflow == Style::Overflow::Auto && extent > .5f;
++			scrollbars[i].element->SetProperty(PropertyId::Visibility,
++				Property(scrollbars[i].enabled ? Style::Visibility::Visible : Style::Visibility::Hidden));
++		}
+ 		if (!scrollbars[i].enabled)
+ 			continue;
+ 
+@@ -157,6 +176,9 @@
+ 		scrollbars[i].element->SetOffset(offset, element, true);
+ 	}
+ 
++	if (corner && !(scrollbars[0].enabled && scrollbars[1].enabled))
++		corner->SetProperty(PropertyId::Visibility, Property(Style::Visibility::Hidden));
++
+ 	// Format the corner, if it is necessary.
+ 	if (scrollbars[0].enabled && scrollbars[1].enabled)
+ 	{
+--- a/Source/Core/Layout/ContainerBox.cpp
++++ b/Source/Core/Layout/ContainerBox.cpp
+@@ -21,6 +21,8 @@
+ 
+ 	if (overflow_y == Style::Overflow::Scroll)
+ 		element->GetElementScroll()->EnableScrollbar(ElementScroll::VERTICAL, box.GetSizeAcross(BoxDirection::Horizontal, BoxArea::Padding));
++	else if ((overflow_y == Style::Overflow::Auto || overflow_y == Style::Overflow::Hidden) && element->GetProperty<int>("scrollbar-gutter") == 1)
++		element->GetElementScroll()->ReserveScrollbar(ElementScroll::VERTICAL, box.GetSizeAcross(BoxDirection::Horizontal, BoxArea::Padding));
+ 	else
+ 		element->GetElementScroll()->DisableScrollbar(ElementScroll::VERTICAL);
+ }
