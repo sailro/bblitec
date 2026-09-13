@@ -1009,7 +1009,7 @@ function developmentChecks(scope: PreflightScope): DevelopmentCheck[] {
         }
     } else if (process.platform !== "win32") {
         checks.push({ label: "C++ compiler", ...(tools.cxx
-            ? { path: tools.cxx } : { problem: "C++ compiler was not found; install Clang on Linux or set CXX" }) });
+            ? { path: tools.cxx } : { problem: "C++ compiler was not found; install Clang or set CXX" }) });
         if (generator === "Ninja") {
             checks.push({ label: "Ninja", ...(tools.ninja
                 ? { path: tools.ninja } : { problem: "ninja was not found" }) });
@@ -1136,9 +1136,9 @@ function setupEnvironment(tools: DevelopmentTools): NodeJS.ProcessEnv {
 }
 
 function runDevelopmentSetup(): void {
-    if (process.platform !== "win32" && process.platform !== "linux") {
+    if (process.platform !== "win32" && process.platform !== "linux" && process.platform !== "darwin") {
         throw new Error(
-            "dev:setup supports Windows and Linux; install host tools manually on this platform and run 'npm run doctor'.",
+            "dev:setup supports Windows, Linux and macOS; install host tools manually on this platform and run 'npm run doctor'.",
         );
     }
     const tools = discoverDevelopmentTools();
@@ -1147,7 +1147,7 @@ function runDevelopmentSetup(): void {
         ["vcpkg", tools.vcpkg],
         ["PowerShell", tools.powershell],
         ["git", tools.git],
-        ...(process.platform === "linux" ? [["Clang (or CC)", tools.cc], ["Clang++ (or CXX)", tools.cxx]] : []),
+        ...(process.platform !== "win32" ? [["Clang (or CC)", tools.cc], ["Clang++ (or CXX)", tools.cxx]] : []),
     ].filter((entry) => !entry[1]);
     if (bootstrapMissing.length > 0) {
         throw new Error(
@@ -1165,7 +1165,7 @@ function runDevelopmentSetup(): void {
         "directx-dxc",
         process.platform === "win32" ? "dxc.exe" : "dxc",
     );
-    if (!existsSync(pinnedDxc)) {
+    if (hostOfflineShaderTarget(process.platform) !== "metal" && !existsSync(pinnedDxc)) {
         run(
             tools.vcpkg!,
             [

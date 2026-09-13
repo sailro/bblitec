@@ -61,6 +61,18 @@ export function remapPinnedVariantRegisters(source: string, vertex: boolean): st
     return compactRegisters(source, vertex);
 }
 
+function mapSampledTextureUses(
+    source: string,
+    samplers: readonly string[],
+    pair: (call: string, prefix: string, texture: string, sampler: string) => string,
+): string {
+    source = source.replace(/(\b(\w+)\.(?:Sample\w*|Gather\w*|CalculateLevelOfDetail\w*)\(\s*)(\w+)/g, pair);
+    // Tint can pass a texture/sampler pair through an HLSL helper. Match
+    // only sampler arguments so earlier arguments do not consume a texture.
+    if (samplers.length) source = source.replace(new RegExp(`(\\b(\\w+)\\s*,\\s*)(${samplers.join("|")})\\b`, "g"), pair);
+    return source;
+}
+
 /** SDL Vulkan binds texture/sampler pairs as combined image samplers at tN/sN.
  * Integer and multisampled Load textures use SDL's storage-texture descriptors.
  * DXC maps register spaces directly onto Vulkan descriptor sets. */
@@ -92,10 +104,7 @@ export function sdlSpirvSource(source: string, vertex: boolean): string {
     };
     // One HLSL sampler can serve several textures. Vulkan's combined
     // descriptors need a declaration and matching use for each texture.
-    source = source.replace(/(\b(\w+)\.(?:Sample\w*|Gather\w*|CalculateLevelOfDetail\w*)\(\s*)(\w+)/g, pair);
-    // Tint can pass a texture/sampler pair through an HLSL helper. Match
-    // only sampler arguments so earlier arguments do not consume a texture.
-    if (samplers.size) source = source.replace(new RegExp(`(\\b(\\w+)\\s*,\\s*)(${[...samplers.keys()].join("|")})\\b`, "g"), pair);
+    source = mapSampledTextureUses(source, [...samplers.keys()], pair);
     const pairedSamplers: string[] = [];
     for (const [texture, { index, space, paired, used }] of textures) {
         if (used.size > 1) throw new Error(`SDL Vulkan cannot bind multiple samplers for texture ${texture}.`);
@@ -176,6 +185,71 @@ export function shaderStageSlots(hlsl: string): ShaderSlot[] {
         });
     }
     return slots.sort((left, right) => left.kind.localeCompare(right.kind) || left.index - right.index);
+}
+
+/** Tint flattens Metal resources in use order. SDL requires the same dense
+ * slots as our HLSL sidecar, with uniforms before storage in the buffer space. */
+export function sdlMslSource(msl: string, hlsl: string, slots: readonly ShaderSlot[]): string {
+    // Metal reserves `main`; Tint may rename it to a generated identifier.
+    // Each artifact contains one stage, so give its exported function the
+    // stable name used by the SDL loader, independently of WGSL naming.
+    const entries = [...msl.matchAll(/^(vertex|fragment)\s+\w+\s+(\w+)\(/gm)];
+    if (entries.length !== 1) throw new Error("Expected one Tint Metal render entry point.");
+    if (entries[0]![2] !== "main0" && /\bmain0\b/.test(msl)) {
+        throw new Error("Tint Metal source already uses the SDL entry-point name main0.");
+    }
+    msl = msl.replace(/^(vertex|fragment)(\s+\w+\s+)\w+\(/m, "$1$2main0(");
+    const uniforms = slots.filter(slot => slot.kind === "b").length;
+    const textures = slots.filter(slot => slot.kind === "t").length;
+    const byName = new Map(slots.map(slot => [slot.name, slot]));
+    // SDL binds samplers alongside textures. Tint may remove the sampler of
+    // an earlier textureLoad, so independently compacted sampler slots drift.
+    // A WGSL sampler shared by several textures needs only one Metal binding;
+    // use its first texture slot, retaining the shared sampler in the shader.
+    const samplerSlots = new Map<string, number>();
+    mapSampledTextureUses(hlsl, slots.filter(slot => slot.kind === "s").map(slot => slot.name),
+        (call, _prefix, texture, sampler) => {
+            const slot = byName.get(texture);
+            if (slot?.kind === "t" && byName.get(sampler)?.kind === "s") {
+                samplerSlots.set(sampler, Math.min(samplerSlots.get(sampler) ?? slot.index, slot.index));
+            }
+            return call;
+        });
+    if (/\btint_storage_buffer_sizes\s*\[\[buffer\(30\)\]\]/.test(msl)) {
+        // The pin tests the pointer's footprint, so even fixed-size storage
+        // buffers occupy array-length entries, in resource-reference order
+        // (also used by its original flattened Metal buffer indices).
+        // The SDL Metal patch publishes lengths at buffer(30) in SDL slot order.
+        const storage = [...msl.matchAll(/\b(\w+)\s*\[\[buffer\((\d+)\)\]\]/g)]
+            .map(match => ({ name: match[1]!, index: Number(match[2]) }))
+            .filter(binding => byName.get(binding.name)?.kind === "r")
+            .sort((a, b) => a.index - b.index);
+        let lengths = 0;
+        msl = msl.replace(/(\(\*\w+\.tint_storage_buffer_sizes\))\[(\d+)u\]\.([xyzw])/g,
+            (_load, pointer: string, vector: string, lane: string) => {
+                const buffer = storage[Number(vector) * 4 + "xyzw".indexOf(lane)];
+                if (!buffer) throw new Error("Metal array length has no reflected storage buffer.");
+                const slot = byName.get(buffer.name)!.index;
+                lengths++;
+                return `${pointer}[${Math.floor(slot / 4)}u].${"xyzw"[slot % 4]}`;
+            });
+        if (!lengths) throw new Error("Unrecognized Tint Metal array-length expression.");
+        const vectors = Math.ceil(slots.filter(slot => slot.kind === "r").length / 4);
+        msl = msl.replace(/const constant tint_array<uint4, \d+>\* tint_storage_buffer_sizes/g,
+            `const constant tint_array<uint4, ${vectors}>* tint_storage_buffer_sizes`);
+    }
+    return msl.replace(/\b(\w+)\s*\[\[(buffer|texture|sampler)\(\d+\)\]\]/g,
+        (_declaration, name: string, kind: string) => {
+            if (name === "tint_storage_buffer_sizes" && kind === "buffer") return `${name} [[buffer(30)]]`;
+            const slot = byName.get(name);
+            if (!slot) throw new Error(`Metal resource ${name} is absent from the SDL shader bindings.`);
+            const expectedKind = slot.kind === "b" || slot.kind === "r" ? "buffer" : slot.kind === "s" ? "sampler" : "texture";
+            if (kind !== expectedKind) throw new Error(`Metal resource ${name} has unexpected kind ${kind}.`);
+            const index = slot.kind === "s" ? samplerSlots.get(name)
+                : slot.index + (slot.kind === "r" ? uniforms : slot.kind === "i" ? textures : 0);
+            if (index === undefined) throw new Error(`Metal sampler ${name} has no reflected texture pair.`);
+            return `${name} [[${kind}(${index})]]`;
+        });
 }
 
 export function hlslUniformBufferNames(hlsl: string): string[] {

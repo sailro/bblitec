@@ -12,6 +12,9 @@
 #include <bit>
 #include <cassert>
 #include <charconv>
+#if defined(__APPLE__)
+#include <boost/charconv/to_chars.hpp>
+#endif
 #include <chrono>
 #include <cmath>
 #include <cstddef>
@@ -37,6 +40,17 @@
 #include <vector>
 
 namespace bbl::js {
+
+// Apple's system libc++ only provides floating to_chars from macOS 13.3.
+#if defined(__APPLE__)
+namespace number_chars = boost::charconv;
+// Request the shortest significand; Boost's general mode can choose an exact
+// integer spelling with extra significant digits. JS chooses decimal layout below.
+inline constexpr auto shortest_number_format = number_chars::chars_format::scientific;
+#else
+namespace number_chars = std;
+inline constexpr auto shortest_number_format = number_chars::chars_format::general;
+#endif
 
 template <typename T> class TypedArray;
 template <typename Values> class TypedArraySlot;
@@ -1582,9 +1596,9 @@ using NumberTextBuffer = std::array<char, 64>;
         }
     }
     NumberTextBuffer shortest;
-    const auto converted = std::to_chars(
+    const auto converted = number_chars::to_chars(
         shortest.data(), shortest.data() + shortest.size(), value,
-        std::chars_format::general);
+        shortest_number_format);
     assert(converted.ec == std::errc{});
     const auto exponent_start = std::find(shortest.data(), converted.ptr, 'e');
     char* output = buffer.data();
@@ -1714,9 +1728,9 @@ template <typename... Parts>
                   static_cast<std::size_t>(digits), '0');
     }
     std::array<char, 160> buffer{};
-    const auto converted = std::to_chars(
+    const auto converted = number_chars::to_chars(
         buffer.data(), buffer.data() + buffer.size(), value,
-        std::chars_format::fixed, digits);
+        number_chars::chars_format::fixed, digits);
     assert(converted.ec == std::errc{});
     return std::string(buffer.data(), converted.ptr);
 }

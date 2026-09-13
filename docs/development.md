@@ -4,7 +4,7 @@
 
 Requires Node.js 22.12+, CMake 3.24+, Ninja, C++20, vcpkg, PowerShell, a GPU
 and WebGPU-capable Chrome/Edge. Windows development uses clang-cl when
-available, otherwise MSVC; shipping uses MSVC. Linux development defaults to Clang.
+available, otherwise MSVC; shipping uses MSVC. Linux and macOS development default to Clang.
 
 ```powershell
 npm ci
@@ -55,13 +55,56 @@ Run scenes inside a graphical session. SDL selects X11 or Wayland;
 `SDL_VIDEODRIVER=x11|wayland` forces that selection. An SSH session needs display
 access (`DISPLAY`/Xauthority for X11, `XDG_RUNTIME_DIR`/`WAYLAND_DISPLAY` for
 Wayland) and permission to use the GPU's render node. No display is provided by
-SSH alone. Minimal shipping supports Windows and Linux x64 as described below.
+SSH alone. Minimal shipping supports Windows, Linux and macOS x64 as described below.
 
 Linux resolves installed fonts through Fontconfig and renders UI text with
 RmlUi's FreeType engine. Windows additionally uses the custom DirectWrite
 shaping and rasterization engine described in [UI](ui.md#css-layout-and-fonts).
 Font selection, fallback coverage and text metrics can therefore differ;
 successful Linux builds do not imply passing the existing strict visual gates.
+
+### macOS prerequisites
+
+macOS targets Metal through SDL_GPU and Dawn, with Cocoa windows. Install
+Apple's Command Line Tools (SDK and system linker), Clang 18 or newer, Ninja,
+CMake, Node.js 22.12+, PowerShell 7, Git, pkg-config and vcpkg. Select versions
+that support the host macOS release. Apple Clang 14 cannot compile the pinned
+Tint's C++20 code; `CC`/`CXX` can select a separate LLVM installation.
+On older macOS releases, the LLVM libc++ headers must retain Apple's availability
+annotations when linking the system libc++. A distribution configured with
+`_LIBCPP_HAS_NO_VENDOR_AVAILABILITY_ANNOTATIONS` can otherwise emit references
+to newer runtime symbols, such as `__libcpp_verbose_abort`, unavailable on
+Monterey. In a dedicated LLVM installation, remove that define from
+`include/c++/v1/__config_site` to restore Apple's availability checks, retaining
+a backup of the original configuration. Set `MACOSX_DEPLOYMENT_TARGET` before
+building dependencies. The Dawn build applies
+`tools/patches/dawn-metal-sdk-compat.patch` to preserve Apple9 family detection
+with SDKs older than macOS 14.
+
+```sh
+export VCPKG_ROOT="$HOME/vcpkg"
+export CC=/path/to/llvm/bin/clang
+export CXX=/path/to/llvm/bin/clang++
+export CMAKE_GENERATOR=Ninja
+export CMAKE_BUILD_PARALLEL_LEVEL=3
+export VCPKG_MAX_CONCURRENCY=3
+npm ci
+caffeinate -i npm run dev:setup
+npm run doctor
+npm run scene -- process scene1
+npm run scene -- parity scene1 --differential
+```
+
+The host architecture selects `x64-osx` or `arm64-osx` dependencies. Development
+builds both renderers; Metal shaders use pinned Tint's MSL output and compile
+on the GPU driver at startup, so DXC and the offline `metal` tool are unnecessary.
+Run in a logged-in graphical session, including when launching through SSH.
+Set `CHROME_PATH` for a WebGPU-capable Chrome installation outside the standard
+application directory. Browser/GPU versions remain part of capture provenance.
+UI resolves fonts through CoreText and uses RmlUi's FreeType engine.
+Floating-point number formatting links Boost.Charconv on macOS because the
+system C++ library lacks floating `to_chars` before macOS 13.3. The existing
+binary64 formatting regression checks the result against JavaScript.
 
 Rebuild installed dependencies when their maintained patches change.
 LabSound uses `tools/patches/labsound-lazy-decoders.patch` to keep its optional file-decoder registry lazy.
@@ -166,7 +209,7 @@ use the saved differential reports and the validation sequence above.
 
 ## Native builds
 
-`--backend sdl_gpu|dawn|both` selects renderers; Windows and Linux default to both and
+`--backend sdl_gpu|dawn|both` selects renderers; Windows, Linux and macOS default to both and
 require Dawn. `--compiler auto|clangcl|msvc` selects the Windows compiler.
 `BBLITE_DEV_COMPILER` and `BBLITE_CMAKE_GENERATOR` override compiler/generator.
 
@@ -263,7 +306,8 @@ The command generates scenes and host shaders, prepares reached static
 dependencies once, builds concurrently, and packages each demo in turn.
 Windows uses MSVC, a static CRT and SDL_GPU/D3D12. Linux uses Clang, LLD and
 SDL_GPU/Vulkan; install `lld` alongside the Linux prerequisites above.
-Linux shipping does not build or package Dawn. Each image-codec
+macOS uses Clang and SDL_GPU/Metal. Linux and macOS shipping do not build or
+package Dawn. Each image-codec
 set has its own vcpkg install, so SDL_image cannot pull unused decoders from a
 shared superset. Fresh CMake caches discard old package paths; stale deployed
 payloads are preserved beside their build tree before deployment.
@@ -298,6 +342,16 @@ adding `-EnableCodecs` or `-EnableSvg` when reached. The minimal SDL script keep
 Vulkan and X11/Wayland while removing unused audio/gamepad and renderer code.
 The packager includes only SPIR-V and binding sidecars, checks dynamic library
 resolution without development loader overrides, and forces Vulkan for smoke.
+
+macOS x64 uses the same release command. Its minimal build uses `-Oz`, LTO and
+the Apple linker's `-dead_strip`, with trimmed static project dependencies.
+Packages contain MSL and binding sidecars, preserve executable permissions,
+and check startup with Metal. The staged executable is stripped and ad-hoc
+signed; it is not Developer ID signed or notarized. `RUNTIME-LIBRARIES.txt`
+records system libraries/frameworks and packaging refuses external dynamic
+dependencies. Set `MACOSX_DEPLOYMENT_TARGET` before building dependencies and
+scenes to choose the minimum OS version. Minimal Apple Silicon packaging is
+not enabled.
 
 For a manual Windows build, use `BBLITE_MINSIZE=ON`, one backend, MSVC, static CRT and
 `VCPKG_TARGET_TRIPLET=x64-windows-static`. Set `BBLITE_GENERATED_DIR` and

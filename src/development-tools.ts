@@ -327,7 +327,8 @@ export function discoverDevelopmentTools(
                   join(dawnDirectory, "bin", "dxcompiler.dll"),
                   join(dawnDirectory, "bin", "dxil.dll"),
               ]
-            : platform === "linux" ? [join(dawnDirectory, "lib", "libwebgpu_dawn.so")] : []),
+            : platform === "linux" ? [join(dawnDirectory, "lib", "libwebgpu_dawn.so")]
+            : platform === "darwin" ? [join(dawnDirectory, "lib", "libwebgpu_dawn.dylib")] : []),
     ];
     const rmlUiConfig = join(
         rmlUiDirectory,
@@ -350,8 +351,8 @@ export function discoverDevelopmentTools(
                 ?? findExecutable("ccache", options),
         visualStudioRoot,
         cmake,
-        cc: platform === "win32" ? undefined : findExecutable(environment.CC ?? (platform === "linux" ? "clang" : "cc"), options),
-        cxx: platform === "win32" ? undefined : findExecutable(environment.CXX ?? (platform === "linux" ? "clang++" : "c++"), options),
+        cc: platform === "win32" ? undefined : findExecutable(environment.CC ?? "clang", options),
+        cxx: platform === "win32" ? undefined : findExecutable(environment.CXX ?? "clang++", options),
         ninja: findExecutable(environment.NINJA_PATH ?? "ninja", options),
         powershell: findExecutable(
             platform === "win32" ? "pwsh.exe" : "pwsh",

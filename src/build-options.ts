@@ -6,7 +6,7 @@ export const DEVELOPMENT_VCPKG_INSTALL = "development-full";
 export function defaultDevelopmentBackend(
     platform: NodeJS.Platform,
 ): "SDL_GPU" | "BOTH" {
-    return platform === "win32" || platform === "linux" ? "BOTH" : "SDL_GPU";
+    return platform === "win32" || platform === "linux" || platform === "darwin" ? "BOTH" : "SDL_GPU";
 }
 
 export function developmentTriplet(platform: NodeJS.Platform = process.platform, arch = process.arch): string {

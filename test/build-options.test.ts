@@ -201,6 +201,7 @@ test("normalizes retained CSS cascade keywords and measures width resets", () =>
 test("canonicalizes the build-time backend flag", () => {
     assert.equal(defaultDevelopmentBackend("win32"), "BOTH");
     assert.equal(defaultDevelopmentBackend("linux"), "BOTH");
+    assert.equal(defaultDevelopmentBackend("darwin"), "BOTH");
     assert.equal(canonicalCompiledBackend("sdl_gpu", "build"), "SDL_GPU");
     assert.equal(canonicalCompiledBackend("DAWN", "process"), "DAWN");
     assert.equal(canonicalCompiledBackend("both", "process"), "BOTH");

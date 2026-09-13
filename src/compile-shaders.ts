@@ -9,7 +9,7 @@ import { discoverDevelopmentTools, type DevelopmentTools } from "./development-t
 import { compiledShaderArtifactExtensions, GeneratedTree } from "./generated-tree.js";
 import { contentDigest, hashEntries, isCompiledShaderOutput, writeJsonRecord } from "./validation-resume.js";
 import { assertReflectedBindings, assertUniformBufferCap, prepareSdlUniformAdaptation, sdlUniformSource,
-    normalizeTintHlslBindings, remapPinnedVariantRegisters, sdlSpirvSource, shaderStageSlots, type SdlUniformAdaptation } from "./shader-bindings.js";
+    normalizeTintHlslBindings, remapPinnedVariantRegisters, sdlSpirvSource, sdlMslSource, shaderStageSlots, type SdlUniformAdaptation } from "./shader-bindings.js";
 import { readShaderComposition, shaderStageConstants, type OfflineShaderStage } from "./shader-composition.js";
 import { isMainModule, parseFlags } from "./tooling/flags.js";
 import { repositoryModuleClosure } from "./bake-cache.js";
@@ -225,12 +225,13 @@ export function compileOfflineShaders(options: ShaderCompilationOptions): Shader
                         assertUniformBufferCap(hlsl, `${source} (after SDL uniform adaptation)`);
                     }
                     const normalized = stage.pinnedBindings ? remapPinnedVariantRegisters(hlsl, vertex) : normalizeTintHlslBindings(hlsl);
+                    const slots = shaderStageSlots(normalized);
                     tree.write(`${stage.stem}.hlsl`, `${normalized}${EOL}`);
-                    tree.write(`${stage.stem}.slots`, `${shaderStageSlots(normalized).map(slot => `${slot.kind}${slot.index} ${slot.name}`).join(EOL)}${EOL}`);
+                    tree.write(`${stage.stem}.slots`, `${slots.map(slot => `${slot.kind}${slot.index} ${slot.name}`).join(EOL)}${EOL}`);
                     tree.write(`${stage.stem}.tint-reflection.txt`, `${reflected}${EOL}`);
                     if (formats.tint.includes(".msl")) {
                         runCompiler(tools.tint, [sdlSource, ...stageArgs, "--format", "msl", "--output-name", pendingMsl], environment);
-                        tree.write(`${stage.stem}.msl`, readFileSync(pendingMsl));
+                        tree.write(`${stage.stem}.msl`, sdlMslSource(readFileSync(pendingMsl, "utf8"), normalized, slots));
                     }
                     for (const extension of formats.tint) cacheArtifact(`${cacheBase}${extension}`, readFileSync(`${outputBase}${extension}`));
                     result.tintCompiled++;

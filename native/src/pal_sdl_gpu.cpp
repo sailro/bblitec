@@ -1061,10 +1061,10 @@ struct GpuState : SdlGpuDevice {
     SDL_GPUTexture* msaa_color = nullptr;
     SDL_GPUTexture* depth = nullptr;
 #if BBLITE_PBR_VARIANTS > 0
-    // One pipeline per (variant, pipeline kind): the kind carries the cull mode,
+    // One pipeline per (variant, pipeline kind, samples): the kind carries the cull mode,
     // the winding a mirrored node needs and the blend and depth state, exactly
     // as it does for the transcribed pipelines.
-    std::map<std::size_t, OwnedSdlPipeline> pinned_pipelines;
+    std::map<std::pair<std::size_t, SDL_GPUSampleCount>, OwnedSdlPipeline> pinned_pipelines;
     // Each variant's stage slot maps, read once from the `.slots` sidecars.
     std::vector<PinnedStageSlots> pinned_vertex_slots;
     std::vector<PinnedStageSlots> pinned_fragment_slots;
@@ -2326,13 +2326,14 @@ const GpuState::EsmBlur* esm_caster_params_for(
 [[maybe_unused]] void apply_pass_depth_state(
     SDL_GPUGraphicsPipelineCreateInfo& info,
     const GpuState& state,
-    bool shadow_pass) {
+    bool shadow_pass,
+    std::optional<SDL_GPUSampleCount> task_samples = {}) {
     info.depth_stencil_state.compare_op =
         gpu_depth_compare(pal::pass_depth_compare(shadow_pass));
     info.depth_stencil_state.enable_depth_test = true;
     info.multisample_state.sample_count = shadow_pass
         ? task_sample_count(state, pal::pass_depth_samples(true, 1))
-        : state.sample_count;
+        : task_samples.value_or(state.sample_count);
     info.target_info.depth_stencil_format = shadow_pass
         ? SDL_GPU_TEXTUREFORMAT_D32_FLOAT
         : state.depth_format;
@@ -2585,14 +2586,16 @@ SDL_GPUGraphicsPipeline* pinned_variant_pipeline(
     bool shadow_pass = false,
     // Which ESM generator's map this pass writes, when it writes one: a
     // caster's colour target is that generator's own recorded row.
-    std::uint32_t esm_shadow_index = invalid_handle) {
-    const std::size_t key = pal::variant_pipeline_key(
+    std::uint32_t esm_shadow_index = invalid_handle,
+    std::optional<SDL_GPUSampleCount> task_samples = {}) {
+    const std::size_t variant_key = pal::variant_pipeline_key(
         pal::esm_keyed_variant(
             variant,
             upstream::pbr_variants.size(),
             esm_shadow_index),
         kind,
         {shadow_pass});
+    const auto key = std::make_pair(variant_key, task_samples.value_or(state.sample_count));
     const auto existing = state.pinned_pipelines.find(key);
     if (existing != state.pinned_pipelines.end()) return existing->second.get();
     ensure_pinned_slots(state, variant);
@@ -2678,7 +2681,7 @@ SDL_GPUGraphicsPipeline* pinned_variant_pipeline(
     info.rasterizer_state.front_face =
         gpu_front_face(traits.clockwise_front_face);
     info.rasterizer_state.enable_depth_clip = true;
-    apply_pass_depth_state(info, state, shadow_pass);
+    apply_pass_depth_state(info, state, shadow_pass, task_samples);
     info.depth_stencil_state.enable_depth_write =
         entry.no_color_output || !transparent;
     // A depth-only view's fragment writes no colour target, and the pass it
@@ -2928,7 +2931,8 @@ void draw_pinned_variant(
     // pin's standard-Z depth state rather than this port's reverse-Z.
     bool shadow_pass = false,
     // The generator whose map that pass writes, when it writes one.
-    std::uint32_t esm_shadow_index = invalid_handle) {
+    std::uint32_t esm_shadow_index = invalid_handle,
+    std::optional<SDL_GPUSampleCount> task_samples = {}) {
 #if BBLITE_LOCAL_CUBEMAP
     const auto* local_cubemap = ensure_local_cubemap(state, material);
 #endif
@@ -2940,7 +2944,8 @@ void draw_pinned_variant(
             draw.pipeline,
             geometry_task,
             shadow_pass,
-            esm_shadow_index);
+            esm_shadow_index,
+            task_samples);
     if (variant_pipeline != bound_pipeline) {
         SDL_BindGPUGraphicsPipeline(pass, variant_pipeline);
         bound_pipeline = variant_pipeline;
@@ -4296,8 +4301,7 @@ SDL_GPUGraphicsPipeline* standard_variant_pipeline(
     info.rasterizer_state.front_face =
         gpu_front_face(traits.clockwise_front_face);
     info.rasterizer_state.enable_depth_clip = true;
-    apply_pass_depth_state(info, state, shadow_pass);
-    if (task_samples && !shadow_pass && !geometry_task) info.multisample_state.sample_count = *task_samples;
+    apply_pass_depth_state(info, state, shadow_pass, task_samples);
     info.depth_stencil_state.enable_depth_write =
         entry.no_color_output || !transparent;
     info.target_info.color_target_descriptions =
@@ -4362,10 +4366,9 @@ void draw_standard_variant(
     std::uint32_t esm_shadow_index = invalid_handle
 #if defined(BBLITE_HAS_TAA) && BBLITE_HAS_TAA
     , std::vector<PreparedSdlDraw>* deferred = nullptr,
-    const std::shared_ptr<PersistentSceneUniforms>& deferred_scene = {},
-    std::optional<SDL_GPUSampleCount> task_samples = {}
+    const std::shared_ptr<PersistentSceneUniforms>& deferred_scene = {}
 #endif
-    ) {
+    , std::optional<SDL_GPUSampleCount> task_samples = {}) {
     const upstream::RenderItem& item = draw.item;
     SDL_GPUGraphicsPipeline* variant_pipeline =
         standard_variant_pipeline(
@@ -4374,11 +4377,8 @@ void draw_standard_variant(
             draw.pipeline,
             geometry_task,
             shadow_pass,
-            esm_shadow_index
-#if defined(BBLITE_HAS_TAA) && BBLITE_HAS_TAA
-            , task_samples
-#endif
-            );
+            esm_shadow_index,
+            task_samples);
     if (
 #if defined(BBLITE_HAS_TAA) && BBLITE_HAS_TAA
         deferred == nullptr &&
@@ -11283,6 +11283,15 @@ public:
 #endif
                                       , std::optional<ShaderTaskTarget> shader_target = {}
                                       ) {
+                // Composed materials must use the render task's sample count,
+                // just as custom materials do, rather than the main target's.
+                [[maybe_unused]] const auto task_samples = shader_target
+                    ? std::optional<SDL_GPUSampleCount>{shader_target->samples}
+#if defined(BBLITE_HAS_TAA) && BBLITE_HAS_TAA
+                    : deferred_samples;
+#else
+                    : std::optional<SDL_GPUSampleCount>{};
+#endif
                 bool scene_matrix_bound = true;
                 // One dispatch for both passes; only the sources
                 // differ (`secondary_pipeline_for`).
@@ -11448,8 +11457,10 @@ public:
                                             ShadowFilter::esm_directional
                                     ? shadow_generator->esm_index
                                     : invalid_handle
+#else
+                                , invalid_handle
 #endif
-                                );
+                                , task_samples);
                             continue;
                         }
 #endif
@@ -11515,13 +11526,13 @@ public:
                                             ShadowFilter::esm_directional
                                     ? shadow_generator->esm_index
                                     : invalid_handle
-#elif defined(BBLITE_HAS_TAA) && BBLITE_HAS_TAA
+#else
                                 , invalid_handle
 #endif
 #if defined(BBLITE_HAS_TAA) && BBLITE_HAS_TAA
-                                , deferred, deferred_scene, deferred_samples
+                                , deferred, deferred_scene
 #endif
-                                );
+                                , task_samples);
                             continue;
                         }
 #else

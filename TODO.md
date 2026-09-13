@@ -72,6 +72,6 @@ status. One line per item: the gap, where it is, its size (S < 1 h, M < half day
 - [ ] Shadow generator maps/buffers are released only at teardown (pal_sdl_gpu.cpp:3891, :6022) and handles index the vector; reclaim retired generators without compacting. M.
 - [ ] The crosshair is a private property (pal_ui_rml.cpp:1929), there is no bare tag selector kind (:1729-1749), line height is hardcoded 1.32 (:3155). M.
 - [ ] Qualify Linux Vulkan parity against existing browser references: strict gates retain shared and backend-specific residuals (largest SDL/Dawn differences: scene75, scene187). L.
-- [ ] macOS native setup and surfaces remain unsupported. L.
+- [ ] Qualify macOS Metal parity against existing browser references, including platform-font UI differences; validate Apple Silicon development and enable its minimal packaging. L; current host coverage is Intel macOS.
 - [ ] Drop sdl-multisample-read.patch (SDL#15838) and d3d12-multisample-lines.patch (SDL#16182) when an SDL release passes their controls; png-grey-ramp-last-index.patch self-retires. S per release.
 - [ ] A floating-origin transform-only version bump rebakes and re-uploads whole vertex buffers, twice with pinned_vertices (pal_dawn.cpp:13137-13181). M; 9 trees.

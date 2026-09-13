@@ -21,6 +21,9 @@ vcpkg_from_github(
         # Reserve complete graphics/compute descriptor bindings before
         # switching heaps, then republish every affected root table.
         d3d12-descriptor-heaps.patch
+        # Supply buffer lengths for Tint's robust Metal storage accesses.
+        metal-storage-buffer-sizes.patch
+        metal-fence-query.patch
 )
 
 string(COMPARE EQUAL "${VCPKG_LIBRARY_LINKAGE}" "static" SDL_STATIC)

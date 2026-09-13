@@ -19,7 +19,7 @@ New-Item -ItemType Directory -Path $workspacePath, $output -Force |
     Out-Null
 Sync-PinnedCheckout $source $pin.repository $pin.commit "Tint"
 
-$compilerArguments = Get-LinuxCompilerArguments
+$compilerArguments = Get-PosixCompilerArguments
 & $CMake -S $source -B $build @compilerArguments `
     -DCMAKE_BUILD_TYPE=Release `
     -DDAWN_SUPPORTS_CXX_MODULES=OFF `
@@ -27,6 +27,7 @@ $compilerArguments = Get-LinuxCompilerArguments
     -DDAWN_ENABLE_D3D11=OFF `
     -DDAWN_ENABLE_D3D12=OFF `
     -DDAWN_ENABLE_VULKAN=OFF `
+    -DDAWN_ENABLE_METAL=OFF `
     -DDAWN_ENABLE_NULL=OFF `
     -DDAWN_ENABLE_DESKTOP_GL=OFF `
     -DDAWN_ENABLE_OPENGLES=OFF `

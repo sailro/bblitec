@@ -13,6 +13,10 @@
 #elif defined(__APPLE__)
 #include <CoreFoundation/CoreFoundation.h>
 #include <CoreText/CoreText.h>
+#include <ft2build.h>
+#include FT_FREETYPE_H
+#include <memory>
+#include <type_traits>
 #else
 #include <fontconfig/fontconfig.h>
 #endif
@@ -217,16 +221,32 @@ std::optional<SystemFontFace> find_platform_font(
     CfRef<CFStringRef> resolved_family(CTFontCopyFamilyName(font.get()));
     if (!path.get() || !resolved_family.get()) return std::nullopt;
 
-    int face_index = 0;
-    CfRef<CFNumberRef> index(static_cast<CFNumberRef>(
-        CTFontDescriptorCopyAttribute(resolved.get(), kCTFontIndexAttribute)));
-    if (index.get()) {
-        CFNumberGetValue(index.get(), kCFNumberIntType, &face_index);
+    // CoreText exposes the file and PostScript name, but no public collection
+    // index attribute. Resolve that name in the same FreeType face order the
+    // UI loader consumes, rather than choosing the first face of a TTC.
+    CfRef<CFStringRef> postscript_name(CTFontCopyPostScriptName(font.get()));
+    if (!postscript_name.get()) return std::nullopt;
+    const auto filename = cf_string(path.get());
+    const auto postscript = cf_string(postscript_name.get());
+    FT_Library raw_library = nullptr;
+    if (FT_Init_FreeType(&raw_library)) return std::nullopt;
+    const std::unique_ptr<std::remove_pointer_t<FT_Library>, decltype(&FT_Done_FreeType)>
+        library(raw_library, FT_Done_FreeType);
+    FT_Long face_count = 1;
+    for (FT_Long face_index = 0; face_index < face_count; ++face_index) {
+        FT_Face raw_face = nullptr;
+        if (FT_New_Face(library.get(), filename.c_str(), face_index, &raw_face)) return std::nullopt;
+        const std::unique_ptr<std::remove_pointer_t<FT_Face>, decltype(&FT_Done_Face)>
+            face(raw_face, FT_Done_Face);
+        face_count = std::min(face->num_faces, static_cast<FT_Long>(std::numeric_limits<int>::max()));
+        const char* name = FT_Get_Postscript_Name(face.get());
+        if (name && postscript == name) {
+            return SystemFontFace{
+                std::filesystem::path(filename), cf_string(resolved_family.get()),
+                static_cast<int>(face_index)};
+        }
     }
-    return SystemFontFace{
-        std::filesystem::path(cf_string(path.get())),
-        cf_string(resolved_family.get()),
-        face_index};
+    return std::nullopt;
 }
 
 #else

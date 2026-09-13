@@ -18,17 +18,27 @@ $source = Join-Path $workspacePath "dawn"
 $build = Join-Path $workspacePath "build-dawn"
 $output = Resolve-RepositoryPath $OutputDirectory
 $CMake = Find-CMake $CMake
-if (-not $IsWindows -and -not $IsLinux) { throw "Dawn setup supports Windows and Linux." }
+if (-not $IsWindows -and -not $IsLinux -and -not $IsMacOS) { throw "Dawn setup supports Windows, Linux and macOS." }
 $d3d12 = if ($IsWindows) { "ON" } else { "OFF" }
 $vulkan = if ($IsLinux) { "ON" } else { "OFF" }
+$metal = if ($IsMacOS) { "ON" } else { "OFF" }
 
 New-Item -ItemType Directory -Path $workspacePath, $output -Force |
     Out-Null
 Sync-PinnedCheckout $source $pin.repository $pin.commit "Dawn"
+$patches = @()
+if ($IsMacOS) {
+    $patch = Join-Path $root "tools/patches/dawn-metal-sdk-compat.patch"
+    & git -C $source apply --check $patch
+    if ($LASTEXITCODE -ne 0) { throw "Dawn Metal SDK compatibility patch does not apply." }
+    & git -C $source apply $patch
+    if ($LASTEXITCODE -ne 0) { throw "Dawn Metal SDK compatibility patch failed." }
+    $patches += @{ file = "dawn-metal-sdk-compat.patch"; sha256 = (Get-FileHash $patch -Algorithm SHA256).Hash.ToLowerInvariant() }
+}
 
 # We consume the C API. The pin's module probe accepts GCC 13 even though
 # CMake cannot scan that compiler's module dependencies.
-$compilerArguments = Get-LinuxCompilerArguments
+$compilerArguments = Get-PosixCompilerArguments
 & $CMake -S $source -B $build @compilerArguments `
     -DCMAKE_BUILD_TYPE=Release `
     -DDAWN_SUPPORTS_CXX_MODULES=OFF `
@@ -41,6 +51,7 @@ $compilerArguments = Get-LinuxCompilerArguments
     -DDAWN_ENABLE_D3D11=OFF `
     "-DDAWN_ENABLE_D3D12=$d3d12" `
     "-DDAWN_ENABLE_VULKAN=$vulkan" `
+    "-DDAWN_ENABLE_METAL=$metal" `
     -DDAWN_ENABLE_NULL=OFF `
     -DDAWN_ENABLE_DESKTOP_GL=OFF `
     -DDAWN_ENABLE_OPENGLES=OFF `
@@ -111,6 +122,7 @@ Copy-Item (Join-Path $source "LICENSE") (Join-Path $output "LICENSE.txt") -Force
     repository = $pin.repository
     commit = $pin.commit
     license = $pin.license
+    patches = $patches
     builtAt = (Get-Date).ToUniversalTime().ToString("o")
 } | ConvertTo-Json | Set-Content (Join-Path $output "provenance.json")
 

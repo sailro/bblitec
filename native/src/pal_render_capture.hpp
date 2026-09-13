@@ -20,6 +20,8 @@
 // receipts supplied by the PALs; their bytes are not rebuilt here.
 #pragma once
 
+#include <type_traits>
+
 #include <bblite/pal.hpp>
 #include <bblite/runtime.hpp>
 #include <bblite/upstream/render_capabilities.hpp>
@@ -154,9 +156,10 @@ public:
         *stream_ << (flag ? "true" : "false");
         first_ = false;
     }
-    void value(std::uint32_t number) {
+    template <typename T> requires (std::is_integral_v<T> && !std::is_same_v<T, bool>)
+    void value(T number) {
         separate();
-        *stream_ << number;
+        *stream_ << +number;
         first_ = false;
     }
     /**
@@ -174,16 +177,6 @@ public:
         } else {
             *stream_ << index;
         }
-        first_ = false;
-    }
-    void value(std::size_t number) {
-        separate();
-        *stream_ << number;
-        first_ = false;
-    }
-    void value(int number) {
-        separate();
-        *stream_ << number;
         first_ = false;
     }
     void value(float number) {

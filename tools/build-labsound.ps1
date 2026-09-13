@@ -35,7 +35,7 @@ $ErrorActionPreference = "Stop"
 Import-Module (Join-Path $PSScriptRoot "bblite-tools.psm1") -Force
 $root = Get-RepositoryRoot
 if ($StaticRuntime -and -not $IsWindows) { throw "-StaticRuntime selects the Windows shipping CRT." }
-if ($MinSize -and -not $IsLinux) { throw "-MinSize selects Linux shipping; use -StaticRuntime on Windows." }
+if ($MinSize -and -not $IsLinux -and -not $IsMacOS) { throw "-MinSize selects Unix shipping; use -StaticRuntime on Windows." }
 $minimalBuild = $StaticRuntime -or $MinSize
 if (-not $Workspace) {
     $Workspace = if ($minimalBuild) {
@@ -122,13 +122,13 @@ if ($coreOnlyBuild -and -not $minimalBuild) {
         '-DCMAKE_CXX_FLAGS_RELEASE=-O2 -DNDEBUG -DLABSOUND_CORE_ONLY'
     }
 }
-if ($MinSize -and $IsLinux) {
+if ($MinSize -and -not $IsWindows) {
     $cppFlags = '-Os -DNDEBUG -ffunction-sections -fdata-sections'
     if ($coreOnlyBuild) { $cppFlags += ' -DLABSOUND_CORE_ONLY' }
     $configureArguments += @("-DCMAKE_CXX_FLAGS_RELEASE=$cppFlags",
         '-DCMAKE_C_FLAGS_RELEASE=-Os -DNDEBUG -ffunction-sections -fdata-sections')
 }
-$configureArguments += @(Get-LinuxCompilerArguments)
+$configureArguments += @(Get-PosixCompilerArguments)
 & $CMake @configureArguments
 if ($LASTEXITCODE -ne 0) {
     throw "LabSound CMake configuration failed."
@@ -158,22 +158,23 @@ $nyquistName = if ($IsWindows) { "libnyquist.lib" } else { "liblibnyquist.a" }
 $labSoundLib = Resolve-BuiltLibrary @(
     (Join-Path $build "bin/$labSoundName"),
     (Join-Path $build "bin/Release/$labSoundName")
+    if ($IsMacOS) { Join-Path $build "bin/LabSound.framework/Versions/A/LabSound" }
 ) "LabSound"
-$libraries = @($labSoundLib)
+$libraries = @{ $labSoundName = $labSoundLib }
 if (-not $coreOnlyBuild) {
     $nyquistLib = Resolve-BuiltLibrary @(
         (Join-Path $build "_deps/libnyquist-build/lib/$nyquistName"),
         (Join-Path $build "_deps/libnyquist-build/lib/Release/$nyquistName")
     ) "libnyquist"
-    $libraries += $nyquistLib
+    $libraries[$nyquistName] = $nyquistLib
 }
 
 $includeOut = Join-Path $output "include"
 $libOut = Join-Path $output "lib"
 New-Item -ItemType Directory -Path $includeOut, $libOut -Force | Out-Null
 Copy-Item -Recurse -Force (Join-Path $source "include\LabSound") $includeOut
-foreach ($library in $libraries) {
-    Copy-Item -Force $library $libOut
+foreach ($name in $libraries.Keys) {
+    Copy-Item -Force $libraries[$name] (Join-Path $libOut $name)
 }
 Copy-Item -Force (Join-Path $source "LICENSE") (Join-Path $output "LabSound-LICENSE.txt")
 Copy-Item -Force (Join-Path $source "COPYING") (Join-Path $output "LabSound-COPYING.txt")

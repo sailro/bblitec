@@ -290,6 +290,10 @@ list(FILTER BBLITE_RUNTIME_SOURCES EXCLUDE REGEX "${BBLITE_PAL_COMMON_PATTERN}")
 # warning and size options -- carried by one interface target both the
 # object library and the executable consume.
 add_library(bblite_features INTERFACE)
+if(APPLE)
+    find_package(boost_charconv CONFIG REQUIRED)
+    target_link_libraries(bblite_features INTERFACE Boost::charconv)
+endif()
 add_library(bblite_pal_common OBJECT ${BBLITE_PAL_COMMON_SOURCES})
 target_link_libraries(bblite_pal_common PRIVATE bblite_features)
 add_executable(
@@ -542,7 +546,9 @@ if(BBLITE_BACKEND_DAWN)
             list(APPEND BBLITE_RUNTIME_LIBRARIES
                 "$<TARGET_FILE_DIR:dawn::webgpu_dawn>/dxcompiler.dll"
                 "$<TARGET_FILE_DIR:dawn::webgpu_dawn>/dxil.dll")
-        elseif(UNIX AND NOT APPLE)
+        elseif(APPLE)
+            set_property(TARGET bblite_native APPEND PROPERTY BUILD_RPATH "@loader_path")
+        elseif(UNIX)
             set_property(TARGET bblite_native APPEND PROPERTY BUILD_RPATH "$ORIGIN")
         endif()
     endif()
@@ -564,9 +570,9 @@ endif()
 if(SDL3_FOUND AND BBLITE_REQUIRED_IMAGE_CODECS)
     # Use libwebp's exported config; SDL_image's fallback spells WebP_FOUND
     # differently and cannot discover static WebP consistently.
-    if("webp" IN_LIST BBLITE_IMAGE_CODECS)
-        find_package(WebP CONFIG REQUIRED)
-    endif()
+    # The shared development SDL_image also reaches WebP when this scene
+    # does not. Prefer its config there too; trimmed installs may omit it.
+    find_package(WebP CONFIG QUIET)
     find_package(SDL3_image CONFIG REQUIRED)
     target_link_libraries(bblite_features INTERFACE
         $<IF:$<TARGET_EXISTS:SDL3_image::SDL3_image-shared>,SDL3_image::SDL3_image-shared,SDL3_image::SDL3_image-static>
@@ -895,6 +901,11 @@ if("audio:engine" IN_LIST BBLITE_RUNTIME_FEATURES)
     target_link_libraries(bblite_features INTERFACE
             "${BBLITE_LABSOUND_LIBRARY}"
     )
+    if(APPLE)
+        # The pinned LabSound uses Apple's FFT and vector math implementations.
+        find_library(BBLITE_ACCELERATE Accelerate REQUIRED)
+        target_link_libraries(bblite_features INTERFACE "${BBLITE_ACCELERATE}")
+    endif()
     if(BBLITE_AUDIO_CAPTURE OR BBLITE_AUDIO_DECODE_FILE)
         find_library(BBLITE_NYQUIST_LIBRARY NAMES libnyquist
             PATHS "${BBLITE_LABSOUND_DIR}/lib" NO_DEFAULT_PATH NO_CACHE)
@@ -1012,6 +1023,9 @@ if(BBLITE_MINSIZE)
                 bblite_native
                 PRIVATE /LTCG /OPT:REF /OPT:ICF /INCREMENTAL:NO /MAP
             )
+        elseif(APPLE)
+            target_compile_options(bblite_features INTERFACE -Oz -flto)
+            target_link_options(bblite_native PRIVATE -flto -Wl,-dead_strip)
         else()
             find_program(BBLITE_LLD NAMES ld.lld REQUIRED)
             target_compile_options(bblite_features INTERFACE -Oz -flto -ffunction-sections

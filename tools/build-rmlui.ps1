@@ -48,7 +48,7 @@ $ErrorActionPreference = "Stop"
 Import-Module (Join-Path $PSScriptRoot "bblite-tools.psm1") -Force
 $root = Get-RepositoryRoot
 if ($StaticRuntime -and -not $IsWindows) { throw "-StaticRuntime selects the Windows shipping CRT." }
-if ($MinSize -and -not $IsLinux) { throw "-MinSize selects Linux shipping; use -StaticRuntime on Windows." }
+if ($MinSize -and -not $IsLinux -and -not $IsMacOS) { throw "-MinSize selects Unix shipping; use -StaticRuntime on Windows." }
 $minimalBuild = $StaticRuntime -or $MinSize
 # Development keeps one complete artifact. Shipping selects SVG only when
 # the generated scene reaches ui:inline-svg.
@@ -115,7 +115,7 @@ if (-not $FreetypeRoot) {
         }
     } else {
         $hostArch = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString().ToLowerInvariant()
-        $triplet = if ($IsWindows) { "x64-windows" } else { "$hostArch-linux" }
+        $triplet = if ($IsWindows) { "x64-windows" } elseif ($IsMacOS) { "$hostArch-osx" } else { "$hostArch-linux" }
         $FreetypeRoot = Join-Path $installedRoot "development-full/$triplet"
     }
 }
@@ -241,13 +241,13 @@ if (Test-Path $cachePath) {
         Remove-Item -Recurse -Force $build
     }
 }
-if ($MinSize -and $IsLinux) {
+if ($MinSize -and -not $IsWindows) {
     $configureArguments += @(
         '-DCMAKE_CXX_FLAGS_RELEASE=-Os -DNDEBUG -ffunction-sections -fdata-sections',
         '-DCMAKE_C_FLAGS_RELEASE=-Os -DNDEBUG -ffunction-sections -fdata-sections'
     )
 }
-$configureArguments += @(Get-LinuxCompilerArguments)
+$configureArguments += @(Get-PosixCompilerArguments)
 & $CMake @configureArguments
 if ($LASTEXITCODE -ne 0) {
     throw "RmlUi CMake configuration failed."
