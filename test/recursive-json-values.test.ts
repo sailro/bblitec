@@ -6,8 +6,8 @@ import test from "node:test";
 import {compileSource} from "../src/compiler.js";
 import {nativeFixtureVcpkgRoot, optionalNativeFixtureTools, runNativeFixtureCompiler} from "./native-fixture.js";
 
-function nativeCheck(name: string, source: string, t: test.TestContext): void {
-    const result = compileSource(source);
+function nativeCheck(name: string, source: string, t: test.TestContext, options?: Parameters<typeof compileSource>[1]): void {
+    const result = compileSource(source, options);
     const native = optionalNativeFixtureTools(false);
     if (!native) { t.skip("Native fixture compiler unavailable."); return; }
     const directory = resolve("artifacts/recursive-json-values", name);
@@ -18,6 +18,21 @@ function nativeCheck(name: string, source: string, t: test.TestContext): void {
         "/I", "native/include", `/I${nativeFixtureVcpkgRoot}/include`, `/Fo:${directory}/`, `/Fe:${executable}`, cpp]);
     assert.equal(execFileSync(executable, {encoding: "utf8", timeout: 10000}), "");
 }
+
+test("fetched numbers keep double precision when retained as dynamic values", t => {
+    const directory=resolve("artifacts/recursive-json-values/fetched-numbers");
+    mkdirSync(directory,{recursive:true});
+    const payload={scalar:0.86,values:[0.1,0.86,16777217,1e100]};
+    writeFileSync(join(directory,"values.json"),JSON.stringify(payload));
+    nativeCheck("fetched-numbers", `
+        function retain(value:unknown,depth:number):unknown {return depth>0?retain(value,depth-1):value;}
+        const response=await fetch("http://localhost/values.json");
+        const loaded=await response.json();
+        const value=retain(loaded,1);
+        if(JSON.stringify(value)!==${JSON.stringify(JSON.stringify(payload))})
+            throw new Error("fetched numeric precision");
+    `, t, {fileName:join(directory,"entry.ts"),publicDir:directory});
+});
 
 test("typed arrays and tuples retain live storage across dynamic calls", t => {
     nativeCheck("typed-arrays", `

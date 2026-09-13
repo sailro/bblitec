@@ -45,7 +45,8 @@ function valueJson(_dataType: DataType<"json">, lowerer: DataSinkHost, value: Va
     if (value.kind === "tuple" && !value.cpp) return compileJsonTupleView(lowerer, value, node);
     const type = value.dataType ?? (value.kind === "number" || value.kind === "boolean" || value.kind === "string"
         ? {kind: value.kind} : undefined);
-    return type ? lowerer.context.dataTypes.jsonValueCpp(type, value.cpp, node) : undefined;
+    const cpp = value.kind === "number" ? lowerer.context.castNumber(value, "double") : value.cpp;
+    return type ? lowerer.context.dataTypes.jsonValueCpp(type, cpp, node) : undefined;
 }
 
 function valueNumber(_dataType: DataType<"number">, lowerer: DataSinkHost, value: Value, _node: ts.Node): string | undefined {

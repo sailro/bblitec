@@ -224,6 +224,7 @@ with represented objects use retained identity.
 Native value functions whose early returns contain represented dynamic objects
 keep dynamic return storage, including immediately lowered async helpers.
 Compatible fixed-record fallback paths retain their existing observing views.
+Fetched numbers retain JavaScript double precision when entering dynamic storage.
 `Array.find` over stored literal tuples preserves the selected literal domain;
 found records retain their source identity and shared writes.
 `pop` and `shift` accept temporary arrays, including results of string splitting;

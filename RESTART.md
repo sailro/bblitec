@@ -8,6 +8,23 @@ dependencies will not be present in a fresh clone.
 
 ## Read this first
 
+**Current unit: numeric precision at dynamic storage.** Receiver unit `80431171`
+is committed/pushed. async966 captures the complete failing native loader output;
+diagnose-async966.mjs finds 114 differences, ALL exactly Math.fround(expected).
+Fetched numbers carry the original static double but their initial C++ spelling
+uses float literals. Dynamic tuple views sent that spelling directly into JSON
+storage. valueJson now uses the existing castNumber(value, "double") sink rule;
+ordinary float-target policies remain unchanged. numbers967-before reproduces
+the issue with fractional/large fetched numbers; numbers968 checks dynamic JSON,
+storage and packaged-fetch regressions. check-async969.mjs regenerates the actual
+loader/full-JavaScript comparison; native verification is in progress with
+check-generated-native.mjs --large-stack. This runner option only sets an 8 MiB
+reserve for the large unoptimized fixture and reports exit status on failure.
+numbers968-regressions is GREEN: 32/32 without skips. async969-native is GREEN:
+the unchanged async loader's complete output matches JavaScript on its actual
+public configuration, and original defaults remain unchanged (generation 4.18s).
+Next full entry retry follows this precision commit.
+
 **Latest unit: temporary array receivers.** Return-storage unit `ff68a671`
 is committed/pushed. Native pop/shift now accept temporary retained-array wrappers
 and delegate to the ordinary lvalue operations. pop962-before reproduces both
