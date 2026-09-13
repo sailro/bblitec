@@ -26,7 +26,7 @@ broader regression checks at useful batch boundaries. Unknown requirements stay
 visible; do not invent an overall completion percentage from static counts.
 
 **The external application does not fully compile yet.** Native graphics availability now opens the intended startup branch; generation
-stops on remaining control CSS presentation. Its native build and intended
+stops on a stylesheet helper argument without a static string. Its native build and intended
 application runtime have never been reached. A green sweep validates the registered corpus;
 it does not establish that this external application compiles or runs.
 
@@ -44,7 +44,53 @@ it does not establish that this external application compiles or runs.
 | External generated output | `generated/external-app` (ignored; not a successful complete generation) |
 | Session diagnostics | `artifacts/external-integration` (ignored) |
 
-Latest complete-entry attempt: `compile721` passes the list/implicit-grid stylesheet
+Latest complete-entry attempt: `compile741` passes all eight captured stylesheets
+and stops at the stylesheet helper's css argument, bound as data without a static
+string (213.4 seconds). Next trace the argument's caller/origin and assess helper
+specialization, rather than guessing another CSS property. Full intended application
+generation, native build and runtime remain incomplete.
+
+Control/spacing support uses native property/shorthand registration without another
+RmlUi patch (still sixteen). appearance:auto/none and the prefixed alias share one
+property. The initial native implementation suppressed the whole range theme;
+appearance733-browser.png proves the browser preserves its independently themed
+thumb. The corrected decorator suppresses only the track and includes appearance
+in its texture key. spacing734 passes three checks including pixel alpha, retained
+thumb/focus/keyboard input, logical/physical cascade, auto margins and live removal.
+The original ten control-spacing727 declaration probes refuse 10/10; 731/735 admit
+10/10. Logical margin/padding pairs and start/end edges use the existing physical
+properties for the supported horizontal LTR layout, including media overrides.
+Their names participate in the fixed-grid geometry proof so padding cannot bypass it.
+
+population735 generates all 288 entries and passes the native bootstrap.
+spacing735-regressions passes 785/785. compile735 gets past appearance but refuses
+gap in the same stylesheet's max-width rule (253.7 seconds); the earlier body-only
+inventory had lost that media context. Gap/row-gap/column-gap media overrides now
+lower. assess-full-stylesheets.mjs preserves whole captured stylesheets: 739/740
+admit all eight. The broader assess-private-stylesheets.mjs reports a NEW baseline
+of 57 candidate complete literals: 11 accepted, 10 refused, 36 dynamic/unassessed
+(private-stylesheets742); it includes unused code and is separate from body counts.
+css-bodies740 is 998 accepted / 126 refused / 77 unassessed, not native coverage.
+
+The Window harness exposed the old file-only input type gate in 736. 737 also
+confirmed that input is outside the source innerHTML subset, unlike host companions.
+The constructed-control gap is now fixed for static text/password/range types:
+the shared attribute path emits normalized types without file dependencies. Other
+types and changing an active file input into another type remain explicit refusals.
+The native file transition guard protects aliases too. Do not claim checkbox/radio,
+number/date semantics or broader innerHTML forms from this extension.
+
+spacing738 ran 13/14: an old source assertion in browser-file.test.ts still expected
+short pre-DOM-dispatch source and an untrusted click signature. Its function-scoped
+ordering assertion now includes the shared DOM dispatch and trusted projected clicks;
+the listener-before-default-action contract stays asserted. spacing740 passes 14/14,
+including file transition refusals; spacing741-regressions passes 796/796 without skips.
+spacing-window738 passes actual range construction, media/inline spacing and unchanged
+DPWCDWMK replay on SDL_GPU and Dawn. Final alias normalization preserves reads after
+prefixed cssText; spacing743 passes six focused style/control checks, and
+spacing-window743 passes both backends including both appearance alias getters.
+
+The earlier `compile721` passes the list/implicit-grid stylesheet
 and reaches another stylesheet, stopping on appearance:none after 252.7 seconds
 while broader checks ran concurrently. The whole new stylesheet also needs
 padding-inline in a max-width rule. Handle those together in the next control/logical

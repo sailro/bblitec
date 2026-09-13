@@ -39,6 +39,7 @@
 #include "pal_ui_font_win32.hpp"
 #include "pal_ui_range.hpp"
 #include "pal_ui_scrollbars.hpp"
+#include "pal_ui_style_properties.hpp"
 #include "pal_ui_text.hpp"
 #include "pal_system_preferences.hpp"
 
@@ -647,6 +648,10 @@ void ui_set_attribute(
     }
     UiElementRecord& record = ui_element(engine, element);
     const auto existing = record.attributes.find(name);
+#if defined(BBLITE_HAS_BROWSER_FILE) && BBLITE_HAS_BROWSER_FILE
+    if (name == "type" && record.file_input && !ascii_iequals(value, "file"))
+        throw std::runtime_error("Changing the type of a native file input is not represented.");
+#endif
     const bool replaces_style =
         name == "style" && !record.style_properties.empty();
     if (
@@ -3467,6 +3472,7 @@ struct UiRmlRuntime {
                 throw std::runtime_error("RmlUi initialization failed.");
             }
             initialized = true;
+            register_ui_style_properties();
             Rml::Factory::RegisterElementInstancer("button", &button_instancer);
             scrollbar_properties = register_ui_scrollbar_properties();
             Rml::Factory::RegisterDecoratorInstancer("bbl-native-range", &range_decorator);

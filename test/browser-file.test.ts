@@ -287,6 +287,7 @@ test("refuses multiple, directories, and unsupported accept syntax", () => {
                 pattern.test(error.message),
         );
     };
+    refusal(`const input=document.createElement('input');input.type='file';input.type='text';`,/without changing a file input/);
     refusal(
         `
         const input = document.createElement("input");
@@ -410,8 +411,8 @@ test("browser file ownership stays generic and PAL-isolated", () => {
         "utf8",
     );
     assert.match(
-        ui,
-        /const auto callbacks = ui_element\(engine, element\)\.click_callbacks;[\s\S]{0,160}callback\(\);[\s\S]{0,300}const std::string tag = ui_element\(engine, element\)\.tag;[\s\S]{0,80}tag == "a"/,
+        cppFunction(ui, "void ui_click("),
+        /const auto callbacks = ui_element\(engine, element\)\.click_callbacks;[\s\S]*dispatch_dom_pointer[\s\S]*callback\(\);[\s\S]*const std::string tag = ui_element\(engine, element\)\.tag;[\s\S]*tag == "a"/,
         "programmatic and projected clicks dispatch listeners before the default action",
     );
     assert.match(
@@ -424,7 +425,7 @@ test("browser file ownership stays generic and PAL-isolated", () => {
         /release_browser_file_subtree\(engine, child\)/,
         "subtree removal releases descendant browser-file ownership",
     );
-    assert.match(ui, /event_type == "click"[\s\S]{0,80}ui_click\(engine, element\)/);
+    assert.match(ui, /event_type == "click"[\s\S]{0,80}ui_click\(engine, element, true\)/);
 
     const projection = readFileSync(
         resolve("src/compiler/output-projection.ts"),

@@ -21,7 +21,7 @@ namespace bbl::pal {
 // default light control palette. RmlUi still owns slider layout and input.
 class UiRangeDecorator final : public Rml::Decorator {
     struct Data {
-        std::tuple<int, int, float, int> key{};
+        std::tuple<int, int, float, int, bool> key{};
         float opacity = 0;
         Rml::CallbackTexture texture;
         Rml::Geometry geometry;
@@ -45,7 +45,7 @@ class UiRangeDecorator final : public Rml::Decorator {
         }
         return area / samples;
     }
-    static std::vector<Rml::byte> pixels(int width, int height, float thumb, int state) {
+    static std::vector<Rml::byte> pixels(int width, int height, float thumb, int state, bool themed_track) {
         const std::array<unsigned, 3> accent = state == 3 ? std::array<unsigned,3>{203,203,203}
             : state == 2 ? std::array<unsigned,3>{55,147,255} : state == 1 ? std::array<unsigned,3>{0,92,200} : std::array<unsigned,3>{0,117,255};
         const unsigned fill = state == 1 ? 229 : state == 2 ? 245 : 239;
@@ -58,11 +58,13 @@ class UiRangeDecorator final : public Rml::Decorator {
                 for (unsigned channel = 0; channel < 3; ++channel) color[channel] = rgb[channel] * alpha + color[channel] * (1 - alpha);
                 color[3] = 255 * alpha + color[3] * (1 - alpha);
             };
-            const float outer = coverage(x, y, 1, track_top, width - 1.f, track_bottom, 4);
-            over({fill,fill,fill}, outer * (state == 3 ? 77.f / 255.f : 1.f));
-            over(accent, outer * std::clamp(thumb + 4 - x, 0.f, 1.f));
-            const float inner = coverage(x, y, 2, track_top + 1, width - 2.f, track_bottom - 1, 3);
-            over({border,border,border}, (outer - inner) * 128.f / 255.f);
+            if (themed_track) {
+                const float outer = coverage(x, y, 1, track_top, width - 1.f, track_bottom, 4);
+                over({fill,fill,fill}, outer * (state == 3 ? 77.f / 255.f : 1.f));
+                over(accent, outer * std::clamp(thumb + 4 - x, 0.f, 1.f));
+                const float inner = coverage(x, y, 2, track_top + 1, width - 2.f, track_bottom - 1, 3);
+                over({border,border,border}, (outer - inner) * 128.f / 255.f);
+            }
             over(accent, coverage(x, y, thumb - 7.5f, center - 7.5f, thumb + 7.5f, center + 7.5f, 7.5f));
             for (unsigned channel = 0; channel < 4; ++channel)
                 result[(static_cast<std::size_t>(y) * width + x) * 4 + channel] = static_cast<Rml::byte>(std::clamp(std::lround(color[channel]), 0l, 255l));
@@ -73,6 +75,9 @@ public:
     Rml::DecoratorDataHandle GenerateElementData(Rml::Element*, Rml::BoxArea) const override { return reinterpret_cast<Rml::DecoratorDataHandle>(new Data{}); }
     void ReleaseElementData(Rml::DecoratorDataHandle value) const override { delete reinterpret_cast<Data*>(value); }
     void RenderElement(Rml::Element* element, Rml::DecoratorDataHandle value) const override {
+        // The range thumb has its own native appearance. Removing the input's
+        // appearance suppresses its track while retaining that thumb and input.
+        const bool themed_track = element->GetProperty<int>("appearance") == 0;
         auto& data = *reinterpret_cast<Data*>(value);
         Rml::Element* bar = nullptr;
         for (int child = 0; child < element->GetNumChildren(true); ++child)
@@ -85,12 +90,12 @@ public:
         const float thumb = bar->GetAbsoluteOffset(Rml::BoxArea::Border).x - origin.x + bar->GetBox().GetSize(Rml::BoxArea::Border).x * .5f;
         const int state = element->IsPseudoClassSet("disabled") ? 3 : element->IsPseudoClassSet("active") ? 2 : element->IsPseudoClassSet("hover") ? 1 : 0;
         const float opacity = element->GetComputedValues().opacity();
-        const auto key = std::tuple{width, height, thumb, state};
+        const auto key = std::tuple{width, height, thumb, state, themed_track};
         const bool geometry_changed = !data.initialized || width != std::get<0>(data.key) ||
             height != std::get<1>(data.key) || opacity != data.opacity;
         auto& manager = element->GetContext()->GetRenderManager();
         if (!data.initialized || key != data.key) {
-            data.texture = manager.MakeCallbackTexture([bytes = pixels(width, height, thumb, state), width, height](const Rml::CallbackTextureInterface& out) {
+            data.texture = manager.MakeCallbackTexture([bytes = pixels(width, height, thumb, state, themed_track), width, height](const Rml::CallbackTextureInterface& out) {
                 return out.GenerateTexture(bytes, {width, height});
             });
         }

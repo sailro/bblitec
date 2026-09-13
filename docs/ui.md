@@ -91,6 +91,11 @@ display rules. Author CSS can override its default `display:none`, following the
 [HTML hidden contract](https://html.spec.whatwg.org/multipage/interaction.html#the-hidden-attribute).
 The `until-found` state requires find-in-page behavior and is refused.
 
+Constructed inputs accept static text, password and range types through `.type`
+and `setAttribute`; names normalize to lower case. These use the existing native
+control and form-value paths without selecting file-transfer dependencies. File
+inputs keep their dedicated path; changing a file input into another control refuses.
+
 Boolean `disabled` reflects attribute presence on buttons, inputs and textareas.
 Disabled controls cannot focus or activate through pointer input or `click()`;
 re-enabling a control preserves its identity and listeners.
@@ -177,6 +182,14 @@ still removes the whole subtree. Class/stylesheet transitions support delayed ze
 visibility changes, preserving a fade until hiding completes. This follows the
 [CSS visibility model](https://www.w3.org/TR/css-display-3/#visibility).
 Inline style writes update visibility but do not currently initiate transitions.
+Logical padding/margin inline and block shorthands and start/end edges share the
+physical box properties in the retained horizontal, left-to-right layout. They
+preserve declaration order, physical/logical overrides, live removal, supported
+lengths and auto margins. Supported max-width rules can override logical spacing.
+Vertical writing and right-to-left logical box mapping remain unsupported.
+`appearance:auto/none` and its `-webkit-appearance` alias retain control input and
+authored styles. On ranges, none removes the native track while retaining the
+independently themed thumb. Custom thumb appearance/selectors remain unsupported.
 Text presentation supports normal/italic font style, none/uppercase/lowercase/capitalize transforms,
 and clip/ellipsis overflow. Native font shaping and casing remain the limits of the text projection.
 Literal transform origins accept a single keyword/length or horizontal then vertical components,

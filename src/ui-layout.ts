@@ -6,9 +6,18 @@ const signedLength = String.raw`(?:[+-]?${magnitude}${lengthUnit}|[+-]?0)`;
 const basis = `(?:auto|${length})`;
 const direction = "(?:row|row-reverse|column|column-reverse)";
 const wrap = "(?:nowrap|wrap|wrap-reverse)";
+const logicalSpacingValues = new Map<string, RegExp>();
+for (const [family, value] of [["padding", length], ["margin", `(?:auto|${signedLength})`]]) {
+    for (const axis of ["inline", "block"]) {
+        logicalSpacingValues.set(`${family}-${axis}`, new RegExp(`^${value}(?:\\s+${value})?$`));
+        for (const edge of ["start", "end"]) logicalSpacingValues.set(`${family}-${axis}-${edge}`, new RegExp(`^${value}$`));
+    }
+}
+export const uiLogicalSpacingProperties: readonly string[] = [...logicalSpacingValues.keys()];
 
 /** Values whose layout is represented by the pinned flex and box formatters. */
 const layoutValues: ReadonlyMap<string, RegExp> = new Map([
+    ...logicalSpacingValues,
     ["align-content", /^(?:start|end|flex-start|flex-end|center|space-between|space-around|space-evenly|stretch)$/],
     ["align-self", /^(?:auto|start|end|flex-start|flex-end|center|baseline|stretch)$/],
     ["flex", new RegExp(`^(?:none|initial|auto|${number}(?:\\s+${number})?(?:\\s+${basis})?|${length})$`)],

@@ -7,7 +7,7 @@ import { supportedUiFilter } from "../ui-filters.js";
 import {findUiCssSyntax, stripUiCssComments, uiCssBlockEnd, uiCssSyntaxIndices} from "../ui-css-syntax.js";
 import {isUiGeneratedPart, parseUiGeneratedContent, uiGeneratedContentCpp, uiGeneratedPartCpp, type UiGeneratedContent, type UiGeneratedPart} from "../ui-generated-content.js";
 import {parseUiSelectorSequence, splitUiSelectorList, uiSelectorSequenceCss, uiSelectorSequenceSpecificity, uiSelectorSequenceCpp, uiSelectorSequenceTests, uiSelectorSequenceNeedsAuthoredTree, type UiSelectorStep} from "../ui-selector.js";
-import { isUiLayoutProperty, supportedUiLayoutValue } from "../ui-layout.js";
+import { isUiLayoutProperty, supportedUiLayoutValue, uiLogicalSpacingProperties } from "../ui-layout.js";
 import { nativeHostUiStyleRules, uiStyleSelector, uiStyleSelectorCppKind, uiStyleSelectorDescriptor, uiStyleInteractionStateCount, uiStyleRuleNeedsRuntimeMatch, uiStyleRuleHasMedia, uiMotionPreferenceCpp, isUiScrollbarPart, uiScrollbarPartCpp, type UiStyleSelectorShape, type UiStyleSelectorKind } from "../ui-style-rule.js";
 import { validateFileAccept } from "./browser-file.js";
 import { CompileError } from "./compile-error.js";
@@ -916,6 +916,9 @@ export class UiProjection {
      * unreviewed declaration can never silently drop into the projection.
      */
     private static readonly PROJECTED_UI_STYLE_PROPERTIES = new EmissionSet<string>([
+        ...uiLogicalSpacingProperties,
+        "appearance",
+        "-webkit-appearance",
         "align-content",
         "align-items",
         "align-self",
@@ -1025,6 +1028,8 @@ export class UiProjection {
         ["text-transform", ["none", "uppercase", "lowercase", "capitalize"]],
         ["text-overflow", ["clip", "ellipsis"]],
         ["font-style", ["normal", "italic"]],
+        ["appearance", ["auto", "none"]],
+        ["-webkit-appearance", ["auto", "none"]],
         ["-webkit-user-drag", ["none"]],
         ["list-style", ["none"]],
         ["list-style-type", ["none"]],
@@ -1111,6 +1116,7 @@ export class UiProjection {
         /(?:^|;)\s*gap\s*:\s*([0-9]+(?:\.[0-9]*)?)px\s*(?:;|$)/i;
 
     private static readonly UI_GRID_CHILD_GEOMETRY_PROPERTIES = [
+        ...uiLogicalSpacingProperties,
         "width",
         "height",
         "min-width",
@@ -1940,6 +1946,7 @@ export class UiProjection {
         const cssName = property
             .replace(/([a-z0-9])([A-Z])/g, "$1-$2")
             .toLowerCase();
+        if (cssName === "webkit-appearance" || cssName === "-webkit-appearance") return "appearance";
         return cssName === "background" ? "background-color" : cssName === "word-wrap" ? "overflow-wrap" : cssName;
     }
 
@@ -2027,7 +2034,9 @@ export class UiProjection {
                 const property = declaration.slice(0, colon).trim().toLowerCase();
                 if (colon >= 0 && UiProjection.INERT_UI_STYLE_PROPERTIES.has(property)) return;
                 let lowered = declaration;
-                if (colon >= 0 && property === "border-image") {
+                if (colon >= 0 && property === "-webkit-appearance") {
+                    lowered = `appearance:${declaration.slice(colon + 1)}`;
+                } else if (colon >= 0 && property === "border-image") {
                     lowered = `border-image:${this.lowerUiBorderImage(declaration.slice(colon + 1), site)}`;
                 } else if (colon >= 0 && isUiLayoutProperty(property)) {
                     lowered = `${property}:${declaration.slice(colon + 1).trim().toLowerCase()}`;
@@ -2462,11 +2471,15 @@ export class UiProjection {
                 const sourceStyle = body.trim();
                 if (inheritedMaxWidth !== undefined) {
                     const mediaProperties = new EmissionSet([
+                        ...uiLogicalSpacingProperties,
                         "align-items",
                         "align-self",
                         "bottom",
                         "content",
                         "font-size",
+                        "gap",
+                        "row-gap",
+                        "column-gap",
                         "height",
                         "left",
                         "justify-items",
@@ -4627,9 +4640,12 @@ export class UiProjection {
                 const inputType =
                     this.context.compileStringLiteral(value).toLowerCase();
                 if (inputType !== "file") {
+                    if (["text", "password", "range"].includes(inputType) && !element.uiFileInput) {
+                        return `bbl::ui_set_attribute(${engine}, ${element.cpp}, "type", ${this.context.cppString(inputType)})`;
+                    }
                     this.context.fail(
                         value,
-                        `Retained native <input> supports only the static type 'file', not '${inputType}'.`,
+                        `Retained native <input> type '${inputType}' is not represented; static text, password, range and file inputs are supported, without changing a file input into another control.`,
                     );
                 }
                 element.uiFileInput = true;
