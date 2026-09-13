@@ -2234,6 +2234,11 @@ export class DataTypeRegistry {
     return this.enumBridgeCpp(dataType, cpp, node, "from_string");
   }
 
+  /** Collection queries may miss the represented literal domain without throwing. */
+  public enumFindStringCpp(dataType: DataType<"enum">, cpp: string, node: ts.Node): string {
+    return this.enumBridgeCpp(dataType, cpp, node, "find_string");
+  }
+
   /** Converts a runtime string-literal union back to its JavaScript text. */
   public enumToStringCpp(
     dataType: DataType & { kind: "enum" },
@@ -2251,7 +2256,7 @@ export class DataTypeRegistry {
     dataType: DataType & { kind: "enum" },
     cpp: string,
     node: ts.Node,
-    bridge: "from_string" | "to_string",
+    bridge: "from_string" | "find_string" | "to_string",
   ): string {
     const definition = [...this.enumsByKey.values()].find(
       (entry) => entry.name === dataType.name,
@@ -2260,7 +2265,7 @@ export class DataTypeRegistry {
       this.fail(node, `Unknown enum '${dataType.name}'.`);
     }
     this.emittedNamedTypes.add(dataType.name);
-    (bridge === "from_string"
+    (bridge !== "to_string"
       ? this.runtimeEnumParsers
       : this.runtimeEnumSerializers
     ).add(dataType.name);
@@ -2746,11 +2751,15 @@ export class DataTypeRegistry {
       );
       if (structuredClone || this.runtimeEnumParsers.has(definition.name)) {
         lines.push(
-          `inline ${definition.name} ${definition.name}_from_string(const std::string& value) {`,
+          `inline bbl::js::Nullable<${definition.name}> ${definition.name}_find_string(const std::string& value) {`,
           ...definition.members.map(
             (member) =>
               `    if (value == ${JSON.stringify(member)}) return ${definition.name}::${this.enumMemberIdentifier(definition, member)};`,
           ),
+          "    return {};",
+          "}",
+          `inline ${definition.name} ${definition.name}_from_string(const std::string& value) {`,
+          `    if (const auto found = ${definition.name}_find_string(value)) return *found;`,
           `    throw std::runtime_error("Invalid ${definition.name} value: " + value);`,
           "}",
           "",

@@ -1590,7 +1590,7 @@ function compileMapDataMethod(lowerer: DataLowerer, call: ts.CallExpression, cal
             lowerer.context.fail(call, `Map.${method} expects exactly one key.`);
         }
         const keyValue = lowerer.context.compileValue(argumentAt(call, 0));
-        const key = lowerer.compileKnownValueForSink(keyValue, dataType.key, argumentAt(call, 0));
+        const key = lowerer.compileLookupKey(keyValue, dataType.key, argumentAt(call, 0));
         const staticKey = keyValue.staticString ??
             (keyValue.staticNumber !== undefined
                 ? String(keyValue.staticNumber)
@@ -1745,7 +1745,7 @@ function compileSetDataMethod(lowerer: DataLowerer, call: ts.CallExpression, cal
             lowerer.context.fail(call, `Set.${method} expects exactly one value.`);
         }
         const member = lowerer.context.compileValue(argumentAt(call, 0));
-        const value = lowerer.compileKnownValueForSink(member, dataType.element, argumentAt(call, 0));
+        const value = lowerer.compileLookupKey(member, dataType.element, argumentAt(call, 0));
         if (method === "delete")
             lowerer.context.recordCollectionKey(narrowed, member, true);
         return {

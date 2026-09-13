@@ -10,6 +10,35 @@ import { optionalNativeFixtureTools, runNativeFixtureCompiler } from "./native-f
 
 const native = optionalNativeFixtureTools(false);
 
+check("collection queries accept strings outside a stored literal union", `
+    type Key="first"|"second";
+    type Query=Key|"outside";
+    const set=new Set<Key>(["first","second"]);
+    const map=new Map<Key,number>([["first",3],["second",7]]);
+    const objects=new Map<Key,{size:number}>([["first",{size:5}]]);
+    const values:Key[]=["first","second","first"];
+    const queries:Query[]=["outside","first","second"];
+    for(const query of queries) {
+        const inside=query!=="outside";
+        if(set.has(query as Key)!==inside || map.has(query as Key)!==inside) throw new Error("membership");
+        if((map.get(query as Key)===undefined)===inside) throw new Error("map lookup");
+        if(values.includes(query as Key)!==inside || (values.indexOf(query as Key)>=0)!==inside ||
+            (values.lastIndexOf(query as Key)>=0)!==inside) throw new Error("array search");
+    }
+    let unknown:string="outside";
+    if(set.has(unknown as Key)||set.delete(unknown as Key)||map.delete(unknown as Key)||objects.get(unknown as Key)!==undefined)
+        throw new Error("absent string");
+    unknown="first";
+    const found=objects.get(unknown as Key);
+    if(!found||found.size!==5||!set.delete(unknown as Key)||!map.delete(unknown as Key)) throw new Error("present string");
+    let reads=0;
+    function probe():string {reads++;return "outside";}
+    if(set.has(probe() as Key)||reads!==1)throw new Error("query evaluated once");
+    let fromReads=0;
+    function from():number {fromReads++;return 1;}
+    if(values.lastIndexOf("outside" as Key,from())!==-1||fromReads!==1)throw new Error("missing query still evaluates fromIndex");
+`);
+
 function check(name: string, source: string): void {
     test(name, async t => {
         runInNewContext(ts.transpileModule(source, {

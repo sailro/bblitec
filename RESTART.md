@@ -8,6 +8,19 @@ dependencies will not be present in a fresh clone.
 
 ## Read this first
 
+**Typed validator runtime now passes.** Array/tuple unit `bf246cae` is committed
+and pushed after staged type/privacy checks. The generic enum-query follow-up
+shares a nonthrowing enum lookup with the strict storage parser. Set.has/delete,
+Map.has/get/delete and array includes/indexOf/lastIndexOf now pass missing literal
+domains through existing Nullable-key mechanisms. The neutral core-library test
+also checks argument effects. `queries896-focused` passes; `typed-validator896`
+generates in 2.21 seconds and `typed-validator896-native` builds and executes with
+the ACTUAL typed defaults. `queries897-focused` is the follow-up regression run.
+`compile898` is the current full-entry retry with an ignored CPU profile. Do not
+rebuild dist or change compiler inputs during it. Full-application completion is
+still unproven. PR metadata payload `pr898.json` includes both platform rebases
+and current measurements; publish after committing the query follow-up.
+
 **Typed arrays and actual validator generation:** the working unit adds retained
 native array/numeric tuple views and fixed compiler-tuple getters. Typed cohort
 `typed-values886` admits 6/8 (up from 3/8): scalar arrays, object arrays and mixed

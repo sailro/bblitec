@@ -233,6 +233,10 @@ Object key enumeration orders numeric index keys before other insertion-ordered
 keys. Conditional Set, Map and dynamic-value construction evaluates only the
 selected branch, including any array operations needed to build it.
 
+Set/Map lookups and array searches accept represented strings outside a stored
+string-literal union. Such queries miss normally (`false`, `undefined` or `-1`);
+they do not use the throwing conversion required when storing an enum value.
+
 Map construction accepts literal key/value pairs, direct array `map` projections,
 stored pair arrays, or another Map with compatible entries. Fresh collections honor wider destination
 key and value types. Entry projections

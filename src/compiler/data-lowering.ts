@@ -4034,6 +4034,19 @@ export class DataLowerer {
      * a nested container would compare by identity in JavaScript and field by
      * field here, so those are rejected rather than answered differently.
      */
+    /** A query can miss a narrow enum domain; a stored-value sink cannot. */
+    public compileLookupKey(value: Value, type: DataType, node: ts.Node): string {
+        if (type.kind === "enum" &&
+            (value.kind === "string" || value.dataType?.kind === "string" ||
+                value.dataType?.kind === "enum" && value.dataType.name !== type.name)) {
+            if (value.staticString !== undefined && this.context.dataTypes.enumMembers(type.name).includes(value.staticString))
+                return this.context.dataTypes.enumMemberCpp(type, value.staticString, node);
+            const text = this.compileKnownValueForSink(value, {kind:"string"}, node);
+            return this.context.dataTypes.enumFindStringCpp(type, text, node);
+        }
+        return this.compileKnownValueForSink(value, type, node);
+    }
+
     public compileArraySearch(
         call: ts.CallExpression,
         owner: Value,
@@ -4064,10 +4077,8 @@ export class DataLowerer {
             );
         }
         this.context.reachJsData();
-        const value = this.compileForSink(
-            argumentAt(call, 0),
-            element,
-        );
+        const argument = argumentAt(call, 0);
+        const value = this.compileLookupKey(this.context.compileValue(argument), element, argument);
         if (method === "lastIndexOf") {
             const needle = this.context.allocateTemporaryCppName("last_index_needle");
             this.context.emit({ kind: "declaration", type: "const auto", name: needle, initializer: value });

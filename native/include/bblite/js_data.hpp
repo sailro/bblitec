@@ -1435,6 +1435,10 @@ class IndexedInsertionOrdered {
     [[nodiscard]] bool has(const KeyT& key) const {
         return find(key) != storage_->index.end();
     }
+    template <typename Query> requires std::is_same_v<Query, KeyT>
+    [[nodiscard]] bool has(const Nullable<Query>& key) const { return key && has(*key); }
+    template <typename Query> requires std::is_same_v<Query, KeyT>
+    [[nodiscard]] bool erase(const Nullable<Query>& key) { return key && erase(*key); }
     [[nodiscard]] bool erase(const KeyT& key) {
         const auto entry = find(key);
         if (entry == storage_->index.end()) return false;
@@ -2774,6 +2778,11 @@ template <typename T, std::size_t N>
     return -1.0;
 }
 
+template <typename Values, typename T> requires std::is_enum_v<T>
+[[nodiscard]] inline double array_index_of(const Values& values, const Nullable<T>& value) {
+    return value ? array_index_of(values, *value) : -1.0;
+}
+
 // `array.pop()!` — the compiled subset requires a non-empty array (the
 // corpus always guards with `.length`); JavaScript would yield `undefined`,
 // which the plain-data model cannot represent, so an empty pop refuses by
@@ -2915,6 +2924,11 @@ template <typename Values, typename T>
         if (values[remaining - 1] == value) return static_cast<double>(remaining - 1);
     }
     return -1.0;
+}
+
+template <typename Values, typename T> requires std::is_enum_v<T>
+[[nodiscard]] inline double array_last_index_of(const Values& values, const Nullable<T>& value, double from) {
+    return value ? array_last_index_of(values, *value, from) : -1.0;
 }
 
 template <typename T>
