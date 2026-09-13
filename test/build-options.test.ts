@@ -168,10 +168,6 @@ test("normalizes retained CSS cascade keywords and measures width resets", () =>
         gridCascade,
         /normalized_css_keyword\(dynamic_display->second\)/,
     );
-    assert.match(
-        gridCascade,
-        /normalized_css_keyword\(dynamic_justification->second\)/,
-    );
 
     const intrinsic = projection.slice(
         projection.indexOf("bool has_active_authored_width"),

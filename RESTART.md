@@ -8,6 +8,17 @@ dependencies will not be present in a fresh clone.
 
 ## Read this first
 
+**macOS rebase:** rebased all 94 commits onto `32cab018` (PR #249).
+Backup branch `codex/external-project-support-before-macos` retains `fd343d90`.
+Conflicts preserve both the macOS number-formatting adapter and dynamic-value
+helpers, and keep exception-safe `std::thread` joining within the reload loop.
+The range comparison is `macos884-range-diff.log`; other differences are TODO
+context. Platform/compiler checks passed 56/57 in `macos884-checks`; the sole
+failure asserted the removed structural-grid justification adapter. That obsolete
+assertion is removed; native grid behavior already has dedicated coverage.
+Continue the array/tuple boundary unit below after the focused rerun and push.
+This Windows host cannot establish native macOS build or rendering results.
+
 **Latest follow-up: typed dictionaries and fixed record views.**
 Savepoint `ebca2403` is committed and pushed; PR #247's description is now updated
 successfully (`pr873.json`, verified GET contains 914/914). The old GitHub server
