@@ -110,7 +110,8 @@ export function compileWorkerApplication(
 }
 
 function renderingProduct(manifest: CompileManifest): string {
-    const { source, inputs, features, featureSites, runtimeSources, generatedSources, assets, adaptations, ...products } = manifest;
+    const { source, inputs, features, featureSites, runtimeSources, generatedSources, assets, adaptations, assetDecoders, ...products } = manifest;
     void source; void inputs; void features; void featureSites; void runtimeSources; void generatedSources; void assets; void adaptations;
+    void assetDecoders;
     return JSON.stringify(products);
 }

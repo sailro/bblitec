@@ -8,6 +8,58 @@ dependencies will not be present in a fresh clone.
 
 ## Read this first
 
+**Current decoder unit (1075), ready to commit.** Ownership unit is committed and
+pushed as **b75429e6**. setKtx2DecoderUrl and setDracoBaseUrl now lower definite
+bootstrap configuration into manifest metadata. Computed URLs use actual compiled
+static string values (plain compileStringLiteral did not resolve appUrl calls).
+KTX2 overrides require fresh nested literals so later alias mutation is not erased.
+Each reached glTF asset retains its realm's configuration; worker asset merging
+already rejects differing specializations of one source. Rendering-product equality
+ignores the bootstrap-only metadata. CLI prepares decoder sets per asset/configuration.
+
+src/asset-decoders.ts lazily reads configured files, maps KTX2 script/WASM resources
+into the bake server and shares/retries each in-progress load. basis-transcode passes
+the configured URLs to the pinned loader and hashes decoder bytes in its bake key.
+Draco geometry decoding executes the supplied JS with supplied WASM bytes in the
+existing VM, caches by the bytes and clears failed loads. CLI tracks local decoder
+inputs only when read, and records a configured-asset-decoders adaptation. No decoder
+runtime implementation or application-specific source is added to native output.
+
+Validation: decoder1070-regressions **672/672** compiler/asset tests; decoders1074-focused
+**6/6**, including browser KTX2 pixel outputs changing with supplied decoder bytes,
+configured Draco module execution, lazy reads/retry, and per-asset setup/late-change
+refusal. decoders1075-regressions **29/29** adds worker compilation, bake-cache and
+compressed-texture checks. No skips. The two unchanged application setup calls are
+extracted only into ignored decoders1070.ts; decoders1071-generate succeeds and
+decoders1073-native builds/runs with PAL/workers. All sessions closed. Ordinary dist
+predates the final per-asset configuration wiring; decoders1074-dist matches current
+implementation. Finish staged checks/commit/push, then rebuild dist.
+
+**Full1072 finished: engine creation reached.** Main402, **statement56/294**, refuses
+the runtime-valued msaaSamples option. 558 successful/observed bodies,96 modules,
+22,151 unobserved bodies;279.32s. Counts match1065 because this advances through
+intrinsics, not another application function body. There were eight mixed successful/
+refused body observations; ownership replay now participates in this full run.
+Inventory1075 marks the new frontier. No whole-app generation/build/run yet.
+
+**Next MSAA implementation direction:** compileEngineCreation in compiler.ts8030
+requires selectedStaticNumberValue(samples) to be1/4. The source passes sceneAa.samples,
+computed from quality settings. The pinned surface rule is `options?.msaaSamples === 1
+? 1 : 4`; preserve strict equality for actual JSON values, and evaluate the option once.
+src/lowering/pinned-surface.ts owns the generated preferred_sample_count() header.
+The native engine currently receives EngineOptions{title,width,height} (runtime.hpp139).
+Prefer a per-engine optional sample override (0 keeps the existing generated default),
+then pass EngineOptions to the pinned sample helper at the seven backend uses:
+pal_dawn.cpp, pal_dawn_effect.cpp, pal_dawn_frame_graph.cpp, pal_sdl_gpu.cpp,
+pal_sdl_gpu_effect.cpp, pal_sdl_gpu_frame_graph.cpp. Do not use process-global mutable
+sample state; workers/engines may differ. Compile-time constant paths should preserve
+their existing metadata/folding. Dynamic engine.msaaSamples and scene/frame-graph
+default selection need runtime metadata/captures rather than silently defaulting4.
+Inspect every use of msaaSamples in compiler/intrinsics/engine.ts and values/metadata.ts,
+types.ts, plus engine property read compiler.ts11957. Native scene configuration
+already takes a runtime sample count. Header/backend edits require no active native
+build (none now). Complete decoder unit before changing this separate unit.
+
 **Latest ownership/boundary unit (1068), ready to commit.** Spread/key-order unit is
 committed and pushed as **6a289051**. The current changes retain actual JSON in
 typed object/array locals, inline arguments and record conditionals; aggregate

@@ -1,4 +1,5 @@
 import { EmissionMap } from "../emission-transaction.js";
+import {compileAssetDecoderConfiguration} from "../asset-decoders.js";
 import type { LoweringServices } from "../lowering-services.js";
 import ts from "typescript";
 import { argumentAt } from "../syntax.js";
@@ -48,6 +49,9 @@ export interface AssetIntrinsicContext
         | "compileDdsEnvironmentOptions"
         | "compileDdsEnvironmentBackgroundOptions"
         | "registerAsset"
+        | "setAssetDecoderConfiguration"
+        | "lookupIdentifierValue"
+        | "emitDiscardedValue"
         | "recordGltfContainerLoad"
         | "enableGltfCameras"
         | "hasFeature"
@@ -802,6 +806,8 @@ function compileLoadHdrEnvironment(context: AssetIntrinsicContext, call: ts.Call
 }
 
 const assetIntrinsicHandlers = new EmissionMap<string, (context: AssetIntrinsicContext, call: ts.CallExpression) => Value | undefined>([
+    ["setKtx2DecoderUrl", (context, call) => compileAssetDecoderConfiguration(context, "setKtx2DecoderUrl", call)],
+    ["setDracoBaseUrl", (context, call) => compileAssetDecoderConfiguration(context, "setDracoBaseUrl", call)],
     ["acquireTexture", compileAcquireTexture],
     ["releaseTexture", compileAcquireTexture],
     ["getContainerMeshes", compileGetContainerMeshes],

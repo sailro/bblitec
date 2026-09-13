@@ -33,6 +33,7 @@ import {
     webgpuComputeBrowserArgs,
 } from "./browser-harness.js";
 import { cachedJsonBake, moduleIdentity } from "./bake-cache.js";
+import type {Ktx2DecoderAssets} from "./asset-decoders.js";
 
 /** One transcoded level, as the pin's own `writeTexture` call carried it. */
 export interface TranscodedMipLevel {
@@ -109,8 +110,9 @@ const ktx2Loader: PinnedTranscodeLoader = {
  * first. Bytes cross as base64 for the reason the executed-module runner
  * gives: a number per byte turns a megabyte into ten seconds of JSON.
  */
-function transcodeModule(loader: PinnedTranscodeLoader, url: string): string {
-    return `import { createEngine, ${loader.entryExport} } from ${JSON.stringify(pinnedBrowserEntryUrl)};
+function transcodeModule(loader: PinnedTranscodeLoader, url: string, decoder?: Ktx2DecoderAssets): string {
+    return `import { createEngine, ${loader.entryExport}${decoder ? ", setKtx2DecoderUrl" : ""} } from ${JSON.stringify(pinnedBrowserEntryUrl)};
+${decoder ? `setKtx2DecoderUrl(${JSON.stringify(decoder.url)}, ${JSON.stringify(decoder.wasmUrls)});` : ""}
 
 ${pageBase64Script}
 window.__transcodeBasis = async () => {
@@ -179,6 +181,7 @@ async function transcodeTexture(
     loader: PinnedTranscodeLoader,
     url: string,
     bytes: Uint8Array,
+    decoder?: Ktx2DecoderAssets,
 ): Promise<TranscodedBasisTexture> {
     // Deterministic in (asset bytes, pin, browser) — the transcoder the
     // pin injects and the format its priority list selects are the
@@ -191,8 +194,8 @@ async function transcodeTexture(
             version: "1",
             module: moduleIdentity(import.meta.url),
             browser: true,
-            parameters: {},
-            inputs: [bytes],
+            parameters: decoder ? {decoder: {url:decoder.url, wasmUrls:decoder.wasmUrls}} : {},
+            inputs: [bytes, ...Object.values(decoder?.resources ?? {})],
         },
         async () => {
             // The pin fetches the file itself, so it is served back from
@@ -200,9 +203,9 @@ async function transcodeTexture(
             // cache every other asset uses, and the CDN is asked only
             // for the transcoder.
             const server = createSuiteSceneServer(
-                transcodeModule(loader, loader.servedPath),
+                transcodeModule(loader, loader.servedPath, decoder),
                 {
-                    virtualAssets: { [loader.servedPath]: bytes },
+                    virtualAssets: { [loader.servedPath]: bytes, ...decoder?.resources },
                 },
             );
             return (await runPageGlobal(server, "__transcodeBasis", {
@@ -242,8 +245,9 @@ export async function transcodeBasisTexture(
 export async function transcodeKtx2Texture(
     url: string,
     bytes: Uint8Array,
+    decoder?: Ktx2DecoderAssets,
 ): Promise<TranscodedBasisTexture> {
-    return transcodeTexture(ktx2Loader, url, bytes);
+    return transcodeTexture(ktx2Loader, url, bytes, decoder);
 }
 
 /**

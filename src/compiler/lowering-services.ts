@@ -1,4 +1,5 @@
 import type ts from "typescript";
+import type {AssetDecoderConfiguration} from "../asset-decoders.js";
 import type { CompiledMeshWalk } from "../gltf-mesh-walks.js";
 import type { CompiledRenderTargetOptions } from "./intrinsics/engine-options.js";
 import type {
@@ -113,6 +114,7 @@ export interface LoweringServices {
     readonly variableScopes: Array<Map<ts.Symbol, VariableBinding>>;
     functionEmissionScope(): import("./function-specializations.js").FunctionEmissionScope;
     readonly assets: Map<string, CompileAsset>;
+    setAssetDecoderConfiguration(configuration: AssetDecoderConfiguration, node: ts.Node): void;
     readonly assetPayloads: Map<string, string>;
     readonly reachedTextData: CompiledTextData[];
     readonly reachedShaderPrograms: CompiledShaderProgram[];

@@ -405,6 +405,10 @@ transport failures reject it. Other request options, request objects, streaming 
 
 Pinned Draco/meshopt decoders and document hooks run during packaging, preserving hook order.
 Sparse, quantized and compressed inputs become ordinary native accessors. Other extensions refuse.
+Definite bootstrap calls to `setDracoBaseUrl` and `setKtx2DecoderUrl` select the decoder files
+used during packaging. URLs may be computed when their values are known during generation;
+KTX2 overrides require fresh nested literals of constant URLs. Configuration follows the loading
+realm's assets. Runtime selection and changes after compressed asset loads refuse.
 
 ### Compressed textures
 
@@ -413,6 +417,8 @@ Basis and glTF KTX2 use the pinned browser transcoder
 at generation, enabling only compression families supported by native upload.
 The pinned loader selects within that device feature set; native upload checks device support.
 Sampler, encoding and invertY behavior are producer-specific.
+Configured decoder files load only when needed; their bytes participate in bake-cache identity,
+and local decoder files participate in scene input tracking.
 
 ### Gaussian splat row updates
 

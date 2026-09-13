@@ -6,6 +6,7 @@ import { EmissionSet } from "./emission-transaction.js";
 import type ts from "typescript";
 import type { NativeCaptureBinding, NativeCompanionKey, NativeExpression } from "./closure-captures.js";
 import type { CompileAdaptation } from "../fidelity.js";
+import type {AssetDecoderConfiguration} from "../asset-decoders.js";
 import type {
   NodeParticleBakeRequest,
   NodeParticleBuilder,
@@ -70,6 +71,7 @@ export interface CompileOptions extends DeploymentOptions {
 }
 
 export interface CompileManifest {
+  assetDecoders?: AssetDecoderConfiguration;
   source: string;
   /**
    * Every local file this generation read, as sorted forward-slash
@@ -947,6 +949,8 @@ export interface HandleCollectionInfo {
 }
 
 export interface CompileAsset {
+  /** Decoder setup from the realm that loads this asset. */
+  assetDecoders?: AssetDecoderConfiguration;
   /** Indices into CompileManifest.meshWalks demanded for this asset. */
   meshWalks?: number[];
   /** Texture-loading modes reached by this Babylon asset's call sites. */

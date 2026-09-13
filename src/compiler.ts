@@ -137,6 +137,7 @@ import {
 } from "./compiler/module-initializers.js";
 import { compileSpriteAtlasRecord } from "./compiler/sprite-atlas-record.js";
 import { readPngDimensionsSync } from "./compiler/asset-bytes-sync.js";
+import type {AssetDecoderConfiguration} from "./asset-decoders.js";
 import { createCompilerProgram } from "./compiler/program.js";
 import { nativeReturnTsType } from "./compiler/native-return-type.js";
 import { readProperty } from "./compiler/properties.js";
@@ -576,6 +577,7 @@ class Compiler
     private readonly featureSites = new EmissionMap<Feature, string>();
     public readonly assets = new EmissionMap<string, CompileAsset>();
     public readonly assetPayloads = new EmissionMap<string, string>();
+    private readonly assetDecoders = new EmissionMap<"configuration", AssetDecoderConfiguration>();
     public readonly reachedTextData: CompiledTextData[] = emissionArray([]);
     /** The source-keyed record for the most recent `loadGltf` call. */
     private lastGltfContainerAsset: CompileAsset | undefined;
@@ -924,6 +926,7 @@ class Compiler
                 runtimeSources,
                 generatedSources,
                 assets: [...this.assets.values()],
+                ...(this.assetDecoders.has("configuration") ? {assetDecoders:this.assetDecoders.get("configuration")!} : {}),
                 shaderVariants: this.reachedShaderPrograms.map(
                     ({ name }) => name,
                 ),
@@ -10400,12 +10403,21 @@ class Compiler
         );
     }
 
+    public setAssetDecoderConfiguration(configuration: AssetDecoderConfiguration, node: ts.Node): void {
+        if (this.isInRuntimeControlFlow() || [...this.assets.values()].some(asset => asset.kind === "gltf" || asset.kind === "basis"))
+            this.fail(node, "Asset decoder configuration requires definite setup before compressed asset loads.");
+        this.assetDecoders.set("configuration", {...this.assetDecoders.get("configuration"), ...configuration});
+    }
+
     public registerAsset(
         source: string,
         kind: CompileAsset["kind"],
         faceSize?: number,
     ): CompileAsset {
-        return registerAsset(this, source, kind, faceSize);
+        const asset = registerAsset(this, source, kind, faceSize);
+        const decoders = this.assetDecoders.get("configuration");
+        if (kind === "gltf" && decoders) asset.assetDecoders = decoders;
+        return asset;
     }
 
     /**

@@ -3,6 +3,7 @@
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import {prepareAssetDecoders, type AssetDecoders} from "./asset-decoders.js";
 import {
     CompileAsset,
     CompileError,
@@ -284,6 +285,7 @@ async function materializeAsset(
     assetPayloads: ReadonlyMap<string, string>,
     sourceTextureReads = false,
     meshWalks: NonNullable<CompileResult["manifest"]["meshWalks"]> = [],
+    decoders: AssetDecoders = {},
 ): Promise<MaterializedAssetFacts | undefined> {
     const inlineSource = assetPayloads.get(asset.source);
     if (
@@ -348,9 +350,11 @@ async function materializeAsset(
                     source, dirname(inputPath), sourceTextureReads,
                     meshWalks.map((walk, index) =>
                         asset.meshWalks?.includes(index) ? walk : undefined),
+                    decoders,
                 ),
                 source,
                 {cameras: asset.gltfCameras === true},
+                decoders,
             ),
         );
         return;
@@ -442,7 +446,7 @@ async function materializeAsset(
     const bytes = await assetBytes(source, inputPath);
     writeFileSync(destination, asset.kind === "texture" && isKtx1(bytes)
         ? await packageKtx1(bytes)
-        : await packageGltfLoadPlan(bytes, source, {cameras: asset.gltfCameras === true}));
+        : await packageGltfLoadPlan(bytes, source, {cameras: asset.gltfCameras === true}, decoders));
 }
 
 function materializedAssetSource(
@@ -659,6 +663,20 @@ async function main(): Promise<void> {
     // and prunes what this run no longer emits.
     rmSync(resolve(outputPath, "assets"), { recursive: true, force: true });
     const tree = new GeneratedTree(outputPath);
+    const decoderSources = new Set<string>();
+    const decoderSets = new Map<string, AssetDecoders>();
+    const decodersFor = (asset: CompileAsset): AssetDecoders => {
+        const key = JSON.stringify(asset.assetDecoders ?? {});
+        let decoders = decoderSets.get(key);
+        if (!decoders) {
+            decoders = prepareAssetDecoders(asset.assetDecoders, source => {
+                decoderSources.add(source);
+                return assetBytes(source, inputPath);
+            });
+            decoderSets.set(key, decoders);
+        }
+        return decoders;
+    };
     const materializedFacts = await Promise.all(
         result.manifest.assets.map((asset) =>
             materializeAsset(
@@ -668,6 +686,7 @@ async function main(): Promise<void> {
                 result.assetPayloads,
                 result.manifest.features.includes("material:source-texture-read"),
                 result.manifest.meshWalks,
+                decodersFor(asset),
             ),
         ),
     );
@@ -1531,6 +1550,16 @@ ${imageCodecLines || '    ""'}
         const local = localAssetPath(asset.source, inputPath);
         if (local !== undefined) listInput(local);
     }
+    for (const source of decoderSources) {
+        const local = localAssetPath(source, inputPath);
+        if (local !== undefined) listInput(local);
+    }
+    if (decoderSources.size) result.manifest.adaptations.push({
+        id:"configured-asset-decoders", category:"asset-materialization", risk:"medium",
+        sourceSemantics:"Decoder setup selects the JavaScript and WebAssembly files loaded when the browser first reaches compressed geometry or KTX2 images.",
+        nativeSemantics:"Packaging executes the configured decoder files and stores decoded geometry or transcoded texture bytes. Decoder reads remain lazy, their contents distinguish cached results, and local files participate in scene input tracking.",
+        validation:["asset-decoders: configured Draco execution, KTX2 URL overrides and cache invalidation by decoder bytes"],
+    });
     result.manifest.inputs = [...new Set(result.manifest.inputs)].sort();
     tree.write(
         "manifest.json",

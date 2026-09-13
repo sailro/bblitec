@@ -146,6 +146,9 @@ differences; no general bit-identity claim follows.
 
 Keep pinned mips, encoding, samplers and upload orientation. `invertY` may select
 a UV transform rather than a row flip; color and depth views are distinct resources.
+Source-configured KTX2 and Draco decoders execute during packaging with their supplied
+JavaScript and WebAssembly files. Native output contains the resulting texture or geometry
+payload. Decoder contents distinguish cached bakes, and local decoder inputs are tracked.
 
 ### Gaussian splats
 
