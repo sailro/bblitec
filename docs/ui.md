@@ -303,6 +303,21 @@ Static selectors/properties are validated; source/sheet order and live max-width
 Max-width rules share ordinary declaration admission, including wrapping, physical
 margins, text alignment, paint and native grid tracks. Properties outside the
 represented CSS surface still refuse inside media queries.
+
+`container-type:inline-size` establishes inline size containment and an independent
+formatting context on supported non-replaced block, flex and grid containers,
+including their atomic inline forms. Contents do not determine the container's
+intrinsic inline size; explicit width/minimums and ordinary content height remain.
+`normal` restores ordinary sizing. Unnamed `@container(max-width:Npx)` rules use
+the nearest eligible ancestor's content width in CSS pixels, independently of
+viewport media queries. Nested maximum-width conditions and viewport/motion
+conditions compose. Generated parts can query their originating container.
+Size, display, class and container-type changes settle the native cascade before
+synchronous DOM measurements. Named queries, minimum/height/style/scroll-state
+queries, container-relative units and other container types remain unsupported.
+The native context tracks threshold changes so animated sizes also invalidate
+generated content and retained presentation adaptations. A nonconverging query
+layout reports an explicit error.
 Reduced-motion media rules support `reduce` and `no-preference` through the same cascade.
 On Windows, they follow the system [client-area animation preference](https://learn.microsoft.com/en-us/windows/win32/winauto/client-area-animation),
 checked about once per second while the UI runs.
@@ -354,6 +369,7 @@ native range painting follows browser geometry and control states.
 | `rmlui-css-declarations.patch` | Preserve quoted/escaped values and nested blocks across declaration boundaries |
 | `rmlui-visibility.patch` | Inherit visibility while retaining visible descendants in paint/input/focus; admit delayed zero-duration transitions |
 | `rmlui-zero-track-grid.patch` | Format row-major fixed/auto/fraction tracks, implicit rows and inline grids with native item alignment and authored parents |
+| `rmlui-zz-container-queries.patch` | Apply inline-size containment and settle nearest-container maximum-width queries after native layout |
 | `rmlui-fragment-root.patch` | Parse inline fragments under a custom document tag without an XML handler |
 | `rmlui-generated-content.patch` | Originating-element styles for generated boxes; preserve authored query, serialization and structural-selector semantics |
 | `rmlui-selector-functions.patch` | Selector-list/relative matching and invalidation; widget-owned placeholder text styles |
@@ -403,7 +419,7 @@ marker values, counters and marker images remain unsupported.
 
 - No general selectors/traversal/observers, full browser form semantics,
   multiple pointer identities or arbitrary events.
-- Font-variant-numeric can degrade. General grid and unsupported text-shadow forms refuse.
+- Font-variant-numeric can degrade. Unrepresented grid and text-shadow forms refuse.
 - The reviewed difference-blend crosshair degrades; other unsupported blend
   modes refuse. General mask-image filters remain unsupported.
 - blur(px)/none are supported; other reached backdrop functions can degrade.

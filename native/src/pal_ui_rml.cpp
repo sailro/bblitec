@@ -880,7 +880,8 @@ void ui_add_style_rule(
     std::vector<UiSelectorStep> sequence,
     UiGeneratedPart generated,
     std::optional<UiGeneratedContent> content,
-    UiRangePart range) {
+    UiRangePart range,
+    double container_max_width) {
     UiElementRecord& owner = ui_element(engine, stylesheet);
     if (owner.tag != "style") {
         throw std::runtime_error(
@@ -901,7 +902,7 @@ void ui_add_style_rule(
         focus_visible,
         active,
         scrollbar,
-        motion, std::move(sequence), generated, std::move(content), range});
+        motion, std::move(sequence), generated, std::move(content), range, container_max_width});
     mark_ui_changed(engine, owner);
 }
 
@@ -921,7 +922,8 @@ void ui_add_host_style_rule(
     std::vector<UiSelectorStep> sequence,
     UiGeneratedPart generated,
     std::optional<UiGeneratedContent> content,
-    UiRangePart range) {
+    UiRangePart range,
+    double container_max_width) {
     if (primary.empty() || (style.empty() && !content)) {
         throw std::runtime_error(
             "A native host UI style rule must have a target and declarations.");
@@ -937,7 +939,7 @@ void ui_add_host_style_rule(
         focus_visible,
         active,
         scrollbar,
-        motion, std::move(sequence), generated, std::move(content), range});
+        motion, std::move(sequence), generated, std::move(content), range, container_max_width});
     ++engine.ui_style_revision;
     mark_ui_changed(engine);
 }
@@ -2188,6 +2190,10 @@ std::string ui_style_rule_selector(const UiStyleRule& rule) {
     case UiStyleSelectorKind::IdDescendantClass:
         selector = "#" + rule.primary + " ." + rule.secondary;
         break;
+    }
+    if (rule.container_max_width >= 0.0) {
+        const bool part = rule.generated != UiGeneratedPart::None || rule.range != UiRangePart::None || rule.scrollbar != UiScrollbarPart::None;
+        selector += std::string(part ? ":bbl-container-self-max-width(" : ":bbl-container-max-width(") + std::to_string(rule.container_max_width) + ")";
     }
     const std::string states = std::string(rule.hover ? ":hover" : "") +
         (rule.focus_visible ? ":focus-visible" : "") + (rule.active ? ":active" : "");
@@ -3587,6 +3593,7 @@ struct UiRmlRuntime {
                 Rml::ScrollFlag::None);
             sync_tree();
             context->Update();
+            if (sync_container_queries()) { sync_tree(); context->Update(); }
             if (sync_generated_content()) {
                 context->Update();
                 if (sync_generated_content()) context->Update();
@@ -3760,6 +3767,11 @@ struct UiRmlRuntime {
             (rule.motion == UiMotionPreference::Any || reduced_motion == (rule.motion == UiMotionPreference::Reduce));
     }
 
+    bool style_rule_container_matches(const UiStyleRule& rule, Rml::Element* origin) const {
+        return rule.container_max_width < 0.0 || (origin && origin->MatchesContainerSize(static_cast<float>(rule.container_max_width),
+            rule.generated != UiGeneratedPart::None || rule.range != UiRangePart::None || rule.scrollbar != UiScrollbarPart::None));
+    }
+
     static const char* motion_theme(bool reduced) {
         return reduced ? "bbl-motion-reduce" : "bbl-motion-no-preference";
     }
@@ -3794,6 +3806,7 @@ struct UiRmlRuntime {
                     handle_at(projected_elements, handle).element->IsPseudoClassSet("active"))) ||
                 (rule.focus_visible && (!engine.ui_focus_visible || engine.ui_focused_element != handle)) ||
                 !style_rule_media_matches(rule) ||
+                !style_rule_container_matches(rule, handle.value < projected_elements.size() ? projected_elements[handle.value].element : nullptr) ||
                 !(rule.selector == UiStyleSelectorKind::Sequence
                     ? ui_selector_sequence_matches(handle.value < projected_elements.size() ? projected_elements[handle.value].element : nullptr, rule.sequence)
                     : ui_style_rule_matches(engine, handle, rule))) {
@@ -3824,7 +3837,9 @@ struct UiRmlRuntime {
             observes_generated_content = observes_generated_content || rule.content.has_value();
             const std::string public_style =
                 filter_private_ui_declarations(rule.style, false);
-            if (public_style.empty()) return;
+            // Empty conditional nodes still register thresholds used by native
+            // presentation adaptations and content-only generated parts.
+            if (public_style.empty() && rule.container_max_width < 0.0) return;
             const bool media = rule.max_width >= 0.0 || motion;
             if (media) source += "@media ";
             if (rule.max_width >= 0.0) {
@@ -4021,7 +4036,7 @@ struct UiRmlRuntime {
                 const UiStyleRule* selected = nullptr;
                 std::uint32_t specificity = 0;
                 if (!replaced) for (const auto* rule : rules) {
-                    if (rule->generated != part || !ui_selector_sequence_matches(origin, rule->sequence)) continue;
+                    if (rule->generated != part || !style_rule_container_matches(*rule, origin) || !ui_selector_sequence_matches(origin, rule->sequence)) continue;
                     const auto candidate = ui_style_rule_specificity(*rule);
                     if (!selected || candidate >= specificity) { selected = rule; specificity = candidate; }
                 }
@@ -4674,6 +4689,13 @@ struct UiRmlRuntime {
         }
         return !width.value.empty() &&
             is_concrete_authored_width(width.value);
+    }
+
+    bool sync_container_queries() {
+        const auto revision = context->GetContainerQueryRevision();
+        if (projected_container_query_revision == revision) return false;
+        projected_container_query_revision = revision;
+        return true;
     }
 
     bool sync_hover_states() {
@@ -5397,6 +5419,7 @@ struct UiRmlRuntime {
 #endif
     std::string projected_style_sheet_source;
     std::uint64_t projected_style_revision = 0;
+    std::size_t projected_container_query_revision = 0;
     float density_ratio = 0.0f;
     std::uint32_t viewport_width = 0;
     std::uint32_t viewport_height = 0;
@@ -5536,15 +5559,16 @@ void update_ui_rml_runtime(
     if (focus_changed) runtime.context->Update();
     if (runtime.sync_focus_within()) runtime.context->Update();
     const bool hover_changed = runtime.sync_hover_states();
-    if (hover_changed) {
-        // Public :hover declarations are handled by RmlUi itself. Re-run the
+    const bool containers_changed = runtime.sync_container_queries();
+    if (hover_changed || containers_changed) {
+        // Public conditional declarations are handled by RmlUi itself. Re-run the
         // private projection so intrinsic widths and decorators observe the
         // same active selector set.
         runtime.sync_tree();
         runtime.context->Update();
     }
     bool generated_changed = false;
-    if (tree_changed || motion_changed || dimensions_changed || density_changed || focus_changed || hover_changed) {
+    if (tree_changed || motion_changed || dimensions_changed || density_changed || focus_changed || hover_changed || containers_changed) {
         generated_changed = runtime.sync_generated_content();
         if (generated_changed) {
             runtime.context->Update();
@@ -5556,7 +5580,7 @@ void update_ui_rml_runtime(
     if (sync_ui_scrollbar_styles(*runtime.document, runtime.scrollbar_properties)) runtime.context->Update();
     if (
         focus_changed || hover_changed || motion_changed || dimensions_changed ||
-        density_changed || generated_changed) {
+        density_changed || generated_changed || containers_changed) {
         runtime.invalidate_gradient_text();
     }
     if (runtime.sync_svg_current_colors()) {
@@ -5569,6 +5593,7 @@ void update_ui_rml_runtime(
         dimensions_changed ||
         motion_changed ||
         generated_changed ||
+        containers_changed ||
         hover_changed;
     if (layout_changed) runtime.update_intrinsic_widths();
     runtime.sync_client_rects(layout_changed);

@@ -3332,6 +3332,8 @@ struct UiStyleRule {
     UiGeneratedPart generated = UiGeneratedPart::None;
     std::optional<UiGeneratedContent> content{};
     UiRangePart range = UiRangePart::None;
+    /** A negative value means no containing-block size query. */
+    double container_max_width = -1.0;
 };
 
 /**

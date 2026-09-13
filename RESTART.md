@@ -8,6 +8,49 @@ dependencies will not be present in a fresh clone.
 
 ## Read this first
 
+**Latest integration batch: container queries.** Grid savepoint `f6402459` is
+committed and pushed. Native inline-size containment and unnamed maximum-width
+queries now pass source/host admission and focused layout tests. The same native
+pin has a twentieth patch, `rmlui-zz-container-queries.patch`, applied after grid
+support. Its working copies are `containers820-rml-{before,after}` under the
+ignored session directory; `regenerate-container-patch.py` emits its LF bytes.
+The latest installed library is `rml827`. Property changes dirty descendant
+definitions before those descendants update; Context::Update settles threshold
+results after layout and exposes a query revision to retained presentation and
+generated content. Empty conditional stylesheet nodes observe thresholds needed
+by private-only adaptations. Native tests cover nearest ancestors, type/display
+resets, CSS specificity, padding, flex/grid intrinsic widths, generated parts,
+native size changes without DOM writes, cached synchronous measurements and DPR.
+
+`containers-window830` passes SDL_GPU and Dawn with the original DPWCDWMK tape.
+The earlier DPWCK failures were caused by the new probe doing several synchronous
+layout reads before creating the original input fixture: tracing showed the
+first click targeting the empty root. The probe now runs after the input fixture
+is constructed. The tape, callbacks and runtime input semantics are unchanged;
+temporary hit tracing was removed. `grid-window828` also passes both backends.
+`containers830-focused` passes 6/6; `containers831-regressions` passes 944/945,
+with the sole failure an old source-regex assertion requiring `if (hover_changed)`
+instead of the expanded hover/container condition. That assertion is corrected;
+`containers832-focused` passes 3/3, including the corrected assertion, host capture
+condition serialization and native container behavior. Population831 generates all 288
+entries and passes scene41 bootstrap. Scene180 differential parity831 remains
+0.020/0.455 on both backends, canvas-only 0/0 and native backend difference 0.
+
+The fixed stylesheet cohort now has **167 admitted, zero refused, two keyframe
+blocks unassessed** (`style-contexts824`). The reduced stylesheet installer also
+compiles (`imported-styles824`). Full-entry `compile825` moves past those styles
+and refuses `code.textContent` in 252.3 seconds. **Inspection shows this is the
+result of an assignment expression in a concise arrow callback, not an authored
+getter read:** the source has the ordinary shape `localize(() =>
+(element.textContent = label()))`. Expressions.compileValue currently handles
+plain assignment expressions by emitting the store and reading the left side
+back (expressions.ts around line1130), which requires a getter and can also
+misrepresent setters/evaluation order. Investigate a reusable assigned-value
+representation or the callback's discarded-return path; do not add a text getter
+just to paper over this case. No successful full application generation/build/
+runtime has been reached. The stored variadic Math TODO and the text getter/
+compound-assignment TODO remain open. Continue after the container savepoint.
+
 **Latest savepoint, 2026-09-13: native grid tracks.** The Linux rebase onto
 `a7b1504d` and compatibility fix are pushed. Grid now uses native row-major
 fixed/auto/fractional tracks, bounded repeat/minmax, inline-grid and live

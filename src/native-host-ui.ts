@@ -148,8 +148,10 @@ export function readNativeHostUi(path: string): NativeHostUi {
                 "focusVisible",
                 "active",
                 "scrollbar",
+                "range",
                 "pseudo",
                 "maxWidth",
+                "containerMaxWidth",
                 "reducedMotion",
                 "style",
             ],
@@ -192,6 +194,8 @@ export function readNativeHostUi(path: string): NativeHostUi {
         if (item.maxWidth !== undefined && typeof item.maxWidth !== "number") {
             throw new Error(`${location}.maxWidth must be a number.`);
         }
+        if (item.containerMaxWidth !== undefined && (typeof item.containerMaxWidth !== "number" || !Number.isFinite(item.containerMaxWidth) || item.containerMaxWidth < 0))
+            throw new Error(`${location}.containerMaxWidth must be a non-negative finite number.`);
         if (item.reducedMotion !== undefined && typeof item.reducedMotion !== "boolean") {
             throw new Error(`${location}.reducedMotion must be a boolean.`);
         }
@@ -199,6 +203,7 @@ export function readNativeHostUi(path: string): NativeHostUi {
             kind: item.kind,
             primary: item.primary,
             style: item.style,
+            ...(item.containerMaxWidth !== undefined ? {containerMaxWidth:item.containerMaxWidth} : {}),
             ...(item.secondary !== undefined
                 ? { secondary: item.secondary }
                 : {}),

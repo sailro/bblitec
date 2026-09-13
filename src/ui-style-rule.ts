@@ -121,12 +121,13 @@ export function uiStyleRuleNeedsRuntimeMatch(rule: UiStyleSelectorShape): boolea
 /** A bounded structural selector imported from the browser host page. */
 export interface NativeHostUiStyleRule extends UiStyleSelectorShape {
     maxWidth?: number;
+    containerMaxWidth?: number;
     reducedMotion?: boolean;
     style: string;
 }
 
-export function uiStyleRuleHasMedia(rule: { maxWidth?: number; reducedMotion?: boolean }): boolean {
-    return rule.maxWidth !== undefined || rule.reducedMotion !== undefined;
+export function uiStyleRuleHasConditions(rule: { maxWidth?: number; reducedMotion?: boolean; containerMaxWidth?: number }): boolean {
+    return rule.maxWidth !== undefined || rule.reducedMotion !== undefined || rule.containerMaxWidth !== undefined;
 }
 
 export function uiMotionPreferenceCpp(value: boolean | undefined): string {

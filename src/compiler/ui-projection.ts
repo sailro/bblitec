@@ -9,7 +9,7 @@ import {findUiCssSyntax, stripUiCssComments, uiCssBlockEnd, uiCssSyntaxIndices} 
 import {isUiGeneratedPart, parseUiGeneratedContent, uiGeneratedContentCpp, uiGeneratedPartCpp, type UiGeneratedContent, type UiGeneratedPart} from "../ui-generated-content.js";
 import {parseUiSelectorSequence, splitUiSelectorList, uiSelectorSequenceCss, uiSelectorSequenceCpp, type UiSelectorStep} from "../ui-selector.js";
 import { isUiLayoutProperty, supportedUiLayoutValue, uiLogicalSpacingProperties } from "../ui-layout.js";
-import { nativeHostUiStyleRules, uiStyleSelector, uiStyleSelectorCppKind, uiStyleSelectorDescriptor, uiStyleInteractionStateCount, uiStyleRuleNeedsRuntimeMatch, uiStyleRuleHasMedia, uiMotionPreferenceCpp, isUiScrollbarPart, uiScrollbarPartCpp, isUiRangePart, uiRangePartCpp, type UiStyleSelectorShape, type UiStyleSelectorKind } from "../ui-style-rule.js";
+import { nativeHostUiStyleRules, uiStyleSelector, uiStyleSelectorCppKind, uiStyleSelectorDescriptor, uiStyleInteractionStateCount, uiStyleRuleNeedsRuntimeMatch, uiStyleRuleHasConditions, uiMotionPreferenceCpp, isUiScrollbarPart, uiScrollbarPartCpp, isUiRangePart, uiRangePartCpp, type UiStyleSelectorShape, type UiStyleSelectorKind } from "../ui-style-rule.js";
 import { validateFileAccept } from "./browser-file.js";
 import { CompileError } from "./compile-error.js";
 import { documentEngine } from "./window-events.js";
@@ -25,6 +25,7 @@ interface LoweredUiStyleRule extends UiStyleSelectorShape {
     kind: Exclude<UiStyleSelectorKind, "tag-attribute">;
     hover: boolean;
     maxWidth?: number;
+    containerMaxWidth?: number;
     reducedMotion?: boolean;
     style: string;
     selector: string;
@@ -920,6 +921,7 @@ export class UiProjection {
         "cursor",
         "display",
         "grid-template-columns",
+        "container-type",
         "grid-template-rows",
         "flex",
         "flex-basis",
@@ -1005,6 +1007,7 @@ export class UiProjection {
         ["text-overflow", ["clip", "ellipsis"]],
         ["font-style", ["normal", "italic"]],
         ["scrollbar-gutter", ["auto", "stable"]],
+        ["container-type", ["normal", "inline-size"]],
         ["overscroll-behavior-x", ["auto", "contain", "none"]],
         ["overscroll-behavior-y", ["auto", "contain", "none"]],
         ["appearance", ["auto", "none"]],
@@ -2007,7 +2010,7 @@ export class UiProjection {
                 "lowered: retained sheets accept tag/id/class compounds, attribute presence/equality, " +
                 "descendant/child/sibling chains and hover/active/focus/focus-visible/disabled/checked states, " +
                 "scrollbar and range thumb/track pseudo-elements, " +
-                "'@media (max-width:Npx)', '@media (prefers-reduced-motion:reduce|no-preference)', and '@keyframes' blocks.";
+                "'@media (max-width:Npx)', '@media (prefers-reduced-motion:reduce|no-preference)', '@container (max-width:Npx)', and '@keyframes' blocks.";
             if (site) this.context.fail(site, message);
             this.context.failAtFile(message);
         };
@@ -2019,6 +2022,7 @@ export class UiProjection {
             text: string,
             inheritedMaxWidth?: number,
             inheritedReducedMotion?: boolean,
+            inheritedContainerMaxWidth?: number,
         ): void => {
             let cursor = 0;
             while (cursor < text.length) {
@@ -2038,7 +2042,7 @@ export class UiProjection {
                     }
                     const motion = /^@media\s*\(\s*prefers-reduced-motion\s*:\s*(reduce|no-preference)\s*\)$/i.exec(header);
                     if (motion) {
-                        parseBlocks(body, undefined, motion[1]!.toLowerCase() === "reduce");
+                        parseBlocks(body, undefined, motion[1]!.toLowerCase() === "reduce", inheritedContainerMaxWidth);
                         continue;
                     }
                     const media = header.match(
@@ -2048,7 +2052,15 @@ export class UiProjection {
                     if (!media || !Number.isFinite(maxWidth) || maxWidth < 0) {
                         refuseSelector(header);
                     }
-                    parseBlocks(body, maxWidth);
+                    parseBlocks(body, maxWidth, undefined, inheritedContainerMaxWidth);
+                    continue;
+                }
+                if (/^@container\b/i.test(header)) {
+                    const query = /^@container\s*\(\s*max-width\s*:\s*([0-9]+(?:\.[0-9]*)?)px\s*\)$/i.exec(header);
+                    const width = Number(query?.[1]);
+                    if (!query || !Number.isFinite(width) || width < 0 || width > 3.4028234663852886e38) refuseSelector(header);
+                    parseBlocks(body, inheritedMaxWidth, inheritedReducedMotion,
+                        Math.min(inheritedContainerMaxWidth ?? Infinity, width));
                     continue;
                 }
                 if (header.startsWith("@")) refuseSelector(header);
@@ -2090,6 +2102,7 @@ export class UiProjection {
                         rule.maxWidth = inheritedMaxWidth;
                     }
                     if (inheritedReducedMotion !== undefined) rule.reducedMotion = inheritedReducedMotion;
+                    if (inheritedContainerMaxWidth !== undefined) rule.containerMaxWidth = inheritedContainerMaxWidth;
                     if (site) rule.site = site;
                     if (ownerId !== undefined) rule.ownerId = ownerId;
                     if (
@@ -3182,7 +3195,7 @@ export class UiProjection {
                             !uiStyleRuleNeedsRuntimeMatch(rule) &&
                             !rule.scrollbar && !rule.range &&
                             !rule.pseudo &&
-                            !uiStyleRuleHasMedia(rule)
+                            !uiStyleRuleHasConditions(rule)
                         ) {
                             this.context.emit(
                                 `bbl::ui_add_${rule.kind}_style(${engine}, ` +
@@ -3203,8 +3216,8 @@ export class UiProjection {
                                     `, bbl::UiScrollbarPart::${uiScrollbarPartCpp(rule.scrollbar)}, ` +
                                     `${rule.focusVisible ? "true" : "false"}, ${rule.active ? "true" : "false"}, ` +
                                     `bbl::UiMotionPreference::${uiMotionPreferenceCpp(rule.reducedMotion)}` +
-                                    `${rule.sequence || rule.pseudo || rule.range ? `, ${uiSelectorSequenceCpp(rule.sequence ?? [], value => this.context.cppString(value))}` : ""}` +
-                                    `${rule.pseudo || rule.range ? `, bbl::UiGeneratedPart::${uiGeneratedPartCpp(rule.pseudo)}, ${uiGeneratedContentCpp(rule.content, value => this.context.cppString(value))}` : ""}${rule.range ? `, bbl::UiRangePart::${uiRangePartCpp(rule.range)}` : ""});`,
+                                    `${rule.sequence || rule.pseudo || rule.range || rule.containerMaxWidth !== undefined ? `, ${uiSelectorSequenceCpp(rule.sequence ?? [], value => this.context.cppString(value))}` : ""}` +
+                                    `${rule.pseudo || rule.range || rule.containerMaxWidth !== undefined ? `, bbl::UiGeneratedPart::${uiGeneratedPartCpp(rule.pseudo)}, ${uiGeneratedContentCpp(rule.content, value => this.context.cppString(value))}` : ""}${rule.range || rule.containerMaxWidth !== undefined ? `, bbl::UiRangePart::${uiRangePartCpp(rule.range)}` : ""}${rule.containerMaxWidth !== undefined ? `, ${doubleLiteral(rule.containerMaxWidth)}` : ""});`,
                             );
                         }
                     }
@@ -3549,6 +3562,8 @@ export class UiProjection {
             }
             const selected = rule.pseudo || rule.range ? UiProjection.parseUiSelector(uiStyleSelector(rule), declarations) : rule;
             if (!selected) this.context.failAtFile("Native host UI pseudo-element has an unsupported originating selector.");
+            if (rule.containerMaxWidth !== undefined && (!Number.isFinite(rule.containerMaxWidth) || rule.containerMaxWidth < 0 || rule.containerMaxWidth > 3.4028234663852886e38))
+                this.context.failAtFile("Native host UI containerMaxWidth must be a non-negative finite native number.");
             const selectedSequence = selected.sequence ?? sequence;
             emitted.push(
                 `${indent}bbl::ui_add_host_style_rule(${engine}, ` +
@@ -3562,8 +3577,8 @@ export class UiProjection {
                     `, ${selected.focusVisible ? "true" : "false"}, ${selected.active ? "true" : "false"}, ` +
                     `bbl::UiScrollbarPart::${uiScrollbarPartCpp(rule.scrollbar)}, ` +
                     `bbl::UiMotionPreference::${uiMotionPreferenceCpp(rule.reducedMotion)}` +
-                    `${selectedSequence || rule.pseudo || rule.range ? `, ${uiSelectorSequenceCpp(selectedSequence ?? [], value => this.context.cppString(value))}` : ""}` +
-                    `${rule.pseudo || rule.range ? `, bbl::UiGeneratedPart::${uiGeneratedPartCpp(rule.pseudo)}, ${uiGeneratedContentCpp(content, value => this.context.cppString(value))}` : ""}${rule.range ? `, bbl::UiRangePart::${uiRangePartCpp(rule.range)}` : ""});`,
+                    `${selectedSequence || rule.pseudo || rule.range || rule.containerMaxWidth !== undefined ? `, ${uiSelectorSequenceCpp(selectedSequence ?? [], value => this.context.cppString(value))}` : ""}` +
+                    `${rule.pseudo || rule.range || rule.containerMaxWidth !== undefined ? `, bbl::UiGeneratedPart::${uiGeneratedPartCpp(rule.pseudo)}, ${uiGeneratedContentCpp(content, value => this.context.cppString(value))}` : ""}${rule.range || rule.containerMaxWidth !== undefined ? `, bbl::UiRangePart::${uiRangePartCpp(rule.range)}` : ""}${rule.containerMaxWidth !== undefined ? `, ${doubleLiteral(rule.containerMaxWidth)}` : ""});`,
             );
         }
 

@@ -118,7 +118,8 @@ void ui_add_style_rule(
     std::vector<UiSelectorStep> sequence = {},
     UiGeneratedPart generated = UiGeneratedPart::None,
     std::optional<UiGeneratedContent> content = std::nullopt,
-    UiRangePart range = UiRangePart::None);
+    UiRangePart range = UiRangePart::None,
+    double container_max_width = -1.0);
 void ui_add_host_style_rule(
     Engine& engine,
     UiStyleSelectorKind selector,
@@ -135,7 +136,8 @@ void ui_add_host_style_rule(
     std::vector<UiSelectorStep> sequence = {},
     UiGeneratedPart generated = UiGeneratedPart::None,
     std::optional<UiGeneratedContent> content = std::nullopt,
-    UiRangePart range = UiRangePart::None);
+    UiRangePart range = UiRangePart::None,
+    double container_max_width = -1.0);
 js::Array<UiElementHandle> ui_query_class(
     Engine& engine,
     UiElementHandle root,

@@ -1,0 +1,359 @@
+# Inline-size containment and settled size-query selectors. Applied after native grid support.
+--- a/Include/RmlUi/Core/Context.h
++++ b/Include/RmlUi/Core/Context.h
+@@ -292,6 +292,8 @@
+ 	/// as fast as possible", for example if an animation is playing.
+ 	/// @return Time until the next update is expected.
+ 	double GetNextUpdateDelay() const;
++	size_t GetContainerQueryRevision() const { return container_query_revision; }
++	void NotifyContainerQueryChange() { ++container_query_revision; }
+ 
+ protected:
+ 	void Release() override;
+@@ -390,6 +392,7 @@
+ 	// Time in seconds until Update and Render should be called again. This allows applications to only redraw the ui if needed.
+ 	// See RequestNextUpdate() and NextUpdateRequested() for details.
+ 	double next_update_timeout = 0;
++	size_t container_query_revision = 0;
+ 
+ 	// Internal callback for when an element is detached or removed from the hierarchy.
+ 	void OnElementDetach(Element* element);
+--- a/Include/RmlUi/Core/Element.h
++++ b/Include/RmlUi/Core/Element.h
+@@ -561,6 +561,8 @@
+ 	/// @param[in] selector The selector or comma-separated selectors to match against.
+ 	/// @return True if the element matches the given RCSS selector query, false otherwise.
+ 	bool Matches(const String& selector);
++	bool IsInlineSizeContainer() const;
++	bool MatchesContainerSize(float max_width, bool include_self = false) const;
+ 	/// Checks if the provided element is a descendant of the current element.
+ 	/// @param[in] element The element to test with.
+ 	/// @return True if the provided element is a descendant of this element, false otherwise.
+--- a/Include/RmlUi/Core/ID.h
++++ b/Include/RmlUi/Core/ID.h
+@@ -166,6 +166,7 @@
+ 	BorderImage,
+ 	GridTemplateColumns,
+ 	GridTemplateRows,
++	ContainerType,
+ 	JustifyItems,
+ 	JustifySelf,
+ 
+--- a/Include/RmlUi/Core/StyleSheet.h
++++ b/Include/RmlUi/Core/StyleSheet.h
+@@ -37,6 +37,7 @@
+ 	/// Builds the node index for a combined style sheet.
+ 	void BuildNodeIndex();
+ 	bool HasRelationalSelectors() const { return has_relational_selectors; }
++	const Vector<float>& GetContainerQueryWidths() const { return container_query_widths; }
+ 
+ 	/// Returns the named @decorator, or null if it does not exist.
+ 	const NamedDecorator* GetNamedDecorator(const String& name) const;
+@@ -64,6 +65,7 @@
+ 	// Root level node, attributes from special nodes like "body" get added to this node
+ 	UniquePtr<StyleSheetNode> root;
+ 	bool has_relational_selectors = false;
++	Vector<float> container_query_widths;
+ 
+ 	// The maximum specificity offset used in this style sheet to distinguish between properties in
+ 	// similarly-specific rules, but declared on different lines. When style sheets are merged, the
+--- a/Source/Core/Context.cpp
++++ b/Source/Core/Context.cpp
+@@ -20,6 +20,8 @@
+ #include <clocale>
+ #include <iterator>
+ #include <limits>
++#include <stdexcept>
++#include "../../Include/RmlUi/Core/StyleSheet.h"
+ 
+ namespace Rml {
+ 
+@@ -202,16 +204,46 @@
+ 	root->dirty_definition = false;
+ 	root->dirty_child_definitions = false;
+ 
+-	root->Update(density_independent_pixel_ratio, Vector2f(dimensions));
+-
+-	for (int i = 0; i < root->GetNumChildren(); ++i)
+-	{
+-		if (auto doc = root->GetChild(i)->GetOwnerDocument())
+-		{
+-			doc->UpdateLayout();
+-			doc->UpdatePosition();
+-		}
+-	}
++    // Query results depend on the settled content box, not on temporary boxes
++    // used during intrinsic sizing. Iterate only while a threshold result or
++    // container identity changes. Inline containment breaks child-size feedback.
++    const auto snapshot = [&] {
++        Vector<Pair<const Element*, Vector<bool>>> result;
++        for (int i = 0; i < root->GetNumChildren(); ++i) {
++            auto* doc = root->GetChild(i)->GetOwnerDocument();
++            const auto* sheet = doc ? doc->GetStyleSheet() : nullptr;
++            if (!sheet || sheet->GetContainerQueryWidths().empty()) continue;
++            const auto visit = [&](const auto& self, const Element* element) -> void {
++                if (element->GetComputedValues().display() == Style::Display::None) return;
++                if (element->IsInlineSizeContainer()) {
++                    Vector<bool> matches;
++                    for (const float width : sheet->GetContainerQueryWidths()) matches.push_back(element->MatchesContainerSize(width, true));
++                    result.emplace_back(element, std::move(matches));
++                }
++                for (int child = 0; child < element->GetNumChildren(); ++child) self(self, element->GetChild(child));
++            };
++            visit(visit, doc);
++        }
++        return result;
++    };
++    auto previous_queries = snapshot();
++    size_t max_passes = previous_queries.size() + 2;
++    for (size_t pass = 0;; ++pass) {
++        root->Update(density_independent_pixel_ratio, Vector2f(dimensions));
++        for (int i = 0; i < root->GetNumChildren(); ++i) {
++            if (auto doc = root->GetChild(i)->GetOwnerDocument()) {
++                doc->UpdateLayout();
++                doc->UpdatePosition();
++            }
++        }
++        auto queries = snapshot();
++        if (queries == previous_queries) break;
++        max_passes = std::max(max_passes, queries.size() + 2);
++        if (pass >= max_passes) throw std::runtime_error("Container query layout did not converge.");
++        NotifyContainerQueryChange();
++        previous_queries = std::move(queries);
++        root->dirty_definition = true;
++    }
+ 
+ 	// Release any documents that were unloaded during the update.
+ 	ReleaseUnloadedDocuments();
+--- a/Source/Core/Element.cpp
++++ b/Source/Core/Element.cpp
+@@ -1697,6 +1697,28 @@
+ 
+ void Element::OnRender() {}
+ 
++bool Element::IsInlineSizeContainer() const
++{
++    if (meta->style.GetProperty(PropertyId::ContainerType)->Get<int>() != 1 || const_cast<Element*>(this)->IsReplaced()) return false;
++    switch (GetComputedValues().display()) {
++    case Style::Display::Block: case Style::Display::FlowRoot: case Style::Display::InlineBlock:
++    case Style::Display::Flex: case Style::Display::InlineFlex: case Style::Display::Grid: case Style::Display::InlineGrid: return true;
++    default: return false;
++    }
++}
++
++bool Element::MatchesContainerSize(float max_width, bool include_self) const
++{
++    for (auto* ancestor = include_self ? this : GetParentNode(); ancestor; ancestor = ancestor->GetParentNode()) {
++        if (ancestor->GetComputedValues().display() == Style::Display::None) return false;
++        if (!ancestor->IsInlineSizeContainer()) continue;
++        const float density = ancestor->GetContext() ? ancestor->GetContext()->GetDensityIndependentPixelRatio() : 1.f;
++        const float content_width = ancestor->main_box.GetSize().x - ancestor->GetElementScroll()->GetScrollbarSize(ElementScroll::VERTICAL);
++        return content_width <= max_width * density;
++    }
++    return false;
++}
++
+ void Element::OnResize() {}
+ 
+ void Element::OnLayout() {}
+@@ -1812,6 +1834,11 @@
+ void Element::OnPropertyChange(const PropertyIdSet& changed_properties)
+ {
+ 	RMLUI_ZoneScoped;
++    if (changed_properties.Contains(PropertyId::ContainerType) ||
++        (changed_properties.Contains(PropertyId::Display) && meta->style.GetProperty(PropertyId::ContainerType)->Get<int>() == 1)) {
++        for (const auto& child : children) child->DirtyDefinition(DirtyNodes::Self);
++        if (auto* context = GetContext()) context->NotifyContainerQueryChange();
++    }
+ 	const bool top_right_bottom_left_changed = (           //
+ 		changed_properties.Contains(PropertyId::Top) ||    //
+ 		changed_properties.Contains(PropertyId::Right) ||  //
+--- a/Source/Core/Layout/BlockContainer.cpp
++++ b/Source/Core/Layout/BlockContainer.cpp
+@@ -334,6 +334,12 @@
+ 
+ float BlockContainer::GetShrinkToFitWidth() const
+ {
++    if (element->IsInlineSizeContainer()) {
++        const auto& computed = element->GetComputedValues();
++        float minimum, maximum;
++        LayoutDetails::GetMinMaxWidth(minimum, maximum, computed, box, 0.f);
++        return Math::Clamp(computed.width().type == Style::Width::Length ? box.GetSize().x : 0.f, minimum, maximum);
++    }
+ 	auto& computed = element->GetComputedValues();
+ 
+ 	float content_width = 0.0f;
+--- a/Source/Core/Layout/ContainerBox.cpp
++++ b/Source/Core/Layout/ContainerBox.cpp
+@@ -275,7 +275,7 @@
+ 		return box.GetSize().x;
+ 
+ 	// Infer shrink-to-fit width from the intrinsic width of the element.
+-	return FlexFormattingContext::GetMaxContentSize(element).x;
++	return element->IsInlineSizeContainer() ? 0.f : FlexFormattingContext::GetMaxContentSize(element).x;
+ }
+ 
+ String FlexContainer::DebugDumpTree(int depth) const
+--- a/Source/Core/Layout/FormattingContext.cpp
++++ b/Source/Core/Layout/FormattingContext.cpp
+@@ -31,7 +31,7 @@
+ 	{
+ 		type = FormattingContextType::Table;
+ 	}
+-	else if (display == Display::InlineBlock || display == Display::FlowRoot || display == Display::TableCell || computed.float_() != Float::None ||
++	else if (element->IsInlineSizeContainer() || display == Display::InlineBlock || display == Display::FlowRoot || display == Display::TableCell || computed.float_() != Float::None ||
+ 		computed.position() == Position::Absolute || computed.position() == Position::Fixed || computed.overflow_x() != Overflow::Visible ||
+ 		computed.overflow_y() != Overflow::Visible || !element->GetParentNode() || element->GetParentNode()->GetDisplay() == Display::Flex)
+ 	{
+--- a/Source/Core/Layout/LayoutDetails.cpp
++++ b/Source/Core/Layout/LayoutDetails.cpp
+@@ -237,6 +237,12 @@
+ 	{
+ 		return box.GetSize().x;
+ 	}
++
++    if (element->IsInlineSizeContainer()) {
++        float minimum, maximum;
++        LayoutDetails::GetMinMaxWidth(minimum, maximum, element->GetComputedValues(), box, intrinsic_width ? 0.f : containing_block.x);
++        return Math::Clamp(0.f, minimum, maximum);
++    }
+ 
+ 	// Currently we don't support shrink-to-fit width for tables. Just return a zero-sized width.
+ 	const Style::Display display = element->GetDisplay();
+--- a/Source/Core/StyleSheet.cpp
++++ b/Source/Core/StyleSheet.cpp
+@@ -68,6 +68,10 @@
+ 	styled_node_index = {};
+ 	root->BuildIndex(styled_node_index);
+ 	has_relational_selectors = root->HasRelationalSelectors();
++    container_query_widths.clear();
++    root->CollectContainerWidths(container_query_widths);
++    std::sort(container_query_widths.begin(), container_query_widths.end());
++    container_query_widths.erase(std::unique(container_query_widths.begin(), container_query_widths.end()), container_query_widths.end());
+ }
+ 
+ const NamedDecorator* StyleSheet::GetNamedDecorator(const String& name) const
+--- a/Source/Core/StyleSheetFactory.cpp
++++ b/Source/Core/StyleSheetFactory.cpp
+@@ -1,4 +1,6 @@
+ #include "StyleSheetFactory.h"
++#include <charconv>
++#include <cmath>
+ #include "../../Include/RmlUi/Core/Log.h"
+ #include "../../Include/RmlUi/Core/StyleSheetContainer.h"
+ #include "StreamFile.h"
+@@ -29,6 +31,8 @@
+ 		{"has", StructuralSelectorType::Has},
+ 		{"bbl-relative-anchor", StructuralSelectorType::Scope},
+ 		{"scope", StructuralSelectorType::Scope},
++		{"bbl-container-max-width", StructuralSelectorType::ContainerMaxWidth},
++		{"bbl-container-self-max-width", StructuralSelectorType::ContainerMaxWidth},
+ 	}
+ {}
+ 
+@@ -96,6 +100,7 @@
+ 	case StructuralSelectorType::Not:
+ 	case StructuralSelectorType::Is:
+ 	case StructuralSelectorType::Where:
++	case StructuralSelectorType::ContainerMaxWidth:
+ 	case StructuralSelectorType::Has: requires_parameter = true; break;
+ 	default: break;
+ 	}
+@@ -118,6 +123,16 @@
+ 	{
+ 		const String parameters = StringUtilities::StripWhitespace(StringView(name, parameter_start + 1, parameter_end - (parameter_start + 1)));
+ 
++        if (selector_type == StructuralSelectorType::ContainerMaxWidth) {
++            float width = 0.f;
++            const auto parsed = std::from_chars(parameters.data(), parameters.data() + parameters.size(), width);
++            if (parsed.ec != std::errc{} || parsed.ptr != parameters.data() + parameters.size() || !std::isfinite(width) || width < 0.f)
++                return StructuralSelector(StructuralSelectorType::Invalid, 0, 0);
++            StructuralSelector result(selector_type, name.find("bbl-container-self-") == 0 ? 1 : 0, 0);
++            result.container_max_width = width;
++            result.specificity = 0;
++            return result;
++        }
+ 		if (selector_type == StructuralSelectorType::Not || selector_type == StructuralSelectorType::Is ||
+ 			selector_type == StructuralSelectorType::Where || selector_type == StructuralSelectorType::Has)
+ 		{
+--- a/Source/Core/StyleSheetNode.cpp
++++ b/Source/Core/StyleSheetNode.cpp
+@@ -106,6 +106,15 @@
+ 	}
+ 
+ 	return node;
++}
++
++void StyleSheetNode::CollectContainerWidths(Vector<float>& widths) const
++{
++    for (const auto& test : selector.structural_selectors) {
++        if (test.type == StructuralSelectorType::ContainerMaxWidth) widths.push_back(test.container_max_width);
++        if (test.selector_tree) test.selector_tree->root->CollectContainerWidths(widths);
++    }
++    for (const auto& child : children) child->CollectContainerWidths(widths);
+ }
+ 
+ bool StyleSheetNode::HasRelationalSelectors() const
+--- a/Source/Core/StyleSheetNode.h
++++ b/Source/Core/StyleSheetNode.h
+@@ -48,6 +48,7 @@
+ 	/// Returns the specificity of this node.
+ 	int GetSpecificity() const;
+ 	bool HasRelationalSelectors() const;
++	void CollectContainerWidths(Vector<float>& widths) const;
+ 
+ private:
+ 	void CalculateAndSetSpecificity();
+--- a/Source/Core/StyleSheetSelector.cpp
++++ b/Source/Core/StyleSheetSelector.cpp
+@@ -37,11 +37,11 @@
+ 	// which are instantiated separately will never compare equal, even if they have the exact same sub-selector expression. This further results in
+ 	// such selectors not being de-duplicated. This should not lead to any functional differences but leads to potentially missed memory/performance
+ 	// optimizations. E.g. 'div a, div b' will combine the two div nodes, while ':not(div) a, :not(div) b' will not combine the two not-div nodes.
+-	return a.type == b.type && a.a == b.a && a.b == b.b && a.selector_tree == b.selector_tree;
++	return a.type == b.type && a.a == b.a && a.b == b.b && a.selector_tree == b.selector_tree && a.container_max_width == b.container_max_width;
+ }
+ bool operator<(const StructuralSelector& a, const StructuralSelector& b)
+ {
+-	return std::tie(a.type, a.a, a.b, a.selector_tree) < std::tie(b.type, b.a, b.b, b.selector_tree);
++	return std::tie(a.type, a.a, a.b, a.selector_tree, a.container_max_width) < std::tie(b.type, b.a, b.b, b.selector_tree, b.container_max_width);
+ }
+ 
+ bool operator==(const CompoundSelector& a, const CompoundSelector& b)
+@@ -382,6 +382,8 @@
+ 		return false;
+ 	}
+ 	break;
++	case StructuralSelectorType::ContainerMaxWidth:
++		return element->MatchesContainerSize(selector.container_max_width, selector.a != 0);
+ 	case StructuralSelectorType::Scope:
+ 	{
+ 		return scope && element == scope;
+--- a/Source/Core/StyleSheetSelector.h
++++ b/Source/Core/StyleSheetSelector.h
+@@ -84,6 +84,7 @@
+ 	Where,
+ 	Has,
+ 	Scope,
++	ContainerMaxWidth,
+ };
+ struct StructuralSelector {
+ 	StructuralSelector(StructuralSelectorType type, int a, int b) : type(type), a(a), b(b) {}
+@@ -103,6 +104,7 @@
+ 	// For selectors that contain internal selectors such as :not().
+ 	SharedPtr<const SelectorTree> selector_tree;
+ 	bool relative_siblings = false;
++	float container_max_width = -1.f;
+ };
+ bool operator==(const StructuralSelector& a, const StructuralSelector& b);
+ bool operator<(const StructuralSelector& a, const StructuralSelector& b);
+--- a/Source/Core/StyleSheetSpecification.cpp
++++ b/Source/Core/StyleSheetSpecification.cpp
+@@ -425,6 +425,7 @@
+ 	RegisterProperty(PropertyId::AlignContent, "align-content", "stretch", false, true).AddParser("keyword", "flex-start, flex-end, center, space-between, space-around, space-evenly, stretch, start, end");
+ 	RegisterProperty(PropertyId::GridTemplateColumns, "grid-template-columns", "none", false, true).AddParser("string");
+ 	RegisterProperty(PropertyId::GridTemplateRows, "grid-template-rows", "none", false, true).AddParser("string");
++	RegisterProperty(PropertyId::ContainerType, "container-type", "normal", false, true).AddParser("keyword", "normal, inline-size");
+ 	RegisterProperty(PropertyId::JustifyItems, "justify-items", "stretch", false, true).AddParser("keyword", "flex-start, flex-end, center, baseline, stretch, start, end");
+ 	RegisterProperty(PropertyId::JustifySelf, "justify-self", "auto", false, true).AddParser("keyword", "auto, flex-start, flex-end, center, baseline, stretch, start, end");
+ 	RegisterProperty(PropertyId::AlignItems, "align-items", "stretch", false, true).AddParser("keyword", "flex-start, flex-end, center, baseline, stretch, start, end");
