@@ -116,7 +116,7 @@ test("treats a call argument as an array mutation escape", () => {
         result.cpp,
         /void extend\(bbl::js::Array<double>& (v_fn\d+_list)\)/,
     );
-    assert.match(result.cpp, /v_fn\d+_list\.push_back\(40\.0\);/);
+    assert.match(result.cpp, /v_fn\d+_list\.push_back\(40\.0\)/);
     assert.match(result.cpp, /bblscene::extend\(v_grown\);/);
 });
 

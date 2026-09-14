@@ -287,7 +287,7 @@ const listenerLoop = `
 test("listener registration does not execute nested retained construction in its loop", () => {
     const result = compileSource(scene(listenerLoop));
     assert.equal(result.manifest.shadowGenerators.length, 2);
-    assert.match(result.cpp, /bbl::ui_on_click\(/);
+    assert.match(result.cpp, /bbl::on_dom_pointer\(/);
 });
 
 test("retained construction cannot hide actual ordinal creation in the registering loop", () => {

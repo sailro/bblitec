@@ -33,8 +33,8 @@ export function requireWindowHost(context: Pick<LoweringServices, "options" | "r
 
 /** DOM handles belong to the Window document in application realms, even when
  * that realm also owns a rendering engine. Synchronous scenes use their engine. */
-export function documentEngine(context: Pick<LoweringServices, "options" | "defaultEngine" | "reachFeature" | "fail">, node: ts.Node): string | undefined {
-    if (!context.options.workers) return context.defaultEngine();
+export function documentEngine(context: Pick<LoweringServices, "options" | "defaultEngine" | "requireDefaultEngine" | "reachFeature" | "fail">, node: ts.Node): string | undefined {
+    if (!context.options.workers) return context.defaultEngine() === undefined ? undefined : context.requireDefaultEngine(node);
     requireWindowHost(context, node);
     return "bbl::pal::window_document_engine()";
 }

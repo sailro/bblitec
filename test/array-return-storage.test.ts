@@ -17,11 +17,21 @@ const source = `
     function useCopy(items:readonly number[]):number {const values=copy(items); let sum=0; for(const value of values) sum+=value; return sum;}
     function identity(items:readonly number[]):readonly number[] {return items;}
     function local():readonly number[] {const values:number[]=[11,13]; return values;}
+    const gathered:string[]=[];
+    function append(rows:[number,string][]):{start:number;end:number} {
+        const start=gathered.length;
+        for(const [amount,label] of rows) gathered.push(amount+label);
+        return {start,end:gathered.length};
+    }
     async function main(){
         const items:number[]=[2,3]; const held=identity(items); items.push(4);
         if(useCopy(items)!==18 || held.length!==3 || held[2]!==4) throw new Error("input ownership");
         if(sumRow(0)!==10 || sumRow(1)!==26) throw new Error("table row lifetime");
         const values=local(); if(values[0]!==11 || values[1]!==13) throw new Error("returned local lifetime");
+        const first=append([[1,"a"],[2,"b"]]);
+        const second=append([[7,"z"]]);
+        const repeated=append([[1,"a"],[2,"b"]]);
+        if(first.start!==0 || first.end!==2 || second.start!==2 || second.end!==3 || repeated.start!==3 || repeated.end!==5 || gathered.join(",")!=="1a,2b,7z,1a,2b") throw new Error("constant arguments reused across calls");
     }
 `;
 

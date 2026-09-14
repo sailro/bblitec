@@ -4,7 +4,7 @@ import type {LoweringServices} from "./lowering-services.js";
 import type {Value} from "./types.js";
 import {documentEngine} from "./window-events.js";
 
-type Context = Pick<LoweringServices, "options" | "defaultEngine" | "unwrap" | "lookupOptional" |
+type Context = Pick<LoweringServices, "options" | "defaultEngine" | "requireDefaultEngine" | "unwrap" | "lookupOptional" |
     "isDefaultLibraryIdentifier" | "reachFeature" | "fail">;
 
 export function eventTargetCpp(context: Context, value: Value, node: ts.Node): string {

@@ -20,7 +20,7 @@ import type { NativeFunctionLowerer } from "./native-functions.js";
 import type { CompilerSymbols } from "./symbols.js";
 import type { StaticEvaluator } from "./static-evaluator.js";
 import type { HandleCollections, HandleCollectionTarget } from "./handle-collections.js";
-import type { SupportedFunction, UserFunctionLowerer } from "./user-functions.js";
+import type { CallbackInvocationOptions, SupportedFunction, UserFunctionLowerer } from "./user-functions.js";
 import type {
     CompileAsset,
     DefaultRenderTaskEmission,
@@ -490,7 +490,7 @@ export interface LoweringServices {
     materializeEscapingValue(value: Value, label: string, node?: ts.Expression): Value;
     pinValueToTemporary(value: Value, label: string, node?: ts.Expression): Value;
     bindDataTuple(value: Value, arity: number, label?: string): string;
-    compileCallbackWithValues(declaration: ts.Identifier | ts.FunctionDeclaration | ts.ArrowFunction | ts.FunctionExpression | ts.MethodDeclaration, arguments_: readonly Value[], callNode: ts.Node, discardReturn?: boolean, body?: {coroutine: true}): Value;
+    compileCallbackWithValues(declaration: ts.Identifier | ts.FunctionDeclaration | ts.ArrowFunction | ts.FunctionExpression | ts.MethodDeclaration, arguments_: readonly Value[], callNode: ts.Node, discardReturn?: boolean, body?: CallbackInvocationOptions): Value;
     compileStoredDataFunction(expression: ts.Identifier | ts.FunctionDeclaration | ts.ArrowFunction | ts.FunctionExpression | ts.MethodDeclaration, dataType: DataType & {
         kind: "function";
     }, owner?: Value): string;
@@ -607,7 +607,7 @@ export interface LoweringServices {
     compileDeviceRecoveryIntrinsic(name: string, call: ts.CallExpression): Value | undefined;
     markEngineStart(engineCpp: string, node: ts.Node): void;
     emitFinallyGuard(cleanup: readonly string[]): string;
-    emitEngineFinally(body: readonly string[], cleanup: readonly string[], site: ts.TryStatement): boolean;
+    emitEngineFinally(body: readonly string[], cleanup: () => readonly string[], site: ts.TryStatement): boolean;
     isEntryBodyScope(): boolean;
     increaseIndent(): void;
     decreaseIndent(): void;

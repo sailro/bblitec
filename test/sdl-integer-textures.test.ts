@@ -41,6 +41,7 @@ static SDL_GPUShaderCreateInfo shader_info{};
 static std::vector<SDL_GPUTexture*> sampled, loaded;
 static bool last_fragment = false;
 template<class T> T next_handle() { return reinterpret_cast<T>(identity++); }
+const char* SDL_GetError() { return "fixture SDL error"; }
 SDL_GPUTexture* SDL_CreateGPUTexture(SDL_GPUDevice*, const SDL_GPUTextureCreateInfo* info) {
     const bool integer = info->format == SDL_GPU_TEXTUREFORMAT_R32G32B32A32_UINT || info->format == SDL_GPU_TEXTUREFORMAT_R32_UINT;
     if (integer && (info->usage & SDL_GPU_TEXTUREUSAGE_SAMPLER)) return nullptr;

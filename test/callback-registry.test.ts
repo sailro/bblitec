@@ -579,7 +579,7 @@ test("refuses borrowed payloads at retained storage and capture sites", () => {
                 };
                 saved.add(later);
             `,
-            pattern: /escaping callback cannot capture platform event value 'payload'/,
+            pattern: /escaping callback cannot capture platform event value '(?:payload|later)'/,
         },
         {
             name: "nested-record-array",

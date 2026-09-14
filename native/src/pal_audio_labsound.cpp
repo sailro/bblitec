@@ -789,7 +789,7 @@ AudioContextHandle audio_create_context(std::shared_ptr<AudioSession>& session) 
 }
 
 AudioSession::~AudioSession() {
-    for (const auto context : contexts_) audio_close_context(context);
+    for (const auto& context : contexts_) audio_close_context(context);
 }
 
 void audio_collect_finished() {
@@ -1377,7 +1377,7 @@ void render_audio_capture([[maybe_unused]] std::uint32_t id) noexcept
 } // namespace
 
 void AudioSession::finish() noexcept {
-    for (const auto context : contexts_) {
+    for (const auto& context : contexts_) {
         render_audio_capture(context.value);
         audio_close_context(context);
     }

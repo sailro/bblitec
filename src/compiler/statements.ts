@@ -1216,25 +1216,27 @@ export class StatementLowerer {
         context: StatementLoweringContext,
         statement: ts.TryStatement,
     ): void {
-        if (!statement.finallyBlock) {
+        const finallyBlock = statement.finallyBlock;
+        if (!finallyBlock) {
             this.emitTryBody(context, statement);
             return;
         }
-        if (context.workerCheckpointCpp() && someAnalysisNode(statement.finallyBlock, ts.isAwaitExpression, {functions:"skip"}))
-            context.fail(statement.finallyBlock, "Await in finally requires asynchronous cleanup completion.");
+        if (context.workerCheckpointCpp() && someAnalysisNode(finallyBlock, ts.isAwaitExpression, {functions:"skip"}))
+            context.fail(finallyBlock, "Await in finally requires asynchronous cleanup completion.");
         // Lower in source order so generation-only bindings and cleanup see
         // the try body's effects. Native cleanup still precedes the captured
         // body as a scope guard, covering early returns and exceptions.
         const beforeBody = context.nativeBindingCheckpoint();
         const body = context.captureEmittedLines(() =>
             this.emitTryBody(context, statement));
-        const capturedFinally = this.captureFinallyGuard(
-            context, statement.finallyBlock, beforeBody,
+        const captureFinally = () => this.captureFinallyGuard(
+            context, finallyBlock, beforeBody,
         );
+        if (context.emitEngineFinally(body, captureFinally, statement)) return;
+        const capturedFinally = captureFinally();
         const finallyGuard = capturedFinally.length
             ? capturedFinally
             : undefined;
-        if (finallyGuard && context.emitEngineFinally(body, finallyGuard, statement)) return;
         if (finallyGuard) {
             context.emit("{");
             context.increaseIndent();

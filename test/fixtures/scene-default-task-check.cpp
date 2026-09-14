@@ -11,10 +11,17 @@ std::uint32_t task_count = 0;
 unsigned color_tasks = 0;
 unsigned enabled_registrations = 0;
 unsigned disabled_registrations = 0;
+unsigned mesh_registrations = 0;
 }
 
 namespace bbl {
 Engine create_engine(EngineOptions) { return {}; }
+MeshHandle create_box(Engine&, BoxOptions) { return {7}; }
+void add_to_scene(Scene& scene, MeshHandle mesh) {
+    assert(mesh.value == 7 && scene.meshes.empty());
+    scene.meshes.push_back(mesh);
+    ++mesh_registrations;
+}
 Scene create_scene_context(Engine& engine) {
     Scene scene;
     scene.engine = &engine;
@@ -41,6 +48,7 @@ TaskHandle create_copy_to_texture_task(Engine&, Scene&, CopyTaskOptions options)
 }
 void add_task(Scene& scene, TaskHandle task) { scene.tasks.push_back(task); }
 void register_scene_with_shadow_support(Scene& scene) {
+    if (mesh_registrations) assert(scene.meshes.size() == 1 && scene.meshes[0].value == 7);
     if (scene.state->default_render_task) {
         assert(scene.state->default_render_task_created && scene.tasks.size() == 3);
         ++enabled_registrations;

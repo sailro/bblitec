@@ -200,6 +200,7 @@ export interface DataLoweringContext
         | "reachFeature"
         | "reachJsRandom"
         | "defaultEngine"
+        | "requireDefaultEngine"
         | "refuseBorrowedPlatformEventEscape"
         | "fail"
     >,
@@ -872,9 +873,6 @@ export class DataLowerer {
                     unwrapped,
                 );
                 if (optional) return optional;
-            }
-            if (mode === "write" && owner.dataType?.kind === "tuple") {
-                this.invalidateStaticElements(owner);
             }
             return this.elementRead(
                 owner,
@@ -1827,19 +1825,25 @@ export class DataLowerer {
                 expression.right,
             );
             if (
-                rightType &&
+                rightType?.kind === "optional" &&
                 dataTypesEqual(
-                    this.context.dataTypes.markStoredObjectReferences(rightType),
-                    left.dataType,
+                    this.context.dataTypes.markStoredObjectReferences(rightType.inner),
+                    inner,
                 )
             ) {
-                const fallbackOptional = fallbackForSink(left.dataType);
+                // Only the fallback can remain nullish. Its absence metadata
+                // need not match the left operand's retained storage.
+                const resultType: DataType = {
+                    kind: "optional", inner,
+                    ...(rightType.undefinedOnly ? { undefinedOnly: true } : {}),
+                };
+                const fallbackOptional = fallbackForSink(resultType);
                 return {
                     kind: "data",
                     cpp:
                         `(${temp}.has_value() ? ${temp} : ` +
                         `${fallbackOptional})`,
-                    dataType: left.dataType,
+                    dataType: resultType,
                 };
             }
             // A fallback may widen a scalar's literal union, or introduce a
@@ -2228,6 +2232,9 @@ export class DataLowerer {
         if (!dataType) {
             return undefined;
         }
+        if (mode === "write" && dataType.kind === "tuple") {
+            this.invalidateStaticElements(owner);
+        }
         if ((dataType.kind === "vector" || dataType.kind === "tuple") && expressionMayRunCode(access.argumentExpression)) {
             const receiver = this.context.allocateTemporaryCppName("indexed_array");
             this.context.emit(`auto ${receiver} = ${owner.cpp};`);
@@ -2497,6 +2504,7 @@ export class DataLowerer {
                         indexed,
                         dataType.element,
                     ),
+                    nativeCaptures: owner.nativeCaptures ?? [],
                     ...(owner.readOnly
                         ? { readOnly: true as const }
                         : {}),
@@ -2523,6 +2531,7 @@ export class DataLowerer {
                     kind: "number",
                     cpp: indexed,
                     dataType: { kind: "number" },
+                    nativeCaptures: owner.nativeCaptures ?? [],
                 };
             case "table": {
                 const remaining =
@@ -3455,17 +3464,10 @@ export class DataLowerer {
         if (!elements) {
             return undefined;
         }
-        // Keyed by the declaration so every use site shares one
-        // constant rather than emitting a copy each time.
-        const symbol =
-            this.context.checker.getSymbolAtLocation(
-                unwrapped,
-            );
-        const declaration =
-            symbol?.declarations?.[0] ?? unwrapped;
+        // An inlined parameter can bind different constants at each call.
+        // Share storage only when the element type and contents match.
         const name =
-            this.context.dataTypes.registerConstantArray(
-                declaration,
+            this.context.dataTypes.registerSharedConstantArray(
                 unwrapped.text,
                 this.context.dataTypes.cppType(element),
                 elements,

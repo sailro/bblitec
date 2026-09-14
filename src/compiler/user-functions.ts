@@ -35,6 +35,11 @@ import { firstReturn, forEachReturn, emitReachableStatements } from "./loop-cont
 import { FunctionSpecializations, functionDependencies } from "./function-specializations.js";
 import { callTypeArguments, mentionsTypeParameter } from "./type-arguments.js";
 
+export interface CallbackInvocationOptions {
+    coroutine?: true;
+    frameDriven?: true;
+}
+
 function generationKnownPrimitive(value: Value): boolean {
     return value.kind === "json-null" || value.staticNumber !== undefined ||
         value.staticString !== undefined || value.staticBoolean !== undefined;
@@ -1212,11 +1217,12 @@ export class UserFunctionLowerer {
             const properties =
                 argument.recordProperties ?? (argument.recordProperties = {});
             for (const [name, property] of Object.entries(properties)) {
-                const declaration = property.callbackDeclaration;
+                const callback = property.callbackDeclaration;
+                const declaration = callback && ts.isIdentifier(callback)
+                    ? tryResolveFunctionDeclaration(this.checker, callback) : callback;
                 if (
                     property.kind !== "callback" ||
                     !declaration ||
-                    ts.isIdentifier(declaration) ||
                     !reachesTarget(declaration)
                 ) {
                     continue;
@@ -2291,7 +2297,7 @@ export class UserFunctionLowerer {
         arguments_: readonly Value[],
         callNode: ts.Node,
         discardReturn = false,
-        body?: {coroutine: true},
+        body?: CallbackInvocationOptions,
     ): Value {
         const bound = ts.isIdentifier(declaration) ? context.lookupOptional(declaration) : undefined;
         if (bound?.nativePromiseSettlement) return context.dataLowerer.compilePromiseSettlement(bound, arguments_, callNode);
@@ -2351,8 +2357,7 @@ export class UserFunctionLowerer {
         }
         // The frame driver already retains and invokes this callback. Its
         // self-scheduling source edge is not an immediate recursive call.
-        const frameCallback = callNode === declaration && context.isInFrameCallback();
-        const group = frameCallback ? undefined : this.recursiveGroup(ir.declaration);
+        const group = body?.frameDriven ? undefined : this.recursiveGroup(ir.declaration);
         const shared = bound?.nativeCallbackParameterTypes && bound.cpp
             ? this.compileSpecializedCallbackCall(context, callNode, bound, values)
             : group ? this.lowerRecursiveGroup(context, ir, callNode, values, group, true, false)
@@ -2368,7 +2373,7 @@ export class UserFunctionLowerer {
             values,
             callNode,
             discardReturn,
-            body,
+            body?.coroutine ? {coroutine:true} : undefined,
         );
     }
 

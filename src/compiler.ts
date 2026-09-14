@@ -160,6 +160,7 @@ import {
     writesThroughTrackedRoot,
     type AliasedMutationScan,
     type SupportedFunction,
+    type CallbackInvocationOptions,
 } from "./compiler/user-functions.js";
 import {
     argumentAt,
@@ -3083,10 +3084,11 @@ class Compiler
         });
         visit(callback.body);
         if (!recursive) {
-            // Realm callbacks can outlive initialization. Retain their lexical
-            // owner so later reads from nested callbacks keep identity. The
-            // frame-only emitter still specializes these declarations on reach.
-            if (this.options.workers) this.defineVariable(name, this.compileValue(callback));
+            // Keep the declaration's lexical owner when a nested callback
+            // later reads it for invocation or listener removal.
+            const value = this.compileValue(callback);
+            if (value.kind !== "callback") this.fail(callback, "A function declaration requires a callback value.");
+            this.defineVariable(name, { ...value, callbackDeclaration: name });
             return;
         }
         if (this.options.workers && ts.getModifiers(callback)?.some(modifier => modifier.kind === ts.SyntaxKind.AsyncKeyword)) {
@@ -7384,22 +7386,17 @@ class Compiler
         if (this.frameCallbackDepth === 0) {
             this.frameCallbackScopeFloor = this.variableScopes.length;
         }
-        const previousDeferredFloor = this.deferredCaptureFloor;
-        const previousDeferredCeiling = this.deferredCaptureCeiling;
+        const previousDeferredScopes = this.deferredCaptureScopes;
         const previousPlatformEventCaptureFloor =
             this.escapingPlatformEventCaptureFloor;
         if (this.frameCallbackDepth > 0) {
             this.escapingPlatformEventCaptureFloor = this.variableScopes.length;
         }
         this.refuseEscapingPlatformEventCapturesIn(unwrapped);
-        this.deferredCaptureFloor =
-            signature === "void" || signature === "interval"
-                ? this.frameCallbackScopeFloor
+        this.deferredCaptureScopes =
+            (signature === "void" || signature === "interval") && this.frameCallbackScopeFloor !== undefined
+                ? new EmissionSet(this.variableScopes.slice(this.frameCallbackScopeFloor))
                 : undefined;
-        this.deferredCaptureCeiling =
-            this.deferredCaptureFloor === undefined
-                ? undefined
-                : this.variableScopes.length;
         this.pushScope(this.allocateBlockPrefix());
         // This body is emitted into a real native callback lambda. A source
         // `return` therefore leaves that lambda directly, including when it
@@ -7434,8 +7431,7 @@ class Compiler
         } finally {
             this.endNativeFunctionBody();
             this.popScope();
-            this.deferredCaptureFloor = previousDeferredFloor;
-            this.deferredCaptureCeiling = previousDeferredCeiling;
+            this.deferredCaptureScopes = previousDeferredScopes;
             this.escapingPlatformEventCaptureFloor =
                 previousPlatformEventCaptureFloor;
             this.frameCallbackScopeFloor = previousFrameFloor;
@@ -7516,8 +7512,7 @@ class Compiler
             signature === "interval"
                 ? undefined
                 : this.allocateTemporaryCppName("frame_callback_value");
-        const previousDeferredFloor = this.deferredCaptureFloor;
-        const previousDeferredCeiling = this.deferredCaptureCeiling;
+        const previousDeferredScopes = this.deferredCaptureScopes;
         const previousPlatformEventCaptureFloor =
             this.escapingPlatformEventCaptureFloor;
         if (this.frameCallbackDepth > 0) {
@@ -7525,11 +7520,8 @@ class Compiler
         }
         this.refuseEscapingPlatformEventCapturesIn(identifier);
         if (signature === "interval") {
-            this.deferredCaptureFloor = this.frameCallbackScopeFloor;
-            this.deferredCaptureCeiling =
-                this.deferredCaptureFloor === undefined
-                    ? undefined
-                    : this.variableScopes.length;
+            this.deferredCaptureScopes = this.frameCallbackScopeFloor === undefined
+                ? undefined : new EmissionSet(this.variableScopes.slice(this.frameCallbackScopeFloor));
         }
         const captureByValue = retainCaptures || !!this.options.workers || this.frameCallbackDepth > 0 || this.managedCaptures.length > 0;
         this.frameCallbackDepth += 1;
@@ -7550,6 +7542,8 @@ class Compiler
                     identifier,
                     parameter ? [{ kind: "number", cpp: parameter }] : [],
                     identifier,
+                    false,
+                    {frameDriven:true},
                 );
                 if (value.cpp.length > 0) {
                     this.emit(`${value.cpp};`);
@@ -7558,8 +7552,7 @@ class Compiler
             compiled = this.captureManagedClosureLines(emitBody, captureByValue ? false : "entry");
         } finally {
             this.frameCallbackDepth -= 1;
-            this.deferredCaptureFloor = previousDeferredFloor;
-            this.deferredCaptureCeiling = previousDeferredCeiling;
+            this.deferredCaptureScopes = previousDeferredScopes;
             this.escapingPlatformEventCaptureFloor =
                 previousPlatformEventCaptureFloor;
         }
@@ -9379,6 +9372,10 @@ class Compiler
         declaration: ts.Node,
         owner: Value | undefined,
     ): number {
+        if (ts.isIdentifier(declaration)) {
+            declaration = tryResolveFunctionDeclaration(this.checker, declaration) ??
+                this.fail(declaration, "Callback identity requires a function declaration.");
+        }
         const key = this.callbackClosureKey(declaration, owner);
         const perClosure =
             this.callbackIdentities.get(declaration) ??
@@ -11563,10 +11560,7 @@ class Compiler
         if (this.options.workers) return;
         if (
             frameLocal &&
-            this.deferredCaptureFloor !== undefined &&
-            this.deferredCaptureCeiling !== undefined &&
-            scopeIndex >= this.deferredCaptureFloor &&
-            scopeIndex < this.deferredCaptureCeiling
+            this.deferredCaptureScopes?.has(this.variableScopes[scopeIndex]!)
         ) {
             this.fail(
                 identifier,
@@ -12857,7 +12851,10 @@ class Compiler
         }
         if (isHandleKind(value.kind) && !value.nativeBinding) {
             const cpp = this.allocateTemporaryCppName(label);
-            this.emit({ kind: "declaration", type: value.kind === "engine" ? "auto&" : "const auto", name: cpp, initializer: value.cpp, attributes: "[[maybe_unused]] " });
+            // A scene snapshot owns its selected shared state while remaining
+            // writable through the native Scene& APIs after source rebinding.
+            const type = value.kind === "engine" ? "auto&" : value.kind === "scene" ? "auto" : "const auto";
+            this.emit({ kind: "declaration", type, name: cpp, initializer: value.cpp, attributes: "[[maybe_unused]] " });
             const pinned = { ...value, cpp, ...(value.kind === "engine" ? { engineCpp: cpp } : {}), nativeBinding: true as const };
             this.describeNativeValue(pinned);
             return pinned;
@@ -13190,7 +13187,7 @@ class Compiler
         arguments_: readonly Value[],
         callNode: ts.Node,
         discardReturn = false,
-        body?: {coroutine: true},
+        body?: CallbackInvocationOptions,
     ): Value {
         const callable = ts.isFunctionDeclaration(declaration)
             ? (declaration.name ??
@@ -13730,19 +13727,12 @@ class Compiler
      * Everything at or above it lives on that callback's own stack frame.
      * A deferred (`setTimeout`) callback runs AFTER that frame has
      * returned, so naming one of those locals would emit a reference to
-     * dead storage -- which is why `deferredCaptureFloor` refuses it.
+     * dead storage -- which is why `deferredCaptureScopes` refuses it.
      */
     private frameCallbackScopeFloor: number | undefined;
 
-    /**
-     * Set while a deferred callback's body is being compiled. A binding
-     * resolved at or above this depth belongs to a frame that will be
-     * gone when the callback runs.
-     */
-    private deferredCaptureFloor: number | undefined;
-
-    /** First callback-owned scope, which is safe for that callback to read. */
-    private deferredCaptureCeiling: number | undefined;
+    /** Expired frame scopes, tracked by identity across lexical scope restoration. */
+    private deferredCaptureScopes: ReadonlySet<Map<ts.Symbol, VariableBinding>> | undefined;
 
     /**
      * Scope depth at which a nested persistent callback begins. Platform event
@@ -14934,7 +14924,7 @@ class Compiler
     }
 
     /** Keep a flat try/finally alive across the startEngine continuation. */
-    public emitEngineFinally(body: readonly string[], cleanup: readonly string[], site: ts.TryStatement): boolean {
+    public emitEngineFinally(body: readonly string[], cleanup: () => readonly string[], site: ts.TryStatement): boolean {
         const mark = this.engineStartMark;
         if (!mark || site.catchClause) return false;
         const start = body.findIndex((line) => line.startsWith("bbl::start_engine("));
@@ -14945,6 +14935,9 @@ class Compiler
         // writes and refuse calls/accessors whose exception effects are unknown.
         const checkCleanup = (node: ts.Node): void => {
             if (ts.isFunctionLike(node)) return;
+            // Erased browser calls with no arguments have no native cleanup
+            // effects. Platform-backed calls remain outside browser erasure.
+            if (ts.isCallExpression(node) && node.arguments.length === 0 && this.isBrowserOnlyExpression(node)) return;
             const properties = ts.isPropertyAccessExpression(node)
                 ? [this.checker.getSymbolAtLocation(node.name)]
                 : ts.isElementAccessExpression(node)
@@ -14963,11 +14956,16 @@ class Compiler
             line.trim().startsWith(Compiler.startContinuationGatePrefix))) {
             this.fail(site, "A finally block spanning startEngine cannot also span a later frame yield.");
         }
-        const guard = this.emitFinallyGuard(cleanup);
+        const cleanupLines = cleanup();
+        const guard = cleanupLines.length ? this.emitFinallyGuard(cleanupLines) : undefined;
         for (const line of body.slice(0, start)) this.emit(line);
         mark.index = this.body.length;
         mark.indentLevel = this.indentLevel;
         this.emit(body[start]!);
+        if (!guard) {
+            for (const line of body.slice(start + 1)) this.emit(line);
+            return true;
+        }
         // The outer guard covers setup/start failures. The continuation
         // guard finishes cleanup on its own normal, return or exception
         // completion, while the outer guard remains safe to destroy later.
