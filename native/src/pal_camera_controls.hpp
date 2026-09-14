@@ -9,6 +9,9 @@
 #pragma once
 
 #include <bblite/runtime.hpp>
+#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
+#include <bblite/pal_ui.hpp>
+#endif
 
 #include <bblite/upstream/camera_controls.hpp>
 
@@ -171,7 +174,7 @@ inline void dispatch_surface_camera_pointer(
         } else return;
         for (const auto& scene : engine.registered_scenes) {
             if (!scene || !scene->surface_canvas || scene->camera.value >= engine.cameras.size()) continue;
-              const auto rect = ui_get_client_rect(engine, *scene->surface_canvas);
+            const auto rect = ui_get_client_rect(engine, *scene->surface_canvas);
             if (x < rect.left || y < rect.top || x >= rect.left + rect.width || y >= rect.top + rect.height) continue;
             const auto index = scene->camera.value;
             handle_camera_pointer_event(event, engine.cameras[index], surfaces.pointer, engine.canvas_client_width, engine.canvas_client_height);
