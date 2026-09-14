@@ -4,7 +4,7 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import test from "node:test";
 import { compileSource } from "../src/compiler.js";
-import { cppFunction, optionalNativeFixtureTools, runNativeFixtureCompiler } from "./native-fixture.js";
+import { cppFunction, cppSection, optionalNativeFixtureTools, runNativeFixtureCompiler } from "./native-fixture.js";
 import { CameraLowerer } from "../src/lowering/camera-lowerer.js";
 import { LoweringContext } from "../src/lowering/context.js";
 import { CompressedTextureLowerer } from "../src/lowering/compressed-texture-lowerer.js";
@@ -12,6 +12,57 @@ import { writeKtx1 } from "../src/basis-transcode.js";
 import { packageKtx1 } from "../src/compressed-texture-package.js";
 
 const nativeTools = optionalNativeFixtureTools(false);
+
+test("GPU picking maps CSS coordinates before bounds checks on both backends", { skip: !nativeTools }, () => {
+    const functions = ["sdl", "dawn"].map(backend => {
+        const file = backend === "sdl" ? "pal_sdl_gpu.cpp" : "pal_dawn.cpp";
+        const source = readFileSync(`native/src/${file}`, "utf8");
+        const picker = cppFunction(source, `PickingInfo pick_${backend}_scene(`);
+        const mapping = cppSection(picker, "const double width =", backend === "sdl" ? "    if (camera_record->viewport" : "    if (camera.viewport");
+        return `PickingInfo ${backend}(const Engine& engine, double x, double y) { ${mapping} return {true, x, y}; }`;
+    });
+    runCpp("pick-client-coordinates", `
+        #include <cassert>
+        #include <cmath>
+        #include <initializer_list>
+        struct Engine { struct { int width = 2404, height = 1080; } options; double canvas_client_width, canvas_client_height; };
+        struct PickingInfo { bool hit = false; double x = 0, y = 0; };
+        ${functions.join("\n")}
+        int main() {
+            for (const double density : {1.0, 1.25, 2.0, 2.4375, 3.0}) {
+                Engine engine{{}, 2404 / density, 1080 / density};
+                for (auto pick : {sdl, dawn}) {
+                    const auto result = pick(engine, 1700.25 / density, 700.5 / density);
+                    assert(result.hit && std::abs(result.x - 1700.25) < 1e-9 && std::abs(result.y - 700.5) < 1e-9);
+                    assert(!pick(engine, engine.canvas_client_width, 0).hit);
+                    assert(!pick(engine, 0, engine.canvas_client_height).hit);
+                    assert(!pick(engine, -1, 0).hit);
+                }
+            }
+        }
+    `);
+});
+
+test("laid-out canvas panes retain physical bounds at any CSS density", { skip: !nativeTools }, () => {
+    const source = readFileSync("native/src/pal_gpu_shared.hpp", "utf8");
+    runCpp("canvas-pane-density", `
+        #define BBLITE_HAS_UI 1
+        #include <bblite/runtime.hpp>
+        #include <cassert>
+        namespace bbl::pal { ${cppFunction(source, "inline PixelViewport laid_out_canvas_pane(")} }
+        int main() {
+            bbl::Engine engine;
+            engine.options.width = 1200; engine.options.height = 800;
+            engine.ui_elements.emplace_back();
+            engine.ui_elements.back().client_rect = {600, 100, 400, 600};
+            for (double density : {1.0, 2.0, 3.0}) {
+                engine.canvas_client_width = 1200 / density; engine.canvas_client_height = 800 / density;
+                auto pane = bbl::pal::laid_out_canvas_pane(engine, bbl::UiElementHandle{0}, 600, 400);
+                assert(pane.x == 300 && pane.y == 50 && pane.width == 200 && pane.height == 300);
+            }
+        }
+    `);
+});
 
 test("storage synchronization preserves live buffers and versions across failures", { skip: !nativeTools }, () => {
     runCpp("storage-record-sync", `

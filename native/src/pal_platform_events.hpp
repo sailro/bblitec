@@ -19,6 +19,21 @@
 
 namespace bbl::pal {
 
+inline bool is_touch_event(const SDL_Event& event) {
+    return event.type == SDL_EVENT_FINGER_DOWN || event.type == SDL_EVENT_FINGER_MOTION ||
+        event.type == SDL_EVENT_FINGER_UP || event.type == SDL_EVENT_FINGER_CANCELED;
+}
+
+inline bool is_emulated_touch_mouse(const SDL_Event& event) {
+    return (event.type == SDL_EVENT_MOUSE_MOTION && event.motion.which == SDL_TOUCH_MOUSEID) ||
+        ((event.type == SDL_EVENT_MOUSE_BUTTON_DOWN || event.type == SDL_EVENT_MOUSE_BUTTON_UP) && event.button.which == SDL_TOUCH_MOUSEID);
+}
+
+inline bool is_emulated_pointer_event(const SDL_Event& event) {
+    return is_emulated_touch_mouse(event) || (is_touch_event(event) &&
+        (event.tfinger.touchID == SDL_MOUSE_TOUCHID || event.tfinger.touchID == SDL_PEN_TOUCHID));
+}
+
 /** True for live user input that must not leak into deterministic test runs. */
 inline bool is_platform_input_event(const SDL_Event& event) {
     return
@@ -29,7 +44,7 @@ inline bool is_platform_input_event(const SDL_Event& event) {
         event.type == SDL_EVENT_MOUSE_MOTION ||
         event.type == SDL_EVENT_MOUSE_BUTTON_DOWN ||
         event.type == SDL_EVENT_MOUSE_BUTTON_UP ||
-        event.type == SDL_EVENT_MOUSE_WHEEL;
+        event.type == SDL_EVENT_MOUSE_WHEEL || is_touch_event(event);
 }
 
 inline std::string keyboard_event_key(std::string_view code) {
@@ -186,8 +201,8 @@ inline void dispatch_platform_mouse_button(
  * `UiClick@x:y` queues an SDL motion/press/release triplet so retained UI
  * receives the same host events as a physical click without moving the
  * user's pointer or foreground focus.
- * `UiMove@x:y` and `+UiMouseLeft@x:y`/`-UiMouseLeft@x:y` use that same
- * SDL path for hover and held drags, including camera controls.
+ * `UiMove@x:y` and `+UiMouseLeft@x:y`/`-UiMouseLeft@x:y` (also MouseRight)
+ * use that same SDL path for hover and held drags, including camera controls.
  * `UiKey@Ctrl+A` (SDL key names, optional Ctrl+) queues a key press/release;
  * `UiText@hex` queues UTF-8 bytes as an SDL text input event.
  * `UiWheelUp`/`UiWheelDown` queue SDL wheel packets at the canvas center.
@@ -201,6 +216,7 @@ inline void dispatch_platform_mouse_button(
  * `DeviceLoss` for the source's dataset handshake, retained hooks, and loss API.
  */
 inline void sync_pointer_lock(SDL_Window* window, Engine& engine);
+inline double dom_mouse_buttons(SDL_MouseButtonFlags pressed);
 
 inline void release_pointer_lock_on_escape(
     SDL_Window* window,
@@ -212,8 +228,8 @@ inline void release_pointer_lock_on_escape(
     sync_pointer_lock(window, engine);
 }
 
-inline constexpr SDL_MouseID replay_ui_mouse_id =
-    static_cast<SDL_MouseID>(~0u);
+// SDL reserves -1 and -2 for touch/pen mouse emulation.
+inline constexpr SDL_MouseID replay_ui_mouse_id = static_cast<SDL_MouseID>(~0u - 2u);
 
 class PlatformInputReplay {
 public:
@@ -335,7 +351,7 @@ public:
         if (code == "MouseMoveRight") {
             const PlatformMouseEvent event{
                 .button = -1.0,
-                .buttons = static_cast<double>(mouse_buttons_),
+                .buttons = dom_mouse_buttons(mouse_buttons_),
                 .client_x = engine.canvas_client_width / 2.0,
                 .client_y = engine.canvas_client_height / 2.0,
                 .movement_x = 100.0,
@@ -346,7 +362,7 @@ public:
         if (const auto point = pointer_position(code, "MouseMove@")) {
             const PlatformMouseEvent event{
                 .button = -1.0,
-                .buttons = static_cast<double>(mouse_buttons_),
+                .buttons = dom_mouse_buttons(mouse_buttons_),
                 .client_x = point->first,
                 .client_y = point->second,
             };
@@ -355,8 +371,9 @@ public:
         }
         const auto ui_click = pointer_position(code, "UiClick@");
         const auto ui_move = pointer_position(code, "UiMove@");
-        const auto ui_down = pointer_position(code, "+UiMouseLeft@");
-        const auto ui_up = pointer_position(code, "-UiMouseLeft@");
+        const bool right = code.starts_with("+UiMouseRight@") || code.starts_with("-UiMouseRight@");
+        const auto ui_down = pointer_position(code, right ? "+UiMouseRight@" : "+UiMouseLeft@");
+        const auto ui_up = pointer_position(code, right ? "-UiMouseRight@" : "-UiMouseLeft@");
         if (const auto point = ui_click ? ui_click : ui_move ? ui_move : ui_down ? ui_down : ui_up) {
             const std::uint32_t window_id =
                 window ? SDL_GetWindowID(window) : 0;
@@ -369,7 +386,8 @@ public:
             motion.motion.y = static_cast<float>(point->second);
             motion.motion.xrel = static_cast<float>(point->first - engine.input_replay_pointer_x);
             motion.motion.yrel = static_cast<float>(point->second - engine.input_replay_pointer_y);
-            motion.motion.state = mouse_buttons_;
+            // Windows relative packets can omit held buttons; transitions remain authoritative.
+            motion.motion.state = window && SDL_GetWindowRelativeMouseMode(window) ? 0 : mouse_buttons_;
             engine.input_replay_pointer_x = point->first;
             engine.input_replay_pointer_y = point->second;
             SDL_Event down{};
@@ -377,7 +395,7 @@ public:
             down.button.type = SDL_EVENT_MOUSE_BUTTON_DOWN;
             down.button.windowID = window_id;
             down.button.which = replay_ui_mouse_id;
-            down.button.button = SDL_BUTTON_LEFT;
+            down.button.button = right ? SDL_BUTTON_RIGHT : SDL_BUTTON_LEFT;
             down.button.down = true;
             down.button.x = static_cast<float>(point->first);
             down.button.y = static_cast<float>(point->second);
@@ -393,11 +411,11 @@ public:
             };
             queue(motion);
             if (ui_click || ui_down) {
-                mouse_buttons_ |= SDL_BUTTON_LMASK;
+                mouse_buttons_ |= SDL_BUTTON_MASK(down.button.button);
                 queue(down);
             }
             if (ui_click || ui_up) {
-                mouse_buttons_ &= ~SDL_BUTTON_LMASK;
+                mouse_buttons_ &= ~SDL_BUTTON_MASK(down.button.button);
                 queue(up);
             }
             return;
@@ -408,7 +426,7 @@ public:
                 code == "WheelUp" ? -100.0 : 100.0,
                 engine.canvas_client_width / 2.0,
                 engine.canvas_client_height / 2.0,
-                static_cast<double>(mouse_buttons_));
+                dom_mouse_buttons(mouse_buttons_));
             return;
         }
         const bool down_only = code.size() > 1 && code.front() == '+';
@@ -423,33 +441,31 @@ public:
             event_code.remove_prefix(5);
         }
         double mouse_button = -1.0;
-        double mouse_mask = 0.0;
+        SDL_MouseButtonFlags mouse_mask = 0;
         const auto left_point =
             pointer_position(event_code, "MouseLeft@");
         const bool outside_canvas =
             event_code == "MouseLeftOutsideCanvas";
         if (event_code == "MouseLeft" || left_point || outside_canvas) {
             mouse_button = 0.0;
-            mouse_mask = 1.0;
+            mouse_mask = SDL_BUTTON_LMASK;
         } else if (event_code == "MouseMiddle") {
             mouse_button = 1.0;
-            mouse_mask = 4.0;
+            mouse_mask = SDL_BUTTON_MMASK;
         } else if (event_code == "MouseRight") {
             mouse_button = 2.0;
-            mouse_mask = 2.0;
+            mouse_mask = SDL_BUTTON_RMASK;
         }
         if (mouse_button >= 0.0) {
             const auto dispatch_mouse = [&](bool down) {
-                const auto mask =
-                    static_cast<unsigned int>(mouse_mask);
                 if (down) {
-                    mouse_buttons_ |= mask;
+                    mouse_buttons_ |= mouse_mask;
                 } else {
-                    mouse_buttons_ &= ~mask;
+                    mouse_buttons_ &= ~mouse_mask;
                 }
                 const PlatformMouseEvent event{
                     .button = mouse_button,
-                    .buttons = static_cast<double>(mouse_buttons_),
+                    .buttons = dom_mouse_buttons(mouse_buttons_),
                     .client_x = outside_canvas
                         ? -1.0
                         : left_point
@@ -645,11 +661,13 @@ inline bool sync_engine_canvas_size(
         SDL_GetWindowSizeInPixels(window, &width, &height) &&
         width > 0 &&
         height > 0) {
-        const float display_scale = SDL_GetWindowDisplayScale(window);
+        const float display_scale = window_render_density(window, engine.options);
         const float pixel_density = SDL_GetWindowPixelDensity(window);
-        return update_engine_canvas_metrics(engine, width, height,
-            display_scale > 0.0f ? display_scale : 1.0f,
+        const bool changed = update_engine_canvas_metrics(engine, width, height,
+            display_scale,
             pixel_density > 0.0f ? pixel_density : 1.0f);
+        if (changed && engine.dom_input) engine.dom_input->pending_resize = true;
+        return changed;
     }
     return false;
 }
@@ -983,11 +1001,90 @@ inline void handle_platform_event(
     }
 }
 
+inline void append_touch_cancel(Engine& engine, DomEventBatch& batch, DomTouchContact contact) {
+    contact.pointer.buttons = 0;
+    auto cancelled = dom_touch_input(engine, DomPointerAction::Cancel, contact);
+    batch.events.insert(batch.events.end(), std::make_move_iterator(cancelled->events.begin()), std::make_move_iterator(cancelled->events.end()));
+    batch.released_pointers.insert(batch.released_pointers.end(), cancelled->released_pointers.begin(), cancelled->released_pointers.end());
+}
+
 /** Build an owned script input transaction before running native defaults.
  * Retained UI installs hit/focus path providers; canvas-only scenes use the
  * same dispatch contract without pulling in RmlUi. */
 inline std::shared_ptr<DomEventBatch> prepare_dom_platform_input(Engine& engine, const SDL_Event& event) {
+    if (is_touch_event(event)) static_cast<void>(dom_input(engine));
     if (!engine.dom_input) return {};
+    const bool resize = event.type == SDL_EVENT_WINDOW_RESIZED || event.type == SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED ||
+        event.type == SDL_EVENT_WINDOW_DISPLAY_SCALE_CHANGED;
+    const auto previous_width = engine.options.width, previous_height = engine.options.height;
+    if (resize) handle_platform_event(event, engine, false);
+    if (is_touch_event(event)) {
+        auto& input = *engine.dom_input;
+        const auto key = std::pair{event.tfinger.touchID, event.tfinger.fingerID};
+        const bool down = event.type == SDL_EVENT_FINGER_DOWN;
+        const bool released = event.type == SDL_EVENT_FINGER_UP || event.type == SDL_EVENT_FINGER_CANCELED;
+        auto found = input.touches.find(key);
+        if (down && found == input.touches.end()) {
+            double id = 2;
+            while (std::any_of(input.touches.begin(), input.touches.end(), [id](const auto& item) { return item.second.pointer.pointer_id == id; })) ++id;
+            DomTouchContact contact;
+            contact.pointer.pointer_type = "touch";
+            contact.pointer.pointer_id = id;
+            contact.pointer.is_primary = input.touches.empty();
+            found = input.touches.emplace(key, std::move(contact)).first;
+        }
+        if (found == input.touches.end()) return std::make_shared<DomEventBatch>();
+        auto& contact = found->second;
+        auto& pointer = contact.pointer;
+        const auto canvas_span = [&]() -> double {
+            if (input.touches.size() != 2) return 0;
+            const auto& first = input.touches.begin()->second;
+            const auto& second = std::next(input.touches.begin())->second;
+            if (first.path.empty() || second.path.empty() || first.path.front() != second.path.front() ||
+                first.path.front().kind != DomEventTargetKind::Canvas) return 0;
+            return std::hypot(first.pointer.client_x - second.pointer.client_x,
+                first.pointer.client_y - second.pointer.client_y);
+        };
+        const double previous_span = canvas_span();
+        pointer.button = event.type == SDL_EVENT_FINGER_MOTION ? -1 : 0;
+        pointer.buttons = released ? 0 : 1;
+        pointer.client_x = event.tfinger.x * engine.canvas_client_width;
+        pointer.client_y = event.tfinger.y * engine.canvas_client_height;
+        pointer.movement_x = event.tfinger.dx * engine.canvas_client_width;
+        pointer.movement_y = event.tfinger.dy * engine.canvas_client_height;
+        if (down) contact.path = input.hit_path ? input.hit_path(pointer.client_x, pointer.client_y) : dom_canvas_path();
+        if (down && !contact.path.empty() && contact.path.front().kind == DomEventTargetKind::Canvas &&
+            std::any_of(input.touches.begin(), input.touches.end(), [](const auto& item) { return item.second.gesture; }))
+            contact.gesture = true;
+        std::shared_ptr<DomEventBatch> batch;
+        const double current_span = canvas_span();
+        if (down && current_span > 0 && input.event_types.contains("wheel")) {
+            batch = std::make_shared<DomEventBatch>();
+            for (auto& [id, item] : input.touches) {
+                (void)id;
+                if (!item.gesture && &item != &contact) {
+                    append_touch_cancel(engine, *batch, item);
+                }
+                item.gesture = true;
+            }
+        } else if (contact.gesture) {
+            batch = std::make_shared<DomEventBatch>();
+            if (event.type == SDL_EVENT_FINGER_MOTION && current_span > 0) {
+                const auto& first = input.touches.begin()->second.pointer;
+                const auto& second = std::next(input.touches.begin())->second.pointer;
+                const PlatformMouseEvent wheel{.button = -1,
+                    .client_x = (first.client_x + second.client_x) / 2,
+                    .client_y = (first.client_y + second.client_y) / 2,
+                    .delta_y = touch_wheel_delta_y(previous_span, current_span)};
+                batch->add(dom_event(wheel, "wheel", contact.path), true);
+            }
+        } else {
+            batch = dom_touch_input(engine, down ? DomPointerAction::Down : event.type == SDL_EVENT_FINGER_UP ? DomPointerAction::Up :
+                event.type == SDL_EVENT_FINGER_CANCELED ? DomPointerAction::Cancel : DomPointerAction::Move, contact);
+        }
+        if (released) input.touches.erase(found);
+        return batch;
+    }
     auto& input = *engine.dom_input;
     auto batch = std::make_shared<DomEventBatch>();
     if (event.type == SDL_EVENT_KEY_DOWN || event.type == SDL_EVENT_KEY_UP) {
@@ -1006,7 +1103,7 @@ inline std::shared_ptr<DomEventBatch> prepare_dom_platform_input(Engine& engine,
         const auto modifiers = SDL_GetModState();
         const PlatformMouseEvent pointer{
             .button = move || wheel ? -1.0 : static_cast<double>(event.button.button - 1),
-            .buttons = dom_mouse_buttons(move ? event.motion.state : tracked_mouse_buttons()),
+            .buttons = dom_mouse_buttons(tracked_mouse_buttons()),
             .client_x = (move ? event.motion.x : wheel ? event.wheel.mouse_x : event.button.x) * engine.canvas_window_to_client_scale,
             .client_y = (move ? event.motion.y : wheel ? event.wheel.mouse_y : event.button.y) * engine.canvas_window_to_client_scale,
             .movement_x = move ? static_cast<double>(event.motion.xrel) : 0,
@@ -1030,13 +1127,40 @@ inline std::shared_ptr<DomEventBatch> prepare_dom_platform_input(Engine& engine,
         if (event.type == SDL_EVENT_WINDOW_FOCUS_LOST) {
             batch = dom_pointer_input(engine, DomPointerAction::Cancel, PlatformMouseEvent{}, input.hover_path);
             input.hover_path.clear();
+            for (auto& [key, contact] : input.touches) {
+                (void)key;
+                if (!contact.gesture) append_touch_cancel(engine, *batch, contact);
+            }
+            input.touches.clear();
         }
         batch->add(dom_event(PlatformMouseEvent{}, event.type == SDL_EVENT_WINDOW_FOCUS_LOST ? "blur" : "focus",
             {DomEventTarget::window()}, false, false));
-    } else if (event.type == SDL_EVENT_WINDOW_RESIZED) {
+    } else if (resize && (input.pending_resize || event.type == SDL_EVENT_WINDOW_RESIZED || engine.options.width != previous_width || engine.options.height != previous_height)) {
+        input.pending_resize = false;
         batch->add(dom_event(PlatformMouseEvent{}, "resize", {DomEventTarget::window()}, false, false));
     } else return {};
     return batch;
+}
+
+/** Legacy engine hooks (including glTF interactivity) receive the same primary
+ * compatibility stream as DOM mouse listeners. Secondary/UI contacts stay separate. */
+inline void dispatch_touch_defaults(Engine& engine, const DomEventBatch& batch) {
+    for (const auto& entry : batch.events) {
+        const auto* pointer = std::get_if<PlatformMouseEvent>(&entry.payload);
+        if (!pointer || !pointer->dom || pointer->dom->target != DomEventTarget::canvas()) continue;
+        const auto& type = pointer->dom->type;
+        if (pointer->is_primary && type == "pointercancel") {
+            engine.canvas_click_armed = false;
+            engine.mouse_cancel_callbacks.dispatch(*pointer);
+        }
+        if (batch.default_prevented) {
+            if (pointer->is_primary && type == "mouseup") engine.canvas_click_armed = false;
+            continue;
+        }
+        if (type == "mousedown" || type == "mouseup") dispatch_platform_mouse_button(engine, *pointer, type == "mousedown", false);
+        else if (type == "mousemove") dispatch_platform_mouse_move(engine, *pointer, false);
+        else if (type == "wheel") dispatch_platform_wheel_event(engine, pointer->delta_y, pointer->client_x, pointer->client_y, 0, false);
+    }
 }
 
 /**
@@ -1070,6 +1194,7 @@ inline void poll_platform_events(
     }
     SDL_Event event;
     while (SDL_PollEvent(&event)) {
+        if (is_emulated_pointer_event(event)) continue;
         if (
             event.type == SDL_EVENT_QUIT ||
             event.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED) {
@@ -1081,9 +1206,14 @@ inline void poll_platform_events(
             !is_replayed_ui_event(event)) {
             continue;
         }
-        if (const auto batch = prepare_dom_platform_input(engine, event)) {
+        const auto batch = prepare_dom_platform_input(engine, event);
+        if (batch) {
             dispatch_dom_batch(engine, batch);
             if (!batch->ready()) throw std::logic_error("Synchronous frame input cannot defer its callbacks.");
+            // Listener side effects apply even when a later contextmenu listener
+            // prevents defaults or retained UI consumes the native packet.
+            sync_pointer_lock(SDL_GetWindowFromEvent(&event), engine);
+            if (is_touch_event(event)) dispatch_touch_defaults(engine, *batch);
             if (batch->default_prevented) {
                 if (event.type == SDL_EVENT_MOUSE_BUTTON_UP) engine.canvas_click_armed = false;
                 continue;
@@ -1113,6 +1243,12 @@ inline void poll_platform_events(
             event.type == SDL_EVENT_MOUSE_WHEEL) {
             apply_canvas_cursor(engine);
         }
+    }
+    if (engine.dom_input && engine.dom_input->pending_resize) {
+        engine.dom_input->pending_resize = false;
+        auto batch = std::make_shared<DomEventBatch>();
+        batch->add(dom_event(PlatformMouseEvent{}, "resize", {DomEventTarget::window()}, false, false));
+        dispatch_dom_batch(engine, batch);
     }
 }
 

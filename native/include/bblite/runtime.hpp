@@ -142,6 +142,7 @@ struct EngineOptions {
     int height = 720;
     /** Zero retains the generated default; source runtime choices store one or four. */
     std::uint32_t msaa_samples = 0;
+    double max_device_pixel_ratio = std::numeric_limits<double>::infinity();
 };
 
 /** Browser-neutral keyboard data delivered by the platform event loop. */

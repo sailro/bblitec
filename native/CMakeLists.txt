@@ -99,6 +99,15 @@ endif()
 set(VCPKG_APPLOCAL_DEPS OFF)
 
 project(babylon_lite_native LANGUAGES CXX)
+if(ANDROID)
+    set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+    if(DEFINED BBLITE_BACKEND AND NOT BBLITE_BACKEND STREQUAL "SDL_GPU")
+        message(FATAL_ERROR "Android currently requires BBLITE_BACKEND=SDL_GPU.")
+    endif()
+    if("ui:rml" IN_LIST BBLITE_RUNTIME_FEATURES AND ANDROID_PLATFORM_LEVEL LESS 29)
+        message(FATAL_ERROR "Android system-font UI requires API 29 or newer.")
+    endif()
+endif()
 include("${BBLITE_NATIVE_ROOT}/compiler-cache.cmake")
 
 set(BBLITE_GENERATED_SHADER_DIR "${BBLITE_GENERATED_DIR}/upstream/shaders")
@@ -296,9 +305,19 @@ if(APPLE)
 endif()
 add_library(bblite_pal_common OBJECT ${BBLITE_PAL_COMMON_SOURCES})
 target_link_libraries(bblite_pal_common PRIVATE bblite_features)
-add_executable(
-    bblite_native
-    "${BBLITE_GENERATED_DIR}/main.cpp"
+set(BBLITE_ENTRY_SOURCE "${BBLITE_GENERATED_DIR}/main.cpp")
+if(ANDROID)
+    set(BBLITE_ENTRY_SOURCE "${BBLITE_NATIVE_ROOT}/src/pal_android_main.cpp")
+    add_library(bblite_native SHARED "${BBLITE_ENTRY_SOURCE}")
+    set_target_properties(bblite_native PROPERTIES OUTPUT_NAME main)
+    set_source_files_properties("${BBLITE_ENTRY_SOURCE}" PROPERTIES
+        COMPILE_DEFINITIONS "BBLITE_ANDROID_ENTRY=\"${BBLITE_GENERATED_DIR}/main.cpp\"")
+    target_link_libraries(bblite_features INTERFACE log)
+else()
+    add_executable(bblite_native "${BBLITE_ENTRY_SOURCE}")
+endif()
+target_sources(
+    bblite_native PRIVATE
     # The one TU that includes the generated build stamp
     # (bblite_build_stamp): unconditional and scene-dependent by design,
     # so only it recompiles when the stamp changes within one tree.
@@ -313,7 +332,7 @@ if(BBLITE_NATIVE_CACHE_ACTIVE)
     bblite_cached_headers(BBLITE_BACKEND_HEADERS)
     target_include_directories(bblite_native PRIVATE "${BBLITE_BACKEND_HEADERS}")
     set_source_files_properties(
-        "${BBLITE_GENERATED_DIR}/main.cpp"
+        "${BBLITE_ENTRY_SOURCE}"
         "${BBLITE_NATIVE_ROOT}/src/pal_build_stamp.cpp"
         ${BBLITE_GENERATED_SOURCES}
         PROPERTIES INCLUDE_DIRECTORIES "${BBLITE_GENERATED_DIR}/upstream/include")
@@ -750,6 +769,8 @@ if("ui:rml" IN_LIST BBLITE_RUNTIME_FEATURES)
     )
     if(WIN32)
         target_link_libraries(bblite_features INTERFACE dwrite)
+    elseif(ANDROID)
+        target_link_libraries(bblite_features INTERFACE android)
     elseif(APPLE)
         find_library(BBLITE_CORE_FOUNDATION CoreFoundation REQUIRED)
         find_library(BBLITE_CORE_TEXT CoreText REQUIRED)
@@ -870,7 +891,7 @@ if("audio:engine" IN_LIST BBLITE_RUNTIME_FEATURES)
         set(BBLITE_AUDIO_DECODE_FILE OFF)
     endif()
     find_library(BBLITE_LABSOUND_LIBRARY NAMES LabSound
-        PATHS "${BBLITE_LABSOUND_DIR}/lib" NO_DEFAULT_PATH NO_CACHE)
+        PATHS "${BBLITE_LABSOUND_DIR}/lib" NO_DEFAULT_PATH NO_CMAKE_FIND_ROOT_PATH NO_CACHE)
     if(NOT BBLITE_LABSOUND_LIBRARY)
         message(
             FATAL_ERROR
@@ -927,7 +948,7 @@ if("audio:engine" IN_LIST BBLITE_RUNTIME_FEATURES)
     endif()
     if(BBLITE_AUDIO_CAPTURE OR BBLITE_AUDIO_DECODE_FILE)
         find_library(BBLITE_NYQUIST_LIBRARY NAMES libnyquist
-            PATHS "${BBLITE_LABSOUND_DIR}/lib" NO_DEFAULT_PATH NO_CACHE)
+            PATHS "${BBLITE_LABSOUND_DIR}/lib" NO_DEFAULT_PATH NO_CMAKE_FIND_ROOT_PATH NO_CACHE)
         if(NOT BBLITE_NYQUIST_LIBRARY)
             message(
                 FATAL_ERROR
@@ -1011,7 +1032,7 @@ if(BBLITE_MAIN_OPT STREQUAL "O1")
             set(BBLITE_MAIN_OPT_FLAGS -O1)
         endif()
         set_property(
-            SOURCE "${BBLITE_GENERATED_DIR}/main.cpp"
+            SOURCE "${BBLITE_ENTRY_SOURCE}"
             APPEND PROPERTY COMPILE_OPTIONS ${BBLITE_MAIN_OPT_FLAGS}
         )
         # A unit compiled at another level cannot consume the tree's PCH
@@ -1019,7 +1040,7 @@ if(BBLITE_MAIN_OPT STREQUAL "O1")
         # the generated unit includes what it needs itself, as the shipping
         # build without a PCH proves every time.
         set_property(
-            SOURCE "${BBLITE_GENERATED_DIR}/main.cpp"
+            SOURCE "${BBLITE_ENTRY_SOURCE}"
             PROPERTY SKIP_PRECOMPILE_HEADERS ON
         )
     endif()

@@ -1,0 +1,23 @@
+plugins { id 'com.android.application' }
+
+def staging = file(providers.gradleProperty('bbliteStaging').get())
+layout.buildDirectory = new File(staging, 'gradle-app')
+android {
+    namespace 'org.bblite.prototype'
+    compileSdk 35
+    buildToolsVersion '35.0.0'
+    defaultConfig {
+        applicationId providers.gradleProperty('bbliteApplicationId').getOrElse('org.bblite.prototype')
+        minSdk = (project.findProperty('bbliteMinSdk') ?: '28').toInteger()
+        targetSdk 35
+        versionCode 1
+        versionName '0.1'
+        resValue 'string', 'app_name', "Babylon Lite · ${providers.gradleProperty('bbliteScene').get()}"
+    }
+    sourceSets.main {
+        java.srcDir providers.gradleProperty('bbliteSdlJava').get()
+        assets.srcDir new File(staging, 'assets')
+        jniLibs.srcDir new File(staging, 'jniLibs')
+    }
+    packaging.jniLibs.useLegacyPackaging = false
+}

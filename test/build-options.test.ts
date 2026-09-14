@@ -111,7 +111,8 @@ test("keeps RmlUi recording backend-neutral and realizes it in scene and sprite 
         /FontChoice|std::filesystem::exists/,
     );
     assert.doesNotMatch(
-        fontArchitecture,
+        // The packaged text-symbol face is an app asset, not a guessed host font location.
+        fontArchitecture.replace('"fonts/NotoSansSymbols2-Regular.ttf"', '""'),
         /["'][^"'\r\n]*(?:[\\/]fonts[\\/]|\.tt[fc]\b|\.otf\b)[^"'\r\n]*["']/i,
     );
     assert.match(projection, /class UiRenderRecorder/);

@@ -5,6 +5,7 @@
 #include "pal_gpu_shared.hpp"
 #include "pal_platform_events.hpp"
 #include "pal_system_preferences.hpp"
+#include "pal_window.hpp"
 #if BBLITE_HAS_PBR_RENDERER
 #include "pal_camera_controls.hpp"
 #endif
@@ -27,7 +28,7 @@ struct WindowEvent final : ExternalEvent {
 struct WindowDomEvent final : ExternalEvent {
     std::shared_ptr<DomEventBatch> batch;
 };
-/** Only mouse event structs are copied; SDL events containing pointers are
+/** Only pointer event structs are copied; SDL events containing pointers are
  * never admitted to the realm mailbox. */
 struct WindowPointerEvent final : ExternalEvent {
     UiElementHandle element;
@@ -48,6 +49,7 @@ struct DocumentSnapshot {
     std::vector<UiStyleRule> styles;
     std::uint64_t style_revision = 0;
     std::set<std::string> dom_event_types;
+    std::set<std::uint32_t> dom_pointer_elements;
 };
 struct LayoutSnapshot {
     std::vector<UiClientRect> rectangles;
@@ -164,7 +166,10 @@ std::unique_ptr<DocumentSnapshot> snapshot_document(const Engine& engine) {
     snapshot->document_roots = engine.ui_document_roots;
     snapshot->styles = engine.ui_host_style_rules;
     snapshot->style_revision = engine.ui_style_revision;
-    if (engine.dom_input) snapshot->dom_event_types = engine.dom_input->event_types;
+    if (engine.dom_input) {
+        snapshot->dom_event_types = engine.dom_input->event_types;
+        snapshot->dom_pointer_elements = engine.dom_input->pointer_elements;
+    }
     return snapshot;
 }
 
@@ -177,6 +182,7 @@ void apply_document(Engine& engine, DocumentSnapshot snapshot, const std::shared
     if (!snapshot.dom_event_types.empty()) {
         auto& input = dom_input(engine);
         input.event_types = std::move(snapshot.dom_event_types);
+        input.pointer_elements = std::move(snapshot.dom_pointer_elements);
         input.batch_sink = [inbox](std::shared_ptr<DomEventBatch> batch) {
             auto event = std::make_unique<WindowDomEvent>();
             event->batch = std::move(batch);
@@ -230,9 +236,18 @@ void tick_document() {
 void dispatch_canvas_input(const WindowPointerEvent& packet) {
     auto& doc = current_document();
     if (packet.pointer.type == SDL_EVENT_WINDOW_FOCUS_LOST) {
+        for (auto& [index, target] : doc.input_targets) {
+            (void)index;
+            if (auto engine = target.engine.lock()) {
+                if (const auto batch = prepare_dom_platform_input(*engine, packet.pointer)) {
+                    dispatch_dom_batch(*engine, batch);
+                    dispatch_touch_defaults(*engine, *batch);
+                }
+            }
 #if BBLITE_HAS_PBR_RENDERER
-        for (auto& [index, target] : doc.input_targets) { (void)index; target.camera = {}; }
+            target.camera = {};
 #endif
+        }
         return;
     }
     const auto target = doc.input_targets.find(packet.element.value);
@@ -240,7 +255,13 @@ void dispatch_canvas_input(const WindowPointerEvent& packet) {
     const auto engine = target->second.engine.lock();
     if (!engine) return;
     const auto& event = packet.pointer;
-    if (event.type == SDL_EVENT_MOUSE_MOTION) {
+    if (is_touch_event(event)) {
+        const auto batch = prepare_dom_platform_input(*engine, event);
+        dispatch_dom_batch(*engine, batch);
+        if (!batch->ready()) throw std::logic_error("Canvas touch callbacks cannot defer their defaults.");
+        dispatch_touch_defaults(*engine, *batch);
+        if (batch->default_prevented) return;
+    } else if (event.type == SDL_EVENT_MOUSE_MOTION) {
         const PlatformMouseEvent mouse{.button = -1, .buttons = dom_mouse_buttons(event.motion.state),
             .client_x = event.motion.x, .client_y = event.motion.y,
             .movement_x = event.motion.xrel, .movement_y = event.motion.yrel};
@@ -255,7 +276,8 @@ void dispatch_canvas_input(const WindowPointerEvent& packet) {
 #if BBLITE_HAS_PBR_RENDERER
     if (engine->registered_scenes.empty() || !engine->registered_scenes.front()) return;
     const auto camera = engine->registered_scenes.front()->camera;
-    if (camera.value < engine->cameras.size()) handle_camera_pointer_event(event, handle_at(engine->cameras, camera), target->second.camera);
+    if (camera.value < engine->cameras.size()) handle_camera_pointer_event(event, handle_at(engine->cameras, camera), target->second.camera,
+        engine->canvas_client_width, engine->canvas_client_height);
 #endif
 }
 } // namespace
@@ -443,9 +465,10 @@ int run_window_application(WorkerEntry initialize, EngineOptions options) {
         }
         if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS)) throw std::runtime_error(SDL_GetError());
         struct Quit { ~Quit() { SDL_Quit(); } } quit;
+        configure_run_surface(options);
         using Window = std::unique_ptr<SDL_Window, decltype(&SDL_DestroyWindow)>;
-        Window window(SDL_CreateWindow(options.title.c_str(), options.width, options.height, SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY |
-            (frame_options.test_pass ? SDL_WINDOW_NOT_FOCUSABLE : 0)), &SDL_DestroyWindow);
+        Window window(SDL_CreateWindow(options.title.c_str(), options.width, options.height, run_window_flags(SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY |
+            (frame_options.test_pass ? SDL_WINDOW_NOT_FOCUSABLE : 0))), &SDL_DestroyWindow);
         if (!window) throw std::runtime_error(SDL_GetError());
         std::shared_ptr<WindowPresenter> presenter;
         const bool dawn = environment_variable("BBLITE_GPU_BACKEND") == "dawn";
@@ -461,6 +484,7 @@ int run_window_application(WorkerEntry initialize, EngineOptions options) {
             auto services = std::make_shared<WindowServices>(std::shared_ptr<OffscreenDevice>(presenter, &presenter->device()), capture_frame_count);
             Engine display;
             display.options = options;
+            dom_input(display).canvas_background = false;
             std::unique_ptr<UiRmlRuntime, decltype(&destroy_ui_rml_runtime)> ui(
                 create_ui_rml_runtime(display, window.get(), options.width, options.height), &destroy_ui_rml_runtime);
             std::atomic<bool> finished = false;
@@ -531,7 +555,16 @@ int run_window_application(WorkerEntry initialize, EngineOptions options) {
             PlatformInputReplay input_replay;
             LayoutSnapshot next_layout;
             std::shared_ptr<const LayoutSnapshot> layout;
+            const auto canvas_at = [&](double x, double y) -> UiElementHandle {
+                for (std::size_t index = 0; index < display.ui_elements.size() && index < layout->rectangles.size(); ++index) {
+                    const auto& box = layout->rectangles[index];
+                    if (display.ui_elements[index].external_gpu_canvas && x >= box.left && y >= box.top &&
+                        x < box.left + box.width && y < box.top + box.height) return {static_cast<std::uint32_t>(index)};
+                }
+                return {};
+            };
             UiElementHandle pointer_capture{};
+            std::map<std::pair<std::uint64_t, std::uint64_t>, UiElementHandle> touch_captures;
             SDL_MouseButtonFlags pointer_buttons = 0;
             std::optional<SDL_Event> pending_input;
             std::shared_ptr<DomEventBatch> pending_dispatch;
@@ -562,6 +595,7 @@ int run_window_application(WorkerEntry initialize, EngineOptions options) {
                         if (prevented) continue;
                     } else {
                         if (!SDL_PollEvent(&event)) break;
+                        if (is_emulated_pointer_event(event)) continue;
                         if (event.type == SDL_EVENT_QUIT || event.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED) running = false;
                         if (frame_options.test_pass && is_platform_input_event(event) && !is_replayed_ui_event(event)) continue;
                         if (auto batch = prepare_dom_platform_input(display, event)) {
@@ -580,9 +614,35 @@ int run_window_application(WorkerEntry initialize, EngineOptions options) {
                     const bool reaches_canvas = handle_ui_rml_event(*ui, event);
                     if (event.type == SDL_EVENT_WINDOW_FOCUS_LOST) {
                         pointer_capture = {}; pointer_buttons = 0;
+                        touch_captures.clear();
                         auto packet = std::make_unique<WindowPointerEvent>();
                         packet->pointer = event;
                         services->inbox->post(std::move(packet));
+                    }
+                    if (is_touch_event(event)) {
+                        if (!layout) continue;
+                        const auto key = std::pair{event.tfinger.touchID, event.tfinger.fingerID};
+                        auto found = touch_captures.find(key);
+                        if (event.type == SDL_EVENT_FINGER_DOWN && reaches_canvas) {
+                            const auto target = canvas_at(event.tfinger.x * layout->width, event.tfinger.y * layout->height);
+                            if (target.value != invalid_handle) found = touch_captures.insert_or_assign(key, target).first;
+                        }
+                        if (found == touch_captures.end()) continue;
+                        const auto target = found->second;
+                        if (event.type == SDL_EVENT_FINGER_UP || event.type == SDL_EVENT_FINGER_CANCELED) touch_captures.erase(found);
+                        if (target.value >= layout->rectangles.size()) continue;
+                        const auto& box = layout->rectangles[target.value];
+                        if (box.width <= 0 || box.height <= 0) continue;
+                        auto packet = std::make_unique<WindowPointerEvent>();
+                        packet->element = target;
+                        packet->pointer = event;
+                        auto& touch = packet->pointer.tfinger;
+                        touch.x = static_cast<float>((touch.x * layout->width - box.left) / box.width);
+                        touch.y = static_cast<float>((touch.y * layout->height - box.top) / box.height);
+                        touch.dx *= static_cast<float>(layout->width / box.width);
+                        touch.dy *= static_cast<float>(layout->height / box.height);
+                        services->inbox->post(std::move(packet));
+                        continue;
                     }
                     const bool move = event.type == SDL_EVENT_MOUSE_MOTION;
                     const bool down = event.type == SDL_EVENT_MOUSE_BUTTON_DOWN;
@@ -593,16 +653,7 @@ int run_window_application(WorkerEntry initialize, EngineOptions options) {
                     const double x = move ? event.motion.x : wheel ? event.wheel.mouse_x : event.button.x;
                     const double y = move ? event.motion.y : wheel ? event.wheel.mouse_y : event.button.y;
                     auto target = pointer_capture;
-                    if (target.value == invalid_handle) {
-                        for (std::size_t index = 0; index < display.ui_elements.size(); ++index) {
-                            if (!display.ui_elements[index].external_gpu_canvas || index >= layout->rectangles.size()) continue;
-                            const auto& box = layout->rectangles[index];
-                            if (x * layout->pixel_ratio >= box.left && y * layout->pixel_ratio >= box.top &&
-                                x * layout->pixel_ratio < box.left + box.width && y * layout->pixel_ratio < box.top + box.height) {
-                                target = {static_cast<std::uint32_t>(index)}; break;
-                            }
-                        }
-                    }
+                    if (target.value == invalid_handle) target = canvas_at(x * layout->pixel_ratio, y * layout->pixel_ratio);
                     if (target.value == invalid_handle || target.value >= layout->rectangles.size()) continue;
                     if (down) { pointer_capture = target; pointer_buttons |= SDL_BUTTON_MASK(event.button.button); }
                     if (up) { pointer_buttons &= ~SDL_BUTTON_MASK(event.button.button); if (!pointer_buttons) pointer_capture = {}; }
@@ -632,6 +683,9 @@ int run_window_application(WorkerEntry initialize, EngineOptions options) {
                 next_layout.width = width; next_layout.height = height;
                 const auto density = SDL_GetWindowDisplayScale(window.get());
                 next_layout.pixel_ratio = density > 0 ? density : 1;
+                const auto pixel_density = SDL_GetWindowPixelDensity(window.get());
+                update_engine_canvas_metrics(display, width, height, next_layout.pixel_ratio,
+                    pixel_density > 0 ? pixel_density : 1);
                 if (services->screen_requested.load()) {
                     const auto display_id = SDL_GetDisplayForWindow(window.get());
                     SDL_Rect bounds{}, available{};

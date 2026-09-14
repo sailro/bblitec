@@ -5,11 +5,12 @@
 
 namespace {
 int rotations = 0;
+double wheel_delta = 0;
 }
 namespace bbl::upstream {
 void apply_arc_rotate_pointer_rotation(CameraRecord&, double, double) { ++rotations; }
 void apply_arc_rotate_pointer_pan(CameraRecord&, double, double) {}
-void apply_arc_rotate_wheel(CameraRecord&, double) {}
+void apply_arc_rotate_wheel(CameraRecord&, double delta) { wheel_delta += delta; }
 void apply_free_camera_pointer_rotation(CameraRecord&, double, double) { ++rotations; }
 }
 
@@ -64,5 +65,32 @@ int main() {
     event.button.button = SDL_BUTTON_LEFT;
     bbl::pal::handle_camera_pointer_event(event, camera, state);
     assert(!state.orbiting);
+    allowed = true;
+    const auto touch = [&](SDL_EventType type, SDL_FingerID id, float x, float y) {
+        SDL_Event finger{};
+        finger.type = type; finger.tfinger.touchID = 5; finger.tfinger.fingerID = id;
+        finger.tfinger.x = x; finger.tfinger.y = y;
+        bbl::pal::handle_camera_pointer_event(finger, camera, state, 800, 400);
+    };
+    touch(SDL_EVENT_FINGER_DOWN, 10, .25f, .5f);
+    touch(SDL_EVENT_FINGER_MOTION, 10, .3f, .5f);
+    assert(rotations == 2 && state.orbiting);
+    touch(SDL_EVENT_FINGER_DOWN, 20, .7f, .5f);
+    assert(!state.orbiting && state.touches.size() == 2);
+    touch(SDL_EVENT_FINGER_MOTION, 20, .9f, .5f);
+    assert(wheel_delta < 0 && rotations == 2); // Expand zooms in without orbiting.
+    const double expanded = wheel_delta;
+    touch(SDL_EVENT_FINGER_MOTION, 20, .7f, .5f);
+    assert(wheel_delta > expanded && std::abs(wheel_delta) < .001); // Pinch reverses it.
+    touch(SDL_EVENT_FINGER_UP, 20, .7f, .5f);
+    assert(state.orbiting && state.touches.size() == 1);
+    touch(SDL_EVENT_FINGER_MOTION, 10, .35f, .5f);
+    assert(rotations == 3);
+    touch(SDL_EVENT_FINGER_CANCELED, 10, .35f, .5f);
+    assert(state.touches.empty() && !state.orbiting);
+    touch(SDL_EVENT_FINGER_DOWN, 30, .5f, .5f);
+    SDL_Event blur{}; blur.type = SDL_EVENT_WINDOW_FOCUS_LOST;
+    bbl::pal::handle_camera_pointer_event(blur, camera, state);
+    assert(state.touches.empty() && !state.orbiting);
     std::cout << "editor-pointer-check: ok\n";
 }

@@ -6,6 +6,8 @@ native/vcpkg_installed/
 tools/shader-compiler/vcpkg_installed/
 artifacts/
 .cache/
+native/android/.gradle/
+native/android/build/
 
 .idea/
 .vscode/

@@ -174,6 +174,15 @@ template <typename Driver> void exercise(int index) {
     ++state.frame; assert(driver.prepare() == FramePreparation::ready);
     ++state.frame; assert(driver.prepare() == FramePreparation::ready);
     assert((wheels == std::vector<double>{-100,100,-100,100}));
+    // Replayed mouse packets survive touch-emulation filtering on every driver.
+    replay_source = "UiClick@20:30"; state.input_replay = PlatformInputReplay{};
+    engine.input_replay_next_frame = 0;
+    engine.input_replay_pointer_x = 16; engine.input_replay_pointer_y = 35;
+    state.frame_options.test_pass = true;
+    ++state.frame; assert(driver.prepare() == FramePreparation::ready);
+    ++state.frame; assert(driver.prepare() == FramePreparation::ready);
+    assert(downs == 3 && clicks == 2);
+    state.frame_options.test_pass = false;
     replay_source.clear(); state.input_replay = PlatformInputReplay{};
     engine.options.width = 1; engine.options.height = 1;
     engine.canvas_client_width = 1; engine.canvas_client_height = 1;
@@ -181,6 +190,17 @@ template <typename Driver> void exercise(int index) {
     resize.window.windowID = SDL_GetWindowID(window); assert(SDL_PushEvent(&resize));
     assert(driver.prepare() == FramePreparation::ready);
     assert(engine.options.width == 640 && engine.options.height == 480 && resizes == 1);
+    // Canvas script hooks run before a retained UI default consumes the packet.
+    consume_ui = true;
+    for (const Uint32 type : {SDL_EVENT_FINGER_DOWN, SDL_EVENT_FINGER_UP}) {
+        SDL_Event touch{}; touch.type = type; touch.tfinger.windowID = SDL_GetWindowID(window);
+        touch.tfinger.touchID = 3; touch.tfinger.fingerID = 9;
+        touch.tfinger.x = .25f; touch.tfinger.y = .5f;
+        assert(SDL_PushEvent(&touch));
+    }
+    assert(driver.prepare() == FramePreparation::ready);
+    assert(downs == 4 && clicks == 3);
+    consume_ui = false;
     int lock_changes = 0;
     engine.pointer_lock_change_callbacks.add(1, [&] { ++lock_changes; });
     const auto lock = [&] {
@@ -200,6 +220,36 @@ template <typename Driver> void exercise(int index) {
     assert(!engine.pointer_locked && !engine.pointer_lock_requested && !relative_mouse && cursor_visible);
     assert(lock_changes == 4);
     replay_source.clear(); state.input_replay = PlatformInputReplay{};
+    // Quake requests lock on right-down and releases on right-up, while
+    // suppressing contextmenu. Neither UI consumption nor preventDefault
+    // may swallow these explicit listener requests.
+    on_dom_pointer(engine, DomEventTarget::canvas(), "pointerdown", 90, [&](const PlatformMouseEvent& event) {
+        if (event.button == 2) engine.pointer_lock_requested = true;
+    });
+    on_dom_pointer(engine, DomEventTarget::canvas(), "pointerup", 90, [&](const PlatformMouseEvent& event) {
+        if (event.button == 2) engine.pointer_lock_requested = false;
+    });
+    int locked_moves = 0;
+    on_dom_pointer(engine, DomEventTarget::canvas(), "pointermove", 90, [&](const PlatformMouseEvent& event) {
+        assert(event.buttons == 2 && event.movement_x == 4 && event.movement_y == -5);
+        ++locked_moves;
+        // Quake releases capture when a move reports that RMB is no longer held.
+        if (event.buttons == 0) engine.pointer_lock_requested = false;
+    });
+    on_dom_pointer(engine, DomEventTarget::canvas(), "contextmenu", 90, [](const PlatformMouseEvent& event) { event.prevent_default(); });
+    consume_ui = true;
+    for (const auto type : {SDL_EVENT_MOUSE_BUTTON_DOWN, SDL_EVENT_MOUSE_BUTTON_UP}) {
+        queue_pointer(type, 20, SDL_BUTTON_RIGHT);
+        assert(driver.prepare() == FramePreparation::ready);
+        assert(engine.pointer_locked == (type == SDL_EVENT_MOUSE_BUTTON_DOWN) && relative_mouse == engine.pointer_locked);
+        if (type == SDL_EVENT_MOUSE_BUTTON_DOWN) {
+            queue_pointer(SDL_EVENT_MOUSE_MOTION);
+            assert(driver.prepare() == FramePreparation::ready);
+            assert(engine.pointer_locked && relative_mouse && !cursor_visible);
+        }
+    }
+    assert(lock_changes == 6 && locked_moves == 1);
+    consume_ui = false;
     for (const Uint32 type : {SDL_EVENT_WINDOW_CLOSE_REQUESTED, SDL_EVENT_QUIT}) {
         state.running = true;
         SDL_Event close{}; close.type = type; assert(SDL_PushEvent(&close));

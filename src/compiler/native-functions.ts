@@ -209,8 +209,10 @@ export function captureDataFunctionBody(
         try {
             return {
                 parameterDeclarations,
-                lines: context.captureEmittedLines(
-                    emitBody,
+                lines: context.dataLowerer.captureStringIndexes(
+                    parameters.filter(parameter => parameter.type.kind === "string" && parameter.readOnly && !parameter.byReference)
+                        .map(parameter => ({ cpp: context.cppLocalName(parameter.name.text), declaration: parameter.name.parent.parent })),
+                    () => context.captureEmittedLines(emitBody),
                 ),
             };
         } finally {

@@ -18,7 +18,7 @@ function Assert-PackageChild([string]$Root, [string]$Path) {
 }
 
 function New-PackageOutput([string]$Root, [string]$Name) {
-    if ($Name -notmatch '^bblitec-[a-z0-9]+(?:-[a-z0-9]+)*-(?:(?:windows|linux|macos)-x64|macos-universal)$') {
+    if ($Name -notmatch '^bblitec-[a-z0-9]+(?:-[a-z0-9]+)*-(?:(?:windows|linux|macos)-x64|macos-universal|android-(?:arm64-v8a|x86-64))$') {
         throw "Invalid package name: $Name"
     }
     $rootPath = [IO.Path]::GetFullPath($Root)

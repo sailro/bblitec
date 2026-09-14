@@ -10,6 +10,7 @@ Both backends consume generated plans, state, layouts and uniform writers.
 | Binding authority | Compiled `.slots` sidecars | WGSL and generated layouts |
 | Uniform transport | Push/uniform/storage API | Queue writes and retained bind groups |
 | Windows / Linux / macOS | D3D12 / Vulkan / Metal | D3D12 / Vulkan / Metal |
+| Android | Vulkan | Unsupported |
 | Lifetime | SDL objects and fences | WebGPU objects and submission retention |
 
 Backend agreement does not establish browser parity. Measurements live in [status](status.md).
@@ -27,12 +28,14 @@ Canvas metrics update before callbacks; RAF retains its registration phase and t
   resource kind, slot order and uniform size. Large uniform blocks may use read-only storage.
 - SDL integer texture loads occupy storage-texture slots. Vulkan sampled textures use combined
   image/sampler descriptors; integer and multisampled loads use separate images.
-- SPIR-V preserves Tint's TEXCOORD indices, including gaps.
+- SPIR-V preserves varying locations. Vertex-buffer inputs compact with their pipeline attributes to fit mobile limits.
 - Metal uses `main0`, flattened sidecar bindings and buffer lengths at reserved index 30 for robust access.
 - Dawn pipeline keys include format, samples, depth, blend, cull, topology and compare. Reached layouts
   determine device limits. Vulkan teardown releases the presentation surface before the device.
 - Material pipelines use each task's sample count. Shared uploads retain per-binding sampler/UV state;
   image identity includes bytes and upload flags. Last-owner release retires cached images.
+- Android prefers Vulkan 1.3 helper-invocation discard to preserve masked edges under MSAA;
+  older devices retain the Vulkan 1.0 shader path.
 - Local probe sets own their cube arrays and uniform data. SDL stores the 64 KiB probe block in a buffer.
 - Node geometry retains original attribute/index streams and separate per-view uniforms.
 

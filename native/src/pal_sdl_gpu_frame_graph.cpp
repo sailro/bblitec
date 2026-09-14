@@ -303,7 +303,7 @@ PostProcessProgram build_post_process_program(
     info.target_info.color_target_descriptions = &target;
     info.target_info.num_color_targets = 1;
     program.pipeline = OwnedSdlPipeline{
-        SDL_CreateGPUGraphicsPipeline(state.gpu.device, &info), {state.gpu.device}};
+        create_sdl_graphics_pipeline(state.gpu.device, &info), {state.gpu.device}};
     if (!program.pipeline) {
         gpu_error("SDL_CreateGPUGraphicsPipeline post-process");
     }

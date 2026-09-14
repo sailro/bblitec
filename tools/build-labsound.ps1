@@ -24,17 +24,21 @@
 param(
     [string]$Workspace = "",
     [string]$OutputDirectory = "",
+    [ValidateSet('', 'arm64-v8a', 'x86_64')][string]$AndroidAbi = '',
+    [string]$AndroidNdk = $env:ANDROID_NDK_HOME,
     [ValidateSet('', 'x86_64', 'arm64')][string]$MacArchitecture = '',
     [switch]$StaticRuntime,
     [switch]$MinSize,
     [switch]$CoreOnly,
     [switch]$EnableCodecs,
+    [ValidateRange(0, 1024)][int]$Jobs = 0,
     [string]$CMake = $env:CMAKE_COMMAND
 )
 
 $ErrorActionPreference = "Stop"
 Import-Module (Join-Path $PSScriptRoot "bblite-tools.psm1") -Force
 $root = Get-RepositoryRoot
+if ($AndroidAbi -and ($StaticRuntime -or $MinSize -or $MacArchitecture)) { throw 'Android cannot be combined with desktop target options.' }
 if ($StaticRuntime -and -not $IsWindows) { throw "-StaticRuntime selects the Windows shipping CRT." }
 if ($MinSize -and -not $IsLinux -and -not $IsMacOS) { throw "-MinSize selects Unix shipping; use -StaticRuntime on Windows." }
 $minimalBuild = $StaticRuntime -or $MinSize
@@ -49,6 +53,7 @@ if (-not $Workspace) {
         ".cache\labsound"
     }
     if ($MacArchitecture) { $Workspace += "-$MacArchitecture" }
+    if ($AndroidAbi) { $Workspace += "-android-$AndroidAbi" }
 }
 if (-not $OutputDirectory) {
     $OutputDirectory = if ($minimalBuild) {
@@ -61,6 +66,7 @@ if (-not $OutputDirectory) {
         "artifacts\tools\labsound"
     }
     if ($MacArchitecture) { $OutputDirectory += "-$MacArchitecture" }
+    if ($AndroidAbi) { $OutputDirectory += "-android-$AndroidAbi" }
 }
 if ($CoreOnly -and $EnableCodecs) {
     throw "-CoreOnly and -EnableCodecs are mutually exclusive."
@@ -119,7 +125,7 @@ if ($StaticRuntime) {
     )
 }
 if ($coreOnlyBuild -and -not $minimalBuild) {
-    $configureArguments += if ($IsWindows) {
+    $configureArguments += if ($IsWindows -and -not $AndroidAbi) {
         '-DCMAKE_CXX_FLAGS_RELEASE=/O2 /DNDEBUG /DLABSOUND_CORE_ONLY'
     } else {
         '-DCMAKE_CXX_FLAGS_RELEASE=-O2 -DNDEBUG -DLABSOUND_CORE_ONLY'
@@ -131,7 +137,7 @@ if ($MinSize -and -not $IsWindows) {
     $configureArguments += @("-DCMAKE_CXX_FLAGS_RELEASE=$cppFlags",
         '-DCMAKE_C_FLAGS_RELEASE=-Os -DNDEBUG -ffunction-sections -fdata-sections')
 }
-$configureArguments += @(Get-PosixCompilerArguments $MacArchitecture)
+$configureArguments += if ($AndroidAbi) { @(Get-AndroidCompilerArguments $AndroidAbi $AndroidNdk) } else { @(Get-PosixCompilerArguments $MacArchitecture) }
 & $CMake @configureArguments
 if ($LASTEXITCODE -ne 0) {
     throw "LabSound CMake configuration failed."
@@ -139,7 +145,7 @@ if ($LASTEXITCODE -ne 0) {
 
 # The core target alone: the bundled backends are replaced by the SDL3
 # device in this project's own PAL.
-$parallelArguments = Get-BuildParallelArguments
+$parallelArguments = Get-BuildParallelArguments $Jobs
 & $CMake --build $build --target LabSound --config Release @parallelArguments
 if ($LASTEXITCODE -ne 0) {
     throw "LabSound build failed."
@@ -156,8 +162,8 @@ function Resolve-BuiltLibrary([string[]]$candidates, [string]$label) {
     return $found
 }
 
-$labSoundName = if ($IsWindows) { "LabSound.lib" } else { "libLabSound.a" }
-$nyquistName = if ($IsWindows) { "libnyquist.lib" } else { "liblibnyquist.a" }
+$labSoundName = if ($IsWindows -and -not $AndroidAbi) { "LabSound.lib" } else { "libLabSound.a" }
+$nyquistName = if ($IsWindows -and -not $AndroidAbi) { "libnyquist.lib" } else { "liblibnyquist.a" }
 $labSoundLib = Resolve-BuiltLibrary @(
     (Join-Path $build "bin/$labSoundName"),
     (Join-Path $build "bin/Release/$labSoundName")

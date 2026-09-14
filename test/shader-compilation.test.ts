@@ -98,8 +98,8 @@ var<uniform> nmeShadowParams: Node;`;
 
 test("offline targets select only their executable format", () => {
     for (const [target, binaries, metal] of [
-        ["d3d12", [".dxil"], false], ["vulkan", [".spv"], false],
-        ["metal", [], true], ["all", [".dxil", ".spv"], true],
+        ["d3d12", [".dxil"], false], ["vulkan", [".spv", ".demote.spv"], false],
+        ["metal", [], true], ["all", [".dxil", ".spv", ".demote.spv"], true],
     ] as const) {
         const formats = offlineShaderFormats(target);
         assert.deepEqual(formats.binaries.map(format => format.extension), binaries);
@@ -150,6 +150,21 @@ function fixtureRoot(t: { after: (cleanup: () => void) => void }): string {
     copyFileSync("upstream/tint.json", join(root, "upstream/tint.json"));
     return root;
 }
+
+test("Vulkan discard has a helper-invocation variant and a baseline device fallback", { skip: !tools.tint || !tools.dxc }, t => {
+    const root = fixtureRoot(t);
+    const directory = shaderDirectory(root, "discard", `
+@fragment fn main(@builtin(position) p: vec4f) -> @location(0) vec4f {
+    if (p.x < 20.0) { discard; }
+    return vec4f(dpdx(p.x), 0.0, 0.0, 1.0);
+}`);
+    compileOfflineShaders({ directories: [directory], repositoryRoot: root, target: "vulkan", tools });
+    for (const [extension, discard, absent] of [[".spv", 252, 5380], [".demote.spv", 5380, 252]] as const) {
+        const opcodes = new Set([...spirvInstructions(readFileSync(join(directory, `simple.frag${extension}`)))].map(i => i.opcode));
+        assert.ok(opcodes.has(discard), extension);
+        assert.ok(!opcodes.has(absent), extension);
+    }
+});
 
 test("Metal uses SDL buffer slots and preserves bounds checks across reordered runtime arrays", { skip: !tools.tint }, t => {
     const root = fixtureRoot(t);
@@ -334,7 +349,9 @@ struct Output {
         return { output, entryPoint: stage === "vert" ? "vertexMain" : "fragmentMain", pinnedBindings: false };
     });
     writeFileSync(join(directory, "composition.json"), JSON.stringify({ modules }));
+    writeFileSync(join(directory, "sparse.vert.demote.spv"), "stale fragment-only variant");
     compileOfflineShaders({ repositoryRoot: root, directories: [directory], tools, target: "vulkan" });
+    assert.equal(existsSync(join(directory, "sparse.vert.demote.spv")), false);
     const locations = (stage: string): Map<string, number> => {
         const bytes = readFileSync(join(directory, `sparse.${stage}.spv`));
         const names = new Map<number, string>();
@@ -406,7 +423,7 @@ test("target switches remove unrequested products and specialize all formats", {
     for (const target of ["all", "metal", "d3d12", "vulkan"] as const) {
         compileOfflineShaders({ repositoryRoot: root, directories: [directory], tools, target });
         const formats = offlineShaderFormats(target);
-        for (const extension of [".msl", ".dxil", ".spv"]) {
+        for (const extension of [".msl", ".dxil", ".spv", ".demote.spv"]) {
             assert.equal(existsSync(join(directory, `simple.frag${extension}`)),
                 formats.tint.includes(extension) || formats.binaries.some(format => format.extension === extension), `${target}: ${extension}`);
         }

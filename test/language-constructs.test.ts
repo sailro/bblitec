@@ -1019,6 +1019,34 @@ check("string-indexing", `
     if (names.join(",") !== "xyz,yxz,zyx") throw new Error("static string projection");
 `);
 
+check("string-indexing-parameter-lifetime", `
+    function scan(text: string): number {
+        let sum = 0;
+        const n = text.length;
+        for (let i = 0; i < n;) sum += text[i++]!.charCodeAt(0);
+        for (let i = n - 1; i >= 0; i--) sum -= text.charCodeAt(i);
+        if (text[n] !== undefined || text[-1] !== undefined || text[0.5] !== undefined ||
+            !Number.isNaN(text.charCodeAt(Infinity))) throw new Error("indexed bounds");
+        return sum;
+    }
+    if (scan("aé😀Z".repeat(20000)) !== 0 || scan("different") !== 0 || scan("") !== 0)
+        throw new Error("repeated string traversal");
+    function replace(text: string): string {
+        const first = text[0];
+        function change(): number { text = "cd"; return 1; }
+        const selected = text[change()];
+        return first + selected + text[0];
+    }
+    const runtimeText = "ab".repeat(Math.trunc(Math.random()) + 1);
+    if (replace(runtimeText) !== "abc") throw new Error("mutable parameter snapshot");
+    function retained(text: string): () => string | undefined {
+        const first = text[0];
+        return () => first + text[1];
+    }
+    const first = retained("ab"), second = retained("cd");
+    if (first() !== "ab" || second() !== "cd") throw new Error("retained string capture");
+`);
+
 check("literal-key-record-lookup", `
     type Mode = "low" | "high";
     interface Settings { amount: number; enabled: boolean; }

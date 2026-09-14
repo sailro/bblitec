@@ -2,21 +2,32 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <cstdlib>
 #include <limits>
+#include <map>
 #include <vector>
+
+#if defined(__APPLE__)
+#include <ft2build.h>
+#include FT_FREETYPE_H
+#include <memory>
+#include <type_traits>
+#endif
 
 #if defined(_WIN32)
 #include <dwrite.h>
 #include <wrl/client.h>
 
 #include "pal_win32_text.hpp"
+#elif defined(__ANDROID__)
+#include "pal_android_font.hpp"
+#include <android/font.h>
+#include <android/font_matcher.h>
+#include <android/system_fonts.h>
+#include FT_MULTIPLE_MASTERS_H
 #elif defined(__APPLE__)
 #include <CoreFoundation/CoreFoundation.h>
 #include <CoreText/CoreText.h>
-#include <ft2build.h>
-#include FT_FREETYPE_H
-#include <memory>
-#include <type_traits>
 #else
 #include <fontconfig/fontconfig.h>
 #endif
@@ -126,6 +137,87 @@ std::optional<SystemFontFace> find_platform_font(
         std::filesystem::path(std::move(path)),
         std::string(family),
         static_cast<int>(face->GetIndex())};
+}
+
+#elif defined(__ANDROID__)
+
+std::optional<SystemFontFace> android_font_face(const AFont* font, int weight) {
+    if (!font) return std::nullopt;
+    const char* path = AFont_getFontFilePath(font);
+    if (!path) return std::nullopt;
+    const auto library = android_font_library();
+    if (!library) return std::nullopt;
+    FT_Face raw_face = nullptr;
+    const auto collection_index = AFont_getCollectionIndex(font);
+    if (FT_New_Face(library, path, collection_index, &raw_face)) return std::nullopt;
+    FontOwner<FT_Face, &FT_Done_Face> face(raw_face, FT_Done_Face);
+    if (!face->family_name) return std::nullopt;
+    int index = static_cast<int>(collection_index);
+    // RmlUi accepts FreeType's face index, including a variable font's named
+    // instance in its high bits. Preserve the requested weight when available.
+    FT_MM_Var* variations = nullptr;
+    if (!FT_Get_MM_Var(face.get(), &variations)) {
+        int distance = std::numeric_limits<int>::max();
+        for (FT_UInt axis = 0; axis < variations->num_axis; ++axis) {
+            if (variations->axis[axis].tag != FT_MAKE_TAG('w', 'g', 'h', 't')) continue;
+            for (FT_UInt style = 0; style < variations->num_namedstyles; ++style) {
+                const int candidate = static_cast<int>(variations->namedstyle[style].coords[axis] / 65536);
+                const int difference = std::abs(candidate - weight);
+                if (difference < distance) {
+                    distance = difference;
+                    index = static_cast<int>(collection_index | ((style + 1) << 16));
+                }
+            }
+        }
+        FT_Done_MM_Var(library, variations);
+    }
+    return SystemFontFace{path, face->family_name, index};
+}
+
+std::optional<SystemFontFace> find_platform_font(std::string_view family, int weight) {
+    if (family == "sans-serif" || family == "serif" || family == "monospace") {
+        FontOwner<AFontMatcher*, &AFontMatcher_destroy> matcher(AFontMatcher_create(), AFontMatcher_destroy);
+        if (!matcher) return std::nullopt;
+        AFontMatcher_setStyle(matcher.get(), static_cast<std::uint16_t>(std::clamp(weight, 1, 1000)), false);
+        const std::uint16_t text[] = {'A'};
+        FontOwner<AFont*, &AFont_close> font(
+            AFontMatcher_match(matcher.get(), std::string(family).c_str(), text, 1, nullptr), AFont_close);
+        return android_font_face(font.get(), weight);
+    }
+    // Named fallback families must actually exist; the matcher otherwise
+    // returns its default font even for a missing emoji or symbol family.
+    struct NamedFont {
+        FontOwner<AFont*, &AFont_close> font;
+        std::string family;
+    };
+    static const auto fonts = [] {
+        std::vector<NamedFont> result;
+        const auto library = android_font_library();
+        FontOwner<ASystemFontIterator*, &ASystemFontIterator_close> iterator(
+            ASystemFontIterator_open(), ASystemFontIterator_close);
+        if (!iterator || !library) return result;
+        while (AFont* next = ASystemFontIterator_next(iterator.get())) {
+            FontOwner<AFont*, &AFont_close> font(next, AFont_close);
+            if (AFont_isItalic(font.get())) continue;
+            FT_Face raw_face = nullptr;
+            if (FT_New_Face(library, AFont_getFontFilePath(font.get()), AFont_getCollectionIndex(font.get()), &raw_face)) continue;
+            FontOwner<FT_Face, &FT_Done_Face> face(raw_face, FT_Done_Face);
+            if (face->family_name) result.push_back({std::move(font), face->family_name});
+        }
+        return result;
+    }();
+    const AFont* best = nullptr;
+    int distance = std::numeric_limits<int>::max();
+    for (const auto& candidate : fonts) {
+        if (candidate.family != family) continue;
+        const int difference = std::abs(static_cast<int>(AFont_getWeight(candidate.font.get())) - weight);
+        if (difference < distance) {
+            best = candidate.font.get();
+            distance = difference;
+            if (distance == 0) break;
+        }
+    }
+    return android_font_face(best, weight);
 }
 
 #elif defined(__APPLE__)
@@ -307,7 +399,15 @@ std::optional<SystemFontFace> find_system_font(
     std::string_view family,
     int weight) {
     if (family.empty()) return std::nullopt;
+#ifdef __ANDROID__
+    static thread_local std::map<std::pair<std::string, int>, std::optional<SystemFontFace>> fonts;
+    const auto key = std::pair{std::string(family), weight};
+    const auto found = fonts.find(key);
+    if (found != fonts.end()) return found->second;
+    return fonts.emplace(key, find_platform_font(family, weight)).first->second;
+#else
     return find_platform_font(family, weight);
+#endif
 }
 
 } // namespace bbl::pal

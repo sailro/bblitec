@@ -9,6 +9,9 @@
 #pragma once
 
 #include <bblite/runtime.hpp>
+#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
+#include <bblite/pal_ui.hpp>
+#endif
 
 #include <bblite/upstream/camera_controls.hpp>
 
@@ -21,6 +24,7 @@ namespace bbl::pal {
 struct CameraPointerState {
     bool orbiting = false;
     bool panning = false;
+    std::map<std::pair<std::uint64_t, std::uint64_t>, std::array<double, 2>> touches;
 };
 
 struct SurfaceCameraPointerState {
@@ -37,8 +41,49 @@ inline constexpr double nominal_frame_milliseconds = 1000.0 / 60.0;
 inline void handle_camera_pointer_event(
     const SDL_Event& event,
     CameraRecord& camera,
-    CameraPointerState& state) {
+    CameraPointerState& state, double touch_width = 1, double touch_height = 1) {
+    if (event.type == SDL_EVENT_WINDOW_FOCUS_LOST) { state = {}; return; }
     if (!camera.controls_enabled) {
+        return;
+    }
+
+    if (is_touch_event(event)) {
+        const auto key = std::pair{event.tfinger.touchID, event.tfinger.fingerID};
+        const std::array<double, 2> point{event.tfinger.x * touch_width, event.tfinger.y * touch_height};
+        const auto span = [&] {
+            auto first = state.touches.begin(), second = std::next(first);
+            return std::hypot(first->second[0] - second->second[0], first->second[1] - second->second[1]);
+        };
+        if (event.type == SDL_EVENT_FINGER_DOWN) {
+            if (camera.should_handle_pointer_down && !camera.should_handle_pointer_down()) { state = {}; return; }
+            state.touches.insert_or_assign(key, point);
+            state.orbiting = state.touches.size() == 1;
+            state.panning = false;
+            return;
+        }
+        const auto found = state.touches.find(key);
+        if (found == state.touches.end()) return;
+        if (event.type == SDL_EVENT_FINGER_UP || event.type == SDL_EVENT_FINGER_CANCELED) {
+            state.touches.erase(found);
+            state.orbiting = state.touches.size() == 1;
+            return;
+        }
+        SDL_Event translated{};
+        if (state.touches.size() == 1) {
+            translated.type = SDL_EVENT_MOUSE_MOTION;
+            translated.motion.xrel = static_cast<float>(point[0] - found->second[0]);
+            translated.motion.yrel = static_cast<float>(point[1] - found->second[1]);
+        } else if (state.touches.size() == 2) {
+            const double previous = span();
+            found->second = point;
+            const double current = span();
+            if (previous <= 0 || current <= 0) return;
+            translated.type = SDL_EVENT_MOUSE_WHEEL;
+            // A proportional gesture produces the same zoom at every DPI.
+            translated.wheel.y = static_cast<float>(touch_wheel_delta_y(previous, current) / -100);
+        }
+        found->second = point;
+        handle_camera_pointer_event(translated, camera, state);
         return;
     }
 
@@ -112,32 +157,35 @@ inline void dispatch_surface_camera_pointer(
     if (engine.surface_canvas) {
         if (surfaces.captured.value < engine.cameras.size()) {
             const auto index = surfaces.captured.value;
-            handle_camera_pointer_event(event, engine.cameras[index], surfaces.pointer);
-            if (!surfaces.pointer.orbiting && !surfaces.pointer.panning) surfaces.captured = {};
+            handle_camera_pointer_event(event, engine.cameras[index], surfaces.pointer, engine.canvas_client_width, engine.canvas_client_height);
+            if (!surfaces.pointer.orbiting && !surfaces.pointer.panning && surfaces.pointer.touches.empty()) surfaces.captured = {};
             return;
         }
         double x = 0, y = 0;
         if (event.type == SDL_EVENT_MOUSE_BUTTON_DOWN) {
-            x = event.button.x; y = event.button.y;
+            x = event.button.x * engine.canvas_window_to_client_scale;
+            y = event.button.y * engine.canvas_window_to_client_scale;
         } else if (event.type == SDL_EVENT_MOUSE_WHEEL) {
-            x = event.wheel.mouse_x; y = event.wheel.mouse_y;
+            x = event.wheel.mouse_x * engine.canvas_window_to_client_scale;
+            y = event.wheel.mouse_y * engine.canvas_window_to_client_scale;
+        } else if (event.type == SDL_EVENT_FINGER_DOWN) {
+            x = event.tfinger.x * engine.canvas_client_width;
+            y = event.tfinger.y * engine.canvas_client_height;
         } else return;
-        x *= engine.canvas_window_to_client_scale;
-        y *= engine.canvas_window_to_client_scale;
         for (const auto& scene : engine.registered_scenes) {
             if (!scene || !scene->surface_canvas || scene->camera.value >= engine.cameras.size()) continue;
-            const auto& rect = engine.ui_elements.at(scene->surface_canvas->value).client_rect;
+            const auto rect = ui_get_client_rect(engine, *scene->surface_canvas);
             if (x < rect.left || y < rect.top || x >= rect.left + rect.width || y >= rect.top + rect.height) continue;
             const auto index = scene->camera.value;
-            handle_camera_pointer_event(event, engine.cameras[index], surfaces.pointer);
-            if (surfaces.pointer.orbiting || surfaces.pointer.panning) surfaces.captured = scene->camera;
+            handle_camera_pointer_event(event, engine.cameras[index], surfaces.pointer, engine.canvas_client_width, engine.canvas_client_height);
+            if (surfaces.pointer.orbiting || surfaces.pointer.panning || !surfaces.pointer.touches.empty()) surfaces.captured = scene->camera;
             return;
         }
         return;
     }
 #endif
     (void)surfaces;
-    handle_camera_pointer_event(event, primary, primary_state);
+    handle_camera_pointer_event(event, primary, primary_state, engine.canvas_client_width, engine.canvas_client_height);
 }
 
 inline void update_camera(CameraRecord& camera) {

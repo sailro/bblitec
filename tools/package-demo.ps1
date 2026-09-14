@@ -1,5 +1,10 @@
 param(
+    [ValidateSet('desktop', 'android')][string]$Platform = 'desktop',
     [string]$Scene = "scene1",
+    [string]$Sdk = $env:ANDROID_HOME,
+    [string]$Device,
+    [ValidateSet('arm64-v8a', 'x86_64')][string]$Abi = 'arm64-v8a',
+    [int]$Jobs = 8,
     [string]$OutputRoot = "artifacts\releases",
     [string]$BuildDirectory = "",
     [string]$Arm64BuildDirectory = "",
@@ -20,6 +25,11 @@ Import-Module (Join-Path $PSScriptRoot "bblite-tools.psm1") -Force
 Import-Module (Join-Path $PSScriptRoot "image-codecs.psm1") -Force
 Import-Module (Join-Path $PSScriptRoot "package-output.psm1") -Force
 $root = Get-RepositoryRoot
+if ($Platform -eq 'android') {
+    if ($BuildDirectory -or $Arm64BuildDirectory -or $ExpectBackend -eq 'DAWN') { throw 'Android packaging builds its own SDL_GPU APK.' }
+    & (Join-Path $PSScriptRoot 'package-android.ps1') -Scene $Scene -Sdk $Sdk -Device $Device -Abi $Abi -Jobs $Jobs -OutputRoot $OutputRoot
+    return
+}
 $hostArchitecture = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture
 if ((-not $IsWindows -and -not $IsLinux -and -not $IsMacOS) -or
     ($hostArchitecture -ne 'X64' -and -not ($IsMacOS -and $hostArchitecture -eq 'Arm64'))) {

@@ -123,7 +123,7 @@ struct SdlTextRenderer {
         descriptor.target_info.depth_stencil_format = depth_format;
         descriptor.target_info.has_depth_stencil_target = info.has_depth;
         created->pipeline = retain_sdl_text_resource<SdlTextPipelineLease>(owner,
-            SDL_CreateGPUGraphicsPipeline(owner->device, &descriptor), "pipeline");
+            create_sdl_graphics_pipeline(owner->device, &descriptor), "pipeline");
         if (owner->capture.enabled()) created->capture = text_pipeline_capture(info,
             sdl_text_format_name(color_format), info.has_depth ? sdl_text_format_name(depth_format) : "");
         pipelines.emplace(key, created);

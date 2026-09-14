@@ -11167,9 +11167,11 @@ PickingInfo pick_dawn_scene(
         return PickingInfo{};
     }
     const CameraRecord& camera = handle_at(engine.cameras, scene.camera);
-    // Native has no CSS box, so the pin's backing/client scale is 1.
+    // The picker's public coordinates are CSS pixels, as in the pin.
     const double width = static_cast<double>(engine.options.width);
     const double height = static_cast<double>(engine.options.height);
+    x *= width / engine.canvas_client_width;
+    y *= height / engine.canvas_client_height;
     if (x < 0.0 || y < 0.0 || x >= width || y >= height) {
         return PickingInfo{};
     }

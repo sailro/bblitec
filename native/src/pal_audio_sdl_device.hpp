@@ -27,9 +27,11 @@
 #include "LabSound/extended/VectorMath.h"
 
 #include <SDL3/SDL.h>
+#include "pal_runtime_trace.hpp"
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <memory>
 #include <vector>
 
@@ -197,9 +199,15 @@ private:
         if (frames <= 0) return;
 
         self->render(frames, self->scratch_.data(), nullptr);
-        SDL_PutAudioStreamData(
+        const bool submitted = SDL_PutAudioStreamData(
             stream, self->scratch_.data(),
             frames * channels * static_cast<int>(sizeof(float)));
+        if (self->stream_.trace && submitted) {
+            self->stream_.frames += static_cast<std::uint64_t>(frames);
+            for (int sample = 0; sample < frames * channels; ++sample) {
+                self->stream_.peak = std::max(self->stream_.peak, std::abs(self->scratch_[static_cast<std::size_t>(sample)]));
+            }
+        }
     }
 
     static constexpr float kLow = -1.0f;
@@ -208,11 +216,15 @@ private:
     struct StreamOwner {
         bool initialized = SDL_InitSubSystem(SDL_INIT_AUDIO);
         SDL_AudioStream* value = nullptr;
+        bool trace = runtime_trace_enabled();
+        std::uint64_t frames = 0;
+        float peak = 0.f;
         StreamOwner() = default;
         StreamOwner(const StreamOwner&) = delete;
         StreamOwner& operator=(const StreamOwner&) = delete;
         ~StreamOwner() {
             if (value) SDL_DestroyAudioStream(value);
+            if (trace && value) std::cerr << "[bblite trace] audio playback frames=" << frames << " peak=" << peak << '\n';
             if (initialized) SDL_QuitSubSystem(SDL_INIT_AUDIO);
         }
     };

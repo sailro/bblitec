@@ -72,6 +72,45 @@ Development uses host x64-osx/arm64-osx dependencies. CoreText/FreeType supplies
 provides floating formatting on systems lacking floating `to_chars`. Maintained Dawn patches support
 older SDK capability checks. Apple Silicon runtime validation requires an Apple Silicon host.
 
+### Android
+
+Requires Java 17, SDK platform/build-tools 35 and NDK 28.2.13676358.
+Set ANDROID_HOME to a writable SDK; Android Studio is optional. Use the Windows CMake path above.
+
+```powershell
+sdkmanager --sdk_root=$env:ANDROID_HOME "platform-tools" "platforms;android-35" "build-tools;35.0.0" "ndk;28.2.13676358"
+npm run android -- -Scene torus-states -Sdk C:/Dev/android-sdk -Device <serial> -Install
+npm run android:sweep -- --sdk C:/Dev/android-sdk --device emulator-5554
+npm run package:demo -- -Platform android -Scene torus-states -Sdk C:/Dev/android-sdk -Device <serial>
+npm run demos:release -- --platform android --scene torus-states --sdk C:/Dev/android-sdk --device <serial>
+```
+
+ARM64 is the default; use -Abi x86_64 (--abi x86_64 for npm workflows) for emulators.
+-Install opens the app; -Smoke requires native exit 0 and a PNG. APKs/logs are in
+artifacts/android/<scene>/<abi>. Development installs share org.bblite.prototype.
+Reached UI/audio dependencies build automatically into artifacts/tools/<library>-android-<abi>.
+Their input fingerprints permit reuse; sweep workers consume one prepared dependency set.
+
+Packaging builds Release native code in a debug-signed APK, embeds assets/notices, validates the
+staged APK on --device, and publishes a ZIP/receipt under artifacts/releases. Each demo has its own
+application ID. Existing packages move to .replaced/.
+Android release workflows serialize shared dependency and device work.
+
+The sweep builds four APKs concurrently after preparing dependencies, then captures serially at the
+registered pose and golden dimensions. It preserves thresholds, restores display size and distinguishes
+unsupported features, failures and mismatches. --scene is repeatable; --parallel and --jobs control builds.
+Evidence is in artifacts/android/sweep/<run-id>. Standalone builds must run outside an active sweep.
+
+Use adb devices -l to select an authorized, unlocked phone or a Vulkan-capable emulator:
+
+```powershell
+sdkmanager --sdk_root=$env:ANDROID_HOME "emulator" "system-images;android-35;google_apis;x86_64"
+avdmanager create avd -n bblite-api35 -k "system-images;android-35;google_apis;x86_64"
+emulator -avd bblite-api35 -gpu host -no-snapshot
+```
+
+Emulator captures do not qualify physical-device performance. See [limits](features.md#android).
+
 ## Core workflow
 
 Commands follow `npm run scene --`. Targets are registry IDs, local TypeScript paths or `all`.

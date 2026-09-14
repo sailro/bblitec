@@ -46,7 +46,7 @@ canvas at its page position. Build switches are in [development](development.md#
 | Content | textContent/innerText, bounded innerHTML, id/class/type, static attributes | Compound text writes; unsupported root replacement/removal |
 | Styles/classes | cssText, static style fields/methods, classList add/remove/forced toggle | Nonempty setProperty priority; dynamic property names |
 | Queries | Literal querySelector/querySelectorAll/matches/closest; attached document ID lookup | Interaction states, :scope, dynamic selectors, pseudo-element queries |
-| Pointer/keyboard | Movement, buttons, boundaries, click/dblclick, wheel, contextmenu, keyboard | One mouse pointer; no AbortSignal, explicit capture lifecycle or coalesced events |
+| Pointer/keyboard | Mouse and multi-touch pointers, boundaries, click/dblclick, wheel, contextmenu, keyboard | No AbortSignal, explicit capture lifecycle or coalesced events |
 | Focus/forms | Focus, activeElement, button navigation, text/password inputs, textarea, range values/input | Full browser form behavior and broader constructed input types |
 | Boolean attributes | hidden/disabled reflect presence; disabled controls cannot focus/activate | hidden=until-found refuses |
 
@@ -57,6 +57,8 @@ Generated boxes are excluded. Root documentElement/head/body identities are dist
 Common input dispatch preserves target/capture/bubble, callback identity, removal, once, capture,
 passive, stopPropagation and stopImmediatePropagation. Passive listeners cannot cancel defaults.
 UI runs before cameras; preventDefault suppresses default UI actions and camera propagation.
+Touch contacts retain independent IDs and their initial targets through release or cancellation;
+only the primary contact emits compatibility mouse events. Focus loss cancels active contacts.
 Window keyboard listeners precede default actions. Focus/form callbacks use per-element dispatch.
 
 Event flags, phases, modifiers, pointer IDs/types and target/currentTarget/relatedTarget are represented.
@@ -69,7 +71,7 @@ Beforeunload and page-history caching are unsupported; native pagehide has persi
 
 Attribute names use HTML ASCII casing. Removal updates retained/rendered state; text/markup replacement
 removes prior children. Source append arguments finish before insertion. Canvas backing dimensions are
-drawable pixels; client dimensions are CSS pixels. Synchronous rectangle reads flush pending layout.
+drawable pixels; client dimensions and bounding rectangles are CSS pixels. Rectangle reads flush pending layout.
 
 ### File transfer controls
 
@@ -142,8 +144,12 @@ Packaged raster images expose decode/complete/natural dimensions before engine c
 on realm microtasks; empty/broken images reject and source changes invalidate requests. Network/responsive
 sources, load/error events and distinct DOMException values are unsupported.
 
-Fonts use DirectWrite on Windows, CoreText/fontconfig discovery with FreeType on macOS/Linux. Color fonts
-retain PNG decoding. Font coverage, baseline/line-height rounding, emoji/ZWJ shaping and glyph rasterization
+Fonts use DirectWrite on Windows and FreeType with CoreText, Fontconfig or Android system-font discovery
+on macOS, Linux and Android. Android resolves generic families through its font matcher and named families
+through its installed-font list; variable fonts select the nearest named weight. Android's text renderer
+rasterizes color emoji, including COLRv1; bundled Noto Sans Symbols 2 supplies monochrome text symbols.
+Other color fonts retain PNG decoding. Font coverage,
+baseline/line-height rounding, emoji/ZWJ shaping and glyph rasterization
 can differ from Chromium. Relative transition units resolve at transition start.
 
 | Maintained RmlUi patch | Contract |
@@ -168,6 +174,7 @@ can differ from Chromium. Relative transition units resolve at transition start.
 | `rmlui-object-fit.patch` | Image fitting |
 | `rmlui-overflow-wrap.patch` | Emergency wrapping |
 | `rmlui-transform-key-ownership.patch` | Transition key lifetime |
+| `rmlui-zzz-android-charconv.patch` | Locale-independent CSS number parsing with NDK libc++ |
 
 ## Rendering
 

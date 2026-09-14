@@ -293,11 +293,19 @@ std::string parent_path(const std::string& path) {
 }
 
 std::string executable_directory() {
+#if defined(__ANDROID__)
+    const char* base_path = SDL_GetAndroidInternalStoragePath();
+    if (!base_path || !*base_path) {
+        throw std::runtime_error("Android internal storage is unavailable.");
+    }
+    return join_path(base_path, "payload");
+#else
     const char* base_path = SDL_GetBasePath();
     if (!base_path || !*base_path) {
         throw std::runtime_error("SDL_GetBasePath failed.");
     }
     return std::filesystem::path(base_path).lexically_normal().string();
+#endif
 }
 
 std::string environment_variable(const char* name) {

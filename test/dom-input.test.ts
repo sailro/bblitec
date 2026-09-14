@@ -1,9 +1,9 @@
-import {mkdirSync, writeFileSync} from "node:fs";
+import {mkdirSync, readFileSync, writeFileSync} from "node:fs";
 import {join, resolve} from "node:path";
 import test from "node:test";
 import assert from "node:assert/strict";
 import {compileSource} from "../src/compiler.js";
-import {runRmlUiFixture} from "./native-fixture.js";
+import {cppFunction, runRmlUiFixture} from "./native-fixture.js";
 
 test("generated DOM listeners receive retained SDL paths and control native defaults", t => {
     const directory = resolve("artifacts/dom-input");
@@ -21,7 +21,7 @@ test("generated DOM listeners receive retained SDL paths and control native defa
         function mark(element: HTMLElement): void { element.setAttribute("data-target", "yes"); }
         const targets: EventTarget[] = [];
         const parent = document.createElement("div");
-        parent.style.cssText = "position:absolute;left:20px;top:20px;width:200px;height:80px;pointer-events:auto";
+        parent.style.cssText = "position:absolute;left:20px;top:20px;width:200px;height:80px";
         const button = document.createElement("button");
         button.id = "button";
         button.style.cssText = "position:absolute;left:0;top:0;width:80px;height:40px";
@@ -66,6 +66,8 @@ test("generated DOM listeners receive retained SDL paths and control native defa
         globalThis.close();
     `, {fileName:join(directory, "entry.ts")});
     writeFileSync(join(directory, "program.hpp"), result.cpp);
+    writeFileSync(join(directory, "focus.hpp"), "namespace bbl {\n" +
+        cppFunction(readFileSync("src/lowering/scene-lowerer.ts", "utf8"), "void focus_canvas(") + "\n}");
     assert.throws(() => compileSource(`
         const worker = new Worker(new URL("./worker.ts", import.meta.url), {type:"module"});
         worker.terminate();

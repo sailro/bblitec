@@ -4,6 +4,9 @@
 #include <bblite/runtime.hpp>
 #include <bblite/pal_offscreen.hpp>
 #include <SDL3/SDL.h>
+#ifdef __ANDROID__
+#include <jni.h>
+#endif
 
 #include "pal_runtime_trace.hpp"
 
@@ -27,6 +30,41 @@ inline void trace_run_window(const char* action, SDL_Window* window) {
 #endif
               << " position=" << x << ',' << y
               << " size=" << width << 'x' << height << '\n';
+}
+
+inline void configure_run_surface(const EngineOptions& options) {
+#ifdef __ANDROID__
+    SDL_SetHint(SDL_HINT_ORIENTATIONS, "LandscapeLeft LandscapeRight");
+    auto* env = static_cast<JNIEnv*>(SDL_GetAndroidJNIEnv());
+    auto activity = static_cast<jobject>(SDL_GetAndroidActivity());
+    if (!env || !activity) throw std::runtime_error("Android activity unavailable.");
+    const jclass type = env->GetObjectClass(activity);
+    const jmethodID configure = env->GetMethodID(type, "configureSurface", "(D)Z");
+    const bool configured = configure && env->CallBooleanMethod(activity, configure, options.max_device_pixel_ratio);
+    const bool exception = env->ExceptionCheck();
+    if (exception) env->ExceptionClear();
+    env->DeleteLocalRef(type);
+    env->DeleteLocalRef(activity);
+    if (!configured || exception) throw std::runtime_error("Android surface configuration failed.");
+#else
+    (void)options;
+#endif
+}
+
+inline SDL_WindowFlags run_window_flags(SDL_WindowFlags flags) {
+#ifdef __ANDROID__
+    flags |= SDL_WINDOW_FULLSCREEN;
+#endif
+    return flags;
+}
+
+inline float window_render_density(SDL_Window* window, [[maybe_unused]] const EngineOptions& options) {
+    float density = SDL_GetWindowDisplayScale(window);
+    if (density <= 0) density = 1;
+#ifdef __ANDROID__
+    density = std::min(density, static_cast<float>(options.max_device_pixel_ratio));
+#endif
+    return density;
 }
 
 class SdlWindowRun {
@@ -63,8 +101,9 @@ class SdlWindowRun {
             trace_run_window("reuse", window_);
             return window_;
         }
+        configure_run_surface(options);
         window_ = SDL_CreateWindow(options.title.c_str(), options.width,
-                                   options.height, flags);
+                                   options.height, run_window_flags(flags));
         if (window_) trace_run_window("create", window_);
         return window_;
     }
@@ -91,10 +130,9 @@ inline bool initialize_run_sdl(SDL_InitFlags flags) {
 
 inline SDL_Window* acquire_run_window(
     const EngineOptions& options, SDL_WindowFlags flags) {
-    return active_window_run
-        ? active_window_run->acquire(options, flags)
-        : SDL_CreateWindow(options.title.c_str(), options.width,
-                           options.height, flags);
+    if (active_window_run) return active_window_run->acquire(options, flags);
+    configure_run_surface(options);
+    return SDL_CreateWindow(options.title.c_str(), options.width, options.height, run_window_flags(flags));
 }
 
 inline void release_run_window(SDL_Window* window) {

@@ -1,0 +1,13 @@
+{
+  "scene": "sandblox",
+  "notes": "Held movement keys reach the focused canvas with retained UI present.",
+  "phases": [
+    { "id": "idle", "frame": 120 },
+    { "id": "walk", "frame": 120, "tape": ["-*10", "+KeyW", "-*90", "-KeyW"] }
+  ],
+  "expect": [
+    { "kind": "capture-differs", "phase": "walk", "vs": "idle", "path": "camera" },
+    { "kind": "capture-compare", "phase": "walk", "vs": "idle", "path": "camera.target[2]", "op": ">", "notes": "The camera target follows the character root position." },
+    { "kind": "image-mad", "phase": "walk", "vs": "idle", "min": 1 }
+  ]
+}

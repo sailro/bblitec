@@ -1,0 +1,186 @@
+{
+  "findings": [
+    {
+      "applied": true,
+      "summary": "Reuse Assert-PackageChild for staging cleanup and join_path for the Android payload directory."
+    },
+    {
+      "applied": true,
+      "summary": "Remove duplicate force-stop and redundant stream flushes."
+    },
+    {
+      "applied": true,
+      "summary": "Enable native caching, buffer log insertions under one lock and stream logcat once per smoke run."
+    },
+    {
+      "applied": true,
+      "summary": "Use the canonical entry source for desktop and Android target properties and cache includes."
+    },
+    {
+      "summary": "Reuse parity thresholds, the bounded worker pool and atomic JSON records; tolerate transient Windows report readers.",
+      "applied": true
+    },
+    {
+      "summary": "Generate only selected scenes for focused runs, reuse decoded reference dimensions and count statuses in one pass.",
+      "applied": true
+    },
+    {
+      "summary": "Bound retained log chunks and search only new text plus a split-marker tail.",
+      "applied": true
+    },
+    {
+      "summary": "Prepare dependencies once for read-only parallel APK builds, serialize device capture and avoid packaging a bootstrap APK.",
+      "applied": true
+    },
+    {
+      "summary": "Share logged child-process execution across desktop shipping, Android shipping and the Android sweep.",
+      "applied": true
+    },
+    {
+      "summary": "Build engine option arguments explicitly and keep Android limits in Features.",
+      "applied": true
+    },
+    {
+      "summary": "Configure Android buffers only when creating the retained SDL window.",
+      "applied": true
+    },
+    {
+      "applied": true,
+      "summary": "Derive the Android sweep dependency union from selected generated scenes through the canonical CMake feature rules."
+    },
+    {
+      "applied": true,
+      "summary": "Use one path-valued bootstrap option and pass the generated-directory list through a file to avoid Windows command-line limits."
+    },
+    {
+      "applied": true,
+      "summary": "Remove temporary dependency-test fixtures after checking their workspace boundary."
+    },
+    {
+      "summary": "Reuse the package boundary assertion before replacing a RmlUi build tree.",
+      "applied": true
+    },
+    {
+      "summary": "Cache Android named-font metadata and family/weight results, including misses; resolve variations only for the selected face.",
+      "applied": true
+    },
+    {
+      "summary": "Reuse Android dependency artifacts using input fingerprints and required output checks.",
+      "applied": true
+    },
+    {
+      "summary": "Restrict RmlUi fingerprints to consumed dependency ABI records, which include their transitive inputs.",
+      "applied": true
+    },
+    {
+      "summary": "Keep Android CSS number parsing in one maintained RmlUi adapter and select Boost.Charconv only for UI.",
+      "applied": true
+    },
+    {
+      "summary": "Remove obsolete unsupported-feature classification after replacing blanket Android refusals with the system-font API requirement.",
+      "applied": true
+    },
+    {
+      "summary": "Extend the shared UI hit-testing rule with DOM listener element identities and transport only that native metadata across the Window mailbox.",
+      "applied": true
+    },
+    {
+      "summary": "Use canonical idle replay tokens and allow the blocked realm to acknowledge unblocking before the resize phase.",
+      "applied": true
+    },
+    {
+      "summary": "Reuse shared canvas metrics to convert Window DOM input at the actual SDL pixel density.",
+      "applied": true
+    },
+    {
+      "summary": "Share Window canvas hit selection between mouse and touch after coordinate conversion.",
+      "applied": true
+    },
+    {
+      "summary": "Compute touch hit positions directly in CSS client coordinates without a redundant scale round trip.",
+      "applied": true
+    },
+    {
+      "summary": "Reuse the shared Android FreeType library and face owner for color-font coverage.",
+      "applied": true
+    },
+    {
+      "summary": "Cache registered font faces and Java typefaces instead of reopening them during layout.",
+      "applied": true
+    },
+    {
+      "summary": "Measure emoji advances without rasterizing and share cached pixels with texture callbacks.",
+      "applied": true
+    },
+    {
+      "summary": "Share touch cancellation and pinch wheel math between platform input and camera controls.",
+      "applied": true
+    },
+    {
+      "summary": "Allocate a DOM touch batch only in the selected dispatch branch.",
+      "applied": true
+    },
+    {
+      "summary": "Keep Window body hit policy explicit instead of inferring an implicit canvas background.",
+      "applied": true
+    },
+    {
+      "summary": "Gate pinch-to-wheel adaptation on reached wheel listeners to preserve raw canvas multi-touch.",
+      "applied": true
+    },
+    {
+      "summary": "Keep public rectangles in CSS coordinates and renderer pane bounds in physical pixels.",
+      "applied": true
+    },
+    {
+      "summary": "Deliver initial resize through the shared input pipeline when window metrics change before event polling.",
+      "applied": true
+    },
+    {
+      "summary": "Reuse SDL shader ownership for vertex-input metadata cleanup.",
+      "applied": true
+    },
+    {
+      "summary": "Remove duplicate SPIR-V input state and rewrite recorded location offsets without a second instruction walk.",
+      "applied": true
+    },
+    {
+      "summary": "Reserve compact pipeline attributes from the retained shader layout.",
+      "applied": true
+    },
+    {
+      "summary": "Reuse native fixture extraction helpers in the GPU picking coordinate regression.",
+      "applied": true
+    },
+    {
+      "summary": "Reuse the queued pointer fixture helper for right-button capture checks.",
+      "applied": true
+    },
+    {
+      "summary": "Compile helper-invocation variants only for fragment stages and prune obsolete vertex variants.",
+      "applied": true
+    },
+    {
+      "summary": "Adapt and hash SPIR-V input once for both fragment variants.",
+      "applied": true
+    },
+    {
+      "summary": "Reuse TypeScript ancestor lookup for function-local string indexes.",
+      "applied": true
+    },
+    {
+      "summary": "Allocate string index names lazily and keep usage in the existing emission map.",
+      "applied": true
+    },
+    {
+      "summary": "Keep replay button masks in SDL_MouseButtonFlags without floating conversions.",
+      "applied": true
+    }
+  ],
+  "angles": [
+    "reuse",
+    "simplification",
+    "efficiency",
+    "altitude"
+  ]
+}

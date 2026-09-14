@@ -2037,7 +2037,7 @@ function compileStringDataMethod(lowerer: DataLowerer, call: ts.CallExpression, 
         }
         return {
             kind: "number",
-            cpp: `bbl::js::string_char_code_at(${narrowed.cpp}, ${lowerer.context.compileNumber(argumentAt(call, 0), "double")})`,
+            cpp: `bbl::js::string_char_code_at(${lowerer.stringIndexReceiver(narrowed, call)}, ${lowerer.context.compileNumber(argumentAt(call, 0), "double")})`,
             dataType: { kind: "number" },
         };
     }
