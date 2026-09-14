@@ -112,7 +112,12 @@ struct DomEventBatch;
 struct DomTouchContact {
     PlatformMouseEvent pointer;
     std::vector<DomEventTarget> path;
+    bool gesture = false;
 };
+
+inline double touch_wheel_delta_y(double previous, double current) {
+    return previous > 0 && current > 0 ? -300 * std::log(current / previous) : 0;
+}
 struct DomInput {
     DomEventListeners<PlatformMouseEvent> pointer;
     DomEventListeners<PlatformKeyboardEvent> keyboard;
@@ -130,6 +135,8 @@ struct DomInput {
     std::set<double> suppress_compatibility_mouse;
     std::map<std::pair<std::uint64_t, std::uint64_t>, DomTouchContact> touches;
     bool native_pointer_default = false;
+    bool canvas_background = true;
+    bool pending_resize = false;
 
 #if defined(BBLITE_WORKERS) && BBLITE_WORKERS
     void gc_trace(const js::TraceVisitor& visitor) const {

@@ -66,7 +66,7 @@ struct UiFilterSdlResources {
         info.rasterizer_state.fill_mode = SDL_GPU_FILLMODE_FILL; info.rasterizer_state.cull_mode = SDL_GPU_CULLMODE_NONE;
         info.multisample_state.sample_count = SDL_GPU_SAMPLECOUNT_1;
         info.target_info.color_target_descriptions = &target; info.target_info.num_color_targets = 1;
-        pipeline = SDL_CreateGPUGraphicsPipeline(device, &info);
+        pipeline = create_sdl_graphics_pipeline(device, &info);
         if (!pipeline) gpu_error("SDL_CreateGPUGraphicsPipeline UI filter");
     }
 };

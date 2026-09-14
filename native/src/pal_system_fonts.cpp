@@ -7,7 +7,7 @@
 #include <map>
 #include <vector>
 
-#if defined(__ANDROID__) || defined(__APPLE__)
+#if defined(__APPLE__)
 #include <ft2build.h>
 #include FT_FREETYPE_H
 #include <memory>
@@ -20,6 +20,7 @@
 
 #include "pal_win32_text.hpp"
 #elif defined(__ANDROID__)
+#include "pal_android_font.hpp"
 #include <android/font.h>
 #include <android/font_matcher.h>
 #include <android/system_fonts.h>
@@ -139,17 +140,6 @@ std::optional<SystemFontFace> find_platform_font(
 }
 
 #elif defined(__ANDROID__)
-
-template <typename T, auto Destroy>
-using FontOwner = std::unique_ptr<std::remove_pointer_t<T>, decltype(Destroy)>;
-
-FT_Library android_font_library() {
-    static thread_local FontOwner<FT_Library, &FT_Done_FreeType> library([] {
-        FT_Library value = nullptr;
-        return FT_Init_FreeType(&value) ? nullptr : value;
-    }(), FT_Done_FreeType);
-    return library.get();
-}
 
 std::optional<SystemFontFace> android_font_face(const AFont* font, int weight) {
     if (!font) return std::nullopt;

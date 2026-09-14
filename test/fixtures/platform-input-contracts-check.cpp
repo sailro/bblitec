@@ -190,6 +190,17 @@ template <typename Driver> void exercise(int index) {
     resize.window.windowID = SDL_GetWindowID(window); assert(SDL_PushEvent(&resize));
     assert(driver.prepare() == FramePreparation::ready);
     assert(engine.options.width == 640 && engine.options.height == 480 && resizes == 1);
+    // Canvas script hooks run before a retained UI default consumes the packet.
+    consume_ui = true;
+    for (const Uint32 type : {SDL_EVENT_FINGER_DOWN, SDL_EVENT_FINGER_UP}) {
+        SDL_Event touch{}; touch.type = type; touch.tfinger.windowID = SDL_GetWindowID(window);
+        touch.tfinger.touchID = 3; touch.tfinger.fingerID = 9;
+        touch.tfinger.x = .25f; touch.tfinger.y = .5f;
+        assert(SDL_PushEvent(&touch));
+    }
+    assert(driver.prepare() == FramePreparation::ready);
+    assert(downs == 4 && clicks == 3);
+    consume_ui = false;
     int lock_changes = 0;
     engine.pointer_lock_change_callbacks.add(1, [&] { ++lock_changes; });
     const auto lock = [&] {

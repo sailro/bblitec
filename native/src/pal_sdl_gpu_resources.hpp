@@ -3,6 +3,9 @@
 #include "pal_sdl_gpu_commands.hpp"
 #include <SDL3/SDL_gpu.h>
 #include <memory>
+#include <map>
+#include <mutex>
+#include <stdexcept>
 #include <vector>
 
 namespace bbl::pal {
@@ -13,8 +16,35 @@ struct SdlGpuDeleter {
     void operator()(Resource* resource) const noexcept { Release(device, resource); }
 };
 
-using OwnedSdlShader = std::unique_ptr<
-    SDL_GPUShader, SdlGpuDeleter<SDL_GPUShader, SDL_ReleaseGPUShader>>;
+inline std::mutex sdl_shader_inputs_mutex;
+inline std::map<SDL_GPUShader*, std::map<Uint32, Uint32>> sdl_shader_inputs;
+inline void release_sdl_shader(SDL_GPUDevice* device, SDL_GPUShader* shader) {
+    { const std::lock_guard lock(sdl_shader_inputs_mutex); sdl_shader_inputs.erase(shader); }
+    SDL_ReleaseGPUShader(device, shader);
+}
+using OwnedSdlShader = std::unique_ptr<SDL_GPUShader, SdlGpuDeleter<SDL_GPUShader, release_sdl_shader>>;
+
+inline SDL_GPUGraphicsPipeline* create_sdl_graphics_pipeline(SDL_GPUDevice* device, const SDL_GPUGraphicsPipelineCreateInfo* source) {
+    auto info = *source;
+    std::vector<SDL_GPUVertexAttribute> attributes;
+    {
+        const std::lock_guard lock(sdl_shader_inputs_mutex);
+        if (const auto layout = sdl_shader_inputs.find(info.vertex_shader); layout != sdl_shader_inputs.end()) {
+            attributes.reserve(layout->second.size());
+            for (Uint32 i = 0; i < info.vertex_input_state.num_vertex_attributes; ++i) {
+                auto attribute = info.vertex_input_state.vertex_attributes[i];
+                if (const auto location = layout->second.find(attribute.location); location != layout->second.end()) {
+                    attribute.location = location->second;
+                    attributes.push_back(attribute);
+                }
+            }
+            if (attributes.size() != layout->second.size()) throw std::runtime_error("SPIR-V vertex input has no pipeline attribute.");
+            info.vertex_input_state.vertex_attributes = attributes.data();
+            info.vertex_input_state.num_vertex_attributes = static_cast<Uint32>(attributes.size());
+        }
+    }
+    return SDL_CreateGPUGraphicsPipeline(device, &info);
+}
 using OwnedSdlPipeline = std::unique_ptr<
     SDL_GPUGraphicsPipeline,
     SdlGpuDeleter<SDL_GPUGraphicsPipeline, SDL_ReleaseGPUGraphicsPipeline>>;

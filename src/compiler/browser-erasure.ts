@@ -1136,9 +1136,8 @@ export class BrowserErasure {
                         unwrapped.expression.expression,
                     )
                 ) {
-                    // Native's drawing surface is its client box: there is
-                    // no CSS page offset between an SDL pointer coordinate
-                    // and the backing surface coordinate the picker reads.
+                    // The primary canvas starts at the client origin. Its
+                    // CSS extent is independent of its backing resolution.
                     return { kind: "dom-rect" };
                 }
                 if (

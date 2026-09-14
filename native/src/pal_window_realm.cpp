@@ -236,9 +236,18 @@ void tick_document() {
 void dispatch_canvas_input(const WindowPointerEvent& packet) {
     auto& doc = current_document();
     if (packet.pointer.type == SDL_EVENT_WINDOW_FOCUS_LOST) {
+        for (auto& [index, target] : doc.input_targets) {
+            (void)index;
+            if (auto engine = target.engine.lock()) {
+                if (const auto batch = prepare_dom_platform_input(*engine, packet.pointer)) {
+                    dispatch_dom_batch(*engine, batch);
+                    dispatch_touch_defaults(*engine, *batch);
+                }
+            }
 #if BBLITE_HAS_PBR_RENDERER
-        for (auto& [index, target] : doc.input_targets) { (void)index; target.camera = {}; }
+            target.camera = {};
 #endif
+        }
         return;
     }
     const auto target = doc.input_targets.find(packet.element.value);
@@ -246,7 +255,13 @@ void dispatch_canvas_input(const WindowPointerEvent& packet) {
     const auto engine = target->second.engine.lock();
     if (!engine) return;
     const auto& event = packet.pointer;
-    if (event.type == SDL_EVENT_MOUSE_MOTION) {
+    if (is_touch_event(event)) {
+        const auto batch = prepare_dom_platform_input(*engine, event);
+        dispatch_dom_batch(*engine, batch);
+        if (!batch->ready()) throw std::logic_error("Canvas touch callbacks cannot defer their defaults.");
+        dispatch_touch_defaults(*engine, *batch);
+        if (batch->default_prevented) return;
+    } else if (event.type == SDL_EVENT_MOUSE_MOTION) {
         const PlatformMouseEvent mouse{.button = -1, .buttons = dom_mouse_buttons(event.motion.state),
             .client_x = event.motion.x, .client_y = event.motion.y,
             .movement_x = event.motion.xrel, .movement_y = event.motion.yrel};
@@ -469,6 +484,7 @@ int run_window_application(WorkerEntry initialize, EngineOptions options) {
             auto services = std::make_shared<WindowServices>(std::shared_ptr<OffscreenDevice>(presenter, &presenter->device()), capture_frame_count);
             Engine display;
             display.options = options;
+            dom_input(display).canvas_background = false;
             std::unique_ptr<UiRmlRuntime, decltype(&destroy_ui_rml_runtime)> ui(
                 create_ui_rml_runtime(display, window.get(), options.width, options.height), &destroy_ui_rml_runtime);
             std::atomic<bool> finished = false;

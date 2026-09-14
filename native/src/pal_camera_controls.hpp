@@ -77,7 +77,7 @@ inline void handle_camera_pointer_event(
             if (previous <= 0 || current <= 0) return;
             translated.type = SDL_EVENT_MOUSE_WHEEL;
             // A proportional gesture produces the same zoom at every DPI.
-            translated.wheel.y = static_cast<float>(3 * std::log(current / previous));
+            translated.wheel.y = static_cast<float>(touch_wheel_delta_y(previous, current) / -100);
         }
         found->second = point;
         handle_camera_pointer_event(translated, camera, state);
@@ -171,7 +171,7 @@ inline void dispatch_surface_camera_pointer(
         } else return;
         for (const auto& scene : engine.registered_scenes) {
             if (!scene || !scene->surface_canvas || scene->camera.value >= engine.cameras.size()) continue;
-            const auto& rect = engine.ui_elements.at(scene->surface_canvas->value).client_rect;
+              const auto rect = ui_get_client_rect(engine, *scene->surface_canvas);
             if (x < rect.left || y < rect.top || x >= rect.left + rect.width || y >= rect.top + rect.height) continue;
             const auto index = scene->camera.value;
             handle_camera_pointer_event(event, engine.cameras[index], surfaces.pointer, engine.canvas_client_width, engine.canvas_client_height);

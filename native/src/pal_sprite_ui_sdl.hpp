@@ -183,7 +183,7 @@ inline SDL_GPUGraphicsPipeline* create_sprite_ui_sdl_pipeline(
     info.target_info.color_target_descriptions = &target;
     info.target_info.num_color_targets = 1;
     SDL_GPUGraphicsPipeline* pipeline =
-        SDL_CreateGPUGraphicsPipeline(device, &info);
+        create_sdl_graphics_pipeline(device, &info);
     if (!pipeline) gpu_error("SDL_CreateGPUGraphicsPipeline sprite UI");
     return pipeline;
 }

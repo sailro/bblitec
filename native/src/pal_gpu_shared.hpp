@@ -199,8 +199,8 @@ inline PixelViewport laid_out_canvas_pane(
     std::uint32_t target_width,
     std::uint32_t target_height) {
     const auto& rect = handle_at(engine.ui_elements, canvas).client_rect;
-    const double scale_x = target_width / engine.canvas_client_width;
-    const double scale_y = target_height / engine.canvas_client_height;
+    const double scale_x = static_cast<double>(target_width) / engine.options.width;
+    const double scale_y = static_cast<double>(target_height) / engine.options.height;
     return PixelViewport{
         static_cast<std::int32_t>(rect.left * scale_x),
         static_cast<std::int32_t>(rect.top * scale_y),

@@ -58,6 +58,15 @@ inline SDL_WindowFlags run_window_flags(SDL_WindowFlags flags) {
     return flags;
 }
 
+inline float window_render_density(SDL_Window* window, [[maybe_unused]] const EngineOptions& options) {
+    float density = SDL_GetWindowDisplayScale(window);
+    if (density <= 0) density = 1;
+#ifdef __ANDROID__
+    density = std::min(density, static_cast<float>(options.max_device_pixel_ratio));
+#endif
+    return density;
+}
+
 class SdlWindowRun {
   public:
     SdlWindowRun() : previous_(active_window_run) {

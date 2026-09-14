@@ -4,6 +4,9 @@ import org.libsdl.app.SDLActivity;
 import org.libsdl.app.SDLSurface;
 import android.content.Context;
 import android.os.Build;
+import android.os.Bundle;
+import android.view.KeyEvent;
+import android.window.OnBackInvokedDispatcher;
 import android.view.SurfaceHolder;
 import android.view.WindowInsets;
 import android.view.WindowInsetsController;
@@ -21,6 +24,29 @@ import java.nio.file.StandardCopyOption;
 
 public final class MainActivity extends SDLActivity {
     private CappedSurface surface;
+
+    public int[] rasterizeEmoji(byte[] utf8, String path, int index, int size, float spacing) {
+        return EmojiRaster.render(utf8, path, index, size, spacing);
+    }
+
+    public int[] measureEmoji(byte[] utf8, String path, int index, int size, float spacing) {
+        return EmojiRaster.measure(utf8, path, index, size, spacing);
+    }
+
+    @Override protected void onCreate(Bundle savedInstanceState) {
+        super.onCreate(savedInstanceState);
+        if (Build.VERSION.SDK_INT >= 33)
+            getOnBackInvokedDispatcher().registerOnBackInvokedCallback(
+                OnBackInvokedDispatcher.PRIORITY_DEFAULT, this::finish);
+    }
+
+    @Override public boolean dispatchKeyEvent(KeyEvent event) {
+        if (event.getKeyCode() == KeyEvent.KEYCODE_BACK) {
+            if (event.getAction() == KeyEvent.ACTION_UP && !event.isCanceled()) finish();
+            return true;
+        }
+        return super.dispatchKeyEvent(event);
+    }
 
     @Override public void onWindowFocusChanged(boolean hasFocus) {
         super.onWindowFocusChanged(hasFocus);
@@ -106,7 +132,7 @@ public final class MainActivity extends SDLActivity {
                 Files.write(marker.toPath(), version.getBytes(StandardCharsets.UTF_8));
             }
             if ((getApplicationInfo().flags & android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0) {
-                for (String key : new String[] { "BBLITE_RUN_ID", "BBLITE_MAX_FRAMES", "BBLITE_RUNTIME_TRACE", "BBLITE_FRAME_DELTA_MS", "BBLITE_ANIMATION_SEEK_SECONDS", "BBLITE_TEST_PASS", "BBLITE_INPUT_REPLAY", "BBLITE_CAPTURE_ENGINE_FRAME" }) {
+                for (String key : new String[] { "BBLITE_RUN_ID", "BBLITE_MAX_FRAMES", "BBLITE_RUNTIME_TRACE", "BBLITE_FRAME_DELTA_MS", "BBLITE_ANIMATION_SEEK_SECONDS", "BBLITE_TEST_PASS", "BBLITE_INPUT_REPLAY", "BBLITE_CAPTURE_ENGINE_FRAME", "BBLITE_GPU_DEBUG", "BBLITE_MSAA" }) {
                     String value = getIntent().getStringExtra(key);
                     if (value != null) nativeSetenv(key, value);
                 }

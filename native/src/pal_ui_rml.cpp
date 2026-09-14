@@ -31,6 +31,7 @@
 
 #include "RmlUi_Platform_SDL.h"
 #include "pal_runtime_trace.hpp"
+#include "pal_window.hpp"
 #include "pal_ui_backdrop.hpp"
 #include "pal_ui_filter.hpp"
 #include "pal_ui_snapshot.hpp"
@@ -38,6 +39,7 @@
 #include "pal_ui_defaults.hpp"
 #include "pal_ui_form.hpp"
 #include "pal_ui_font_win32.hpp"
+#include "pal_ui_font_android.hpp"
 #include "pal_ui_range.hpp"
 #include "pal_ui_scrollbars.hpp"
 #include "pal_ui_style_properties.hpp"
@@ -414,7 +416,9 @@ UiClientRect ui_get_client_rect(
     if (engine.ui_measure_element) return engine.ui_measure_element(engine, element);
     UiElementRecord& record = ui_element(engine, element);
     record.client_rect_requested = true;
-    return record.client_rect;
+    const double scale = engine.canvas_client_width / engine.options.width;
+    const auto& rect = record.client_rect;
+    return {rect.left * scale, rect.top * scale, rect.width * scale, rect.height * scale};
 }
 
 std::string ui_get_form_value(Engine& engine, UiElementHandle element) {
@@ -3450,6 +3454,10 @@ struct UiRmlRuntime {
             Rml::Factory::RegisterDecoratorInstancer("bbl-native-range", &range_decorator);
 #if defined(_WIN32)
             platform_fonts = std::make_unique<Win32UiFontEngine>(*Rml::GetFontEngineInterface());
+#elif defined(__ANDROID__)
+            platform_fonts = std::make_unique<AndroidUiFontEngine>(*Rml::GetFontEngineInterface());
+#endif
+#if defined(_WIN32) || defined(__ANDROID__)
             Rml::SetFontEngineInterface(platform_fonts.get());
 #endif
             // Let the retained stylesheet cascade these properties on all
@@ -3619,8 +3627,13 @@ struct UiRmlRuntime {
             auto& input = dom_input(engine);
             input.hit_path = [this](double x, double y) {
                 if (this->engine.pointer_locked) return dom_canvas_path();
-                return event_path(context->GetElementAtPoint(Rml::Vector2f{
-                    static_cast<float>(x) * density_ratio, static_cast<float>(y) * density_ratio}));
+                auto* hit = context->GetElementAtPoint(Rml::Vector2f{
+                    static_cast<float>(x) * density_ratio, static_cast<float>(y) * density_ratio});
+                auto path = event_path(hit);
+                if (this->engine.dom_input->canvas_background &&
+                    (!hit || hit == document || hit == document_body || hit == context->GetRootElement()))
+                    path.insert(path.begin(), DomEventTarget::canvas());
+                return path;
             };
             input.focus_path = [this] { return event_path(context->GetFocusElement()); };
             input.can_activate = [this](DomEventTarget target) {
@@ -3666,9 +3679,7 @@ struct UiRmlRuntime {
     }
 
     bool update_density_ratio() {
-        const float display_scale = SDL_GetWindowDisplayScale(window);
-        const float next_density_ratio =
-            display_scale > 0.0f ? display_scale : 1.0f;
+        const float next_density_ratio = pal::window_render_density(window, engine.options);
         if (density_ratio == next_density_ratio) return false;
         density_ratio = next_density_ratio;
         context->SetDensityIndependentPixelRatio(density_ratio);
@@ -5438,6 +5449,8 @@ struct UiRmlRuntime {
     std::optional<TextFormMetrics> text_form_metrics;
 #if defined(_WIN32)
     std::unique_ptr<Win32UiFontEngine> platform_fonts;
+#elif defined(__ANDROID__)
+    std::unique_ptr<AndroidUiFontEngine> platform_fonts;
 #endif
     std::string projected_style_sheet_source;
     std::uint64_t projected_style_revision = 0;
@@ -5476,6 +5489,10 @@ void destroy_ui_rml_runtime(UiRmlRuntime* runtime) noexcept {
 }
 
 bool handle_ui_rml_event(UiRmlRuntime& runtime, SDL_Event& event) {
+    if (event.type == SDL_EVENT_WINDOW_DISPLAY_SCALE_CHANGED) {
+        runtime.update_density_ratio();
+        return true;
+    }
     const auto input = runtime.engine.dom_input;
     const bool previous_pointer_default = input && input->native_pointer_default;
     if (input) input->native_pointer_default = event.type == SDL_EVENT_MOUSE_BUTTON_UP ||

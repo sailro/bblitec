@@ -28,7 +28,7 @@ Canvas metrics update before callbacks; RAF retains its registration phase and t
   resource kind, slot order and uniform size. Large uniform blocks may use read-only storage.
 - SDL integer texture loads occupy storage-texture slots. Vulkan sampled textures use combined
   image/sampler descriptors; integer and multisampled loads use separate images.
-- SPIR-V preserves Tint's TEXCOORD indices, including gaps.
+- SPIR-V preserves varying locations. Vertex-buffer inputs compact with their pipeline attributes to fit mobile limits.
 - Metal uses `main0`, flattened sidecar bindings and buffer lengths at reserved index 30 for robust access.
 - Dawn pipeline keys include format, samples, depth, blend, cull, topology and compare. Reached layouts
   determine device limits. Vulkan teardown releases the presentation surface before the device.

@@ -162,6 +162,80 @@ int main() {
         assert(held[1].empty() && cancelled == 2 && engine.dom_input->touches.empty());
         assert(engine.dom_input->suppress_compatibility_mouse.empty());
     }
+    {
+        Engine engine;
+        pal::update_engine_canvas_metrics(engine, 640, 480, 2, 1);
+        int downs = 0, moves = 0, cancels = 0, clicks = 0;
+        int native_downs = 0, native_clicks = 0, native_cancels = 0;
+        engine.mouse_down_callbacks.add(1, [&](const PlatformMouseEvent& event) { ++native_downs; assert(event.client_x == 80 && event.client_y == 120); });
+        engine.canvas_click_callbacks.add(1, [&] { ++native_clicks; });
+        engine.mouse_cancel_callbacks.add(1, [&](const PlatformMouseEvent& event) { ++native_cancels; assert(event.buttons == 0); });
+        double zoom = 0;
+        for (const auto type : {"pointerdown", "pointermove", "pointercancel", "click", "wheel"})
+            on_dom_pointer(engine, DomEventTarget::canvas(), type, 1, [&](const PlatformMouseEvent& event) {
+                if (event.dom->type == "pointerdown") { ++downs; assert(event.client_x == 80 && event.client_y == 120); }
+                if (event.dom->type == "pointermove") ++moves;
+                if (event.dom->type == "pointercancel") ++cancels;
+                if (event.dom->type == "click") ++clicks;
+                if (event.dom->type == "wheel") { zoom += event.delta_y; event.prevent_default(); }
+            });
+        pal::UiRmlRuntime runtime(engine, window, 640, 480);
+        pal::update_ui_rml_runtime(runtime, 640, 480);
+        assert(engine.dom_input->hit_path(80, 120).front() == DomEventTarget::canvas());
+        const auto touch = [&](SDL_EventType type, SDL_FingerID id, float x) {
+            SDL_Event event{}; event.type = type; event.tfinger.touchID = 3; event.tfinger.fingerID = id;
+            event.tfinger.x = x; event.tfinger.y = .5f;
+            auto batch = pal::prepare_dom_platform_input(engine, event); dispatch_dom_batch(engine, batch);
+            pal::dispatch_touch_defaults(engine, *batch);
+            return batch->default_prevented;
+        };
+        touch(SDL_EVENT_FINGER_DOWN, 1, .25f); touch(SDL_EVENT_FINGER_UP, 1, .25f);
+        assert(downs == 1 && clicks == 1);
+        touch(SDL_EVENT_FINGER_DOWN, 1, .25f); touch(SDL_EVENT_FINGER_DOWN, 2, .75f);
+        assert(downs == 2 && cancels == 1);
+        assert(touch(SDL_EVENT_FINGER_MOTION, 2, 1.f));
+        assert(zoom < 0 && moves == 0);
+        assert(touch(SDL_EVENT_FINGER_MOTION, 2, .75f));
+        assert(std::abs(zoom) < .001);
+        touch(SDL_EVENT_FINGER_DOWN, 3, .5f);
+        touch(SDL_EVENT_FINGER_UP, 3, .5f);
+        assert(downs == 2 && cancels == 1);
+        touch(SDL_EVENT_FINGER_UP, 2, .75f); touch(SDL_EVENT_FINGER_UP, 1, .25f);
+        assert(clicks == 1 && engine.dom_input->touches.empty());
+        assert(native_downs == 2 && native_clicks == 1 && native_cancels == 1);
+        touch(SDL_EVENT_FINGER_DOWN, 1, .25f); touch(SDL_EVENT_FINGER_DOWN, 2, .75f);
+        SDL_Event blur{}; blur.type = SDL_EVENT_WINDOW_FOCUS_LOST;
+        dispatch_dom_batch(engine, pal::prepare_dom_platform_input(engine, blur));
+        assert(cancels == 2 && engine.dom_input->touches.empty());
+        engine.dom_input->canvas_background = false;
+        assert(engine.dom_input->hit_path(80, 120).front() != DomEventTarget::canvas());
+        int resized = 0;
+        on_dom_pointer(engine, DomEventTarget::window(), "resize", 1, [&](const PlatformMouseEvent&) {
+            ++resized; assert(engine.options.width == 640 && engine.options.height == 480);
+        });
+        engine.options.width = 1; engine.options.height = 1;
+        SDL_Event resize{}; resize.type = SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED; resize.window.windowID = SDL_GetWindowID(window);
+        dispatch_dom_batch(engine, pal::prepare_dom_platform_input(engine, resize));
+        assert(resized == 1);
+        engine.options.width = 1;
+        assert(pal::sync_engine_canvas_size(window, engine));
+        SDL_FlushEvents(SDL_EVENT_FIRST, SDL_EVENT_LAST);
+        bool running = true;
+        pal::poll_platform_events(engine, running, false);
+        assert(resized == 2 && !engine.dom_input->pending_resize);
+    }
+    {
+        Engine engine;
+        int downs = 0, cancels = 0;
+        on_dom_pointer(engine, DomEventTarget::canvas(), "pointerdown", 1, [&](const PlatformMouseEvent&) { ++downs; });
+        on_dom_pointer(engine, DomEventTarget::canvas(), "pointercancel", 1, [&](const PlatformMouseEvent&) { ++cancels; });
+        for (const SDL_FingerID id : {1, 2}) {
+            SDL_Event event{}; event.type = SDL_EVENT_FINGER_DOWN; event.tfinger.touchID = 3;
+            event.tfinger.fingerID = id; event.tfinger.x = static_cast<float>(id) / 3;
+            dispatch_dom_batch(engine, pal::prepare_dom_platform_input(engine, event));
+        }
+        assert(downs == 2 && cancels == 0); // Raw canvas multi-touch remains available without wheel adaptation.
+    }
     SDL_DestroyWindow(window);
     SDL_Quit();
 }

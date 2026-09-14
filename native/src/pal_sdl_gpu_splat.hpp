@@ -210,7 +210,7 @@ inline SplatPass create_splat_pass(
     info.target_info.depth_stencil_format = depth_format;
     info.target_info.has_depth_stencil_target = true;
     pass.pipeline = OwnedSdlPipeline{
-        SDL_CreateGPUGraphicsPipeline(device, &info), {device}};
+        create_sdl_graphics_pipeline(device, &info), {device}};
     if (!pass.pipeline) gpu_error("SDL_CreateGPUGraphicsPipeline splat");
     vertex_shader.reset();
     fragment_shader.reset();

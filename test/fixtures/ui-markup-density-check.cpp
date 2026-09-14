@@ -23,8 +23,14 @@ int main() {
         auto* parent = runtime.projected_elements.at(cross.value).element;
         const auto expectNear = [](float actual, float expected) { assert(std::abs(actual - expected) < .1f); };
         for (const float density : {1.f, 2.f, 3.f}) {
+            engine.options.width = 640; engine.options.height = 480;
+            engine.canvas_client_width = 640 / density; engine.canvas_client_height = 480 / density;
             runtime.context->SetDensityIndependentPixelRatio(density);
             runtime.context->Update();
+            runtime.sync_client_rects(true);
+            const auto rect = ui_get_client_rect(engine, cross);
+            expectNear(static_cast<float>(rect.width), 22);
+            expectNear(static_cast<float>(rect.left + rect.width / 2), 320 / density);
             auto* dot = parent->GetChild(0);
             const auto position = dot->GetAbsoluteOffset(Rml::BoxArea::Border);
             expectNear(dot->GetBox().GetSize().x, 2 * density);

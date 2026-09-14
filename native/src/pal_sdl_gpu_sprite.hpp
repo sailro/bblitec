@@ -285,7 +285,7 @@ inline OwnedSdlPipeline create_sprite_layer_pipeline(
         pipeline_info.target_info.has_depth_stencil_target = true;
     }
     OwnedSdlPipeline pipeline{
-        SDL_CreateGPUGraphicsPipeline(device, &pipeline_info), {device}};
+        create_sdl_graphics_pipeline(device, &pipeline_info), {device}};
     if (!pipeline) {
         gpu_error("SDL_CreateGPUGraphicsPipeline sprite");
     }

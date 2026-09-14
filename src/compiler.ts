@@ -5594,7 +5594,7 @@ class Compiler
             return {
                 kind: "number",
                 cpp: axis
-                    ? `static_cast<double>(${this.requireDefaultEngine(expression)}.options.${axis})`
+                    ? `${this.requireDefaultEngine(expression)}.canvas_client_${axis}`
                     : "0.0",
                 ...(axis ? {} : { staticNumber: 0 }),
                 dataType: { kind: "number" },

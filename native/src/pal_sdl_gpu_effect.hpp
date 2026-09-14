@@ -159,7 +159,7 @@ inline EffectPass create_effect_pass(
     info.target_info.color_target_descriptions = &color;
     info.target_info.has_depth_stencil_target = false;
     pass.pipeline = OwnedSdlPipeline{
-        SDL_CreateGPUGraphicsPipeline(device, &info), {device}};
+        create_sdl_graphics_pipeline(device, &info), {device}};
     vertex.reset();
     fragment.reset();
     if (!pass.pipeline) gpu_error("SDL_CreateGPUGraphicsPipeline effect");

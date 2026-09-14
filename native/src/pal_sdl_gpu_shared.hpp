@@ -1,6 +1,7 @@
 #pragma once
 #include "pal_sdl_gpu_device.hpp"
 #include "pal_sdl_gpu_resources.hpp"
+#include "pal_spirv_vertex.hpp"
 #include "pal_owned_gpu_record.hpp"
 #include "pal_device_options.hpp"
 
@@ -662,10 +663,13 @@ inline OwnedSdlShader load_shader(
     const std::string shader_root = shader_override.empty()
         ? join_path(executable_directory(), BBLITE_GPU_SHADER_DIR)
         : shader_override;
-    const std::vector<std::uint8_t> code = read_binary_file(
+    std::vector<std::uint8_t> code = read_binary_file(
         join_path(
             shader_root,
             std::string(base_name) + extension));
+    std::map<Uint32, Uint32> inputs;
+    const bool compact_inputs = format == SDL_GPU_SHADERFORMAT_SPIRV && stage == SDL_GPU_SHADERSTAGE_VERTEX;
+    if (compact_inputs) inputs = compact_spirv_vertex_inputs(code);
     SDL_GPUShaderCreateInfo info{};
     info.code_size = code.size();
     info.code = code.data();
@@ -681,7 +685,12 @@ inline OwnedSdlShader load_shader(
         throw std::runtime_error(std::string("SDL_CreateGPUShader ") + base_name +
             extension + " (" + entrypoint + "): " + SDL_GetError());
     }
-    return {shader, {device}};
+    OwnedSdlShader owned{shader, {device}};
+    if (compact_inputs) {
+        const std::lock_guard lock(sdl_shader_inputs_mutex);
+        sdl_shader_inputs.emplace(shader, std::move(inputs));
+    }
+    return owned;
 }
 
 inline SDL_GPUBuffer* upload_buffer(
