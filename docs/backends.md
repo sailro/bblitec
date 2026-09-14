@@ -10,6 +10,7 @@ Both backends consume generated plans, state, layouts and uniform writers.
 | Binding authority | Compiled `.slots` sidecars | WGSL and generated layouts |
 | Uniform transport | Push/uniform/storage API | Queue writes and retained bind groups |
 | Windows / Linux / macOS | D3D12 / Vulkan / Metal | D3D12 / Vulkan / Metal |
+| Android prototype | Vulkan | Unsupported |
 | Lifetime | SDL objects and fences | WebGPU objects and submission retention |
 
 Backend agreement does not establish browser parity. Measurements live in [status](status.md).

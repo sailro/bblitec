@@ -21,6 +21,7 @@ npm run scene -- parity scene1 --differential
 
 See [development](docs/development.md#setup) for Windows, Linux and macOS prerequisites
 and the Windows CMake path. A built scene requires a GPU.
+Android APK prototyping uses the [Android workflow](docs/development.md#android-prototype).
 
 ## Documentation
 

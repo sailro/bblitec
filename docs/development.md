@@ -72,6 +72,64 @@ Development uses host x64-osx/arm64-osx dependencies. CoreText/FreeType supplies
 provides floating formatting on systems lacking floating `to_chars`. Maintained Dawn patches support
 older SDK capability checks. Apple Silicon runtime validation requires an Apple Silicon host.
 
+### Android prototype
+
+Android cross-compilation uses the existing host compiler and Vulkan shader tools,
+Java 17, Android SDK platform 35, build-tools 35.0.0 and NDK 28.2.13676358.
+Install missing SDK packages with `sdkmanager`; Android Studio is optional.
+Set `ANDROID_HOME` to a writable SDK directory and `ANDROID_NDK_HOME` only when
+the NDK is outside that SDK. Use the command-line tools under that SDK so
+`avdmanager` discovers the same packages. On Windows, use the CMake path above.
+
+```powershell
+sdkmanager --sdk_root=$env:ANDROID_HOME "platform-tools" "platforms;android-35" "build-tools;35.0.0" "ndk;28.2.13676358"
+npm run android -- -Scene scene1 -Sdk C:/Dev/android-sdk -Install -Device <adb-serial>
+npm run android -- -Scene scene1 -Sdk C:/Dev/android-sdk -Abi x86_64 -Smoke -Device emulator-5554
+```
+
+ARM64 (`arm64-v8a`) is the default; `x86_64` targets the emulator. `-Jobs N`
+controls native build concurrency. `-SkipGenerate` reuses an existing generated
+tree. Generation and SPIR-V compilation run on the host; scene code compiles
+with the NDK. Dependencies use the repository's existing pins and patches,
+with separate Android triplets and `artifacts/android-vcpkg`. Run standalone
+Android builds sequentially and outside an active sweep because they reconcile
+that shared install.
+
+APKs, staging and smoke results live under `artifacts/android/<scene>/<abi>`.
+`-Smoke` installs the APK, runs eight frames, requires a successful native exit
+and retrieves a PNG plus a JSON receipt containing device and APK identity.
+This is a startup check, not a visual-parity gate. `-Install` leaves the scene
+running. Both use the single debug app `org.bblite.prototype`; installing another
+scene replaces it. Application data stays private to this app. The launcher
+extracts packaged assets and shaders when their content identity changes.
+
+`npm run android:sweep -- --sdk C:/Dev/android-sdk --device emulator-5554`
+prepares a shared dependency set, builds up to four APKs concurrently, then
+installs and captures scenes sequentially. It captures each scene's configured
+native pose at the golden image dimensions, and applies the existing full-image
+and foreground thresholds. `--abi arm64-v8a` selects a physical ARM64 target;
+`--scene <id>` restricts the selection and can be repeated. `--parallel N` sets
+the APK build concurrency and `--jobs N` the native jobs per APK. The target's
+display size is overridden for capture and restored afterward. Per-scene logs,
+images and an aggregate report live in `artifacts/android/sweep/<run-id>`.
+Unsupported features, build/runtime failures and visual mismatches are distinct
+results; any prevents a passing sweep.
+
+For unattended testing, create an accelerated emulator with Vulkan support:
+
+```powershell
+sdkmanager --sdk_root=$env:ANDROID_HOME "emulator" "system-images;android-35;google_apis;x86_64"
+avdmanager create avd -n bblite-api35 -k "system-images;android-35;google_apis;x86_64"
+emulator -accel-check
+emulator -avd bblite-api35 -gpu host -no-snapshot
+```
+
+Physical devices require USB debugging authorization and an unlocked screen.
+Select either target with `-Device` from `adb devices -l`. Emulator automation
+does not qualify a physical device's Vulkan driver or performance.
+See [platform limits](features.md#android) before choosing scenes or demos.
+APKs are debug-signed prototypes, not store release packages.
+
 ## Core workflow
 
 Commands follow `npm run scene --`. Targets are registry IDs, local TypeScript paths or `all`.

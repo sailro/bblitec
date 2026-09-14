@@ -143,5 +143,19 @@ export function writeJsonRecord(path: string, value: unknown): void {
     mkdirSync(dirname(path), { recursive: true });
     const temporary = `${path}.${process.pid}.tmp`;
     writeFileSync(temporary, `${JSON.stringify(value, null, 2)}\n`);
-    renameSync(temporary, path);
+    for (let attempt = 0; ; attempt += 1) {
+        try {
+            renameSync(temporary, path);
+            return;
+        } catch (error) {
+            // Windows readers can briefly deny replacement of an open file.
+            // Keep the old record intact while that handle closes.
+            if (
+                process.platform !== "win32" || attempt >= 10 ||
+                !(error instanceof Error) || !("code" in error) ||
+                (error.code !== "EPERM" && error.code !== "EACCES" && error.code !== "EBUSY")
+            ) throw error;
+            Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50);
+        }
+    }
 }

@@ -1,0 +1,42 @@
+{
+  "findings": [
+    {
+      "applied": true,
+      "summary": "Reuse Assert-PackageChild for staging cleanup and join_path for the Android payload directory."
+    },
+    {
+      "applied": true,
+      "summary": "Remove duplicate force-stop and redundant stream flushes."
+    },
+    {
+      "applied": true,
+      "summary": "Enable native caching, buffer log insertions under one lock and stream logcat once per smoke run."
+    },
+    {
+      "applied": true,
+      "summary": "Use the canonical entry source for desktop and Android target properties and cache includes."
+    },
+    {
+      "summary": "Reuse parity thresholds, the bounded worker pool and atomic JSON records; tolerate transient Windows report readers.",
+      "applied": true
+    },
+    {
+      "summary": "Generate only selected scenes for focused runs, reuse decoded reference dimensions and count statuses in one pass.",
+      "applied": true
+    },
+    {
+      "summary": "Bound retained log chunks and search only new text plus a split-marker tail.",
+      "applied": true
+    },
+    {
+      "summary": "Prepare dependencies once for read-only parallel APK builds, serialize device capture and avoid packaging a bootstrap APK.",
+      "applied": true
+    }
+  ],
+  "angles": [
+    "reuse",
+    "simplification",
+    "efficiency",
+    "altitude"
+  ]
+}

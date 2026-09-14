@@ -184,6 +184,17 @@ Same-engine canvases have independent targets, cameras, rectangles and input own
 ArcRotate/Free cameras, framing, bounded orthographic projection, viewports and supported SDL controls
 are live. Geospatial input, off-center orthographic planes and broader camera combinations refuse.
 
+## Android
+
+The Android prototype targets ARM64 and x86_64, API 28+ and devices satisfying
+SDL_GPU's Vulkan requirements. It builds one registered scene into a debug APK.
+Single-finger input uses SDL's mouse emulation and the existing camera/pointer
+path; multi-touch gestures are not implemented. Retained UI (`ui:rml`), audio
+(`audio:engine`), worker-window rendering (`platform:window`) and Dawn builds
+refuse explicitly. Other reached subsystems remain subject to device capabilities
+and their existing admission limits; the complete scene/demo corpus is not
+Android-qualified. [Development](development.md#android-prototype) owns commands.
+
 ## Asset loading and upload
 
 | Format | Supported | Limits |
