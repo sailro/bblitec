@@ -69,7 +69,7 @@ public:
         // (`msaaSamples === 1 ? 1 : 4`), not a re-typed 4.
         samples = frame_options.single_sample
             ? 1u
-            : upstream::preferred_sample_count();
+            : upstream::preferred_sample_count(engine.options.msaa_samples);
 
         // Registration order is draw order across renderers, as it is in the
         // pinned `engine._renderingContexts`.

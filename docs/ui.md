@@ -1,137 +1,188 @@
 # Native page UI
 
-The bounded DOM/CSS/Canvas2D projection uses retained typed operations and
-RmlUi. SDL_GPU and Dawn consume the same UI draw frame. This page owns the UI
-surface and its compatibility limits.
+Typed DOM/CSS/Canvas2D operations project into RmlUi. SDL_GPU and Dawn consume the same draw frame.
+
+## RmlUi ownership and integration gaps
+
+| Area | Owner |
+| --- | --- |
+| Layout, flexbox, animations, transitions, controls | RmlUi |
+| Selectors | RmlUi supports queries, matches/closest, combinators, attributes, positional forms and negation |
+| Shadows, gradients, filters | RmlUi effects/decorators; backend render hooks supply layers, masks, textures and shaders |
+| Browser projection | Compiler admission, DOM ownership, events, CSS translation and compatibility patches |
+
+The [pin](../upstream/rmlui.json) and maintained patches define the library surface.
+Check them before adding an implementation. Source rejection does not imply missing library support.
+
+Authored-tree queries work before rendering and while detached. A separate matcher also handles live
+RmlUi metadata, duplicating library capability. `Element::Matches` reparses each call; cached reuse
+needs performance and semantic verification. The easing/steps mapping is approximate.
 
 ## Integration
 
-Build switches for RmlUi, FreeType and LunaSVG are in
-[development](development.md#native-builds). Scene TypeScript owns live controls. Reviewed `ui/*.json` companions describe
-static host chrome explicitly; they do not discover arbitrary browser pages.
+- TypeScript owns live controls; reviewed `ui/*.json` companions describe static host chrome.
+- Worker applications select the Window host through reached Window APIs. Workers cannot use Window DOM.
+- DOM handles retain their document owner across aliases, containers, helpers and engine creation.
+- RAF runs on the owner repaint clock, returns cancellable IDs and needs no engine. Notifications coalesce.
+- Error/unhandled-rejection listeners support removal, once and preventDefault before engine creation.
+  Events borrow dispatch; names are Error, stack/location are absent. Rejectionhandled is unsupported.
+- Resolution and reduced-motion matchMedia queries retain identity/current matches and zero-argument change
+  listeners. Wider queries, event payloads and removal refuse. ResizeObserver entries are unavailable.
+- Navigator exposes native identity, OS platform, processor count and language. Heap snapshots and client
+  hints are absent. Async graphics guards expose the existing Window service; adapter requests and
+  GPU constructor/prototype instrumentation are unsupported.
+- Location follows deployment. Reload completes the task/microtasks then recreates realms, retaining
+  durable storage. Other navigation refuses. Screen/viewport metrics use CSS pixels at display scale.
+- The Window service provides promise-backed clipboard text writes; reads/rich data are unsupported.
 
-The multi-canvas companions retain the original canvases, divider and labels. Equivalent flex panes
-provide native rectangles; pinned host HTML supplies the browser reference. Canvas-only captures
-retain every canvas at its page position, so labels cannot conceal a rendering regression.
+Host multi-canvas companions retain canvases, dividers and labels. Canvas-only captures include every
+canvas at its page position. Build switches are in [development](development.md#native-builds).
 
 ## DOM and events
 
-| Area | Supported |
-| --- | --- |
-| Construction | Static-tag createElement, appendChild/append, root attachment, remove |
-| Content | textContent/innerText, bounded innerHTML, className/id/type, static attributes |
-| Styles/classes | cssText, reached style fields, classList add/remove/forced toggle |
-| Queries | Static class query on a known complete retained subtree |
-| Input | Reached click/mousedown/pointerdown/up/cancel/lost-capture callbacks; one pointer |
-| Focus | Control/canvas focus, focus listeners, activeElement identity, button navigation |
-| Text forms | Retained input/textarea value and input callbacks; textarea editing and vertical resize |
-| Range forms | Retained value/input callbacks and native range widgets |
-| Files | Object-URL download anchors and static single-file inputs |
+| Area | Supported | Limits |
+| --- | --- | --- |
+| Construction | Static tags, appendChild, mixed text/element append, remove, retained roots | No general DOM implementation |
+| Content | textContent/innerText, bounded innerHTML, id/class/type, static attributes | Compound text writes; unsupported root replacement/removal |
+| Styles/classes | cssText, static style fields/methods, classList add/remove/forced toggle | Nonempty setProperty priority; dynamic property names |
+| Queries | Literal querySelector/querySelectorAll/matches/closest; attached document ID lookup | Interaction states, :scope, dynamic selectors, pseudo-element queries |
+| Pointer/keyboard | Movement, buttons, boundaries, click/dblclick, wheel, contextmenu, keyboard | One mouse pointer; no AbortSignal, explicit capture lifecycle or coalesced events |
+| Focus/forms | Focus, activeElement, button navigation, text/password inputs, textarea, range values/input | Full browser form behavior and broader constructed input types |
+| Boolean attributes | hidden/disabled reflect presence; disabled controls cannot focus/activate | hidden=until-found refuses |
 
-UI receives pointer input before cameras. Consumed events do not move cameras;
-Window keyboard listeners run before default UI actions. `preventDefault`
-suppresses those actions and camera propagation. Retained elements preserve
-focus/hover/capture identity. Borrowed events cannot escape dispatch; copy
-owned scalar fields.
+Queries use current attributes/order, including detached subtrees. Single queries return null; lists
+are ordered snapshots. Dynamic traversal into innerHTML throws without an authored markup tree.
+Generated boxes are excluded. Root documentElement/head/body identities are distinct.
 
-Canvas `width/height` are drawable pixels; `clientWidth/clientHeight` are CSS
-pixels. Pointer conversion uses pixel density/display scale. Density changes
-refresh metrics even without a drawable resize.
+Common input dispatch preserves target/capture/bubble, callback identity, removal, once, capture,
+passive, stopPropagation and stopImmediatePropagation. Passive listeners cannot cancel defaults.
+UI runs before cameras; preventDefault suppresses default UI actions and camera propagation.
+Window keyboard listeners precede default actions. Focus/form callbacks use per-element dispatch.
+
+Event flags, phases, modifiers, pointer IDs/types and target/currentTarget/relatedTarget are represented.
+Copy owned fields before dispatch ends. Optional element calls snapshot the receiver and skip arguments
+when absent. Window input waits for callbacks while servicing layout requests.
+
+Window pagehide runs before realm cleanup on close/reload, with Document target and Window currentTarget.
+It uses shared listener ordering and microtask checkpoints, with the [HTML page-transition flags](https://html.spec.whatwg.org/multipage/nav-history-apis.html#the-pagetransitionevent-interface).
+Beforeunload and page-history caching are unsupported; native pagehide has persisted=false.
+
+Attribute names use HTML ASCII casing. Removal updates retained/rendered state; text/markup replacement
+removes prior children. Source append arguments finish before insertion. Canvas backing dimensions are
+drawable pixels; client dimensions are CSS pixels. Synchronous rectangle reads flush pending layout.
 
 ### File transfer controls
 
-Downloads use save dialogs and atomic publication; cancellation writes nothing.
-File inputs snapshot bytes/name before change dispatch. Cancellation retains the
-old selection; retained File values keep old snapshots. Reads enforce per-file
-limits and a 256 MiB engine live-selection cap. `File.text` reads the snapshot.
-
-Picker completion and immediate text continuations can occur before `click`
-returns. Multiple files/directories, unsupported accept entries, arbitrary URL
-navigation and source-selected native paths refuse.
+Save dialogs publish atomically; cancellation writes nothing. Single-file inputs snapshot bytes/name
+before change dispatch. File aliases retain snapshots; selections have a 256 MiB live cap and per-file
+limits. Completion may occur before click returns. Multiple files/directories, unsupported accept values,
+arbitrary source paths and file-input type transitions refuse.
 
 ### Markup
 
-Generation-time innerHTML accepts bounded text/div/span and reviewed
-svg/path/rect attributes. Scripts, event attributes, dynamic attributes,
-unsupported elements and malformed nesting refuse. Runtime text is escaped.
-Inline SVG rasterizes at live CSS size; [mixed currentColor/literal paints](../src/compiler/ui-projection.ts) and
-queries into SVG internals refuse.
+Closed innerHTML admits text/div/span and reviewed SVG/path/rect attributes. Scripts, event attributes,
+dynamic attributes and malformed nesting refuse. Runtime text is escaped. SVG rasterizes at CSS size;
+mixed currentColor/literal paints and internal SVG queries refuse.
 
 ## Canvas2D
 
-Supports backing dimensions, scale, full-surface clear, fillRect, bounded
-paths/fill/stroke, putImageData, destination-rectangle canvas drawImage,
-sampling intent and bounded fillText. Offscreen canvases retain premultiplied
-RGBA pixels and revisions.
+Supports backing dimensions, scale, full clear, fillRect, bounded paths/fill/stroke, putImageData,
+destination-rectangle canvas drawImage and bounded fillText. Offscreen pixels are premultiplied RGBA.
+Closed canvas producers can bake getImageData; mutable module/engine inputs refuse.
 
-Generation captures top-level `getImageData` reads in closed canvas-producing
-functions. Arguments must be known data, closed data producers or local asset
-directories; mutable module inputs and runtime engine reads refuse.
-
-An engine-less entry can present primary `renderCanvas` with window/input/RAF
-support on both backends. Source-created GPU engine ownership cannot share that
-primary canvas. Client size stays live; backing dimensions follow source resets.
-Rectangles normalize negative extents and use backing-pixel fractional coverage.
-Opaque full redraws retire covered commands.
-
-Partial clear, source-rectangle blits, arbitrary transforms, general
-clipping/shaping and non-convex tessellation remain unsupported.
+Engine-less renderCanvas presents through Window/input/RAF. That primary canvas cannot also own a
+source-created GPU engine. Partial clear, source-rectangle blits, general transforms/clipping/shaping
+and non-convex tessellation refuse. Opaque full redraws retire covered commands.
 
 ## CSS, layout, and fonts
 
-Supports reached browser defaults, platform fonts, fixed/inset/calc positioning,
-bounded shorthands, backgrounds, gradients, rounded borders, text effects and
-deterministic CSS animation. Scrollbars are 16 density-independent pixels.
+| Area | Supported | Limits |
+| --- | --- | --- |
+| Position/box | Reached defaults, fixed/inset/calc, box sizing, physical edges, horizontal-LTR logical margins/padding | Vertical/RTL logical mapping; unrepresented math/shorthands |
+| Flex | Wrapping/reversal, grow/shrink/basis, numeric shorthand, flow, alignment, independent gaps | Intrinsic basis keywords and unrepresented CSS math |
+| Grid | Row-major grid/inline-grid; auto/px/fr, minmax(px,fr), integer repeat, implicit rows, gaps/alignment | 256 explicit tracks; no spans, named/alternate placement, percentage tracks or broader intrinsic functions |
+| Grid items | Cell-relative widths/spacing, anonymous text items, live child/style changes | Percentage heights, baseline alignment and broader replaced-item sizing |
+| Containers | inline-size containment; unnamed nearest-ancestor max-width:Npx queries | Named/min/height/style/scroll-state queries, relative units, other containment types |
+| Media | Reached max-width and reduced-motion rules | Reduced motion uses Windows preference polling; other platforms refuse that preference |
+| Text | Wrapping/word-break, normal/italic, casing, clip/ellipsis, supported text effects | Browser min-content, oblique, custom overflow, exact shaping/rasterization |
+| Visibility | Inherited visible/hidden with visible descendants; delayed zero-duration stylesheet transitions | collapse; inline writes do not initiate transitions |
+| Borders/backgrounds | Solid sides, px/em/rem widths, rounded corners, gradients, solid border/padding/content clipping | Gradient/image clipping and broader border composition |
+| Box shadows | Ordered inset/outer layers, pixel offsets/spread/blur, explicit colors and color variables | Omitted/currentColor, non-pixel lengths; cached textures clip to viewport size |
+| Raster border images | Packaged stretch slices, number/percentage slices, live widths | Outset, center fill, repeat, SVG, longhands, runtime-generated declarations |
+| Images | Centered fill/contain/cover/none/scale-down; content-box clipping | object-position; Canvas2D supports fill only |
+| Scrollbars | auto/thin/none widths, auto/two-color styles, selected WebKit parts, stable gutter | Both-edge/vertical/viewport gutters; orientation states, track-piece, resizer |
+| Overscroll | Per-axis auto/contain/none through the native scroll path | Browser edge handoff/bounce/navigation; contain and none share behavior |
+| Lists | Unmarked block lists with default margins/indentation | Marker types, counters and images |
 
-Selectors are bounded class/id/compound and proven ancestor forms, with optional
-hover. [Tag-only projection](../src/compiler/ui-projection.ts) is unsupported. Static selectors/properties are
-validated; source/sheet order and live max-width rules are retained.
-Only fixed grids with proven equivalent wrapping-flex geometry lower; unknown
-track/class/id changes refuse.
+Grid retains authored parents and structural selectors. Track sizing follows non-spanning layout;
+source/style/inline order, responsive changes and child mutations update it. Container queries settle
+before synchronous measurements and report nonconverging layouts.
 
-Fonts use DirectWrite/CoreText/fontconfig. Generic emoji/ZWJ shaping is limited.
-Linux and macOS UI retain FreeType's PNG decoder for system color-font glyphs,
-including Apple Color Emoji's bitmap data and media-symbol fallbacks.
-Unauthored button fonts use the generic sans default; normal line height uses
-per-face ratios, so browser glyph/size rounding can differ.
-Windows file fonts use DirectWrite OpenType shaping and browser-compatible raster modes and coverage.
-Color/fallback faces and font effects retain RmlUi rasterization; glyph coverage and baseline rounding
-can differ from browser text. Textareas preserve fractional line height and design advances;
-native range painting follows browser geometry and control states.
+Custom properties preserve case, inherit and support var fallbacks; `--bbl-` is reserved. Quoted values
+and nested blocks retain declaration boundaries. Empty writes remove local declarations; cssText
+replaces the list. Closed stylesheet helpers/templates snapshot values in source order. Runtime-generated
+stylesheet text refuses.
 
-| Maintained RmlUi patch | Purpose |
+Stylesheet selectors support tags/IDs/classes, attribute presence/equality, descendant/child/sibling
+combinators, hover/active/focus/focus-visible/focus-within/disabled/checked, positional An+B/of-type,
+empty, not/is/where/has. Where has zero specificity. Has updates ancestor styles; nested has and
+pseudo-elements within relative lists refuse. Wider attribute operators and nth-child of-lists remain limited.
+
+Before/after generate flow/positioned boxes from literal strings or attr text. None/normal remove boxes;
+empty strings retain them. Generated boxes do not affect authored queries/serialization/positional counts.
+Counters/images/typed attr fallbacks and adaptations requiring authored handles refuse. Placeholder
+styles admit color/opacity only.
+
+Horizontal range widgets support appearance:none and WebKit thumb/track styles, including state,
+size/margins/borders/gradients/shadows. Input behavior remains native. Vertical/tick/Firefox semantics
+are unsupported; Gecko-only selector lists are rejected like Chromium's. Native scrollbars use 16/8
+CSS-pixel auto/thin widths; standard non-auto settings override vendor styles.
+
+Packaged raster images expose decode/complete/natural dimensions before engine creation. Decode settles
+on realm microtasks; empty/broken images reject and source changes invalidate requests. Network/responsive
+sources, load/error events and distinct DOMException values are unsupported.
+
+Fonts use DirectWrite on Windows, CoreText/fontconfig discovery with FreeType on macOS/Linux. Color fonts
+retain PNG decoding. Font coverage, baseline/line-height rounding, emoji/ZWJ shaping and glyph rasterization
+can differ from Chromium. Relative transition units resolve at transition start.
+
+| Maintained RmlUi patch | Contract |
 | --- | --- |
-| `rmlui-css-box-model.patch` | Solid backgrounds under borders; offset shrink-to-fit sizing |
-| `rmlui-premultiplied-rounding.patch` | Browser-oriented color/opacity rounding |
-| `rmlui-fractional-letter-spacing.patch` | Fractional default-font accumulation; excludes HarfBuzz sample |
-| `rmlui-line-leading.patch` | Floor upper half-leading; preserve authored fractional textarea line height |
-| `rmlui-transform-key-ownership.patch` | Own mutable transition keys; preserve shared relative transforms |
-
-Relative transition units resolve at transition start. Fully responsive
-relative-unit interpolation, gradient border compositing and exact browser
-font rasterization are not guaranteed. Rebuild patched libraries before checks.
+| `rmlui-css-box-model.patch` | Background painting, shadow bounds and shrink-to-fit |
+| `rmlui-css-declarations.patch` | Quoted/nested declarations |
+| `rmlui-visibility.patch` | Visibility inheritance/transitions |
+| `rmlui-zero-track-grid.patch` | Native grid formatting |
+| `rmlui-zz-container-queries.patch` | Inline containment/max-width queries |
+| `rmlui-fragment-root.patch` | Fragment roots |
+| `rmlui-generated-content.patch` | Generated-box ownership |
+| `rmlui-selector-functions.patch` | Functional selectors/placeholder |
+| `rmlui-range-layout.patch` | Horizontal range layout |
+| `rmlui-overscroll-axes.patch` | Independent scroll axes |
+| `rmlui-scrollbar-gutter.patch` | Stable gutter |
+| `rmlui-flex-layout.patch` | Flex defaults/alignment |
+| `rmlui-solid-background-clip.patch` | Solid clipping |
+| `rmlui-textured-borders.patch` | Raster border slices |
+| `rmlui-premultiplied-rounding.patch` | Color rounding |
+| `rmlui-fractional-letter-spacing.patch` | Fractional advances |
+| `rmlui-line-leading.patch` | Leading/textarea metrics |
+| `rmlui-object-fit.patch` | Image fitting |
+| `rmlui-overflow-wrap.patch` | Emergency wrapping |
+| `rmlui-transform-key-ownership.patch` | Transition key lifetime |
 
 ## Rendering
 
-Both backends composite a premultiplied transparent layer at scene sample count.
-Backdrop blur snapshots preceding UI, uses FP16 scratch targets and clips before
-later UI. Resize/density updates intrinsic measurements. Canvas overlays sit
-below DOM chrome.
+Both backends composite premultiplied UI at scene sample count. Canvas overlays precede DOM chrome.
+Backdrop blur snapshots preceding UI into FP16 scratch. Filters retain nested layers and ordered color
+adjustments, pixel blur and explicit-color drop-shadow chains. Canvas-only capture excludes UI filters.
+Rebuild patched libraries before validation.
 
 ## Limits
 
-Single-row inline grids support positive px/fr tracks with one element child per track.
-Runtime track replacement and implicit extra rows refuse. Form dimensions support content-box and border-box.
+- General mask-image and unsupported blend modes refuse; the reviewed difference crosshair degrades.
+- Backdrop blur(px)/none are represented; other reached backdrop functions may degrade.
+- will-change, touch-action, user-select and image-rendering are hints. Only -webkit-user-drag:none is admitted.
+- element.animate and listener removal outside shared input dispatch remain no-ops.
+- CSS easing/steps, font variants and rasterization have approximations.
+- Retained UI is unavailable under standalone effect/frame-graph drivers.
 
-- No general selectors/traversal/observers, full browser form semantics, JavaScript hover callbacks,
-  multiple pointer identities or arbitrary events.
-- Supported inset outlines become borders; other shadows/font-variant-numeric
-  can degrade. General grid and unsupported text-shadow forms refuse.
-- The reviewed difference-blend crosshair degrades; other unsupported blend
-  modes refuse. Backdrop blur does not supply general mask/filter layers.
-- blur(px)/none are supported; other reached backdrop functions can degrade.
-- will-change, touch-action, user-select and image-rendering are accepted hints.
-- element.animate and listener removal are no-ops; CSS keyframes use mapped easing.
-
-Parity measures the [full page](fidelity.md#what-is-measured-the-full-page);
-do not infer that every UI residual is unavoidable.
+Parity measures the [full page](fidelity.md#what-is-measured-the-full-page).

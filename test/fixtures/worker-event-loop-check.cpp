@@ -201,6 +201,55 @@ void terminate_idle_and_before_initialization() {
         require(executed.load() != before, "Termination before initialization still executed source");
     }
 }
+void closing_before_cleanup() {
+    for (const bool terminate : {false, true}) {
+        EventLoop loop;
+        std::vector<std::string> order;
+        bool owner_alive = true;
+        loop.run([&] {
+            loop.defer_cleanup([&] { owner_alive = false; order.push_back("cleanup"); });
+            loop.post([&] { order.push_back("discarded task"); });
+            if (terminate) {
+                loop.queue_microtask([&] { order.push_back("discarded microtask"); });
+                loop.inbox()->terminate();
+            }
+            else loop.close();
+        }, [&] {
+            require(owner_alive, "Closing callback ran after native cleanup");
+            loop.checkpoint();
+            order.push_back("closing");
+            loop.dispatch_callback([&] {
+                loop.queue_microtask([&] { order.push_back("closing microtask"); });
+            });
+        });
+        require(order == std::vector<std::string>{"closing", "closing microtask", "cleanup"}, "Closing event ordering");
+        require(!owner_alive, "Closing callback prevented cleanup");
+    }
+    EventLoop loop;
+    bool cleaned = false;
+    try {
+        loop.run([&] {
+            loop.defer_cleanup([&] { cleaned = true; });
+            throw std::runtime_error("original failure");
+        }, [] { throw std::runtime_error("closing failure"); });
+        require(false, "Initial error was lost during closing");
+    } catch (const std::runtime_error& error) {
+        require(std::string(error.what()) == "original failure", "Closing error replaced initial failure");
+    }
+    require(cleaned, "Closing exception skipped cleanup");
+    EventLoop closing_failure;
+    bool closing_cleaned = false;
+    try {
+        closing_failure.run([&] {
+            closing_failure.defer_cleanup([&] { closing_cleaned = true; });
+            closing_failure.close();
+        }, [] { throw std::runtime_error("closing failure"); });
+        require(false, "Closing error was lost");
+    } catch (const std::runtime_error& error) {
+        require(std::string(error.what()) == "closing failure", "Closing error changed");
+    }
+    require(closing_cleaned, "Closing-only failure skipped cleanup");
+}
 } // namespace
 
 int main() {
@@ -211,6 +260,7 @@ int main() {
         timers_and_errors();
         terminate_busy_and_release_on_owner();
         terminate_idle_and_before_initialization();
+        closing_before_cleanup();
         std::cout << "Worker event loop: ordering, computation, timers, errors and termination passed.\n";
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n';

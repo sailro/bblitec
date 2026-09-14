@@ -1,8 +1,11 @@
 find_package(Git REQUIRED)
 
+# Stage the maintained patch in this disposable dependency checkout. The next
+# forced checkout of the pin then removes files added by an older patch version,
+# as well as restoring modified files. Index checks still reject local divergence.
 execute_process(
     COMMAND
-        "${GIT_EXECUTABLE}" -C "${RMLUI_SOURCE_DIR}" apply --unidiff-zero --check
+        "${GIT_EXECUTABLE}" -C "${RMLUI_SOURCE_DIR}" apply --index --unidiff-zero --check
         "${RMLUI_PATCH}"
     RESULT_VARIABLE patch_applies
     OUTPUT_QUIET
@@ -12,7 +15,7 @@ execute_process(
 if(patch_applies EQUAL 0)
     execute_process(
         COMMAND
-            "${GIT_EXECUTABLE}" -C "${RMLUI_SOURCE_DIR}" apply --unidiff-zero
+            "${GIT_EXECUTABLE}" -C "${RMLUI_SOURCE_DIR}" apply --index --unidiff-zero
             "${RMLUI_PATCH}"
         RESULT_VARIABLE patch_result
     )
@@ -22,7 +25,7 @@ if(patch_applies EQUAL 0)
 else()
     execute_process(
         COMMAND
-            "${GIT_EXECUTABLE}" -C "${RMLUI_SOURCE_DIR}" apply --unidiff-zero
+            "${GIT_EXECUTABLE}" -C "${RMLUI_SOURCE_DIR}" apply --index --unidiff-zero
             --check --reverse "${RMLUI_PATCH}"
         RESULT_VARIABLE patch_is_present
         OUTPUT_QUIET

@@ -50,10 +50,9 @@ test("keeps a Map delete on the container being iterated", () => {
     const item = /for \(auto&& (v_bblite_item_\d+) : v_jobs\) \{/.exec(
         result.cpp,
     )![1];
-    assert.match(
-        result.cpp,
-        new RegExp(`v_jobs\\.erase\\(${item}\\.first\\)`),
-    );
+    const key = new RegExp(`auto (\\w+) = ${item}\\.first;`).exec(result.cpp)?.[1];
+    assert.ok(key, "The destructured key snapshots the current entry.");
+    assert.match(result.cpp, new RegExp(`v_jobs\\.erase\\(${key}\\)`));
     assert.match(result.cpp, /v_jobs\.size\(\)/);
 });
 
@@ -117,7 +116,7 @@ test("treats a call argument as an array mutation escape", () => {
         result.cpp,
         /void extend\(bbl::js::Array<double>& (v_fn\d+_list)\)/,
     );
-    assert.match(result.cpp, /v_fn\d+_list\.push_back\(40\.0\);/);
+    assert.match(result.cpp, /v_fn\d+_list\.push_back\(40\.0\)/);
     assert.match(result.cpp, /bblscene::extend\(v_grown\);/);
 });
 

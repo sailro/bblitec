@@ -18,6 +18,10 @@
  */
 import { EmissionMap } from "./emission-transaction.js";
 import ts from "typescript";
+import type { LoweringServices } from "./lowering-services.js";
+import type { Value } from "./types.js";
+import type { DataType } from "./data-types.js";
+import {nativeFunctionValue} from "./native-function-values.js";
 import {
     pinnedHypotCall,
     pinnedMathSpelling,
@@ -30,6 +34,8 @@ export interface MathMember {
     readonly variadic?: true;
     /** The C++ call over doubles. */
     readonly cpp: (args: readonly string[]) => string;
+    /** A variadic member over an already evaluated numeric range. */
+    readonly rangeCpp?: (range: string) => string;
     /**
      * The exact generation-time fold. Only the integer-valued members carry
      * one: their result is exact in both engines, so the folded value and
@@ -120,7 +126,8 @@ export const MATH_MEMBERS: ReadonlyMap<string, MathMember> = new EmissionMap<
     // `pinnedNumericMathCallsWithHypot`, and the one spelling `fidelity.md`
     // records as `splat-hypot-approximation` -- so scene code and pinned
     // code agree on it rather than this one call site being the exception.
-    ["hypot", { arity: 2, variadic: true, cpp: pinnedHypotCall, reach: "js-data" }],
+    ["hypot", { arity: 0, variadic: true, cpp: pinnedHypotCall,
+        rangeCpp: range => `bbl::js::hypot_js(${range})`, reach: "js-data" }],
     [
         "random",
         {
@@ -131,6 +138,11 @@ export const MATH_MEMBERS: ReadonlyMap<string, MathMember> = new EmissionMap<
         },
     ],
 ]);
+
+/** Native min/max calls share the same range and list overloads. */
+export function mathExtremeCpp(method: string, source: string): string {
+    return `bbl::js::math_extreme<${method === "max"}>(${source})`;
+}
 
 /** The exact fold of a one-argument member, where the table carries one. */
 export function mathUnaryFold(
@@ -216,4 +228,26 @@ export function mathMemberCall(
         isDefaultLibraryIdentifier,
     );
     return access ? { name: access.name.text, call: expression } : undefined;
+}
+
+/** Math callbacks use the native numeric helpers and owned rest-array convention. */
+export function mathFunctionValue(
+    context: Pick<LoweringServices, "checker" | "isDefaultLibraryIdentifier" | "dataLowerer" | "dataTypes" | "callbackIdentity" | "reachJsData" | "reachJsRandom" | "fail">,
+    expression: ts.Expression,
+): Value | undefined {
+    const access = mathMemberAccess(expression, identifier => context.isDefaultLibraryIdentifier(identifier));
+    if (!access) return undefined;
+    const member = MATH_MEMBERS.get(access.name.text);
+    const extreme = access.name.text === "max" || access.name.text === "min";
+    if (!member && !extreme) return undefined;
+    const variadic = extreme || member?.variadic;
+    const type: DataType<"function"> = {kind:"function",
+        parameters:variadic ? [{kind:"vector", element:{kind:"number"}}] : Array.from({length:member!.arity}, () => ({kind:"number"})),
+        ...(variadic ? {restParameter:0} : {}),
+        result:{kind:"number"}, identity:true};
+    const parameters = type.parameters.map((_, index) => `argument_${index}`);
+    if (member?.reach === "js-random") context.reachJsRandom();
+    const body = extreme ? mathExtremeCpp(access.name.text, "argument_0")
+        : variadic ? member!.rangeCpp!("argument_0") : member!.cpp(parameters);
+    return nativeFunctionValue(context, access, type, `return ${body};`);
 }

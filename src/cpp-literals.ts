@@ -172,11 +172,18 @@ export const cppIdentifierPattern = /^[A-Za-z_][A-Za-z0-9_]*$/;
 /**
  * A string as a C++ literal.
  *
- * JSON's escaping is C++'s for everything a scene can carry, except the two
- * line separators JavaScript allows raw inside a string and C++ does not.
+ * Keep lone UTF-16 surrogates in the runtime's WTF-8 representation: C++
+ * forbids surrogate universal-character names. Match escaped backslashes
+ * separately so a source string containing literal "\\ud800" stays literal.
  */
 export function stringLiteral(value: string): string {
     return JSON.stringify(value)
+        .replace(/\\\\|\\u(d[89a-f][0-9a-f]{2})/gi, (escape: string, surrogate: string | undefined) => {
+            if (!surrogate) return escape;
+            const unit = Number.parseInt(surrogate, 16);
+            return [0xe0 | (unit >> 12), 0x80 | ((unit >> 6) & 0x3f), 0x80 | (unit & 0x3f)]
+                .map(byte => `\\${byte.toString(8).padStart(3, "0")}`).join("");
+        })
         .split("\u2028")
         .join("\\u2028")
         .split("\u2029")

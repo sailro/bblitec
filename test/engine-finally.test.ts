@@ -34,12 +34,27 @@ test("finally blocks explicitly refuse an additional suspended frame boundary", 
     )), /finally block spanning startEngine cannot also span a later frame yield/);
 });
 
+test("engine-spanning finally erases browser helper cleanup and retains native writes", () => {
+    for (const nativeCleanup of ["", "cleanups++;"]) {
+        const result = compileSource(source
+            .replace('async function main()', 'import { installBrowserHelper } from "./fixtures/compiler-modules/browser-helper.js"; async function main()')
+            .replace("let cleanups = 0;", 'let cleanups = 0; const canvas = document.getElementById("renderCanvas") as HTMLCanvasElement; const progress = installBrowserHelper(canvas, { estimatedBytes: 42 });')
+            .replace("cleanups++;", `progress.done(); ${nativeCleanup}`),
+        { fileName: "test/compiler-multi-file-entry.ts" });
+        assert.doesNotMatch(result.cpp, /globalThis|fetch|dataset|progress/);
+        assert.match(result.cpp, /defer_start_continuation/);
+        assert.equal(/finally_completion_\d+\.run\(\)/.test(result.cpp), nativeCleanup.length > 0);
+    }
+});
+
 test("engine-spanning finally refuses direct and indirect cleanup exceptions", () => {
     for (const cleanup of [
         'throw new Error("cleanup");',
         'const fail = (): void => { throw new Error("cleanup"); }; fail();',
         'const fail = (): number => { throw new Error("cleanup"); }; const value = { get current(): number { return fail(); } }; cleanups += value.current;',
         'const fail = (): number => { throw new Error("cleanup"); }; const value = { get current(): number { return fail(); } }; const key = "current"; cleanups += value[key];',
+        'performance.now();',
+        'const canvas = document.getElementById("renderCanvas") as HTMLCanvasElement; canvas.focus();',
     ]) {
         assert.throws(() => compileSource(source.replace("cleanups++;", cleanup)),
             /finally block spanning startEngine requires non-throwing cleanup/);

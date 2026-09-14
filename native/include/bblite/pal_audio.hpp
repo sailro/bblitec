@@ -66,13 +66,17 @@
 #include <cstdint>
 #include <string>
 #include <bblite/js_data.hpp>
+#include <bblite/pal_audio_types.hpp>
+#include <bblite/js_callback.hpp>
 
 namespace bbl::pal {
 
-/** One audio context: a real-time SDL3 device, or a capture render. */
-struct AudioContextHandle {
-    std::uint32_t value = 0;
-};
+#if defined(BBLITE_WORKERS) && BBLITE_WORKERS
+/** Scheduled-source callbacks run through their owning realm's event queue. */
+void audio_add_ended_listener(AudioNodeHandle node, std::size_t identity,
+    js::Callback<void()> callback, bool capture = false, bool once = false);
+void audio_remove_ended_listener(AudioNodeHandle node, std::size_t identity, bool capture = false);
+#endif
 
 /** Context ownership follows the generated engine, including failed startup. */
 class AudioSession {
@@ -85,49 +89,6 @@ public:
 private:
     std::vector<AudioContextHandle> contexts_;
     friend AudioContextHandle audio_create_context(std::shared_ptr<AudioSession>& session);
-};
-
-/** One node in a context's graph. */
-struct AudioNodeRecord;
-struct AudioNodeHandle {
-    std::uint32_t value = 0;
-    std::shared_ptr<AudioNodeRecord> ownership;
-};
-
-/** Planar PCM retained by JS handles and any source bus using it. */
-struct AudioBufferRecord;
-struct AudioBufferHandle {
-    std::uint32_t value = 0;
-    std::shared_ptr<AudioBufferRecord> ownership;
-};
-
-/**
- * The automatable parameters the reached slice names, as the enumerator
- * a generated caller passes rather than the string Web Audio spells --
- * the contract `pinned_depth_compare` and `pinned_blend_table` already
- * hold for their own enumerations.
- */
-enum class AudioParamName : std::uint8_t {
-    Gain,
-    Frequency,
-    Detune,
-    Q,
-    Pan,
-    PlaybackRate,
-};
-
-/**
- * One automatable scalar on a node (`gain`, `frequency`, ...).
- *
- * It is a *value*, not an id into a table, because Web Audio's contract
- * is identity: `osc.frequency` returns the same `AudioParam` object on
- * every read, and the pinned ramp component depends on that -- it
- * retains the object and keeps `_rampEndTime` state on it. A handle
- * minted per call would make two reads of one parameter two parameters.
- */
-struct AudioParamHandle {
-    AudioNodeHandle node;
-    AudioParamName name = AudioParamName::Gain;
 };
 
 /** `OscillatorNode.type`. */
@@ -153,9 +114,9 @@ enum class BiquadFilterKind : std::uint8_t {
 // -- context lifecycle ---------------------------------------------------
 
 /**
- * `new AudioContext()`. The rate and channel count are the device's --
- * Web Audio's constructor takes neither, and which they are is a
- * platform answer rather than a Babylon one. Opening fails by throwing,
+ * The supported no-options `new AudioContext()` uses the device's rate
+ * and channel count. Browser constructor options, including a requested
+ * sample rate, are outside this entry point. Opening fails by throwing,
  * exactly as this project's GPU backends throw rather than degrading.
  *
  * When the capture capability was compiled, `BBLITE_AUDIO_CAPTURE` builds a
@@ -165,7 +126,7 @@ enum class BiquadFilterKind : std::uint8_t {
 AudioContextHandle audio_create_context();
 AudioContextHandle audio_create_context(std::shared_ptr<AudioSession>& session);
 
-/** `ctx.close()` plus the device teardown a real-time context owns. */
+/** Idempotent session teardown; asynchronous close checks lifecycle separately. */
 void audio_close_context(AudioContextHandle context);
 
 /** `ctx.currentTime`. */
@@ -174,11 +135,14 @@ double audio_current_time(AudioContextHandle context);
 /** `ctx.sampleRate`. */
 double audio_sample_rate(AudioContextHandle context);
 
-/** `AudioContext.state` for a live context. */
+/** `AudioContext.state`, including closed aliases retained after device teardown. */
 std::string audio_state(AudioContextHandle context);
 
 /** `ctx.resume()`. Inert on a capture context, as the pin's unlock is. */
 void audio_resume(AudioContextHandle context);
+
+/** Pause rendering and its clock while retaining the graph. */
+void audio_suspend(AudioContextHandle context);
 
 /** `ctx.destination`. */
 AudioNodeHandle audio_destination(AudioContextHandle context);
@@ -206,6 +170,13 @@ AudioBufferHandle audio_decode_buffer(
 bbl::js::F32Array audio_buffer_channel(
     AudioBufferHandle buffer,
     std::uint32_t channel);
+
+enum class AudioBufferProperty { Duration, Length, SampleRate, NumberOfChannels };
+double audio_buffer_property(AudioBufferHandle buffer, AudioBufferProperty property);
+enum class AudioBufferCopy { FromChannel, ToChannel };
+void audio_buffer_copy(AudioBufferHandle buffer, bbl::js::F32Array samples,
+    std::uint32_t channel, std::uint32_t offset, AudioBufferCopy direction);
+bbl::js::Nullable<AudioBufferHandle> audio_source_buffer(AudioNodeHandle source);
 
 /** `ctx.createBufferSource()`. */
 AudioNodeHandle audio_create_buffer_source(AudioContextHandle context);

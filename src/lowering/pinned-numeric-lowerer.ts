@@ -180,6 +180,8 @@ export interface PinnedBinding {
     cpp: string;
     /** An effectful buffer getter must be read when a local aliases it. */
     materializeAlias?: true;
+    /** Indexed stores through a platform view, including its bounds and rounding rules. */
+    indexedStore?: (owner: string, index: string, value: string) => string;
     /** For a view, the C++ expression giving its byte length. */
     bytesCpp?: string;
     /**
@@ -1492,6 +1494,12 @@ export class PinnedNumericLowerer {
                 expression.operatorToken.kind,
             );
             if (operator) {
+                const target = unwrapExpression(expression.left);
+                const owner = ts.isElementAccessExpression(target) ? this.elementOwner(target) : undefined;
+                if (owner?.indexedStore && ts.isElementAccessExpression(target)) {
+                    if (operator !== "=") this.fail(expression, "compound assignment through an indexed store adapter");
+                    return owner.indexedStore(owner.cpp, this.expression(target.argumentExpression), this.expression(expression.right));
+                }
                 return (
                     `${this.assignmentTarget(expression.left)} ${operator} ` +
                     `${this.storedValue(expression.left, expression.right)}`
@@ -2009,6 +2017,7 @@ export class PinnedNumericLowerer {
             // here. Leaving it to the emitted `const` would report the same
             // fact as a C++ compile error with no pinned source location.
             const target = this.elementOwner(unwrapped);
+            if (target?.indexedStore) this.fail(unwrapped, "reference to an adapted indexed store");
             if (
                 target &&
                 (target.type === "f32-view" || target.type === "u8-view") &&

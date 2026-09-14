@@ -43,46 +43,99 @@ inline float ui_clip_side(UiClipPoint a, UiClipPoint b, UiClipPoint p) {
     return (b[0] - a[0]) * (p[1] - a[1]) - (b[1] - a[1]) * (p[0] - a[0]);
 }
 
+/** Clip one convex polygon against an oriented half-plane. */
+inline std::vector<UiClipPoint> clip_ui_polygon(const std::vector<UiClipPoint>& polygon,
+    UiClipPoint a, UiClipPoint b, float sign) {
+    std::vector<UiClipPoint> result;
+    if (polygon.empty()) return result;
+    auto previous = polygon.back();
+    float previous_side = sign * ui_clip_side(a, b, previous);
+    for (const auto point : polygon) {
+        const float side = sign * ui_clip_side(a, b, point);
+        if ((side >= 0) != (previous_side >= 0)) {
+            const float amount = previous_side / (previous_side - side);
+            result.push_back({previous[0] + amount * (point[0] - previous[0]),
+                previous[1] + amount * (point[1] - previous[1])});
+        }
+        if (side >= 0) result.push_back(point);
+        previous = point; previous_side = side;
+    }
+    return result;
+}
+
+inline void triangulate_ui_polygon(std::vector<UiClipTriangle>& result, const std::vector<UiClipPoint>& polygon) {
+    for (std::size_t i = 2; i < polygon.size(); ++i) {
+        const auto a = polygon[0], b = polygon[i - 1], c = polygon[i];
+        const float longest = std::max({std::hypot(a[0] - b[0], a[1] - b[1]),
+            std::hypot(a[0] - c[0], a[1] - c[1]), std::hypot(b[0] - c[0], b[1] - c[1])});
+        // Subtracting adjacent mask triangles can leave a roundoff sliver on
+        // their shared edge. It has no pixel coverage but may hit an exact
+        // sample location unless rejected by a distance-based tolerance.
+        if (std::abs(ui_clip_side(a, b, c)) > longest * .0001f)
+            result.push_back({a, b, c});
+    }
+}
+
 /** Intersect triangulated masks without assuming a particular DOM box shape. */
 inline std::vector<UiClipTriangle> intersect_ui_masks(
-    const std::vector<UiClipTriangle>& left,
-    const std::vector<UiClipTriangle>& right) {
+    const std::vector<UiClipTriangle>& left, const std::vector<UiClipTriangle>& right) {
     std::vector<UiClipTriangle> result;
-    result.reserve(left.size() * right.size() * 4);
     for (const auto& a : left) for (const auto& b : right) {
         const float orientation = ui_clip_side(b[0], b[1], b[2]);
         if (std::abs(orientation) < 1e-6f) continue;
-        const float sign = orientation > 0 ? 1.0f : -1.0f;
-        std::array<UiClipPoint, 6> polygon{};
-        std::copy(a.begin(), a.end(), polygon.begin());
-        std::size_t polygon_size = a.size();
-        for (std::size_t edge = 0; edge < 3 && polygon_size > 0; ++edge) {
-            std::array<UiClipPoint, 6> clipped{};
-            std::size_t clipped_size = 0;
-            UiClipPoint previous = polygon[polygon_size - 1];
-            float previous_side = sign * ui_clip_side(b[edge], b[(edge + 1) % 3], previous);
-            for (std::size_t index = 0; index < polygon_size; ++index) {
-                const UiClipPoint point = polygon[index];
-                const float side = sign * ui_clip_side(b[edge], b[(edge + 1) % 3], point);
-                if ((side >= 0) != (previous_side >= 0)) {
-                    const float amount = previous_side / (previous_side - side);
-                    clipped[clipped_size++] = {
-                        previous[0] + amount * (point[0] - previous[0]),
-                        previous[1] + amount * (point[1] - previous[1])};
-                }
-                if (side >= 0) clipped[clipped_size++] = point;
-                previous = point;
-                previous_side = side;
-            }
-            polygon = clipped;
-            polygon_size = clipped_size;
-        }
-        for (std::size_t i = 2; i < polygon_size; ++i) {
-            if (std::abs(ui_clip_side(polygon[0], polygon[i - 1], polygon[i])) > 1e-6f)
-                result.push_back({polygon[0], polygon[i - 1], polygon[i]});
-        }
+        const float sign = orientation > 0 ? 1.f : -1.f;
+        std::vector<UiClipPoint> polygon(a.begin(), a.end());
+        for (std::size_t edge = 0; edge < 3 && !polygon.empty(); ++edge)
+            polygon = clip_ui_polygon(polygon, b[edge], b[(edge + 1) % 3], sign);
+        triangulate_ui_polygon(result, polygon);
     }
     return result;
+}
+
+/** Subtract each mask triangle, retaining disjoint outside pieces at each edge. */
+inline std::vector<UiClipTriangle> subtract_ui_masks(
+    std::vector<UiClipTriangle> left, const std::vector<UiClipTriangle>& right) {
+    for (const auto& b : right) {
+        const float orientation = ui_clip_side(b[0], b[1], b[2]);
+        if (std::abs(orientation) < 1e-6f) continue;
+        const float sign = orientation > 0 ? 1.f : -1.f;
+        std::vector<UiClipTriangle> remaining;
+        for (const auto& a : left) {
+            std::vector<UiClipPoint> inside(a.begin(), a.end());
+            for (std::size_t edge = 0; edge < 3 && !inside.empty(); ++edge) {
+                triangulate_ui_polygon(remaining, clip_ui_polygon(inside, b[edge], b[(edge + 1) % 3], -sign));
+                inside = clip_ui_polygon(inside, b[edge], b[(edge + 1) % 3], sign);
+            }
+        }
+        left = std::move(remaining);
+    }
+    return left;
+}
+
+/** Preserve attributes when a recorded draw is clipped to the same mask as composites. */
+inline void clip_ui_geometry(UiRenderFrame& frame, std::uint32_t first_vertex, std::uint32_t first_index, const std::vector<UiClipTriangle>& mask) {
+    std::vector<UiRenderVertex> vertices;
+    for (std::size_t i = first_index; i + 2 < frame.indices.size(); i += 3) {
+        const std::array source{frame.vertices.at(frame.indices[i]), frame.vertices.at(frame.indices[i + 1]), frame.vertices.at(frame.indices[i + 2])};
+        const UiClipTriangle triangle{{{source[0].x, source[0].y}, {source[1].x, source[1].y}, {source[2].x, source[2].y}}};
+        const float area = ui_clip_side(triangle[0], triangle[1], triangle[2]);
+        if (std::abs(area) < 1e-6f) continue;
+        for (const auto& clipped : intersect_ui_masks({triangle}, mask)) for (const auto point : clipped) {
+            const float a = ui_clip_side(triangle[1], triangle[2], point) / area;
+            const float b = ui_clip_side(triangle[2], triangle[0], point) / area;
+            const float c = 1 - a - b;
+            const auto number = [&](auto field) { return a * (source[0].*field) + b * (source[1].*field) + c * (source[2].*field); };
+            const auto color = [&](auto field) { return static_cast<std::uint8_t>(std::clamp(std::lround(number(field)), 0l, 255l)); };
+            vertices.push_back({point[0], point[1], color(&UiRenderVertex::red), color(&UiRenderVertex::green),
+                color(&UiRenderVertex::blue), color(&UiRenderVertex::alpha), number(&UiRenderVertex::u), number(&UiRenderVertex::v)});
+        }
+    }
+    frame.vertices.resize(first_vertex);
+    frame.indices.resize(first_index);
+    for (const auto& vertex : vertices) {
+        frame.indices.push_back(static_cast<std::uint32_t>(frame.vertices.size()));
+        frame.vertices.push_back(vertex);
+    }
 }
 
 inline std::vector<UiClipTriangle> ui_rect_mask(float left, float top, float right, float bottom) {

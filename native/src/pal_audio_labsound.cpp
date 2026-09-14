@@ -18,6 +18,9 @@
 #include <bblite/pal_audio.hpp>
 
 #include <bblite/pal.hpp>
+#if defined(BBLITE_WORKERS) && BBLITE_WORKERS
+#include <bblite/pal_event_loop.hpp>
+#endif
 
 #include "pal_audio_sdl_device.hpp"
 #include "pal_audio_handles.hpp"
@@ -66,21 +69,46 @@
 
 namespace bbl::pal {
 
+struct AudioContextState {
+    enum class Status { Running, Suspended, Closed };
+    Status status = Status::Running;
+    double sample_rate = 48000.0;
+    double closed_time = 0.0;
+#if defined(BBLITE_WORKERS) && BBLITE_WORKERS
+    bool polling_events = false;
+#endif
+};
+
 struct AudioSourceState {
     bool started = false;
     bool completed = false;
+#if defined(BBLITE_WORKERS) && BBLITE_WORKERS
+    std::weak_ptr<EventLoop::Inbox> inbox;
+    std::uint64_t completion = 0;
+    bool event_pull = false;
+    void post_completion() {
+        const auto id = std::exchange(completion, 0);
+        if (id) if (auto target = inbox.lock()) target->post(std::make_unique<CompletionEvent>(id));
+    }
+#endif
 };
 
 struct AudioNodeRecord {
     std::shared_ptr<lab::AudioNode> node;
     std::shared_ptr<AudioSourceState> source;
+#if defined(BBLITE_WORKERS) && BBLITE_WORKERS
+    std::array<PlatformEventListeners<void()>, 2> ended;
+    void gc_trace(const js::TraceVisitor& visitor) const { visitor(ended); }
+#endif
 #if BBLITE_HAS_AUDIO_BUFFER_SOURCE
     bool source_loop = false;
+    AudioBufferHandle buffer{};
 #endif
 };
 
 #if BBLITE_HAS_AUDIO_BUFFER_SOURCE
 struct AudioBufferRecord {
+    std::uint32_t handle = 0;
     std::vector<bbl::js::F32Array> channels;
     lab::AudioBus bus;
     AudioBufferRecord(std::uint32_t channel_count, std::uint32_t frames)
@@ -120,10 +148,21 @@ struct ContextRecord {
             // while the record and context still retain the destination.
             device->setDestinationNode({});
         }
+#if defined(BBLITE_WORKERS) && BBLITE_WORKERS
+        for (const auto& [identity, entry] : graph) {
+            (void)identity;
+            if (entry.source && entry.source->event_pull) context->removeAutomaticPullNode(entry.node);
+        }
+        if (context) {
+            lab::ContextRenderLock render(context.get(), "bblite audio event teardown");
+            context->handlePreRenderTasks(render);
+        }
+#endif
         nodes.for_each_live([](AudioNodeRecord& record) { record.node.reset(); });
     }
 
     std::shared_ptr<lab::AudioContext> context;
+    std::shared_ptr<AudioContextState> state = std::make_shared<AudioContextState>();
     std::shared_ptr<lab::AudioDestinationNode> destination;
     std::shared_ptr<detail::AudioDeviceSdl3> device;
     /**
@@ -213,6 +252,12 @@ void collect_audio_graph(ContextRecord& context) {
     context.has_draining_tails = false;
     for (auto& [identity, entry] : context.graph) {
         entry.reached = false;
+#if defined(BBLITE_WORKERS) && BBLITE_WORKERS
+        if (entry.source && entry.source->completed && entry.source->event_pull) {
+            context.context->removeAutomaticPullNode(entry.node);
+            entry.source->event_pull = false;
+        }
+#endif
         if (entry.source && entry.source->completed && !entry.outputs.empty()) {
             if (entry.retire_after < 0.0) entry.retire_after = now + graph_tail(context, identity, render);
             if (now >= entry.retire_after) pending.push_back(identity);
@@ -297,6 +342,61 @@ std::unordered_map<std::uint32_t, ContextRecord>& contexts()
     return map;
 }
 
+#if defined(BBLITE_WORKERS) && BBLITE_WORKERS
+/** LabSound's automatic event dispatch is disabled. A bounded realm timer
+ * also pumps completion for applications with no rendering frame. */
+void poll_audio_events(std::uint32_t id) {
+    const auto found = contexts().find(id);
+    if (found == contexts().end()) return;
+    auto& context = found->second;
+    if (context.state->polling_events) return;
+    const bool pending = std::any_of(context.graph.begin(), context.graph.end(), [](const auto& entry) {
+        return entry.second.source && entry.second.source->completion != 0;
+    });
+    if (!pending) return;
+    context.state->polling_events = true;
+    EventLoop::current().set_timeout([id] {
+        const auto active = contexts().find(id);
+        if (active == contexts().end()) return;
+        active->second.state->polling_events = false;
+        collect_audio_graph(active->second);
+        poll_audio_events(id);
+    }, 8.0);
+}
+
+void retain_audio_completion(const AudioNodeHandle& node) {
+    const auto& record = node.ownership;
+    const auto& state = record->source;
+    if (!state || !state->started || state->completed || state->completion ||
+        (record->ended[0].empty() && record->ended[1].empty())) return;
+    auto& loop = EventLoop::current();
+    if (const auto previous = state->inbox.lock(); previous && previous != loop.inbox())
+        throw std::logic_error("An audio listener belongs to another realm.");
+    auto& audio = contexts().at(context_of(node.value));
+    const auto context = audio.state;
+    auto handler = js::make_closure(std::tuple{node, context}, [](auto& captures, std::unique_ptr<ExternalEvent>) {
+        const auto& source = std::get<0>(captures);
+        if (std::get<1>(captures)->status == AudioContextState::Status::Closed) return;
+        auto& owner = EventLoop::current();
+        // Listener snapshots and removals use the shared DOM registry rules.
+        // Delivery is a queued task, outside all audio graph locks/iteration.
+        for (auto& listeners : source.ownership->ended) {
+            listeners.dispatch_with([&](auto& listener) {
+                const auto callback = listener;
+                owner.dispatch_callback([callback] { callback(); });
+            });
+        }
+    });
+    state->inbox = loop.inbox();
+    state->completion = loop.register_completion(std::move(handler), [state] { state->completion = 0; });
+    // Scheduled sources must advance even without an output connection.
+    // LabSound's render quantum already avoids processing a node twice.
+    audio.context->addAutomaticPullNode(record->node);
+    state->event_pull = true;
+    poll_audio_events(context_of(node.value));
+}
+#endif
+
 /**
  * `BBLITE_AUDIO_CAPTURE`. Audio produces no pixels, so the parity
  * harness has nothing to screenshot -- but an offline render is a byte
@@ -364,9 +464,9 @@ std::shared_ptr<lab::AudioNode> require_node(AudioNodeHandle node)
 #if BBLITE_HAS_AUDIO_BUFFER_SOURCE
 std::shared_ptr<AudioBufferRecord> require_buffer(AudioBufferHandle buffer)
 {
-    ContextRecord& record = require_context(context_of(buffer.value));
-    const std::uint32_t index = index_of(buffer.value);
-    if (!record.buffers.contains(index, buffer.ownership)) {
+    // Buffer data outlives its creating context. Validate its owned record,
+    // which retains the packed identity even after the context registry dies.
+    if (!buffer.value || !buffer.ownership || buffer.ownership->handle != buffer.value) {
         throw std::runtime_error("Invalid audio buffer handle.");
     }
     return buffer.ownership;
@@ -395,7 +495,8 @@ AudioBufferHandle allocate_audio_buffer(
             static_cast<int>(frames));
     }
     auto entry = context_record.buffers.insert(std::move(buffer));
-    return AudioBufferHandle{pack(context.value, entry.index), std::move(entry.ownership)};
+    entry.ownership->handle = pack(context.value, entry.index);
+    return AudioBufferHandle{entry.ownership->handle, std::move(entry.ownership)};
 }
 #endif
 
@@ -465,7 +566,7 @@ template <typename Node>
 AudioNodeHandle create_node(AudioContextHandle context)
 {
     ContextRecord& record = require_context(context.value);
-    auto value = std::make_shared<AudioNodeRecord>();
+    auto value = js::make_gc_shared<AudioNodeRecord>();
     value->node = std::make_shared<Node>(*record.context);
     if constexpr (std::is_base_of_v<lab::AudioScheduledSourceNode, Node>) {
         value->source = std::make_shared<AudioSourceState>();
@@ -473,7 +574,12 @@ AudioNodeHandle create_node(AudioContextHandle context)
         // queued completion notifications from retaining the source.
         std::weak_ptr<AudioSourceState> completion = value->source;
         std::static_pointer_cast<Node>(value->node)->setOnEnded([completion] {
-            if (auto state = completion.lock()) state->completed = true;
+            if (auto state = completion.lock()) {
+                state->completed = true;
+#if defined(BBLITE_WORKERS) && BBLITE_WORKERS
+                state->post_completion();
+#endif
+            }
         });
     }
     auto entry = record.nodes.insert(std::move(value));
@@ -647,13 +753,27 @@ AudioContextHandle audio_create_context()
     auto destination_entry = record.nodes.insert(std::move(destination_record));
     record.destination_handle = {pack(id, destination_entry.index), std::move(destination_entry.ownership)};
     register_graph_node(record, record.destination_handle);
+    record.state->sample_rate = record.sample_rate;
+    AudioContextHandle handle{id, record.state};
     contexts().emplace(id, std::move(record));
-    return AudioContextHandle{id};
+    return handle;
 }
 
 void audio_close_context(AudioContextHandle context)
 {
-    contexts().erase(context.value);
+    const auto found = contexts().find(context.value);
+    if (found == contexts().end()) return;
+    auto& record = found->second;
+    if (record.device) record.device->stop();
+    record.state->closed_time = record.context->currentTime();
+    record.state->status = AudioContextState::Status::Closed;
+#if defined(BBLITE_WORKERS) && BBLITE_WORKERS
+    for (auto& [identity, entry] : record.graph) {
+        (void)identity;
+        if (entry.source) entry.source->post_completion();
+    }
+#endif
+    contexts().erase(found);
 }
 
 AudioContextHandle audio_create_context(std::shared_ptr<AudioSession>& session) {
@@ -669,7 +789,7 @@ AudioContextHandle audio_create_context(std::shared_ptr<AudioSession>& session) 
 }
 
 AudioSession::~AudioSession() {
-    for (const auto context : contexts_) audio_close_context(context);
+    for (const auto& context : contexts_) audio_close_context(context);
 }
 
 void audio_collect_finished() {
@@ -679,29 +799,65 @@ void audio_collect_finished() {
     }
 }
 
+#if defined(BBLITE_WORKERS) && BBLITE_WORKERS
+void audio_add_ended_listener(AudioNodeHandle node, std::size_t identity,
+    js::Callback<void()> callback, bool capture, bool once) {
+    require_node(node);
+    if (!node.ownership->source) throw std::runtime_error("Audio node is not a scheduled source.");
+    node.ownership->ended[capture ? 0 : 1].add(identity, std::move(callback), once);
+    retain_audio_completion(node);
+}
+
+void audio_remove_ended_listener(AudioNodeHandle node, std::size_t identity, bool capture) {
+    require_node(node);
+    if (!node.ownership->source) throw std::runtime_error("Audio node is not a scheduled source.");
+    node.ownership->ended[capture ? 0 : 1].remove(identity);
+    auto& record = *node.ownership;
+    if (record.ended[0].empty() && record.ended[1].empty() && record.source->completion) {
+        EventLoop::current().cancel_completion(record.source->completion);
+        require_context(context_of(node.value)).context->removeAutomaticPullNode(record.node);
+        record.source->event_pull = false;
+    }
+}
+#endif
+
 double audio_current_time(AudioContextHandle context)
 {
     require_runtime_execution("an audio clock read");
+    if (context.state && context.state->status == AudioContextState::Status::Closed)
+        return context.state->closed_time;
     return require_context(context.value).context->currentTime();
 }
 
 double audio_sample_rate(AudioContextHandle context)
 {
+    if (context.state) return context.state->sample_rate;
     return require_context(context.value).sample_rate;
 }
 
 std::string audio_state(AudioContextHandle context)
 {
-    require_context(context.value);
-    // Creation opens and starts the native device atomically. A failed open
-    // throws, so every live handle has reached Web Audio's running state.
-    return "running";
+    const auto& state = context.state ? *context.state : *require_context(context.value).state;
+    switch (state.status) {
+        case AudioContextState::Status::Running: return "running";
+        case AudioContextState::Status::Suspended: return "suspended";
+        case AudioContextState::Status::Closed: return "closed";
+    }
+    throw std::logic_error("Invalid audio context state.");
 }
 
 void audio_resume(AudioContextHandle context)
 {
     ContextRecord& record = require_context(context.value);
     if (record.device) record.device->start();
+    record.state->status = AudioContextState::Status::Running;
+}
+
+void audio_suspend(AudioContextHandle context)
+{
+    ContextRecord& record = require_context(context.value);
+    if (record.device) record.device->stop();
+    record.state->status = AudioContextState::Status::Suspended;
 }
 
 AudioNodeHandle audio_destination(AudioContextHandle context)
@@ -845,13 +1001,53 @@ AudioNodeHandle audio_create_buffer_source(AudioContextHandle context)
 #endif
 }
 
+double audio_buffer_property(AudioBufferHandle buffer, AudioBufferProperty property) {
+#if BBLITE_HAS_AUDIO_BUFFER_SOURCE
+    const auto record = require_buffer(buffer);
+    switch (property) {
+        case AudioBufferProperty::Duration: return static_cast<double>(record->bus.length()) / record->bus.sampleRate();
+        case AudioBufferProperty::Length: return static_cast<double>(record->bus.length());
+        case AudioBufferProperty::SampleRate: return record->bus.sampleRate();
+        case AudioBufferProperty::NumberOfChannels: return static_cast<double>(record->channels.size());
+    }
+    throw std::logic_error("Unknown AudioBuffer property.");
+#else
+    (void)buffer; (void)property;
+    throw std::runtime_error("Audio buffer source support was not compiled.");
+#endif
+}
+
+void audio_buffer_copy(AudioBufferHandle buffer, bbl::js::F32Array samples,
+    std::uint32_t channel, std::uint32_t offset, AudioBufferCopy direction) {
+    auto channel_data = audio_buffer_channel(buffer, channel);
+    if (offset >= channel_data.size()) return;
+    const auto count = std::min(samples.size(), channel_data.size() - offset);
+    // A source view can overlap its destination. Snapshot only the copied
+    // samples and use typed-array loads/stores for ArrayBuffer-backed views.
+    auto source = direction == AudioBufferCopy::ToChannel ? samples.copy_range(0, count)
+        : channel_data.copy_range(offset, offset + count);
+    auto destination = direction == AudioBufferCopy::ToChannel ? channel_data : samples;
+    const auto start = direction == AudioBufferCopy::ToChannel ? offset : 0u;
+    for (std::size_t index = 0; index < count; ++index) destination.store(start + index, source.load(index));
+}
+
+bbl::js::Nullable<AudioBufferHandle> audio_source_buffer(AudioNodeHandle source) {
+#if BBLITE_HAS_AUDIO_BUFFER_SOURCE
+    if (!std::dynamic_pointer_cast<lab::SampledAudioNode>(require_node(source)))
+        throw std::runtime_error("Audio node is not a buffer source.");
+    if (!source.ownership->buffer.value) return std::nullopt;
+    return source.ownership->buffer;
+#else
+    (void)source;
+    throw std::runtime_error("Audio buffer source support was not compiled.");
+#endif
+}
+
 void audio_set_buffer(AudioNodeHandle source, AudioBufferHandle buffer)
 {
 #if BBLITE_HAS_AUDIO_BUFFER_SOURCE
-    if (context_of(source.value) != context_of(buffer.value)) {
-        throw std::runtime_error(
-            "An AudioBufferSourceNode and its buffer must share a context.");
-    }
+    auto& context = require_context(context_of(source.value));
+    lab::ContextRenderLock render(context.context.get(), "bblite audio buffer assignment");
     auto sampled =
         std::dynamic_pointer_cast<lab::SampledAudioNode>(require_node(source));
     if (!sampled) {
@@ -861,6 +1057,11 @@ void audio_set_buffer(AudioNodeHandle source, AudioBufferHandle buffer)
     // Alias the bus to the buffer owner: LabSound can keep playing after JS
     // releases its AudioBuffer handle, without dangling channel memory.
     sampled->setBus(std::shared_ptr<lab::AudioBus>(buffer_record, &buffer_record->bus));
+    // Configure channels before the first pull can select an in-place bus.
+    // LabSound applies its queued buffer inside process(), after that selection.
+    sampled->output(0)->setNumberOfChannels(render, buffer_record->bus.numberOfChannels());
+    sampled->output(0)->updateRenderingState(render);
+    source.ownership->buffer = buffer;
     if (runtime_trace_enabled()) {
         float peak = 0.0f;
         for (const auto& channel : buffer_record->channels) {
@@ -983,6 +1184,9 @@ static void audio_node_start_impl(
                 0);
         }
         node.ownership->source->started = true;
+#if defined(BBLITE_WORKERS) && BBLITE_WORKERS
+        retain_audio_completion(node);
+#endif
         if (runtime_trace_enabled()) {
             std::fprintf(
                 stderr,
@@ -1003,6 +1207,9 @@ static void audio_node_start_impl(
     }
     scheduled->start(static_cast<float>(when));
     node.ownership->source->started = true;
+#if defined(BBLITE_WORKERS) && BBLITE_WORKERS
+    retain_audio_completion(node);
+#endif
     if (runtime_trace_enabled()) {
         std::fprintf(
             stderr,
@@ -1170,7 +1377,7 @@ void render_audio_capture([[maybe_unused]] std::uint32_t id) noexcept
 } // namespace
 
 void AudioSession::finish() noexcept {
-    for (const auto context : contexts_) {
+    for (const auto& context : contexts_) {
         render_audio_capture(context.value);
         audio_close_context(context);
     }

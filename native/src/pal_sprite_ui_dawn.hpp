@@ -19,6 +19,7 @@
 #include "pal_gpu_shared.hpp"
 #include "pal_dawn_shared.hpp"
 #include "pal_ui_backdrop_dawn.hpp"
+#include "pal_ui_filter_dawn.hpp"
 
 namespace bbl::pal {
 
@@ -26,6 +27,7 @@ using SpriteUiDawnTexture = UiDawnTexture;
 
 struct SpriteUiDawnResources {
     UiBackdropDawnResources backdrop;
+    UiFilterDawnResources filters;
     WGPUBindGroupLayout screen_layout = nullptr;
     WGPUBindGroupLayout texture_layout = nullptr;
     WGPUPipelineLayout texture_pipeline_layout = nullptr;
@@ -329,7 +331,7 @@ inline void render_sprite_ui_dawn_frame(
     SpriteUiDawnResources& ui,
     const UiRenderFrame& frame,
     ExternalTexture external_texture = nullptr) {
-    if (frame.draws.empty() || frame.width == 0 || frame.height == 0) return;
+    if ((frame.draws.empty() && frame.operations.empty()) || frame.width == 0 || frame.height == 0) return;
     create_sprite_ui_dawn_resources(state, ui);
     if (!frame.backdrops.empty()) {
         ensure_sprite_ui_dawn_backdrop_pipeline(state, ui);
@@ -397,78 +399,86 @@ inline void render_sprite_ui_dawn_frame(
         ui.textures.emplace(source.id, texture);
     }
 
-    std::size_t draw_begin = 0;
-    for (std::size_t segment = 0; segment <= frame.backdrops.size(); ++segment) {
-    const std::size_t draw_end = segment < frame.backdrops.size()
-        ? frame.backdrops[segment].before_draw : frame.draws.size();
-    WGPURenderPassColorAttachment attachment =
-        WGPU_RENDER_PASS_COLOR_ATTACHMENT_INIT;
-    attachment.view = target;
-    attachment.loadOp = WGPULoadOp_Load;
-    attachment.storeOp = WGPUStoreOp_Store;
-    WGPURenderPassDescriptor descriptor =
-        WGPU_RENDER_PASS_DESCRIPTOR_INIT;
-    descriptor.colorAttachmentCount = 1;
-    descriptor.colorAttachments = &attachment;
-    DawnRenderPass pass{wgpuCommandEncoderBeginRenderPass(encoder, &descriptor)};
-    wgpuRenderPassEncoderSetBindGroup(
-        pass, 0, ui.screen_group, 0, nullptr);
-    wgpuRenderPassEncoderSetVertexBuffer(
-        pass, 0, ui.vertices, 0, WGPU_WHOLE_SIZE);
-    wgpuRenderPassEncoderSetIndexBuffer(
-        pass,
-        ui.indices,
-        WGPUIndexFormat_Uint32,
-        0,
-        WGPU_WHOLE_SIZE);
-    for (std::size_t draw_index = draw_begin; draw_index < draw_end; ++draw_index) {
-        const UiRenderDraw& draw = frame.draws[draw_index];
-        const std::optional<UiScissorRect> scissor =
-            clamped_ui_scissor(draw, frame.width, frame.height);
-        if (!scissor) continue;
-        wgpuRenderPassEncoderSetScissorRect(
+    const UiDawnTexture root_target{target_texture, target, nullptr, nullptr};
+    ui.filters.begin_frame();
+    for_each_ui_segment(frame, [&](std::size_t draw_begin, std::size_t draw_end, std::uint32_t layer) {
+        const auto draw_target = ui.filters.target(state.device, encoder, root_target, state.surface_format,
+            ui.texture_layout, ui.sampler, frame, layer);
+        WGPURenderPassColorAttachment attachment =
+            WGPU_RENDER_PASS_COLOR_ATTACHMENT_INIT;
+        attachment.view = draw_target.view;
+        attachment.loadOp = WGPULoadOp_Load;
+        attachment.storeOp = WGPUStoreOp_Store;
+        WGPURenderPassDescriptor descriptor =
+            WGPU_RENDER_PASS_DESCRIPTOR_INIT;
+        descriptor.colorAttachmentCount = 1;
+        descriptor.colorAttachments = &attachment;
+        DawnRenderPass pass{wgpuCommandEncoderBeginRenderPass(encoder, &descriptor)};
+        wgpuRenderPassEncoderSetBindGroup(
+            pass, 0, ui.screen_group, 0, nullptr);
+        wgpuRenderPassEncoderSetVertexBuffer(
+            pass, 0, ui.vertices, 0, WGPU_WHOLE_SIZE);
+        wgpuRenderPassEncoderSetIndexBuffer(
             pass,
-            static_cast<std::uint32_t>(scissor->left),
-            static_cast<std::uint32_t>(scissor->top),
-            static_cast<std::uint32_t>(scissor->width),
-            static_cast<std::uint32_t>(scissor->height));
-        if (draw.texture_id) {
-            const auto owned = ui.textures.find(draw.texture_id);
-            const SpriteUiDawnTexture* texture = owned == ui.textures.end() ? nullptr : &owned->second;
-            if constexpr (!std::is_same_v<ExternalTexture, std::nullptr_t>) {
-                if (!texture) texture = external_texture(draw.texture_id);
-            }
-            if (!texture) continue;
-            wgpuRenderPassEncoderSetPipeline(pass, ui.texture_pipeline);
-            wgpuRenderPassEncoderSetBindGroup(
+            ui.indices,
+            WGPUIndexFormat_Uint32,
+            0,
+            WGPU_WHOLE_SIZE);
+        for (std::size_t draw_index = draw_begin; draw_index < draw_end; ++draw_index) {
+            const UiRenderDraw& draw = frame.draws[draw_index];
+            const std::optional<UiScissorRect> scissor =
+                clamped_ui_scissor(draw, frame.width, frame.height);
+            if (!scissor) continue;
+            wgpuRenderPassEncoderSetScissorRect(
                 pass,
-                1,
-                draw.nearest_sampling
-                    ? texture->nearest_group
-                    : texture->group,
-                0,
-                nullptr);
-        } else {
-            wgpuRenderPassEncoderSetPipeline(pass, ui.color_pipeline);
+                static_cast<std::uint32_t>(scissor->left),
+                static_cast<std::uint32_t>(scissor->top),
+                static_cast<std::uint32_t>(scissor->width),
+                static_cast<std::uint32_t>(scissor->height));
+            if (draw.texture_id) {
+                const auto owned = ui.textures.find(draw.texture_id);
+                const SpriteUiDawnTexture* texture = owned == ui.textures.end() ? nullptr : &owned->second;
+                if constexpr (!std::is_same_v<ExternalTexture, std::nullptr_t>) {
+                    if (!texture) texture = external_texture(draw.texture_id);
+                }
+                if (!texture) continue;
+                wgpuRenderPassEncoderSetPipeline(pass, ui.texture_pipeline);
+                wgpuRenderPassEncoderSetBindGroup(
+                    pass,
+                    1,
+                    draw.nearest_sampling
+                        ? texture->nearest_group
+                        : texture->group,
+                    0,
+                    nullptr);
+            } else {
+                wgpuRenderPassEncoderSetPipeline(pass, ui.color_pipeline);
+            }
+            wgpuRenderPassEncoderDrawIndexed(
+                pass, draw.index_count, 1, draw.first_index, 0, 0);
         }
-        wgpuRenderPassEncoderDrawIndexed(
-            pass, draw.index_count, 1, draw.first_index, 0, 0);
-    }
-    wgpuRenderPassEncoderEnd(pass);
-    pass.reset();
-    if (segment < frame.backdrops.size()) {
-        render_ui_backdrop_dawn(state.device, encoder, target_texture, target,
-            state.surface_format, ui.vertices, ui.indices, ui.sampler,
-            ui.screen_group, ui.texture_layout, ui.texture_pipeline,
-            ui.backdrop, frame, segment);
-    }
-    draw_begin = draw_end;
-    }
+        wgpuRenderPassEncoderEnd(pass);
+        pass.reset();
+    }, [&](const UiRenderOperation& operation) {
+        if (operation.kind == UiRenderOperation::Kind::ResetLayer) {
+            ui.filters.reset_layer(operation.index);
+        } else if (operation.kind == UiRenderOperation::Kind::Backdrop) {
+            render_ui_backdrop_dawn(state.device, encoder, target_texture, target,
+                state.surface_format, ui.vertices, ui.indices, ui.sampler, ui.screen_group, ui.texture_layout,
+                ui.texture_pipeline, ui.backdrop, frame, operation.index);
+        } else {
+            render_ui_composite_dawn(state.device, state.queue, encoder, root_target, state.surface_format,
+                ui.vertices, ui.indices, ui.sampler, ui.screen_group, ui.texture_layout,
+                ui.texture_pipeline, ui.filters, frame, operation.index);
+        }
+    });
+    ui.filters.finish_frame(frame.composites.size());
 }
 
 inline void release_sprite_ui_dawn_resources(
     SpriteUiDawnResources& ui) {
     ui.backdrop.release();
+    ui.filters.release();
     for (auto& [id, source] : ui.textures) {
         static_cast<void>(id);
         source.release();

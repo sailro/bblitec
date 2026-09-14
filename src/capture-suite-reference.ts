@@ -397,7 +397,9 @@ function hostUiBootstrapScript(
     );
     const styleSheet = nativeHostUiStyleRules(hostUi)
         .map((rule) => {
-            const body = `${uiStyleSelector(rule)}{${rule.style}}`;
+            let body = `${uiStyleSelector(rule)}{${rule.style}}`;
+            if (rule.containerMaxWidth !== undefined) body = `@container(max-width:${rule.containerMaxWidth}px){${body}}`;
+            if (rule.reducedMotion !== undefined) body = `@media(prefers-reduced-motion:${rule.reducedMotion ? "reduce" : "no-preference"}){${body}}`;
             return rule.maxWidth === undefined
                 ? body
                 : `@media(max-width:${rule.maxWidth}px){${body}}`;

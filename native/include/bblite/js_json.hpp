@@ -6,7 +6,8 @@
 // Neither half knows any application. `JSON.stringify` writes through
 // `json_write` overloads -- one per plain-data container here, one per
 // reached generated struct emitted beside the struct itself -- so the key
-// order is the record's own declaration order and nothing sorts it. The
+// order follows JavaScript's own enumerable properties. Index keys precede
+// other keys, which retain insertion order. The
 // bytes are observable (they are what a save round-trips and what a debug
 // capture shows), which is why nlohmann's `std::map`-backed object is not
 // the writer.
@@ -25,6 +26,7 @@
 #include <bblite/js_data.hpp>
 
 #include <cmath>
+#include <charconv>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
@@ -32,6 +34,7 @@
 #include <string>
 #include <string_view>
 #include <utility>
+#include <typeinfo>
 #include <vector>
 
 #ifndef JSON_USE_IMPLICIT_CONVERSIONS
@@ -211,6 +214,33 @@ inline void json_write(JsonWriter& writer, const JsonValue& value);
     return number_to_string(key);
 }
 
+[[nodiscard]] inline std::optional<std::uint32_t> json_property_index(std::string_view name) {
+    if (name.empty() || (name.size()>1 && name.front()=='0')) return std::nullopt;
+    std::uint32_t index = 0;
+    const auto parsed = std::from_chars(name.data(), name.data()+name.size(), index);
+    if (parsed.ec != std::errc{} || parsed.ptr != name.data()+name.size() ||
+        index == std::numeric_limits<std::uint32_t>::max()) return std::nullopt;
+    return index;
+}
+
+[[nodiscard]] inline bool json_property_key_less(std::string_view left, std::string_view right) {
+    const auto a = json_property_index(left), b = json_property_index(right);
+    return a && (!b || *a < *b);
+}
+
+/** Sort references, avoiding repeated linear lookups in parsed object storage. */
+template<typename Entries, typename Visitor>
+inline void json_for_each_object_entry(const Entries& entries, Visitor&& visitor) {
+    using Entry = std::remove_cvref_t<decltype(*entries.begin())>;
+    std::vector<const Entry*> ordered;
+    ordered.reserve(entries.size());
+    for (const auto& entry : entries) ordered.push_back(&entry);
+    std::stable_sort(ordered.begin(), ordered.end(), [](const Entry* left, const Entry* right) {
+        return json_property_key_less(json_object_key(left->first), json_object_key(right->first));
+    });
+    for (const Entry* entry : ordered) visitor(entry->first, entry->second);
+}
+
 template <typename T>
 inline void json_write(JsonWriter& writer, const Array<T>& values) {
     writer.begin_array();
@@ -260,16 +290,19 @@ inline void json_write(JsonWriter& writer, const Ref<T>& value) {
 
 /**
  * A `Map` is the lowering of a JavaScript record/index signature, and its
- * storage is insertion-ordered, so the written keys keep the order the
- * source inserted them in.
+ * storage is insertion-ordered. Serialization orders its property keys as
+ * JavaScript does, without changing the dictionary's storage.
  */
 template <typename K, typename V>
 inline void json_write(JsonWriter& writer, const Map<K, V>& entries) {
     writer.begin_object();
-    for (const auto& entry : entries) {
-        writer.key(json_object_key(entry.first));
-        json_write(writer, entry.second);
-    }
+    json_for_each_object_entry(entries, [&](const K& key, const V& value) {
+        if constexpr (std::is_same_v<V, JsonValue>) {
+            if (value.is_undefined()) return;
+        }
+        writer.key(json_object_key(key));
+        json_write(writer, value);
+    });
     writer.end_object();
 }
 
@@ -295,6 +328,25 @@ template <typename T>
  * property and an out-of-range index are `undefined`, exactly as they are
  * in the browser, so a source-level shape guard reaches the same verdict.
  */
+struct JsonNativeObject {
+    virtual ~JsonNativeObject() = default;
+    [[nodiscard]] virtual JsonValue get(std::string_view key) const = 0;
+    [[nodiscard]] virtual bbl::js::Array<std::string> own_keys() const = 0;
+    [[nodiscard]] virtual const std::type_info& type() const = 0;
+    [[nodiscard]] virtual const void* identity() const = 0;
+    virtual void gc_trace(const TraceVisitor& visitor) const = 0;
+};
+
+struct JsonNativeArray {
+    virtual ~JsonNativeArray() = default;
+    [[nodiscard]] virtual std::size_t size() const = 0;
+    [[nodiscard]] virtual JsonValue at(std::size_t index) const = 0;
+    [[nodiscard]] virtual const void* identity() const = 0;
+    virtual void gc_trace(const TraceVisitor& visitor) const = 0;
+};
+
+class JsonArrayView;
+
 class JsonValue {
   public:
     enum class Kind : std::uint8_t {
@@ -343,16 +395,63 @@ class JsonValue {
     [[nodiscard]] static JsonValue from_array(Array elements) {
         JsonValue value;
         value.kind_ = Kind::array;
-        value.array_ = std::make_shared<Array>(std::move(elements));
+        value.array_ = make_gc_shared<Array>(std::move(elements));
         return value;
     }
 
     [[nodiscard]] static JsonValue from_object(Object entries) {
         JsonValue value;
         value.kind_ = Kind::object;
-        value.object_ = std::make_shared<Object>(std::move(entries));
+        value.object_ = make_gc_shared<Object>(std::move(entries));
         return value;
     }
+
+    template <typename T>
+    [[nodiscard]] static JsonValue from_native(T value);
+
+    template <typename Getter>
+    [[nodiscard]] static JsonValue from_record_view(Getter getter, bbl::js::Array<std::string> keys);
+
+    template <typename Getter>
+    [[nodiscard]] static JsonValue from_tuple_view(Getter getter, std::size_t length);
+
+    [[nodiscard]] static JsonValue from_array_reference(const bbl::js::Array<JsonValue>& elements) {
+        JsonValue value;
+        value.kind_ = Kind::array;
+        value.array_ = elements.retained_storage();
+        return value;
+    }
+
+    template <typename Sequence>
+    [[nodiscard]] static JsonValue from_sequence(Sequence elements);
+
+    [[nodiscard]] bbl::js::Array<JsonValue> array_value() const {
+        if (!is_array()) throw std::runtime_error("Value is not an array.");
+        if (!array_) throw std::runtime_error("Typed array storage cannot be reinterpreted as dynamic mutable storage.");
+        return bbl::js::Array<JsonValue>(array_);
+    }
+
+    template <typename T>
+    [[nodiscard]] bool instance_of() const { return native_ && native_->type() == typeid(T); }
+
+    void gc_trace(const TraceVisitor& visitor) const { visitor(array_); visitor(object_); visitor(native_); visitor(native_array_); }
+
+    [[nodiscard]] bool strict_equals(const JsonValue& other) const {
+        if (kind_ != other.kind_) return false;
+        switch (kind_) {
+            case Kind::undefined: case Kind::null: return true;
+            case Kind::boolean: return boolean_ == other.boolean_;
+            case Kind::number: return number_ == other.number_;
+            case Kind::string: return string_ == other.string_;
+            case Kind::array: return array_identity() == other.array_identity();
+            case Kind::object:
+                if (native_ || other.native_) return native_ && other.native_ && native_->identity() == other.native_->identity();
+                return object_ == other.object_;
+        }
+        return false;
+    }
+
+    [[nodiscard]] friend bool operator==(const JsonValue& left, const JsonValue& right) { return left.strict_equals(right); }
 
     [[nodiscard]] Kind kind() const { return kind_; }
     [[nodiscard]] bool is_undefined() const { return kind_ == Kind::undefined; }
@@ -400,36 +499,108 @@ class JsonValue {
         if (kind_ != Kind::array) {
             return std::numeric_limits<double>::quiet_NaN();
         }
-        return static_cast<double>(array_->size());
+        return static_cast<double>(array_size());
     }
 
-    [[nodiscard]] const JsonValue& at(double index) const {
-        static const JsonValue absent;
-        if (kind_ != Kind::array || !(index >= 0.0)) return absent;
+    [[nodiscard]] JsonValue at(double index) const {
+        if (is_object() || is_string()) return get(bbl::js::number_to_string(index));
+        if (kind_ != Kind::array || !(index >= 0.0) || index >= static_cast<double>(array_size())) return {};
         const auto slot = static_cast<std::size_t>(index);
-        if (static_cast<double>(slot) != index || slot >= array_->size()) {
-            return absent;
-        }
-        return (*array_)[slot];
+        if (static_cast<double>(slot) != index) return {};
+        return native_array_ ? native_array_->at(slot) : (*array_)[slot];
     }
 
-    [[nodiscard]] const JsonValue& get(std::string_view key) const {
-        static const JsonValue absent;
-        if (kind_ != Kind::object) return absent;
+    [[nodiscard]] JsonValue get(std::string_view key) const {
+        if (is_array() || is_string()) {
+            if (key == "length") return from_number(is_array() ? length() : static_cast<double>(string_code_units(string_).size()));
+            const auto index = json_property_index(key);
+            if (!index) return {};
+            if (is_array()) return at(static_cast<double>(*index));
+            const auto units = string_code_units(string_);
+            return *index < units.size() ? from_string(string_char_at(string_, static_cast<double>(*index))) : JsonValue{};
+        }
+        if (kind_ != Kind::object) return {};
+        if (native_) return native_->get(key);
         for (const Entry& entry : *object_) {
             if (entry.first == key) return entry.second;
         }
-        return absent;
+        return {};
     }
 
-    [[nodiscard]] const Object& entries() const {
-        static const Object empty;
-        return kind_ == Kind::object ? *object_ : empty;
+    template<typename Visitor>
+    void for_each_entry(Visitor&& visitor) const {
+        if (native_) {
+            for (const auto& key : own_keys()) visitor(key, native_->get(key));
+        } else if (kind_ == Kind::object) {
+            json_for_each_object_entry(*object_, std::forward<Visitor>(visitor));
+        }
     }
 
-    [[nodiscard]] const Array& elements() const {
-        static const Array empty;
-        return kind_ == Kind::array ? *array_ : empty;
+    void set(std::string_view key, JsonValue value) const {
+        if (kind_ != Kind::object || native_) throw std::runtime_error("Dynamic property assignment requires an owned object.");
+        for (Entry& entry : *object_) {
+            if (entry.first == key) { entry.second = std::move(value); return; }
+        }
+        object_->emplace_back(key, std::move(value));
+    }
+
+    [[nodiscard]] JsonArrayView elements() const;
+
+    /** Own enumerable properties: index keys precede other keys in insertion order. */
+    [[nodiscard]] bbl::js::Array<std::string> own_keys() const {
+        if (is_null() || is_undefined()) throw std::runtime_error("Cannot enumerate null or undefined.");
+        bbl::js::Array<std::string> result;
+        if (is_array() || is_string()) {
+            const auto count = is_array() ? array_size() : string_code_units(string_).size();
+            for (std::size_t index=0; index<count; ++index) result.push_back(std::to_string(index));
+        } else if (is_object()) {
+            if (native_) result = native_->own_keys();
+            else for (const auto& entry : *object_) result.push_back(entry.first);
+            std::stable_sort(result.begin(), result.end(), json_property_key_less);
+        }
+        return result;
+    }
+
+    [[nodiscard]] bbl::js::Array<JsonValue> own_values() const {
+        bbl::js::Array<JsonValue> result;
+        if (is_object()) {
+            for_each_entry([&](const auto&, const JsonValue& value) { result.push_back(value); });
+        } else {
+            for (const auto& key : own_keys()) result.push_back(get(key));
+        }
+        return result;
+    }
+
+    [[nodiscard]] bool has_own(std::string_view key) const {
+        if (is_null() || is_undefined()) throw std::runtime_error("Cannot inspect null or undefined.");
+        if (is_object()) {
+            if (native_) {
+                for (const auto& name : native_->own_keys()) if (name == key) return true;
+                return false;
+            }
+            for (const auto& entry : *object_) if (entry.first == key) return true;
+        } else if (is_array() || is_string()) {
+            if (key == "length") return true;
+            const auto index = json_property_index(key);
+            return index && *index < (is_array() ? array_size() : string_code_units(string_).size());
+        }
+        return false;
+    }
+
+    [[nodiscard]] bool has_property(std::string_view key) const {
+        if (!is_object() && !is_array()) throw std::runtime_error("The right side of in must be an object.");
+        if (has_own(key)) return true;
+        for (const auto name : {"constructor", "__defineGetter__", "__defineSetter__", "hasOwnProperty",
+                "__lookupGetter__", "__lookupSetter__", "isPrototypeOf", "propertyIsEnumerable",
+                "toLocaleString", "toString", "valueOf", "__proto__"}) if (key == name) return true;
+        if (is_array()) {
+            for (const auto name : {"at", "concat", "copyWithin", "fill", "find", "findIndex", "findLast", "findLastIndex",
+                    "lastIndexOf", "pop", "push", "reverse", "shift", "unshift", "slice", "sort", "splice", "includes",
+                    "indexOf", "join", "keys", "entries", "values", "forEach", "filter", "flat", "flatMap", "map",
+                    "every", "some", "reduce", "reduceRight", "toReversed", "toSorted", "toSpliced", "with"})
+                if (key == name) return true;
+        }
+        return false;
     }
 
     /** `Number(value)`, over the kinds a JSON document can hold. */
@@ -465,9 +636,10 @@ class JsonValue {
             case Kind::string: return string_;
             case Kind::array: {
                 std::string joined;
-                for (std::size_t index = 0; index < array_->size(); ++index) {
+                const auto count = array_size();
+                for (std::size_t index = 0; index < count; ++index) {
                     if (index != 0) joined.push_back(',');
-                    const JsonValue& element = (*array_)[index];
+                    const JsonValue element = at(static_cast<double>(index));
                     // Array#join spells null and undefined as empty.
                     if (element.is_null() || element.is_undefined()) continue;
                     joined.append(element.to_string());
@@ -493,6 +665,9 @@ class JsonValue {
     [[nodiscard]] bool strict_equals(std::string_view other) const {
         return kind_ == Kind::string && string_ == other;
     }
+    [[nodiscard]] bool strict_equals(const char* other) const {
+        return strict_equals(std::string_view(other));
+    }
 
     [[nodiscard]] bool strict_equals(bool other) const {
         return kind_ == Kind::boolean && boolean_ == other;
@@ -502,7 +677,9 @@ class JsonValue {
     template <typename Predicate>
     [[nodiscard]] bool every(Predicate predicate) const {
         if (kind_ != Kind::array) return true;
-        for (const JsonValue& element : *array_) {
+        const auto count = array_size();
+        for (std::size_t index = 0; index < count; ++index) {
+            const JsonValue element = at(static_cast<double>(index));
             if (!predicate(element)) return false;
         }
         return true;
@@ -511,21 +688,181 @@ class JsonValue {
     /** `Array#some` over an array. */
     template <typename Predicate>
     [[nodiscard]] bool some(Predicate predicate) const {
-        if (kind_ != Kind::array) return false;
-        for (const JsonValue& element : *array_) {
-            if (predicate(element)) return true;
-        }
-        return false;
+        return !every([&](const JsonValue& element) { return !static_cast<bool>(predicate(element)); });
     }
 
   private:
+    [[nodiscard]] std::size_t array_size() const { return native_array_ ? native_array_->size() : array_->size(); }
+    [[nodiscard]] const void* array_identity() const { return native_array_ ? native_array_->identity() : array_.get(); }
     Kind kind_ = Kind::undefined;
     bool boolean_ = false;
     double number_ = 0.0;
     std::string string_;
     std::shared_ptr<Array> array_;
     std::shared_ptr<Object> object_;
+    std::shared_ptr<JsonNativeObject> native_;
+    std::shared_ptr<JsonNativeArray> native_array_;
 };
+
+/** An observing range retains its owner and reads each slot when visited. */
+class JsonArrayView {
+    JsonValue value_;
+  public:
+    explicit JsonArrayView(JsonValue value) : value_(std::move(value)) {}
+    [[nodiscard]] std::size_t size() const { return value_.is_array() ? static_cast<std::size_t>(value_.length()) : 0; }
+    [[nodiscard]] bool empty() const { return size() == 0; }
+    [[nodiscard]] JsonValue operator[](std::size_t index) const { return value_.at(static_cast<double>(index)); }
+    void gc_trace(const TraceVisitor& visitor) const { visitor(value_); }
+    struct Sentinel {};
+    struct Iterator {
+        const JsonArrayView* owner;
+        std::size_t index;
+        [[nodiscard]] JsonValue operator*() const { return (*owner)[index]; }
+        Iterator& operator++() { ++index; return *this; }
+        [[nodiscard]] bool operator!=(Sentinel) const { return index < owner->size(); }
+    };
+    [[nodiscard]] Iterator begin() const { return {this, 0}; }
+    [[nodiscard]] Sentinel end() const { return {}; }
+};
+
+inline JsonArrayView JsonValue::elements() const { return JsonArrayView(*this); }
+
+/** Object spread copies own enumerable properties while retaining nested values. */
+inline void json_spread_into(Map<std::string,JsonValue>& target, const JsonValue& source) {
+    if (source.is_null() || source.is_undefined()) return;
+    if (source.is_object()) {
+        source.for_each_entry([&](const std::string& key, const JsonValue& value) { target.set(key, value); });
+    } else {
+        for (const auto& key : source.own_keys()) target.set(key, source.get(key));
+    }
+}
+
+inline void json_flatten_into(bbl::js::Array<JsonValue>& output, const JsonValue& value, double depth) {
+    if (depth > 0 && value.is_array()) {
+        const auto values = value.elements();
+        const auto length = values.size();
+        for (std::size_t index = 0; index < length; ++index) {
+            json_flatten_into(output, values[index], depth - 1);
+        }
+    } else output.push_back(value);
+}
+
+[[nodiscard]] inline JsonValue json_value(const JsonValue& value) { return value; }
+[[nodiscard]] inline JsonValue json_value(double value) { return JsonValue::from_number(value); }
+[[nodiscard]] inline JsonValue json_value(bool value) { return JsonValue::from_boolean(value); }
+[[nodiscard]] inline JsonValue json_value(const std::string& value) { return JsonValue::from_string(value); }
+[[nodiscard]] inline JsonValue json_value(const char* value) { return JsonValue::from_string(value); }
+[[nodiscard]] inline JsonValue json_value(const bbl::js::Array<JsonValue>& value) { return JsonValue::from_array_reference(value); }
+template <typename T>
+[[nodiscard]] JsonValue json_value(const bbl::js::Array<T>& value) { return JsonValue::from_sequence(value); }
+template <std::size_t N>
+[[nodiscard]] JsonValue json_value(const Tuple<N>& value) { return JsonValue::from_sequence(value); }
+template <typename T> [[nodiscard]] JsonValue json_value(const std::optional<T>& value);
+template <typename T> [[nodiscard]] JsonValue json_value(const Nullable<T>& value);
+template <typename T> [[nodiscard]] JsonValue json_value(const Map<std::string,T>& value);
+template <typename... T> [[nodiscard]] JsonValue json_value(const std::variant<T...>& value);
+template <typename T>
+[[nodiscard]] JsonValue json_value(const Ref<T>& value) { return value ? JsonValue::from_native(value) : JsonValue::null_value(); }
+
+template <typename T>
+[[nodiscard]] JsonValue json_value(const std::optional<T>& value) { return value ? json_value(*value) : JsonValue{}; }
+template <typename T>
+[[nodiscard]] JsonValue json_value(const Nullable<T>& value) { return value ? json_value(*value) : JsonValue{}; }
+template <typename T>
+[[nodiscard]] JsonValue json_value(const Map<std::string,T>& value) { return JsonValue::from_native(value); }
+template <typename... T>
+[[nodiscard]] JsonValue json_value(const std::variant<T...>& value) {
+    return std::visit([](const auto& member) { return json_value(member); }, value);
+}
+
+template <typename Sequence>
+struct JsonTypedArray final : JsonNativeArray {
+    Sequence value;
+    explicit JsonTypedArray(Sequence source) : value(std::move(source)) {}
+    std::size_t size() const override { return value.size(); }
+    JsonValue at(std::size_t index) const override { return json_value(value[index]); }
+    const void* identity() const override { return value.identity(); }
+    void gc_trace(const TraceVisitor& visitor) const override { visitor(value); }
+};
+
+template <typename Sequence>
+JsonValue JsonValue::from_sequence(Sequence elements) {
+    JsonValue value;
+    value.kind_ = Kind::array;
+    value.native_array_ = make_gc_shared<JsonTypedArray<Sequence>>(std::move(elements));
+    return value;
+}
+
+template<typename Getter>
+struct JsonTupleView final : JsonNativeArray {
+    mutable Getter getter;
+    std::size_t length;
+    JsonTupleView(Getter read, std::size_t count) : getter(std::move(read)), length(count) {}
+    std::size_t size() const override { return length; }
+    JsonValue at(std::size_t index) const override { return getter(index); }
+    const void* identity() const override { return this; }
+    void gc_trace(const TraceVisitor& visitor) const override { visitor(getter); }
+};
+
+template<typename Getter>
+JsonValue JsonValue::from_tuple_view(Getter getter, std::size_t length) {
+    JsonValue value;
+    value.kind_ = Kind::array;
+    value.native_array_ = make_gc_shared<JsonTupleView<Getter>>(std::move(getter), length);
+    return value;
+}
+
+template <typename T>
+[[nodiscard]] JsonValue json_value_property(const Map<std::string, T>& value, std::string_view key) {
+    const std::string name(key);
+    return value.has(name) ? json_value(value.at(name)) : JsonValue{};
+}
+template <typename T>
+[[nodiscard]] bbl::js::Array<std::string> json_value_keys(const Map<std::string, T>& value) {
+    return map_keys(value);
+}
+
+template <typename T>
+struct JsonNativeBox final : JsonNativeObject {
+    T value;
+    explicit JsonNativeBox(T source) : value(std::move(source)) {}
+    JsonValue get(std::string_view key) const override { return json_value_property(value, key); }
+    bbl::js::Array<std::string> own_keys() const override { return json_value_keys(value); }
+    const std::type_info& type() const override { return typeid(T); }
+    const void* identity() const override {
+        if constexpr (requires { value.identity(); }) return value.identity();
+        else return value.get();
+    }
+    void gc_trace(const TraceVisitor& visitor) const override { visitor(value); }
+};
+
+template <typename T>
+JsonValue JsonValue::from_native(T source) {
+    JsonValue value;
+    value.kind_ = Kind::object;
+    value.native_ = make_gc_shared<JsonNativeBox<T>>(std::move(source));
+    return value;
+}
+
+template<typename Getter>
+struct JsonRecordView final : JsonNativeObject {
+    mutable Getter getter;
+    bbl::js::Array<std::string> keys;
+    JsonRecordView(Getter read, bbl::js::Array<std::string> names) : getter(std::move(read)), keys(std::move(names)) {}
+    JsonValue get(std::string_view key) const override { return getter(key); }
+    bbl::js::Array<std::string> own_keys() const override { return {keys.begin(), keys.end()}; }
+    const std::type_info& type() const override { return typeid(JsonRecordView); }
+    const void* identity() const override { return this; }
+    void gc_trace(const TraceVisitor& visitor) const override { visitor(getter); visitor(keys); }
+};
+
+template<typename Getter>
+JsonValue JsonValue::from_record_view(Getter getter, bbl::js::Array<std::string> keys) {
+    JsonValue value;
+    value.kind_ = Kind::object;
+    value.native_ = make_gc_shared<JsonRecordView<Getter>>(std::move(getter), std::move(keys));
+    return value;
+}
 
 inline void json_write(JsonWriter& writer, const JsonValue& value) {
     switch (value.kind()) {
@@ -553,10 +890,11 @@ inline void json_write(JsonWriter& writer, const JsonValue& value) {
             break;
     }
     writer.begin_object();
-    for (const auto& entry : value.entries()) {
-        writer.key(entry.first);
-        json_write(writer, entry.second);
-    }
+    value.for_each_entry([&](const std::string& key, const JsonValue& entry) {
+        if (entry.is_undefined()) return;
+        writer.key(key);
+        json_write(writer, entry);
+    });
     writer.end_object();
 }
 

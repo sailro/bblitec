@@ -10,6 +10,102 @@ import { optionalNativeFixtureTools, runNativeFixtureCompiler } from "./native-f
 
 const native = optionalNativeFixtureTools(false);
 
+check("optional string unions widen through chained lazy fallbacks without losing absence", `
+    type Mode="quiet"|"balanced"|"vivid";
+    type Choice=Mode|"custom"|"";
+    let automatic:Mode|undefined;
+    let calls=0;
+    function fallback():Mode|undefined {calls++;return automatic;}
+    function select(saved:Choice|null):Choice {return saved??fallback()??"balanced";}
+    function text():string|undefined {return automatic;}
+    if(select(null)!=="balanced"||text()!==undefined||calls!==1)throw new Error("empty optional");
+    automatic="quiet";
+    if(select(null)!=="quiet"||text()!=="quiet"||calls!==2)throw new Error("present optional");
+    if(select("custom")!=="custom"||select("")!==""||calls!==2)throw new Error("lazy optional fallback");
+    automatic=undefined;
+    if(select(null)!=="balanced"||text()!==undefined||calls!==3)throw new Error("cleared optional");
+`);
+
+check("pop and shift consume temporary arrays once and preserve shared receivers", `
+    const texts:string[]=["a,b,c"];
+    let calls=0;
+    function source():string {calls++;return texts[0]!;}
+    if(source().split(",").pop()!=="c"||source().split(",").shift()!=="a"||calls!==2)
+        throw new Error("temporary array receiver");
+    const values:string[]=["first","middle","last"];
+    const alias=values;
+    if(values.pop()!=="last"||alias.length!==2||alias.shift()!=="first"||values[0]!=="middle")
+        throw new Error("shared receiver mutations");
+`);
+
+check("array find adapts retained elements to the selected result storage", `
+    const names=["left","right"] as const;
+    const weights:Record<typeof names[number],number>={left:1,right:2};
+    function selected(weight:number) {return names.find(name=>weights[name]===weight);}
+    const queries=[1,2,3];
+    for(const query of queries){
+        const found=selected(query);
+        if((query===1&&found!=="left")||(query===2&&found!=="right")||(query===3&&found!==undefined))
+            throw new Error("literal tuple find result");
+    }
+    const rows:Array<{name:string;value:number}>=[{name:"first",value:1},{name:"second",value:2}];
+    const found=rows.find(row=>row.value===2);
+    if(!found||found!==rows[1])throw new Error("found record identity");
+    found.value=7;
+    if(rows[1]!.value!==7)throw new Error("found record alias");
+`);
+
+check("generic recursive returns preserve synchronous type parameters", `
+    function retain<T>(value:T,depth:number):T {return depth>0?retain(value,depth-1):value;}
+    if(retain(3,2)!==3 || retain("value",2)!=="value") throw new Error("generic scalar");
+    const source:number[]=[1,2];
+    const array=retain(source,2);array.push(3);
+    if(source.length!==3) throw new Error("generic array alias");
+    const rows:Array<{size:number}>=[{size:1}];
+    const row=rows[0]!;
+    const record=retain(row,2);record.size=4;
+    if(row.size!==4) throw new Error("generic record alias");
+`);
+
+test("generic recursive records refuse an unowned alias boundary", () => {
+    assert.throws(() => compileSource(`
+        function retain<T>(value:T,depth:number):T {return depth>0?retain(value,depth-1):value;}
+        const source={size:1};const result=retain(source,2);result.size=4;
+        if(source.size!==4)throw new Error("alias");
+    `), /Generic recursive record returns require owned object storage/);
+});
+
+check("collection queries accept strings outside a stored literal union", `
+    type Key="first"|"second";
+    type Query=Key|"outside";
+    const set=new Set<Key>(["first","second"]);
+    const map=new Map<Key,number>([["first",3],["second",7]]);
+    const objects=new Map<Key,{size:number}>([["first",{size:5}]]);
+    const values:Key[]=["first","second","first"];
+    const queries:Query[]=["outside","first","second"];
+    for(const query of queries) {
+        const inside=query!=="outside";
+        if(set.has(query as Key)!==inside || map.has(query as Key)!==inside) throw new Error("membership");
+        if((map.get(query as Key)===undefined)===inside) throw new Error("map lookup");
+        if(values.includes(query as Key)!==inside || (values.indexOf(query as Key)>=0)!==inside ||
+            (values.lastIndexOf(query as Key)>=0)!==inside) throw new Error("array search");
+    }
+    let unknown:string="outside";
+    if(set.has(unknown as Key)||set.delete(unknown as Key)||map.delete(unknown as Key)||objects.get(unknown as Key)!==undefined)
+        throw new Error("absent string");
+    unknown="first";
+    const found=objects.get(unknown as Key);
+    if(!found||found.size!==5||!set.delete(unknown as Key)||!map.delete(unknown as Key)) throw new Error("present string");
+    let reads=0;
+    function probe():string {reads++;return "outside";}
+    if(set.has(probe() as Key)||reads!==1)throw new Error("query evaluated once");
+    let fromReads=0;
+    function from():number {fromReads++;return 1;}
+    if(values.lastIndexOf("outside" as Key,from())!==-1||fromReads!==1)throw new Error("missing query still evaluates fromIndex");
+    const records:Array<{size:number}>=[{size:1}];
+    if(records.indexOf(records[0]!)!==0||records.indexOf(records[4]!)!==-1)throw new Error("record query identity and absence");
+`);
+
 function check(name: string, source: string): void {
     test(name, async t => {
         runInNewContext(ts.transpileModule(source, {
@@ -30,6 +126,124 @@ function check(name: string, source: string): void {
         });
     });
 }
+
+check("regexp-match-results", `
+    const global = /([a-z]+)([0-9]+)/g;
+    const alias = global;
+    global.lastIndex = 20;
+    const matches = 'ab12 cd3'.match(global);
+    if(!matches || matches.length !== 2 || matches.join('|') !== 'ab12|cd3' || alias.lastIndex !== 0)
+        throw new Error('global matches omit captures and reset shared state');
+    const single = /(a)?(b)/;
+    single.lastIndex = 7;
+    const optional = 'b ab'.match(single);
+    const present = 'ab'.match(single);
+    if(!optional || optional.length !== 3 || optional.join('|') !== 'b||b' ||
+        !present || present.join('|') !== 'ab|a|b' || single.lastIndex !== 7)
+        throw new Error('non-global captures and unchanged state');
+    const missing = /z/g;
+    missing.lastIndex = 3;
+    if('ab'.match(missing) !== null || missing.lastIndex !== 0 || 'a'.match(single) !== null || single.lastIndex !== 7)
+        throw new Error('absent matches and lastIndex');
+    const empty = /(?:)/g;
+    empty.lastIndex = 7;
+    const positions = '😀'.match(empty);
+    if(!positions || positions.length !== 3 || positions.join('|') !== '||' || empty.lastIndex !== 0)
+        throw new Error('empty matches advance one UTF16 unit');
+    const units = '😀'.match(/./g);
+    if(!units || units.length !== 2 || units[0]!.charCodeAt(0) !== 0xd83d || units[1]!.charCodeAt(0) !== 0xde00)
+        throw new Error('global matches preserve UTF16 captures');
+`);
+
+check("regexp-replacement-callbacks", `
+    function edit(text:string):string {
+        return text.replace(/([a-z]+)([0-9]+)/g, (match:string, word:string, digits:string, offset:number, original:string) => {
+            if(original !== text || match !== word+digits) throw new Error('callback arguments');
+            return word.toUpperCase() + (Number(digits)+offset);
+        });
+    }
+    if(edit('ab12 cd3') !== 'AB12 CD8') throw new Error('global captures');
+    let seen = '';
+    const optional = 'a b'.replace(/(a)|(b)/g, (match, first, second, offset) => {
+        seen += (first === undefined ? '-' : first) + (second === undefined ? '-' : second) + offset;
+        return match;
+    });
+    if(optional !== 'a b' || seen !== 'a-0-b2') throw new Error('unmatched capture');
+    if('word'.replace(/(word)/, (_match, word) => word.toUpperCase()) !== 'WORD') throw new Error('inferred capture method');
+    const pattern = /a/g;
+    const alias = pattern;
+    pattern.lastIndex = 20;
+    let calls = 0;
+    const replaced = 'aa'.replace(pattern, (match:string, offset:number) => {
+        if(calls === 0 && pattern.lastIndex !== 0) throw new Error('global initial state');
+        calls++;
+        alias.lastIndex = 7;
+        return match.toUpperCase() + offset;
+    });
+    if(replaced !== 'A0A1' || calls !== 2 || pattern.lastIndex !== 7) throw new Error('snapshot matches and shared regex state');
+    const first = /a/;
+    first.lastIndex = 3;
+    if('aa'.replace(first, () => '!') !== '!a' || first.lastIndex !== 3) throw new Error('non-global state');
+    let unicode = '';
+    const text = 'é😀x';
+    const unchanged = text.replace(/./g, (match:string, offset:number) => { unicode += offset; return match; });
+    if(unchanged !== text || unicode !== '0123') throw new Error('UTF16 units and offsets');
+    if('ab'.replace(/(?:)/g, (_match:string, offset:number) => String(offset)) !== '0a1b2') throw new Error('empty match progress');
+    if('aaa'.replace(/^a/g, () => '!') !== '!aa') throw new Error('anchored global search');
+    if('ab ab'.replace(/\\ba/g, () => '!') !== '!b !b') throw new Error('word boundaries');
+    if('aba'.replaceAll(/a/g, () => '!') !== '!b!') throw new Error('global replaceAll');
+    function runtime(source:string):string {
+        const regex = new RegExp(source, 'g');
+        return 'a2 b3'.replace(regex, (match:string, word:string|undefined, digits:string|undefined, offset:number) =>
+            (word ?? '') + (digits ?? '') + offset);
+    }
+    const patterns:string[] = ['([a-z])([0-9])'];
+    for(const source of patterns) if(runtime(source) !== 'a20 b33') throw new Error('runtime regex arguments');
+    const choices:boolean[] = [false,true];
+    for(const captured of choices) {
+        const selected = captured ? /(a)/g : /a/g;
+        const result = 'a'.replace(selected, (match:string, second:string|number|undefined, third:string|number|undefined) => {
+            if(captured) {
+                if(second !== 'a' || third !== 0) throw new Error('selected capture positions');
+            } else if(second !== 0 || third !== 'a') throw new Error('selected offset positions');
+            return match;
+        });
+        if(result !== 'a') throw new Error('selected regex');
+    }
+    const callbacks:((match:string, capture:string|undefined, offset:number, source:string)=>string)[] = [];
+    callbacks.push((match, capture, offset, source) => {
+            callbacks.pop();
+            callbacks.push(() => 'changed');
+            if(source !== 'b ab') throw new Error('stored callback input');
+            return (capture ?? '-') + offset;
+        });
+    if('b ab'.replace(/(a)?b/g, callbacks[0]) !== '-0 a2') throw new Error('stored callback snapshot');
+    const retained:(()=>string)[] = [];
+    const literals = 'b ab'.replace(/(a)?b/g, (match:string, capture:string|undefined) => {
+        retained.push(() => capture ?? 'missing');
+        return '$&';
+    });
+    if(literals !== '$& $&' || retained[0]() !== 'missing' || retained[1]() !== 'a') throw new Error('owned captures and literal results');
+    let missingCalls = 0;
+    const missing = /z/g;
+    missing.lastIndex = 7;
+    if('abc'.replace(missing, () => { missingCalls++; return ''; }) !== 'abc' || missingCalls !== 0 || missing.lastIndex !== 0)
+        throw new Error('missing global match');
+    let rejected = false;
+    try { 'a'.replaceAll(/a/, () => { missingCalls++; return ''; }); } catch { rejected = true; }
+    if(!rejected || missingCalls !== 0) throw new Error('replaceAll global requirement');
+    const empty = /(?:)/g;
+    const emptyResult = '😀'.replace(empty, (_match:string, offset:number) => String(offset));
+    if(emptyResult.length !== 5 || emptyResult.charCodeAt(1) !== 0xd83d || emptyResult.charCodeAt(3) !== 0xde00)
+        throw new Error('empty match advances one UTF16 unit');
+    if(text.charCodeAt(0) !== 233 || text.charCodeAt(NaN) !== 233 || text.charCodeAt(1.9) !== 0xd83d ||
+        !Number.isNaN(text.charCodeAt(-1)) || !Number.isNaN(text.charCodeAt(Infinity)) || !Number.isNaN(text.charCodeAt(4)))
+        throw new Error('UTF16 character codes and bounds');
+    const shared = /./g;
+    const sharedAlias = shared;
+    if(!shared.test('😀') || sharedAlias.lastIndex !== 1 || !sharedAlias.test('😀') || shared.lastIndex !== 2 || shared.test('😀'))
+        throw new Error('exec shares UTF16 state');
+`);
 
 check("math-and-number", `
     function verify(x: number): void {

@@ -8,9 +8,13 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import type { NativeHostUi, NativeHostUiElement } from "./compiler/types.js";
+import {isUiGeneratedPart} from "./ui-generated-content.js";
 import {
     isUiStyleSelectorKind,
+    isUiScrollbarPart,
+    isUiRangePart,
     nativeHostUiStyleRules,
+    type NativeHostUiStyleRule,
 } from "./ui-style-rule.js";
 
 export function refuseUnknownKeys(
@@ -127,7 +131,7 @@ export function readNativeHostUi(path: string): NativeHostUi {
     ) {
         throw new Error(`Native host UI '${path}' styleRules must be an array.`);
     }
-    const styleRules = (record.styleRules ?? []).map((rule, index) => {
+    const styleRules = (record.styleRules ?? []).map((rule, index): NativeHostUiStyleRule => {
         const location = `Native host UI '${path}' styleRules[${index}]`;
         if (!rule || typeof rule !== "object" || Array.isArray(rule)) {
             throw new Error(`${location} must be an object.`);
@@ -143,7 +147,12 @@ export function readNativeHostUi(path: string): NativeHostUi {
                 "hover",
                 "focusVisible",
                 "active",
+                "scrollbar",
+                "range",
+                "pseudo",
                 "maxWidth",
+                "containerMaxWidth",
+                "reducedMotion",
                 "style",
             ],
             location,
@@ -175,13 +184,26 @@ export function readNativeHostUi(path: string): NativeHostUi {
         if (item.active !== undefined && typeof item.active !== "boolean") {
             throw new Error(`${location}.active must be a boolean.`);
         }
+        if (item.scrollbar !== undefined && !isUiScrollbarPart(item.scrollbar)) {
+            throw new Error(`${location}.scrollbar must name a supported scrollbar part.`);
+        }
+        if (item.range !== undefined && !isUiRangePart(item.range))
+            throw new Error(`${location}.range must name a thumb or track.`);
+        if (item.pseudo !== undefined && !isUiGeneratedPart(item.pseudo))
+            throw new Error(`${location}.pseudo must be before, after or placeholder.`);
         if (item.maxWidth !== undefined && typeof item.maxWidth !== "number") {
             throw new Error(`${location}.maxWidth must be a number.`);
+        }
+        if (item.containerMaxWidth !== undefined && (typeof item.containerMaxWidth !== "number" || !Number.isFinite(item.containerMaxWidth) || item.containerMaxWidth < 0))
+            throw new Error(`${location}.containerMaxWidth must be a non-negative finite number.`);
+        if (item.reducedMotion !== undefined && typeof item.reducedMotion !== "boolean") {
+            throw new Error(`${location}.reducedMotion must be a boolean.`);
         }
         return {
             kind: item.kind,
             primary: item.primary,
             style: item.style,
+            ...(item.containerMaxWidth !== undefined ? {containerMaxWidth:item.containerMaxWidth} : {}),
             ...(item.secondary !== undefined
                 ? { secondary: item.secondary }
                 : {}),
@@ -189,6 +211,10 @@ export function readNativeHostUi(path: string): NativeHostUi {
             ...(item.hover !== undefined ? { hover: item.hover } : {}),
             ...(item.focusVisible !== undefined ? { focusVisible: item.focusVisible } : {}),
             ...(item.active !== undefined ? { active: item.active } : {}),
+            ...(item.reducedMotion !== undefined ? { reducedMotion: item.reducedMotion } : {}),
+            ...(item.range !== undefined ? {range:item.range} : {}),
+            ...(item.scrollbar !== undefined ? { scrollbar: item.scrollbar } : {}),
+            ...(item.pseudo !== undefined ? { pseudo: item.pseudo } : {}),
             ...(item.maxWidth !== undefined
                 ? { maxWidth: item.maxWidth }
                 : {}),

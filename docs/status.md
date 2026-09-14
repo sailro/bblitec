@@ -1,17 +1,13 @@
 # Current status
 
 Published full-image / foreground MAD against pinned browser references.
-Poses and gates live in `src/scene-registry.ts`; `npm run status:verify` checks
-these rows against available reports. Values do not certify an unvalidated
-working tree. Interpretation belongs in [fidelity](fidelity.md#what-is-measured-the-full-page).
+Registry poses/gates and repeatability exceptions remain authoritative.
+Values describe saved reports, not the current working tree. Verify with `npm run status:verify`.
 
 ## Curated parity scenes
 
-Pinned numbered scenes. A coverage cell leads with the registry name; commentary follows a
-semicolon. Plain cells are below 0.5; a row with any value at or above 0.5 is coloured per
-value (green below 0.5, yellow at or above 0.5, red at or above 1). Scene-specific registry
-gates remain authoritative. Rows named in the wobble allowlist of `src/scene-neutrality.ts`
-keep their published value while the newest report lies inside the recorded band.
+Numbered scene coverage starts with its registry name. Colors: below 0.5 green,
+0.5–1 yellow, 1+ red. Repeatability-exempt rows retain their published values.
 
 | Scene | Preview | SDL_GPU | Dawn | Coverage |
 | ---: | :---: | ---: | ---: | --- |
@@ -271,7 +267,7 @@ Unchanged pinned applications, including their reached source and asset graphs.
 
 | Application | Preview | SDL_GPU | Dawn | Coverage |
 | --- | :---: | ---: | ---: | --- |
-| Offscreen (Worker) | <img src="images/scenes/offscreen.png" alt="Offscreen main and worker views" width="160"> | $\color{#1a7f37}{\textsf{0.438}} / \color{#9a6700}{\textsf{0.553}}$ | $\color{#1a7f37}{\textsf{0.438}} / \color{#9a6700}{\textsf{0.553}}$ | Dedicated Worker realms; transferred canvases; retained blocking control. UI residual; canvas-only MAD: SDL_GPU 0.002 / 0.002, Dawn 0.001 / 0.002. |
+| Offscreen (Worker) | <img src="images/scenes/offscreen.png" alt="Offscreen main and worker views" width="160"> | $\color{#1a7f37}{\textsf{0.425}} / \color{#9a6700}{\textsf{0.553}}$ | $\color{#1a7f37}{\textsf{0.425}} / \color{#9a6700}{\textsf{0.553}}$ | Dedicated Worker realms; transferred canvases; retained blocking control. UI residual; canvas-only MAD: SDL_GPU 0.002 / 0.002, Dawn 0.001 / 0.002. |
 | Tetris | <img src="images/scenes/tetris.png" alt="Tetris rendering" width="160"> | $\color{#cf222e}{\textsf{1.074}} / \color{#9a6700}{\textsf{0.856}}$ | $\color{#cf222e}{\textsf{1.074}} / \color{#9a6700}{\textsf{0.856}}$ | Thin-instance game; audio; retained UI. UI residual; no-UI MAD: SDL_GPU 0.093 / 0.101, Dawn 0.093 / 0.101. |
 | Doom | <img src="images/scenes/doom.png" alt="Doom rendering" width="160"> | 0.001 / 0.001 | 0.001 / 0.001 | WAD game; sprites; audio; retained UI. |
 | LibreQuake | <img src="images/scenes/quake.png" alt="LibreQuake rendering" width="160"> | 0.048 / 0.048 | 0.048 / 0.048 | BSP/WAD2/MDL game; audio; Canvas2D HUD. |
@@ -279,7 +275,7 @@ Unchanged pinned applications, including their reached source and asset graphs.
 | Platformer | <img src="images/scenes/platformer.png" alt="Platformer rendering" width="160"> | $\color{#9a6700}{\textsf{0.809}} / \color{#9a6700}{\textsf{0.809}}$ | $\color{#9a6700}{\textsf{0.806}} / \color{#9a6700}{\textsf{0.806}}$ | Sprite game; CRT pass; audio; retained UI. UI residual; no-UI MAD: SDL_GPU 0.004 / 0.004, Dawn 0.000 / 0.000. |
 | Break Meshes | <img src="images/scenes/break-meshes.png" alt="Break Meshes rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Voronoi fracture; PBR; physics. |
 | Racer | <img src="images/scenes/racer.png" alt="Racer rendering" width="160"> | $\color{#9a6700}{\textsf{0.606}} / \color{#9a6700}{\textsf{0.606}}$ | $\color{#9a6700}{\textsf{0.606}} / \color{#9a6700}{\textsf{0.606}}$ | Driving game; CSM; physics; audio; retained HUD. UI residual; no-UI MAD: SDL_GPU 0.004 / 0.004, Dawn 0.004 / 0.004. |
-| Antigravity Racer | <img src="images/scenes/antigravity-racer.png" alt="Antigravity Racer rendering" width="160"> | $\color{#cf222e}{\textsf{3.324}} / \color{#cf222e}{\textsf{3.385}}$ | $\color{#cf222e}{\textsf{3.324}} / \color{#cf222e}{\textsf{3.385}}$ | Antigravity racing game; dynamic hierarchy instances; shader storage; CSM; HDR/IBL; gamepads; GPU picking; retained menu. UI residual; canvas-only MAD: SDL_GPU 0.028 / 0.029, Dawn 0.028 / 0.029. |
+| Antigravity Racer | <img src="images/scenes/antigravity-racer.png" alt="Antigravity Racer rendering" width="160"> | $\color{#cf222e}{\textsf{3.309}} / \color{#cf222e}{\textsf{3.370}}$ | $\color{#cf222e}{\textsf{3.309}} / \color{#cf222e}{\textsf{3.370}}$ | Antigravity racing game; dynamic hierarchy instances; shader storage; CSM; HDR/IBL; gamepads; GPU picking; retained menu. UI residual; canvas-only MAD: SDL_GPU 0.028 / 0.029, Dawn 0.028 / 0.029. |
 | Littlest Tokyo | <img src="images/scenes/littlest-tokyo.png" alt="Littlest Tokyo rendering" width="160"> | 0.143 / 0.109 | 0.143 / 0.109 | Animated glTF; PBR/IBL; retained chrome. |
 | Bath Day | <img src="images/scenes/bath-day.png" alt="Bath Day rendering" width="160"> | 0.103 / 0.141 | 0.103 / 0.141 | Skinned Draco/WebP glTF; transmission; retained chrome. |
 | Freeciv | <img src="images/scenes/freeciv.png" alt="Freeciv rendering" width="160"> | 0.189 / 0.186 | 0.172 / 0.169 | Strategy map; sprites; picking; retained cursor/tooltips. |
@@ -301,7 +297,7 @@ Repository fixtures running against pinned Babylon Lite. These measure contracts
 | nav-crowd | <img src="images/scenes/regression-nav-crowd.png" alt="Navigation crowd step rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Navigation Crowd Step |
 | nav-obstacles | <img src="images/scenes/regression-nav-obstacles.png" alt="Navigation obstacle removal rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Navigation Obstacle Removal |
 | mesh-flags | <img src="images/scenes/regression-mesh-flags.png" alt="Mesh visible and pickable rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Mesh Visible and Pickable |
-| physics-aggregate-options | <img src="images/scenes/regression-physics-aggregate-options.png" alt="Physics aggregate options rendering" width="160"> | 0.047 / 0.074 | 0.047 / 0.074 | Physics Aggregate Options; 0.053 / 0.083 before the physics family gates: with the constraints family compiled out the cylinder's landing moves by a float ulp, deterministic on both backends |
+| physics-aggregate-options | <img src="images/scenes/regression-physics-aggregate-options.png" alt="Physics aggregate options rendering" width="160"> | 0.047 / 0.074 | 0.047 / 0.074 | Physics Aggregate Options |
 | physics-floating-origin | <img src="images/scenes/regression-physics-floating-origin.png" alt="Physics floating origin rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Physics Floating Origin Regions |
 | material-falloff | <img src="images/scenes/regression-material-falloff.png" alt="Material falloff write rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Material Falloff Write |
 | compiler-state | <img src="images/scenes/regression-compiler-state.png" alt="Compiler state rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Compiler State |

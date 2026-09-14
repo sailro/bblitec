@@ -1,4 +1,6 @@
 import { BinaryBuilder } from "./glb-binary-builder.js";
+import {createHash} from "node:crypto";
+import type {AssetDecoders, DracoDecoderAssets} from "./asset-decoders.js";
 // Compressed and quantized glTF geometry, resolved at generation time.
 //
 // `KHR_draco_mesh_compression` and `EXT_meshopt_compression` are decoded by
@@ -158,7 +160,7 @@ interface DracoModule {
     _free(pointer: number): void;
 }
 
-let dracoModule: Promise<DracoModule> | undefined;
+const dracoModules = new Map<string, Promise<DracoModule>>();
 
 interface MeshoptDecoderModule {
     ready: Promise<void>;
@@ -294,10 +296,13 @@ async function preparePinnedMeshoptDecoder(): Promise<void> {
  * else; the WebAssembly is handed over directly rather than fetched, which
  * is what keeps the whole thing offline.
  */
-async function loadDracoModule(): Promise<DracoModule> {
-    if (dracoModule) return dracoModule;
-    dracoModule = (async () => {
-        const [glue, wasm] = await Promise.all([
+async function loadDracoModule(configured?: DracoDecoderAssets): Promise<DracoModule> {
+    const key = configured ? createHash("sha256").update(String(configured.javascript.length)).update(":")
+        .update(configured.javascript).update(configured.wasm).digest("hex") : "pinned";
+    const previous = dracoModules.get(key);
+    if (previous) return previous;
+    const loading = (async () => {
+        const [glue, wasm] = configured ? [configured.javascript, configured.wasm] : await Promise.all([
             pinnedArtifact("draco_decoder.js"),
             pinnedArtifact("draco_decoder.wasm"),
         ]);
@@ -316,7 +321,7 @@ async function loadDracoModule(): Promise<DracoModule> {
         sandbox.self = sandbox;
         sandbox.globalThis = sandbox;
         createContext(sandbox);
-        runInContext(glue.toString("utf8"), sandbox, {
+        runInContext(Buffer.from(glue).toString("utf8"), sandbox, {
             filename: "draco_decoder.js",
         });
         const factory = sandbox.DracoDecoderModule as
@@ -324,12 +329,14 @@ async function loadDracoModule(): Promise<DracoModule> {
             | undefined;
         if (typeof factory !== "function") {
             throw new Error(
-                "The pinned draco_decoder.js did not define DracoDecoderModule.",
+                "draco_decoder.js did not define DracoDecoderModule.",
             );
         }
         return factory({ wasmBinary: new Uint8Array(wasm) });
     })();
-    return dracoModule;
+    dracoModules.set(key, loading);
+    try { return await loading; }
+    catch (error) { if (dracoModules.get(key) === loading) dracoModules.delete(key); throw error; }
 }
 
 interface DecodedPrimitive {
@@ -351,8 +358,9 @@ async function decodeDracoPrimitive(
     compressed: Uint8Array,
     attributeMap: Record<string, number>,
     componentCounts: Record<string, number>,
+    decoderAssets?: AssetDecoders["draco"],
 ): Promise<DecodedPrimitive> {
-    const module = await loadDracoModule();
+    const module = await loadDracoModule(await decoderAssets?.());
     const decoder = new module.Decoder();
     const buffer = new module.DecoderBuffer();
     buffer.Init(compressed, compressed.byteLength);
@@ -466,6 +474,7 @@ export function encodeUnsignedShortJoints(
 async function decodeDracoGlb(
     glb: GlbChunks,
     label: string,
+    decoder?: AssetDecoders["draco"],
 ): Promise<boolean> {
     const used = declaredExtensions(glb.json);
     if (!used.includes(DRACO_EXTENSION)) {
@@ -541,6 +550,7 @@ async function decodeDracoGlb(
                 compressed,
                 attributeMap,
                 componentCounts,
+                decoder,
             );
 
             for (const [name, data] of decoded.attributes) {
@@ -924,12 +934,12 @@ export async function resolveGeometryExtensions(
 }
 
 /** Resolve geometry in an already parsed container, retaining its updated BIN bytes. */
-export async function resolveGlbGeometry(glb: GlbChunks, label: string): Promise<boolean> {
+export async function resolveGlbGeometry(glb: GlbChunks, label: string, decoders: AssetDecoders = {}): Promise<boolean> {
     let rewrote = false;
     for (const pass of pinnedPreParsePasses) {
         rewrote = (await runPinnedPreParse(pass, glb, label)) || rewrote;
     }
     rewrote = (await convertGaussianSplats(glb, label)) || rewrote;
-    rewrote = (await decodeDracoGlb(glb, label)) || rewrote;
+    rewrote = (await decodeDracoGlb(glb, label, decoders.draco)) || rewrote;
     return rewrote;
 }

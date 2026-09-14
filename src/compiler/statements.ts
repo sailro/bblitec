@@ -75,6 +75,7 @@ export interface StatementLoweringContext
         | "trackResourceLoopEarlyReturn"
         | "isRuntimeResourceConstruction"
         | "emitNativeReturn"
+        | "emitNativeThrow"
         | "meshTransformDirtyEntry"
         | "captureEmittedLines"
         | "canShareFunctionBody"
@@ -458,6 +459,7 @@ export class StatementLowerer {
         context: StatementLoweringContext,
         statement: ts.Statement,
     ): void {
+        if (ts.canHaveModifiers(statement) && ts.getModifiers(statement)?.some(modifier => modifier.kind === ts.SyntaxKind.DeclareKeyword)) return;
         if (context.isFoldedFlattenLoop(statement)) {
             // The declaration above it already answered with the
             // container's flattened meshes; the loop that filled the list
@@ -1214,23 +1216,27 @@ export class StatementLowerer {
         context: StatementLoweringContext,
         statement: ts.TryStatement,
     ): void {
-        if (!statement.finallyBlock) {
+        const finallyBlock = statement.finallyBlock;
+        if (!finallyBlock) {
             this.emitTryBody(context, statement);
             return;
         }
+        if (context.workerCheckpointCpp() && someAnalysisNode(finallyBlock, ts.isAwaitExpression, {functions:"skip"}))
+            context.fail(finallyBlock, "Await in finally requires asynchronous cleanup completion.");
         // Lower in source order so generation-only bindings and cleanup see
         // the try body's effects. Native cleanup still precedes the captured
         // body as a scope guard, covering early returns and exceptions.
         const beforeBody = context.nativeBindingCheckpoint();
         const body = context.captureEmittedLines(() =>
             this.emitTryBody(context, statement));
-        const capturedFinally = this.captureFinallyGuard(
-            context, statement.finallyBlock, beforeBody,
+        const captureFinally = () => this.captureFinallyGuard(
+            context, finallyBlock, beforeBody,
         );
+        if (context.emitEngineFinally(body, captureFinally, statement)) return;
+        const capturedFinally = captureFinally();
         const finallyGuard = capturedFinally.length
             ? capturedFinally
             : undefined;
-        if (finallyGuard && context.emitEngineFinally(body, finallyGuard, statement)) return;
         if (finallyGuard) {
             context.emit("{");
             context.increaseIndent();
@@ -1275,6 +1281,7 @@ export class StatementLowerer {
                 for (const child of statement.tryBlock
                     .statements) {
                     this.emit(context, child);
+                    if (this.terminatesAfterLowering(child) || this.staticIterationCompleted()) break;
                 }
             } finally {
                 context.popScope();
@@ -1317,6 +1324,7 @@ export class StatementLowerer {
                 for (const child of statement.catchClause
                     .block.statements) {
                     this.emit(context, child);
+                    if (this.terminatesAfterLowering(child) || this.staticIterationCompleted()) break;
                 }
             } finally {
                 context.popScope();
@@ -1458,6 +1466,7 @@ export class StatementLowerer {
         }
         if (
             value.staticString === undefined &&
+            value.kind !== "string" &&
             !(
                 value.kind === "data" &&
                 value.dataType?.kind === "string"
@@ -1466,12 +1475,13 @@ export class StatementLowerer {
             context.fail(thrown, "A thrown Error message must be a string.");
         }
         context.reachThrow();
-        context.emit(
-            `throw std::runtime_error(${
+        context.emitNativeThrow(
+            `std::runtime_error(${
                 value.staticString !== undefined
                     ? context.cppString(value.staticString)
                     : value.cpp
-            });`,
+            })`,
+            statement,
         );
     }
 
@@ -2434,6 +2444,7 @@ export class StatementLowerer {
         if (!elements) {
             return false;
         }
+        if (elements.length === 0) return true;
         if (this.preferNativeDataIteration(context, statement, elements.length) &&
             elements.every((value) => this.plainIterationData(context, value)) &&
             context.emitNativeDataIteration(statement, () =>
@@ -2761,17 +2772,25 @@ export class StatementLowerer {
             context.emit("}");
             return true;
         }
-        // A span is a borrowed descriptor, so hold that descriptor by value.
-        // Binding the range-for's hidden reference to a returned span makes
-        // GCC 13 incorrectly tie it to temporary arguments of the source call.
-        const span = target.container.dataType?.kind === "span"
-            ? context.allocateTemporaryCppName("range") : undefined;
-        context.emit(
-            `for (${span ? `auto ${span} = std::span{${target.container.cpp}}; ` : ""}auto&& ${item} : ${span ?? target.container.cpp}) {`,
-        );
-        context.increaseIndent();
+        const storedIterator = target.container.dataType?.kind === "iterator";
+        if (storedIterator) {
+            const source = context.allocateTemporaryCppName("iterator_source");
+            const value = context.allocateTemporaryCppName("iterator_value");
+            context.emit(`const auto ${source} = ${target.container.cpp};`);
+            context.emit(`while (auto ${value} = ${source}.next().value) {`);
+            context.increaseIndent();
+            context.emit(`[[maybe_unused]] auto&& ${item} = *${value};`);
+        } else {
+            // A span is a borrowed descriptor, so hold that descriptor by value.
+            // Binding the range-for's hidden reference to a returned span makes
+            // GCC 13 incorrectly tie it to temporary arguments of the source call.
+            const span = target.container.dataType?.kind === "span"
+                ? context.allocateTemporaryCppName("range") : undefined;
+            context.emit(`for (${span ? `auto ${span} = std::span{${target.container.cpp}}; ` : ""}auto&& ${item} : ${span ?? target.container.cpp}) {`);
+            context.increaseIndent();
+        }
         for (const line of lines) context.emit(line);
-        context.emit(`static_cast<void>(${item});`);
+        if (!storedIterator) context.emit(`static_cast<void>(${item});`);
         context.decreaseIndent();
         context.emit("}");
         return true;
@@ -2961,7 +2980,7 @@ export class StatementLowerer {
                     );
                     context.emit(`${target.cpp} = ${value.cpp};`);
                 } else if (
-                    target.kind === "data" &&
+                    (target.kind === "data" || target.kind === "promise") &&
                     operator === "=" &&
                     context.emitDataAssignment(unwrapped)
                 ) {
@@ -3016,7 +3035,8 @@ export class StatementLowerer {
                     context.unwrap(unwrapped.right),
                 )
             ) {
-                this.emitTupleResourceAssignment(context, unwrapped);
+                if (!context.dataLowerer.emitArrayDestructuringAssignment(unwrapped))
+                    this.emitTupleResourceAssignment(context, unwrapped);
             } else {
                 context.emitAssignment(unwrapped);
             }
@@ -3196,10 +3216,9 @@ export class StatementLowerer {
                 return;
             }
         }
-        context.fail(
-            unwrapped,
-            `Unsupported expression statement: ${ts.SyntaxKind[unwrapped.kind]}.`,
-        );
+        // Any supported value expression can be evaluated for effects alone,
+        // including the value of a return in a contextually void function.
+        context.emitDiscardedValue(context.compileValue(unwrapped));
     }
 
     /** Assigns a tuple result to definite-assignment resource bindings. */
@@ -3775,6 +3794,13 @@ function terminatesFlow(statement: ts.Statement): boolean {
     if (ts.isBlock(statement)) {
         const last = statement.statements.at(-1);
         return last ? terminatesFlow(last) : false;
+    }
+    if (ts.isIfStatement(statement)) {
+        return !!statement.elseStatement && terminatesFlow(statement.thenStatement) && terminatesFlow(statement.elseStatement);
+    }
+    if (ts.isTryStatement(statement)) {
+        return (!!statement.finallyBlock && terminatesFlow(statement.finallyBlock)) ||
+            (terminatesFlow(statement.tryBlock) && (!statement.catchClause || terminatesFlow(statement.catchClause.block)));
     }
     return false;
 }

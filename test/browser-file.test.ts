@@ -11,6 +11,7 @@ import test from "node:test";
 
 import { CompileError, compileSource } from "../src/compiler.js";
 import {
+    cppFunction,
     nativeFixtureVcpkgRoot,
     optionalNativeFixtureTools,
     runNativeFixtureCompiler,
@@ -270,10 +271,11 @@ test("lowers the complete map export/import browser source shape", () => {
         "input_files",
         "file_text",
         "json_parse",
-        "array_from_iterable",
+        "serializeWorld",
     ]) {
         assert.match(result.cpp, new RegExp(symbol));
     }
+    assert.match(result.cpp, /World\{1\.0, v_\w*parts\}/);
 });
 
 test("refuses multiple, directories, and unsupported accept syntax", () => {
@@ -285,6 +287,7 @@ test("refuses multiple, directories, and unsupported accept syntax", () => {
                 pattern.test(error.message),
         );
     };
+    refusal(`const input=document.createElement('input');input.type='file';input.type='text';`,/without changing a file input/);
     refusal(
         `
         const input = document.createElement("input");
@@ -408,21 +411,21 @@ test("browser file ownership stays generic and PAL-isolated", () => {
         "utf8",
     );
     assert.match(
-        ui,
-        /const auto callbacks = ui_element\(engine, element\)\.click_callbacks;[\s\S]{0,160}callback\(\);[\s\S]{0,300}const std::string tag = ui_element\(engine, element\)\.tag;[\s\S]{0,80}tag == "a"/,
+        cppFunction(ui, "void ui_click("),
+        /const auto callbacks = ui_element\(engine, element\)\.click_callbacks;[\s\S]*dispatch_dom_pointer[\s\S]*callback\(\);[\s\S]*const std::string tag = ui_element\(engine, element\)\.tag;[\s\S]*tag == "a"/,
         "programmatic and projected clicks dispatch listeners before the default action",
     );
     assert.match(
-        ui,
-        /void ui_remove\([\s\S]{0,300}release_browser_file_subtree\(engine, element\)/,
+        cppFunction(ui, "void ui_remove("),
+        /release_browser_file_subtree\(engine, element\)/,
         "element removal releases its browser-file ownership",
     );
     assert.match(
-        ui,
-        /void ui_replace_children\([\s\S]{0,300}release_browser_file_subtree\(engine, child\)/,
+        cppFunction(ui, "void ui_replace_children("),
+        /release_browser_file_subtree\(engine, child\)/,
         "subtree removal releases descendant browser-file ownership",
     );
-    assert.match(ui, /event_type == "click"[\s\S]{0,80}ui_click\(engine, element\)/);
+    assert.match(ui, /event_type == "click"[\s\S]{0,80}ui_click\(engine, element, true\)/);
 
     const projection = readFileSync(
         resolve("src/compiler/output-projection.ts"),

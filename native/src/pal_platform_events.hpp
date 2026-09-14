@@ -3,6 +3,7 @@
 
 #include <bblite/runtime.hpp>
 #include <bblite/pal_offscreen.hpp>
+#include <bblite/pal_dom_events.hpp>
 
 #include <SDL3/SDL.h>
 
@@ -52,7 +53,8 @@ inline bool dispatch_platform_keyboard_event(
     bool shift_key = false,
     bool ctrl_key = false,
     bool alt_key = false,
-    bool meta_key = false) {
+    bool meta_key = false,
+    bool include_dom = true) {
     trace_keyboard_event(code, down, repeat);
     const PlatformKeyboardEvent event{
         .code = std::string(code),
@@ -63,23 +65,50 @@ inline bool dispatch_platform_keyboard_event(
         .alt_key = alt_key,
         .meta_key = meta_key,
     };
+    bool prevented = false;
+    if (include_dom && engine.dom_input) {
+        const auto& input = *engine.dom_input;
+        auto batch = std::make_shared<DomEventBatch>();
+        batch->add(dom_event(event, down ? "keydown" : "keyup", input.focus_path ? input.focus_path() : dom_canvas_path()), true);
+        dispatch_dom_batch(engine, batch);
+        if (!batch->ready()) throw std::logic_error("Direct keyboard dispatch cannot defer callbacks.");
+        prevented = batch->default_prevented;
+    }
     auto& callbacks = down
         ? engine.key_down_callbacks
         : engine.key_up_callbacks;
     callbacks.dispatch(event);
-    return event.default_prevented;
+    return prevented || event.default_prevented;
 }
 
 inline bool canvas_contains_client_point(
     const Engine& engine,
     const PlatformMouseEvent& event);
 
+inline bool dispatch_dom_platform_pointer(Engine& engine, DomPointerAction action, const PlatformMouseEvent& event) {
+    if (!engine.dom_input) return false;
+    const auto& input = *engine.dom_input;
+    auto path = input.hit_path ? input.hit_path(event.client_x, event.client_y) :
+        canvas_contains_client_point(engine, event) ? dom_canvas_path() :
+        std::vector<DomEventTarget>{DomEventTarget::document(), DomEventTarget::window()};
+    const auto batch = dom_pointer_input(engine, action, event, std::move(path));
+    dispatch_dom_batch(engine, batch);
+    if (!batch->ready()) throw std::logic_error("Direct pointer dispatch cannot defer callbacks.");
+    return batch->default_prevented;
+}
+
+inline void dispatch_platform_mouse_move(Engine& engine, const PlatformMouseEvent& event, bool include_dom = true) {
+    if (include_dom && dispatch_dom_platform_pointer(engine, DomPointerAction::Move, event)) return;
+    if (canvas_contains_client_point(engine, event)) engine.mouse_move_callbacks.dispatch(event);
+}
+
 inline void dispatch_platform_wheel_event(
     Engine& engine,
     double delta_y,
     double client_x,
     double client_y,
-    double buttons = 0.0) {
+    double buttons = 0.0,
+    bool include_dom = true) {
     const PlatformMouseEvent event{
         .button = -1.0,
         .buttons = buttons,
@@ -87,6 +116,7 @@ inline void dispatch_platform_wheel_event(
         .client_y = client_y,
         .delta_y = delta_y,
     };
+    if (include_dom && dispatch_dom_platform_pointer(engine, DomPointerAction::Wheel, event)) return;
     if (!canvas_contains_client_point(engine, event)) return;
     engine.mouse_wheel_callbacks.dispatch(event);
 }
@@ -125,7 +155,12 @@ inline void dispatch_canvas_click(
 inline void dispatch_platform_mouse_button(
     Engine& engine,
     const PlatformMouseEvent& event,
-    bool down) {
+    bool down,
+    bool include_dom = true) {
+    if (include_dom && dispatch_dom_platform_pointer(engine, down ? DomPointerAction::Down : DomPointerAction::Up, event)) {
+        if (!down) engine.canvas_click_armed = false;
+        return;
+    }
     const bool inside = canvas_contains_client_point(engine, event);
     if (down) {
         if (!inside) return;
@@ -305,7 +340,7 @@ public:
                 .client_y = engine.canvas_client_height / 2.0,
                 .movement_x = 100.0,
             };
-            engine.mouse_move_callbacks.dispatch(event);
+            dispatch_platform_mouse_move(engine, event);
             return;
         }
         if (const auto point = pointer_position(code, "MouseMove@")) {
@@ -315,7 +350,7 @@ public:
                 .client_x = point->first,
                 .client_y = point->second,
             };
-            engine.mouse_move_callbacks.dispatch(event);
+            dispatch_platform_mouse_move(engine, event);
             return;
         }
         const auto ui_click = pointer_position(code, "UiClick@");
@@ -794,7 +829,8 @@ inline void sync_pointer_lock(SDL_Window* window, Engine& engine) {
 
 inline void handle_platform_event(
     const SDL_Event& event,
-    Engine& engine) {
+    Engine& engine,
+    bool include_dom = true) {
     if (
         event.type == SDL_EVENT_WINDOW_RESIZED ||
         event.type == SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED ||
@@ -820,7 +856,7 @@ inline void handle_platform_event(
             (event.key.mod & SDL_KMOD_SHIFT) != 0,
             (event.key.mod & SDL_KMOD_CTRL) != 0,
             (event.key.mod & SDL_KMOD_ALT) != 0,
-            (event.key.mod & SDL_KMOD_GUI) != 0);
+            (event.key.mod & SDL_KMOD_GUI) != 0, include_dom);
         // Escape is reserved by the browser host to leave pointer lock; the
         // application does not need to register document.exitPointerLock()
         // for that affordance. SDL relative mode has no corresponding
@@ -862,7 +898,7 @@ inline void handle_platform_event(
         dispatch_platform_mouse_button(
             engine,
             mouse_event,
-            event.type == SDL_EVENT_MOUSE_BUTTON_DOWN);
+            event.type == SDL_EVENT_MOUSE_BUTTON_DOWN, include_dom);
         if (runtime_trace_enabled()) {
             std::cerr
                 << "[bblite trace] input mouse-button callbacks-complete"
@@ -904,9 +940,7 @@ inline void handle_platform_event(
                 << " locked=" << (engine.pointer_locked ? 1 : 0)
                 << '\n';
         }
-        if (canvas_contains_client_point(engine, mouse_event)) {
-            engine.mouse_move_callbacks.dispatch(mouse_event);
-        }
+        dispatch_platform_mouse_move(engine, mouse_event, include_dom);
         sync_pointer_lock(
             SDL_GetWindowFromID(event.motion.windowID),
             engine);
@@ -921,7 +955,7 @@ inline void handle_platform_event(
             delta_y,
             event.wheel.mouse_x * engine.canvas_window_to_client_scale,
             event.wheel.mouse_y * engine.canvas_window_to_client_scale,
-            dom_mouse_buttons(tracked_mouse_buttons()));
+            dom_mouse_buttons(tracked_mouse_buttons()), include_dom);
         return;
     }
     if (event.type == SDL_EVENT_WINDOW_FOCUS_LOST) {
@@ -947,6 +981,62 @@ inline void handle_platform_event(
     if (hidden || visible) {
         engine.visibility_change_callbacks.dispatch(hidden);
     }
+}
+
+/** Build an owned script input transaction before running native defaults.
+ * Retained UI installs hit/focus path providers; canvas-only scenes use the
+ * same dispatch contract without pulling in RmlUi. */
+inline std::shared_ptr<DomEventBatch> prepare_dom_platform_input(Engine& engine, const SDL_Event& event) {
+    if (!engine.dom_input) return {};
+    auto& input = *engine.dom_input;
+    auto batch = std::make_shared<DomEventBatch>();
+    if (event.type == SDL_EVENT_KEY_DOWN || event.type == SDL_EVENT_KEY_UP) {
+        const auto code = keyboard_event_code(event.key.scancode);
+        const PlatformKeyboardEvent key{
+            .code = std::string(code), .key = keyboard_event_key(code), .repeat = event.key.repeat,
+            .shift_key = (event.key.mod & SDL_KMOD_SHIFT) != 0, .ctrl_key = (event.key.mod & SDL_KMOD_CTRL) != 0,
+            .alt_key = (event.key.mod & SDL_KMOD_ALT) != 0, .meta_key = (event.key.mod & SDL_KMOD_GUI) != 0,
+        };
+        auto path = input.focus_path ? input.focus_path() : dom_canvas_path();
+        batch->add(dom_event(key, event.type == SDL_EVENT_KEY_DOWN ? "keydown" : "keyup", std::move(path)), true);
+    } else if (event.type == SDL_EVENT_MOUSE_MOTION || event.type == SDL_EVENT_MOUSE_BUTTON_DOWN ||
+        event.type == SDL_EVENT_MOUSE_BUTTON_UP || event.type == SDL_EVENT_MOUSE_WHEEL) {
+        const bool move = event.type == SDL_EVENT_MOUSE_MOTION, wheel = event.type == SDL_EVENT_MOUSE_WHEEL;
+        if (!move && !wheel) update_tracked_mouse_button(event.button);
+        const auto modifiers = SDL_GetModState();
+        const PlatformMouseEvent pointer{
+            .button = move || wheel ? -1.0 : static_cast<double>(event.button.button - 1),
+            .buttons = dom_mouse_buttons(move ? event.motion.state : tracked_mouse_buttons()),
+            .client_x = (move ? event.motion.x : wheel ? event.wheel.mouse_x : event.button.x) * engine.canvas_window_to_client_scale,
+            .client_y = (move ? event.motion.y : wheel ? event.wheel.mouse_y : event.button.y) * engine.canvas_window_to_client_scale,
+            .movement_x = move ? static_cast<double>(event.motion.xrel) : 0,
+            .movement_y = move ? static_cast<double>(event.motion.yrel) : 0,
+            .delta_y = wheel ? dom_wheel_delta_y(event.wheel) : 0,
+            .shift_key = (modifiers & SDL_KMOD_SHIFT) != 0, .ctrl_key = (modifiers & SDL_KMOD_CTRL) != 0,
+            .alt_key = (modifiers & SDL_KMOD_ALT) != 0, .meta_key = (modifiers & SDL_KMOD_GUI) != 0,
+        };
+        auto path = input.hit_path ? input.hit_path(pointer.client_x, pointer.client_y) :
+            canvas_contains_client_point(engine, pointer) ? dom_canvas_path() :
+            std::vector<DomEventTarget>{DomEventTarget::document(), DomEventTarget::window()};
+        batch = dom_pointer_input(engine, move ? DomPointerAction::Move : wheel ? DomPointerAction::Wheel :
+            event.type == SDL_EVENT_MOUSE_BUTTON_DOWN ? DomPointerAction::Down : DomPointerAction::Up, pointer, path);
+        if (event.type == SDL_EVENT_MOUSE_BUTTON_UP && event.button.button == SDL_BUTTON_LEFT && event.button.clicks == 2)
+            batch->add(dom_event(pointer, "dblclick", path), true);
+        if (event.type == SDL_EVENT_MOUSE_BUTTON_UP && event.button.button == SDL_BUTTON_RIGHT)
+            batch->add(dom_event(pointer, "contextmenu", path), true);
+    } else if (event.type == SDL_EVENT_WINDOW_MOUSE_LEAVE) {
+        batch = dom_pointer_input(engine, DomPointerAction::Leave, PlatformMouseEvent{}, {});
+    } else if (event.type == SDL_EVENT_WINDOW_FOCUS_LOST || event.type == SDL_EVENT_WINDOW_FOCUS_GAINED) {
+        if (event.type == SDL_EVENT_WINDOW_FOCUS_LOST) {
+            batch = dom_pointer_input(engine, DomPointerAction::Cancel, PlatformMouseEvent{}, input.hover_path);
+            input.hover_path.clear();
+        }
+        batch->add(dom_event(PlatformMouseEvent{}, event.type == SDL_EVENT_WINDOW_FOCUS_LOST ? "blur" : "focus",
+            {DomEventTarget::window()}, false, false));
+    } else if (event.type == SDL_EVENT_WINDOW_RESIZED) {
+        batch->add(dom_event(PlatformMouseEvent{}, "resize", {DomEventTarget::window()}, false, false));
+    } else return {};
+    return batch;
 }
 
 /**
@@ -991,6 +1081,14 @@ inline void poll_platform_events(
             !is_replayed_ui_event(event)) {
             continue;
         }
+        if (const auto batch = prepare_dom_platform_input(engine, event)) {
+            dispatch_dom_batch(engine, batch);
+            if (!batch->ready()) throw std::logic_error("Synchronous frame input cannot defer its callbacks.");
+            if (batch->default_prevented) {
+                if (event.type == SDL_EVENT_MOUSE_BUTTON_UP) engine.canvas_click_armed = false;
+                continue;
+            }
+        }
         if (event.type == SDL_EVENT_KEY_DOWN || event.type == SDL_EVENT_KEY_UP) {
             // Window listeners receive keyboard events bubbling from focused
             // controls too. Run them before RmlUi's default actions so a
@@ -1000,14 +1098,14 @@ inline void poll_platform_events(
             const bool prevented = !code.empty() && dispatch_platform_keyboard_event(
                 engine, code, event.type == SDL_EVENT_KEY_DOWN, event.key.repeat,
                 (event.key.mod & SDL_KMOD_SHIFT) != 0, (event.key.mod & SDL_KMOD_CTRL) != 0,
-                (event.key.mod & SDL_KMOD_ALT) != 0, (event.key.mod & SDL_KMOD_GUI) != 0);
+                (event.key.mod & SDL_KMOD_ALT) != 0, (event.key.mod & SDL_KMOD_GUI) != 0, false);
             release_pointer_lock_on_escape(SDL_GetWindowFromID(event.key.windowID), engine,
                 code, event.type == SDL_EVENT_KEY_DOWN);
             if (!prevented && ui_filter(event)) dispatched(event);
             continue;
         }
         if (!ui_filter(event)) continue;
-        handle_platform_event(event, engine);
+        handle_platform_event(event, engine, false);
         dispatched(event);
         if (event.type == SDL_EVENT_MOUSE_MOTION ||
             event.type == SDL_EVENT_MOUSE_BUTTON_DOWN ||

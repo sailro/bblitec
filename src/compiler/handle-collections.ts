@@ -1244,7 +1244,8 @@ export class HandleCollections {
             ? this.context.lookupOptional(unwrapped)
             : ts.isCallExpression(unwrapped) ||
                 ts.isPropertyAccessExpression(unwrapped) ||
-                ts.isElementAccessExpression(unwrapped)
+                ts.isElementAccessExpression(unwrapped) ||
+                (ts.isBinaryExpression(unwrapped) && unwrapped.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken)
               ? this.context.compileValue(unwrapped)
               : undefined;
         if ((value?.collectionCardinality ?? value?.staticElementsOwner?.collectionCardinality)?.untrackedAliases) {

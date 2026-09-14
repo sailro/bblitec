@@ -17,8 +17,10 @@ export const namedKinds: DataKindOperations<"struct" | "enum" | "function"> = {
         cpp: (type, context) => `bbl::js::Callback<${type.result ? context.cppType(type.result) : "void"}` +
             `(${type.parameters.map(parameter => context.cppType(parameter)).join(", ")})>`,
         key: (type, key) => `${type.identity ? "cb" : "fn"}(${type.parameters.map(key).join(",")})` +
+            `${type.restParameter === undefined ? "" : `...${type.restParameter}`}` +
             `${type.erasedParameters?.length ? `~${type.erasedParameters.join(",")}` : ""}->${type.result ? key(type.result) : "void"}`,
         equal: (left, right, equal) => left.identity === right.identity &&
+            left.restParameter === right.restParameter &&
             (left.erasedParameters ?? []).join(",") === (right.erasedParameters ?? []).join(",") &&
             left.parameters.length === right.parameters.length &&
             left.parameters.every((parameter, index) => equal(parameter, right.parameters[index]!)) &&

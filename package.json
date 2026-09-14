@@ -58,6 +58,7 @@
     "@types/node": "^22.15.0",
     "@types/pngjs": "^6.0.5",
     "@typescript/native": "npm:typescript@^7.0.2",
+    "@webgpu/types": "0.1.52",
     "magic-string": "0.30.21",
     "playwright-core": "^1.62.1",
     "pngjs": "^7.0.0",

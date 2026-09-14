@@ -1,0 +1,510 @@
+import assert from "node:assert/strict";
+import {execFileSync} from "node:child_process";
+import {mkdirSync, writeFileSync} from "node:fs";
+import {join, resolve} from "node:path";
+import test from "node:test";
+import {compileSource} from "../src/compiler.js";
+import {nativeFixtureVcpkgRoot, optionalNativeFixtureTools, runNativeFixtureCompiler} from "./native-fixture.js";
+
+function nativeCheck(name: string, source: string, t: test.TestContext, options?: Parameters<typeof compileSource>[1]): void {
+    const result = compileSource(source, options);
+    const native = optionalNativeFixtureTools(false);
+    if (!native) { t.skip("Native fixture compiler unavailable."); return; }
+    const directory = resolve("artifacts/recursive-json-values", name);
+    mkdirSync(directory, {recursive: true});
+    const cpp = join(directory, "check.cpp"), executable = join(directory, "check.exe");
+    writeFileSync(cpp, result.cpp);
+    runNativeFixtureCompiler(native, ["/nologo", "/std:c++20", "/W4", "/WX", "/EHsc", "/MD",
+        "/I", "native/include", `/I${nativeFixtureVcpkgRoot}/include`, `/Fo:${directory}/`, `/Fe:${executable}`, cpp]);
+    assert.equal(execFileSync(executable, {encoding: "utf8", timeout: 10000}), "");
+}
+
+test("typed dynamic record reads preserve string and enum keys and nullable results", t => {
+    nativeCheck("typed-property-keys", `
+        type Key="first"|"second"|"zero"|"missing";
+        interface Row { score:number; }
+        const parsed=JSON.parse('{"rows":{"first":{"score":2},"second":{"score":4},"zero":{"score":0}}}');
+        let fallbacks=0;
+        function fallback():number {fallbacks++;return -1;}
+        const read:(id:Key)=>number=id=>{
+            const row:Row|undefined=parsed.rows[id];
+            return row?.score ?? fallback();
+        };
+        const ids:Key[]=["first","second","zero","missing"];
+        if(read(ids[0]!)!==2||read(ids[1]!)!==4||read(ids[2]!)!==0||read(ids[3]!)!==-1||fallbacks!==1)
+            throw new Error("typed key or lazy fallback");
+        const alias:Row=parsed.rows[ids[0]!];
+        alias.score=8;
+        if(parsed.rows.first.score!==8||read(ids[0]!)!==8)throw new Error("typed dynamic alias");
+        const missing=parsed.rows.missing, nil=JSON.parse('null');
+        const chosen=missing??alias;
+        const chosenNull=nil??alias;
+        if(chosen!==alias||chosenNull!==alias)throw new Error("nullish identifier identity");
+        const values=JSON.parse('[0,false,"",null]');
+        if((values[0]??9)!==0||(values[1]??true)!==false||(values[2]??"fallback")!==""||(values[3]??7)!==7)
+            throw new Error("nullish falsy values");
+    `, t);
+});
+
+test("dynamic object spread snapshots native record fields and retains nested aliases", t => {
+    nativeCheck("native-record-spread", `
+        interface Settings { enabled:boolean; weight:number; nested:{score:number}; }
+        const defaults:Settings={enabled:true,weight:2,nested:{score:3}};
+        let calls=0;
+        function read():Settings {calls++;return defaults;}
+        const override=JSON.parse('{"enabled":false,"extra":7}');
+        const result={...read(),...override};
+        if(calls!==1||result.enabled!==false||result.weight!==2||result.extra!==7)
+            throw new Error("spread fields and override");
+        defaults.weight=8;
+        defaults.nested.score=9;
+        if(result.weight!==2||result.nested.score!==9)throw new Error("shallow spread aliases");
+        const again={...defaults,...JSON.parse('{}')};
+        if(again===result||again.nested!==result.nested||again.weight!==8)throw new Error("fresh root shared child");
+        function later():unknown {defaults.weight=10;return JSON.parse('{"enabled":false}');}
+        const snapshot={...defaults,...later() as object};
+        if(snapshot.weight!==8||defaults.weight!==10||snapshot.enabled!==false)
+            throw new Error("source before later spread effects");
+    `, t);
+});
+
+test("typed function parameters retain dynamic record and array arguments", t => {
+    nativeCheck("dynamic-typed-arguments", `
+        interface Row { score:number; child:{score:number}; }
+        function update(row:Row, value:number):Row {row.score=value;return row;}
+        function updateArray(rows:Row[]):Row {rows[0]!.score=12;return rows[0]!;}
+        class Reader { read(row:Row):number {return row.score;} }
+        const row:Row=JSON.parse('{"score":2,"extra":7,"child":{"score":3}}');
+        const alias=update(row,8);
+        if(alias!==row||row.score!==8||(alias as any).extra!==7)throw new Error("typed argument identity");
+        const reader=new Reader();
+        if(reader.read(row)!==8)throw new Error("typed method argument");
+        const rows:Row[]=JSON.parse('[{"score":4,"extra":9,"child":{"score":5}}]');
+        const item=updateArray(rows);
+        if(item!==rows[0]||item.score!==12||(item as any).extra!==9)throw new Error("typed array argument");
+    `, t);
+});
+
+test("JSON serialization orders index keys before other object properties", t => {
+    const input = '{"tail":8,"10":10,"2":2,"01":1,"4294967295":5,"4294967294":4,"-0":6,"0":0}';
+    const expected = JSON.stringify(JSON.parse(input));
+    nativeCheck("serialized-property-order", `
+        const parsed=JSON.parse(${JSON.stringify(input)});
+        parsed.missing=undefined;
+        if(JSON.stringify(parsed)!==${JSON.stringify(expected)})throw new Error("parsed key order");
+        const spread={...parsed};
+        if(JSON.stringify(spread)!==${JSON.stringify(expected)})throw new Error("dynamic dictionary key order");
+        const keys:string[]=${JSON.stringify(Object.keys(JSON.parse(input)).reverse())};
+        const dictionary:Record<string,number>={};
+        for(const key of keys)dictionary[key]=parsed[key];
+        if(JSON.stringify(dictionary)!==${JSON.stringify(JSON.stringify(Object.fromEntries(Object.entries(JSON.parse(input)).reverse())))})
+            throw new Error("typed dictionary key order");
+    `, t);
+});
+
+test("typed conditional records retain selected identities and lazy branch effects", t => {
+    nativeCheck("dynamic-typed-conditional", `
+        interface Row {score:number;child:{score:number};}
+        const parsed:Row=JSON.parse('{"score":2,"child":{"score":3},"extra":7}');
+        const fixed:Row={score:4,child:{score:5}};
+        let conditions=0, left=0, right=0;
+        function condition(flag:boolean):boolean {conditions++;return flag;}
+        function loaded():Row {left++;return parsed;}
+        function fallback():Row {right++;return fixed;}
+        for(const flag of JSON.parse('[true,false]')){
+            const selected=condition(flag)?loaded():fallback();
+            if(flag){
+                if(selected!==parsed||(selected as any).extra!==7)throw new Error("loaded selection identity");
+            }else{
+                if(selected!==fixed||selected.child!==fixed.child)throw new Error("fixed selection identity");
+            }
+        }
+        if(conditions!==2||left!==1||right!==1)throw new Error("conditional evaluation count");
+    `, t);
+});
+
+test("late native record ownership preserves aliases and generic recursive returns", t => {
+    nativeCheck("late-record-ownership", `
+        interface Row {count:number; child:{count:number};}
+        const source:Row={count:2,child:{count:3}};
+        const alias=source;
+        let initializations=0;
+        function make<T>(value:T):{value:T} {initializations++;return {value};}
+        function retain<T>(value:T,depth:number):unknown {return depth>0?retain(value,depth-1):value;}
+        const number=make(4), text=make("before");
+        const boxed=retain(source,2), boxedNumber=retain(number,2), boxedText=retain(text,2);
+        alias.count=8;alias.child.count=9;number.value=5;text.value="after";
+        if(boxed!==source||(boxed as Row).count!==8||(boxed as Row).child!==source.child)
+            throw new Error("late root and nested aliases");
+        if(boxedNumber!==number||(boxedNumber as {value:number}).value!==5||
+            boxedText!==text||(boxedText as {value:string}).value!=="after"||initializations!==2)
+            throw new Error("generic storage and initializer count");
+        if(JSON.stringify({typed:source,dynamic:boxed})!==
+            '{"typed":{"count":8,"child":{"count":9}},"dynamic":{"count":8,"child":{"count":9}}}')
+            throw new Error("mixed typed and dynamic serialization");
+    `, t);
+});
+
+test("dynamic property keys preserve numeric spelling and receiver evaluation order", t => {
+    nativeCheck("property-key-order", `
+        let current=JSON.parse('{"name":1,"1":4,"-1.5":5,"true":6,"null":7,"undefined":8}');
+        const one=1, negative=-1.5, flag=true;
+        if(current[one]!==4||current[negative]!==5||current[flag as any]!==6||current[null as any]!==7||current[undefined as any]!==8)
+            throw new Error("property key conversion");
+        const array=JSON.parse('[2,3]');
+        if(array[-0]!==2||array[1]!==3||array["01"]!==undefined||array[-1]!==undefined)
+            throw new Error("array index spelling");
+        let calls=0;
+        function key():string {calls++;current=JSON.parse('{"name":2}');return "name";}
+        if(current[key()]!==1||current.name!==2||calls!==1)throw new Error("read receiver order");
+        const target=current;
+        current[key()]=9;
+        if(target.name!==9||current.name!==2||calls!==2)throw new Error("write receiver order");
+        type Name="a"|"b";
+        let name:Name="a";
+        function rhs():number {name="b";return 3;}
+        const row=JSON.parse('{"a":1,"b":2}');
+        row[name]=rhs();
+        if(row.a!==3||row.b!==2)throw new Error("write key before RHS");
+    `, t);
+});
+
+test("fetched numbers keep double precision when retained as dynamic values", t => {
+    const directory=resolve("artifacts/recursive-json-values/fetched-numbers");
+    mkdirSync(directory,{recursive:true});
+    const payload={scalar:0.86,values:[0.1,0.86,16777217,1e100]};
+    writeFileSync(join(directory,"values.json"),JSON.stringify(payload));
+    nativeCheck("fetched-numbers", `
+        function retain(value:unknown,depth:number):unknown {return depth>0?retain(value,depth-1):value;}
+        const response=await fetch("http://localhost/values.json");
+        const loaded=await response.json();
+        const value=retain(loaded,1);
+        if(JSON.stringify(value)!==${JSON.stringify(JSON.stringify(payload))})
+            throw new Error("fetched numeric precision");
+    `, t, {fileName:join(directory,"entry.ts"),publicDir:directory});
+});
+
+test("typed arrays and tuples retain live storage across dynamic calls", t => {
+    nativeCheck("typed-arrays", `
+        function retain(value:unknown,depth:number):unknown { return depth>0 ? retain(value,depth-1) : value; }
+        const values:number[]=[1,2];
+        const boxed=retain(values,1);
+        values.push(3);
+        if(!Array.isArray(boxed)||boxed.length!==3||boxed[2]!==3||boxed!==retain(values,2)) throw new Error("array identity");
+        const rows:Array<{size:number}>=[{size:1}];
+        const records=retain(rows,1);
+        rows[0]!.size=2;
+        if((records as Array<{size:number}>)[0]!.size!==2) throw new Error("record element alias");
+        const row:[number,string]=[1,"before"];
+        const mixed=retain(row,1);
+        row[1]="after";
+        if((mixed as unknown[])[1]!=="after") throw new Error("tuple alias");
+        const config={color:[0.2,0.4,0.6] as const, nested:[{size:1}] as const, empty:{}};
+        const defaults=retain(config,1) as {color:unknown[],nested:Array<{size:number}>};
+        if(defaults.color!==defaults.color || defaults.color.length!==3 || defaults.color[1]!==0.4)
+            throw new Error("fixed tuple identity");
+        config.nested[0].size=4;
+        if(defaults.nested[0]!.size!==4) throw new Error("tuple nested record alias");
+        const names=Object.keys(defaults);names.push("extra");
+        if(Object.keys(defaults).length!==3) throw new Error("own keys snapshot");
+        let count=0;
+        for(const entry of boxed) { count++; if(entry===1) values.push(4); }
+        if(count!==4) throw new Error("live iteration length");
+        const filtered=boxed.filter(value=>value!==2);
+        if(filtered.length!==3||filtered[2]!==4) throw new Error("typed array filter");
+        const nested=retain([[1,2],[3]],1);
+        if(!Array.isArray(nested)||nested.flat().length!==3) throw new Error("typed array flatten");
+    `, t);
+});
+
+test("native exhaustive switch helpers compile with defined fallthrough", t => {
+    nativeCheck("exhaustive-switch", `
+        type Kind="first"|"second";
+        export function select(kind:Kind):number {switch(kind) {case "first":return 3;case "second":return 7;}}
+        const keys:Kind[]=["first","second"];
+        let result=0;for(const key of keys)result+=select(key);
+        if(result!==10)throw new Error("exhaustive switch");
+    `, t);
+});
+
+test("dynamic array views refuse ambiguous absence and Map object entries", () => {
+    const retain = `function retain(value:unknown,depth:number):unknown {return depth>0 ? retain(value,depth-1) : value;}`;
+    assert.throws(() => compileSource(retain + `const row:[number|null,string]=[null,"text"];const boxed=retain(row,1);row[1]="after";`),
+        /does not match the expected data json/);
+    assert.throws(() => compileSource(retain + `const rows:Array<{items:Map<string,number>}>= [{items:new Map([["first",1]])}];retain(rows,1);`),
+        /no retained value view for map/);
+});
+
+test("native value functions preserve dynamic results and fallback aliases", t => {
+    nativeCheck("dynamic-returns", `
+        interface Config {branch:{size:number};keep:{value:number}}
+        const defaults={branch:{size:1},keep:{value:2}};
+        let effects=0;
+        function parse(source:unknown):Config {
+            effects++;
+            return {...(source as Record<string,unknown>),keep:defaults.keep} as unknown as Config;
+        }
+        async function load(source:unknown,fail:boolean):Promise<Config> {
+            try {
+                if(fail)throw new Error("fallback");
+                if(source===null)return defaults;
+                return parse(source);
+            } catch {return defaults;}
+        }
+        const flags:boolean[]=[false,true];
+        const loaded=await load(JSON.parse('{"branch":{"size":3}}'),flags[0]!);
+        const empty=await load(JSON.parse('null'),flags[0]!);
+        const literal=await load(null,flags[0]!);
+        const failed=await load(JSON.parse('{}'),flags[1]!);
+        if(loaded.branch.size!==3||loaded.keep!==defaults.keep||loaded===defaults||effects!==1)
+            throw new Error("dynamic result or return effects");
+        if(empty!==defaults||literal!==defaults||failed!==defaults)throw new Error("fallback identity");
+        defaults.keep.value=7;
+        if(loaded.keep.value!==7||empty.keep.value!==7||failed.keep.value!==7)
+            throw new Error("return aliases");
+    `, t);
+});
+
+test("dynamic object spread copies outer properties and retains nested identity", t => {
+    nativeCheck("dynamic-spread", `
+        function plain(value:unknown):value is Record<string,unknown>{return typeof value==="object"&&value!==null&&!Array.isArray(value);}
+        function merge<T>(base:T,source:unknown):T{
+            if(!plain(base)||!plain(source))return source===undefined?base:source as T;
+            const result:Record<string,unknown>={...(base as unknown as Record<string,unknown>)};
+            for(const key of Object.keys(source))result[key]=plain(result[key])?merge(result[key],source[key]):source[key];
+            return result as unknown as T;
+        }
+        const base:unknown=JSON.parse('{"branch":{"size":1},"keep":{"value":2}}');
+        const result=merge(base,JSON.parse('{"branch":{"size":3}}')) as Record<string,unknown>;
+        if((result.branch as {size:number}).size!==3||result.keep!==(base as Record<string,unknown>).keep||result===base)
+            throw new Error("merge identity");
+        const typed={branch:{size:1},keep:{value:2}};
+        const changed=merge(typed,JSON.parse('{"branch":{"size":5}}'));
+        if(changed.branch.size!==5||changed.keep!==typed.keep||changed===typed)throw new Error("typed merge identity");
+        typed.keep.value=7;
+        if(changed.keep.value!==7||typed.branch.size!==1)throw new Error("typed merge aliases");
+        const branch={...changed.branch};
+        branch.size=6;
+        if(branch.size!==6||changed.branch.size!==5)throw new Error("typed branch copy");
+        const direct={...JSON.parse('{"first":1}'),last:2};
+        if(direct.first!==1||direct.last!==2)throw new Error("direct parsed spread");
+        const scalar=merge(2,JSON.parse('"text"'));
+        if((scalar as unknown)!=="text")throw new Error("dynamic generic scalar kind");
+        const copy:Record<string,unknown>={...(base as Record<string,unknown>),extra:4};
+        copy.branch=2;
+        if((base as {branch:{size:number}}).branch.size!==1||copy.extra!==4||copy.missing!==undefined||copy['missing']!==undefined)
+            throw new Error("fresh root and missing keys");
+        function spread(value:unknown,depth:number):unknown {
+            if(depth>0)return spread(value,depth-1);
+            return {before:1,...(value as Record<string,unknown>),after:2};
+        }
+        for(const value of JSON.parse('[null,false,4]'))if(Object.keys(spread(value,1) as object).join(',')!=="before,after")
+            throw new Error("primitive spread");
+        const array=spread(JSON.parse('[3,4]'),1) as Record<string,unknown>;
+        if(array[0]!==3||Object.keys(array).join(',')!=="0,1,before,after")throw new Error("array spread");
+        const text=spread("ab",1) as Record<string,unknown>;
+        if(text[0]!=="a"||text[1]!=="b")throw new Error("string spread");
+        if(Object.keys(spread(undefined,1) as object).join(',')!=="before,after")throw new Error("undefined spread");
+        const ordered=spread(JSON.parse('{"after":8,"before":9,"middle":3}'),1) as Record<string,unknown>;
+        if(ordered.before!==9||ordered.after!==2||Object.keys(ordered).join(',')!=="before,after,middle")
+            throw new Error("overwrite order");
+        let effects=0;
+        function source():unknown {effects++;return base;}
+        const once={...(source() as Record<string,unknown>),extra:effects};
+        if(effects!==1||once.extra!==1)throw new Error("spread effects");
+    `, t);
+});
+
+test("guarded dynamic strings use checked string method receivers", t => {
+    nativeCheck("string-receiver", `
+        function normalize(value:unknown):string|null {
+            if(typeof value!=="string")return null;
+            return value.toLowerCase().trim();
+        }
+        for(const value of JSON.parse('[" ABC ","Def"]')){
+            const result=normalize(value);
+            if(result!=="abc"&&result!=="def")throw new Error("guarded string method");
+        }
+        if(normalize(JSON.parse('4'))!==null)throw new Error("guard rejects number");
+        let caught=false;
+        try {(JSON.parse('4') as string).toLowerCase();}catch {caught=true;}
+        if(!caught)throw new Error("assertion must not coerce receiver");
+    `,t);
+});
+
+test("shared string predicates preserve constant and mutable captures", t => {
+    nativeCheck("string-captures", `
+        const marker="control";
+        export function matches(value:string):boolean {return value===marker;}
+        let active="first";
+        function isActive(value:string):boolean {return value===active;}
+        const values:string[]=["control","other"];
+        if(!matches(values[0]!)||matches(values[1]!))throw new Error("constant comparison capture");
+        if(!isActive("first"))throw new Error("initial mutable capture");
+        active="second";
+        if(isActive("first")||!isActive("second"))throw new Error("updated mutable capture");
+    `,t);
+});
+
+test("optional scalar returns retain undefined in dynamic records", t => {
+    nativeCheck("optional-return", `
+        function positive(value:unknown):number|undefined {
+            return typeof value==="number"&&Number.isFinite(value)&&value>0?value:undefined;
+        }
+        const present={...JSON.parse('{}'),budget:positive(JSON.parse('4'))};
+        const absent={...JSON.parse('{}'),budget:positive(JSON.parse('"wrong"'))};
+        if(present.budget!==4||absent.budget!==undefined||!Object.hasOwn(absent,"budget"))
+            throw new Error("optional result kind and presence");
+        if(JSON.stringify(absent)!=="{}")throw new Error("undefined property serialization");
+    `,t);
+});
+
+test("dynamic values retain JavaScript template and concatenation strings", t => {
+    nativeCheck("dynamic-concat", `
+        const values=JSON.parse('[null,true,3.25,"text",[1,null,2],{}]');
+        const expected=["value:null","value:true","value:3.25","value:text","value:1,,2","value:[object Object]"];
+        let index=0;
+        for(const value of values){
+            const actual=\`value:\${value}\`;
+            if(actual!==expected[index]||("value:"+value)!==actual)throw new Error("dynamic string conversion");
+            index++;
+        }
+    `,t);
+});
+
+test("recursive unknown boundaries retain parsed trees and returned scalar kinds", t => {
+    nativeCheck("trees", `
+        function retain<T>(value:T, depth:number):T {return depth>0 ? retain(value,depth-1) : value;}
+        const count = (value: unknown): number => {
+            if(Array.isArray(value)) { let sum=0; for(const child of value) sum+=count(child); return sum; }
+            return 1;
+        };
+        function named(value: unknown): number {
+            if(Array.isArray(value)) { let sum=0; for(const child of value) sum+=named(child); return sum; }
+            return 1;
+        }
+        const array = (values: readonly unknown[]): number => {
+            let sum=0; for(const child of values) sum+=Array.isArray(child) ? array(child) : 1; return sum;
+        };
+        function first(value: unknown): unknown {
+            if(Array.isArray(value)) return first(value[0]);
+            if(value === null) return "empty";
+            return value;
+        }
+        const tree: unknown = JSON.parse('[1,[2,[3,4]],5]');
+        if(retain<unknown>(tree,2)!==tree)throw new Error("generic dynamic identity");
+        if(count(tree)!==5 || named(tree)!==5 || array(tree as unknown[])!==5)
+            throw new Error("recursive tree visits");
+        if(first(JSON.parse('[[3]]'))!==3 || first(JSON.parse('[[true]]'))!==true ||
+            first(JSON.parse('[[null]]'))!=="empty") throw new Error("dynamic recursive return");
+    `, t);
+});
+
+test("dynamic recursion retains native object views, array aliases and builtin callbacks", t => {
+    nativeCheck("views", `
+        class Packet {
+            constructor(public label: string, public items: readonly unknown[]) {}
+        }
+        function check(seed: unknown, depth: number): number {
+            if (depth > 0) return check(seed, depth - 1);
+            const isArray = Array.isArray;
+            const callbacks = [Array.isArray];
+            if (callbacks[0] !== isArray || !callbacks[0]!(seed) || callbacks[0]!(3))
+                throw new Error("builtin identity and invocation");
+            const dictionary: Record<string, unknown> = {};
+            dictionary.first = seed;
+            dictionary.label = "before";
+            const erased: unknown = dictionary;
+            dictionary.label = "after";
+            const record = erased as Record<string, unknown>;
+            if (record.label !== "after" || record.first !== seed || !("label" in record) ||
+                !Object.hasOwn(record, "first") || Object.hasOwn(record, "toString"))
+                throw new Error("live dictionary view");
+            const values: unknown[] = JSON.parse('[1,[2,[3]],4]');
+            const alias: unknown = values;
+            values.push(5);
+            if (JSON.stringify(alias) !== '[1,[2,[3]],4,5]') throw new Error("array alias");
+            if (JSON.stringify(values.flat()) !== '[1,2,[3],4,5]' ||
+                JSON.stringify(values.flat(0)) !== '[1,[2,[3]],4,5]' ||
+                JSON.stringify(values.flat(Infinity)) !== '[1,2,3,4,5]') throw new Error("dynamic flat");
+            const packet = new Packet("before", values);
+            const boxed: unknown = packet;
+            packet.label = "after";
+            if (!(boxed instanceof Packet) || boxed.label !== "after" || boxed.items.length !== 4 ||
+                !Object.hasOwn(boxed, "items")) throw new Error("live class view");
+            return 1;
+        }
+        if (check(JSON.parse('[true]'), 2) !== 1) throw new Error("recursive result");
+    `, t);
+});
+
+test("recursive groups inside stored callbacks retain branch laziness and captures", t => {
+    nativeCheck("groups", `
+        const visit = (source: unknown): number => {
+            const visited: number[] = [];
+            const walk = (value: unknown): void => {
+                if (Array.isArray(value)) { walkArray(value); return; }
+                const names = typeof value === "object" && value !== null
+                    ? new Set(Object.keys(value).sort()) : new Set(["leaf"]);
+                visited.push(names.size);
+            };
+            const walkArray = (values: readonly unknown[]): void => {
+                for (const value of values) walk(value);
+            };
+            walk(source);
+            return visited.length;
+        };
+        const callbacks = [visit];
+        if (callbacks[0]!(JSON.parse('[1,[2,{"b":3,"a":4}]]')) !== 3)
+            throw new Error("mutual recursion and lazy set construction");
+    `, t);
+});
+
+test("default array sorting uses UTF-16 text order and comparator ties stay stable", t => {
+    nativeCheck("sorting", `
+        const words: string[] = ["\\uE000", "\\u{10000}", "z", "a"];
+        const same = words.sort();
+        if (same !== words || words.join(",") !== "a,z,\\u{10000},\\uE000") throw new Error("UTF-16 order");
+        const numbers = [2, 10, -1, 1];
+        numbers.sort();
+        if (numbers.join(",") !== "-1,1,10,2") throw new Error("numeric text order");
+        const records: Array<{group: number; index: number}> = [];
+        for (let index=0; index<32; index++) records.push({group:index%2,index});
+        records.sort((left,right)=>left.group-right.group);
+        for(let index=0;index<16;index++) {
+            if(records[index]!.index!==index*2 || records[index+16]!.index!==index*2+1)
+                throw new Error("stable comparator ties");
+        }
+    `, t);
+});
+
+test("typed dictionaries retain scalar, enum and record aliases through dynamic boundaries", t => {
+    nativeCheck("typed-dictionaries", `
+        function retain(value: unknown, depth: number): unknown {
+            return depth > 0 ? retain(value, depth - 1) : value;
+        }
+        const numbers: Record<string, number> = {first: 1};
+        const boxedNumbers = retain(numbers, 1) as Record<string, unknown>;
+        numbers.first = 2;
+        numbers.second = 3;
+        if (boxedNumbers.first !== 2 || Object.keys(boxedNumbers).length !== 2 ||
+            retain(numbers, 1) !== boxedNumbers) throw new Error("number dictionary alias");
+        const tags: Record<string, "open" | "closed"> = {first: "open"};
+        const boxedTags = retain(tags, 1) as Record<string, unknown>;
+        tags.first = "closed";
+        if (boxedTags.first !== "closed") throw new Error("enum dictionary alias");
+        const records: Record<string, {size: number}> = {first: {size: 1}};
+        const boxedRecords = retain(records, 1) as Record<string, unknown>;
+        records.first!.size = 3;
+        if ((boxedRecords.first as {size: number}).size !== 3)
+            throw new Error("record dictionary alias");
+        function retainTyped(value: {nested: {size: number}}, depth: number): unknown {
+            return depth > 0 ? retainTyped(value, depth - 1) : value;
+        }
+        const typed = {nested: {size: 5}};
+        const first = retainTyped(typed, 1);
+        typed.nested.size = 7;
+        if (first !== retainTyped(typed, 1) || (first as {nested:{size:number}}).nested.size !== 7)
+            throw new Error("captured record keeps caller storage and identity");
+    `, t);
+});

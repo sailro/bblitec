@@ -38,7 +38,7 @@ class SdlWindowPresenter final : public WindowPresenter {
         if (!swapchain || width == 0 || height == 0) return false;
         const auto format = SDL_GetGPUSwapchainTextureFormat(device_.get(), window_);
         auto* destination = composite_.target(device_.get(), swapchain, format,
-            width, height, !capture.empty() || !ui.backdrops.empty());
+            width, height, !capture.empty() || ui_frame_reads_target(ui));
         SDL_GPUColorTargetInfo target{};
         target.texture = destination;
         target.load_op = SDL_GPU_LOADOP_CLEAR;

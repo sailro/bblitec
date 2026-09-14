@@ -14,6 +14,7 @@ export class CompileError extends Error {
         line: number,
         column: number,
         message: string,
+        public readonly reason: "unsupported" | "static-value-required" = "unsupported",
     ) {
         super(`${fileName}:${line}:${column}: ${message}`);
         this.name = "CompileError";

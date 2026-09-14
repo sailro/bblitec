@@ -279,7 +279,7 @@ endif()
 # unreferenced object and the static registrations it carries.
 set(
     BBLITE_PAL_COMMON_PATTERN
-    "/src/(pal|pal_sdl|pal_ui_rml|pal_audio_labsound|pal_physics_bullet|pal_physics_debug|pal_navigation_recast|pal_file|pal_storage|pal_text_layout)\\.cpp$"
+    "/src/(pal|pal_sdl|pal_image|pal_ui_rml|pal_audio_labsound|pal_physics_bullet|pal_physics_debug|pal_navigation_recast|pal_file|pal_storage|pal_text_layout)\\.cpp$"
 )
 set(BBLITE_PAL_COMMON_SOURCES ${BBLITE_RUNTIME_SOURCES})
 list(FILTER BBLITE_PAL_COMMON_SOURCES INCLUDE REGEX "${BBLITE_PAL_COMMON_PATTERN}")
@@ -497,6 +497,7 @@ if(NOT SDL3_FOUND)
 endif()
 target_link_libraries(bblite_features INTERFACE SDL3::SDL3)
 bblite_feature_define(BBLITE_HAS_GAMEPAD "input:gamepad")
+bblite_feature_define(BBLITE_HAS_DOM_INPUT "input:dom")
 bblite_feature_define(BBLITE_HAS_BROWSER_FILE "browser:file")
 
 target_compile_definitions(bblite_features INTERFACE BBLITE_HAS_SDL_GPU=$<BOOL:${BBLITE_BACKEND_SDL_GPU}>)
@@ -582,6 +583,24 @@ endif()
 if("text:layout" IN_LIST BBLITE_RUNTIME_FEATURES)
     find_package(harfbuzz CONFIG REQUIRED)
     target_link_libraries(bblite_features INTERFACE harfbuzz::harfbuzz)
+endif()
+
+if("data:locale" IN_LIST BBLITE_RUNTIME_FEATURES)
+    if(WIN32)
+        target_link_libraries(bblite_features INTERFACE icu)
+    else()
+        find_package(ICU REQUIRED COMPONENTS uc i18n)
+        target_link_libraries(bblite_features INTERFACE ICU::uc ICU::i18n)
+    endif()
+endif()
+
+if("platform:http" IN_LIST BBLITE_RUNTIME_FEATURES)
+    if(WIN32)
+        target_link_libraries(bblite_features INTERFACE winhttp)
+    else()
+        find_package(CURL REQUIRED)
+        target_link_libraries(bblite_features INTERFACE CURL::libcurl)
+    endif()
 endif()
 
 # BBLITE_RENDERER_TRANSMISSION is generated into render_capabilities.hpp,
@@ -962,7 +981,7 @@ if(
 endif()
 
 if(MSVC)
-    target_compile_options(bblite_features INTERFACE /W4 /WX /permissive- /EHsc)
+    target_compile_options(bblite_features INTERFACE /W4 /WX /permissive- /EHsc /bigobj)
 else()
     target_compile_options(bblite_features INTERFACE -Wall -Wextra -Wpedantic -Werror)
 endif()

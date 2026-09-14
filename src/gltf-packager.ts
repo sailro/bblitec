@@ -1,4 +1,5 @@
 import { readFile } from "node:fs/promises";
+import type {AssetDecoders} from "./asset-decoders.js";
 import { compressedTextureFormat } from "./compressed-texture-format.js";
 import { packageKtx1 } from "./compressed-texture-package.js";
 import { downloadCachedResource } from "./asset-download-cache.js";
@@ -481,6 +482,7 @@ export async function packageGltf(
     baseDirectory: string,
     sourceTextureReads = false,
     meshWalks: readonly (CompiledMeshWalk | undefined)[] = [],
+    decoders: AssetDecoders = {},
 ): Promise<Uint8Array> {
     const remote = /^https?:\/\//i.test(source);
     const rootResource = await readResource(source, source, baseDirectory);
@@ -730,7 +732,7 @@ export async function packageGltf(
                 "./compiler/compressed-texture.js"
             );
             const lowerer = compressedTextureLowerer();
-            const transcoded = await transcodeKtx2Texture(uri, bytes);
+            const transcoded = await transcodeKtx2Texture(uri, bytes, await decoders.ktx2?.());
             bytes = await packageKtx1(writeKtx1(
                 transcoded,
                 lowerer.magicBytes(),

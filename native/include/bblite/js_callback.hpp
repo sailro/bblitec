@@ -156,6 +156,14 @@ class Callback<R(Args...)> {
     std::shared_ptr<Callback> recursive_owner_;
 };
 
+// A signature adapter keeps the function's identity and traced environment.
+template <typename Target, typename Source, typename Invoke>
+[[nodiscard]] Target adapt_callback(Source source, Invoke invoke) {
+    if (!source) return {};
+    const auto identity = source.identity();
+    return Target{identity, make_closure(std::move(source), std::move(invoke))};
+}
+
 // A recursive body holds only a weak reference to its own storage. Every
 // outward function value retains that storage, including a self reference
 // passed to another callback, so the final outward release reclaims it.

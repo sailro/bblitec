@@ -82,6 +82,12 @@ inline std::uint32_t preferred_sample_count() {
     return ${sampleCount}u;
 }
 
+/** A runtime engine option overrides this scene's generated default. */
+inline std::uint32_t preferred_sample_count(std::uint32_t configured) {
+    return configured == 0u ? preferred_sample_count()
+        : configured == ${singleSampleCount}u ? ${singleSampleCount}u : ${defaultSampleCount}u;
+}
+
 } // namespace bbl::upstream
 `;
 }

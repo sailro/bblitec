@@ -8,7 +8,7 @@ import { optionalNativeFixtureTools, runNativeFixtureCompiler } from "./native-f
 
 function sceneProgram(body: string): string {
     return `
-    import { createEngine, createSceneContext, registerSceneWithShadowSupport } from "@babylonjs/lite";
+    import { addToScene, createBox, createEngine, createSceneContext, registerSceneWithShadowSupport } from "@babylonjs/lite";
     import type { SceneContext } from "@babylonjs/lite";
     async function main(): Promise<void> {
         const engine = await createEngine({});
@@ -20,6 +20,20 @@ function sceneProgram(body: string): string {
 }
 
 const cases = [
+    {
+        name: "pushed-scene-snapshots",
+        source: sceneProgram(`
+        const scenes: SceneContext[] = [];
+        let selected = enabled;
+        scenes.push(selected);
+        selected = disabled;
+        scenes.push(selected);
+        const mesh = createBox(engine, 1);
+        for (const scene of scenes) addToScene(scene, mesh);
+        for (const scene of scenes) await registerSceneWithShadowSupport(scene);
+        for (const scene of scenes) await registerSceneWithShadowSupport(scene);
+        `),
+    },
     {
         name: "enabled-first",
         source: sceneProgram(`

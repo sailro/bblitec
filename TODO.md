@@ -1,77 +1,108 @@
 # Unfinished work
 
-Only open work belongs here. [Features](docs/features.md) owns support, [fidelity](docs/fidelity.md) owns
-adaptations, [status](docs/status.md) owns measurements and [audit](audit.md) owns verified findings with their
-status. One line per item: the gap, where it is, its size (S < 1 h, M < half day, L) and what reaches it.
+Open gaps only. [Features](docs/features.md) owns support; [fidelity](docs/fidelity.md) owns adaptations;
+[status](docs/status.md) owns measurements. Source paths identify the affected subsystem.
 
 ## Compiler
 
-- [ ] Remaining core-library forms in data-methods.ts: reverse callbacks, Unicode normalization and locale collation (`normalize`, `localeCompare`), `Array<[K, V]>` pair elements (a mixed tuple has no native element type, so `[...map.entries()]` and pair arrays refuse), `Set.entries()`. M; real applications reach `localeCompare` (26 sites in one).
-- [ ] Class inheritance, `#private` members, static blocks and mutable static fields written from static methods refuse (classes.ts); a caught error's `name` is always `Error` and its `cause` is dropped (error-values.ts), pending an error value kind over a native exception carrying both. M; real applications reach each a few times.
-- [ ] `Object.assign(engineHandle, {...})` still erases silently (object-statics.ts, the shape the browser-instrumentation path always erased); lower it as the property writes it stands for, or refuse. S; camera-mutations and node-geometry tests pin the current shape.
-- [ ] Lowerings that restate a neighbour instead of reaching one mechanism: the logical-assignment store repeats the scalar and data-path stores rather than running the plain assignment under its guard, and `dictionary.name` keeps a member arm per operation rather than canonicalizing to the element access (data-lowering.ts); `Array.from`'s mapper walk shares no scaffold with the array-callback loops; library globals are recognized per site with three alias tests (expressions.ts, static-evaluator.ts, module-initializers.ts); `DataTypeRegistry` names anonymous structs while classifying, so callers pre-gate on checker facts (`declaredAsDictionary`, `mentionsTypeParameter`), the module-state planner reads container-ness off initializer syntax, and the receiver's type arguments sit beside the call-frame stack (data-types.ts). M.
-- [ ] A finally spanning startEngine admits plain writes only (compiler.ts:20545-20567); lower exception completion so a cleanup exception replaces the active one instead of terminating. M; 8 trees reach finally.
-- [ ] Typed WGSL parsing falls back to `rawSource` (shader-ir.ts:982) behind three regex predicates (:1154-1194); 37 regex-over-WGSL sites remain across the shader pipeline. Extend the IR to helper functions, constants and loops (:1320) before removing any. L.
+- [ ] Dynamic values: optional own-property presence, earlier class instances, erased record/array mutation (`data-types.ts`, `json-record-views.ts`, `user-functions.ts`, `js_json.hpp`).
+- [ ] Embedded NUL strings truncate at native value sinks (`cpp-literals.ts`, `data-sinks/scalars.ts`).
+- [ ] URLSearchParams: non-string constructors, mutation, serialization and iteration (`search-params.ts`).
+- [ ] Distinct null/undefined storage for destructuring/parameter defaults (`data-lowering.ts`, `js_data.hpp`).
+- [ ] Custom thenable resolution and ownership (`async.ts`).
+- [ ] Early-return getters (`compiler.ts`).
+- [ ] Promise.race heterogeneous results/spreads/iterables; wider constructor adoption/rejection values (`async.ts`).
+- [ ] Image network/responsive sources, load/error events and distinct DOMException values (`pal_ui_rml.cpp`).
+- [ ] Browser GPU requests, constructors/prototypes and diagnostics (`browser-erasure.ts`, `pal_window_realm.cpp`).
+- [ ] Dynamic typeof values in inferred string-literal fields (`data-sinks/structures.ts`).
+- [ ] Promise.all spreads/iterables, stored void/value-only arrays and changed recovery representations (`async.ts`).
+- [ ] Suspended catch/finally completion (`async.ts`, `statements.ts`).
+- [ ] Recursive record/function initializer types (`compiler.ts`, `data-types.ts`).
+- [ ] Transitive mutable dependencies in imported constant initializers (`module-initializers.ts`).
+- [ ] textContent/innerText compound writes with descendant-text reads (`ui-projection.ts`).
+- [ ] Transitions initiated by inline style writes (`pal_ui_rml.cpp`).
+- [ ] Reuse RmlUi for live selector metadata; preserve authored queries, generated nodes and input state (`ui_selector.hpp`, `ui_selector_match.hpp`).
+- [ ] Grid spans/names/placement, percentage tracks/heights, intrinsic functions and baseline/replaced-item alignment (`ui-grid.ts`).
+- [ ] Named/minimum/block/style/scroll-state container queries, relative units and containment types (`ui-projection.ts`).
+- [ ] List marker types, counters and images (`ui-projection.ts`, `pal_ui_defaults.hpp`).
+- [ ] Constructed checkbox/radio/number/date controls and file-input type transitions (`ui-projection.ts`).
+- [ ] Vertical ranges, tick marks and Firefox control semantics (`pal_ui_range.hpp`).
+- [ ] Scroll edge handoff, bounce/navigation, both-edge/vertical/viewport gutters (RmlUi scroll patches).
+- [ ] Authored innerHTML query trees, interaction snapshots, :scope and computed selectors (`platform-calls.ts`).
+- [ ] Class inheritance/private/static blocks/static mutation; Error names and causes (`classes.ts`, `error-values.ts`).
+- [ ] Generators/async iteration, Proxy, WeakRef and Symbol storage (`expressions.ts`, `statements.ts`, `data-types.ts`).
+- [ ] Object.assign on engine handles erases writes (`object-statics.ts`).
+- [ ] Shared lowering for logical assignment, dictionary property access and Array.from callbacks (`data-lowering.ts`).
+- [ ] Consolidate library-global recognition and type/storage classification (`expressions.ts`, `static-evaluator.ts`, `module-initializers.ts`, `data-types.ts`).
+- [ ] General exception completion across startEngine cleanup (`compiler.ts`).
+- [ ] WGSL IR support for helpers/constants/loops; remove rawSource and regex fallbacks (`shader-ir.ts`).
 
 ## Assets and composition
 
-- [ ] Every browser producer launches Chromium (browser-harness.ts:131; 8 call sites) and re-transpiles its module graph (`transpileForBrowser`, 6 sites); share one page and graph per generation without weakening cache keys or provenance. M; about 40 trees.
-- [ ] js_voxel_file.hpp:65 hand-parses one save document; replace with typed JSON lowering. M; minecraft, sandblox.
-- [ ] material-plugin.ts evaluates `getCustomCode` bodies (:499-604) apart from `PinnedShaderText`; share the evaluator. S/M.
-- [ ] Two sources whose 32-bit FNV names collide would overwrite one packaged asset (compiler/assets.ts:550); refuse the collision in `registerAsset`. S.
-- [ ] `BBLITE_RENDERER_TRANSMISSION` is 1 in five trees whose composed set carries no refraction arm (littlest-tokyo, scene177, scene178, scene26, tetris); derive it from the composed arm like the other capability defines. S, changes five binaries.
-- [ ] `renderer-lowerer.ts:3277-3470 assertPinnedShaderFormulas` asserts fragment formulas of a transcription that no longer exists; the four `lowerShaders` arm booleans exist for it alone. Delete. S.
+- [ ] Share Chromium pages and transpiled graphs per generation (`browser-harness.ts`).
+- [ ] Replace handwritten voxel-save parsing with typed JSON (`js_voxel_file.hpp`).
+- [ ] Share plugin getCustomCode evaluation with PinnedShaderText (`material-plugin.ts`).
+- [ ] Refuse packaged-asset FNV name collisions (`compiler/assets.ts`).
+- [ ] Derive transmission activation from composed arms (`renderer-lowerer.ts`).
+- [ ] Remove obsolete assertPinnedShaderFormulas and its unused arm flags (`renderer-lowerer.ts`).
 
 ## Runtime capabilities
 
-| Area | Open work (refusal or gap) |
+| Area | Open gaps |
 | --- | --- |
-| Cameras | Off-center orthographic planes (camera.ts:384); geospatial input arms (scene 225); controls have no restore path after the disposer (scene.ts:317) |
-| Hierarchy | Imported-root scaling and non-Y rotation (assignments.ts:1587-1599, scene-node-transforms.ts:20-37); getDescendants/getChildMeshes have no arm |
-| Morphs | One direct target per mesh (mesh.ts:2085), one mesh per target (assignments.ts:2123), pre-start only (:2112), no thin-instance combination (pinned-mesh-features.ts:47) |
-| PBR/Standard | Textured environment rotation (scene.ts:344, asset.ts:928); static local cubemaps only (local-cubemap.ts:50); metallic-reflectance allowlist (material-options.ts:872); lightmap binding before registration (material.ts:804) |
-| Node materials | Numeric inputs and reflective/map mutation (node-input-surface.ts:36-76); later texture producers (compiler.ts:10249); imported strided/non-FLOAT/deformed geometry (node-geometry-assets.ts:29-49, compiler.ts:2008) |
-| Plugins/shaders | System uniforms beyond five matrices (shader-material.ts:340); getUniforms/writeUbo/defines/isEnabled/priority (material-plugin.ts:194-206); PBR sampler plugins (:555); fixed-function state beyond culling/depthWrite (shader-material.ts:131) |
-| Effects | Custom vertexWGSL and blend state (effect.ts:334); visibility/sampleType/viewDimension/samplerType (:132); per-binding uniform records (:390); textures beyond createSolidTexture2D (:417); update callback (:449); no dispose/unregister arm |
-| Sprites/billboards | Sprite coverage-gamma lane never written (sprite-lowerer.ts:2257); handle-object APIs have no arm; loadSpriteAtlas metadataUrl/textureOptions (sprite.ts:891-916); system `order` against other transparents (:1578) |
-| Picking | Four influences (four-influence-skinning adaptation, scene 7); thin-instance/VAT detailed picks (pinned-picking-shaders.ts:60); pickAsync filter/discard/ignore (picking.ts:89); hit-record field allowlist (hit-record.ts:103) |
-| Splats | One shader-fragment list per scene (compiler.ts:19678); buffer-view methods beyond find/filter/reduce/some/every/map/forEach (data-methods.ts:1538-1559) |
-| Shadows | PCF normalBias, PCF-spot forceRefreshEveryFrame, CSM stabilizeCascades/worldSpaceBias (shadow.ts:101-127); computed receiveShadows (assignments.ts:1794); thin-instance CSM casters lowered (pinned-csm.ts:536) but unobserved |
-| Lines/instances | updateLineSystem topology and color-layout changes (line-lowerer.ts:843-846, line.ts:193); no dash API; thin-instance GPU culling omitted (adaptation; scenes 16/165, sandblox) |
-| Particles | Unlowered evaluators/local shapes (node-particle-live-lowerer.ts:2110-2126); provider bridges (particle.ts:619, :797); snippets (:686); flipped textures (node-particle-lowerer.ts:2331); mixed provider/generation sets (particle.ts:537) |
-| Navigation | Tiled builds without obstacles (navigation.ts:715); reachRadius (:561); no getRandomPointAround or dispose arm |
-| Physics | Constraint springs/motors/retained handles (physics.ts:228-264); groundMesh-only square heightfields (:217); inertia orientation (:1341); character/viewer observables (character-controller.ts:52, physics.ts:288-319); concave/compound proximity targets refuse in the PAL |
-| Audio | setMasterVolume ramps and eleven REFUSED_BY_NAME APIs (audio.ts:56-93); bus.ts is not lowered (output-projection.ts:446); no browser/native offline PCM gate |
-| UI | Tag allowlist (compiler/ui-projection.ts); no retained UI under standalone frame-graph/effect drivers; Canvas2D partial clear, source-rect blits, transforms and clipping (ui.md#canvas2d) |
-| Text | Static font size/options; live color arguments and run edits refuse; retained text requires one text-only default scene (pal_text_scene.hpp) |
-| Post-process/TAA | TAA preparation covers Standard colour tasks only (pal_temporal_shared.hpp); fog only for PBR/Standard surfaces; scene-code transmissive materials have no composed arm |
-| Flow graphs | 18 admitted block types; other blocks, accessors, context, BABYLON_flow_graph and data cycles refuse (features.md#flow-graphs) |
-| Assets | Collector rest/optional parameters (gltf-mesh-walks.ts:28); material extensions/texture transforms/BasisU with public albedo reads (gltf-material-texture-identity.ts:18); animated/morphed GPU instances (gltf-loader-cpp.ts:2832); Standard VAT (pinned-standard-variants.ts:494) |
+| Engine | Render-function wrapping; shared Window/worker recovery; additional lifecycle/diagnostic APIs |
+| Cameras | Off-center orthographic planes, geospatial input, control restoration |
+| Hierarchy | Imported-root scaling/non-Y rotation; descendant/child-mesh queries |
+| Morphs | Multiple/replaced/late targets and thin-instance combinations |
+| PBR/Standard | Textured environment rotation, live local probes, wider metallic-reflectance fields, post-registration lightmaps |
+| Node materials | Numeric/reflective inputs, later textures, strided/non-FLOAT/deformed imported geometry |
+| Plugins/shaders | Broader system matrices, uniform writers/defines/priority, PBR samplers and pipeline state |
+| Effects | Custom vertex/blend/layouts, per-binding uniform records, wider textures, update/dispose/unregister |
+| Sprites | Coverage gamma, handle APIs, atlas options and mixed transparent order |
+| Picking | Eight-influence/deformed-instance/VAT detail, filter/discard/ignore and wider hit records |
+| Splats | Multiple fragment sets and broader buffer-view methods |
+| Shadows | PCF normalBias/spot refresh, CSM stabilization/bias, dynamic receiveShadows, thin-instance qualification |
+| Geometry/instances | Runtime geometry capacity/topology/color/normal/UV updates; line topology/colors/dashes; dynamic draw counts |
+| VAT | Broader bake, storage/time setters and deformation queries |
+| Particles | Evaluators/local shapes, providers, snippets, flipped textures and mixed generation sets |
+| Navigation | Tiled builds without obstacles, reach radius, broader path/point/ray queries and disposal |
+| Physics | Springs/motors/retained constraints, wider heightfields, inertia orientation, observables, concave/compound queries |
+| Audio | Babylon sound/bus/spatial wrappers and master ramps; owned async main-bus metadata; options/statechange, event payloads/onended/AbortSignal, nullable buffers, closed-context graphs, media streams and PCM parity |
+| UI | Broader tags/drivers and Canvas2D clear/blit/transform/clip forms |
+| Text | Dynamic font options/color/run edits and mixed/custom scene layouts |
+| Post-process | Broader TAA/fog/transmission, task ordering/removal/disposal, resource views and samplers |
+| Flow graphs | Blocks beyond the admitted 18, accessors/context, BABYLON_flow_graph and cycles |
+| Textures | 3D creation, partial/runtime uploads and broader direct KTX2 paths |
+| Assets | Wider collectors; public albedo extensions/transforms/BasisU; animated/morphed GPU instances; Standard VAT |
 
-- [ ] Bullet writes an ACTION target pose immediately (pal_physics_bullet.cpp:2763-2770); Havok integrates a deferred target and keeps the derived velocity. M; scene 106.
-- [ ] Solver residuals at the registered poses (status.md: 105 0.274, 41 0.215, 101 0.178, 48 0.060, 45 0.039). Trace per substep with BBLITE_PHYSICS_TRACE (pal_physics_bullet.cpp:1715) before touching authored scenes or thresholds.
-- [ ] Editing gizmos are display-only (display-only-editing-gizmo adaptation; scenes 221/222/224): bounding-box and scale drags are not reached. M.
+- [ ] ACTION prestep differs from Havok's deferred target/velocity (`pal_physics_bullet.cpp`).
+- [ ] Physics solver residuals require substep tracing at registry poses; preserve source and thresholds.
+- [ ] Bounding-box and scale gizmo drags lack native editing.
 
 ## Worker and platform
 
-- [ ] Worker realms must share one rendering product (worker-modules.ts:82-85). L; unreached beyond offscreen.
-- [ ] Transfer lists admit OffscreenCanvas only (workers.ts:119); clone nodes are undefined/null/bool/double/string/array/object/buffer/transfer (pal_structured_clone.hpp:41); ArrayBuffer transfer, MessagePort and Date/Map/Set/typed-array views refuse. L; unreached.
-- [ ] Worker listeners: message/error only, `once` the only option, no worker-scope error or unhandledrejection (workers.ts:133-147, runtime.hpp:180). M; unreached.
-- [ ] The Window realm forwards mouse events only (pal_window_realm.cpp:431-435); keyboard, cross-realm preventDefault and ResizeObserver entries are missing; drawCallCount is per engine but has no worker transport. L.
-- [ ] SharedArrayBuffer/Atomics fall to the generic constructor refusal (expressions.ts:689); name the contract. S.
-- [ ] DPR follows a 16 ms poll of SDL_GetWindowDisplayScale (pal_window_realm.cpp:477); a pure DPR change leaves the canvas backing store (pal_canvas.hpp:134) and every MediaQueryList stays registered (pal_window_realm.cpp:337-341). M.
-- [ ] File accept/MIME/extension/label tables are spelled four times (browser-file.ts:39, js_file.hpp:280-326, js_voxel_file.hpp:26) with two parsers; one generated descriptor. M, deletes more than it adds.
-- [ ] read_local_storage tests exists() before opening (pal_storage.cpp:124-138), read_text_file_bounded copies twice (pal_file_io.hpp:256-266), pal_ui_form.hpp:36 reads a font unchecked and pal.cpp:254 reads unbounded; one helper returning absent/error/value. M, deletes more than it adds.
-- [ ] json_parse builds a nlohmann::ordered_json and converts it to JsonValue (js_json.hpp:598-604); parse directly, keeping key order, numeric flattening and the SyntaxError boundary. M.
-- [ ] The Win32 move/resize modal loop stalls the SDL_PollEvent loop (pal_platform_events.hpp:621); adopt SDL main callbacks for interactive builds. M.
+- [ ] Different rendering products across worker realms (`worker-modules.ts`).
+- [ ] ArrayBuffer/MessagePort transfer and Date/Map/Set/typed-view cloning (`workers.ts`, `pal_structured_clone.hpp`).
+- [ ] Wider worker listener options and worker-scope error/rejection dispatch (`workers.ts`).
+- [ ] ResizeObserver entries and worker draw-count transport (`pal_window_realm.cpp`).
+- [ ] Beforeunload lifecycle; AbortSignal, explicit pointer capture and coalesced events (`dom-listeners.ts`).
+- [ ] Explicit SharedArrayBuffer/Atomics contract (`expressions.ts`).
+- [ ] DPR-only backing-store resize and MediaQueryList lifetime (`pal_window_realm.cpp`, `pal_canvas.hpp`).
+- [ ] Native compression streams and broader MessageChannel/browser service calls (`platform-calls.ts`).
+- [ ] Shared file accept/MIME/extension descriptors (`browser-file.ts`, `js_file.hpp`, `js_voxel_file.hpp`).
+- [ ] Shared bounded I/O returning absent/error/value (`pal_storage.cpp`, `pal_file_io.hpp`, `pal_ui_form.hpp`, `pal.cpp`).
+- [ ] Direct ordered JsonValue parsing without intermediate JSON conversion (`js_json.hpp`).
+- [ ] Window updates during the Win32 move/resize modal loop (`pal_platform_events.hpp`).
 
 ## Backend and performance
 
-- [ ] No test compares .slots sidecars with PAL binding tables (test/ checks survival and bytes only); SDL keeps four PinnedStageSlots pairs (pal_sdl_gpu.cpp:941-1084) and Dawn its own node layout caches (pal_dawn.cpp:7158, :7307). M.
-- [ ] Morph-shadow is emitted in 19 trees and reached in 2; light/camera gizmos 7/1. Gate at reach. M, deletes generated code.
-- [ ] Shadow generator maps/buffers are released only at teardown (pal_sdl_gpu.cpp:3891, :6022) and handles index the vector; reclaim retired generators without compacting. M.
-- [ ] The crosshair is a private property (pal_ui_rml.cpp:1929), there is no bare tag selector kind (:1729-1749), line height is hardcoded 1.32 (:3155). M.
-- [ ] Qualify Linux Vulkan parity against existing browser references: strict gates retain shared and backend-specific residuals (largest SDL/Dawn differences: scene75, scene187). L.
-- [ ] Qualify macOS Metal parity against existing browser references, including platform-font UI differences; validate Apple Silicon development and enable its minimal packaging. L; current host coverage is Intel macOS.
-- [ ] Drop sdl-multisample-read.patch (SDL#15838) and d3d12-multisample-lines.patch (SDL#16182) when an SDL release passes their controls; png-grey-ramp-last-index.patch self-retires. S per release.
-- [ ] A floating-origin transform-only version bump rebakes and re-uploads whole vertex buffers, twice with pinned_vertices (pal_dawn.cpp:13137-13181). M; 9 trees.
+- [ ] Compare compiled slots with PAL binding tables; consolidate duplicated layout caches.
+- [ ] Gate morph-shadow and light/camera gizmo emission on reach.
+- [ ] Reclaim retired shadow resources without compacting handles.
+- [ ] Remove private crosshair property and fixed line height (`pal_ui_rml.cpp`).
+- [ ] Additional attribute operators/nth-child of-lists; generated counters/images/typed attr/outline/gradient-text; broader placeholder styling.
+- [ ] Omitted/currentColor and non-pixel box shadows; viewport-limited shadow textures.
+- [ ] Linux Vulkan parity against browser references, including scene75/scene187 residuals.
+- [ ] macOS Metal/font parity and native Apple Silicon validation.
+- [ ] Retire SDL multisample/line patches after upstream controls pass; PNG gray-ramp patch self-retires.
+- [ ] Avoid full duplicated vertex rebakes/uploads for floating-origin transform-only changes (`pal_dawn.cpp`).

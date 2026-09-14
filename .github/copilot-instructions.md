@@ -1,9 +1,14 @@
 # Repository instructions
 
 Read [README](../README.md#documentation) and its canonical pages before feature
-work. Use its ownership table: facts live in one page, support in Features,
-adaptations in Fidelity, unfinished work in TODO. Keep docs concise; no
-checkpoint logs, completed-work lists or duplicated test narratives.
+work. Use its ownership table: support in Features, adaptations in Fidelity,
+unfinished work in TODO.
+
+**Documentation is not a developer log.** State current facts and limitations
+in the minimum text. Replace stale content; never append session history,
+difficulty, chronology or progress narratives. Each fact has one canonical owner.
+Keep logs and historical evidence in ignored artifacts. Do not add dedicated
+handoff documents. This is an explicit, persistent user requirement.
 
 ## Source and implementation
 
@@ -25,8 +30,8 @@ checkpoint logs, completed-work lists or duplicated test narratives.
 
 ## Work and validation
 
-State exact scene IDs in a checkpoint; distinguish assessed, implemented and
-integrated work. Follow [development](../docs/development.md#validation) for
+Status reports name exact scene IDs and measured state. Follow
+[development](../docs/development.md#validation) for
 focused checks, simplify records and final validation. Use
 [debugging](../docs/debugging.md) for unexplained differences. An integrated
 scene needs current measurements and interaction checks on both backends.

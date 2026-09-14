@@ -8,6 +8,8 @@ import { argumentAt } from "./syntax.js";
 
 import { readProperty, type PropertyContext } from "./properties.js";
 import type { Feature, Value } from "./types.js";
+import { domAudioHandleKind } from "./data-types.js";
+import { listenerOptions } from "./dom-listeners.js";
 
 /**
  * What resolving a receiver needs, and nothing more. `PropertyContext`
@@ -21,6 +23,9 @@ interface AudioReceiverContext
         | "resolveThisField"
         | "compileValue"
         | "unwrap"
+        | "checker"
+        | "isDefaultLibraryIdentifier"
+        | "emit"
     > {}
 
 /** What a property write needs. `AssignmentContext` satisfies it. */
@@ -39,10 +44,20 @@ interface AudioCallContext
     Pick<LoweringServices,
         | "checker"
         | "expectKind"
+        | "expectArgumentCount"
         | "allocateTemporaryCppName"
         | "cppString"
         | "registerAsset"
+        | "dataLowerer"
         | "options"
+        | "compileCondition"
+        | "compileStringLiteral"
+        | "dataTypes"
+        | "hoistForwardCallbackBindings"
+        | "compilePlatformCallback"
+        | "platformEventCallbackIdentity"
+        | "pinValueToTemporary"
+        | "emitDiscardedValue"
     > {}
 
 const AUDIO_KINDS = new EmissionSet<string>([
@@ -96,22 +111,57 @@ const NODE_FACTORIES: Readonly<
     },
 };
 
+/** Optional host capabilities absent from the native audio platform. Keep
+ * their feature-detection answer and unguarded-call diagnostic together. */
+const UNAVAILABLE_CONTEXT_METHODS: Readonly<Record<string, string>> = {
+    setSinkId: "native output-device selection is unavailable",
+    createMediaStreamDestination: "native recording streams are unavailable",
+    createMediaStreamSource: "native recording streams are unavailable",
+    createMediaElementSource: "an HTMLAudioElement has no native audio producer",
+};
+
 /**
  * Browser applications sometimes feature-detect an AudioContext factory
  * before calling it. A factory this native surface implements is present by
  * construction, so its `typeof` result is the same constant as the browser's.
  */
-export function isSupportedAudioMethodProperty(
+export function audioTypeof(
     context: AudioReceiverContext,
     expression: ts.Expression,
-): boolean {
+): "function" | "undefined" | undefined {
     const property = context.unwrap(expression);
-    if (!ts.isPropertyAccessExpression(property)) return false;
+    if (ts.isIdentifier(property) && property.text === "AudioContext" &&
+        context.isDefaultLibraryIdentifier(property)) return "function";
+    if (!ts.isPropertyAccessExpression(property)) return undefined;
     const receiver = resolveAudioReceiver(context, property.expression);
-    return Boolean(
-        receiver?.kind === "audio-context" &&
-        NODE_FACTORIES[property.name.text],
-    );
+    if (receiver?.kind !== "audio-context") return undefined;
+    const result = UNAVAILABLE_CONTEXT_METHODS[property.name.text] ? "undefined" :
+        NODE_FACTORIES[property.name.text] || ["resume", "suspend", "close"].includes(property.name.text) ? "function" : undefined;
+    if (result && receiver.cpp) context.emit(`static_cast<void>(${receiver.cpp});`);
+    return result;
+}
+
+/** Prototype aliases preserve the same absent optional host capabilities. */
+export function audioPrototypeValue(
+    context: Pick<LoweringServices, "isDefaultLibraryIdentifier">,
+    expression: ts.PropertyAccessExpression,
+): Value | undefined {
+    if (expression.name.text !== "prototype" || !ts.isIdentifier(expression.expression) ||
+        expression.expression.text !== "AudioContext" || !context.isDefaultLibraryIdentifier(expression.expression)) return undefined;
+    return {kind:"record", cpp:"", recordProperties:Object.fromEntries(
+        Object.keys(UNAVAILABLE_CONTEXT_METHODS).map(name => [name, {kind:"json-null" as const, cpp:"std::nullopt"}]))};
+}
+
+export function compileAudioConstructor(
+    context: Pick<LoweringServices, "isDefaultLibraryIdentifier" | "reachFeature" | "audioSessionCpp" | "fail">,
+    expression: ts.NewExpression,
+): Value | undefined {
+    if (!ts.isIdentifier(expression.expression) || expression.expression.text !== "AudioContext" ||
+        !context.isDefaultLibraryIdentifier(expression.expression)) return undefined;
+    if (expression.arguments?.length) context.fail(expression, "AudioContext constructor options are not represented.");
+    context.reachFeature("audio:engine", expression);
+    return {kind:"audio-context", cpp:`bbl::pal::audio_create_context(${context.audioSessionCpp()})`,
+        dataType:{kind:"handle", handle:"audio-context"}, impure:true};
 }
 
 /** `param.<method>(value, time)`. */
@@ -134,9 +184,7 @@ const REFUSED_METHODS: Readonly<Record<string, string>> = {
     createConvolver: "the convolver is not lowered",
     createDynamicsCompressor: "the compressor is not lowered",
     createWaveShaper: "the wave shaper is not lowered",
-    createMediaStreamSource: "a MediaStream has no native equivalent here",
-    createMediaElementSource:
-        "an HTMLAudioElement has no native equivalent here",
+    ...UNAVAILABLE_CONTEXT_METHODS,
     setValueCurveAtTime:
         "a value curve needs the array to reach the PAL as a span, and " +
         "the pinned `audio-param.ts` curve component lowered with it",
@@ -214,10 +262,12 @@ function resolveAudioReceiver(
                 : narrowedAudioData(field);
         }
         const owner = resolveAudioReceiver(context, node.expression);
-        if (!owner) {
-            return undefined;
-        }
-        return readProperty(context, owner, node.name.text, node);
+        if (owner) return readProperty(context, owner, node.name.text, node);
+    }
+    const handle = domAudioHandleKind(context.checker.getNonNullableType(context.checker.getTypeAtLocation(node)));
+    if (handle && AUDIO_KINDS.has(handle)) {
+        const value = context.compileValue(node);
+        return AUDIO_KINDS.has(value.kind) ? value : undefined;
     }
     return undefined;
 }
@@ -261,6 +311,9 @@ export function compileAudioMethodCall(
                 return codec ? [codec] : [];
             })) : AUDIO_CODECS;
             for (const codec of codecs) context.reachFeature(`audio:decode-${codec}`, call);
+            if (context.options.workers) return context.dataLowerer.leafValue(
+                `bbl::pal::audio_decode_async(${receiver.cpp}, ${encoded.cpp})`,
+                {kind:"promise", result:{kind:"handle", handle:"audio-buffer"}});
             const decoded = context.allocateTemporaryCppName(
                 "decoded_audio",
             );
@@ -280,6 +333,14 @@ export function compileAudioMethodCall(
     refuseAudioName(context, REFUSED_METHODS, method, call, "Web Audio");
 
     if (receiver.kind === "audio-context") {
+        if (method === "resume" || method === "suspend" || method === "close") {
+            if (call.arguments.length) context.fail(call, `AudioContext.${method} takes no arguments.`);
+            if (!context.options.workers) context.fail(call, "AudioContext lifecycle promises require an asynchronous application realm.");
+            const action = method === "resume" ? "Resume" : method === "suspend" ? "Suspend" : "Close";
+            return {...context.dataLowerer.leafValue(
+                `bbl::pal::audio_context_transition(${receiver.cpp}, bbl::pal::AudioContextAction::${action})`,
+                {kind:"promise"}), impure:true};
+        }
         if (method === "createBuffer") {
             if (call.arguments.length !== 3) {
                 context.fail(
@@ -335,8 +396,63 @@ export function compileAudioMethodCall(
         };
     }
 
+    if (receiver.kind === "audio-buffer" && (method === "copyFromChannel" || method === "copyToChannel")) {
+        context.expectArgumentCount(call, 2, 3);
+        context.reachFeature("audio:buffer-source", call);
+        const buffer = context.allocateTemporaryCppName("audio_copy_buffer");
+        context.emit(`const auto ${buffer} = ${receiver.cpp};`);
+        const samples = context.compileValue(argumentAt(call, 0));
+        if (samples.dataType?.kind !== "f32array") context.fail(argumentAt(call, 0), `${method} requires a Float32Array.`);
+        const input = context.allocateTemporaryCppName("audio_copy_samples");
+        context.emit(`const auto ${input} = ${samples.cpp};`);
+        const index = (argument: ts.Expression): string => {
+            const cpp = context.compileNumber(argument, "double");
+            const name = context.allocateTemporaryCppName("audio_copy_index");
+            context.emit(`const auto ${name} = bbl::js::to_uint32(${cpp});`);
+            return name;
+        };
+        const channel = index(argumentAt(call, 1));
+        const offset = call.arguments[2] ? index(call.arguments[2]) : "0u";
+        const direction = method === "copyToChannel" ? "ToChannel" : "FromChannel";
+        return {kind:"void", cpp:`bbl::pal::audio_buffer_copy(${buffer}, ${input}, ${channel}, ${offset}, bbl::pal::AudioBufferCopy::${direction})`};
+    }
+
     if (receiver.kind === "audio-node") {
         switch (method) {
+            case "addEventListener":
+            case "removeEventListener": {
+                context.expectArgumentCount(call, 2, 3);
+                if (!context.options.workers) context.fail(call, "Audio event listeners require an asynchronous application realm.");
+                const selected = {...receiver};
+                delete selected.nativeBinding;
+                const target = context.pinValueToTemporary(selected, "audio_event_target", callee.expression);
+                const type = context.compileStringLiteral(argumentAt(call, 0));
+                if (type !== "ended") context.fail(call, "Only scheduled audio source ended listeners are represented.");
+                const callback = argumentAt(call, 1);
+                context.hoistForwardCallbackBindings(callback, call.pos);
+                const removing = method === "removeEventListener";
+                const callbackType = context.checker.getTypeAtLocation(callback);
+                const absent = (callbackType.flags & (ts.TypeFlags.Null | ts.TypeFlags.Undefined)) !== 0;
+                let identity = "0u", listener = "";
+                if (!absent) {
+                    if (removing) {
+                        const value = {...context.compileValue(callback)};
+                        delete value.nativeBinding;
+                        const snapshot = value.kind === "data" ? context.pinValueToTemporary(value, "audio_event_callback", callback) : value;
+                        identity = context.platformEventCallbackIdentity(snapshot, callback);
+                    } else {
+                        if (callbackType.getCallSignatures().some(signature => signature.parameters.length > 0))
+                            context.fail(callback, "Audio ended event payloads are not represented yet.");
+                        const compiled = context.compilePlatformCallback(callback, undefined, []);
+                        identity = compiled.identity;
+                        listener = compiled.cpp;
+                    }
+                }
+                const options = listenerOptions(context, call.arguments[2], removing);
+                return {kind:"void", cpp:absent ? "" :
+                    `bbl::pal::audio_${removing ? "remove" : "add"}_ended_listener(${target.cpp}, ${identity}, ` +
+                    `${removing ? options.capture : `${listener}, ${options.capture}, ${options.once}`})`};
+            }
             case "connect": {
                 if (call.arguments.length !== 1) {
                     context.fail(

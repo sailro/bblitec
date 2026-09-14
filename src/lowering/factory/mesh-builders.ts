@@ -394,30 +394,14 @@ MeshHandle create_polyhedron(Engine& engine, PolyhedronOptions options) {
         const cullingHelper = gpuCulling
             ? this.thinInstanceCullingHelper()
             : "";
-        const instanceColorSetter = instanceColors
-            ? `// src/mesh/thin-instance.ts setThinInstanceColors: bind the
-// per-instance RGBA stream a material with useThinInstanceColors reads.
-// The pinned setter stores the caller's array and bumps its colour
-// version; nothing in the reached slice re-reads it (the per-instance
-// setThinInstanceColor twin is unlowered), so the record takes a copy.
-void set_thin_instance_colors(
-    Engine& engine,
-    MeshHandle mesh,
-    const std::vector<float>& colors) {
-    MeshRecord& record = engine.meshes[mesh.value];
-    record.instance_colors = colors;
-    record.instance_version += 1;
-}
-
-`
-            : "";
+        const instanceColorSetter = instanceColors ? this.thinInstanceColorSetters() : "";
         // `bbl::js::` reaches this unit through the grown-array builders'
         // own `new F32(list)` rounding and through the heightmap pass's
         // value-selecting `||`. Read off what was emitted rather than off a
         // second copy of the predicates behind it: a builder that starts
         // converting a list arrives with its include, and one that stops
         // does not leave a dead one behind.
-        const usesJsData = [
+        const usesJsData = instanceColors || [
             boxDataFactory,
             heightmapBody,
             discFactory,
@@ -3737,8 +3721,68 @@ void update_mesh_positions(
     }
 
 
+    private thinInstanceColorSetters(): string {
+        const lower = (name: "setThinInstanceColors" | "setThinInstanceColor"): string => {
+            const { file, declaration } = this.context.functionDeclaration("src/mesh/thin-instance.ts", name);
+            if (!declaration.body) this.context.contractError(declaration, "Expected a thin-instance color setter body.");
+            const bindings = new Map<string, PinnedBinding>([
+                ["mesh.thinInstances", { cpp: "record", type: "opaque" }],
+                ["mesh.thinInstances.colors", { cpp: "(*record.instance_color_source)", type: "f32", mutable: true,
+                    indexedStore: (owner, index, value) => `bbl::js::typed_array_write(${owner}, ${index}, ${value})` }],
+                ["mesh.thinInstances._version", { cpp: "record.instance_version", type: "scalar" }],
+                ["mesh.thinInstances._colorVersion", { cpp: "color_version", type: "scalar" }],
+                ["mesh.thinInstances._colorDirtyMin", { cpp: "dirty_min", type: "scalar" }],
+                ["mesh.thinInstances._colorDirtyMax", { cpp: "dirty_max", type: "scalar" }],
+                ["mesh.thinInstances.count", { cpp: "static_cast<double>(record.instance_count)", type: "scalar" }],
+                ["colors", { cpp: "colors", type: "f32" }],
+                ...["index", "r", "g", "b", "a"].map(name => [name, { cpp: name, type: "scalar" }] as [string, PinnedBinding]),
+            ]);
+            return lowerPinnedBody(file, declaration.body.statements, {
+                bindings, calls: pinnedNumericMathCalls(),
+            });
+        };
+        const body = (name: "setThinInstanceColors" | "setThinInstanceColor"): string => `
+    MeshRecord& record = engine.meshes[mesh.value];
+    if (!record.thin_instanced) throw std::runtime_error("Thin-instance colors require mesh.thinInstances.");
+    ${name === "setThinInstanceColors" ? "record.instance_color_source = std::make_shared<js::F32Array>();"
+        : "if (!record.instance_color_source) throw std::runtime_error(\"Thin-instance colors have not been bound.\");"}
+    // The PAL uploads the full color stream under the common instance version.
+    // Keep the pinned dirty-range calculations in the lowered body; no second
+    // upload stamp or partial range is needed by that platform contract.
+    double color_version = 0, dirty_min = 0, dirty_max = 0;
+${lower(name)}
+    static_cast<void>(color_version); static_cast<void>(dirty_min); static_cast<void>(dirty_max);
+`;
+        return `// src/mesh/thin-instance.ts: lowered setters retain the caller's typed-array view.
+void set_thin_instance_colors(Engine& engine, MeshHandle mesh, const js::F32Array& colors) {${body("setThinInstanceColors")}}
+void set_thin_instance_color(Engine& engine, MeshHandle mesh, double index,
+    double r, double g, double b, double a) {${body("setThinInstanceColor")}}
+
+`;
+    }
+
+    private thinInstanceCullBoundsPad(): string {
+        const { file, declaration } = this.context.functionDeclaration("src/mesh/thin-instance.ts", "setThinInstanceCullBoundsPad");
+        if (!declaration.body) this.context.contractError(declaration, "Expected a thin-instance bounds setter body.");
+        const body = lowerPinnedBody(file, declaration.body.statements, {
+            bindings: new Map<string, PinnedBinding>([
+                ["mesh.thinInstances", { cpp: "record", type: "opaque", absentCpp: "!record.thin_instanced" }],
+                ["mesh.thinInstances._cullBoundsPad", { cpp: "record.thin_instance_cull_bounds_pad", type: "scalar" }],
+                ["pad", { cpp: "pad", type: "scalar" }],
+            ]),
+            calls: new Map([["ThrowLiteError", args => `throw std::runtime_error("Lite error " + std::to_string(${args[0]}))`]]),
+        });
+        return `// The native culling adaptation draws all active instances; retain the authored bound.
+void set_thin_instance_cull_bounds_pad(Engine& engine, MeshHandle mesh, double pad) {
+    MeshRecord& record = engine.meshes[mesh.value];
+${body}
+}
+
+`;
+    }
+
     private thinInstanceSource(
-        instanceColorSetter: "" | "// src/mesh/thin-instance.ts setThinInstanceColors: bind the\n// per-instance RGBA stream a material with useThinInstanceColors reads.\n// The pinned setter stores the caller's array and bumps its colour\n// version; nothing in the reached slice re-reads it (the per-instance\n// setThinInstanceColor twin is unlowered), so the record takes a copy.\nvoid set_thin_instance_colors(\n    Engine& engine,\n    MeshHandle mesh,\n    const std::vector<float>& colors) {\n    MeshRecord& record = engine.meshes[mesh.value];\n    record.instance_colors = colors;\n    record.instance_version += 1;\n}\n\n",
+        instanceColorSetter: string,
     ): string {
         return `namespace {
 
@@ -3803,7 +3847,7 @@ ${this.thinRuntimeBuilderAssignment("setThinInstances")}
         previous_count);
 }
 
-${instanceColorSetter}// src/mesh/thin-instance.ts setThinInstanceCount: update only the active
+${instanceColorSetter}${this.thinInstanceCullBoundsPad()}// src/mesh/thin-instance.ts setThinInstanceCount: update only the active
 // instance count and re-upload the [0, count) matrix range from the SAME
 // array bound by setThinInstances, leaving the capacity (and therefore
 // the allocated GPU buffer) untouched. The pinned helper is a no-op on a

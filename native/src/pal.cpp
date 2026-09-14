@@ -9,6 +9,7 @@
 #include <functional>
 #include <fstream>
 #include <iterator>
+#include <mutex>
 #include <stdexcept>
 #include <string_view>
 #include <vector>
@@ -23,6 +24,28 @@
 #endif
 
 namespace bbl {
+
+std::string native_platform() { return SDL_GetPlatform(); }
+double logical_processor_count() { return static_cast<double>(SDL_GetNumLogicalCPUCores()); }
+const void* native_navigator_identity() {
+    static const bool identity = true;
+    return std::addressof(identity);
+}
+const void* native_performance_identity() {
+    static const bool identity = true;
+    return std::addressof(identity);
+}
+
+std::string preferred_language() {
+    static std::mutex locale_mutex;
+    const std::lock_guard lock(locale_mutex);
+    const std::unique_ptr<SDL_Locale*, decltype(&SDL_free)> locales(SDL_GetPreferredLocales(nullptr), SDL_free);
+    if (!locales || !locales.get()[0]) return {};
+    const auto& first = *locales.get()[0];
+    std::string language = first.language;
+    if (first.country && *first.country) language += std::string("-") + first.country;
+    return language;
+}
 
 /**
  * `setTimeout(callback, 0)`: queue a callback to run once, at the next

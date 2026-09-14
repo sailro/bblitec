@@ -1,5 +1,6 @@
 import type { LoweringServices } from "../lowering-services.js";
 import ts from "typescript";
+import { engineSampleCountCpp } from "../engine-samples.js";
 import { argumentAt } from "../syntax.js";
 import {
     postProcessComposite,
@@ -28,6 +29,7 @@ export interface EngineIntrinsicContext
         | "noteTextSceneLifecycle"
         | "noteTemporalRecordBoundary"
         | "emit"
+        | "emitDiscardedValue"
         | "fail"
         | "expectSameEngine"
         | "requireDefaultEngine"
@@ -107,7 +109,13 @@ export function compileEngineIntrinsic(
         case "enableSurfaceResizeObserver": {
             context.expectArgumentCount(call, 1, 1);
             const surface = context.compileValue(argumentAt(call, 0));
-            context.expectKind(surface, "surface", argumentAt(call, 0));
+            if (surface.kind !== "engine") {
+                context.expectKind(surface, "surface", argumentAt(call, 0));
+            }
+            // Native frame loops already refresh canvas extents. Installing or
+            // cancelling the browser's layout cache does not change that policy,
+            // but evaluating the surface expression still has source effects.
+            context.emitDiscardedValue(surface);
             return {
                 kind: "callback",
                 cpp: "std::function<void()>{[]() {}}",
@@ -136,7 +144,7 @@ export function compileEngineIntrinsic(
                 ...(engine.surfaceCanvas ? { surfaceCanvas: true as const } : {}),
                 cpp: defaultRenderTask && samples === 4
                     ? create
-                    : `bbl::configure_scene_render_defaults(${create}, ${defaultRenderTask}, ${samples}u)`,
+                    : `bbl::configure_scene_render_defaults(${create}, ${defaultRenderTask}, ${engineSampleCountCpp(engine)})`,
                 sceneEnvironmentState: {
                     rotationSet: false,
                     hasTexturedSkybox: false,

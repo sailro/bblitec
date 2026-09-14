@@ -15,7 +15,7 @@ test("audio handles reject exhaustion without aliasing a live node or context", 
     const executable = join(output, "audio-handles-check.exe");
     runNativeFixtureCompiler(tools!, [
         "/nologo", "/std:c++20", "/W4", "/WX", "/EHsc", "/MD",
-        `/Fo:${output}\\`, `/Fe:${executable}`, "/I", "native/src",
+        `/Fo:${output}\\`, `/Fe:${executable}`, "/I", "native/src", "/I", "native/include",
         "test/fixtures/audio-handles-check.cpp",
     ]);
     assert.match(execFileSync(executable, { encoding: "utf8" }), /audio-handles-check: ok/);

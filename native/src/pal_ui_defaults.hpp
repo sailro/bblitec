@@ -8,6 +8,9 @@ namespace bbl::pal {
 // unbound innerHTML descendants. Keep one sheet for the PAL and layout fixtures.
 inline constexpr std::string_view ui_user_agent_css =
     "div,canvas{display:block;}\n"
+    "ul,ol{display:block;margin:1em 0;padding-left:40px;}\n"
+    "li{display:block;}\n"
+    "[hidden]{display:none;}\n"
     "h1{display:block;font-size:2em;font-weight:bold;margin:0.67em 0;}\n"
     "h2{display:block;font-size:1.5em;font-weight:bold;margin:0.83em 0;}\n"
     "a[href]{color:#0000ee;text-decoration:underline;cursor:pointer;}\n"
@@ -21,11 +24,11 @@ inline constexpr std::string_view ui_user_agent_css =
     "text-align:center;tab-index:auto;}\n"
     // Press/release must resolve to the button, not separate label/icon nodes.
     "button *{focus:none;}\n"
-    "input[type=range]{display:inline-block;box-sizing:content-box;width:129px;height:16px;margin:2px;padding:0;"
+    "input[type=range]{display:inline-block;box-sizing:content-box;width:auto;height:auto;margin:2px;padding:0;"
     "border-width:0;tab-index:auto;pointer-events:auto;}\n"
     "input[type=range]{decorator:bbl-native-range();}\n"
-    "input[type=range] slidertrack{height:6px;margin:5px 0;background-color:transparent;border-width:0;}\n"
-    "input[type=range] sliderbar{width:16px;height:16px;background-color:transparent;}\n"
+    ":where(input[type=range]) > :where(slidertrack){height:auto;margin:0;background-color:transparent;border-width:0;}\n"
+    ":where(input[type=range]) > :where(sliderbar){width:16px;height:16px;background-color:transparent;}\n"
     "input[type=range] sliderprogress{height:6px;background-color:transparent;}\n"
     "input[type=range] sliderarrowdec,input[type=range] sliderarrowinc{width:0;height:0;}\n"
     // RmlUi creates unstyled scrollbar elements on overflow. In particular,
@@ -44,6 +47,20 @@ inline constexpr std::string_view ui_user_agent_css =
     "scrollbarvertical sliderbar:hover,scrollbarhorizontal sliderbar:hover{background-color:#a0a0a0;}\n"
     "scrollbarvertical sliderbar:active,scrollbarhorizontal sliderbar:active{background-color:#b0b0b0;}\n"
     "scrollbarvertical sliderarrowdec,scrollbarvertical sliderarrowinc,"
-    "scrollbarhorizontal sliderarrowdec,scrollbarhorizontal sliderarrowinc{width:0;height:0;}\n";
+    "scrollbarhorizontal sliderarrowdec,scrollbarhorizontal sliderarrowinc{width:0;height:0;}\n"
+    ":bbl-thin-scrollbar > scrollbarvertical{width:8dp;}\n"
+    ":bbl-thin-scrollbar > scrollbarhorizontal{height:8dp;}\n"
+    ":bbl-thin-scrollbar > scrollbarvertical slidertrack{width:8dp;}\n"
+    ":bbl-thin-scrollbar > scrollbarhorizontal slidertrack{height:8dp;}\n"
+    ":bbl-thin-scrollbar > scrollbarvertical sliderbar{width:4dp;margin:0 2dp;}\n"
+    ":bbl-thin-scrollbar > scrollbarhorizontal sliderbar{height:4dp;margin:2dp 0;}\n"
+    ":bbl-hidden-scrollbar > scrollbarvertical{width:0;opacity:0;pointer-events:none;}\n"
+    ":bbl-hidden-scrollbar > scrollbarhorizontal{height:0;opacity:0;pointer-events:none;}\n"
+    ":bbl-hidden-scrollbar > scrollbarvertical slidertrack,:bbl-hidden-scrollbar > scrollbarvertical sliderbar{width:0;margin:0;}\n"
+    ":bbl-hidden-scrollbar > scrollbarhorizontal slidertrack,:bbl-hidden-scrollbar > scrollbarhorizontal sliderbar{height:0;margin:0;}\n"
+    ":bbl-colored-scrollbar > scrollbarvertical,:bbl-colored-scrollbar > scrollbarhorizontal,"
+    ":bbl-colored-scrollbar > scrollbarcorner{background-color:var(--bbl-scrollbar-track);}\n"
+    ":bbl-colored-scrollbar > scrollbarvertical sliderbar,:bbl-colored-scrollbar > scrollbarhorizontal sliderbar"
+    "{background-color:var(--bbl-scrollbar-thumb);}\n";
 
 } // namespace bbl::pal

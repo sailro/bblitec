@@ -17,6 +17,7 @@ import type { LoweringServices } from "./lowering-services.js";
 // are declared once here so every per-domain option module states the
 // same rule instead of carrying its own copy.
 import ts from "typescript";
+import { engineSampleCountCpp } from "./engine-samples.js";
 import { argumentAt } from "./syntax.js";
 import type { Value } from "./types.js";
 import {
@@ -80,7 +81,7 @@ export function compilePositiveInteger(
         const engine = context.lookup(
             unwrapped.expression,
         );
-        return `${engine.msaaSamples ?? 4}u`;
+        return engineSampleCountCpp(engine);
     }
     const value = compileStaticNumber(
         context,
@@ -441,6 +442,10 @@ export function staticNumberValue(
         return undefined;
     }
     if (ts.isIdentifier(node)) {
+        if (context.isDefaultLibraryIdentifier(node)) {
+            if (node.text === "Infinity") return Infinity;
+            if (node.text === "NaN") return NaN;
+        }
         // A miss, not a failure: one caller is an optional probe, and an
         // identifier this scope has no binding for is simply not a constant.
         const value = context.lookupOptional(node);

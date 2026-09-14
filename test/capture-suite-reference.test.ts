@@ -117,6 +117,7 @@ test("serves the host UI bootstrap ahead of the scene module script", async () =
                     focusVisible: true,
                     style: "outline: 2px solid cyan",
                 },
+                {kind:"class",primary:"compact",maxWidth:800,reducedMotion:true,containerMaxWidth:320,style:"width:40px"},
             ],
             elements: [
                 {
@@ -150,6 +151,7 @@ test("serves the host UI bootstrap ahead of the scene module script", async () =
             "host UI must be served ahead of the scene module",
         );
         assert.match(html, /\.hud\{color: red\}/);
+        assert.match(html, /@media\(max-width:800px\)\{@media\(prefers-reduced-motion:reduce\)\{@container\(max-width:320px\)\{\.compact\{width:40px\}\}\}\}/);
         // Legacy classStyles and generic selector flags share the same
         // normalized sheet. Dropping focus-visible paints every button as
         // selected in the reference.

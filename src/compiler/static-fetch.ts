@@ -1,19 +1,7 @@
 import { EmissionMap } from "./emission-transaction.js";
 import type { LoweringServices } from "./lowering-services.js";
-// Generation-time fetch for immutable JSON inputs.
-//
-// A source URL that is statically known can be read while the synchronous
-// compiler runs. The response remains a compile-time value: `ok` and `status`
-// fold exactly, and `json()` turns the document into the same tuple/record
-// values an equivalent literal would have produced. No browser Response or
-// JSON parser leaks into the native program.
-// Generation-time fetch for immutable JSON inputs.
-//
-// A source URL that is statically known can be read while the synchronous
-// compiler runs. The response remains a compile-time value: `ok` and `status`
-// fold exactly, and `json()` turns the document into the same tuple/record
-// values an equivalent literal would have produced. No browser Response or
-// JSON parser leaks into the native program.
+// Closed asset discovery serves both generation-time inputs and owned fetch
+// responses in asynchronous realms. Other asset consumers retain native paths.
 import ts from "typescript";
 import { argumentAt } from "./syntax.js";
 import { readdirSync } from "node:fs";
@@ -22,6 +10,7 @@ import { dirname, relative, resolve, sep } from "node:path";
 import { floatLiteral } from "../cpp-literals.js";
 import { readAssetBytesSync } from "./asset-bytes-sync.js";
 import { canonicalLocalAssetSource, resolveBundledAsset } from "./assets.js";
+import { deploymentUrl } from "./deployment.js";
 import {
     jsonToValue,
     type JsonValuePolicy,
@@ -39,6 +28,9 @@ export interface StaticFetchContext
         | "lookupOptional"
         | "registerAsset"
         | "reachJsData"
+        | "reachFeature"
+        | "dataLowerer"
+        | "probeEmission"
         | "fail"
     > {}
 
@@ -56,13 +48,11 @@ export function compileStaticFetch(
             "Generation-time fetch requires exactly one static URL argument.",
         );
     }
-    const dynamic = compileDynamicPackagedAsset(
-        context,
-        argumentAt(call, 0),
-        "binary",
-    );
-    if (dynamic) return dynamic;
     const url = argumentAt(call, 0);
+    const response = context.options.workers !== undefined;
+    const dynamic = context.probeEmission(() => compileDynamicDirectoryFetch(context, url, "binary", () => true, response)) ??
+        context.probeEmission(() => compileDynamicCandidateFetch(context, url, "binary", () => true, response));
+    if (dynamic) return dynamic;
     if (ts.isIdentifier(url)) {
         const bound = context.lookupOptional(url);
         if (bound && bound.staticString === undefined) {
@@ -76,7 +66,13 @@ export function compileStaticFetch(
     const source = resolveBundledAsset(
         logicalSource,
         context.options.fileName,
+        context.options,
     );
+    if (response) {
+        const asset = context.registerAsset(source, "binary");
+        return ownedPackagedResponse(context, url, [{key:logicalSource, logicalSource, output:asset.output}],
+            {kind:"string", cpp:context.cppString(logicalSource)});
+    }
     return {
         kind: "static-fetch-response",
         cpp: "",
@@ -97,8 +93,8 @@ export function compileDynamicPackagedAsset(
     accepts: (source: string) => boolean = () => true,
 ): Value | undefined {
     return (
-        compileDynamicDirectoryFetch(context, expression, kind, accepts) ??
-        compileDynamicCandidateFetch(context, expression, kind, accepts)
+        context.probeEmission(() => compileDynamicDirectoryFetch(context, expression, kind, accepts)) ??
+        context.probeEmission(() => compileDynamicCandidateFetch(context, expression, kind, accepts))
     );
 }
 
@@ -114,6 +110,7 @@ function compileDynamicCandidateFetch(
     expression: ts.Expression,
     kind: CompileAsset["kind"],
     accepts: (source: string) => boolean,
+    response = false,
 ): Value | undefined {
     const selected = context.compileValue(expression);
     if (
@@ -131,6 +128,7 @@ function compileDynamicCandidateFetch(
             const source = resolveBundledAsset(
                 logicalSource,
                 context.options.fileName,
+                context.options,
             );
             try {
                 readAssetBytesSync(source, context.options.fileName);
@@ -170,6 +168,8 @@ function compileDynamicCandidateFetch(
         }
     }
     if (candidates.size === 0) return undefined;
+    if (response) return ownedPackagedResponse(context, expression, [...candidates.values()].map(({logicalSource, source}) =>
+        ({key:logicalSource, logicalSource, output:context.registerAsset(source, kind).output})), selected);
     const entries = [...candidates.values()].map(({ logicalSource, source }) => {
         const asset = context.registerAsset(source, kind);
         return `{${context.cppString(logicalSource)}, ${context.cppString(asset.output)}}`;
@@ -289,6 +289,7 @@ function compileDynamicDirectoryFetch(
     expression: ts.Expression,
     kind: CompileAsset["kind"],
     accepts: (source: string) => boolean,
+    response = false,
 ): Value | undefined {
     const unwrapped = context.unwrap(expression);
     let logicalPrefix: string | undefined;
@@ -323,7 +324,7 @@ function compileDynamicDirectoryFetch(
     } else {
         return undefined;
     }
-    if (logicalPrefix === undefined || !suffix) return undefined;
+    if (logicalPrefix === undefined || !suffix || suffix.staticString !== undefined) return undefined;
     if (
         suffix.kind !== "string" &&
         !(
@@ -336,16 +337,14 @@ function compileDynamicDirectoryFetch(
     const logicalBase = logicalPrefix.endsWith("/")
         ? logicalPrefix
         : `${logicalPrefix}/`;
-    // Network prefixes cannot name a repository directory. A fully static
-    // URL falls through to the ordinary fetch path, while a genuinely
-    // dynamic network fetch retains that path's static-URL diagnostic.
-    if (/^[a-z][a-z0-9+.-]*:\/\//i.test(logicalBase)) {
-        return undefined;
-    }
     const resolvedBase = resolveBundledAsset(
         logicalBase,
         context.options.fileName,
+        context.options,
     );
+    // Deployment URLs may resolve to public files; other network prefixes
+    // still cannot supply a closed directory of packaged assets.
+    if (/^[a-z][a-z0-9+.-]*:\/\//i.test(resolvedBase)) return undefined;
     const directory = resolve(
         dirname(resolve(context.options.fileName)),
         resolvedBase,
@@ -367,14 +366,16 @@ function compileDynamicDirectoryFetch(
             `Dynamic fetch base '${logicalBase}' contains no files.`,
         );
     }
-    const entries = files.map((file) => {
+    const assets = files.map((file) => {
         const key = relative(directory, file).split(sep).join("/");
         const asset = context.registerAsset(
             `${logicalBase}${key}`,
             kind,
         );
-        return `{${context.cppString(key)}, ${context.cppString(asset.output)}}`;
+        return {key, logicalSource:`${logicalBase}${key}`, output:asset.output};
     });
+    if (response) return ownedPackagedResponse(context, expression, assets, suffix);
+    const entries = assets.map(({key, output}) => `{${context.cppString(key)}, ${context.cppString(output)}}`);
     context.reachJsData();
     return {
         kind: "static-fetch-response",
@@ -385,6 +386,24 @@ function compileDynamicDirectoryFetch(
             `([&](const std::string& key) -> std::string { ` +
             packagedAssetLookupBody(context, entries) + `})(${suffix.cpp})`,
     };
+}
+
+function ownedPackagedResponse(
+    context: StaticFetchContext,
+    node: ts.Node,
+    assets: readonly {key:string; logicalSource:string; output:string}[],
+    selected: Value,
+): Value {
+    context.reachFeature("platform:packaged-fetch", node);
+    context.reachJsData();
+    const entries = assets.map(({key, logicalSource, output}) => {
+        const url = new URL(logicalSource, deploymentUrl(context.options));
+        url.hash = "";
+        return `{${context.cppString(key)}, ${context.cppString(url.href)}, ${context.cppString(output)}}`;
+    });
+    return {...context.dataLowerer.leafValue(
+        `bbl::pal::fetch_packaged(${selected.cpp}, std::array<bbl::pal::PackagedFetchEntry, ${entries.length}>{{${entries.join(", ")}}})`,
+        {kind:"promise", result:{kind:"http-response"}}), nativeCaptures:selected.nativeCaptures ?? []};
 }
 
 function packagedAssetLookupBody(context: StaticFetchContext, entries: readonly string[]): string {

@@ -26,11 +26,13 @@
 #include "pal_gpu_shared.hpp"
 #include "pal_sdl_gpu_shared.hpp"
 #include "pal_ui_backdrop_sdl.hpp"
+#include "pal_ui_filter_sdl.hpp"
 
 namespace bbl::pal {
 
 struct SpriteUiSdlResources {
     UiBackdropSdlResources backdrop;
+    UiFilterSdlResources filters;
     SDL_GPUGraphicsPipeline* color_pipeline = nullptr;
     SDL_GPUGraphicsPipeline* texture_pipeline = nullptr;
     SDL_GPUSampler* sampler = nullptr;
@@ -285,7 +287,7 @@ inline void render_sprite_ui_sdl_frame(
     SpriteUiSdlResources& ui,
     const UiRenderFrame& frame,
     ExternalTexture external_texture = nullptr) {
-    if (frame.draws.empty() || frame.width == 0 || frame.height == 0) return;
+    if ((frame.draws.empty() && frame.operations.empty()) || frame.width == 0 || frame.height == 0) return;
     create_sprite_ui_sdl_resources(device, target_format, ui);
     if (!frame.backdrops.empty()) {
         ensure_sprite_ui_sdl_backdrop_pipeline(device, ui);
@@ -385,71 +387,76 @@ inline void render_sprite_ui_sdl_frame(
     copy.end();
     transfers.clear();
 
-    std::size_t draw_begin = 0;
-    for (std::size_t segment = 0; segment <= frame.backdrops.size(); ++segment) {
-    const std::size_t draw_end = segment < frame.backdrops.size()
-        ? frame.backdrops[segment].before_draw : frame.draws.size();
-    SDL_GPUColorTargetInfo color_target{};
-    color_target.texture = target;
-    color_target.load_op = SDL_GPU_LOADOP_LOAD;
-    color_target.store_op = SDL_GPU_STOREOP_STORE;
-    SdlRenderPass pass{SDL_BeginGPURenderPass(command, &color_target, 1, nullptr)};
-    if (!pass) gpu_error("SDL_BeginGPURenderPass sprite UI");
-    const SDL_GPUBufferBinding vertex_binding{ui.vertices, 0};
-    const SDL_GPUBufferBinding index_binding{ui.indices, 0};
-    SDL_BindGPUVertexBuffers(pass, 0, &vertex_binding, 1);
-    SDL_BindGPUIndexBuffer(
-        pass, &index_binding, SDL_GPU_INDEXELEMENTSIZE_32BIT);
-    const std::array<float, 16> projection{
-        2.0f / frame.width, 0, 0, 0,
-        0, -2.0f / frame.height, 0, 0,
-        0, 0, 0.0001f, 0,
-        -1, 1, 0, 1};
-    const std::array<float, 2> translation{0, 0};
-    SDL_PushGPUVertexUniformData(
-        command, 0, projection.data(), sizeof(projection));
-    SDL_PushGPUVertexUniformData(
-        command, 1, translation.data(), sizeof(translation));
-    for (std::size_t draw_index = draw_begin; draw_index < draw_end; ++draw_index) {
-        const UiRenderDraw& draw = frame.draws[draw_index];
-        const std::optional<UiScissorRect> scissor =
-            clamped_ui_scissor(draw, frame.width, frame.height);
-        if (!scissor) continue;
-        const SDL_Rect clip{
-            scissor->left, scissor->top, scissor->width, scissor->height};
-        SDL_SetGPUScissor(pass, &clip);
-        if (draw.texture_id) {
-            const auto owned = ui.textures.find(draw.texture_id);
-            SDL_GPUTexture* texture = owned == ui.textures.end() ? nullptr : owned->second;
-            if constexpr (!std::is_same_v<ExternalTexture, std::nullptr_t>) {
-                if (!texture) texture = external_texture(draw.texture_id);
+    ui.filters.begin_frame();
+    for_each_ui_segment(frame, [&](std::size_t draw_begin, std::size_t draw_end, std::uint32_t layer) {
+        auto* draw_target = ui.filters.target(device, command, target, target_format, frame, layer);
+        SDL_GPUColorTargetInfo color_target{};
+        color_target.texture = draw_target;
+        color_target.load_op = SDL_GPU_LOADOP_LOAD;
+        color_target.store_op = SDL_GPU_STOREOP_STORE;
+        SdlRenderPass pass{SDL_BeginGPURenderPass(command, &color_target, 1, nullptr)};
+        if (!pass) gpu_error("SDL_BeginGPURenderPass sprite UI");
+        const SDL_GPUBufferBinding vertex_binding{ui.vertices, 0};
+        const SDL_GPUBufferBinding index_binding{ui.indices, 0};
+        SDL_BindGPUVertexBuffers(pass, 0, &vertex_binding, 1);
+        SDL_BindGPUIndexBuffer(
+            pass, &index_binding, SDL_GPU_INDEXELEMENTSIZE_32BIT);
+        const std::array<float, 16> projection{
+            2.0f / frame.width, 0, 0, 0,
+            0, -2.0f / frame.height, 0, 0,
+            0, 0, 0.0001f, 0,
+            -1, 1, 0, 1};
+        const std::array<float, 2> translation{0, 0};
+        SDL_PushGPUVertexUniformData(
+            command, 0, projection.data(), sizeof(projection));
+        SDL_PushGPUVertexUniformData(
+            command, 1, translation.data(), sizeof(translation));
+        for (std::size_t draw_index = draw_begin; draw_index < draw_end; ++draw_index) {
+            const UiRenderDraw& draw = frame.draws[draw_index];
+            const std::optional<UiScissorRect> scissor =
+                clamped_ui_scissor(draw, frame.width, frame.height);
+            if (!scissor) continue;
+            const SDL_Rect clip{
+                scissor->left, scissor->top, scissor->width, scissor->height};
+            SDL_SetGPUScissor(pass, &clip);
+            if (draw.texture_id) {
+                const auto owned = ui.textures.find(draw.texture_id);
+                SDL_GPUTexture* texture = owned == ui.textures.end() ? nullptr : owned->second;
+                if constexpr (!std::is_same_v<ExternalTexture, std::nullptr_t>) {
+                    if (!texture) texture = external_texture(draw.texture_id);
+                }
+                if (!texture) continue;
+                SDL_BindGPUGraphicsPipeline(pass, ui.texture_pipeline);
+                const SDL_GPUTextureSamplerBinding texture_binding{
+                    texture,
+                    draw.nearest_sampling ? ui.nearest_sampler : ui.sampler};
+                SDL_BindGPUFragmentSamplers(pass, 0, &texture_binding, 1);
+            } else {
+                SDL_BindGPUGraphicsPipeline(pass, ui.color_pipeline);
             }
-            if (!texture) continue;
-            SDL_BindGPUGraphicsPipeline(pass, ui.texture_pipeline);
-            const SDL_GPUTextureSamplerBinding texture_binding{
-                texture,
-                draw.nearest_sampling ? ui.nearest_sampler : ui.sampler};
-            SDL_BindGPUFragmentSamplers(pass, 0, &texture_binding, 1);
-        } else {
-            SDL_BindGPUGraphicsPipeline(pass, ui.color_pipeline);
+            SDL_DrawGPUIndexedPrimitives(
+                pass, draw.index_count, 1, draw.first_index, 0, 0);
         }
-        SDL_DrawGPUIndexedPrimitives(
-            pass, draw.index_count, 1, draw.first_index, 0, 0);
-    }
-    pass.end();
-    if (segment < frame.backdrops.size()) {
-        render_ui_backdrop_sdl(device, command, target, target_format,
-            ui.vertices, ui.indices, ui.sampler, ui.texture_pipeline,
-            ui.backdrop, frame, segment);
-    }
-    draw_begin = draw_end;
-    }
+        pass.end();
+    }, [&](const UiRenderOperation& operation) {
+        if (operation.kind == UiRenderOperation::Kind::ResetLayer) {
+            ui.filters.reset_layer(operation.index);
+        } else if (operation.kind == UiRenderOperation::Kind::Backdrop) {
+            render_ui_backdrop_sdl(device, command, target, target_format,
+                ui.vertices, ui.indices, ui.sampler, ui.texture_pipeline, ui.backdrop, frame, operation.index);
+        } else {
+            render_ui_composite_sdl(device, command, target, target_format,
+                ui.vertices, ui.indices, ui.sampler, ui.texture_pipeline, ui.filters, frame, operation.index);
+        }
+    });
+    ui.filters.finish_frame(device, frame.composites.size());
 }
 
 inline void release_sprite_ui_sdl_resources(
     SDL_GPUDevice* device,
     SpriteUiSdlResources& ui) {
     ui.backdrop.release(device);
+    ui.filters.release(device);
     for (const auto& [id, texture] : ui.textures) {
         static_cast<void>(id);
         SDL_ReleaseGPUTexture(device, texture);

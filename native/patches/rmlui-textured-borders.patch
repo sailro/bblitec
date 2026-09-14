@@ -1,0 +1,243 @@
+diff --git a/Include/RmlUi/Core/ID.h b/Include/RmlUi/Core/ID.h
+index 325724d2..75b224a6 100644
+--- a/Include/RmlUi/Core/ID.h
++++ b/Include/RmlUi/Core/ID.h
+@@ -157,6 +157,7 @@ enum class PropertyId : uint8_t {
+ 	RmlUi_Language,
+ 	RmlUi_Direction,
+ 	BackgroundClip,
++	BorderImage,
+ 
+ 	NumDefinedIds,
+ 	FirstCustomId = NumDefinedIds,
+diff --git a/Source/Core/StyleSheetSpecification.cpp b/Source/Core/StyleSheetSpecification.cpp
+index 0ebd2221..339219f4 100644
+--- a/Source/Core/StyleSheetSpecification.cpp
++++ b/Source/Core/StyleSheetSpecification.cpp
+@@ -339,6 +339,8 @@ void StyleSheetSpecification::RegisterDefaultProperties()
+ 	RegisterProperty(PropertyId::Visibility, "visibility", "visible", false, false).AddParser("keyword", "visible, hidden");
+ 	RegisterProperty(PropertyId::TextOverflow, "text-overflow", "clip", false, false).AddParser("keyword", "clip, ellipsis").AddParser("string");
+ 
++	RegisterProperty(PropertyId::BorderImage, "border-image", "none", false, false).AddParser("string");
++
+ 	// Need some work on this if we are to include images.
+ 	RegisterProperty(PropertyId::BackgroundColor, "background-color", "transparent", false, false).AddParser("color");
+ 	RegisterProperty(PropertyId::BackgroundClip, "background-clip", "border-box", false, false)
+diff --git a/Source/Core/ElementStyle.cpp b/Source/Core/ElementStyle.cpp
+index dbb68f08..385857e2 100644
+--- a/Source/Core/ElementStyle.cpp
++++ b/Source/Core/ElementStyle.cpp
+@@ -1355,6 +1355,7 @@ void ElementStyle::ComputeValue(Style::ComputedValues& values, float dp_ratio, V
+ 	// Unhandled properties. Must be manually retrieved with 'GetProperty()'.
+ 	case PropertyId::FillImage:
+ 	case PropertyId::CaretColor:
++	case PropertyId::BorderImage:
+ 	case PropertyId::BackgroundClip:
+ 		break;
+ 	// Invalid properties
+diff --git a/Source/Core/Element.cpp b/Source/Core/Element.cpp
+index eb394d56..d2b6ba41 100644
+--- a/Source/Core/Element.cpp
++++ b/Source/Core/Element.cpp
+@@ -1916,6 +1916,7 @@ void Element::OnPropertyChange(const PropertyIdSet& changed_properties)
+ 	// Dirty the background if it's changed.
+ 	if (border_radius_changed ||                                    //
+ 		changed_properties.Contains(PropertyId::BackgroundColor) || //
++		changed_properties.Contains(PropertyId::BorderImage) ||
+ 		changed_properties.Contains(PropertyId::BackgroundClip) ||  //
+ 		changed_properties.Contains(PropertyId::Opacity) ||         //
+ 		changed_properties.Contains(PropertyId::ImageColor) ||      //
+@@ -3064,6 +3065,8 @@ void Element::OnStyleSheetChangeRecursive()
+ void Element::OnDpRatioChangeRecursive()
+ {
+ 	meta->effects.DirtyEffects();
++	// Border-image auto and dp widths live in a string property.
++	meta->background_border.DirtyBackground();
+ 	GetStyle()->DirtyPropertiesWithUnits(Unit::DP_SCALABLE_LENGTH);
+ 
+ 	OnDpRatioChange();
+diff --git a/Source/Core/ElementBackgroundBorder.h b/Source/Core/ElementBackgroundBorder.h
+index d0ffcaf6..c06a61b2 100644
+--- a/Source/Core/ElementBackgroundBorder.h
++++ b/Source/Core/ElementBackgroundBorder.h
+@@ -19,7 +19,7 @@ public:
+ 	Geometry* GetClipGeometry(Element* element, BoxArea clip_area);
+ 
+ private:
+-	enum class BackgroundType { BackgroundBorder, BoxShadowAndBackgroundBorder, ClipBorder, ClipPadding, ClipContent, Count };
++	enum class BackgroundType { BackgroundBorder, BorderImage, BoxShadowAndBackgroundBorder, ClipBorder, ClipPadding, ClipContent, Count };
+ 	struct Background {
+ 		Geometry geometry;
+ 		Texture texture;
+diff --git a/Source/Core/ElementBackgroundBorder.cpp b/Source/Core/ElementBackgroundBorder.cpp
+index 8ebd589e..1b675d29 100644
+--- a/Source/Core/ElementBackgroundBorder.cpp
++++ b/Source/Core/ElementBackgroundBorder.cpp
+@@ -9,8 +9,123 @@
+ #include "../../Include/RmlUi/Core/RenderManager.h"
+ #include "BoxShadowCache.h"
+ #include "GeometryBoxShadow.h"
++#include "../../Include/RmlUi/Core/ElementDocument.h"
++#include "../../Include/RmlUi/Core/ElementUtilities.h"
++#include "../../Include/RmlUi/Core/URL.h"
++#include <algorithm>
++#include <charconv>
++#include <cmath>
++#include <sstream>
+ 
+ namespace Rml {
++namespace {
++namespace BorderImageDetail {
++enum class LengthUnit { Number, Pixels, DensityPixels, Percent, Auto };
++struct Length { float value = 0; LengthUnit unit = LengthUnit::Number; };
++
++inline bool ReadLength(std::istream& input, Length& result)
++{
++    String token;
++    if (!(input >> token)) return false;
++    if (token == "auto") { result.unit = LengthUnit::Auto; return true; }
++    if (token.size() >= 2 && token.compare(token.size() - 2, 2, "px") == 0) {
++        token.resize(token.size() - 2); result.unit = LengthUnit::Pixels;
++    } else if (token.size() >= 2 && token.compare(token.size() - 2, 2, "dp") == 0) {
++        token.resize(token.size() - 2); result.unit = LengthUnit::DensityPixels;
++    } else if (!token.empty() && token.back() == '%') {
++        token.pop_back(); result.unit = LengthUnit::Percent;
++    }
++    const auto parsed = std::from_chars(token.data(), token.data() + token.size(), result.value);
++    return parsed.ec == std::errc{} && parsed.ptr == token.data() + token.size() &&
++        std::isfinite(result.value) && result.value >= 0;
++}
++
++// Generation expands each box shorthand and packages the source. Runtime
++// keeps percentage slices, border-width multipliers, and auto widths live.
++inline bool Parse(const String& text, String& source, Array<Length, 4>& slices, Array<Length, 4>& widths)
++{
++    if (text.compare(0, 5, "url(\"") != 0) return false;
++    const auto end = text.find("\")", 5);
++    if (end == String::npos) return false;
++    source = text.substr(5, end - 5);
++    std::istringstream input(text.substr(end + 2));
++    for (auto& slice : slices)
++        if (!ReadLength(input, slice) || (slice.unit != LengthUnit::Number && slice.unit != LengthUnit::Percent)) return false;
++    String separator;
++    if (!(input >> separator) || separator != "/") return false;
++    for (auto& width : widths) if (!ReadLength(input, width)) return false;
++    if (!(input >> separator) || separator != "/") return false;
++    for (int i = 0; i < 4; ++i) {
++        Length outset;
++        if (!ReadLength(input, outset) || outset.value != 0 ||
++            (outset.unit != LengthUnit::Number && outset.unit != LengthUnit::Pixels && outset.unit != LengthUnit::DensityPixels)) return false;
++    }
++    if (!(input >> separator) || separator != "stretch") return false;
++    return !(input >> separator);
++}
++} // namespace BorderImageDetail
++
++inline bool GenerateBorderImage(Element* element, const String& text, Mesh& mesh, Texture& texture)
++{
++    using namespace BorderImageDetail;
++    String source;
++    Array<Length, 4> slice_values{}, width_values{};
++    if (!Parse(text, source, slice_values, width_values)) return false;
++    URL document_url;
++    if (const auto* document = element->GetOwnerDocument()) document_url.SetURL(document->GetSourceURL());
++    texture = element->GetRenderManager()->LoadTexture(source, document_url.GetPath());
++    const Vector2f image_size(texture.GetDimensions());
++    if (image_size.x <= 0 || image_size.y <= 0) return false;
++    Array<float, 4> slices{};
++    for (int side = 0; side < 4; ++side) {
++        const float axis = side % 2 == 0 ? image_size.y : image_size.x;
++        slices[side] = std::min(axis, slice_values[side].unit == LengthUnit::Percent ?
++            slice_values[side].value * axis / 100 : slice_values[side].value);
++    }
++    const auto color = Colourb(255).ToPremultiplied(element->GetComputedValues().opacity());
++    for (int box_index = 0; box_index < element->GetNumBoxes(); ++box_index) {
++        const auto render_box = element->GetRenderBox(BoxArea::Border, box_index);
++        const auto size = render_box.GetFillSize();
++        const auto offset = render_box.GetBorderOffset();
++        Vector2f box_offset;
++        const auto& box = element->GetBox(box_index, box_offset);
++        Array<double, 4> widths{};
++        for (int side = 0; side < 4; ++side) {
++            const auto& width = width_values[side];
++            const double value = width.value;
++            switch (width.unit) {
++            case LengthUnit::Number: widths[side] = value * box.GetEdge(BoxArea::Border, BoxEdge(side)); break;
++            case LengthUnit::Pixels: widths[side] = value; break;
++            case LengthUnit::DensityPixels: widths[side] = value * ElementUtilities::GetDensityIndependentPixelRatio(element); break;
++            case LengthUnit::Percent: widths[side] = value * (side % 2 == 0 ? size.y : size.x) / 100; break;
++            case LengthUnit::Auto: widths[side] = double(slices[side]) * ElementUtilities::GetDensityIndependentPixelRatio(element); break;
++            }
++        }
++        // CSS reduces all four used widths by one factor when either pair
++        // overlaps; independent axis clamping would distort the corners.
++        double factor = 1;
++        if (widths[1] + widths[3] > 0) factor = std::min(factor, size.x / (widths[1] + widths[3]));
++        if (widths[0] + widths[2] > 0) factor = std::min(factor, size.y / (widths[0] + widths[2]));
++        for (auto& width : widths) width *= std::max(factor, 0.0);
++        const float x[4] = {0, float(widths[3]), size.x - float(widths[1]), size.x};
++        const float y[4] = {0, float(widths[0]), size.y - float(widths[2]), size.y};
++        const float u[4] = {0, slices[3] / image_size.x, 1 - slices[1] / image_size.x, 1};
++        const float v[4] = {0, slices[0] / image_size.y, 1 - slices[2] / image_size.y, 1};
++        for (int row = 0; row < 3; ++row) for (int column = 0; column < 3; ++column) {
++            // The center is absent unless CSS explicitly requests fill,
++            // which is outside the admitted surface. Overlapping source
++            // slices also remove the corresponding middle edge region.
++            if ((row == 1 && column == 1) || x[column + 1] <= x[column] || y[row + 1] <= y[row] ||
++                u[column + 1] <= u[column] || v[row + 1] <= v[row]) continue;
++            MeshUtilities::GenerateQuad(mesh, offset + Vector2f(x[column], y[row]),
++                {x[column + 1] - x[column], y[row + 1] - y[row]}, color,
++                {u[column], v[row]}, {u[column + 1], v[row + 1]});
++        }
++    }
++    return true;
++}
++} // namespace
++
+ 
+ ElementBackgroundBorder::ElementBackgroundBorder() {}
+ 
+@@ -20,7 +135,7 @@ void ElementBackgroundBorder::Render(Element* element)
+ 	{
+ 		for (auto& background : backgrounds)
+ 		{
+-			if (background.first != BackgroundType::BackgroundBorder)
++			if (background.first != BackgroundType::BackgroundBorder && background.first != BackgroundType::BorderImage)
+ 				background.second.geometry.Release();
+ 		}
+ 
+@@ -40,6 +155,8 @@ void ElementBackgroundBorder::Render(Element* element)
+ 		const Vector2f offset = element->GetAbsoluteOffset(BoxArea::Border);
+ 		background->geometry.Render(offset);
+ 	}
++	if (Background* image = GetBackground(BackgroundType::BorderImage))
++		image->geometry.Render(element->GetAbsoluteOffset(BoxArea::Border), image->texture);
+ }
+ 
+ void ElementBackgroundBorder::DirtyBackground()
+@@ -107,6 +224,16 @@ void ElementBackgroundBorder::GenerateGeometry(Element* element)
+ 
+ 	const ComputedValues& computed = element->GetComputedValues();
+ 	const bool has_box_shadow = computed.has_box_shadow();
++	Mesh image_mesh;
++	if (Background* image = GetBackground(BackgroundType::BorderImage))
++		image_mesh = image->geometry.Release(Geometry::ReleaseMode::ClearMesh);
++	Texture image_texture;
++	const bool has_border_image = GenerateBorderImage(element, element->GetProperty(PropertyId::BorderImage)->Get<String>(), image_mesh, image_texture);
++	if (has_border_image) {
++		Background& image = GetOrCreateBackground(BackgroundType::BorderImage);
++		image.geometry = render_manager->MakeGeometry(std::move(image_mesh));
++		image.texture = image_texture;
++	} else EraseBackground(BackgroundType::BorderImage);
+ 
+ 	if (has_box_shadow)
+ 	{
+@@ -128,6 +255,8 @@ void ElementBackgroundBorder::GenerateGeometry(Element* element)
+ 		computed.border_left_color().ToPremultiplied(opacity),
+ 	};
+ 
++	if (has_border_image) for (auto& color : border_colors) color = ColourbPremultiplied(0, 0, 0, 0);
++
+ 	Geometry& geometry = GetOrCreateBackground(BackgroundType::BackgroundBorder).geometry;
+ 	Mesh mesh = geometry.Release(Geometry::ReleaseMode::ClearMesh);
+ 

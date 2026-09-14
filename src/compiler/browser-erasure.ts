@@ -1,32 +1,17 @@
 import { emissionArray, EmissionSet, EmissionMap } from "./emission-transaction.js";
 import type { LoweringServices } from "./lowering-services.js";
-// Browser-only expression erasure.
-//
-// A pinned scene reaches browser objects -- console, document, window,
-// performance, URLSearchParams -- that have no native counterpart, so
-// the compiler erases those expressions instead of lowering them. This
-// module answers the three questions that erasure turns on: whether an
-// expression is browser-only, what value it evaluates to at compile
-// time (window.location.search is always empty, so a query flag reads
-// as unset and a condition over it folds to the branch the native
-// scene keeps), and whether a call is browser instrumentation that is
-// erased outright.
-// Browser-only expression erasure.
-//
-// A pinned scene reaches browser objects -- console, document, window,
-// performance, URLSearchParams -- that have no native counterpart, so
-// the compiler erases those expressions instead of lowering them. This
-// module answers the three questions that erasure turns on: whether an
-// expression is browser-only, what value it evaluates to at compile
-// time (window.location.search is always empty, so a query flag reads
-// as unset and a condition over it folds to the branch the native
-// scene keeps), and whether a call is browser instrumentation that is
-// erased outright.
+import { deploymentUrl } from "./deployment.js";
+// Browser environment recognition and bounded erasure. Platform-backed
+// values stay on the native lowering path; deployment queries fold against
+// the configured search string. Unrepresented browser instrumentation is
+// handled separately from observable platform operations.
 import ts from "typescript";
 import { argumentAt, identifierText } from "./syntax.js";
 import { promiseExecutor } from "./promise-executor.js";
 import { mathUnaryFold } from "./math-intrinsics.js";
 import type { Value } from "./types.js";
+import { staticStringValue } from "./types.js";
+import { stringLiteral } from "../cpp-literals.js";
 
 /**
  * The global `parseFloat`, in either of the two spellings a scene writes.
@@ -68,11 +53,14 @@ export function isNumberParserCallee(
 }
 
 const NATIVE_DOM_BRIDGE_KINDS = new EmissionSet<Value["kind"]>([
+    "record",
     "audio-engine",
     "audio-buffer",
     "audio-context",
     "audio-node",
     "audio-param",
+    "media-stream",
+    "media-stream-track",
     "blob",
     "data",
     "file",
@@ -86,6 +74,7 @@ const NATIVE_DOM_BRIDGE_KINDS = new EmissionSet<Value["kind"]>([
     "worker-scope",
     "worker-message-event",
     "worker-error-event",
+    "worker-media-query",
     "offscreen-canvas",
 ]);
 
@@ -107,6 +96,7 @@ export interface BrowserErasureContext
         | "isNativeBrowserFileExpression"
         | "platformDocumentHidden"
         | "referenceSearch"
+        | "options"
         | "constantInitializer"
         | "moduleFunctionDeclaration"
     > {}
@@ -155,6 +145,71 @@ export function browserGlobalNamed(
         isDefaultBrowserGlobal(context, unwrapped.expression)
         ? unwrapped.name
         : undefined;
+}
+
+export function browserEnvironmentPropertyValue(context: BrowserGlobalContext & Pick<LoweringServices, "options">, expression: ts.Expression): Value | undefined {
+    const unwrapped = context.unwrap(expression);
+    if (!ts.isPropertyAccessExpression(unwrapped)) return undefined;
+    const owner = browserEnvironmentValue(context, unwrapped.expression);
+    return owner?.recordProperties?.[unwrapped.name.text];
+}
+
+function nativeNavigatorProperties(realm: boolean): Record<string, Value> {
+    const graphics = "bbl::pal::WorkerRealm::current().graphics_identity()";
+    return {
+        language: {kind:"string", cpp:"bbl::preferred_language()"},
+        userAgent: staticStringValue("bblitec/native", stringLiteral),
+        platform: {kind:"string", cpp:"bbl::native_platform()"},
+        hardwareConcurrency: {kind:"number", cpp:"bbl::logical_processor_count()"},
+        onLine: {kind:"boolean", cpp:"true", staticBoolean:true},
+        userAgentData: {kind:"json-null", cpp:"std::nullopt"},
+        deviceMemory: {kind:"json-null", cpp:"std::nullopt"},
+        gpu: realm ? {kind:"record", cpp:graphics, objectIdentityCpp:graphics,
+            optionalFoundCpp:`(${graphics} != nullptr)`, truthinessCpp:`(${graphics} != nullptr)`, recordProperties:{}}
+            : {kind:"json-null", cpp:"std::nullopt"},
+        clipboard: {kind:"record", cpp:"", truthinessCpp:"true", recordProperties:{
+            writeText: {kind:"callback", cpp:"", hostFunction:"clipboard-write"},
+        }},
+    };
+}
+
+/** Native environment properties can travel through an aliased host object. */
+export function browserEnvironmentValue(context: BrowserGlobalContext & Pick<LoweringServices, "options">, expression: ts.Expression): Value | undefined {
+    const global = browserGlobalNamed(context, expression)?.text;
+    if (global === "performance") return {
+        kind: "record", cpp: "", truthinessCpp: "true", objectIdentityCpp: "bbl::native_performance_identity()",
+        recordProperties: {
+            memory: { kind: "json-null", cpp: "std::nullopt" },
+            now: { kind: "data", cpp: "bbl::pal::performance_milliseconds", dataType: {kind:"function", parameters:[], result:{kind:"number"}} },
+        },
+    };
+    if (global !== "navigator") return undefined;
+    return {kind:"record", cpp:"", truthinessCpp:"true", objectIdentityCpp:"bbl::native_navigator_identity()", recordProperties:nativeNavigatorProperties(!!context.options.workers)};
+}
+
+export function browserDeploymentValue(context: BrowserGlobalContext & Pick<LoweringServices, "options">, expression: ts.Expression): string | boolean | null | undefined {
+    const unwrapped = context.unwrap(expression);
+    if (!ts.isPropertyAccessExpression(unwrapped)) return undefined;
+    if (browserGlobalNamed(context, unwrapped.expression)?.text === "location" &&
+        ["origin", "href", "pathname", "search", "hash", "host", "hostname", "port", "protocol"].includes(unwrapped.name.text)) {
+        const url = deploymentUrl(context.options);
+        url.search = context.options.search;
+        return url[unwrapped.name.text as "origin" | "href" | "pathname" | "search" | "hash" | "host" | "hostname" | "port" | "protocol"];
+    }
+    const env = unwrapped.expression;
+    if (ts.isPropertyAccessExpression(env) && env.name.text === "env" &&
+        ts.isMetaProperty(env.expression) && env.expression.keywordToken === ts.SyntaxKind.ImportKeyword &&
+        env.expression.name.text === "meta") {
+        switch (unwrapped.name.text) {
+            case "BASE_URL": return deploymentUrl(context.options).pathname;
+            case "MODE": return "production";
+            case "PROD": return true;
+            case "DEV": case "SSR": return false;
+        }
+        const values = context.options.environment;
+        return values && Object.hasOwn(values, unwrapped.name.text) ? values[unwrapped.name.text]! : null;
+    }
+    return undefined;
 }
 
 export class BrowserErasure {
@@ -278,6 +333,7 @@ export class BrowserErasure {
         if (this.context.isNativeWorkerExpression(expression)) return false;
         const unwrapped = this.context.unwrap(expression);
         if (this.context.isNativeUiValueExpression(unwrapped)) return false;
+        if (browserDeploymentValue(this.context, unwrapped) !== undefined) return false;
         // Scene-created DOM is not a browser object in the native program: it
         // is the input syntax for the retained UI IR. Keep this deliberately
         // narrower than general DOM support. Host-page lookups and arbitrary
@@ -324,6 +380,7 @@ export class BrowserErasure {
         if (this.isWebStorageExpression(unwrapped)) {
             return false;
         }
+        if (browserEnvironmentPropertyValue(this.context, unwrapped) || browserEnvironmentValue(this.context, unwrapped)) return false;
         if (
             ts.isPropertyAccessExpression(unwrapped) &&
             unwrapped.name.text === "hidden" &&
@@ -441,7 +498,7 @@ export class BrowserErasure {
                 unwrapped.expression,
             )
         ) {
-            return true;
+            return this.evaluateBrowserValue(unwrapped) !== undefined;
         }
         if (
             ts.isPropertyAccessExpression(unwrapped) ||
@@ -598,9 +655,9 @@ export class BrowserErasure {
         if (this.isNativeDomBridge(callee.expression)) return true;
 
         return (
-            callee.name.text === "appendChild" &&
+            (callee.name.text === "append" || (callee.name.text === "appendChild" &&
             call.arguments.length === 1 &&
-            this.isNativeDomBridge(argumentAt(call, 0)) &&
+            this.isNativeDomBridge(argumentAt(call, 0)))) &&
             ts.isPropertyAccessExpression(callee.expression) &&
             (callee.expression.name.text === "body" ||
                 callee.expression.name.text === "head") &&
@@ -617,8 +674,11 @@ export class BrowserErasure {
     ): boolean {
         const owner = (node: ts.Expression): Value | undefined => {
             const unwrapped = this.context.unwrap(node);
+            if (ts.isCallExpression(unwrapped) && this.context.isNativeHostUiLookup(unwrapped)) {
+                return {kind:"ui-element", cpp:""};
+            }
             if (
-                ts.isElementAccessExpression(unwrapped) &&
+                (ts.isElementAccessExpression(unwrapped) || ts.isPropertyAccessExpression(unwrapped)) &&
                 this.context.isNativeUiValueExpression(unwrapped)
             ) {
                 return { kind: "ui-element", cpp: "" };
@@ -635,7 +695,7 @@ export class BrowserErasure {
                     unwrapped.name.text,
                 );
             }
-            if (ts.isPropertyAccessExpression(unwrapped)) {
+            if (ts.isPropertyAccessExpression(unwrapped) || ts.isElementAccessExpression(unwrapped)) {
                 return owner(unwrapped.expression);
             }
             if (
@@ -708,6 +768,19 @@ export class BrowserErasure {
         expression: ts.Expression,
     ): Value["browserValue"] | undefined {
         const unwrapped = this.context.unwrap(expression);
+        const deployed = browserDeploymentValue(this.context, unwrapped);
+        if (deployed === null) return {kind:"null"};
+        if (typeof deployed === "boolean") return {kind:"boolean", value:deployed};
+        if (deployed !== undefined) return { kind: "string", value: deployed };
+        if (ts.isTypeOfExpression(unwrapped)) {
+            const global = this.browserGlobalNamed(this.context.unwrap(unwrapped.expression));
+            // Native has no browser recording pipeline; authored capability
+            // guards can select their own unavailable-recording path.
+            if (global?.text === "MediaRecorder") return {kind:"string", value:"undefined"};
+            if (global && ["location", "window", "globalThis", "document", "localStorage", "navigator"].includes(global.text)) {
+                return { kind: "string", value: "object" };
+            }
+        }
         if (unwrapped.kind === ts.SyntaxKind.TrueKeyword) {
             return { kind: "boolean", value: true };
         }
@@ -745,11 +818,18 @@ export class BrowserErasure {
             const bound = this.context.lookupOptional(unwrapped);
             if (bound !== undefined) {
                 if (bound.browserValue !== undefined) return bound.browserValue;
+                if (bound.kind === "json-null") return { kind: "null" };
                 // Inlining can bind a module constant before a browser
                 // helper evaluates it. Its native binding still carries
                 // the same immutable value; mutable parameters do not.
                 if (!bound.parameterBinding && bound.staticNumber !== undefined) {
                     return { kind: "number", value: bound.staticNumber };
+                }
+                if (!bound.parameterBinding && bound.staticString !== undefined) {
+                    return { kind: "string", value: bound.staticString };
+                }
+                if (!bound.parameterBinding && bound.staticBoolean !== undefined) {
+                    return { kind: "boolean", value: bound.staticBoolean };
                 }
                 return undefined;
             }
@@ -784,6 +864,7 @@ export class BrowserErasure {
             const over = argument
                 ? this.evaluateBrowserValue(argument)
                 : undefined;
+            if (argument && over?.kind !== "string") return undefined;
             return {
                 kind: "search-params",
                 search: over?.kind === "string" ? over.value : "",
@@ -822,6 +903,7 @@ export class BrowserErasure {
         if (
             ts.isPropertyAccessExpression(unwrapped) &&
             unwrapped.name.text === "matches" &&
+            !this.context.options.workers &&
             ts.isCallExpression(unwrapped.expression) &&
             ts.isPropertyAccessExpression(unwrapped.expression.expression) &&
             unwrapped.expression.expression.name.text === "matchMedia" &&
@@ -940,6 +1022,13 @@ export class BrowserErasure {
                     kind: "number",
                     value: numeric(left.value, right.value),
                 };
+            }
+            if (unwrapped.operatorToken.kind === ts.SyntaxKind.EqualsEqualsToken ||
+                unwrapped.operatorToken.kind === ts.SyntaxKind.ExclamationEqualsToken) {
+                const right = this.evaluateBrowserValue(unwrapped.right);
+                if (!left || !right || (left.kind !== "null" && right.kind !== "null")) return undefined;
+                const equal = left.kind === "null" && right.kind === "null";
+                return { kind: "boolean", value: unwrapped.operatorToken.kind === ts.SyntaxKind.EqualsEqualsToken ? equal : !equal };
             }
             // A browser-derived value compared against a literal is how the
             // corpus reads an opt-out switch: `params.get("noise") !== "off"`
@@ -1067,9 +1156,12 @@ export class BrowserErasure {
                     if (key?.kind !== "string") return undefined;
                     const parameters = new URLSearchParams(owner.search);
                     if (method === "has") {
+                        const valueArgument = unwrapped.arguments[1];
+                        const value = valueArgument ? this.evaluateBrowserValue(valueArgument) : undefined;
+                        if (valueArgument && value?.kind !== "string") return undefined;
                         return {
                             kind: "boolean",
-                            value: parameters.has(key.value),
+                            value: value?.kind === "string" ? parameters.has(key.value, value.value) : parameters.has(key.value),
                         };
                     }
                     const found = parameters.get(key.value);

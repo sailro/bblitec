@@ -25,7 +25,7 @@ test("all UI GPU consumers preserve backdrop ordering", () => {
     ] as const) {
         for (const file of files) {
             const source = readFileSync(`native/src/${file}`, "utf8");
-            assert.match(source, /frame\.backdrops\[segment\]\.before_draw/);
+            assert.match(source, /for_each_ui_segment\(frame,/);
             assert.ok(source.includes(`render_ui_backdrop_${backend}(`));
         }
     }

@@ -1,4 +1,4 @@
-#include "pal_sdl.cpp"
+#include "pal_image.cpp"
 #include <cassert>
 #include "image.hpp"
 

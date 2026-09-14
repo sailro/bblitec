@@ -1,4 +1,5 @@
 import type ts from "typescript";
+import type {AssetDecoderConfiguration} from "../asset-decoders.js";
 import type { CompiledMeshWalk } from "../gltf-mesh-walks.js";
 import type { CompiledRenderTargetOptions } from "./intrinsics/engine-options.js";
 import type {
@@ -19,7 +20,7 @@ import type { NativeFunctionLowerer } from "./native-functions.js";
 import type { CompilerSymbols } from "./symbols.js";
 import type { StaticEvaluator } from "./static-evaluator.js";
 import type { HandleCollections, HandleCollectionTarget } from "./handle-collections.js";
-import type { UserFunctionLowerer } from "./user-functions.js";
+import type { CallbackInvocationOptions, SupportedFunction, UserFunctionLowerer } from "./user-functions.js";
 import type {
     CompileAsset,
     DefaultRenderTaskEmission,
@@ -62,8 +63,12 @@ import type { CompiledTextData } from "../pinned-text-data.js";
 
 
 
+/** Convert an already evaluated return value, including adopted promise results. */
+export type NativeReturnValueCompiler = (value: Value, type: DataType, node: ts.Node) => string;
+
 /** Execution facts for one native function body. */
 export interface NativeFunctionBodyOptions {
+    coroutine?: boolean;
     runtimeDataLoops?: boolean;
     callSiteEffects?: boolean;
     compileReturn?: (expression: ts.Expression, type: DataType) => string;
@@ -71,12 +76,17 @@ export interface NativeFunctionBodyOptions {
 
 /** Shared compiler operations; each lowering module selects its required services. */
 export interface LoweringServices {
+    withAsyncActivation<T>(work: () => T): T;
+    compileAsyncCall(declaration: SupportedFunction, arguments_: readonly Value[], node: ts.Node): Value | undefined;
+    compileAsyncReturn(expression: ts.Expression, type: DataType | undefined, compileResult?: NativeReturnValueCompiler): string;
+    emitNativeThrow(errorCpp: string, node?: ts.ThrowStatement): void;
     isInFrameCallback(): boolean;
     hasPresentationHost(): boolean;
     hasFeature(feature: Feature): boolean;
     failAtFile(message: string): never;
     isPrimaryCanvas2DContextCall(call: ts.CallExpression): boolean;
     hoistForwardCallbackBindings(callback: ts.Expression, before: number): void;
+    platformEventCallbackIdentity(callback: Value, node: ts.Node): string;
     compilePlatformCallback(
         callback: ts.Expression,
         parameter: { cppType: string; name: string } | undefined,
@@ -84,7 +94,7 @@ export interface LoweringServices {
         documentHiddenCpp?: string,
         captureByValue?: boolean,
         assignIdentity?: boolean,
-    ): { cpp: string; identity: number };
+    ): { cpp: string; identity: string };
     readonly sourceFile: ts.SourceFile;
     readonly checker: ts.TypeChecker;
     readonly options: ResolvedCompileOptions;
@@ -104,6 +114,7 @@ export interface LoweringServices {
     readonly variableScopes: Array<Map<ts.Symbol, VariableBinding>>;
     functionEmissionScope(): import("./function-specializations.js").FunctionEmissionScope;
     readonly assets: Map<string, CompileAsset>;
+    setAssetDecoderConfiguration(configuration: AssetDecoderConfiguration, node: ts.Node): void;
     readonly assetPayloads: Map<string, string>;
     readonly reachedTextData: CompiledTextData[];
     readonly reachedShaderPrograms: CompiledShaderProgram[];
@@ -154,7 +165,6 @@ export interface LoweringServices {
     isNativeUiValueExpression(expression: ts.Expression): boolean;
     readonly uiDegradedStyleProperties: Set<string>;
     readonly uiScopedSheetSelectors: Set<string>;
-    readonly uiGridSubstitutions: Set<string>;
     emitUiPropertyAssignment(expression: ts.BinaryExpression): boolean;
     compileValue(expression: ts.Expression): Value;
     compileWorkerValue(expression: ts.Expression): Value | undefined;
@@ -350,6 +360,7 @@ export interface LoweringServices {
     resolveRecordValue(expression: ts.Expression): Value | undefined;
     compileRecordSetter(owner: Value, setter: ts.SetAccessorDeclaration, value: ts.Expression): void;
     withRecordScopes<T>(owner: Value, work: () => T, method?: ts.Node): T;
+    captureRecordScopes(): Pick<Value, "recordScopes" | "recordTypeArguments">;
     bindClassField(name: ts.Identifier, initializer: ts.Expression, declared?: DataType): void;
     bindNullableClassField(name: ts.Identifier): Value | undefined;
     bindUninitializedClassDataField(name: ts.Identifier, declared?: DataType): Value | undefined;
@@ -479,7 +490,7 @@ export interface LoweringServices {
     materializeEscapingValue(value: Value, label: string, node?: ts.Expression): Value;
     pinValueToTemporary(value: Value, label: string, node?: ts.Expression): Value;
     bindDataTuple(value: Value, arity: number, label?: string): string;
-    compileCallbackWithValues(declaration: ts.Identifier | ts.FunctionDeclaration | ts.ArrowFunction | ts.FunctionExpression | ts.MethodDeclaration, arguments_: readonly Value[], callNode: ts.Node, discardReturn?: boolean): Value;
+    compileCallbackWithValues(declaration: ts.Identifier | ts.FunctionDeclaration | ts.ArrowFunction | ts.FunctionExpression | ts.MethodDeclaration, arguments_: readonly Value[], callNode: ts.Node, discardReturn?: boolean, body?: CallbackInvocationOptions): Value;
     compileStoredDataFunction(expression: ts.Identifier | ts.FunctionDeclaration | ts.ArrowFunction | ts.FunctionExpression | ts.MethodDeclaration, dataType: DataType & {
         kind: "function";
     }, owner?: Value): string;
@@ -596,7 +607,7 @@ export interface LoweringServices {
     compileDeviceRecoveryIntrinsic(name: string, call: ts.CallExpression): Value | undefined;
     markEngineStart(engineCpp: string, node: ts.Node): void;
     emitFinallyGuard(cleanup: readonly string[]): string;
-    emitEngineFinally(body: readonly string[], cleanup: readonly string[], site: ts.TryStatement): boolean;
+    emitEngineFinally(body: readonly string[], cleanup: () => readonly string[], site: ts.TryStatement): boolean;
     isEntryBodyScope(): boolean;
     increaseIndent(): void;
     decreaseIndent(): void;

@@ -17,6 +17,7 @@ import type { LoweringServices } from "./lowering-services.js";
 // URL. The intrinsic lowerers in asset.ts and sprite.ts call these
 // through their contexts.
 import ts from "typescript";
+import { deploymentAssetSource, type DeploymentOptions } from "./deployment.js";
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
@@ -174,6 +175,7 @@ export function registerAsset(
     source = resolveBundledAsset(
         source,
         context.options.fileName,
+        context.options,
     );
     source = canonicalLocalAssetSource(
         source,
@@ -237,7 +239,7 @@ export function registerUiImageAsset(
             `Retained UI image path '${logicalPath}' is not a bounded root-relative asset path.`,
         );
     }
-    source = resolveBundledAsset(source, context.options.fileName);
+    source = resolveBundledAsset(source, context.options.fileName, context.options);
     source = canonicalLocalAssetSource(source, context.options.fileName);
     const key = `ui-image:${source}:${output}`;
     const existing = context.assets.get(key);
@@ -513,7 +515,10 @@ export function probePixelsAsset(
 export function resolveBundledAsset(
     source: string,
     entryFileName?: string,
+    deployment: DeploymentOptions = {},
 ): string {
+    const deployed = deploymentAssetSource(source, deployment);
+    if (deployed !== undefined) return deployed;
     if (source === "/brdf-lut.png") {
         const pin = readUpstreamPin();
         return `https://raw.githubusercontent.com/BabylonJS/Babylon-Lite/${pin.sourceVersion}/packages/babylon-lite/assets/brdf-lut.png`;

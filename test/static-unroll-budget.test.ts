@@ -188,7 +188,7 @@ test("folded bodies keep iteration-local scalar bindings", () => {
 test("a uniform numeric nest uses one native body before static expansion", () => {
     const result = compileSource(uniformNest);
     assert.equal(result.cpp.match(/for \(;/g)?.length, 4); // three construction loops and the result observer
-    assert.equal(result.cpp.match(/push_back\(1\.0\);/g)?.length, 1);
+    assert.equal(result.cpp.match(/push_back\(1\.0\)/g)?.length, 1);
     assert.doesNotMatch(result.cpp, /v_bblite_repeat_index_/);
 });
 
@@ -219,7 +219,7 @@ test("a large data-only static nest keeps its outer loop native", () => {
         result.cpp,
         /for \(; v_block\d+_x < 16\.0; v_block\d+_x\+\+\) \{/,
     );
-    assert.equal(result.cpp.match(/push_back\(1\.0\);/g)?.length, 1);
+    assert.equal(result.cpp.match(/push_back\(1\.0\)/g)?.length, 1);
 });
 
 test("small data loops nested under a native loop remain native", () => {
@@ -246,7 +246,7 @@ test("small data loops nested under a native loop remain native", () => {
     // smaller children execute under runtime control and remain native too,
     // leaving one body rather than 256 generated copies.
     assert.equal(result.cpp.match(/for \(;/g)?.length, 3);
-    assert.equal(result.cpp.match(/push_back\(1\.0\);/g)?.length, 1);
+    assert.equal(result.cpp.match(/push_back\(1\.0\)/g)?.length, 1);
 });
 
 test("a numeric nest computes each ordered index value in its native loops", () => {

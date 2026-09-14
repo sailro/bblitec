@@ -1,6 +1,14 @@
-export type HandleKind = "asset" | "gpu-device" | "gpu-texture" | "device-recovery" | "gpu-environment" | "node-input" | "text-data" | "text-renderable" | "text-layer" | "text-renderer" | "text-run" | "text-run-ref" | "picking-info" | "offscreen-canvas" | "mesh" | "animation-group" | "flow-graph" | "flow-graph-runtime" | "audio-buffer" | "audio-context" | "camera" | "property-animation-group" | "ui-element" | "utility-layer" | "pointer-drag" | "gamepad" | "gamepad-button" | "scene" | "scene-node" | "light" | "shadow-generator" | "hierarchy-instance-pool" | "storage-buffer" | "material" | "physics-body" | "physics-aggregate" | "physics-viewer" | "physics-character-controller" | "physics-shape" | "billboard-sprite" | "billboard-system" | "sprite-layer" | "sprite-atlas" | "splat-mesh" | "texture" | "transform-node" | "skeleton" | "scene-skeleton" | "bone" | "navigation-obstacle";
-export type TypedArrayKind = "u8array" | "f64array" | "f32array" | "u16array" | "i16array" | "u32array" | "i32array";
+export type HandleKind = "worker-media-query" | AudioHandleKind | "engine" | "asset" | "gpu-device" | "gpu-texture" | "device-recovery" | "gpu-environment" | "node-input" | "text-data" | "text-renderable" | "text-layer" | "text-renderer" | "text-run" | "text-run-ref" | "picking-info" | "offscreen-canvas" | "mesh" | "animation-group" | "flow-graph" | "flow-graph-runtime" | "audio-buffer" | "audio-context" | "camera" | "property-animation-group" | "ui-element" | "utility-layer" | "pointer-drag" | "gamepad" | "gamepad-button" | "scene" | "scene-node" | "light" | "shadow-generator" | "hierarchy-instance-pool" | "storage-buffer" | "material" | "physics-body" | "physics-aggregate" | "physics-viewer" | "physics-character-controller" | "physics-shape" | "billboard-sprite" | "billboard-system" | "sprite-layer" | "sprite-atlas" | "splat-mesh" | "texture" | "transform-node" | "skeleton" | "scene-skeleton" | "bone" | "navigation-obstacle";
+export type AudioHandleKind = "audio-node" | "audio-param" | "media-stream" | "media-stream-track";
+export type TypedArrayKind = "u8array" | "i8array" | "f64array" | "f32array" | "u16array" | "i16array" | "u32array" | "i32array";
 export interface DataKinds {
+    "event-target": {kind:"event-target"};
+    "http-response": {kind:"http-response"};
+    "search-params": {kind:"search-params"};
+    "promise": { kind: "promise"; result?: DataType; };
+    "storage": { kind: "storage"; };
+    "date": { kind: "date"; };
+    "date-time-format": { kind: "date-time-format"; };
     "number": {
         kind: "number";
     };
@@ -13,9 +21,15 @@ export interface DataKinds {
     "dataview": {
         kind: "dataview";
     };
+    "bufferview": {
+        kind: "bufferview";
+    };
+    "numberindex": {
+        kind: "numberindex";
+    };
     "borrowed-platform-event": {
         kind: "borrowed-platform-event";
-        event: "event" | "mouse" | "keyboard";
+        event: "event" | "mouse" | "keyboard" | "error" | "rejection";
     };
     "string": {
         kind: "string";
@@ -27,6 +41,8 @@ export interface DataKinds {
     "function": {
         kind: "function";
         parameters: DataType[];
+        /** Native parameter index of the final, freshly packed rest array. */
+        restParameter?: number;
         result?: DataType;
         /**
          * The container this function is stored in observes its JavaScript
@@ -55,7 +71,13 @@ export interface DataKinds {
     };
     "optional": {
         kind: "optional";
+        /** The absent state is known to be undefined, including resized tuple lanes. */
+        undefinedOnly?: true;
         inner: DataType;
+    };
+    "union": {
+        kind: "union";
+        members: DataType[];
     };
     "vector": {
         kind: "vector";
@@ -63,11 +85,17 @@ export interface DataKinds {
     };
     "map": {
         kind: "map";
+        /** Source object index signature; a JavaScript Map has no enumerable entries. */
+        dictionary?: true;
         key: DataType;
         value: DataType;
     };
     "set": {
         kind: "set";
+        element: DataType;
+    };
+    "iterator": {
+        kind: "iterator";
         element: DataType;
     };
     "span": {
@@ -77,6 +105,10 @@ export interface DataKinds {
     "tuple": {
         kind: "tuple";
         arity: number;
+    };
+    "product": {
+        kind: "product";
+        elements: DataType[];
     };
     "enummap": {
         kind: "enummap";
@@ -90,6 +122,7 @@ export interface DataKinds {
     "u8array": {
         kind: "u8array";
     };
+    "i8array": { kind: "i8array"; };
     "f64array": {
         kind: "f64array";
     };

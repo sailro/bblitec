@@ -8,7 +8,22 @@
  * values belongs beside its consumer, not here.
  */
 import ts from "typescript";
+
+/** Literal delimiters are syntax; the native regex consumes only its pattern and flags. */
+export function regularExpressionParts(expression: ts.RegularExpressionLiteral): {pattern:string; flags:string} | undefined {
+    const delimiter = expression.text.lastIndexOf("/");
+    if (delimiter <= 0) return undefined;
+    return {pattern:expression.text.slice(1, delimiter).replaceAll("\\/", "/"), flags:expression.text.slice(delimiter + 1)};
+}
 import { someAnalysisNode } from "./analysis-walk.js";
+
+/** Calls, accessors and writes can change an earlier selected receiver/value. */
+export function expressionMayRunCode(expression: ts.Expression): boolean {
+    return someAnalysisNode(expression, node =>
+        ts.isCallExpression(node) || ts.isNewExpression(node) ||
+        ts.isPropertyAccessExpression(node) || ts.isElementAccessExpression(node) ||
+        isUpdateExpression(node) || isAssignmentExpression(node), {functions: "skip", types: "skip"});
+}
 
 export interface UnwrapOptions {
     /**
@@ -237,6 +252,21 @@ export function isAssignmentExpression(
         ts.isBinaryExpression(node) &&
         isAssignmentOperator(node.operatorToken.kind)
     );
+}
+
+/** Writable leaves of a destructuring pattern; keys and defaults are reads. */
+export function assignmentTargets(expression: ts.Expression): readonly ts.Expression[] {
+    const target = unwrapExpression(expression);
+    if (ts.isOmittedExpression(target)) return [];
+    if (ts.isSpreadElement(target)) return assignmentTargets(target.expression);
+    if (ts.isArrayLiteralExpression(target)) return target.elements.flatMap(assignmentTargets);
+    if (ts.isObjectLiteralExpression(target)) return target.properties.flatMap(property =>
+        ts.isPropertyAssignment(property) ? assignmentTargets(property.initializer)
+            : ts.isShorthandPropertyAssignment(property) ? [property.name]
+            : ts.isSpreadAssignment(property) ? assignmentTargets(property.expression) : []);
+    if (ts.isBinaryExpression(target) && target.operatorToken.kind === ts.SyntaxKind.EqualsToken)
+        return assignmentTargets(target.left);
+    return [target];
 }
 
 /** A prefix or postfix `++`/`--`. */

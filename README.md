@@ -1,15 +1,13 @@
 # Babylon Lite Native
 
-`bblitec` compiles a bounded, reachable subset of Babylon Lite TypeScript into
-C++20. Assets and shaders materialize during generation; scene state, input,
-animation and rendering remain native through SDL3, SDL_GPU and Dawn.
+`bblitec` compiles a bounded Babylon Lite TypeScript subset to C++20.
+Assets/shaders are generated; state, input, animation and rendering run natively on SDL3, SDL_GPU and Dawn.
 
 | [<img src="docs/images/scenes/scene1.png" alt="BoomBox" width="170">](docs/status.md#curated-parity-scenes) | [<img src="docs/images/scenes/scene14.png" alt="Flight Helmet" width="170">](docs/status.md#curated-parity-scenes) | [<img src="docs/images/scenes/sandblox.png" alt="Sandblox" width="170">](docs/status.md#upstream-application-gates) | [<img src="docs/images/scenes/minecraft.png" alt="Voxel Sandbox" width="170">](docs/status.md#upstream-application-gates) |
 | :-: | :-: | :-: | :-: |
 | [<img src="docs/images/scenes/doom.png" alt="Doom" width="170">](docs/status.md#upstream-application-gates) | [<img src="docs/images/scenes/racer.png" alt="Racer" width="170">](docs/status.md#upstream-application-gates) | [<img src="docs/images/scenes/quake.png" alt="LibreQuake" width="170">](docs/status.md#upstream-application-gates) | [<img src="docs/images/scenes/freeciv.png" alt="Freeciv" width="170">](docs/status.md#upstream-application-gates) |
 
-The supported package/source commit is defined in
-[upstream/babylon-lite.json](upstream/babylon-lite.json).
+Source/package pin: [upstream/babylon-lite.json](upstream/babylon-lite.json).
 
 ## Quick start
 
@@ -26,8 +24,7 @@ and the Windows CMake path. A built scene requires a GPU.
 
 ## Documentation
 
-Read these canonical pages before feature work. Each fact has one owner; link
-to that page instead of repeating its content.
+Canonical facts and current state. One owner per fact; no session logs.
 
 | Page | Owns |
 | --- | --- |
@@ -41,7 +38,7 @@ to that page instead of repeating its content.
 | [UI](docs/ui.md) | DOM/CSS/Canvas2D support and browser compatibility |
 | [Status](docs/status.md) | Published measurements and scene previews |
 | [TODO](TODO.md) | Unfinished work |
-| [Audit](audit.md) | Verified findings and their status |
+| [Audit](audit.md) | Open audit findings |
 
 ## Acknowledgements
 

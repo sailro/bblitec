@@ -369,6 +369,10 @@ export function readHandleCollection(
  * between two values run to run.
  */
 export const propertyRules: readonly PropertyRule[] = [
+  ...(["platform-mouse-event", "platform-keyboard-event"] as const).map((owner): PropertyRead => ({
+    owner, property: "persisted", value: "data", helper: "bbl::dom_event_persisted",
+    dataType: { kind: "optional", inner: { kind: "boolean" }, undefinedOnly: true },
+  })),
   // --- Flow graphs ----------------------------------------------------
   // A container's declared graphs and attached runtimes are handles into
   // the generated graph; the pin's records behind them stay at generation.
@@ -467,6 +471,7 @@ export const propertyRules: readonly PropertyRule[] = [
     value: "data",
     helper: "bbl::pal::audio_state",
     dataType: { kind: "string" },
+    impure: true,
   },
   {
     owner: "audio-engine",
@@ -509,6 +514,17 @@ export const propertyRules: readonly PropertyRule[] = [
     helper: "bbl::pal::audio_destination",
   },
   ...AUDIO_PARAM_RULES,
+  ...([
+    ["duration", "Duration"], ["length", "Length"], ["sampleRate", "SampleRate"], ["numberOfChannels", "NumberOfChannels"],
+  ] as const).map(([property, member]): PropertyRead => ({
+    owner: "audio-buffer", property, value: "number", helper: "bbl::pal::audio_buffer_property",
+    helperArgument: `bbl::pal::AudioBufferProperty::${member}`, feature: "audio:buffer-source",
+  })),
+  {
+    owner: "audio-node", property: "buffer", value: "data", helper: "bbl::pal::audio_source_buffer",
+    helperReturnsFreshData: true,
+    dataType: {kind:"optional", inner:{kind:"handle", handle:"audio-buffer"}}, feature: "audio:buffer-source", impure: true,
+  },
   {
     owner: "audio-param",
     property: "value",

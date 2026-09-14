@@ -1,0 +1,955 @@
+# Native row-major grid tracks and item alignment preserve authored DOM parents.
+--- a/Include/RmlUi/Core/ComputedValues.h
++++ b/Include/RmlUi/Core/ComputedValues.h
+@@ -266,6 +266,8 @@
+ 		bool              has_local_transform()        const { return rare.has_local_transform; }
+ 		bool              has_local_perspective()      const { return rare.has_local_perspective; }
+ 		AlignContent      align_content()              const { return GetLocalPropertyKeyword(PropertyId::AlignContent, AlignContent::Stretch); }
++		AlignItems        justify_items()              const { return GetLocalPropertyKeyword(PropertyId::JustifyItems, AlignItems::Stretch); }
++		AlignSelf         justify_self()               const { return GetLocalPropertyKeyword(PropertyId::JustifySelf, AlignSelf::Auto); }
+ 		AlignItems        align_items()                const { return GetLocalPropertyKeyword(PropertyId::AlignItems, AlignItems::Stretch); }
+ 		AlignSelf         align_self()                 const { return GetLocalPropertyKeyword(PropertyId::AlignSelf, AlignSelf::Auto); }
+ 		FlexDirection     flex_direction()             const { return GetLocalPropertyKeyword(PropertyId::FlexDirection, FlexDirection::Row); }
+--- a/Include/RmlUi/Core/ID.h
++++ b/Include/RmlUi/Core/ID.h
+@@ -33,6 +33,7 @@
+ 	Flex,
+ 	FlexFlow,
+ 	Nav,
++	PlaceItems,
+ 
+ 	NumDefinedIds,
+ 	FirstCustomId = NumDefinedIds,
+@@ -163,6 +164,10 @@
+ 	RmlUi_Direction,
+ 	BackgroundClip,
+ 	BorderImage,
++	GridTemplateColumns,
++	GridTemplateRows,
++	JustifyItems,
++	JustifySelf,
+ 
+ 	NumDefinedIds,
+ 	FirstCustomId = NumDefinedIds,
+--- a/Include/RmlUi/Core/StyleTypes.h
++++ b/Include/RmlUi/Core/StyleTypes.h
+@@ -42,7 +42,9 @@
+ 		TableRowGroup,
+ 		TableColumn,
+ 		TableColumnGroup,
+-		TableCell
++		TableCell,
++		Grid,
++		InlineGrid
+ 	};
+ 	enum class Position : uint8_t { Static, Relative, Absolute, Fixed };
+ 
+@@ -130,7 +132,7 @@
+ 	using FlexBasis = LengthPercentageAuto;
+ 	enum class FlexDirection : uint8_t { Row, RowReverse, Column, ColumnReverse };
+ 	enum class FlexWrap : uint8_t { Nowrap, Wrap, WrapReverse };
+-	enum class JustifyContent : uint8_t { FlexStart, FlexEnd, Center, SpaceBetween, SpaceAround, SpaceEvenly, Start, End };
++	enum class JustifyContent : uint8_t { FlexStart, FlexEnd, Center, SpaceBetween, SpaceAround, SpaceEvenly, Start, End, Normal, Stretch, Left, Right };
+ 
+ 	enum class Nav : uint8_t { None, Auto, Horizontal, Vertical, TreeOrder };
+ 
+--- a/Source/Core/Element.cpp
++++ b/Source/Core/Element.cpp
+@@ -2386,7 +2386,7 @@
+ 
+ void Element::AddChildrenToStackingContext(Vector<StackingContextChild>& stacking_children)
+ {
+-	bool is_flex_container = (GetDisplay() == Style::Display::Flex);
++	bool is_flex_container = (GetDisplay() == Style::Display::Flex || GetDisplay() == Style::Display::Grid || GetDisplay() == Style::Display::InlineGrid);
+ 	const int num_children = (int)children.size();
+ 	for (int i = 0; i < num_children; ++i)
+ 	{
+@@ -2450,12 +2450,14 @@
+ 		case Display::FlowRoot:
+ 		case Display::Table:
+ 		case Display::Flex:
++		case Display::Grid:
+ 			order = RenderOrder::Block;
+ 			render_as_atomic_unit = (display == Display::Table || is_flex_item);
+ 			break;
+ 
+ 		case Display::Inline:
+ 		case Display::InlineBlock:
++		case Display::InlineGrid:
+ 		case Display::InlineFlex:
+ 		case Display::InlineTable:
+ 			order = RenderOrder::Inline;
+--- a/Source/Core/ElementStyle.cpp
++++ b/Source/Core/ElementStyle.cpp
+@@ -1355,6 +1355,11 @@
+ 	case PropertyId::FlexShrink:
+ 	case PropertyId::FlexWrap:
+ 	case PropertyId::JustifyContent:
++	case PropertyId::GridTemplateColumns:
++	case PropertyId::GridTemplateRows:
++		break; // Consumed by the grid track formatter.
++	case PropertyId::JustifyItems:
++	case PropertyId::JustifySelf:
+ 		break;
+ 	// Navigation properties. Must be manually retrieved with 'GetProperty()'.
+ 	case PropertyId::NavUp:
+--- a/Source/Core/Layout/BlockContainer.cpp
++++ b/Source/Core/Layout/BlockContainer.cpp
+@@ -527,6 +527,12 @@
+ 	element->SetOffset(border_position - position, GetElement());
+ }
+ 
++bool BlockContainer::GetBaselineOfFirstLine(float& out_baseline) const
++{
++	for (const auto& child : child_boxes) if (child->GetBaselineOfFirstLine(out_baseline)) return true;
++	return false;
++}
++
+ bool BlockContainer::GetBaselineOfLastLine(float& out_baseline) const
+ {
+ 	// Return the baseline of our last child that itself has a baseline.
+--- a/Source/Core/Layout/BlockContainer.h
++++ b/Source/Core/Layout/BlockContainer.h
+@@ -101,6 +101,7 @@
+ 	const Box* GetIfBox() const override;
+ 	float GetShrinkToFitWidth() const override;
+ 	bool GetBaselineOfLastLine(float& out_baseline) const override;
++	bool GetBaselineOfFirstLine(float& out_baseline) const override;
+ 
+ private:
+ 	InlineContainer* EnsureOpenInlineContainer();
+--- a/Source/Core/Layout/BlockFormattingContext.cpp
++++ b/Source/Core/Layout/BlockFormattingContext.cpp
+@@ -66,10 +66,12 @@
+ 	case Style::Display::Block:
+ 	case Style::Display::FlowRoot:
+ 	case Style::Display::Flex:
++	case Style::Display::Grid:
+ 	case Style::Display::Table: return OuterDisplayType::BlockLevel;
+ 
+ 	case Style::Display::Inline:
+ 	case Style::Display::InlineBlock:
++	case Style::Display::InlineGrid:
+ 	case Style::Display::InlineFlex:
+ 	case Style::Display::InlineTable: return OuterDisplayType::InlineLevel;
+ 
+--- a/Source/Core/Layout/ContainerBox.cpp
++++ b/Source/Core/Layout/ContainerBox.cpp
+@@ -262,6 +262,12 @@
+ 	return true;
+ }
+ 
++bool FlexContainer::GetBaselineOfFirstLine(float& out_baseline) const
++{
++	out_baseline = box.GetSizeAcross(BoxDirection::Vertical, BoxArea::Border) + box.GetEdge(BoxArea::Margin, BoxEdge::Bottom) - element->GetBaseline();
++	return true;
++}
++
+ float FlexContainer::GetShrinkToFitWidth() const
+ {
+ 	// For the trivial case of a fixed width, we simply return that.
+--- a/Source/Core/Layout/ContainerBox.h
++++ b/Source/Core/Layout/ContainerBox.h
+@@ -108,6 +108,7 @@
+ 	// @returns True if it succeeds, otherwise false if it needs to be formatted again because scrollbars were enabled.
+ 	bool Close(const Vector2f visible_overflow_size, Vector2f scrollable_content_size, const Box& box, float element_baseline);
+ 
++	bool GetBaselineOfFirstLine(float& out_baseline) const override;
+ 	float GetShrinkToFitWidth() const override;
+ 
+ 	const Box* GetIfBox() const override { return &box; }
+--- a/Source/Core/Layout/FlexFormattingContext.cpp
++++ b/Source/Core/Layout/FlexFormattingContext.cpp
+@@ -6,9 +6,12 @@
+ #include "../../../Include/RmlUi/Core/Types.h"
+ #include "ContainerBox.h"
+ #include "LayoutDetails.h"
++#include "GridTrackSizing.h"
++#include "../../../Include/RmlUi/Core/Context.h"
+ #include <algorithm>
+ #include <float.h>
+ #include <numeric>
++#include <stdexcept>
+ 
+ namespace Rml {
+ 
+@@ -132,6 +135,7 @@
+ 	Size cross;
+ 	float flex_shrink_factor;
+ 	float flex_grow_factor;
++	Style::AlignSelf justify_self; // Grid inline alignment, independent of flex properties.
+ 	Style::AlignSelf align_self;  // 'Auto' is replaced by container's 'align-items' value
+ 
+ 	float inner_flex_base_size;   // Inner size
+@@ -167,10 +171,10 @@
+ 	Vector<FlexLine> lines;
+ };
+ 
+-static void GetItemSizing(FlexItem::Size& destination, const ComputedAxisSize& computed_size, const float base_value, const bool direction_reverse)
++static void GetItemSizing(FlexItem::Size& destination, const ComputedAxisSize& computed_size, const float base_value, const bool direction_reverse, const float edge_base_value = -1.f)
+ {
+ 	float margin_a, margin_b, padding_border_a, padding_border_b;
+-	LayoutDetails::GetEdgeSizes(margin_a, margin_b, padding_border_a, padding_border_b, computed_size, base_value);
++	LayoutDetails::GetEdgeSizes(margin_a, margin_b, padding_border_a, padding_border_b, computed_size, edge_base_value < 0.f ? base_value : edge_base_value);
+ 
+ 	const float padding_border = padding_border_a + padding_border_b;
+ 	const float margin = margin_a + margin_b;
+@@ -220,14 +224,15 @@
+ 	// For details, see https://drafts.csswg.org/css-flexbox/#layout-algorithm
+ 
+ 	const ComputedValues& computed_flex = element_flex->GetComputedValues();
+-	const Style::FlexDirection direction = computed_flex.flex_direction();
++	const bool is_grid = computed_flex.display() == Style::Display::Grid || computed_flex.display() == Style::Display::InlineGrid;
++	const Style::FlexDirection direction = is_grid ? Style::FlexDirection::Row : computed_flex.flex_direction();
+ 	const Style::LengthPercentage row_gap = computed_flex.row_gap();
+ 	const Style::LengthPercentage column_gap = computed_flex.column_gap();
+ 
+ 	const bool main_axis_horizontal = (direction == Style::FlexDirection::Row || direction == Style::FlexDirection::RowReverse);
+ 	const bool direction_reverse = (direction == Style::FlexDirection::RowReverse || direction == Style::FlexDirection::ColumnReverse);
+-	const bool flex_single_line = (computed_flex.flex_wrap() == Style::FlexWrap::Nowrap);
+-	const bool wrap_reverse = (computed_flex.flex_wrap() == Style::FlexWrap::WrapReverse);
++	const bool flex_single_line = !is_grid && (computed_flex.flex_wrap() == Style::FlexWrap::Nowrap);
++	const bool wrap_reverse = !is_grid && (computed_flex.flex_wrap() == Style::FlexWrap::WrapReverse);
+ 
+ 	const float main_available_size = (main_axis_horizontal ? flex_available_content_size.x : flex_available_content_size.y);
+ 	const float cross_available_size = (!main_axis_horizontal ? flex_available_content_size.x : flex_available_content_size.y);
+@@ -247,6 +252,15 @@
+ 	const float main_gap_size = ResolveValue(main_axis_horizontal ? column_gap : row_gap, main_size_base_value);
+ 	const float cross_gap_size = ResolveValue(main_axis_horizontal ? row_gap : column_gap, cross_size_base_value);
+ 
++
++	Vector<GridTrack> grid_columns, grid_rows;
++	if (is_grid) {
++		const float dp_ratio = element_flex->GetContext()->GetDensityIndependentPixelRatio();
++		grid_columns = GridTrackParser::Parse(element_flex->GetProperty<String>("grid-template-columns"), dp_ratio);
++		grid_rows = GridTrackParser::Parse(element_flex->GetProperty<String>("grid-template-rows"), dp_ratio);
++		if (grid_columns.empty()) grid_columns.emplace_back();
++	}
++
+ 	// -- Build a list of all flex items with base size information --
+ 	const int num_flex_children = element_flex->GetNumChildren();
+ 	Vector<FlexItem> items;
+@@ -272,26 +286,43 @@
+ 			flex_container_box->AddRelativeElement(element);
+ 		}
+ 
++		if (is_grid) {
++			using namespace Style;
++			if (computed.height().type == LengthPercentageAuto::Percentage ||
++				computed.min_height().type == LengthPercentage::Percentage || computed.max_height().type == LengthPercentage::Percentage)
++				throw std::runtime_error("UI grid percentage-dependent item sizing is not represented.");
++			if (computed.align_self() == AlignSelf::Baseline || computed.justify_self() == AlignSelf::Baseline ||
++				computed_flex.align_items() == AlignItems::Baseline || computed_flex.justify_items() == AlignItems::Baseline)
++				throw std::runtime_error("UI grid baseline alignment is not represented.");
++		}
+ 		FlexItem item = {};
+ 		item.element = element;
+-		LayoutDetails::BuildBox(item.box, flex_content_containing_block, element, BuildBoxMode::UnalignedBlock);
++		LayoutDetails::BuildBox(item.box, flex_content_containing_block, element, is_grid ? BuildBoxMode::IntrinsicWidth : BuildBoxMode::UnalignedBlock);
+ 
+ 		Style::LengthPercentageAuto item_main_size;
+ 
+ 		{
+-			const ComputedAxisSize computed_main_size =
++			ComputedAxisSize computed_main_size =
+ 				main_axis_horizontal ? LayoutDetails::BuildComputedHorizontalSize(computed) : LayoutDetails::BuildComputedVerticalSize(computed);
+ 			const ComputedAxisSize computed_cross_size =
+ 				!main_axis_horizontal ? LayoutDetails::BuildComputedHorizontalSize(computed) : LayoutDetails::BuildComputedVerticalSize(computed);
+ 
+-			GetItemSizing(item.main, computed_main_size, main_size_base_value, direction_reverse);
+-			GetItemSizing(item.cross, computed_cross_size, cross_size_base_value, wrap_reverse);
++			if (is_grid) {
++				if (computed_main_size.size.type == Style::LengthPercentageAuto::Percentage) computed_main_size.size = {Style::LengthPercentageAuto::Auto, 0.f};
++				if (computed_main_size.min_size.type == Style::LengthPercentage::Percentage) computed_main_size.min_size = {Style::LengthPercentage::Length, 0.f};
++				if (computed_main_size.max_size.type == Style::LengthPercentage::Percentage) computed_main_size.max_size = {Style::LengthPercentage::Length, FLT_MAX};
++			}
++			GetItemSizing(item.main, computed_main_size, is_grid ? 0.f : main_size_base_value, direction_reverse);
++			GetItemSizing(item.cross, computed_cross_size, cross_size_base_value, wrap_reverse, is_grid ? 0.f : -1.f);
+ 
+ 			item_main_size = computed_main_size.size;
+ 		}
+ 
+-		item.flex_shrink_factor = computed.flex_shrink();
+-		item.flex_grow_factor = computed.flex_grow();
++		item.flex_shrink_factor = is_grid ? 0.f : computed.flex_shrink();
++		item.flex_grow_factor = is_grid ? 0.f : computed.flex_grow();
++		item.justify_self = computed.justify_self();
++		if (item.justify_self == Style::AlignSelf::Auto)
++			item.justify_self = static_cast<Style::AlignSelf>(static_cast<int>(computed_flex.justify_items()) + 1);
+ 		item.align_self = computed.align_self();
+ 
+ 		static_assert(int(Style::AlignSelf::FlexStart) == int(Style::AlignItems::FlexStart) + 1 &&
+@@ -302,12 +333,18 @@
+ 		if (item.align_self == Style::AlignSelf::Auto)
+ 			item.align_self = static_cast<Style::AlignSelf>(static_cast<int>(computed_flex.align_items()) + 1);
+ 
++		if (is_grid && element->IsReplaced()) {
++			if (computed.justify_self() == Style::AlignSelf::Auto && !element_flex->GetLocalProperty(PropertyId::JustifyItems))
++				item.justify_self = Style::AlignSelf::Start;
++			if (computed.align_self() == Style::AlignSelf::Auto && !element_flex->GetLocalProperty(PropertyId::AlignItems))
++				item.align_self = Style::AlignSelf::Start;
++		}
+ 		auto GetMainSize = [&](const Box& box) { return box.GetSize()[main_axis_horizontal ? 0 : 1]; };
+ 
+ 		const float sum_padding_border = item.main.sum_edges - (item.main.margin_a + item.main.margin_b);
+ 
+ 		// Find the flex base size (possibly negative when using border box sizing)
+-		if (computed.flex_basis().type != Style::FlexBasis::Auto)
++		if (!is_grid && computed.flex_basis().type != Style::FlexBasis::Auto)
+ 		{
+ 			item.inner_flex_base_size = ResolveValue(computed.flex_basis(), main_size_base_value);
+ 			if (computed.box_sizing() == Style::BoxSizing::BorderBox)
+@@ -326,7 +363,7 @@
+ 		}
+ 		else if (main_axis_horizontal)
+ 		{
+-			item.inner_flex_base_size = LayoutDetails::GetShrinkToFitWidth(element, flex_content_containing_block);
++			item.inner_flex_base_size = LayoutDetails::GetShrinkToFitWidth(element, flex_content_containing_block, is_grid);
+ 		}
+ 		else
+ 		{
+@@ -352,10 +389,44 @@
+ 		item.hypothetical_main_size = Math::Clamp(item.inner_flex_base_size, item.main.min_size, item.main.max_size) + item.main.sum_edges;
+ 		item.flex_base_size = item.inner_flex_base_size + item.main.sum_edges;
+ 
++
++		if (is_grid) {
++			auto& track = grid_columns[items.size() % grid_columns.size()];
++			float minimum = item.hypothetical_main_size;
++			if (track.automatic_minimum && item.main.auto_size) {
++				minimum = item.main.min_size + item.main.sum_edges;
++				if ((!element->GetLocalProperty(PropertyId::MinWidth) || computed.min_width().type == Style::LengthPercentage::Percentage) && !LayoutDetails::IsScrollContainer(computed.overflow_x(), computed.overflow_y())) {
++					if (element->IsReplaced()) minimum = item.hypothetical_main_size;
++					else {
++					// Formatting with zero inline space exposes the largest unbreakable
++					// contribution, using the same text/block formatter as final layout.
++					Box minimum_box = item.box;
++					minimum_box.SetContent({0.f, minimum_box.GetSize().y});
++					RootBox root(Math::Max(flex_content_containing_block, Vector2f(0.f)));
++					auto minimum_layout = FormattingContext::FormatIndependent(&root, element, &minimum_box, FormattingContextType::Block);
++					minimum = Math::Clamp(minimum_layout->GetShrinkToFitWidth(), item.main.min_size, item.main.max_size) + item.main.sum_edges;
++					}
++				}
++			}
++			// Cyclic percentages on replaced boxes compress the min-content
++			// contribution, including the automatic minimum, but not max-content.
++			// https://www.w3.org/TR/css-sizing-3/#min-percentage-contribution
++			if (element->IsReplaced() && (computed.width().type == Style::LengthPercentageAuto::Percentage ||
++				computed.max_width().type == Style::LengthPercentage::Percentage)) {
++				float compressed_minimum = item.main.min_size;
++				Vector2f intrinsic_dimensions;
++				float intrinsic_ratio = -1.f;
++				if (element->GetIntrinsicDimensions(intrinsic_dimensions, intrinsic_ratio) && intrinsic_ratio > 0.f)
++					compressed_minimum = Math::Max(compressed_minimum, ResolveValue(computed.min_height(), 0.f) * intrinsic_ratio);
++				minimum = compressed_minimum + item.main.sum_edges;
++			}
++			track.min_content = Math::Max(track.min_content, minimum);
++			track.max_content = Math::Max(track.max_content, item.hypothetical_main_size);
++		}
+ 		items.push_back(std::move(item));
+ 	}
+ 
+-	if (items.empty())
++	if (items.empty() && !is_grid)
+ 	{
+ 		return;
+ 	}
+@@ -377,7 +448,7 @@
+ 		{
+ 			cursor += item.hypothetical_main_size;
+ 
+-			if (!line_items.empty() && cursor > main_wrap_size)
++			if (!line_items.empty() && (is_grid ? line_items.size() == grid_columns.size() : cursor > main_wrap_size))
+ 			{
+ 				// Break into new line.
+ 				container.lines.emplace_back(std::move(line_items));
+@@ -400,10 +471,16 @@
+ 		items.shrink_to_fit();
+ 	}
+ 
++
++	if (is_grid) {
++		const size_t row_count = Math::Max(size_t(1), Math::Max(grid_rows.size(), container.lines.size()));
++		while (container.lines.size() < row_count) container.lines.emplace_back(Vector<FlexItem>{});
++		grid_rows.resize(row_count);
++	}
+ 	for (FlexLine& line : container.lines)
+ 	{
+ 		// now that items are in lines, we can add the main gap size to all but the last item
+-		if (main_gap_size > 0.f)
++		if (!is_grid && main_gap_size > 0.f)
+ 		{
+ 			for (size_t i = 0; i < line.items.size() - 1; i++)
+ 			{
+@@ -425,12 +502,41 @@
+ 			  return a.accumulated_hypothetical_main_size < b.accumulated_hypothetical_main_size;
+ 		  })->accumulated_hypothetical_main_size;
+ 
+-	const float used_main_size = Math::Clamp(used_main_size_unconstrained, main_min_size, main_max_size);
++	float used_main_size = Math::Clamp(used_main_size_unconstrained, main_min_size, main_max_size);
++	Vector<float> grid_column_offsets;
++	if (is_grid) {
++		const bool stretch_auto = !element_flex->GetLocalProperty(PropertyId::JustifyContent) || computed_flex.justify_content() == Style::JustifyContent::Normal || computed_flex.justify_content() == Style::JustifyContent::Stretch;
++		ResolveGridTracks(grid_columns, main_available_size < 0.f ? -1.f : used_main_size, main_gap_size, stretch_auto);
++		if (main_available_size < 0.f) used_main_size = Math::Clamp(GridTracksExtent(grid_columns, main_gap_size), main_min_size, main_max_size);
++		const float remaining = used_main_size - GridTracksExtent(grid_columns, main_gap_size);
++		float offset = 0.f, spacing = main_gap_size;
++		using Style::JustifyContent;
++		switch (computed_flex.justify_content()) {
++		case JustifyContent::Center: offset = remaining * .5f; break;
++		case JustifyContent::Right: case JustifyContent::End: case JustifyContent::FlexEnd: offset = remaining; break;
++		case JustifyContent::SpaceBetween: if (remaining > 0.f && grid_columns.size() > 1) spacing += remaining / float(grid_columns.size() - 1); break;
++		case JustifyContent::SpaceAround:
++			if (remaining > 0.f) { spacing += remaining / float(grid_columns.size()); offset = remaining / float(2 * grid_columns.size()); }
++			else offset = remaining * .5f;
++			break;
++		case JustifyContent::SpaceEvenly:
++			if (remaining > 0.f) { offset = remaining / float(grid_columns.size() + 1); spacing += offset; }
++			else offset = remaining * .5f;
++			break;
++		default: break;
++		}
++		for (const auto& track : grid_columns) { grid_column_offsets.push_back(offset); offset += track.size + spacing; }
++	}
+ 
+ 	// -- Determine main size --
+ 	// Resolve flexible lengths to find the used main size of all items.
+ 	for (FlexLine& line : container.lines)
+ 	{
++
++		if (is_grid) {
++			for (auto& item : line.items) item.used_main_size = item.hypothetical_main_size;
++			continue;
++		}
+ 		const float available_flex_space = used_main_size - line.accumulated_hypothetical_main_size; // Possibly negative
+ 
+ 		const bool flex_mode_grow = (available_flex_space > 0.f);
+@@ -553,7 +659,33 @@
+ 		const float remaining_free_space = used_main_size -
+ 			std::accumulate(line.items.begin(), line.items.end(), 0.f, [](float value, const FlexItem& item) { return value + item.used_main_size; });
+ 
+-		if (remaining_free_space > 0.0f)
++		if (is_grid) {
++			for (size_t column = 0; column < line.items.size(); ++column) {
++				auto& item = line.items[column];
++				const float cell_width = grid_columns[column].size;
++				const auto& values = item.element->GetComputedValues();
++				// Once the cell is definite, all inline percentages and both axes'
++				// percentage edges resolve against its inline size, not the grid box.
++				LayoutDetails::BuildBox(item.box, {cell_width, flex_content_containing_block.y}, item.element, BuildBoxMode::UnalignedBlock);
++				GetItemSizing(item.main, LayoutDetails::BuildComputedHorizontalSize(values), cell_width, false);
++				GetItemSizing(item.cross, LayoutDetails::BuildComputedVerticalSize(values), cross_size_base_value, false, cell_width);
++				const float resolved_width = item.box.GetSize().x;
++				item.used_main_size = Math::Clamp(resolved_width >= 0.f ? resolved_width : item.inner_flex_base_size, item.main.min_size, item.main.max_size) + item.main.sum_edges;
++				const float free = cell_width - item.used_main_size;
++				const int margins = int(item.main.auto_margin_a) + int(item.main.auto_margin_b);
++				if (margins) {
++					item.main_auto_margin_size_a = item.main.auto_margin_a ? Math::Max(0.f, free) / float(margins) : 0.f;
++				} else if (item.justify_self == Style::AlignSelf::Center) {
++					item.main_auto_margin_size_a = free * .5f;
++				} else if (item.justify_self == Style::AlignSelf::End || item.justify_self == Style::AlignSelf::FlexEnd) {
++					item.main_auto_margin_size_a = free;
++				} else if (item.justify_self == Style::AlignSelf::Stretch && item.main.auto_size) {
++					item.used_main_size = Math::Clamp(cell_width - item.main.sum_edges, item.main.min_size, item.main.max_size) + item.main.sum_edges;
++				}
++				item.main_offset = grid_column_offsets[column] + item.main.margin_a + item.main_auto_margin_size_a;
++			}
++			continue;
++		} else if (remaining_free_space > 0.0f)
+ 		{
+ 			const int num_auto_margins = std::accumulate(line.items.begin(), line.items.end(), 0,
+ 				[](int value, const FlexItem& item) { return value + int(item.main.auto_margin_a) + int(item.main.auto_margin_b); });
+@@ -593,11 +725,15 @@
+ 						break;
+ 					}
+ 					//-fallthrough
++				case JustifyContent::Normal:
++				case JustifyContent::Stretch:
+ 				case JustifyContent::FlexStart: line.items.back().main_auto_margin_size_b = remaining_free_space; break;
+ 				case JustifyContent::FlexEnd: line.items.front().main_auto_margin_size_a = remaining_free_space; break;
++				case JustifyContent::Left:
++				case JustifyContent::Right:
+ 				case JustifyContent::Start:
+ 				case JustifyContent::End:
+-					if ((computed_flex.justify_content() == JustifyContent::Start) == direction_reverse)
++					if ((computed_flex.justify_content() == JustifyContent::Start || computed_flex.justify_content() == JustifyContent::Left) == direction_reverse)
+ 						line.items.front().main_auto_margin_size_a = remaining_free_space;
+ 					else
+ 						line.items.back().main_auto_margin_size_b = remaining_free_space;
+@@ -649,7 +785,7 @@
+ 	}
+ 
+ 	// Apply cross axis gaps to every item in every line except the last line.
+-	if (cross_gap_size > 0.f)
++	if (!is_grid && cross_gap_size > 0.f)
+ 	{
+ 		for (size_t i = 0; i < container.lines.size() - 1; i++)
+ 		{
+@@ -723,7 +859,7 @@
+ 		{
+ 			RMLUI_ASSERT(std::none_of(line.items.begin(), line.items.end(), [&](const auto& item) { return CanSkipHypotheticalCrossSize(item); }));
+ 
+-			const float largest_hypothetical_cross_size =
++			const float largest_hypothetical_cross_size = line.items.empty() ? 0.f :
+ 				std::max_element(line.items.begin(), line.items.end(), [](const FlexItem& a, const FlexItem& b) {
+ 					return a.hypothetical_cross_size < b.hypothetical_cross_size;
+ 				})->hypothetical_cross_size;
+@@ -736,20 +872,33 @@
+ 		}
+ 	}
+ 
++	const float grid_gap_total = is_grid ? cross_gap_size * float(container.lines.size() - 1) : 0.f;
++	const float grid_intrinsic_height = grid_gap_total + std::accumulate(container.lines.begin(), container.lines.end(), 0.f,
++		[](float value, const FlexLine& line) { return value + line.cross_size; });
++	const float row_stretch_size = is_grid
++		? Math::Clamp(cross_available_size >= 0.f ? cross_available_size : grid_intrinsic_height, cross_min_size, cross_max_size)
++		: cross_available_size;
++	if (is_grid) {
++		for (size_t i = 0; i < grid_rows.size(); ++i) grid_rows[i].min_content = grid_rows[i].max_content = container.lines[i].cross_size;
++		ResolveGridTracks(grid_rows, cross_available_size < 0.f && cross_min_size <= grid_intrinsic_height ? -1.f : row_stretch_size,
++			cross_gap_size, computed_flex.align_content() == Style::AlignContent::Stretch);
++		for (size_t i = 0; i < grid_rows.size(); ++i) container.lines[i].cross_size = grid_rows[i].size;
++	}
+ 	// Stretch out the lines if we have extra space.
+-	if (cross_available_size >= 0.f && computed_flex.align_content() == Style::AlignContent::Stretch)
+-	{
+-		int remaining_space = static_cast<int>(cross_available_size -
++	if (!is_grid && row_stretch_size >= 0.f && computed_flex.align_content() == Style::AlignContent::Stretch)
++	{
++		float remaining_space = row_stretch_size - grid_gap_total -
+ 			std::accumulate(container.lines.begin(), container.lines.end(), 0.f,
+-				[](float value, const FlexLine& line) { return value + line.cross_size; }));
+-
++				[](float value, const FlexLine& line) { return value + line.cross_size; });
++
++		remaining_space = float(int(remaining_space));
+ 		if (remaining_space > 0)
+ 		{
+ 			// Here we use integer math to ensure all space is distributed to pixel boundaries.
+ 			const int num_lines = (int)container.lines.size();
+ 			for (int i = 0; i < num_lines; i++)
+ 			{
+-				const int add_space_to_line = remaining_space / (num_lines - i);
++				const float add_space_to_line = float(int(remaining_space) / (num_lines - i));
+ 				remaining_space -= add_space_to_line;
+ 				container.lines[i].cross_size += static_cast<float>(add_space_to_line);
+ 			}
+@@ -863,7 +1012,7 @@
+ 		}
+ 	}
+ 
+-	const float accumulated_lines_cross_size = std::accumulate(container.lines.begin(), container.lines.end(), 0.f,
++	const float accumulated_lines_cross_size = grid_gap_total + std::accumulate(container.lines.begin(), container.lines.end(), 0.f,
+ 		[](float value, const FlexLine& line) { return value + line.cross_size; });
+ 
+ 	// If the available cross size is infinite, the used cross size becomes the accumulated line cross size.
+@@ -948,7 +1097,7 @@
+ 			else
+ 				line.cross_offset = cursor + line.cross_spacing_a;
+ 
+-			cursor += line.cross_spacing_a + line.cross_size + line.cross_spacing_b;
++			cursor += line.cross_spacing_a + line.cross_size + line.cross_spacing_b + (is_grid ? cross_gap_size : 0.f);
+ 		}
+ 	}
+ 
+@@ -974,11 +1123,15 @@
+ 			// Set the position of the element within the flex container
+ 			item.element->SetOffset(flex_content_offset + item_offset, element_flex);
+ 
+-			// The flex container baseline is simply set to the first flex item that has a baseline.
+-			if (!baseline_set && item_layout_box->GetBaselineOfLastLine(flex_baseline))
+-			{
+-				flex_baseline += flex_content_offset.y + item_offset.y;
+-				baseline_set = true;
++			if (!baseline_set) {
++				const bool found = is_grid ? item_layout_box->GetBaselineOfFirstLine(flex_baseline) : item_layout_box->GetBaselineOfLastLine(flex_baseline);
++				// Grid exports its first item's first baseline, synthesizing it at
++				// that item's border-box bottom when it has no line box.
++				if (!found && is_grid) flex_baseline = item.box.GetSize(BoxArea::Border).y;
++				if (found || is_grid) {
++					flex_baseline += flex_content_offset.y + item_offset.y;
++					baseline_set = true;
++				}
+ 			}
+ 
+ 			// The item and its contents may overflow, propagate their border-box overflow to the flex container.
+@@ -993,6 +1146,13 @@
+ 		}
+ 	}
+ 
++
++	if (is_grid) {
++		if (!baseline_set) flex_baseline = flex_content_offset.y + used_cross_size;
++		// Empty tracks and their gaps belong to the grid's scrollable extent too.
++		flex_scrollable_content_size = Math::Max(flex_scrollable_content_size,
++			Vector2f(GridTracksExtent(grid_columns, main_gap_size), GridTracksExtent(grid_rows, cross_gap_size)));
++	}
+ 	flex_resulting_content_size = MainCrossToVec2(used_main_size, used_cross_size);
+ }
+ 
+--- a/Source/Core/Layout/FormattingContext.cpp
++++ b/Source/Core/Layout/FormattingContext.cpp
+@@ -23,7 +23,7 @@
+ 
+ 	auto& computed = element->GetComputedValues();
+ 	const Display display = computed.display();
+-	if (display == Display::Flex || display == Display::InlineFlex)
++	if (display == Display::Flex || display == Display::InlineFlex || display == Display::Grid || display == Display::InlineGrid)
+ 	{
+ 		type = FormattingContextType::Flex;
+ 	}
+--- /dev/null
++++ b/Source/Core/Layout/GridTrackSizing.h
+@@ -0,0 +1,172 @@
++#pragma once
++
++#include "../../../Include/RmlUi/Core/Types.h"
++#include <algorithm>
++#include <charconv>
++#include <cctype>
++#include <cmath>
++#include <numeric>
++#include <stdexcept>
++#include <string_view>
++
++namespace Rml {
++
++// Row-major, non-spanning grid tracks. Keep sizing separate from item formatting
++// so columns and rows use the same fixed/auto/flexible sizing algorithm.
++struct GridTrack {
++	enum class Kind { Fixed, Auto, Flexible };
++	Kind kind = Kind::Auto;
++	bool automatic_minimum = true;
++	float minimum = 0.f;
++	float fraction = 0.f;
++	float min_content = 0.f, max_content = 0.f;
++	float size = 0.f;
++};
++
++class GridTrackParser {
++public:
++	static Vector<GridTrack> Parse(std::string_view value, float dp_ratio)
++	{
++		String lower(value);
++		std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char c) { return char(std::tolower(c)); });
++		GridTrackParser parser(lower, dp_ratio);
++		parser.Space();
++		if (parser.Take("none")) {
++			parser.Space();
++			if (!parser.input.empty()) Fail();
++			return {};
++		}
++		auto result = parser.List(false);
++		if (!parser.input.empty() || result.empty()) Fail();
++		return result;
++	}
++
++private:
++	std::string_view input;
++	float dp_ratio;
++	GridTrackParser(std::string_view input, float dp_ratio) : input(input), dp_ratio(dp_ratio) {}
++	[[noreturn]] static void Fail() { throw std::runtime_error("UI grid tracks require none, auto, non-negative px/fr, minmax(px,fr), or repeat(integer, tracks), at most 256 tracks."); }
++	void Space() { while (!input.empty() && (input.front() == ' ' || input.front() == '\t' || input.front() == '\n' || input.front() == '\r')) input.remove_prefix(1); }
++	bool Take(std::string_view prefix) {
++		if (input.substr(0, prefix.size()) != prefix) return false;
++		input.remove_prefix(prefix.size()); return true;
++	}
++	float Number() {
++		float value = 0.f;
++		const auto parsed = std::from_chars(input.data(), input.data() + input.size(), value);
++		if (parsed.ec != std::errc{} || !std::isfinite(value) || value < 0.f) Fail();
++		input.remove_prefix(size_t(parsed.ptr - input.data()));
++		return value;
++	}
++	float Length() {
++		const float value = Number();
++		if (Take("px")) return value;
++		if (Take("dp")) return value * dp_ratio;
++		if (value != 0.f) Fail();
++		return 0.f;
++	}
++	GridTrack Track() {
++		GridTrack track;
++		if (Take("auto")) return track;
++		if (Take("minmax(")) {
++			Space(); track.automatic_minimum = Take("auto");
++			if (!track.automatic_minimum) track.minimum = Length();
++			Space(); if (!Take(",")) Fail(); Space();
++			track.fraction = Number();
++			if (!Take("fr")) Fail(); Space(); if (!Take(")")) Fail();
++			track.kind = GridTrack::Kind::Flexible;
++			return track;
++		}
++		const float value = Number();
++		if (Take("fr")) { track.kind = GridTrack::Kind::Flexible; track.fraction = value; return track; }
++		track.kind = GridTrack::Kind::Fixed; track.automatic_minimum = false;
++		if (Take("px")) track.minimum = value;
++		else if (Take("dp")) track.minimum = value * dp_ratio;
++		else if (value != 0.f) Fail();
++		return track;
++	}
++	Vector<GridTrack> List(bool repeated) {
++		Vector<GridTrack> result;
++		Space();
++		while (!input.empty() && input.front() != ')') {
++			if (Take("repeat(")) {
++				if (repeated) Fail();
++				Space(); unsigned count_value = 0;
++				const auto parsed = std::from_chars(input.data(), input.data() + input.size(), count_value);
++				if (parsed.ec != std::errc{} || count_value < 1 || count_value > 256) Fail();
++				input.remove_prefix(size_t(parsed.ptr - input.data()));
++				Space(); if (!Take(",")) Fail();
++				const auto pattern = List(true);
++				if (pattern.empty() || !Take(")") || pattern.size() * size_t(count_value) + result.size() > 256) Fail();
++				for (int i = 0; i < int(count_value); ++i) result.insert(result.end(), pattern.begin(), pattern.end());
++			} else {
++				result.push_back(Track());
++				if (result.size() > 256) Fail();
++			}
++			const size_t untrimmed = input.size();
++			Space();
++			if (!input.empty() && input.front() != ')' && input.size() == untrimmed) Fail();
++		}
++		return result;
++	}
++};
++
++inline float GridTracksExtent(const Vector<GridTrack>& tracks, float gap)
++{
++	return std::accumulate(tracks.begin(), tracks.end(), tracks.empty() ? 0.f : gap * float(tracks.size() - 1),
++		[](float sum, const GridTrack& track) { return sum + track.size; });
++}
++
++inline void ResolveGridTracks(Vector<GridTrack>& tracks, float available, float gap, bool stretch_auto)
++{
++	// CSS Grid 11.4-11.8 for non-spanning fixed/auto/flexible tracks.
++	// https://www.w3.org/TR/css-grid-1/#algo-track-sizing
++	for (auto& track : tracks)
++		track.size = track.automatic_minimum ? track.min_content : track.minimum;
++
++	// Maximize auto tracks to their growth limits before distributing fr space.
++	for (;;) {
++		const float free = available < 0.f ? 1.e30f : available - GridTracksExtent(tracks, gap);
++		const size_t growing = size_t(std::count_if(tracks.begin(), tracks.end(), [](const auto& track) {
++			return track.kind == GridTrack::Kind::Auto && track.size < track.max_content;
++		}));
++		if (free <= 0.f || growing == 0) break;
++		bool changed = false;
++		for (auto& track : tracks) if (track.kind == GridTrack::Kind::Auto && track.size < track.max_content) {
++			const float next = std::min(track.max_content, track.size + free / float(growing));
++			changed |= next > track.size; track.size = next;
++		}
++		if (!changed) break;
++	}
++
++	float fraction_size = 0.f;
++	if (available < 0.f) {
++		for (const auto& track : tracks) if (track.kind == GridTrack::Kind::Flexible)
++			fraction_size = std::max(fraction_size, std::max(track.size, track.max_content) / std::max(1.f, track.fraction));
++	} else {
++		Vector<bool> frozen(tracks.size(), false);
++		for (;;) {
++			float free = available - (tracks.empty() ? 0.f : gap * float(tracks.size() - 1));
++			float factors = 0.f;
++			for (size_t i = 0; i < tracks.size(); ++i) {
++				if (tracks[i].kind != GridTrack::Kind::Flexible || frozen[i]) free -= tracks[i].size;
++				else factors += tracks[i].fraction;
++			}
++			fraction_size = std::max(0.f, free) / std::max(1.f, factors);
++			bool changed = false;
++			for (size_t i = 0; i < tracks.size(); ++i) if (tracks[i].kind == GridTrack::Kind::Flexible && !frozen[i] &&
++				tracks[i].size > fraction_size * tracks[i].fraction) { frozen[i] = true; changed = true; }
++			if (!changed) break;
++		}
++	}
++	for (auto& track : tracks) if (track.kind == GridTrack::Kind::Flexible)
++		track.size = std::max(track.size, track.fraction * fraction_size);
++
++	if (stretch_auto && available >= 0.f) {
++		const size_t count = size_t(std::count_if(tracks.begin(), tracks.end(), [](const auto& track) { return track.kind == GridTrack::Kind::Auto; }));
++		const float share = count ? std::max(0.f, available - GridTracksExtent(tracks, gap)) / float(count) : 0.f;
++		for (auto& track : tracks) if (track.kind == GridTrack::Kind::Auto) track.size += share;
++	}
++}
++
++} // namespace Rml
+--- a/Source/Core/Layout/InlineContainer.cpp
++++ b/Source/Core/Layout/InlineContainer.cpp
+@@ -237,6 +237,13 @@
+ 	return result;
+ }
+ 
++bool InlineContainer::GetBaselineOfFirstLine(float& out_baseline) const
++{
++	if (line_boxes.empty()) return false;
++	out_baseline = line_boxes.front()->GetPosition().y + line_boxes.front()->GetBaseline();
++	return true;
++}
++
+ bool InlineContainer::GetBaselineOfLastLine(float& out_baseline) const
+ {
+ 	if (!line_boxes.empty())
+--- a/Source/Core/Layout/InlineContainer.h
++++ b/Source/Core/Layout/InlineContainer.h
+@@ -59,6 +59,7 @@
+ 
+ 	float GetShrinkToFitWidth() const override;
+ 	bool GetBaselineOfLastLine(float& out_baseline) const override;
++	bool GetBaselineOfFirstLine(float& out_baseline) const override;
+ 	String DebugDumpTree(int depth) const override;
+ 
+ private:
+--- a/Source/Core/Layout/LayoutBox.cpp
++++ b/Source/Core/Layout/LayoutBox.cpp
+@@ -11,6 +11,11 @@
+ bool LayoutBox::GetBaselineOfLastLine(float& /*out_baseline*/) const
+ {
+ 	return false;
++}
++
++bool LayoutBox::GetBaselineOfFirstLine(float& out_baseline) const
++{
++	return GetBaselineOfLastLine(out_baseline);
+ }
+ 
+ float LayoutBox::GetShrinkToFitWidth() const
+--- a/Source/Core/Layout/LayoutBox.h
++++ b/Source/Core/Layout/LayoutBox.h
+@@ -21,6 +21,8 @@
+ 	virtual const Box* GetIfBox() const;
+ 	// Returns the baseline of the last line of this box, if any. Returns true if a baseline was found, otherwise false.
+ 	virtual bool GetBaselineOfLastLine(float& out_baseline) const;
++	// First-line baseline for inline grids and their first grid item.
++	virtual bool GetBaselineOfFirstLine(float& out_baseline) const;
+ 	// Calculates the box's inner content width, i.e. the size used to calculate the shrink-to-fit width.
+ 	virtual float GetShrinkToFitWidth() const;
+ 
+--- a/Source/Core/Layout/LayoutDetails.cpp
++++ b/Source/Core/Layout/LayoutDetails.cpp
+@@ -30,6 +30,8 @@
+ 	}
+ 
+ 	const ComputedValues& computed = element->GetComputedValues();
++	const bool intrinsic_width = box_context == BuildBoxMode::IntrinsicWidth;
++	if (intrinsic_width) containing_block.x = 0.f;
+ 
+ 	// Calculate the padding area.
+ 	box.SetEdge(BoxArea::Padding, BoxEdge::Top, Math::Max(0.0f, ResolveValue(computed.padding_top(), containing_block.x)));
+@@ -56,7 +58,7 @@
+ 
+ 	// Calculate the content area and constraints. 'auto' width and height are handled later.
+ 	// For inline non-replaced elements, width and height are ignored, so we can skip the calculations.
+-	if (box_context == BuildBoxMode::Block || box_context == BuildBoxMode::UnalignedBlock || replaced_element)
++	if (box_context != BuildBoxMode::Inline || replaced_element)
+ 	{
+ 		content_area.x = ResolveValueOr(computed.width(), containing_block.x, -1.f);
+ 		content_area.y = ResolveValueOr(computed.height(), containing_block.y, -1.f);
+@@ -70,6 +72,11 @@
+ 			ResolveValueOr(computed.max_height(), containing_block.y, FLT_MAX),
+ 		};
+ 
++		if (intrinsic_width) {
++			if (computed.width().type == Style::LengthPercentageAuto::Percentage) content_area.x = -1.f;
++			if (computed.min_width().type == Style::LengthPercentage::Percentage) min_size.x = 0.f;
++			if (computed.max_width().type == Style::LengthPercentage::Percentage) max_size.x = FLT_MAX;
++		}
+ 		// Adjust sizes for the given box sizing model.
+ 		if (computed.box_sizing() == Style::BoxSizing::BorderBox)
+ 		{
+@@ -197,7 +204,7 @@
+ {
+ 	const ComputedValues& computed = element->GetComputedValues();
+ 
+-	if (box_context == BuildBoxMode::Inline || box_context == BuildBoxMode::UnalignedBlock)
++	if (box_context != BuildBoxMode::Block)
+ 	{
+ 		// For inline elements, their calculations are straightforward. No worrying about auto margins and dimensions, etc.
+ 		// Evaluate the margins. Any declared as 'auto' will resolve to 0.
+@@ -214,7 +221,7 @@
+ 	}
+ }
+ 
+-float LayoutDetails::GetShrinkToFitWidth(Element* element, Vector2f containing_block)
++float LayoutDetails::GetShrinkToFitWidth(Element* element, Vector2f containing_block, bool intrinsic_width)
+ {
+ 	RMLUI_ASSERT(element);
+ 
+@@ -223,7 +230,7 @@
+ 	// maximum constraint.
+ 	Box box;
+ 	float min_height, max_height;
+-	LayoutDetails::BuildBox(box, containing_block, element, BuildBoxMode::UnalignedBlock);
++	LayoutDetails::BuildBox(box, containing_block, element, intrinsic_width ? BuildBoxMode::IntrinsicWidth : BuildBoxMode::UnalignedBlock);
+ 	LayoutDetails::GetDefiniteMinMaxHeight(min_height, max_height, element->GetComputedValues(), box, containing_block.y);
+ 
+ 	if (box.GetSize().x >= 0.f)
+@@ -252,7 +259,7 @@
+ 	UniquePtr<LayoutBox> layout_box = FormattingContext::FormatIndependent(&root, element, &box, FormattingContextType::Block);
+ 
+ 	float shrink_to_fit_width = layout_box->GetShrinkToFitWidth();
+-	if (containing_block.x >= 0)
++	if (!intrinsic_width && containing_block.x >= 0)
+ 	{
+ 		// CSS 2.1 section 10.3.7: for an absolutely positioned element the 'left' and 'right' values take part in the
+ 		// available width, so a box with one offset shrinks to fit the space beside that offset.
+@@ -433,7 +440,7 @@
+ 		// See CSS 2.1 section 10.3.7 for when this should be applied.
+ 		const bool shrink_to_fit = !replaced_element &&
+ 			((computed.float_() != Style::Float::None) || (absolutely_positioned && inset_auto) ||
+-				(computed.display() == Style::Display::InlineBlock || computed.display() == Style::Display::InlineFlex));
++				(computed.display() == Style::Display::InlineBlock || computed.display() == Style::Display::InlineFlex || computed.display() == Style::Display::InlineGrid));
+ 
+ 		if (!shrink_to_fit)
+ 		{
+--- a/Source/Core/Layout/LayoutDetails.h
++++ b/Source/Core/Layout/LayoutDetails.h
+@@ -31,6 +31,7 @@
+ 	Block,          // Sets edges and size if available, auto width can result in shrink-to-fit width, auto margins are used for alignment.
+ 	Inline,         // Sets edges, ignores width, height, and auto margins.
+ 	UnalignedBlock, // Like block, but auto width returns -1, and auto margins are resolved to zero.
++	IntrinsicWidth, // Unaligned block with cyclic inline percentages treated as auto/zero/none for intrinsic contributions.
+ };
+ 
+ /**
+@@ -78,7 +79,7 @@
+ 		BuildBoxMode box_context, bool replaced_element);
+ 
+ 	/// Formats the element and returns the width of its contents.
+-	static float GetShrinkToFitWidth(Element* element, Vector2f containing_block);
++	static float GetShrinkToFitWidth(Element* element, Vector2f containing_block, bool intrinsic_width = false);
+ 
+ 	/// Build computed axis size along the horizontal direction (width and friends).
+ 	static ComputedAxisSize BuildComputedHorizontalSize(const ComputedValues& computed);
+--- a/Source/Core/StyleSheetSpecification.cpp
++++ b/Source/Core/StyleSheetSpecification.cpp
+@@ -304,7 +304,7 @@
+ 	RegisterShorthand(ShorthandId::BorderRadius, "border-radius", "border-top-left-radius, border-top-right-radius, border-bottom-right-radius, border-bottom-left-radius", ShorthandType::Box);
+ 
+ 	RegisterProperty(PropertyId::Display, "display", "inline", false, true)
+-		.AddParser("keyword", "none, block, inline, inline-block, flow-root, flex, inline-flex, table, inline-table, table-row, table-row-group, table-column, table-column-group, table-cell");
++		.AddParser("keyword", "none, block, inline, inline-block, flow-root, flex, inline-flex, table, inline-table, table-row, table-row-group, table-column, table-column-group, table-cell, grid, inline-grid");
+ 	RegisterProperty(PropertyId::Position, "position", "static", false, true).AddParser("keyword", "static, relative, absolute, fixed");
+ 	RegisterProperty(PropertyId::Top, "top", "auto", false, false).AddParser("keyword", "auto").AddParser("length_percent").SetRelativeTarget(RelativeTarget::ContainingBlockHeight);
+ 	RegisterProperty(PropertyId::Right, "right", "auto", false, false).AddParser("keyword", "auto").AddParser("length_percent").SetRelativeTarget(RelativeTarget::ContainingBlockWidth);
+@@ -423,7 +423,12 @@
+ 
+ 	// Flexbox
+ 	RegisterProperty(PropertyId::AlignContent, "align-content", "stretch", false, true).AddParser("keyword", "flex-start, flex-end, center, space-between, space-around, space-evenly, stretch, start, end");
++	RegisterProperty(PropertyId::GridTemplateColumns, "grid-template-columns", "none", false, true).AddParser("string");
++	RegisterProperty(PropertyId::GridTemplateRows, "grid-template-rows", "none", false, true).AddParser("string");
++	RegisterProperty(PropertyId::JustifyItems, "justify-items", "stretch", false, true).AddParser("keyword", "flex-start, flex-end, center, baseline, stretch, start, end");
++	RegisterProperty(PropertyId::JustifySelf, "justify-self", "auto", false, true).AddParser("keyword", "auto, flex-start, flex-end, center, baseline, stretch, start, end");
+ 	RegisterProperty(PropertyId::AlignItems, "align-items", "stretch", false, true).AddParser("keyword", "flex-start, flex-end, center, baseline, stretch, start, end");
++	RegisterShorthand(ShorthandId::PlaceItems, "place-items", "align-items, justify-items", ShorthandType::Replicate);
+ 	RegisterProperty(PropertyId::AlignSelf, "align-self", "auto", false, true).AddParser("keyword", "auto, flex-start, flex-end, center, baseline, stretch, start, end");
+ 
+ 	RegisterProperty(PropertyId::FlexBasis, "flex-basis", "auto", false, true).AddParser("keyword", "auto").AddParser("length_percent");
+@@ -432,7 +437,7 @@
+ 	RegisterProperty(PropertyId::FlexGrow, "flex-grow", "0", false, true).AddParser("number");
+ 	RegisterProperty(PropertyId::FlexShrink, "flex-shrink", "1", false, true).AddParser("number");
+ 	RegisterProperty(PropertyId::FlexWrap, "flex-wrap", "nowrap", false, true).AddParser("keyword", "nowrap, wrap, wrap-reverse");
+-	RegisterProperty(PropertyId::JustifyContent, "justify-content", "flex-start", false, true).AddParser("keyword", "flex-start, flex-end, center, space-between, space-around, space-evenly, start, end");
++	RegisterProperty(PropertyId::JustifyContent, "justify-content", "flex-start", false, true).AddParser("keyword", "flex-start, flex-end, center, space-between, space-around, space-evenly, start, end, normal, stretch, left, right");
+ 
+ 	RegisterShorthand(ShorthandId::Flex, "flex", "flex-grow, flex-shrink, flex-basis", ShorthandType::Flex);
+ 	RegisterShorthand(ShorthandId::FlexFlow, "flex-flow", "flex-direction, flex-wrap", ShorthandType::Unordered);
