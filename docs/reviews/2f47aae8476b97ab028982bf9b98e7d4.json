@@ -91,6 +91,18 @@
     {
       "summary": "Reuse shared canvas metrics to convert Window DOM input at the actual SDL pixel density.",
       "applied": true
+    },
+    {
+      "summary": "Share Window canvas hit selection between mouse and touch after coordinate conversion.",
+      "applied": true
+    },
+    {
+      "summary": "Compute touch hit positions directly in CSS client coordinates without a redundant scale round trip.",
+      "applied": true
+    },
+    {
+      "summary": "Retain the no-DOM fast path for camera-only touch input; camera contact tracking remains independent.",
+      "applied": true
     }
   ],
   "angles": [
