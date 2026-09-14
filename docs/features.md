@@ -186,14 +186,10 @@ are live. Geospatial input, off-center orthographic planes and broader camera co
 
 ## Android
 
-The Android prototype targets ARM64 and x86_64, API 28+ and devices satisfying
-SDL_GPU's Vulkan requirements. It builds one registered scene into a debug APK.
-Single-finger input uses SDL's mouse emulation and the existing camera/pointer
-path; multi-touch gestures are not implemented. Retained UI (`ui:rml`), audio
-(`audio:engine`), worker-window rendering (`platform:window`) and Dawn builds
-refuse explicitly. Other reached subsystems remain subject to device capabilities
-and their existing admission limits; the complete scene/demo corpus is not
-Android-qualified. [Development](development.md#android-prototype) owns commands.
+ARM64/x86_64 APK prototypes use SDL_GPU/Vulkan on API 28+. Authored maxDevicePixelRatio caps the
+render buffer independently of the full-screen view. Single-finger input uses SDL mouse emulation;
+multi-touch, retained UI/fonts, audio, worker windows and Dawn remain unsupported. Full corpus and
+physical-device performance qualification remain open. [Commands](development.md#android-prototype).
 
 ## Asset loading and upload
 

@@ -645,7 +645,10 @@ inline bool sync_engine_canvas_size(
         SDL_GetWindowSizeInPixels(window, &width, &height) &&
         width > 0 &&
         height > 0) {
-        const float display_scale = SDL_GetWindowDisplayScale(window);
+        float display_scale = SDL_GetWindowDisplayScale(window);
+#ifdef __ANDROID__
+        display_scale = std::min(display_scale, static_cast<float>(engine.options.max_device_pixel_ratio));
+#endif
         const float pixel_density = SDL_GetWindowPixelDensity(window);
         return update_engine_canvas_metrics(engine, width, height,
             display_scale > 0.0f ? display_scale : 1.0f,

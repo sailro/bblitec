@@ -1,6 +1,12 @@
 package org.bblite.prototype;
 
 import org.libsdl.app.SDLActivity;
+import org.libsdl.app.SDLSurface;
+import android.content.Context;
+import android.view.SurfaceHolder;
+import android.widget.RelativeLayout;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
@@ -11,6 +17,59 @@ import java.nio.file.Files;
 import java.nio.file.StandardCopyOption;
 
 public final class MainActivity extends SDLActivity {
+    private CappedSurface surface;
+
+    @Override protected SDLSurface createSDLSurface(Context context) {
+        surface = new CappedSurface(context);
+        surface.setLayoutParams(new RelativeLayout.LayoutParams(-1, -1));
+        return surface;
+    }
+
+    // Called on SDL's native thread before creating the Vulkan window.
+    public boolean configureSurface(double cap) {
+        boolean debug = (getApplicationInfo().flags & android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0;
+        double selectedCap = debug && (getIntent().getBooleanExtra("capture", false) || getIntent().getBooleanExtra("nativeResolution", false))
+            ? Double.POSITIVE_INFINITY : cap;
+        CountDownLatch ready = new CountDownLatch(1);
+        runOnUiThread(() -> {
+            surface.cap = selectedCap;
+            surface.trace = "1".equals(getIntent().getStringExtra("BBLITE_RUNTIME_TRACE"));
+            surface.ready = ready;
+            surface.resizeBuffer();
+        });
+        try { return ready.await(10, TimeUnit.SECONDS); }
+        catch (InterruptedException error) { Thread.currentThread().interrupt(); return false; }
+    }
+
+    private static final class CappedSurface extends SDLSurface {
+        double cap = Double.POSITIVE_INFINITY;
+        CountDownLatch ready;
+        boolean trace;
+        CappedSurface(Context context) { super(context); }
+        @Override protected void onSizeChanged(int width, int height, int oldWidth, int oldHeight) {
+            super.onSizeChanged(width, height, oldWidth, oldHeight);
+            resizeBuffer();
+        }
+        void resizeBuffer() {
+            if (getWidth() <= 0 || getHeight() <= 0) return;
+            double density = getResources().getDisplayMetrics().densityDpi / 160.0;
+            double scale = Math.min(density, cap) / density;
+            int width = Math.max(1, (int)(getWidth() * scale));
+            int height = Math.max(1, (int)(getHeight() * scale));
+            if (getHolder().getSurfaceFrame().width() == width && getHolder().getSurfaceFrame().height() == height) {
+                if (ready != null) ready.countDown();
+            } else getHolder().setFixedSize(width, height);
+        }
+        @Override public void surfaceChanged(SurfaceHolder holder, int format, int width, int height) {
+            super.surfaceChanged(holder, format, width, height);
+            // SDL normalizes fingers using these fields; touch coordinates use view pixels.
+            mWidth = getWidth();
+            mHeight = getHeight();
+            if (trace) android.util.Log.i("bblite", "Android surface view=" + getWidth() + "x" + getHeight() + " buffer=" + width + "x" + height + " cap=" + cap);
+            if (ready != null) ready.countDown();
+        }
+    }
+
     @Override protected String[] getLibraries() {
         return new String[] { "c++_shared", "SDL3", "main" };
     }

@@ -590,11 +590,8 @@ interface EnginePrecisionPolicy {
 /**
  * Validate the DOM surface's device-pixel-ratio cap for a native surface.
  *
- * SDL windows are created directly at the compiler-requested backing-store
- * size and without SDL_WINDOW_HIGH_PIXEL_DENSITY, so their effective DPR is
- * always one. A static browser cap of one or greater is therefore already
- * satisfied and emits no native state. Caps below one would request fewer
- * backing pixels than the native target and must not be silently erased.
+ * Desktop windows retain their requested backing size. Android surfaces use
+ * the cap to size their buffers independently of the full-screen view.
  */
 export function compileEnginePixelRatioCap(
     context: PositiveIntegerContext & {
@@ -605,7 +602,7 @@ export function compileEnginePixelRatioCap(
         fail(node: ts.Node, message: string): never;
     },
     options: ts.ObjectLiteralExpression,
-): void {
+): number | undefined {
     const expression = context.objectProperty(
         options,
         "maxDevicePixelRatio",
@@ -622,6 +619,7 @@ export function compileEnginePixelRatioCap(
             "Native surfaces support maxDevicePixelRatio values of 1 or greater: their requested size is already a one-to-one backing-store size.",
         );
     }
+    return cap;
 }
 
 /**

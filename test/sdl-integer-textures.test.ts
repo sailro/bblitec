@@ -40,7 +40,6 @@ static std::uintptr_t identity = 1;
 static SDL_GPUShaderCreateInfo shader_info{};
 static std::vector<SDL_GPUTexture*> sampled, loaded;
 static bool last_fragment = false;
-const char* SDL_GetError() { return "mock SDL error"; }
 template<class T> T next_handle() { return reinterpret_cast<T>(identity++); }
 const char* SDL_GetError() { return "fixture SDL error"; }
 SDL_GPUTexture* SDL_CreateGPUTexture(SDL_GPUDevice*, const SDL_GPUTextureCreateInfo* info) {

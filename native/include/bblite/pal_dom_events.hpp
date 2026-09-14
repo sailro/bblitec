@@ -15,6 +15,11 @@ namespace bbl {
  * mutation and once rules. The owning realm supplies callback cleanup/reporting. */
 template <typename Event>
 class DomEventListeners {
+    struct RestorePassive {
+        DomEventState& state;
+        bool previous;
+        ~RestorePassive() { state.passive_listener = previous; }
+    };
   public:
     using Listeners = PlatformEventListeners<void(const Event&)>;
     using Callback = Listeners::Callback;
@@ -27,11 +32,7 @@ class DomEventListeners {
             auto& state = *event.dom;
             const bool previous = state.passive_listener;
             state.passive_listener = listener->passive;
-            struct Restore {
-                DomEventState& state;
-                bool previous;
-                ~Restore() { state.passive_listener = previous; }
-            } restore{state, previous};
+            RestorePassive restore{state, previous};
             listener->callback(event);
         });
         listeners_[key(target, std::move(type), capture)].add(identity, std::move(wrapper), once);

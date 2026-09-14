@@ -117,3 +117,6 @@ Artifact suffix gpu means SDL_GPU; CLI values are sdl_gpu/dawn.
 
 Prefer `--gpu-debug` over `BBLITE_GPU_DEBUG=1`: it also prevents blocking SDL
 assertion prompts. Build configuration belongs in [development](development.md).
+
+Android debug intents accept `nativeResolution=true` to bypass the source pixel-ratio cap for
+profiling. Automated captures also bypass it to retain the requested golden dimensions.

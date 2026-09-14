@@ -4,6 +4,7 @@ param(
     [string]$Ndk = $env:ANDROID_NDK_HOME,
     [ValidateSet('arm64-v8a', 'x86_64')][string]$Abi = 'arm64-v8a',
     [string]$Device,
+    [ValidatePattern('^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+$')][string]$ApplicationId = 'org.bblite.prototype',
     [switch]$Install,
     [switch]$Smoke,
     [switch]$SkipGenerate,
@@ -94,28 +95,43 @@ try {
     $ndkHost = if ($IsWindows) { 'windows-x86_64' } elseif ($IsMacOS) { 'darwin-x86_64' } else { 'linux-x86_64' }
     $arch = if ($Abi -eq 'arm64-v8a') { 'aarch64-linux-android' } else { 'x86_64-linux-android' }
     Copy-Item "$Ndk/toolchains/llvm/prebuilt/$ndkHost/sysroot/usr/lib/$arch/libc++_shared.so" $libraries
+    $strip = "$Ndk/toolchains/llvm/prebuilt/$ndkHost/bin/llvm-strip$(if ($IsWindows) { '.exe' })"
+    Get-ChildItem $libraries -Filter '*.so' -File | ForEach-Object {
+        Invoke-Checked $strip @('--strip-unneeded', $_.FullName)
+    }
+    $licenses = "$staging/assets/licenses"
+    New-Item -ItemType Directory -Force $licenses | Out-Null
+    Get-ChildItem "$root/artifacts/android-vcpkg/$triplet/share" -Filter copyright -Recurse -File | ForEach-Object {
+        Copy-Item $_.FullName (Join-Path $licenses "$($_.Directory.Name).txt")
+    }
+    Copy-Item "$Ndk/NOTICE.toolchain" "$licenses/NDK-toolchain.txt"
+    Copy-Item "$root/node_modules/@babylonjs/lite/LICENSE" "$licenses/Babylon-Lite.txt"
     $hashes = Get-ChildItem $payload -Recurse -File | Sort-Object FullName | ForEach-Object {
         $_.FullName.Substring($payload.Length) + ':' + (Get-FileHash $_.FullName -Algorithm SHA256).Hash
     }
     $version = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes($hashes -join "`n")))
     Set-Content "$staging/assets/payload.version" $version -NoNewline
     $gradle = if ($IsWindows) { "$sdl/android-project/gradlew.bat" } else { "$sdl/android-project/gradlew" }
+    # Recreate the ZIP so incremental replacement cannot retain holes from larger libraries.
+    $gradleApk = "$staging/gradle-app/outputs/apk/debug/app-debug.apk"
+    Assert-PackageChild $staging $gradleApk
+    if (Test-Path -LiteralPath $gradleApk) { Remove-Item -LiteralPath $gradleApk }
     Invoke-Checked $gradle @('-p', "$root/native/android", '--project-cache-dir', "$staging/gradle-cache",
-        "-PbbliteStaging=$staging", "-PbbliteScene=$id", "-PbbliteSdlJava=$sdl/android-project/app/src/main/java", 'assembleDebug')
+        "-PbbliteStaging=$staging", "-PbbliteScene=$id", "-PbbliteApplicationId=$ApplicationId", "-PbbliteSdlJava=$sdl/android-project/app/src/main/java", 'assembleDebug')
     $apk = "$staging/bblite-$id-$Abi.apk"
-    Copy-Item "$staging/gradle-app/outputs/apk/debug/app-debug.apk" $apk -Force
+    Copy-Item $gradleApk $apk -Force
     Write-Host "APK: $apk"
     if ($Install -or $Smoke) {
         $adb = if ($IsWindows) { "$Sdk/platform-tools/adb.exe" } else { "$Sdk/platform-tools/adb" }
         $selector = if ($Device) { @('-s', $Device) } else { @() }
         Invoke-Checked $adb ($selector + @('install', '-r', $apk))
         if ($Smoke) {
-            $smokeArguments = @('tools/android-smoke.mjs', '--adb', $adb, '--output', "$staging/smoke", '--apk', $apk)
+            $smokeArguments = @('tools/android-smoke.mjs', '--adb', $adb, '--output', "$staging/smoke", '--apk', $apk, '--app', $ApplicationId)
             if ($Device) { $smokeArguments += @('--device', $Device) }
             Invoke-Checked 'node' $smokeArguments
         } else {
-            Invoke-Checked $adb ($selector + @('shell', 'am', 'force-stop', 'org.bblite.prototype'))
-            Invoke-Checked $adb ($selector + @('shell', 'am', 'start', '-W', '-n', 'org.bblite.prototype/.MainActivity'))
+            Invoke-Checked $adb ($selector + @('shell', 'am', 'force-stop', $ApplicationId))
+            Invoke-Checked $adb ($selector + @('shell', 'am', 'start', '-W', '-n', "$ApplicationId/org.bblite.prototype.MainActivity"))
         }
     }
 } finally { Pop-Location }

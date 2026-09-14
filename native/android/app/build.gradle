@@ -7,7 +7,7 @@ android {
     compileSdk 35
     buildToolsVersion '35.0.0'
     defaultConfig {
-        applicationId 'org.bblite.prototype'
+        applicationId providers.gradleProperty('bbliteApplicationId').getOrElse('org.bblite.prototype')
         minSdk 28
         targetSdk 35
         versionCode 1

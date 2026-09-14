@@ -1641,9 +1641,16 @@ using Storage = Ref<StorageTag>;
     return instance;
 }
 using DateTimeFormat = Ref<std::string>;
+#ifdef __ANDROID__
+std::string android_time_zone();
+#endif
 
 [[nodiscard]] inline DateTimeFormat make_date_time_format() {
+#ifdef __ANDROID__
+    return make_ref<std::string>(android_time_zone());
+#else
     return make_ref<std::string>(std::chrono::current_zone()->name());
+#endif
 }
 
 /** ECMAScript TimeClip: finite milliseconds within 100 million days. */

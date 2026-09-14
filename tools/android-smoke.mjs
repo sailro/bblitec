@@ -10,6 +10,7 @@ const { values } = parseArgs({ options: {
     adb: { type: 'string' }, device: { type: 'string' },
     output: { type: 'string' }, apk: { type: 'string' },
     scene: { type: 'string' },
+    app: { type: 'string', default: 'org.bblite.prototype' },
 } });
 if (!values.adb || !values.output || !values.apk) throw new Error('Use --adb, --output, --apk and optionally --device.');
 const output = resolve(values.output);
@@ -19,7 +20,8 @@ function adb(...args) {
     return execFileSync(values.adb, [...selector, ...args], { timeout: 15000, maxBuffer: 16 * 1024 * 1024, windowsHide: true });
 }
 const runId = randomUUID();
-const app = 'org.bblite.prototype';
+const app = values.app;
+if (!/^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+$/.test(app)) throw new Error('Invalid application ID.');
 let captureEnvironment = { BBLITE_MAX_FRAMES: '8' };
 let captureFrame = '5';
 if (values.scene) {
@@ -68,7 +70,7 @@ try {
             });
             logger.stderr.on('data', chunk => appendLog(chunk.toString()));
         });
-        adb('shell', 'am', 'start', '-W', '-n', `${app}/.MainActivity`,
+        adb('shell', 'am', 'start', '-W', '-n', `${app}/org.bblite.prototype.MainActivity`,
             '--es', 'BBLITE_RUN_ID', runId, '--es', 'captureFrame', captureFrame,
             ...Object.entries(captureEnvironment).flatMap(([key, value]) => ['--es', key, value]),
             '--ez', 'capture', 'true');

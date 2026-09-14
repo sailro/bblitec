@@ -1,6 +1,6 @@
-import { spawn, execFileSync } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { closeSync, existsSync, mkdirSync, openSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
@@ -9,6 +9,7 @@ import { compareImages, compareRegion, generateDiffMap, imageDimensions } from '
 import { resolveParityThresholds } from '../dist/src/parity-scene.js';
 import { writeJsonRecord } from '../dist/src/validation-resume.js';
 import { runConcurrently } from '../dist/src/run-concurrently.js';
+import { runLoggedProcess } from '../dist/src/tooling/logged-process.js';
 
 const { values } = parseArgs({ options: {
     sdk: { type: 'string', default: process.env.ANDROID_HOME },
@@ -39,14 +40,8 @@ const report = {
 };
 function save() { writeJsonRecord(join(output, 'report.json'), report); }
 async function run(program, args, logPath) {
-    const log = openSync(logPath, 'w');
-    try {
-        await new Promise((resolve, reject) => {
-            const child = spawn(program, args, { cwd: root, windowsHide: true, stdio: ['ignore', log, log] });
-            child.on('error', reject);
-            child.on('close', code => code === 0 ? resolve() : reject(new Error(`${program} exited with status ${code}; see ${logPath}`)));
-        });
-    } finally { closeSync(log); }
+    const code = await runLoggedProcess(program, args, logPath, { cwd: root });
+    if (code !== 0) throw new Error(`${program} exited with status ${code}; see ${logPath}`);
 }
 console.log(`Android sweep: ${selected.length} scenes. Results: ${output}`);
 save();

@@ -14692,6 +14692,7 @@ test("rejects unsupported dynamic engine and scene options", () => {
         }
     `);
     assert.doesNotMatch(pixelRatio.cpp, /maxDevicePixelRatio|MAX_DPR/);
+    assert.match(pixelRatio.cpp, /EngineOptions\{[^}]*, 0, 1\}/);
     assert.throws(
         () =>
             compileSource(`

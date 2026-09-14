@@ -1,5 +1,7 @@
 // SDLActivity enters the generated program through SDL_main on its native thread.
 #include <android/log.h>
+#include <jni.h>
+#include <SDL3/SDL.h>
 #include <cstdlib>
 #include <iostream>
 #include <mutex>
@@ -10,6 +12,24 @@
 #define main bblite_generated_main
 #include BBLITE_ANDROID_ENTRY
 #undef main
+
+namespace bbl::js {
+std::string android_time_zone() {
+    auto* env = static_cast<JNIEnv*>(SDL_GetAndroidJNIEnv());
+    const jclass type = env->FindClass("java/util/TimeZone");
+    const auto get_default = env->GetStaticMethodID(type, "getDefault", "()Ljava/util/TimeZone;");
+    const jobject zone = env->CallStaticObjectMethod(type, get_default);
+    const auto get_id = env->GetMethodID(type, "getID", "()Ljava/lang/String;");
+    const auto id = static_cast<jstring>(env->CallObjectMethod(zone, get_id));
+    const char* text = env->GetStringUTFChars(id, nullptr);
+    const std::string result(text);
+    env->ReleaseStringUTFChars(id, text);
+    env->DeleteLocalRef(id);
+    env->DeleteLocalRef(zone);
+    env->DeleteLocalRef(type);
+    return result;
+}
+}
 
 namespace {
 class AndroidLog final : public std::streambuf {

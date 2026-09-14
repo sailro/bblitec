@@ -1,6 +1,5 @@
-import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { closeSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, renameSync, writeFileSync } from "node:fs";
 import { availableParallelism, totalmem } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -12,6 +11,7 @@ import { runConcurrently } from "./run-concurrently.js";
 import { flagNumber, isMainModule, parseFlags } from "./tooling/flags.js";
 import { installVcpkgManifest, type VcpkgManifestInstall } from "./vcpkg-install.js";
 import { writeJsonRecord } from "./validation-resume.js";
+import { runLoggedProcess } from "./tooling/logged-process.js";
 
 export type ShippingPlatform = "win32" | "linux" | "darwin";
 
@@ -188,10 +188,17 @@ function readPackageSize(path: string): PackageSize {
 
 async function main(): Promise<void> {
     const flags = parseFlags(process.argv.slice(2), {
-        value: ["--scene", "--output", "--workers", "--jobs"], boolean: ["--plan", "--help"],
+        value: ["--scene", "--output", "--workers", "--jobs", "--platform", "--sdk", "--device", "--abi"], boolean: ["--plan", "--help"],
     }, "shipping-demos");
     if (flags.flags.has("--help")) {
-        console.log("npm run demos:release -- [--scene all|id,id] [--output directory] [--workers N] [--jobs N] [--plan]\n--plan reads existing generated features without building or packaging.");
+        console.log("npm run demos:release -- [--scene all|id,id] [--output directory] [--workers N] [--jobs N] [--plan]\nAndroid: --platform android --sdk directory --device serial [--abi arm64-v8a|x86_64]. Android packages run sequentially.\n--plan describes the packages without building or packaging.");
+        return;
+    }
+    const requestedPlatform = flags.values.get("--platform") ?? "host";
+    if (requestedPlatform !== "host" && requestedPlatform !== "android") throw new Error("--platform must be host or android.");
+    if (requestedPlatform === "android") {
+        const { runAndroidPackages } = await import("./shipping-android.js");
+        await runAndroidPackages(selectShippingScenes(flags.values.get("--scene")), flags.values, flags.flags.has("--plan"));
         return;
     }
     const platform = shippingPlatform();
@@ -221,17 +228,11 @@ async function main(): Promise<void> {
     const results: { stage: string; id: string; exit: number; log: string }[] = [];
     const run = async (stage: string, id: string, command: string, args: string[]): Promise<void> => {
         const log = join(logs, `${stage}-${id}.log`);
-        const fd = openSync(log, "w");
         console.log(`${stage} ${id}: running`);
         let exit = 1;
         try {
-            exit = await new Promise<number>((done, fail) => {
-                const child = spawn(command, args, { cwd: root, env: environment, windowsHide: true, stdio: ["ignore", fd, fd] });
-                child.once("error", fail);
-                child.once("close", code => done(code ?? 1));
-            });
+            exit = await runLoggedProcess(command, args, log, { cwd: root, env: environment });
         } finally {
-            closeSync(fd);
             results.push({ stage, id, exit, log });
             writeJsonRecord(join(logs, "results.json"), results);
         }

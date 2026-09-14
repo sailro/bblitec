@@ -31,6 +31,18 @@
     {
       "summary": "Prepare dependencies once for read-only parallel APK builds, serialize device capture and avoid packaging a bootstrap APK.",
       "applied": true
+    },
+    {
+      "summary": "Share logged child-process execution across desktop shipping, Android shipping and the Android sweep.",
+      "applied": true
+    },
+    {
+      "summary": "Build engine option arguments explicitly and keep Android limits in Features.",
+      "applied": true
+    },
+    {
+      "summary": "Configure Android buffers only when creating the retained SDL window.",
+      "applied": true
     }
   ],
   "angles": [

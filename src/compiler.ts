@@ -8041,6 +8041,7 @@ class Compiler
         }
         let msaaSamples: 1 | 4 | "runtime" = 4;
         let sampleOverride: string | undefined;
+        let pixelRatioCap: number | undefined;
         let highPrecisionMatrix = false;
         let floatingOrigin = false;
         if (call.arguments[1]) {
@@ -8058,7 +8059,7 @@ class Compiler
                 "Reached engine options support maxDevicePixelRatio, msaaSamples, " +
                     "requiredLimits, useHighPrecisionMatrix and useFloatingOrigin.",
             );
-            compileEnginePixelRatioCap(this, options);
+            pixelRatioCap = compileEnginePixelRatioCap(this, options);
             // Both flags reach generation: the pin's `_setHpmAllocator`
             // swaps a process-global allocator, so `useHighPrecisionMatrix`
             // decides the width every matrix this port composes is stored
@@ -8101,7 +8102,10 @@ class Compiler
                 "The prototype currently supports one engine per entry point.",
             );
         }
-        this.emit({ kind: "declaration", type: "auto", name: cppName, initializer: `${this.options.workers ? "bbl::pal::create_realm_engine" : "bbl::create_engine"}(bbl::EngineOptions{${this.cppString(this.options.title)}, ${this.options.width}, ${this.options.height}${sampleOverride ? `, ${sampleOverride}` : ""}}${canvasArgument})` });
+        const engineOptions = [this.cppString(this.options.title), String(this.options.width), String(this.options.height)];
+        if (sampleOverride || pixelRatioCap !== undefined) engineOptions.push(sampleOverride ?? "0");
+        if (pixelRatioCap !== undefined) engineOptions.push(String(pixelRatioCap));
+        this.emit({ kind: "declaration", type: "auto", name: cppName, initializer: `${this.options.workers ? "bbl::pal::create_realm_engine" : "bbl::create_engine"}(bbl::EngineOptions{${engineOptions.join(", ")}}${canvasArgument})` });
         this.engineCreationInsertion = this.body.length;
         if (this.options.workers) this.engineCreationExecution = {
             callback: this.frameCallbackDepth, control: this.runtimeControlFlowDepth,
