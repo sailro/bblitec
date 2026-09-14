@@ -57,6 +57,7 @@ interface AudioCallContext
         | "compilePlatformCallback"
         | "platformEventCallbackIdentity"
         | "pinValueToTemporary"
+        | "emitDiscardedValue"
     > {}
 
 const AUDIO_KINDS = new EmissionSet<string>([

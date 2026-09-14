@@ -369,6 +369,10 @@ export function readHandleCollection(
  * between two values run to run.
  */
 export const propertyRules: readonly PropertyRule[] = [
+  ...(["platform-mouse-event", "platform-keyboard-event"] as const).map((owner): PropertyRead => ({
+    owner, property: "persisted", value: "data", helper: "bbl::dom_event_persisted",
+    dataType: { kind: "optional", inner: { kind: "boolean" }, undefinedOnly: true },
+  })),
   // --- Flow graphs ----------------------------------------------------
   // A container's declared graphs and attached runtimes are handles into
   // the generated graph; the pin's records behind them stay at generation.

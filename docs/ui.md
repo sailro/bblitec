@@ -107,7 +107,7 @@ and non-convex tessellation refuse. Opaque full redraws retire covered commands.
 | Text | Wrapping/word-break, normal/italic, casing, clip/ellipsis, supported text effects | Browser min-content, oblique, custom overflow, exact shaping/rasterization |
 | Visibility | Inherited visible/hidden with visible descendants; delayed zero-duration stylesheet transitions | collapse; inline writes do not initiate transitions |
 | Borders/backgrounds | Solid sides, px/em/rem widths, rounded corners, gradients, solid border/padding/content clipping | Gradient/image clipping and broader border composition |
-| Box shadows | Ordered inset/outer layers, pixel offsets/spread/blur, explicit colors and color variables | Omitted/currentColor, non-pixel lengths; cached textures limited to viewport size |
+| Box shadows | Ordered inset/outer layers, pixel offsets/spread/blur, explicit colors and color variables | Omitted/currentColor, non-pixel lengths; cached textures clip to viewport size |
 | Raster border images | Packaged stretch slices, number/percentage slices, live widths | Outset, center fill, repeat, SVG, longhands, runtime-generated declarations |
 | Images | Centered fill/contain/cover/none/scale-down; content-box clipping | object-position; Canvas2D supports fill only |
 | Scrollbars | auto/thin/none widths, auto/two-color styles, selected WebKit parts, stable gutter | Both-edge/vertical/viewport gutters; orientation states, track-piece, resizer |
@@ -148,7 +148,7 @@ can differ from Chromium. Relative transition units resolve at transition start.
 
 | Maintained RmlUi patch | Contract |
 | --- | --- |
-| `rmlui-css-box-model.patch` | Backgrounds and shrink-to-fit |
+| `rmlui-css-box-model.patch` | Background painting, shadow bounds and shrink-to-fit |
 | `rmlui-css-declarations.patch` | Quoted/nested declarations |
 | `rmlui-visibility.patch` | Visibility inheritance/transitions |
 | `rmlui-zero-track-grid.patch` | Native grid formatting |

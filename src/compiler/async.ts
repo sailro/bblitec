@@ -169,10 +169,10 @@ export class AsyncLowerer {
         return this.activate(declaration, declaration, values, node);
     }
 
-    private pinArgument(value: Value): Value {
+    private pinArgument(value: Value, label = "async_argument"): Value {
         const context = this.context;
         if (!value.cpp || value.kind === "engine") return value;
-        const temporary = context.allocateTemporaryCppName("async_argument");
+        const temporary = context.allocateTemporaryCppName(label);
         context.emit({ kind: "declaration", type: "auto", name: temporary, initializer: value.cpp, attributes: "[[maybe_unused]] " });
         const binding = context.registerNativeBinding(temporary);
         return { ...this.resultAt(value, temporary), nativeCaptures: [binding] };
@@ -260,12 +260,8 @@ export class AsyncLowerer {
         const context = this.context;
         if (call.arguments.length !== 1) context.fail(call, "Promise.race requires one represented iterable.");
         const argument = unwrapExpression(argumentAt(call, 0));
-        const pin = (value: Value, source: ts.Node = call): Value => {
-            const promise = this.asPromise(value, source);
-            const name = context.allocateTemporaryCppName("race_input");
-            context.emit({kind:"declaration", type:"auto", name, initializer:promise.cpp});
-            return {...promise, cpp:name, nativeCaptures:[context.registerNativeBinding(name)]};
-        };
+        const pin = (value: Value, source: ts.Node = call): Value =>
+            this.pinArgument(this.asPromise(value, source), "race_input");
         let promises: Value[];
         if (ts.isArrayLiteralExpression(argument)) promises = argument.elements.map(element => {
             if (ts.isSpreadElement(element)) return context.fail(element, "Promise.race literal spreads require a represented array first.");
@@ -292,12 +288,7 @@ export class AsyncLowerer {
         const context = this.context;
         if (call.arguments.length !== 1) context.fail(call, "Promise.all requires one represented iterable.");
         const argument = unwrapExpression(argumentAt(call, 0));
-        const pin = (value: Value): Value => {
-            const promise = this.asPromise(value, call);
-            const name = context.allocateTemporaryCppName("all_input");
-            context.emit({kind:"declaration", type:"auto", name, initializer:promise.cpp});
-            return {...promise, cpp:name, nativeCaptures:[context.registerNativeBinding(name)]};
-        };
+        const pin = (value: Value): Value => this.pinArgument(this.asPromise(value, call), "all_input");
         let promises: Value[];
         if (ts.isArrayLiteralExpression(argument)) {
             promises = argument.elements.map(element => {

@@ -6,6 +6,7 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, relative, resolve } from "node:path";
 import ts from "typescript";
 import { createCompilerProgram } from "../dist/src/compiler/program.js";
+import { moduleImportKind } from "../dist/src/module-imports.js";
 
 const [entry, output] = process.argv.slice(2);
 if (!entry || !output || process.argv.length !== 4) {
@@ -67,13 +68,9 @@ for (const file of local) {
         if ((ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) && node.moduleSpecifier && ts.isStringLiteralLike(node.moduleSpecifier)) {
             const symbol = checker.getSymbolAtLocation(node.moduleSpecifier);
             const target = symbol?.declarations?.find(ts.isSourceFile);
-            const bindings = ts.isImportDeclaration(node) ? node.importClause?.namedBindings : node.exportClause;
-            const namedTypesOnly = bindings && (ts.isNamedImports(bindings) || ts.isNamedExports(bindings)) &&
-                bindings.elements.length > 0 && bindings.elements.every(binding => binding.isTypeOnly) &&
-                !(ts.isImportDeclaration(node) && node.importClause?.name);
             details.imports.push({ ...location(node), specifier: node.moduleSpecifier.text,
                 target: target ? pathOf(target) : null,
-                typeOnly: Boolean(node.isTypeOnly || node.importClause?.isTypeOnly || namedTypesOnly) });
+                typeOnly: moduleImportKind(node) === "type" });
         }
         if (ts.isCallExpression(node) || ts.isNewExpression(node)) {
             callCount++;

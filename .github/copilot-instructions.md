@@ -7,8 +7,8 @@ unfinished work in TODO.
 **Documentation is not a developer log.** State current facts and limitations
 in the minimum text. Replace stale content; never append session history,
 difficulty, chronology or progress narratives. Each fact has one canonical owner.
-Keep historical evidence in ignored artifacts. RESTART contains current state
-and next actions only. This is an explicit, persistent user requirement.
+Keep logs and historical evidence in ignored artifacts. Do not add dedicated
+handoff documents. This is an explicit, persistent user requirement.
 
 ## Source and implementation
 

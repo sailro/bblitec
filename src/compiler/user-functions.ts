@@ -1038,28 +1038,10 @@ export class UserFunctionLowerer {
             context.bindObjectPattern(parameter.name, value);
             return;
         }
-        if (value.kind === "tuple" && value.tupleElements) {
-            parameter.name.elements.forEach((element, index) => {
-                if (ts.isOmittedExpression(element)) return;
-                if (!ts.isIdentifier(element.name)) context.fail(element.name, "Callback tuple bindings require identifiers.");
-                if (element.dotDotDotToken) {
-                    context.bindParameterValue(element.name, context.dataLowerer.arrayRestValue(value, index, element.name));
-                    return;
-                }
-                const lane = value.tupleElements![index];
-                if (!lane) {
-                    context.fail(
-                        element,
-                        "Array-bound callback parameter reads beyond the supplied tuple.",
-                    );
-                }
-                context.bindParameterValue(element.name, lane);
-            });
-            return;
-        }
+        const elements = value.kind === "tuple" ? value.tupleElements : undefined;
         if (
-            value.kind !== "data" ||
-            (value.dataType?.kind !== "tuple" && value.dataType?.kind !== "product" && value.dataType?.kind !== "vector")
+            !elements && (value.kind !== "data" ||
+                (value.dataType?.kind !== "tuple" && value.dataType?.kind !== "product" && value.dataType?.kind !== "vector"))
         ) {
             context.fail(
                 parameter.name,
@@ -1073,9 +1055,13 @@ export class UserFunctionLowerer {
                 context.bindParameterValue(element.name, context.dataLowerer.arrayRestValue(value, index, element.name));
                 return;
             }
-            context.bindParameterValue(element.name, value.dataType?.kind === "vector"
+            const lane = elements ? elements[index] : value.dataType?.kind === "vector"
                 ? context.dataLowerer.readVectorBindingElement(value, index, element)
-                : context.dataLowerer.fixedTupleElement(value, index, element)!);
+                : context.dataLowerer.fixedTupleElement(value, index, element)!;
+            if (elements && !lane) {
+                context.fail(element, "Array-bound callback parameter reads beyond the supplied tuple.");
+            }
+            context.bindParameterValue(element.name, lane!);
         });
     }
 

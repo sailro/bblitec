@@ -139,6 +139,11 @@ export const MATH_MEMBERS: ReadonlyMap<string, MathMember> = new EmissionMap<
     ],
 ]);
 
+/** Native min/max calls share the same range and list overloads. */
+export function mathExtremeCpp(method: string, source: string): string {
+    return `bbl::js::math_extreme<${method === "max"}>(${source})`;
+}
+
 /** The exact fold of a one-argument member, where the table carries one. */
 export function mathUnaryFold(
     name: string,
@@ -242,7 +247,7 @@ export function mathFunctionValue(
         result:{kind:"number"}, identity:true};
     const parameters = type.parameters.map((_, index) => `argument_${index}`);
     if (member?.reach === "js-random") context.reachJsRandom();
-    const body = extreme ? `bbl::js::math_extreme<${access.name.text === "max"}>(argument_0)`
+    const body = extreme ? mathExtremeCpp(access.name.text, "argument_0")
         : variadic ? member!.rangeCpp!("argument_0") : member!.cpp(parameters);
     return nativeFunctionValue(context, access, type, `return ${body};`);
 }

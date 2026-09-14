@@ -22,6 +22,7 @@ import { numberConstantValue } from "./number-intrinsics.js";
 import {
     describeMathArity,
     MATH_MEMBERS,
+    mathExtremeCpp,
     mathMemberAccess,
     mathUnaryFold,
 } from "./math-intrinsics.js";
@@ -1587,17 +1588,20 @@ export class DataLowerer {
                 expression.right,
             );
         }
+        const fallbackForSink = (type: DataType): string => {
+            let cpp = "";
+            const lines = this.context.captureEmittedLines(() => {
+                this.context.enterRuntimeControlFlow();
+                try { cpp = this.compileForSink(expression.right, type); }
+                finally { this.context.leaveRuntimeControlFlow(); }
+            });
+            return lines.length === 0 ? cpp :
+                `([&]() -> ${this.context.dataTypes.cppType(type)} {\n${lines.join("\n")}\nreturn ${cpp};\n}())`;
+        };
         if (isJsonValue(left)) {
             const value = this.context.pinValueToTemporary(left, "nullish");
             const type: DataType = {kind:"json"};
-            let fallback = "";
-            const lines = this.context.captureEmittedLines(() => {
-                this.context.enterRuntimeControlFlow();
-                try { fallback = this.compileForSink(expression.right, type); }
-                finally { this.context.leaveRuntimeControlFlow(); }
-            });
-            if (lines.length > 0)
-                fallback = `([&]() -> bbl::js::JsonValue {\n${lines.join("\n")}\nreturn ${fallback};\n}())`;
+            const fallback = fallbackForSink(type);
             return this.leafValue(`(${value.cpp}.is_null() || ${value.cpp}.is_undefined() ? ${fallback} : ${value.cpp})`, type);
         }
         if (
@@ -1801,16 +1805,6 @@ export class DataLowerer {
                     dataType: left.dataType,
                 };
             }
-            const fallbackForSink = (type: DataType): string => {
-                let cpp = "";
-                const lines = this.context.captureEmittedLines(() => {
-                    this.context.enterRuntimeControlFlow();
-                    try { cpp = this.compileForSink(expression.right, type); }
-                    finally { this.context.leaveRuntimeControlFlow(); }
-                });
-                return lines.length === 0 ? cpp :
-                    `([&]() -> ${this.context.dataTypes.cppType(type)} {\n${lines.join("\n")}\nreturn ${cpp};\n}())`;
-            };
             if (
                 inner.kind === "struct" &&
                 this.context.dataTypes.isReferenceStruct(inner.name)
@@ -3930,7 +3924,7 @@ export class DataLowerer {
                 this.context.reachJsData();
                 const result = this.context.allocateTemporaryCppName(`math_${method}_result`);
                 this.context.emit({kind:"declaration", type:"const double", name:result,
-                    initializer:`bbl::js::math_extreme<${method === "max"}>(${source})`});
+                    initializer:mathExtremeCpp(method, source)});
                 return {
                     kind: "number",
                     cpp: result,
@@ -3941,7 +3935,7 @@ export class DataLowerer {
                 const packed = this.compileFunctionArguments(call, {kind:"function", restParameter:0,
                     parameters:[{kind:"vector", element:{kind:"number"}}]})[0]!;
                 this.context.reachJsData();
-                return this.leafValue(`bbl::js::math_extreme<${method === "max"}>(${packed})`, {kind:"number"});
+                return this.leafValue(mathExtremeCpp(method, packed), {kind:"number"});
             }
             const staticParts = call.arguments.map((argument) =>
                 staticNumberValue(this.context, argument),
@@ -3961,7 +3955,7 @@ export class DataLowerer {
             // stored and direct calls share NaN and signed-zero behavior.
             const parts = numbers();
             this.context.reachJsData();
-            const cpp = `bbl::js::math_extreme<${method === "max"}>(std::initializer_list<double>{${parts.join(", ")}})`;
+            const cpp = mathExtremeCpp(method, `std::initializer_list<double>{${parts.join(", ")}}`);
             return {
                 kind: "number",
                 cpp,
@@ -7922,11 +7916,7 @@ export class DataLowerer {
                 // Flow narrowing changes checker types, while nullable storage
                 // keeps its declared element representation (including enums).
                 return this.context.probeEmission(() => {
-                    // The event adapter can expose an absent persisted field even
-                    // through a PageTransitionEvent view whose checker type is bool.
-                    const eventField = ts.isPropertyAccessExpression(unwrapped) && unwrapped.name.text === "persisted";
-                    const value = this.compileDataPath(unwrapped, "read") ??
-                        (eventField ? this.context.compileValue(unwrapped) : undefined);
+                    const value = this.compileDataPath(unwrapped, "read");
                     return value?.kind === "data" && optionalComparable(value.dataType)
                         ? value : undefined;
                 });

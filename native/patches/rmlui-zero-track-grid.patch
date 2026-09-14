@@ -522,7 +522,7 @@
 -
 +				[](float value, const FlexLine& line) { return value + line.cross_size; });
 +
-+		if (!is_grid) remaining_space = float(int(remaining_space));
++		remaining_space = float(int(remaining_space));
  		if (remaining_space > 0)
  		{
  			// Here we use integer math to ensure all space is distributed to pixel boundaries.
@@ -530,7 +530,7 @@
  			for (int i = 0; i < num_lines; i++)
  			{
 -				const int add_space_to_line = remaining_space / (num_lines - i);
-+				const float add_space_to_line = is_grid ? remaining_space / float(num_lines - i) : float(int(remaining_space) / (num_lines - i));
++				const float add_space_to_line = float(int(remaining_space) / (num_lines - i));
  				remaining_space -= add_space_to_line;
  				container.lines[i].cross_size += static_cast<float>(add_space_to_line);
  			}

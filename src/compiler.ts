@@ -5492,10 +5492,8 @@ class Compiler
                 return value;
             }
             if (property === "defaultPrevented") return {kind: "boolean", cpp: `${owner.cpp}.${owner.platformEventBase ? "is_default_prevented()" : "default_prevented"}`};
-            if (property === "persisted") return this.dataLowerer.leafValue(
-                `bbl::dom_event_persisted(${owner.cpp})`,
-                { kind: "optional", inner: { kind: "boolean" }, undefinedOnly: true },
-            );
+            const declared = readProperty(this, owner, property, expression);
+            if (declared) return declared;
             if (property === "type") return {kind: "string", cpp: `bbl::dom_event_state(${owner.cpp}).type`};
             if (property === "eventPhase") return {kind: "number", cpp: `bbl::dom_event_state(${owner.cpp}).phase`};
             const booleanField = DOM_EVENT_FLAGS.get(property);

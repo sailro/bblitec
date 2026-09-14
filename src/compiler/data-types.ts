@@ -9,7 +9,7 @@ import { EmissionMap, EmissionSet } from "./emission-transaction.js";
 import {NativeRecordStorageRequired, type NativeRecordStorageDemand} from "./native-record-storage.js";
 import ts from "typescript";
 import { createHash } from "node:crypto";
-import { cppIdentifier, doubleLiteral } from "../cpp-literals.js";
+import { cppIdentifier, doubleLiteral, stringLiteral } from "../cpp-literals.js";
 import { declaredInDefaultLibrary, isDefaultLibraryIdentifier } from "./symbols.js";
 import { nativeReturnTsType } from "./native-return-type.js";
 import { classInstanceProperties } from "./class-properties.js";
@@ -760,21 +760,15 @@ export class DataTypeRegistry {
     if (type.symbol?.name === "Storage" && declaredInDomLibrary(type.symbol)) return {kind:"storage"};
     if (type.symbol?.name === "Response" && declaredInDomLibrary(type.symbol)) return {kind:"http-response"};
     if (type.symbol?.name === "URLSearchParams" && declaredInDomLibrary(type.symbol)) return {kind:"search-params"};
-    if (type.symbol?.name === "Date" && type.symbol.declarations?.some(
-      declaration => ts.isInterfaceDeclaration(declaration) && isDefaultLibraryIdentifier(this.checker, declaration.name),
-    )) return {kind:"date"};
-    if (type.symbol?.name === "DateTimeFormat" && type.symbol.declarations?.some(
-      declaration => ts.isInterfaceDeclaration(declaration) && isDefaultLibraryIdentifier(this.checker, declaration.name),
-    )) return {kind:"date-time-format"};
+    if (type.symbol?.name === "Date" && declaredInDefaultLibrary(type.symbol)) return {kind:"date"};
+    if (type.symbol?.name === "DateTimeFormat" && declaredInDefaultLibrary(type.symbol)) return {kind:"date-time-format"};
     if (type.symbol?.name === "ArrayBuffer") {
       return { kind: "arraybuffer" };
     }
     if (type.symbol?.name === "DataView") {
       return { kind: "dataview" };
     }
-    if (type.symbol?.name === "ArrayBufferView" && type.symbol.declarations?.some(
-      declaration => ts.isInterfaceDeclaration(declaration) && isDefaultLibraryIdentifier(this.checker, declaration.name),
-    )) {
+    if (type.symbol?.name === "ArrayBufferView" && declaredInDefaultLibrary(type.symbol)) {
       return { kind: "bufferview" };
     }
     const platformHandle = platformHandleKind(type);
@@ -2686,11 +2680,11 @@ export class DataTypeRegistry {
       for (const field of fields) {
         const property = `value->${field.name}`;
         const cpp = this.jsonValueCpp(field.type, property, this.jsonBoxedStructs.get(name)!)!;
-        lines.push(`    if (key == ${JSON.stringify(field.sourceName)}) return ${cpp};`);
+        lines.push(`    if (key == ${stringLiteral(field.sourceName)}) return ${cpp};`);
       }
       lines.push("    return {};", "}",
         `inline bbl::js::Array<std::string> json_value_keys([[maybe_unused]] const ${name}& value) {`,
-        `    return {${fields.map(field => JSON.stringify(field.sourceName)).join(", ")}};`, "}", "");
+        `    return {${fields.map(field => stringLiteral(field.sourceName)).join(", ")}};`, "}", "");
     }
     return lines;
   }
@@ -2722,7 +2716,7 @@ export class DataTypeRegistry {
         "    writer.begin_object();",
       );
       for (const field of definition?.fields ?? []) {
-        const key = JSON.stringify(field.sourceName);
+        const key = stringLiteral(field.sourceName);
         // An `f?: T` property is JavaScript's `undefined` when it is not
         // set, and `JSON.stringify` drops such a member outright. An
         // `f: T | null` one is present, so its key is written with `null`.
@@ -2854,14 +2848,16 @@ export class DataTypeRegistry {
         }
       }
       const cloneFields: DataStructField[] = [];
+      const cloneCompleted = new Set<DataStructField>();
       const clonePending = new Set<DataStructField>();
       const visitCloneField = (field: DataStructField): void => {
-        if (cloneFields.includes(field)) return;
+        if (cloneCompleted.has(field)) return;
         if (clonePending.has(field)) throw new Error("Cyclic union field presence is not supported by structured clone.");
         clonePending.add(field);
         for (const condition of field.presentForTags?.flat() ?? [])
           visitCloneField(definition.fields.find(candidate => candidate.sourceName === condition.discriminant)!);
         cloneFields.push(field);
+        cloneCompleted.add(field);
         clonePending.delete(field);
       };
       if (structuredClone) definition.fields.forEach(visitCloneField);
@@ -2887,9 +2883,9 @@ export class DataTypeRegistry {
                 }
                 return `record.${tag.name} == ${literal}`;
               }).join(" && ")})`).join(" || ");
-              return `        visitor.when(${JSON.stringify(field.sourceName)}, record.${field.name}, ${condition});`;
+              return `        visitor.when(${stringLiteral(field.sourceName)}, record.${field.name}, ${condition});`;
             }
-            return `        visitor(${JSON.stringify(field.sourceName)}, record.${field.name}${field.defaultWhenMissing ? ", true" : ""});`;
+            return `        visitor(${stringLiteral(field.sourceName)}, record.${field.name}${field.defaultWhenMissing ? ", true" : ""});`;
           }),
           "    }",
         ])] : []),

@@ -111,6 +111,28 @@ int main() {
         ui_set_style_property(engine, panel, "box-shadow", "none");
         update_ui_rml_runtime(runtime, 320, 240);
         assert(record_ui_rml_frame(runtime, 320, 240).textures.empty());
+        ui_set_style_property(engine, panel, "width", "100px");
+        ui_set_style_property(engine, panel, "height", "120px");
+        ui_set_style_property(engine, panel, "box-shadow", "0 30px 80px black");
+        update_ui_rml_runtime(runtime, 320, 240);
+        const auto& clipped = record_ui_rml_frame(runtime, 320, 240);
+        const auto& clipped_texture = clipped.textures.at(0);
+        const auto& shadow_draw = clipped.draws.at(0);
+        const auto& first_vertex = clipped.vertices.at(clipped.indices.at(shadow_draw.first_index));
+        float left = first_vertex.x, right = left;
+        float top = first_vertex.y, bottom = top;
+        for (std::uint32_t index = shadow_draw.first_index; index < shadow_draw.first_index + shadow_draw.index_count; ++index) {
+            const auto& vertex = clipped.vertices.at(clipped.indices.at(index));
+            left = std::min(left, vertex.x); right = std::max(right, vertex.x);
+            top = std::min(top, vertex.y); bottom = std::max(bottom, vertex.y);
+        }
+        assert(right - left == clipped_texture.width);
+        assert(bottom - top == clipped_texture.height);
+        const auto clipped_id = clipped_texture.id;
+        update_ui_rml_runtime(runtime, 640, 480);
+        const auto& expanded = record_ui_rml_frame(runtime, 640, 480);
+        assert(expanded.textures.at(0).id != clipped_id);
+        assert(expanded.textures.at(0).width > 320 && expanded.textures.at(0).height > 240);
     }
     SDL_DestroyWindow(window);
     SDL_Quit();

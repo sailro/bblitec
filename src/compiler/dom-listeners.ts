@@ -10,7 +10,7 @@ type Context = Pick<LoweringServices,
     "isCanvasElement" | "reachFeature" | "fail" | "requireDefaultEngine" | "requireEngine" |
     "allocateTemporaryCppName" | "compileValue" | "compileCondition" | "compileStringLiteral" |
     "dataLowerer" | "dataTypes" | "hoistForwardCallbackBindings" |
-    "compilePlatformCallback" | "pinValueToTemporary" | "cppString" | "emit">;
+    "compilePlatformCallback" | "pinValueToTemporary" | "cppString" | "emit" | "emitDiscardedValue">;
 
 const pointerNames = new Set([
     "click", "dblclick", "mousedown", "mouseup", "mousemove", "mouseover", "mouseout", "mouseenter", "mouseleave",
@@ -19,7 +19,7 @@ const pointerNames = new Set([
     "wheel", "focus", "blur", "contextmenu", "resize",
 ]);
 
-export function listenerOptions(context: Pick<Context, "unwrap" | "checker" | "compileCondition" | "compileValue" | "allocateTemporaryCppName" | "emit" | "dataTypes" | "dataLowerer" | "fail">,
+export function listenerOptions(context: Pick<Context, "unwrap" | "checker" | "compileCondition" | "compileValue" | "allocateTemporaryCppName" | "emit" | "emitDiscardedValue" | "dataTypes" | "dataLowerer" | "fail">,
     expression: ts.Expression | undefined, removing: boolean): {capture:string; once:string; passive:string} {
     const result = {capture: "false", once: "false", passive: "false"};
     if (!expression) return result;
@@ -68,11 +68,16 @@ export function listenerOptions(context: Pick<Context, "unwrap" | "checker" | "c
             context.fail(property, "AbortSignal listener lifetime is not represented yet.");
         } else {
             // Object construction still evaluates unused properties.
-            const value = context.compileValue(initializer);
-            if (value.cpp) context.emit(`static_cast<void>(${value.cpp});`);
+            context.emitDiscardedValue(context.compileValue(initializer));
         }
     }
     return result;
+}
+
+function pinDetached(context: Pick<Context, "pinValueToTemporary">, value: Value, label: string, node: ts.Expression): Value {
+    const snapshot = {...value};
+    delete snapshot.nativeBinding;
+    return context.pinValueToTemporary(snapshot, label, node);
 }
 
 /** One listener path for native DOM identities; error/visibility/file services
@@ -90,9 +95,7 @@ export function emitDomEventListener(context: Context, call: ts.CallExpression, 
     let engine: string | undefined;
     if (element) {
         engine = context.requireEngine(element, call);
-        const selected = {...element};
-        delete selected.nativeBinding;
-        const owner = context.pinValueToTemporary(selected, "event_target", callee.expression);
+        const owner = pinDetached(context, element, "event_target", callee.expression);
         target = `bbl::DomEventTarget::node(${owner.cpp}.value)`;
     } else {
         let global = browserGlobalNamed(context, callee.expression)?.text;
@@ -112,9 +115,7 @@ export function emitDomEventListener(context: Context, call: ts.CallExpression, 
             if (type?.kind === "event-target") {
                 const value = context.dataLowerer.narrowOptional(context.compileValue(callee.expression), callee.expression);
                 if (value.dataType?.kind !== "event-target") context.fail(callee.expression, "Nullable event targets require a presence guard.");
-                const selected = {...value};
-                delete selected.nativeBinding;
-                const snapshot = context.pinValueToTemporary(selected, "event_target", callee.expression);
+                const snapshot = pinDetached(context, value, "event_target", callee.expression);
                 target = `${snapshot.cpp}.target`;
                 engine = `bbl::dom_target_owner(${snapshot.cpp})`;
             }
@@ -136,9 +137,7 @@ export function emitDomEventListener(context: Context, call: ts.CallExpression, 
     let listener: string | undefined;
     if (removing) {
         const value = context.compileValue(callback);
-        const snapshot = {...value};
-        delete snapshot.nativeBinding;
-        const pinned = value.kind === "data" ? context.pinValueToTemporary(snapshot, "event_callback", callback) : value;
+        const pinned = value.kind === "data" ? pinDetached(context, value, "event_callback", callback) : value;
         identity = callbackIdentity(pinned, callback);
     } else {
         const name = context.allocateTemporaryCppName("dom_event");

@@ -66,7 +66,9 @@ struct UiImageRequest {
     std::string source;
     bool complete = false;
     bool invalidated = false;
-    std::shared_ptr<const pal::DecodedImage> image;
+    bool decoded = false;
+    int width = 0;
+    int height = 0;
 };
 namespace pal {
 namespace {
@@ -604,8 +606,11 @@ std::shared_ptr<UiImageRequest> image_request(Engine& engine, UiElementHandle el
             if (path.find(':') != std::string::npos || path.find('\\') != std::string::npos ||
                 path == ".." || path.starts_with("../") || path.ends_with("/..") || path.find("/../") != std::string::npos)
                 throw std::runtime_error("Image source is outside packaged assets.");
-            const auto bytes = pal::read_binary_file(asset_path(path));
-            request->image = std::make_shared<const pal::DecodedImage>(pal::decode_image(js::ArrayBuffer(bytes)));
+            auto bytes = pal::read_binary_file(asset_path(path));
+            const auto image = pal::decode_image(js::ArrayBuffer(std::move(bytes)));
+            request->width = image.width;
+            request->height = image.height;
+            request->decoded = true;
 #endif
         } catch (const pal::WorkerTerminated&) { throw; }
         catch (const std::exception&) { /* A broken request has zero natural dimensions. */ }
@@ -618,17 +623,17 @@ std::shared_ptr<UiImageRequest> image_request(Engine& engine, UiElementHandle el
 bool ui_image_complete(Engine& engine, UiElementHandle element) { return image_request(engine, element)->complete; }
 double ui_image_natural_width(Engine& engine, UiElementHandle element) {
     const auto request = image_request(engine, element);
-    return request->image ? request->image->width : 0;
+    return request->width;
 }
 double ui_image_natural_height(Engine& engine, UiElementHandle element) {
     const auto request = image_request(engine, element);
-    return request->image ? request->image->height : 0;
+    return request->height;
 }
 js::Promise<js::PromiseVoid> ui_decode_image(Engine& engine, UiElementHandle element) {
     const auto request = image_request(engine, element);
     js::Promise<js::PromiseVoid> result;
     pal::EventLoop::current().queue_microtask([request, result] {
-        if (request->invalidated || !request->image)
+        if (request->invalidated || !request->decoded)
             result.reject(std::make_exception_ptr(std::runtime_error("EncodingError: image data could not be decoded")));
         else result.resolve(js::PromiseVoid{});
     });
@@ -681,8 +686,7 @@ bool ui_has_attribute(Engine& engine, UiElementHandle element, std::string_view 
 }
 
 void ui_remove_attribute(Engine& engine, UiElementHandle element, std::string_view name) {
-    std::string normalized(name);
-    std::transform(normalized.begin(), normalized.end(), normalized.begin(), ascii_lower);
+    const std::string normalized = js::string_lower(std::string(name));
     auto& record = ui_element(engine, element);
 #if defined(BBLITE_HAS_BROWSER_FILE) && BBLITE_HAS_BROWSER_FILE
     if (normalized == "type" && record.file_input)
@@ -1104,10 +1108,15 @@ void ui_on_click(
     mark_ui_changed(engine);
 }
 
+namespace {
+bool ui_activation_disabled(const UiElementRecord& record) {
+    return (record.tag == "button" || record.tag == "input" || record.tag == "textarea") &&
+        record.attributes.contains("disabled");
+}
+}
+
 void ui_click(Engine& engine, UiElementHandle element, bool trusted) {
-    const auto& record = ui_element(engine, element);
-    if ((record.tag == "button" || record.tag == "input" || record.tag == "textarea") &&
-        record.attributes.contains("disabled")) return;
+    if (ui_activation_disabled(ui_element(engine, element))) return;
     // Copy first, matching event dispatch: a callback may mutate the retained
     // element or register another callback without invalidating this event.
     const auto callbacks = ui_element(engine, element).click_callbacks;
@@ -2800,7 +2809,7 @@ public:
 
     Rml::LayerHandle PushLayer() override {
         const auto id = static_cast<std::uint32_t>(layers.size() + 1);
-        layers.push_back({id, frame.draws.size(), {}, UiFrameCheckpoint(frame)});
+        layers.push_back({id, {}, UiFrameCheckpoint(frame)});
         frame.layer_count = std::max(frame.layer_count, id);
         frame.operations.push_back({UiRenderOperation::Kind::ResetLayer, static_cast<std::uint32_t>(frame.draws.size()), id});
         return static_cast<Rml::LayerHandle>(id);
@@ -2822,7 +2831,7 @@ public:
         // Retain the established one-layer backdrop blur path byte-for-byte.
         // A filtered element or a nested backdrop uses the general compositor.
         if (layers.size() == 1 && source == 0 && destination == layers.back().id &&
-            layers.back().first_draw == frame.draws.size() && !filters.empty() &&
+            layers.back().checkpoint.draws == frame.draws.size() && !filters.empty() &&
             std::all_of(filters.begin(), filters.end(), [](const auto& filter) { return filter.kind == UiFilterKind::Blur; })) {
             float sigma = 0;
             for (const auto& filter : filters) sigma = std::hypot(sigma, filter.sigma);
@@ -3405,7 +3414,7 @@ private:
     bool scissor_enabled = false;
     bool nearest_sampling = false;
     struct BackdropLayer { Rml::Rectanglei region{}; float sigma = 0; };
-    struct Layer { std::uint32_t id; std::size_t first_draw; std::optional<BackdropLayer> backdrop; UiFrameCheckpoint checkpoint; };
+    struct Layer { std::uint32_t id; std::optional<BackdropLayer> backdrop; UiFrameCheckpoint checkpoint; };
     std::vector<Layer> layers;
     std::vector<UiClipTriangle> clip_mask;
     std::vector<UiBlurKernel> blur_kernels;
@@ -3617,7 +3626,7 @@ struct UiRmlRuntime {
             input.can_activate = [this](DomEventTarget target) {
                 if (target.kind != DomEventTargetKind::Element) return true;
                 const auto& record = this->engine.ui_elements.at(target.element);
-                return !((record.tag == "button" || record.tag == "input" || record.tag == "textarea") && record.attributes.contains("disabled"));
+                return !ui_activation_disabled(record);
             };
 #endif
         } catch (...) {

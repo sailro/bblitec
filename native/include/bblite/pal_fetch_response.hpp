@@ -1,6 +1,7 @@
 #pragma once
 
 #include <bblite/js_data.hpp>
+#include <bblite/js_encoding.hpp>
 #include <bblite/js_promise.hpp>
 
 namespace bbl::pal {
@@ -16,29 +17,10 @@ using HttpResponse = js::Ref<HttpResponseData>;
 
 /** WHATWG UTF-8 replacement decoding, including initial BOM removal. */
 inline std::string decode_http_text(const std::vector<std::uint8_t>& bytes) {
-    std::string result;
-    result.reserve(bytes.size());
-    for (std::size_t index = 0; index < bytes.size();) {
-        const auto start = index;
-        const auto first = bytes[index++];
-        if (first < 0x80) { result.push_back(static_cast<char>(first)); continue; }
-        unsigned remaining = first >= 0xc2 && first <= 0xdf ? 1u :
-            first >= 0xe0 && first <= 0xef ? 2u : first >= 0xf0 && first <= 0xf4 ? 3u : 0u;
-        bool valid = remaining != 0;
-        auto lower = first == 0xe0 ? 0xa0 : first == 0xf0 ? 0x90 : 0x80;
-        auto upper = first == 0xed ? 0x9f : first == 0xf4 ? 0x8f : 0xbf;
-        while (remaining && index < bytes.size() && bytes[index] >= lower && bytes[index] <= upper) {
-            ++index;
-            --remaining;
-            lower = 0x80;
-            upper = 0xbf;
-        }
-        valid = valid && remaining == 0;
-        if (!valid) result += "\xef\xbf\xbd";
-        else if (!(start == 0 && index == 3 && first == 0xef && bytes[1] == 0xbb && bytes[2] == 0xbf))
-            result.append(reinterpret_cast<const char*>(bytes.data() + start), index - start);
-    }
-    return result;
+    if (bytes.empty()) return {};
+    std::string_view input(reinterpret_cast<const char*>(bytes.data()), bytes.size());
+    if (input.starts_with("\xef\xbb\xbf")) input.remove_prefix(3);
+    return js::decode_utf8(input);
 }
 
 inline bool http_response_ok(const HttpResponse& response) { return response->status >= 200 && response->status < 300; }

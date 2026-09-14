@@ -127,6 +127,34 @@ function check(name: string, source: string): void {
     });
 }
 
+check("regexp-match-results", `
+    const global = /([a-z]+)([0-9]+)/g;
+    const alias = global;
+    global.lastIndex = 20;
+    const matches = 'ab12 cd3'.match(global);
+    if(!matches || matches.length !== 2 || matches.join('|') !== 'ab12|cd3' || alias.lastIndex !== 0)
+        throw new Error('global matches omit captures and reset shared state');
+    const single = /(a)?(b)/;
+    single.lastIndex = 7;
+    const optional = 'b ab'.match(single);
+    const present = 'ab'.match(single);
+    if(!optional || optional.length !== 3 || optional.join('|') !== 'b||b' ||
+        !present || present.join('|') !== 'ab|a|b' || single.lastIndex !== 7)
+        throw new Error('non-global captures and unchanged state');
+    const missing = /z/g;
+    missing.lastIndex = 3;
+    if('ab'.match(missing) !== null || missing.lastIndex !== 0 || 'a'.match(single) !== null || single.lastIndex !== 7)
+        throw new Error('absent matches and lastIndex');
+    const empty = /(?:)/g;
+    empty.lastIndex = 7;
+    const positions = '😀'.match(empty);
+    if(!positions || positions.length !== 3 || positions.join('|') !== '||' || empty.lastIndex !== 0)
+        throw new Error('empty matches advance one UTF16 unit');
+    const units = '😀'.match(/./g);
+    if(!units || units.length !== 2 || units[0]!.charCodeAt(0) !== 0xd83d || units[1]!.charCodeAt(0) !== 0xde00)
+        throw new Error('global matches preserve UTF16 captures');
+`);
+
 check("regexp-replacement-callbacks", `
     function edit(text:string):string {
         return text.replace(/([a-z]+)([0-9]+)/g, (match:string, word:string, digits:string, offset:number, original:string) => {

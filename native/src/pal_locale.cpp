@@ -23,24 +23,6 @@ int32_t icu_length(std::size_t size) {
     return static_cast<int32_t>(size);
 }
 
-std::string locale_id(const std::string& locale) {
-    const auto length = icu_length(locale.size());
-    int32_t parsed = 0;
-    UErrorCode status = U_ZERO_ERROR;
-    const auto size = uloc_forLanguageTag(locale.c_str(), nullptr, 0, &parsed, &status);
-    if (status != U_BUFFER_OVERFLOW_ERROR) check_icu(status);
-    if (length == 0 || parsed != length) throw std::runtime_error("Invalid language tag.");
-    std::string result(static_cast<std::size_t>(size) + 1, '\0');
-    status = U_ZERO_ERROR;
-    uloc_forLanguageTag(locale.c_str(), result.data(), icu_length(result.size()), nullptr, &status);
-    check_icu(status);
-    result.resize(static_cast<std::size_t>(size));
-    return result;
-}
-
-using Collator = std::unique_ptr<UCollator, decltype(&ucol_close)>;
-using Enumeration = std::unique_ptr<UEnumeration, decltype(&uenum_close)>;
-
 template <typename Fill>
 std::string icu_string(Fill fill) {
     UErrorCode status = U_ZERO_ERROR;
@@ -53,6 +35,19 @@ std::string icu_string(Fill fill) {
     result.resize(static_cast<std::size_t>(length));
     return result;
 }
+
+std::string locale_id(const std::string& locale) {
+    const auto length = icu_length(locale.size());
+    int32_t parsed = 0;
+    auto result = icu_string([&](char* output, int32_t capacity, UErrorCode* status) {
+        return uloc_forLanguageTag(locale.c_str(), output, capacity, &parsed, status);
+    });
+    if (length == 0 || parsed != length) throw std::runtime_error("Invalid language tag.");
+    return result;
+}
+
+using Collator = std::unique_ptr<UCollator, decltype(&ucol_close)>;
+using Enumeration = std::unique_ptr<UEnumeration, decltype(&uenum_close)>;
 
 std::string keyword(const std::string& id, const char* key) {
     return icu_string([&](char* output, int32_t capacity, UErrorCode* status) {

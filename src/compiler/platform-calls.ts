@@ -104,6 +104,7 @@ interface PlatformCallContext extends CharacterIntrinsicContext, Pick<LoweringSe
     "objectProperty" |
     "options" |
     "pinValueToTemporary" |
+    "emitDiscardedValue" |
     "reachFeature" |
     "reachJsData" |
     "registerAsset" |

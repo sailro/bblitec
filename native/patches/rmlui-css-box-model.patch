@@ -2,7 +2,18 @@ diff --git a/Source/Core/ElementBackgroundBorder.cpp b/Source/Core/ElementBackgr
 index 409b1d8..e3e7644 100644
 --- a/Source/Core/ElementBackgroundBorder.cpp
 +++ b/Source/Core/ElementBackgroundBorder.cpp
-@@ -132,7 +132,12 @@ void ElementBackgroundBorder::GenerateGeometry(Element* element)
+@@ -16,6 +16,10 @@ ElementBackgroundBorder::ElementBackgroundBorder() {}
+ 
+ void ElementBackgroundBorder::Render(Element* element)
+ {
++	const Vector2i viewport = element->GetRenderManager()->GetViewport();
++	if (viewport != background_viewport && GetBackground(BackgroundType::BoxShadowAndBackgroundBorder))
++		background_dirty = true;
++	background_viewport = viewport;
+ 	if (background_dirty || border_dirty)
+ 	{
+ 		for (auto& background : backgrounds)
+@@ -132,7 +136,12 @@ void ElementBackgroundBorder::GenerateGeometry(Element* element)
  	Mesh mesh = geometry.Release(Geometry::ReleaseMode::ClearMesh);
  
  	for (int i = 0; i < element->GetNumBoxes(); i++)
@@ -16,11 +27,34 @@ index 409b1d8..e3e7644 100644
  
  	geometry = render_manager->MakeGeometry(std::move(mesh));
  }
+diff --git a/Source/Core/ElementBackgroundBorder.h b/Source/Core/ElementBackgroundBorder.h
+--- a/Source/Core/ElementBackgroundBorder.h
++++ b/Source/Core/ElementBackgroundBorder.h
+@@ -34,6 +34,7 @@ private:
+ 
+ 	bool background_dirty = false;
+ 	bool border_dirty = false;
++	Vector2i background_viewport;
+ 
+ 	StableMap<BackgroundType, Background> backgrounds;
+ };
 diff --git a/Source/Core/GeometryBoxShadow.cpp b/Source/Core/GeometryBoxShadow.cpp
 index 872e64f..bc36f8e 100644
 --- a/Source/Core/GeometryBoxShadow.cpp
 +++ b/Source/Core/GeometryBoxShadow.cpp
-@@ -98,7 +98,11 @@ void GeometryBoxShadow::GenerateTexture(CallbackTexture& out_shadow_texture, Geo
+@@ -66,7 +66,10 @@ BoxShadowGeometryInfo GeometryBoxShadow::Resolve(Element* element, const Corner
+ 		Math::ExpandToPixelGrid(texture_region);
+ 
+ 		element_offset_in_texture = -texture_region.TopLeft();
+-		texture_dimensions = Vector2i(texture_region.Size());
++		// The render manager clips saved layers to its viewport. Use the same
++		// dimensions for the cache key and quad so clipped pixels keep their
++		// original size instead of stretching across the requested shadow area.
++		texture_dimensions = Math::Min(Vector2i(texture_region.Size()), element->GetRenderManager()->GetViewport());
+ 	}
+ 
+ 	// Since we can reuse textures across multiple box shadows with the same properties,
+@@ -98,7 +101,11 @@ void GeometryBoxShadow::GenerateTexture(CallbackTexture& out_shadow_texture, Geo
  
  	Mesh mesh = out_background_border_geometry.Release(Geometry::ReleaseMode::ClearMesh);
  	for (size_t i = 0; i < info.padding_render_boxes.size(); i++)

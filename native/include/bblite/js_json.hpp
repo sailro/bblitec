@@ -563,8 +563,10 @@ class JsonValue {
 
     [[nodiscard]] bbl::js::Array<JsonValue> own_values() const {
         bbl::js::Array<JsonValue> result;
-        for (const auto& key : own_keys()) {
-            result.push_back(get(key));
+        if (is_object()) {
+            for_each_entry([&](const auto&, const JsonValue& value) { result.push_back(value); });
+        } else {
+            for (const auto& key : own_keys()) result.push_back(get(key));
         }
         return result;
     }
@@ -686,13 +688,7 @@ class JsonValue {
     /** `Array#some` over an array. */
     template <typename Predicate>
     [[nodiscard]] bool some(Predicate predicate) const {
-        if (kind_ != Kind::array) return false;
-        const auto count = array_size();
-        for (std::size_t index = 0; index < count; ++index) {
-            const JsonValue element = at(static_cast<double>(index));
-            if (predicate(element)) return true;
-        }
-        return false;
+        return !every([&](const JsonValue& element) { return !static_cast<bool>(predicate(element)); });
     }
 
   private:
@@ -734,7 +730,11 @@ inline JsonArrayView JsonValue::elements() const { return JsonArrayView(*this); 
 /** Object spread copies own enumerable properties while retaining nested values. */
 inline void json_spread_into(Map<std::string,JsonValue>& target, const JsonValue& source) {
     if (source.is_null() || source.is_undefined()) return;
-    for (const auto& key : source.own_keys()) target.set(key, source.get(key));
+    if (source.is_object()) {
+        source.for_each_entry([&](const std::string& key, const JsonValue& value) { target.set(key, value); });
+    } else {
+        for (const auto& key : source.own_keys()) target.set(key, source.get(key));
+    }
 }
 
 inline void json_flatten_into(bbl::js::Array<JsonValue>& output, const JsonValue& value, double depth) {

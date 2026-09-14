@@ -1058,11 +1058,19 @@ class RegExp {
     [[nodiscard]] Nullable<Array<std::string>> match(
         const std::string& input) const {
         Array<std::string> result;
-        for (const auto& found : replacements(input)) {
-            if (state_->global) result.push_back(*found.groups[0]);
+        const auto units = wide(input);
+        if (state_->global) last_index() = 0.0;
+        std::size_t start = 0;
+        std::wsmatch found;
+        while (start <= units.size() && search(units, start, found)) {
+            if (state_->global) result.push_back(narrow(found.str()));
             else {
-                for (const auto& group : found.groups) result.push_back(group ? *group : std::string{});
+                result.reserve(found.size());
+                for (const auto& group : found) result.push_back(group.matched ? narrow(group.str()) : std::string{});
+                break;
             }
+            start += static_cast<std::size_t>(found.position() + found.length());
+            if (found.length() == 0) ++start;
         }
         return result.empty()
             ? Nullable<Array<std::string>>(std::nullopt)
