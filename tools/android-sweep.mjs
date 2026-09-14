@@ -51,8 +51,11 @@ if (values.scene) {
     await run(process.execPath, ['dist/src/scene-command.js', 'compile', 'all'], join(output, 'generation.log'));
 }
 // Reconcile the complete dependency set once; parallel builders only read it.
+const generatedDirectories = join(output, 'generation-directories.txt');
+writeFileSync(generatedDirectories, selected.map(scene => resolve(scene.output).replaceAll('\\', '/')).join('\n'));
 await run('pwsh', ['-NoProfile', '-File', 'tools/android.ps1', '-Scene', 'primitives', '-Sdk', values.sdk,
-    '-Abi', values.abi, '-Jobs', values.jobs, '-SweepDependencies'], join(output, 'dependencies.log'));
+    '-Abi', values.abi, '-Jobs', values.jobs,
+    '-SweepGeneratedDirectoriesFile', generatedDirectories], join(output, 'dependencies.log'));
 const originalSize = device('shell', 'wm', 'size').match(/Override size: (\d+x\d+)/)?.[1] ?? 'reset';
 let captureQueue = Promise.resolve();
 async function captureScene(scene, result, sceneOutput) {

@@ -43,6 +43,18 @@
     {
       "summary": "Configure Android buffers only when creating the retained SDL window.",
       "applied": true
+    },
+    {
+      "applied": true,
+      "summary": "Derive the Android sweep dependency union from selected generated scenes through the canonical CMake feature rules."
+    },
+    {
+      "applied": true,
+      "summary": "Use one path-valued bootstrap option and pass the generated-directory list through a file to avoid Windows command-line limits."
+    },
+    {
+      "applied": true,
+      "summary": "Remove temporary dependency-test fixtures after checking their workspace boundary."
     }
   ],
   "angles": [

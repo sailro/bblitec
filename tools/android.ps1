@@ -8,7 +8,7 @@ param(
     [switch]$Install,
     [switch]$Smoke,
     [switch]$SkipGenerate,
-    [switch]$SweepDependencies,
+    [string]$SweepGeneratedDirectoriesFile,
     [switch]$UseInstalledDependencies,
     [int]$Jobs = 8
 )
@@ -60,9 +60,13 @@ try {
         '-DANDROID_PLATFORM=android-28', '-DANDROID_STL=c++_shared',
         '-DCMAKE_BUILD_TYPE=Release', "-DBBLITE_GENERATED_DIR=$generated", '-DBBLITE_BACKEND=SDL_GPU',
         '-DBBLITE_PCH=ON', '-DBBLITE_NATIVE_CACHE=ON')
-    $dependencyFeatures = if ($SweepDependencies) {
-        ((Get-Content "$root/native/vcpkg.json" -Raw | ConvertFrom-Json).features.PSObject.Properties.Name) -join ';'
-    } else { '' }
+    $dependencyFeatures = ''
+    if ($SweepGeneratedDirectoriesFile) {
+        $profile = "$staging/sweep-dependencies.txt"
+        Invoke-Checked $cmake @("-DBBLITE_GENERATED_DIRS_FILE=$SweepGeneratedDirectoriesFile",
+            "-DBBLITE_PROFILE_OUTPUT=$profile", '-P', "$root/tools/android-sweep-dependencies.cmake")
+        $dependencyFeatures = (Get-Content $profile -Raw).Trim()
+    }
     $configure += "-DVCPKG_MANIFEST_FEATURES=$dependencyFeatures"
     $configure += if ($UseInstalledDependencies) { '-DVCPKG_MANIFEST_INSTALL=OFF' } else { '-DVCPKG_MANIFEST_INSTALL=ON' }
     if ($hostTools) { $configure += "-DCMAKE_MAKE_PROGRAM=$($hostTools.Ninja)" }
@@ -76,7 +80,7 @@ try {
         if ($LASTEXITCODE -ne 0 -or $revision -notmatch '^([0-9a-f]{40})\s') { throw "Cannot resolve SDL $sdlVersion." }
         Sync-PinnedCheckout $sdl 'https://github.com/libsdl-org/SDL.git' $Matches[1] 'SDL Android glue'
     }
-    if ($SweepDependencies) { return }
+    if ($SweepGeneratedDirectoriesFile) { return }
     Invoke-Checked $cmake @('--build', $build, '--parallel', "$Jobs")
     # Remove only disposable staging payloads, after checking their absolute boundary.
     foreach ($relative in @('assets', 'jniLibs')) {
