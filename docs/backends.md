@@ -34,6 +34,8 @@ Canvas metrics update before callbacks; RAF retains its registration phase and t
   determine device limits. Vulkan teardown releases the presentation surface before the device.
 - Material pipelines use each task's sample count. Shared uploads retain per-binding sampler/UV state;
   image identity includes bytes and upload flags. Last-owner release retires cached images.
+- Android prefers Vulkan 1.3 helper-invocation discard to preserve masked edges under MSAA;
+  older devices retain the Vulkan 1.0 shader path.
 - Local probe sets own their cube arrays and uniform data. SDL stores the 64 KiB probe block in a buffer.
 - Node geometry retains original attribute/index streams and separate per-view uniforms.
 

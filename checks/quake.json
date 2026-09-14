@@ -1,0 +1,13 @@
+{
+  "scene": "quake",
+  "notes": "Right-button hold acquires pointer lock; release restores the cursor.",
+  "capture": false,
+  "phases": [
+    { "id": "hold-release", "frame": 40, "tape": ["-*10", "+MouseRight", "-*10", "-MouseRight"] }
+  ],
+  "expect": [
+    { "kind": "log-match", "phase": "hold-release", "pattern": "pointer-lock phase=sync-applied requested=1 locked=1" },
+    { "kind": "log-match", "phase": "hold-release", "pattern": "pointer-lock phase=sync-applied requested=0 locked=0" },
+    { "kind": "log-match", "phase": "hold-release", "pattern": "pointer-lock phase=sync-rejected", "absent": true }
+  ]
+}

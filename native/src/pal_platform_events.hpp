@@ -1209,6 +1209,9 @@ inline void poll_platform_events(
         if (batch) {
             dispatch_dom_batch(engine, batch);
             if (!batch->ready()) throw std::logic_error("Synchronous frame input cannot defer its callbacks.");
+            // Listener side effects apply even when a later contextmenu listener
+            // prevents defaults or retained UI consumes the native packet.
+            sync_pointer_lock(SDL_GetWindowFromEvent(&event), engine);
             if (is_touch_event(event)) dispatch_touch_defaults(engine, *batch);
             if (batch->default_prevented) {
                 if (event.type == SDL_EVENT_MOUSE_BUTTON_UP) engine.canvas_click_armed = false;

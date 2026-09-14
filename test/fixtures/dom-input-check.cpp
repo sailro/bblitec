@@ -4,6 +4,7 @@
 #define main generated_main
 #include "../../artifacts/dom-input/program.hpp"
 #undef main
+#include "../../artifacts/dom-input/focus.hpp"
 #include "pal_ui_rml.cpp"
 #include "pal_platform_events.hpp"
 #include <cassert>
@@ -223,6 +224,26 @@ int main() {
         bool running = true;
         pal::poll_platform_events(engine, running, false);
         assert(resized == 2 && !engine.dom_input->pending_resize);
+        // Canvas focus owns keyboard routing even with retained UI installed.
+        int canvas_keys = 0, control_keys = 0;
+        on_dom_keyboard(engine, DomEventTarget::canvas(), "keydown", 42, [&](const PlatformKeyboardEvent& event) {
+            assert(event.code == "KeyW"); ++canvas_keys; event.prevent_default();
+        });
+        const auto control = ui_create_element(engine, "button");
+        ui_append_child(engine, ui_document_root(engine, UiDocumentPart::Body), control);
+        on_dom_keyboard(engine, DomEventTarget::node(control.value), "keydown", 42, [&](const PlatformKeyboardEvent&) { ++control_keys; });
+        pal::update_ui_rml_runtime(runtime, 640, 480);
+        SDL_Event key{}; key.type = SDL_EVENT_KEY_DOWN; key.key.scancode = SDL_SCANCODE_W;
+        focus_canvas(engine);
+        dispatch_dom_batch(engine, pal::prepare_dom_platform_input(engine, key));
+        assert(canvas_keys == 1 && control_keys == 0);
+        ui_focus(engine, control, true);
+        pal::update_ui_rml_runtime(runtime, 640, 480);
+        dispatch_dom_batch(engine, pal::prepare_dom_platform_input(engine, key));
+        assert(canvas_keys == 1 && control_keys == 1);
+        focus_canvas(engine);
+        dispatch_dom_batch(engine, pal::prepare_dom_platform_input(engine, key));
+        assert(canvas_keys == 2 && control_keys == 1);
     }
     {
         Engine engine;

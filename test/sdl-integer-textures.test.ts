@@ -52,6 +52,8 @@ void SDL_ReleaseGPUTexture(SDL_GPUDevice*, SDL_GPUTexture* texture) { allocation
 SDL_GPUSampler* SDL_CreateGPUSampler(SDL_GPUDevice*, const SDL_GPUSamplerCreateInfo*) { return next_handle<SDL_GPUSampler*>(); }
 void SDL_ReleaseGPUSampler(SDL_GPUDevice*, SDL_GPUSampler*) {}
 SDL_GPUShaderFormat SDL_GetGPUShaderFormats(SDL_GPUDevice*) { return SDL_GPU_SHADERFORMAT_DXIL; }
+SDL_PropertiesID SDL_GetGPUDeviceProperties(SDL_GPUDevice*) { return 0; }
+bool SDL_GetBooleanProperty(SDL_PropertiesID, const char*, bool fallback) { return fallback; }
 SDL_GPUShader* SDL_CreateGPUShader(SDL_GPUDevice*, const SDL_GPUShaderCreateInfo* info) { shader_info = *info; return next_handle<SDL_GPUShader*>(); }
 void SDL_ReleaseGPUShader(SDL_GPUDevice*, SDL_GPUShader*) {}
 void bind_sampled(bool fragment, Uint32 first, const SDL_GPUTextureSamplerBinding* bindings, Uint32 count) {

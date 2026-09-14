@@ -32,6 +32,7 @@ export const compiledShaderArtifactExtensions = [
     ".dxil",
     ".hlsl",
     ".msl",
+    ".demote.spv",
     ".spv",
     ".slots",
     ".tint-reflection.txt",

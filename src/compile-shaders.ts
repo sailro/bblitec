@@ -16,7 +16,7 @@ import { repositoryModuleClosure } from "./bake-cache.js";
 
 interface BinaryFormat {
     kind: "dxil" | "spirv";
-    extension: ".dxil" | ".spv";
+    extension: ".dxil" | ".spv" | ".demote.spv";
     flags: readonly string[];
     magic: readonly number[];
 }
@@ -24,6 +24,7 @@ interface BinaryFormat {
 const binaryFormats: readonly BinaryFormat[] = [
     { kind: "dxil", extension: ".dxil", flags: ["-O3"], magic: [0x44, 0x58, 0x42, 0x43] },
     { kind: "spirv", extension: ".spv", flags: ["-spirv", "-fspv-target-env=vulkan1.0", "-O3"], magic: [3, 2, 0x23, 7] },
+    { kind: "spirv", extension: ".demote.spv", flags: ["-spirv", "-fspv-target-env=vulkan1.0", "-fspv-extension=SPV_EXT_demote_to_helper_invocation", "-O3"], magic: [3, 2, 0x23, 7] },
 ];
 
 export function offlineShaderFormats(target: OfflineShaderTarget): { tint: string[]; binaries: readonly BinaryFormat[] } {
@@ -175,7 +176,7 @@ export function compileOfflineShaders(options: ShaderCompilationOptions): Shader
         const selectedExtensions = new Set([...formats.tint, ...formats.binaries.map(format => format.extension)]);
         for (const name of filesIn(directory)) {
             const extension = compiledShaderArtifactExtensions.find(extension => name.endsWith(extension));
-            if (extension && !selectedExtensions.has(extension)) rmSync(join(directory, name));
+            if (extension && (!selectedExtensions.has(extension) || name.endsWith(".vert.demote.spv"))) rmSync(join(directory, name));
         }
         const nativeSources = filesIn(directory).filter(name => name.endsWith(".native.wgsl"));
         const bySource = new Map<string, OfflineShaderStage[]>();
@@ -247,18 +248,20 @@ export function compileOfflineShaders(options: ShaderCompilationOptions): Shader
             const entryPoint = stages.get(stem)?.entryPoint ?? "main";
             const hlsl = readFileSync(source, "utf8");
             assertUniformBufferCap(hlsl, source);
+            const spirvSource = formats.binaries.some(format => format.kind === "spirv") ? sdlSpirvSource(hlsl, stem.endsWith(".vert")) : "";
+            const spirvDigest = sha256(spirvSource);
             let compiled = false;
             for (const format of formats.binaries) {
+                if (format.extension === ".demote.spv" && stem.endsWith(".vert")) continue;
                 if (!tools.dxc) throw new Error("DXC is required for binary shader formats.");
-                const binarySource = format.kind === "spirv" ? sdlSpirvSource(hlsl, stem.endsWith(".vert")) : hlsl;
-                const key = sha256(`${compilerHash}|${format.kind}|${profile}|${entryPoint}|${format.flags.join(",")}|${format.kind === "spirv" ? sha256(binarySource) : digestUpper(source)}`);
+                const key = sha256(`${compilerHash}|${format.kind}|${profile}|${entryPoint}|${format.flags.join(",")}|${format.kind === "spirv" ? spirvDigest : digestUpper(source)}`);
                 const cachePath = join(cacheRoot, `${key}${format.extension}`);
                 let binary = readValidBinary(cachePath, format);
                 if (!binary) {
                     const temporary = `${cachePath}.${process.pid}-${randomUUID()}.tmp`;
                     const adaptedSource = `${temporary}.hlsl`;
                     try {
-                        if (format.kind === "spirv") writeFileSync(adaptedSource, binarySource);
+                        if (format.kind === "spirv") writeFileSync(adaptedSource, spirvSource);
                         const args = format.kind === "dxil" ? ["-T", profile, "-E", entryPoint, ...format.flags] : [...format.flags, "-T", profile, "-E", entryPoint];
                         runCompiler(tools.dxc, [...args, "-Fo", temporary, format.kind === "spirv" ? adaptedSource : source], environment, source);
                         binary = readValidBinary(temporary, format);

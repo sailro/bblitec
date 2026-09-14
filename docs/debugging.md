@@ -70,6 +70,7 @@ Results are in artifacts/check/<id>/. Use numeric checks where small missing obj
 | Animation / emitters | scene153, scene153-live, scene302, scene302-live, scene231, scene241 |
 | Recovery | scene164 |
 | Interactivity | calculator, scene304 |
+| Desktop controls | quake, sandblox |
 
 Scene149 browser live resize throws error #84; its resized reference uses unchanged-module startup at
 960x600. Input tape `-`/UiIdle@0:0 is idle; UiWheelUp/Down uses SDL packets, WheelUp/Down a browser notch.

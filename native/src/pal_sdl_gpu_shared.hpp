@@ -30,6 +30,9 @@
 
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_gpu.h>
+#if defined(__ANDROID__)
+#include <vulkan/vulkan.h>
+#endif
 #if BBLITE_VISUAL_CAPTURE
 #include <SDL3_image/SDL_image.h>
 #endif
@@ -595,7 +598,24 @@ inline void create_sdl_gpu_device(
             ? SDL_WINDOW_RESIZABLE | SDL_WINDOW_NOT_FOCUSABLE
             : SDL_WINDOW_RESIZABLE);
     if (!state.window) gpu_error("SDL_CreateWindow");
-    state.device = SDL_CreateGPUDevice(
+#if defined(__ANDROID__)
+    // Prefer helper invocations for discard, retaining derivatives at masked
+    // edges. SDL's default Vulkan 1.0 device does not enable this feature.
+    VkPhysicalDeviceVulkan13Features features{};
+    features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES;
+    features.shaderDemoteToHelperInvocation = VK_TRUE;
+    SDL_GPUVulkanOptions vulkan{};
+    vulkan.vulkan_api_version = VK_API_VERSION_1_3;
+    vulkan.feature_list = &features;
+    const auto properties = SDL_CreateProperties();
+    SDL_SetBooleanProperty(properties, SDL_PROP_GPU_DEVICE_CREATE_SHADERS_SPIRV_BOOLEAN, true);
+    SDL_SetBooleanProperty(properties, SDL_PROP_GPU_DEVICE_CREATE_DEBUGMODE_BOOLEAN, options.gpu_debug);
+    SDL_SetPointerProperty(properties, SDL_PROP_GPU_DEVICE_CREATE_VULKAN_OPTIONS_POINTER, &vulkan);
+    state.device = SDL_CreateGPUDeviceWithProperties(properties);
+    SDL_DestroyProperties(properties);
+    if (state.device) SDL_SetBooleanProperty(SDL_GetGPUDeviceProperties(state.device), "bblite.shader.demote", true);
+#endif
+    if (!state.device) state.device = SDL_CreateGPUDevice(
         SDL_GPU_SHADERFORMAT_DXIL |
             SDL_GPU_SHADERFORMAT_SPIRV |
             SDL_GPU_SHADERFORMAT_MSL,
@@ -646,7 +666,8 @@ inline OwnedSdlShader load_shader(
         entrypoint = "main";
     } else if (supported & SDL_GPU_SHADERFORMAT_SPIRV) {
         format = SDL_GPU_SHADERFORMAT_SPIRV;
-        extension = ".spv";
+        extension = stage == SDL_GPU_SHADERSTAGE_FRAGMENT && SDL_GetBooleanProperty(SDL_GetGPUDeviceProperties(device), "bblite.shader.demote", false)
+            ? ".demote.spv" : ".spv";
         entrypoint = "main";
     } else if (supported & SDL_GPU_SHADERFORMAT_MSL) {
         format = SDL_GPU_SHADERFORMAT_MSL;

@@ -139,6 +139,7 @@ try {
     $libraries = "$staging/jniLibs/$Abi"
     New-Item -ItemType Directory -Force "$payload/shaders", $libraries | Out-Null
     if (Test-Path "$generated/assets") { Copy-Item "$generated/assets" $payload -Recurse }
+    if ('ui:rml' -in $sceneFeatures) { Copy-Item "$root/native/android/fonts" $payload -Recurse }
     Get-ChildItem "$build/shaders" -File | Where-Object { $_.Extension -in @('.spv', '.slots') } |
         Copy-Item -Destination "$payload/shaders"
     Copy-Item "$build/libmain.so" $libraries
@@ -157,7 +158,10 @@ try {
     }
     Copy-Item "$Ndk/NOTICE.toolchain" "$licenses/NDK-toolchain.txt"
     Copy-Item "$root/node_modules/@babylonjs/lite/LICENSE" "$licenses/Babylon-Lite.txt"
-    if ('ui:rml' -in $sceneFeatures) { Copy-Item "$rmlui/RmlUi-LICENSE.txt" $licenses }
+    if ('ui:rml' -in $sceneFeatures) {
+        Copy-Item "$rmlui/RmlUi-LICENSE.txt" $licenses
+        Copy-Item "$root/native/android/fonts/OFL.txt" "$licenses/NotoSansSymbols2.txt"
+    }
     if ('audio:engine' -in $sceneFeatures) {
         Get-ChildItem $labsound -File | Where-Object { $_.Name -match '-(LICENSE|COPYING)\.txt$' } | Copy-Item -Destination $licenses
     }

@@ -147,7 +147,8 @@ sources, load/error events and distinct DOMException values are unsupported.
 Fonts use DirectWrite on Windows and FreeType with CoreText, Fontconfig or Android system-font discovery
 on macOS, Linux and Android. Android resolves generic families through its font matcher and named families
 through its installed-font list; variable fonts select the nearest named weight. Android's text renderer
-rasterizes color emoji, including COLRv1. Other color fonts retain PNG decoding. Font coverage,
+rasterizes color emoji, including COLRv1; bundled Noto Sans Symbols 2 supplies monochrome text symbols.
+Other color fonts retain PNG decoding. Font coverage,
 baseline/line-height rounding, emoji/ZWJ shaping and glyph rasterization
 can differ from Chromium. Relative transition units resolve at transition start.
 

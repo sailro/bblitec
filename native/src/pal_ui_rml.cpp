@@ -1806,7 +1806,7 @@ public:
     }
 };
 
-std::optional<SystemFontFace> first_system_font(
+[[maybe_unused]] std::optional<SystemFontFace> first_system_font(
     std::initializer_list<std::string_view> families,
     int weight) {
     for (const std::string_view family : families) {
@@ -1852,6 +1852,10 @@ std::optional<SystemFontFace> system_ui_fallback_font() {
     return find_system_font("Segoe UI Symbol", 400);
 #elif defined(__APPLE__)
     return first_system_font({"Apple Symbols", "Arial Unicode MS"}, 400);
+#elif defined(__ANDROID__)
+    // Android's system Symbols fonts are subsetted and omit text media controls.
+    return SystemFontFace{std::filesystem::path(executable_directory()) / "fonts/NotoSansSymbols2-Regular.ttf",
+        "Noto Sans Symbols 2", 0};
 #else
     return first_system_font(
         {"Noto Sans Symbols 2", "Noto Sans Symbols", "sans-serif"},
@@ -3635,7 +3639,9 @@ struct UiRmlRuntime {
                     path.insert(path.begin(), DomEventTarget::canvas());
                 return path;
             };
-            input.focus_path = [this] { return event_path(context->GetFocusElement()); };
+            input.focus_path = [this] {
+                return this->engine.canvas_focused ? dom_canvas_path() : event_path(context->GetFocusElement());
+            };
             input.can_activate = [this](DomEventTarget target) {
                 if (target.kind != DomEventTargetKind::Element) return true;
                 const auto& record = this->engine.ui_elements.at(target.element);
