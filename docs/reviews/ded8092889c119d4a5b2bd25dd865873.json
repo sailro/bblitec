@@ -151,6 +151,18 @@
     {
       "summary": "Reuse native fixture extraction helpers in the GPU picking coordinate regression.",
       "applied": true
+    },
+    {
+      "summary": "Reuse the queued pointer fixture helper for right-button capture checks.",
+      "applied": true
+    },
+    {
+      "summary": "Compile helper-invocation variants only for fragment stages and prune obsolete vertex variants.",
+      "applied": true
+    },
+    {
+      "summary": "Adapt and hash SPIR-V input once for both fragment variants.",
+      "applied": true
     }
   ],
   "angles": [
