@@ -229,14 +229,26 @@ template <typename Driver> void exercise(int index) {
     on_dom_pointer(engine, DomEventTarget::canvas(), "pointerup", 90, [&](const PlatformMouseEvent& event) {
         if (event.button == 2) engine.pointer_lock_requested = false;
     });
+    int locked_moves = 0;
+    on_dom_pointer(engine, DomEventTarget::canvas(), "pointermove", 90, [&](const PlatformMouseEvent& event) {
+        assert(event.buttons == 2 && event.movement_x == 4 && event.movement_y == -5);
+        ++locked_moves;
+        // Quake releases capture when a move reports that RMB is no longer held.
+        if (event.buttons == 0) engine.pointer_lock_requested = false;
+    });
     on_dom_pointer(engine, DomEventTarget::canvas(), "contextmenu", 90, [](const PlatformMouseEvent& event) { event.prevent_default(); });
     consume_ui = true;
     for (const auto type : {SDL_EVENT_MOUSE_BUTTON_DOWN, SDL_EVENT_MOUSE_BUTTON_UP}) {
         queue_pointer(type, 20, SDL_BUTTON_RIGHT);
         assert(driver.prepare() == FramePreparation::ready);
         assert(engine.pointer_locked == (type == SDL_EVENT_MOUSE_BUTTON_DOWN) && relative_mouse == engine.pointer_locked);
+        if (type == SDL_EVENT_MOUSE_BUTTON_DOWN) {
+            queue_pointer(SDL_EVENT_MOUSE_MOTION);
+            assert(driver.prepare() == FramePreparation::ready);
+            assert(engine.pointer_locked && relative_mouse && !cursor_visible);
+        }
     }
-    assert(lock_changes == 6);
+    assert(lock_changes == 6 && locked_moves == 1);
     consume_ui = false;
     for (const Uint32 type : {SDL_EVENT_WINDOW_CLOSE_REQUESTED, SDL_EVENT_QUIT}) {
         state.running = true;

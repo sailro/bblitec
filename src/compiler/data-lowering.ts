@@ -232,6 +232,37 @@ type LocalOwnership =
  * reject writes; owned locals reject writes after escaping by copy.
  */
 export class DataLowerer {
+    private readonly indexedStrings = new EmissionMap<string, { name?: string; declaration: ts.Node }>();
+
+    /** Index only unchanged owned parameters, within their declaring function. */
+    public captureStringIndexes(parameters: readonly { cpp: string; declaration: ts.Node }[], body: () => string[]): string[] {
+        for (const parameter of parameters) this.indexedStrings.set(parameter.cpp, {
+            declaration: parameter.declaration,
+        });
+        try {
+            const lines = body();
+            return [...parameters.flatMap(parameter => {
+                const index = this.indexedStrings.get(parameter.cpp)!;
+                return index.name
+                    ? [`bbl::js::StringIndex ${index.name}(${parameter.cpp});`] : [];
+            }), ...lines];
+        } finally {
+            for (const parameter of parameters) {
+                this.indexedStrings.delete(parameter.cpp);
+            }
+        }
+    }
+
+    public stringIndexReceiver(value: Value, site: ts.Node): string {
+        const index = this.indexedStrings.get(value.cpp);
+        if (!index) return value.cpp;
+        const owner = ts.findAncestor(site, ts.isFunctionLike);
+        // Nested closures retain their normal string storage and capture protocol.
+        if (owner !== index.declaration) return value.cpp;
+        const name = index.name ?? this.context.allocateTemporaryCppName("string_units");
+        if (!index.name) this.indexedStrings.set(value.cpp, { ...index, name });
+        return name;
+    }
     private readonly evaluatedLiteralKeys = new EmissionWeakMap<ts.ObjectLiteralExpression, string[]>();
     private readonly ownership = new EmissionMap<
         string,
@@ -2272,8 +2303,9 @@ export class DataLowerer {
         }
         if (dataType.kind === "string") {
             if (mode === "write") this.context.fail(access, "String element writes are not supported.");
-            let source = owner.cpp;
+            let source = this.stringIndexReceiver(owner, access);
             if (expressionMayRunCode(access.argumentExpression) &&
+                source === owner.cpp &&
                 (owner.staticString === undefined || source !== this.context.cppString(owner.staticString))) {
                 source = this.context.allocateTemporaryCppName("indexed_string");
                 this.context.emit(`const std::string ${source} = ${owner.cpp};`);

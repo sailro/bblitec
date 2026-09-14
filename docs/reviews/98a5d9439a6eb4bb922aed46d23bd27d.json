@@ -163,6 +163,18 @@
     {
       "summary": "Adapt and hash SPIR-V input once for both fragment variants.",
       "applied": true
+    },
+    {
+      "summary": "Reuse TypeScript ancestor lookup for function-local string indexes.",
+      "applied": true
+    },
+    {
+      "summary": "Allocate string index names lazily and keep usage in the existing emission map.",
+      "applied": true
+    },
+    {
+      "summary": "Keep replay button masks in SDL_MouseButtonFlags without floating conversions.",
+      "applied": true
     }
   ],
   "angles": [

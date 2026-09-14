@@ -405,7 +405,7 @@ export function parameterIsReadOnly(
     });
     const parameterCanAlias = typeCanCarryReference(checker.getTypeAtLocation(parameter));
     const readOnly = !someAnalysisNode(declaration.body, (node) => {
-        if (writesThroughRoot(node, rootNamesParameter)) {
+        if (writesThroughRoot(node, rootNamesParameter, method => parameterCanAlias && !readOnlyDataMethods.has(method))) {
             return true;
         }
         if (ts.isCallExpression(node) && parameterCanAlias) {

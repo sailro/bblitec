@@ -2452,6 +2452,38 @@ class StringCodeUnitCursor {
     return string_relative_at(value, index);
 }
 
+/** A function-local UTF-16 index borrowing a proven unchanged string parameter. */
+class StringIndex {
+  public:
+    explicit StringIndex(const std::string& value) : cursor_(value) {}
+    StringIndex(const StringIndex&) = delete;
+    StringIndex& operator=(const StringIndex&) = delete;
+
+    [[nodiscard]] std::optional<char16_t> at(double index) {
+        if (!std::isfinite(index) || index < 0.0 || std::trunc(index) != index) return {};
+        while (static_cast<double>(units_.size()) <= index) {
+            const auto unit = cursor_.next();
+            if (!unit) return {};
+            units_.push_back(*unit);
+        }
+        return units_[static_cast<std::size_t>(index)];
+    }
+
+  private:
+    StringCodeUnitCursor cursor_;
+    std::u16string units_;
+};
+
+[[nodiscard]] inline Nullable<std::string> string_index(StringIndex& value, double index) {
+    const auto unit = value.at(index);
+    return unit ? Nullable<std::string>(string_from_code_units(std::u16string(1, *unit))) : Nullable<std::string>{};
+}
+
+[[nodiscard]] inline double string_char_code_at(StringIndex& value, double index) {
+    const auto unit = value.at(std::isnan(index) ? 0.0 : std::trunc(index));
+    return unit ? static_cast<double>(*unit) : std::numeric_limits<double>::quiet_NaN();
+}
+
 [[nodiscard]] inline Nullable<double> string_code_point_at(const std::string& value, double index) {
     index = std::isnan(index) ? 0.0 : std::trunc(index);
     if (!std::isfinite(index) || index < 0.0) return {};

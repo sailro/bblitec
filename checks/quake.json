@@ -1,13 +1,16 @@
 {
   "scene": "quake",
-  "notes": "Right-button hold acquires pointer lock; release restores the cursor.",
-  "capture": false,
+  "notes": "Right-button drag keeps relative mouse capture and turns the view; release restores the cursor.",
   "phases": [
-    { "id": "hold-release", "frame": 40, "tape": ["-*10", "+MouseRight", "-*10", "-MouseRight"] }
+    { "id": "idle", "frame": 40 },
+    { "id": "hold-release", "frame": 40, "tape": ["-*10", "+UiMouseRight@640:360", "UiMove@660:360", "UiMove@680:360", "UiMove@700:360", "-*5", "-UiMouseRight@700:360"] }
   ],
   "expect": [
-    { "kind": "log-match", "phase": "hold-release", "pattern": "pointer-lock phase=sync-applied requested=1 locked=1" },
-    { "kind": "log-match", "phase": "hold-release", "pattern": "pointer-lock phase=sync-applied requested=0 locked=0" },
-    { "kind": "log-match", "phase": "hold-release", "pattern": "pointer-lock phase=sync-rejected", "absent": true }
+    { "kind": "log-match", "phase": "hold-release", "pattern": "pointer-lock phase=sync-applied requested=1 locked=1 relative=1 cursor-visible=0", "count": 1 },
+    { "kind": "log-match", "phase": "hold-release", "pattern": "pointer-lock phase=sync-applied requested=0 locked=0 relative=0 cursor-visible=1", "count": 1 },
+    { "kind": "log-match", "phase": "hold-release", "pattern": "input mouse-motion xrel=20 yrel=0 sdl-mask=0 dom-buttons=2 requested=1 locked=1", "count": 3 },
+    { "kind": "log-match", "phase": "hold-release", "pattern": "pointer-lock phase=sync-rejected", "absent": true },
+    { "kind": "capture-differs", "phase": "hold-release", "vs": "idle", "path": "camera" },
+    { "kind": "image-mad", "phase": "hold-release", "vs": "idle", "min": 1 }
   ]
 }

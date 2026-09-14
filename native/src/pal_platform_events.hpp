@@ -201,8 +201,8 @@ inline void dispatch_platform_mouse_button(
  * `UiClick@x:y` queues an SDL motion/press/release triplet so retained UI
  * receives the same host events as a physical click without moving the
  * user's pointer or foreground focus.
- * `UiMove@x:y` and `+UiMouseLeft@x:y`/`-UiMouseLeft@x:y` use that same
- * SDL path for hover and held drags, including camera controls.
+ * `UiMove@x:y` and `+UiMouseLeft@x:y`/`-UiMouseLeft@x:y` (also MouseRight)
+ * use that same SDL path for hover and held drags, including camera controls.
  * `UiKey@Ctrl+A` (SDL key names, optional Ctrl+) queues a key press/release;
  * `UiText@hex` queues UTF-8 bytes as an SDL text input event.
  * `UiWheelUp`/`UiWheelDown` queue SDL wheel packets at the canvas center.
@@ -216,6 +216,7 @@ inline void dispatch_platform_mouse_button(
  * `DeviceLoss` for the source's dataset handshake, retained hooks, and loss API.
  */
 inline void sync_pointer_lock(SDL_Window* window, Engine& engine);
+inline double dom_mouse_buttons(SDL_MouseButtonFlags pressed);
 
 inline void release_pointer_lock_on_escape(
     SDL_Window* window,
@@ -350,7 +351,7 @@ public:
         if (code == "MouseMoveRight") {
             const PlatformMouseEvent event{
                 .button = -1.0,
-                .buttons = static_cast<double>(mouse_buttons_),
+                .buttons = dom_mouse_buttons(mouse_buttons_),
                 .client_x = engine.canvas_client_width / 2.0,
                 .client_y = engine.canvas_client_height / 2.0,
                 .movement_x = 100.0,
@@ -361,7 +362,7 @@ public:
         if (const auto point = pointer_position(code, "MouseMove@")) {
             const PlatformMouseEvent event{
                 .button = -1.0,
-                .buttons = static_cast<double>(mouse_buttons_),
+                .buttons = dom_mouse_buttons(mouse_buttons_),
                 .client_x = point->first,
                 .client_y = point->second,
             };
@@ -370,8 +371,9 @@ public:
         }
         const auto ui_click = pointer_position(code, "UiClick@");
         const auto ui_move = pointer_position(code, "UiMove@");
-        const auto ui_down = pointer_position(code, "+UiMouseLeft@");
-        const auto ui_up = pointer_position(code, "-UiMouseLeft@");
+        const bool right = code.starts_with("+UiMouseRight@") || code.starts_with("-UiMouseRight@");
+        const auto ui_down = pointer_position(code, right ? "+UiMouseRight@" : "+UiMouseLeft@");
+        const auto ui_up = pointer_position(code, right ? "-UiMouseRight@" : "-UiMouseLeft@");
         if (const auto point = ui_click ? ui_click : ui_move ? ui_move : ui_down ? ui_down : ui_up) {
             const std::uint32_t window_id =
                 window ? SDL_GetWindowID(window) : 0;
@@ -384,7 +386,8 @@ public:
             motion.motion.y = static_cast<float>(point->second);
             motion.motion.xrel = static_cast<float>(point->first - engine.input_replay_pointer_x);
             motion.motion.yrel = static_cast<float>(point->second - engine.input_replay_pointer_y);
-            motion.motion.state = mouse_buttons_;
+            // Windows relative packets can omit held buttons; transitions remain authoritative.
+            motion.motion.state = window && SDL_GetWindowRelativeMouseMode(window) ? 0 : mouse_buttons_;
             engine.input_replay_pointer_x = point->first;
             engine.input_replay_pointer_y = point->second;
             SDL_Event down{};
@@ -392,7 +395,7 @@ public:
             down.button.type = SDL_EVENT_MOUSE_BUTTON_DOWN;
             down.button.windowID = window_id;
             down.button.which = replay_ui_mouse_id;
-            down.button.button = SDL_BUTTON_LEFT;
+            down.button.button = right ? SDL_BUTTON_RIGHT : SDL_BUTTON_LEFT;
             down.button.down = true;
             down.button.x = static_cast<float>(point->first);
             down.button.y = static_cast<float>(point->second);
@@ -408,11 +411,11 @@ public:
             };
             queue(motion);
             if (ui_click || ui_down) {
-                mouse_buttons_ |= SDL_BUTTON_LMASK;
+                mouse_buttons_ |= SDL_BUTTON_MASK(down.button.button);
                 queue(down);
             }
             if (ui_click || ui_up) {
-                mouse_buttons_ &= ~SDL_BUTTON_LMASK;
+                mouse_buttons_ &= ~SDL_BUTTON_MASK(down.button.button);
                 queue(up);
             }
             return;
@@ -423,7 +426,7 @@ public:
                 code == "WheelUp" ? -100.0 : 100.0,
                 engine.canvas_client_width / 2.0,
                 engine.canvas_client_height / 2.0,
-                static_cast<double>(mouse_buttons_));
+                dom_mouse_buttons(mouse_buttons_));
             return;
         }
         const bool down_only = code.size() > 1 && code.front() == '+';
@@ -438,33 +441,31 @@ public:
             event_code.remove_prefix(5);
         }
         double mouse_button = -1.0;
-        double mouse_mask = 0.0;
+        SDL_MouseButtonFlags mouse_mask = 0;
         const auto left_point =
             pointer_position(event_code, "MouseLeft@");
         const bool outside_canvas =
             event_code == "MouseLeftOutsideCanvas";
         if (event_code == "MouseLeft" || left_point || outside_canvas) {
             mouse_button = 0.0;
-            mouse_mask = 1.0;
+            mouse_mask = SDL_BUTTON_LMASK;
         } else if (event_code == "MouseMiddle") {
             mouse_button = 1.0;
-            mouse_mask = 4.0;
+            mouse_mask = SDL_BUTTON_MMASK;
         } else if (event_code == "MouseRight") {
             mouse_button = 2.0;
-            mouse_mask = 2.0;
+            mouse_mask = SDL_BUTTON_RMASK;
         }
         if (mouse_button >= 0.0) {
             const auto dispatch_mouse = [&](bool down) {
-                const auto mask =
-                    static_cast<unsigned int>(mouse_mask);
                 if (down) {
-                    mouse_buttons_ |= mask;
+                    mouse_buttons_ |= mouse_mask;
                 } else {
-                    mouse_buttons_ &= ~mask;
+                    mouse_buttons_ &= ~mouse_mask;
                 }
                 const PlatformMouseEvent event{
                     .button = mouse_button,
-                    .buttons = static_cast<double>(mouse_buttons_),
+                    .buttons = dom_mouse_buttons(mouse_buttons_),
                     .client_x = outside_canvas
                         ? -1.0
                         : left_point
@@ -1102,7 +1103,7 @@ inline std::shared_ptr<DomEventBatch> prepare_dom_platform_input(Engine& engine,
         const auto modifiers = SDL_GetModState();
         const PlatformMouseEvent pointer{
             .button = move || wheel ? -1.0 : static_cast<double>(event.button.button - 1),
-            .buttons = dom_mouse_buttons(move ? event.motion.state : tracked_mouse_buttons()),
+            .buttons = dom_mouse_buttons(tracked_mouse_buttons()),
             .client_x = (move ? event.motion.x : wheel ? event.wheel.mouse_x : event.button.x) * engine.canvas_window_to_client_scale,
             .client_y = (move ? event.motion.y : wheel ? event.wheel.mouse_y : event.button.y) * engine.canvas_window_to_client_scale,
             .movement_x = move ? static_cast<double>(event.motion.xrel) : 0,
