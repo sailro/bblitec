@@ -8,7 +8,7 @@ android {
     buildToolsVersion '35.0.0'
     defaultConfig {
         applicationId providers.gradleProperty('bbliteApplicationId').getOrElse('org.bblite.prototype')
-        minSdk 28
+        minSdk = (project.findProperty('bbliteMinSdk') ?: '28').toInteger()
         targetSdk 35
         versionCode 1
         versionName '0.1'

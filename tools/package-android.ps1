@@ -14,6 +14,7 @@ if (-not $Device) { throw 'Android packaging requires -Device for its staged sta
 $applicationId = 'org.bblite.demo.' + $Scene.Replace('-', '_')
 & (Join-Path $PSScriptRoot 'android.ps1') -Scene $Scene -Sdk $Sdk -Abi $Abi -Jobs $Jobs -ApplicationId $applicationId
 $built = Join-Path $root "artifacts/android/$Scene/$Abi"
+$configuration = Get-Content "$built/build.json" -Raw | ConvertFrom-Json
 $name = "bblitec-$Scene-sdl-gpu-android-$($Abi.Replace('_', '-'))"
 $plan = New-PackageOutput (Resolve-RepositoryPath $OutputRoot) $name
 $directory = Join-Path $plan.Staging $name
@@ -32,7 +33,7 @@ $receipt = Get-Content (Join-Path $smoke 'report.json') -Raw | ConvertFrom-Json
 @"
 $Scene — Android $Abi, SDL_GPU/Vulkan
 
-Install $Scene.apk on Android 9+ with a compatible Vulkan GPU.
+Install $Scene.apk on Android API $($configuration.minSdk)+ with a compatible Vulkan GPU.
 Application ID: $applicationId
 Debug-signed prototype with Release native code; not a store release.
 Assets, shaders and dependency notices are embedded in the APK.
@@ -41,6 +42,7 @@ $archive = Join-Path $plan.Staging "$name.zip"
 Compress-Archive -Path $directory -DestinationPath $archive
 @{
     scene = $Scene; platform = 'android'; abi = $Abi; applicationId = $applicationId
+    minSdk = $configuration.minSdk
     buildType = 'debug'; nativeConfiguration = 'Release'; backend = 'SDL_GPU'
     apkBytes = (Get-Item $apk).Length; apkSha256 = (Get-FileHash $apk -Algorithm SHA256).Hash
     zipBytes = (Get-Item $archive).Length; zipSha256 = (Get-FileHash $archive -Algorithm SHA256).Hash

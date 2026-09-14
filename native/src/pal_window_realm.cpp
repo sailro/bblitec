@@ -5,6 +5,7 @@
 #include "pal_gpu_shared.hpp"
 #include "pal_platform_events.hpp"
 #include "pal_system_preferences.hpp"
+#include "pal_window.hpp"
 #if BBLITE_HAS_PBR_RENDERER
 #include "pal_camera_controls.hpp"
 #endif
@@ -48,6 +49,7 @@ struct DocumentSnapshot {
     std::vector<UiStyleRule> styles;
     std::uint64_t style_revision = 0;
     std::set<std::string> dom_event_types;
+    std::set<std::uint32_t> dom_pointer_elements;
 };
 struct LayoutSnapshot {
     std::vector<UiClientRect> rectangles;
@@ -164,7 +166,10 @@ std::unique_ptr<DocumentSnapshot> snapshot_document(const Engine& engine) {
     snapshot->document_roots = engine.ui_document_roots;
     snapshot->styles = engine.ui_host_style_rules;
     snapshot->style_revision = engine.ui_style_revision;
-    if (engine.dom_input) snapshot->dom_event_types = engine.dom_input->event_types;
+    if (engine.dom_input) {
+        snapshot->dom_event_types = engine.dom_input->event_types;
+        snapshot->dom_pointer_elements = engine.dom_input->pointer_elements;
+    }
     return snapshot;
 }
 
@@ -177,6 +182,7 @@ void apply_document(Engine& engine, DocumentSnapshot snapshot, const std::shared
     if (!snapshot.dom_event_types.empty()) {
         auto& input = dom_input(engine);
         input.event_types = std::move(snapshot.dom_event_types);
+        input.pointer_elements = std::move(snapshot.dom_pointer_elements);
         input.batch_sink = [inbox](std::shared_ptr<DomEventBatch> batch) {
             auto event = std::make_unique<WindowDomEvent>();
             event->batch = std::move(batch);
@@ -443,6 +449,7 @@ int run_window_application(WorkerEntry initialize, EngineOptions options) {
         }
         if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS)) throw std::runtime_error(SDL_GetError());
         struct Quit { ~Quit() { SDL_Quit(); } } quit;
+        configure_run_surface(options);
         using Window = std::unique_ptr<SDL_Window, decltype(&SDL_DestroyWindow)>;
         Window window(SDL_CreateWindow(options.title.c_str(), options.width, options.height, SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY |
             (frame_options.test_pass ? SDL_WINDOW_NOT_FOCUSABLE : 0)), &SDL_DestroyWindow);
@@ -632,6 +639,9 @@ int run_window_application(WorkerEntry initialize, EngineOptions options) {
                 next_layout.width = width; next_layout.height = height;
                 const auto density = SDL_GetWindowDisplayScale(window.get());
                 next_layout.pixel_ratio = density > 0 ? density : 1;
+                const auto pixel_density = SDL_GetWindowPixelDensity(window.get());
+                update_engine_canvas_metrics(display, width, height, next_layout.pixel_ratio,
+                    pixel_density > 0 ? pixel_density : 1);
                 if (services->screen_requested.load()) {
                     const auto display_id = SDL_GetDisplayForWindow(window.get());
                     SDL_Rect bounds{}, available{};

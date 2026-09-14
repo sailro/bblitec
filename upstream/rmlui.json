@@ -23,6 +23,7 @@
     "rmlui-transform-key-ownership.patch",
     "rmlui-visibility.patch",
     "rmlui-zero-track-grid.patch",
-    "rmlui-zz-container-queries.patch"
+    "rmlui-zz-container-queries.patch",
+    "rmlui-zzz-android-charconv.patch"
   ]
 }

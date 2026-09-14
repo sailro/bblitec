@@ -5,7 +5,7 @@
 // 8 frames and the worker at least 50; the button (the red row-35
 // pixels) sits centred and its label expands while blocked; after the
 // second press releases it the label contracts, the main realm resumes
-// (more than 80 frames after frame 500) and the resize reaches both
+// (more than 80 frames after frame 800) and the resize reaches both
 // engines (700x279 canvases).
 import assert from "node:assert/strict";
 import { loadPng } from "./support.mjs";
@@ -42,7 +42,7 @@ export function check(context) {
                 assert(right - left > 270, `${where}: the block label did not expand`);
             } else {
                 assert(right - left < 220, `${where}: the unblock did not restore the short label`);
-                const late = frames.filter((frame) => frame.frame >= 500);
+                const late = frames.filter((frame) => frame.frame >= 800);
                 assert(late.at(-1).canvases[0].sequence - late[0].canvases[0].sequence > 80, `${where}: the main realm did not resume`);
                 assert(late.every((frame) => frame.canvases.every((canvas) => canvas.width === 700 && canvas.height === 279)), `${where}: the responsive resize did not reach both engines`);
             }

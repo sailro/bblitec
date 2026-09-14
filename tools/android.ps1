@@ -36,6 +36,22 @@ function Invoke-Checked([string]$Program, [string[]]$Arguments) {
     if ($LASTEXITCODE -ne 0) { throw "$Program failed ($LASTEXITCODE)." }
 }
 
+function Build-AndroidDependency([string]$Name, [string]$Output, [string[]]$Inputs, [string[]]$Required, [scriptblock]$Build) {
+    $identity = @($Abi, [IO.Path]::GetFullPath($Ndk)) + @(
+        $Inputs + @("$Ndk/source.properties", "$PSScriptRoot/bblite-tools.psm1", "$PSScriptRoot/android.ps1") |
+            Sort-Object -Unique | ForEach-Object { "$_=" + (Get-FileHash -LiteralPath $_ -Algorithm SHA256).Hash }
+    )
+    $fingerprint = $identity -join "`n"
+    $stamp = "$Output/android-build-inputs.txt"
+    if ((Test-Path $stamp) -and (Get-Content $stamp -Raw) -eq $fingerprint -and
+        @($Required | Where-Object { -not (Test-Path (Join-Path $Output $_)) }).Count -eq 0) {
+        Write-Host "$Name Android artifact is current ($Abi)."
+        return
+    }
+    & $Build
+    Set-Content $stamp $fingerprint -NoNewline
+}
+
 Push-Location $root
 try {
     Invoke-Checked 'npm' @('run', 'build')
@@ -52,23 +68,54 @@ try {
     $build = "$root/native/build-$id-android-$Abi"
     $staging = "$root/artifacts/android/$id/$Abi"
     New-Item -ItemType Directory -Force $staging | Out-Null
+    $directoriesFile = $SweepGeneratedDirectoriesFile
+    if (-not $directoriesFile) {
+        $directoriesFile = "$staging/dependency-directories.txt"
+        Set-Content $directoriesFile $generated.Replace('\', '/')
+    }
+    $profile = "$staging/dependencies.txt"
+    Invoke-Checked $cmake @("-DBBLITE_GENERATED_DIRS_FILE=$directoriesFile",
+        "-DBBLITE_PROFILE_OUTPUT=$profile", '-P', "$root/tools/android-sweep-dependencies.cmake")
+    $dependencyFeatures = (Get-Content $profile -Raw).Trim()
+    $runtimeFeatures = @(Get-Content $directoriesFile | ForEach-Object {
+        (Get-Content (Join-Path $_ 'manifest.json') -Raw | ConvertFrom-Json).features
+    } | Sort-Object -Unique)
+    $rmlui = "$root/artifacts/tools/rmlui-android-$Abi"
+    $labsound = "$root/artifacts/tools/labsound-android-$Abi"
+    if (-not $UseInstalledDependencies) {
+        $vcpkg = Join-Path $vcpkgRoot "vcpkg$(if ($IsWindows) { '.exe' })"
+        $installArguments = @('install', "--x-manifest-root=$root/native", "--x-install-root=$root/artifacts/android-vcpkg",
+            "--overlay-triplets=$root/native/triplets", "--triplet=$triplet")
+        $installArguments += @($dependencyFeatures.Split(';', [StringSplitOptions]::RemoveEmptyEntries) | ForEach-Object { "--x-feature=$_" })
+        Invoke-Checked $vcpkg $installArguments
+        if ('ui:rml' -in $runtimeFeatures) {
+            $inputs = @("$root/upstream/rmlui.json", "$PSScriptRoot/build-rmlui.ps1", "$PSScriptRoot/package-output.psm1", "$root/native/apply-rmlui-patch.cmake") +
+                @(Get-ChildItem "$root/native/patches" -Filter 'rmlui-*.patch' -File | ForEach-Object FullName) +
+                @('freetype', 'lunasvg', 'boost-charconv' | ForEach-Object { "$root/artifacts/android-vcpkg/$triplet/share/$_/vcpkg_abi_info.txt" })
+            Build-AndroidDependency 'RmlUi' $rmlui $inputs @('lib/librmlui.a', 'lib/cmake/RmlUi/RmlUiConfig.cmake', 'bblite-rmlui-features.cmake', 'include/RmlUi/Core.h', 'Backends/RmlUi_Platform_SDL.cpp', 'RmlUi-LICENSE.txt') {
+                & "$PSScriptRoot/build-rmlui.ps1" -AndroidAbi $Abi -AndroidNdk $Ndk -FreetypeRoot "$root/artifacts/android-vcpkg/$triplet" -Jobs $Jobs -CMake $cmake
+            }
+        }
+        if ('audio:engine' -in $runtimeFeatures) {
+            Build-AndroidDependency 'LabSound' $labsound @("$root/upstream/labsound.json", "$PSScriptRoot/build-labsound.ps1", "$PSScriptRoot/patches/labsound-lazy-decoders.patch") @('lib/libLabSound.a', 'lib/liblibnyquist.a', 'include/LabSound/LabSound.h', 'include/libnyquist/Decoders.h', 'bblite-labsound-features.cmake', 'LabSound-LICENSE.txt', 'LabSound-COPYING.txt', 'libnyquist-LICENSE.txt', 'libnyquist-COPYING.txt') {
+                & "$PSScriptRoot/build-labsound.ps1" -AndroidAbi $Abi -AndroidNdk $Ndk -Jobs $Jobs -CMake $cmake
+            }
+        }
+    }
+    $sceneFeatures = (Get-Content "$generated/manifest.json" -Raw | ConvertFrom-Json).features
+    $minSdk = if ('ui:rml' -in $sceneFeatures) { 29 } else { 28 }
+    if ($minSdk -ne 28) { $build += "-api$minSdk" }
     $configure = @('-S', "$root/native", '-B', $build, '-G', 'Ninja',
         "-DCMAKE_TOOLCHAIN_FILE=$vcpkgRoot/scripts/buildsystems/vcpkg.cmake",
         "-DVCPKG_CHAINLOAD_TOOLCHAIN_FILE=$Ndk/build/cmake/android.toolchain.cmake",
         "-DVCPKG_OVERLAY_TRIPLETS=$root/native/triplets", "-DVCPKG_TARGET_TRIPLET=$triplet",
         "-DVCPKG_INSTALLED_DIR=$root/artifacts/android-vcpkg", "-DANDROID_ABI=$Abi",
-        '-DANDROID_PLATFORM=android-28', '-DANDROID_STL=c++_shared',
+        "-DANDROID_PLATFORM=android-$minSdk", '-DANDROID_STL=c++_shared',
+        "-DBBLITE_RMLUI_DIR=$rmlui", "-DBBLITE_LABSOUND_DIR=$labsound",
         '-DCMAKE_BUILD_TYPE=Release', "-DBBLITE_GENERATED_DIR=$generated", '-DBBLITE_BACKEND=SDL_GPU',
         '-DBBLITE_PCH=ON', '-DBBLITE_NATIVE_CACHE=ON')
-    $dependencyFeatures = ''
-    if ($SweepGeneratedDirectoriesFile) {
-        $profile = "$staging/sweep-dependencies.txt"
-        Invoke-Checked $cmake @("-DBBLITE_GENERATED_DIRS_FILE=$SweepGeneratedDirectoriesFile",
-            "-DBBLITE_PROFILE_OUTPUT=$profile", '-P', "$root/tools/android-sweep-dependencies.cmake")
-        $dependencyFeatures = (Get-Content $profile -Raw).Trim()
-    }
     $configure += "-DVCPKG_MANIFEST_FEATURES=$dependencyFeatures"
-    $configure += if ($UseInstalledDependencies) { '-DVCPKG_MANIFEST_INSTALL=OFF' } else { '-DVCPKG_MANIFEST_INSTALL=ON' }
+    $configure += '-DVCPKG_MANIFEST_INSTALL=OFF'
     if ($hostTools) { $configure += "-DCMAKE_MAKE_PROGRAM=$($hostTools.Ninja)" }
     Invoke-Checked $cmake $configure
 
@@ -110,6 +157,10 @@ try {
     }
     Copy-Item "$Ndk/NOTICE.toolchain" "$licenses/NDK-toolchain.txt"
     Copy-Item "$root/node_modules/@babylonjs/lite/LICENSE" "$licenses/Babylon-Lite.txt"
+    if ('ui:rml' -in $sceneFeatures) { Copy-Item "$rmlui/RmlUi-LICENSE.txt" $licenses }
+    if ('audio:engine' -in $sceneFeatures) {
+        Get-ChildItem $labsound -File | Where-Object { $_.Name -match '-(LICENSE|COPYING)\.txt$' } | Copy-Item -Destination $licenses
+    }
     $hashes = Get-ChildItem $payload -Recurse -File | Sort-Object FullName | ForEach-Object {
         $_.FullName.Substring($payload.Length) + ':' + (Get-FileHash $_.FullName -Algorithm SHA256).Hash
     }
@@ -121,9 +172,10 @@ try {
     Assert-PackageChild $staging $gradleApk
     if (Test-Path -LiteralPath $gradleApk) { Remove-Item -LiteralPath $gradleApk }
     Invoke-Checked $gradle @('-p', "$root/native/android", '--project-cache-dir', "$staging/gradle-cache",
-        "-PbbliteStaging=$staging", "-PbbliteScene=$id", "-PbbliteApplicationId=$ApplicationId", "-PbbliteSdlJava=$sdl/android-project/app/src/main/java", 'assembleDebug')
+        "-PbbliteStaging=$staging", "-PbbliteScene=$id", "-PbbliteMinSdk=$minSdk", "-PbbliteApplicationId=$ApplicationId", "-PbbliteSdlJava=$sdl/android-project/app/src/main/java", 'assembleDebug')
     $apk = "$staging/bblite-$id-$Abi.apk"
     Copy-Item $gradleApk $apk -Force
+    @{ scene = $id; abi = $Abi; minSdk = $minSdk } | ConvertTo-Json | Set-Content "$staging/build.json"
     Write-Host "APK: $apk"
     if ($Install -or $Smoke) {
         $adb = if ($IsWindows) { "$Sdk/platform-tools/adb.exe" } else { "$Sdk/platform-tools/adb" }

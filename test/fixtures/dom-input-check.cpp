@@ -83,6 +83,17 @@ int main() {
         });
         ui_click(engine, button);
         assert(clicks == 1);
+        const auto late = ui_create_element(engine, "button");
+        ui_set_attribute(engine, late, "style", "position:absolute;left:260px;top:20px;width:80px;height:40px");
+        ui_append_child(engine, ui_document_root(engine, UiDocumentPart::Body), late);
+        pal::update_ui_rml_runtime(runtime, 640, 480);
+        assert(engine.dom_input->hit_path(280, 40).front() != DomEventTarget::node(late.value));
+        on_dom_pointer(engine, DomEventTarget::node(late.value), "click", 901, [](const PlatformMouseEvent&) {});
+        pal::update_ui_rml_runtime(runtime, 640, 480);
+        assert(engine.dom_input->hit_path(280, 40).front() == DomEventTarget::node(late.value));
+        ui_set_style_property(engine, late, "pointer-events", "none");
+        pal::update_ui_rml_runtime(runtime, 640, 480);
+        assert(engine.dom_input->hit_path(280, 40).front() != DomEventTarget::node(late.value));
         SDL_Event leave{};
         leave.type = SDL_EVENT_WINDOW_MOUSE_LEAVE;
         assert(!send(leave));

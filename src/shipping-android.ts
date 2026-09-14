@@ -1,4 +1,4 @@
-import { mkdirSync, readFileSync } from "node:fs";
+import { mkdirSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { discoverDevelopmentTools } from "./development-tools.js";
 import type { SceneDefinition } from "./scene-registry.js";
@@ -31,7 +31,7 @@ export async function runAndroidPackages(scenes: readonly SceneDefinition[], val
         console.log(`package ${item.scene}: running`);
         const exit = await runLoggedProcess(tools.powershell, item.args, log,
             { env: { ...process.env, ...(tools.cmake ? { CMAKE_COMMAND: tools.cmake } : {}) } });
-        const status = exit === 0 ? "passed" : /Android does not yet support/.test(readFileSync(log, "utf8")) ? "unsupported" : "failed";
+        const status = exit === 0 ? "passed" : "failed";
         results.push({ scene: item.scene, status, exit, log });
         writeJsonRecord(join(logs, "results.json"), results);
         console.log(`package ${item.scene}: ${status}`);

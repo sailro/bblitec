@@ -55,6 +55,42 @@
     {
       "applied": true,
       "summary": "Remove temporary dependency-test fixtures after checking their workspace boundary."
+    },
+    {
+      "summary": "Reuse the package boundary assertion before replacing a RmlUi build tree.",
+      "applied": true
+    },
+    {
+      "summary": "Cache Android named-font metadata and family/weight results, including misses; resolve variations only for the selected face.",
+      "applied": true
+    },
+    {
+      "summary": "Reuse Android dependency artifacts using input fingerprints and required output checks.",
+      "applied": true
+    },
+    {
+      "summary": "Restrict RmlUi fingerprints to consumed dependency ABI records, which include their transitive inputs.",
+      "applied": true
+    },
+    {
+      "summary": "Keep Android CSS number parsing in one maintained RmlUi adapter and select Boost.Charconv only for UI.",
+      "applied": true
+    },
+    {
+      "summary": "Remove obsolete unsupported-feature classification after replacing blanket Android refusals with the system-font API requirement.",
+      "applied": true
+    },
+    {
+      "summary": "Extend the shared UI hit-testing rule with DOM listener element identities and transport only that native metadata across the Window mailbox.",
+      "applied": true
+    },
+    {
+      "summary": "Use canonical idle replay tokens and allow the blocked realm to acknowledge unblocking before the resize phase.",
+      "applied": true
+    },
+    {
+      "summary": "Reuse shared canvas metrics to convert Window DOM input at the actual SDL pixel density.",
+      "applied": true
     }
   ],
   "angles": [

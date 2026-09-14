@@ -73,13 +73,14 @@
     "ui": {
       "description": "FreeType font rasterization for the optional RmlUi scene-created DOM projection.",
       "dependencies": [
+        { "name": "boost-charconv", "platform": "android" },
         {
           "name": "freetype",
           "default-features": false
         },
         {
           "name": "freetype",
-          "platform": "linux | osx",
+          "platform": "linux | osx | android",
           "default-features": false,
           "features": ["png"]
         }

@@ -106,10 +106,6 @@ async function runScene(scene) {
     } catch (error) {
         result.status = 'failed';
         result.reason = error.message;
-        if (result.stage === 'build') {
-            const unsupported = readFileSync(join(sceneOutput, 'build.log'), 'utf8').match(/Android does not yet support ([^\s]+)\./);
-            if (unsupported) { result.status = 'unsupported'; result.reason = unsupported[1]; }
-        }
     }
     result.completedAt = new Date().toISOString();
     save();

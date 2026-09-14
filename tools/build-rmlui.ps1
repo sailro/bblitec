@@ -33,6 +33,8 @@
 param(
     [string]$Workspace = "",
     [string]$OutputDirectory = "",
+    [ValidateSet('', 'arm64-v8a', 'x86_64')][string]$AndroidAbi = '',
+    [string]$AndroidNdk = $env:ANDROID_NDK_HOME,
     [ValidateSet('', 'x86_64', 'arm64')][string]$MacArchitecture = '',
     [string]$FreetypeRoot = "",
     # Only the -StaticRuntime artifact needs vcpkg, to install the
@@ -47,7 +49,10 @@ param(
 
 $ErrorActionPreference = "Stop"
 Import-Module (Join-Path $PSScriptRoot "bblite-tools.psm1") -Force
+Import-Module (Join-Path $PSScriptRoot "package-output.psm1") -Force
 $root = Get-RepositoryRoot
+if ($AndroidAbi -and ($StaticRuntime -or $MinSize -or $MacArchitecture)) { throw 'Android cannot be combined with desktop target options.' }
+if ($AndroidAbi -and -not $FreetypeRoot) { throw 'Android requires -FreetypeRoot at the matching Android vcpkg triplet.' }
 if ($StaticRuntime -and -not $IsWindows) { throw "-StaticRuntime selects the Windows shipping CRT." }
 if ($MinSize -and -not $IsLinux -and -not $IsMacOS) { throw "-MinSize selects Unix shipping; use -StaticRuntime on Windows." }
 $minimalBuild = $StaticRuntime -or $MinSize
@@ -63,6 +68,7 @@ if (-not $Workspace) {
         ".cache\rmlui"
     }
     if ($MacArchitecture) { $Workspace += "-$MacArchitecture" }
+    if ($AndroidAbi) { $Workspace += "-android-$AndroidAbi" }
 }
 if (-not $OutputDirectory) {
     $OutputDirectory = if ($minimalBuild) {
@@ -71,6 +77,7 @@ if (-not $OutputDirectory) {
         "artifacts\tools\rmlui"
     }
     if ($MacArchitecture) { $OutputDirectory += "-$MacArchitecture" }
+    if ($AndroidAbi) { $OutputDirectory += "-android-$AndroidAbi" }
 }
 if (-not $FreetypeRoot) {
     $installedRoot = if ($env:BBLITE_VCPKG_INSTALLED_ROOT) {
@@ -216,8 +223,8 @@ if ($StaticRuntime) {
 # scene builds select (Get-DevToolchain, tools/bblite-tools.psm1); the
 # -StaticRuntime shipping artifact stays on MSVC, the shipping compiler,
 # whose consumers are MSVC-built too.
-$devToolchain = if ($StaticRuntime) { $null } else { Get-DevToolchain }
-$intendedGenerator = if ($devToolchain) { "Ninja" } else { $env:CMAKE_GENERATOR }
+$devToolchain = if ($StaticRuntime -or $AndroidAbi) { $null } else { Get-DevToolchain }
+$intendedGenerator = if ($devToolchain -or $AndroidAbi) { "Ninja" } else { $env:CMAKE_GENERATOR }
 if ($devToolchain) {
     $env:PATH = "$($devToolchain.Path);$env:PATH"
     $env:INCLUDE = $devToolchain.Include
@@ -241,7 +248,8 @@ if (Test-Path $cachePath) {
         $cachedGenerator -ne "Ninja"
     }
     if (-not $generatorMatches) {
-        Remove-Item -Recurse -Force $build
+        Assert-PackageChild $workspacePath $build
+        Remove-Item -LiteralPath $build -Recurse -Force
     }
 }
 if ($MinSize -and -not $IsWindows) {
@@ -250,7 +258,8 @@ if ($MinSize -and -not $IsWindows) {
         '-DCMAKE_C_FLAGS_RELEASE=-Os -DNDEBUG -ffunction-sections -fdata-sections'
     )
 }
-$configureArguments += @(Get-PosixCompilerArguments $MacArchitecture)
+$configureArguments += if ($AndroidAbi) { @(Get-AndroidCompilerArguments $AndroidAbi $AndroidNdk) } else { @(Get-PosixCompilerArguments $MacArchitecture) }
+if ($AndroidAbi) { $configureArguments += "-DCMAKE_FIND_ROOT_PATH=$FreetypeRoot" }
 & $CMake @configureArguments
 if ($LASTEXITCODE -ne 0) {
     throw "RmlUi CMake configuration failed."

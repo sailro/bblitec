@@ -21,7 +21,7 @@ test("generated DOM listeners receive retained SDL paths and control native defa
         function mark(element: HTMLElement): void { element.setAttribute("data-target", "yes"); }
         const targets: EventTarget[] = [];
         const parent = document.createElement("div");
-        parent.style.cssText = "position:absolute;left:20px;top:20px;width:200px;height:80px;pointer-events:auto";
+        parent.style.cssText = "position:absolute;left:20px;top:20px;width:200px;height:80px";
         const button = document.createElement("button");
         button.id = "button";
         button.style.cssText = "position:absolute;left:0;top:0;width:80px;height:40px";

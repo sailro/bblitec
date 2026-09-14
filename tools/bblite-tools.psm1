@@ -170,6 +170,19 @@ function Get-PosixCompilerArguments([ValidateSet('', 'x86_64', 'arm64')][string]
     return $arguments
 }
 
+function Get-AndroidCompilerArguments([string]$Abi, [string]$Ndk) {
+    if ($Abi -notin @('arm64-v8a', 'x86_64')) { throw 'Android requires arm64-v8a or x86_64.' }
+    if (-not $Ndk -or -not (Test-Path "$Ndk/build/cmake/android.toolchain.cmake")) {
+        throw 'Set ANDROID_NDK_HOME or -AndroidNdk to an installed NDK.'
+    }
+    $arguments = @('-G', 'Ninja', "-DCMAKE_TOOLCHAIN_FILE=$Ndk/build/cmake/android.toolchain.cmake",
+        "-DANDROID_ABI=$Abi", '-DANDROID_PLATFORM=android-28', '-DANDROID_STL=c++_shared',
+        '-DCMAKE_POSITION_INDEPENDENT_CODE=ON')
+    $hostTools = Get-DevToolchain
+    if ($hostTools) { $arguments += "-DCMAKE_MAKE_PROGRAM=$($hostTools.Ninja)" }
+    return $arguments
+}
+
 function Get-BuildParallelArguments([int]$Jobs = 0) {
     if (-not $Jobs -and $env:CMAKE_BUILD_PARALLEL_LEVEL) {
         $Jobs = [int]$env:CMAKE_BUILD_PARALLEL_LEVEL
@@ -189,4 +202,5 @@ Export-ModuleMember -Function @(
     "Read-CMakeCache"
     "Get-BuildParallelArguments"
     "Get-PosixCompilerArguments"
+    "Get-AndroidCompilerArguments"
 )

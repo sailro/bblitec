@@ -29,6 +29,9 @@ test("Android sweep installs only dependencies reached by its selected scenes", 
     assert.deepEqual(profile(), ["physics", "png", "text-layout"]);
     featureFile(scenes[0]!, "data:locale platform:http");
     assert.deepEqual(profile(), ["http", "locale", "physics", "png", "text-layout"]);
+    featureFile(scenes[0]!, "ui:rml audio:engine");
+    featureFile(scenes[1]!, "ui:rml platform:window");
+    assert.deepEqual(profile(), ["png", "ui", "ui-svg"]);
 });
 
 test("Android packaging passes the requested target and keeps shared work serialized", () => {

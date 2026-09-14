@@ -3989,9 +3989,10 @@ struct UiRmlRuntime {
         if (
             !has_pointer_events &&
             (!record.click_callbacks.empty() ||
-             !record.event_callbacks.empty())             ) {
-                 append("pointer-events:auto;");
-             }
+             !record.event_callbacks.empty() ||
+             (engine.dom_input && engine.dom_input->pointer_elements.contains(handle.value)))) {
+            append("pointer-events:auto;");
+        }
         return projected_attribute_value("style", style);
     }
 

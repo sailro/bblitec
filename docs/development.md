@@ -88,6 +88,8 @@ npm run demos:release -- --platform android --scene torus-states --sdk C:/Dev/an
 ARM64 is the default; use -Abi x86_64 (--abi x86_64 for npm workflows) for emulators.
 -Install opens the app; -Smoke requires native exit 0 and a PNG. APKs/logs are in
 artifacts/android/<scene>/<abi>. Development installs share org.bblite.prototype.
+Reached UI/audio dependencies build automatically into artifacts/tools/<library>-android-<abi>.
+Their input fingerprints permit reuse; sweep workers consume one prepared dependency set.
 
 Packaging builds Release native code in a debug-signed APK, embeds assets/notices, validates the
 staged APK on --device, and publishes a ZIP/receipt under artifacts/releases. Each demo has its own

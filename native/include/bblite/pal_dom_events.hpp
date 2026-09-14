@@ -113,6 +113,7 @@ struct DomInput {
     DomEventListeners<PlatformMouseEvent> pointer;
     DomEventListeners<PlatformKeyboardEvent> keyboard;
     std::set<std::string> event_types;
+    std::set<std::uint32_t> pointer_elements;
     std::uint64_t revision = 0;
     std::function<void(const PlatformMouseEvent&)> pointer_sink;
     std::function<void(const PlatformKeyboardEvent&)> keyboard_sink;
@@ -142,7 +143,14 @@ inline void on_dom_pointer(Engine& engine, DomEventTarget target, std::string ty
     std::size_t identity, DomEventListeners<PlatformMouseEvent>::Callback callback,
     bool capture = false, bool once = false, bool passive = false) {
     auto& input = dom_input(engine);
-    if (input.event_types.insert(type).second) ++input.revision;
+    const bool new_type = input.event_types.insert(type).second;
+    const bool new_element = target.kind == DomEventTargetKind::Element && input.pointer_elements.insert(target.element).second;
+    if (new_type || new_element) {
+        ++input.revision;
+#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
+        ++engine.ui_revision;
+#endif
+    }
     input.pointer.add(target, std::move(type), identity, std::move(callback), capture, once, passive);
 }
 
