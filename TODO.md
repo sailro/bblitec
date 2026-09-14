@@ -81,7 +81,7 @@ Open gaps only. [Features](docs/features.md) owns support; [fidelity](docs/fidel
 
 ## Worker and platform
 
-- [ ] Complete Android support and qualification, including emulator Offscreen rendering corruption ([remaining limits](docs/features.md#android)).
+- [ ] Extend Android coverage and qualification, including emulator Offscreen rendering corruption ([remaining limits](docs/features.md#android)).
 
 - [ ] Different rendering products across worker realms (`worker-modules.ts`).
 - [ ] ArrayBuffer/MessagePort transfer and Date/Map/Set/typed-view cloning (`workers.ts`, `pal_structured_clone.hpp`).

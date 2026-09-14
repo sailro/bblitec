@@ -186,14 +186,14 @@ are live. Geospatial input, off-center orthographic planes and broader camera co
 
 ## Android
 
-ARM64/x86_64 APK prototypes use SDL_GPU/Vulkan on API 28+; retained UI requires API 29+.
+ARM64/x86_64 APKs use SDL_GPU/Vulkan on API 28+; retained UI requires API 29+.
 RmlUi, LabSound/SDL audio and worker canvases sharing one native window are enabled.
 Authored maxDevicePixelRatio caps the render buffer independently of the full-screen view.
 Apps use landscape orientation and immersive fullscreen. Reveal navigation with a bottom-edge swipe;
 system Back exits the activity. Multi-touch supports simultaneous UI controls and camera gestures.
 Multiple native windows and Dawn remain unsupported. Full corpus and
 physical-device performance qualification remain open.
-[Commands](development.md#android-prototype).
+[Commands](development.md#android).
 
 ## Asset loading and upload
 

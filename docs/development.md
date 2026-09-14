@@ -72,7 +72,7 @@ Development uses host x64-osx/arm64-osx dependencies. CoreText/FreeType supplies
 provides floating formatting on systems lacking floating `to_chars`. Maintained Dawn patches support
 older SDK capability checks. Apple Silicon runtime validation requires an Apple Silicon host.
 
-### Android prototype
+### Android
 
 Requires Java 17, SDK platform/build-tools 35 and NDK 28.2.13676358.
 Set ANDROID_HOME to a writable SDK; Android Studio is optional. Use the Windows CMake path above.
@@ -93,8 +93,8 @@ Their input fingerprints permit reuse; sweep workers consume one prepared depend
 
 Packaging builds Release native code in a debug-signed APK, embeds assets/notices, validates the
 staged APK on --device, and publishes a ZIP/receipt under artifacts/releases. Each demo has its own
-application ID. Existing packages move to .replaced/. These are prototypes, not store releases or
-minimal-size desktop builds. Android release workflows serialize shared dependency and device work.
+application ID. Existing packages move to .replaced/.
+Android release workflows serialize shared dependency and device work.
 
 The sweep builds four APKs concurrently after preparing dependencies, then captures serially at the
 registered pose and golden dimensions. It preserves thresholds, restores display size and distinguishes
