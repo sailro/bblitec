@@ -101,7 +101,55 @@
       "applied": true
     },
     {
-      "summary": "Retain the no-DOM fast path for camera-only touch input; camera contact tracking remains independent.",
+      "summary": "Reuse the shared Android FreeType library and face owner for color-font coverage.",
+      "applied": true
+    },
+    {
+      "summary": "Cache registered font faces and Java typefaces instead of reopening them during layout.",
+      "applied": true
+    },
+    {
+      "summary": "Measure emoji advances without rasterizing and share cached pixels with texture callbacks.",
+      "applied": true
+    },
+    {
+      "summary": "Share touch cancellation and pinch wheel math between platform input and camera controls.",
+      "applied": true
+    },
+    {
+      "summary": "Allocate a DOM touch batch only in the selected dispatch branch.",
+      "applied": true
+    },
+    {
+      "summary": "Keep Window body hit policy explicit instead of inferring an implicit canvas background.",
+      "applied": true
+    },
+    {
+      "summary": "Gate pinch-to-wheel adaptation on reached wheel listeners to preserve raw canvas multi-touch.",
+      "applied": true
+    },
+    {
+      "summary": "Keep public rectangles in CSS coordinates and renderer pane bounds in physical pixels.",
+      "applied": true
+    },
+    {
+      "summary": "Deliver initial resize through the shared input pipeline when window metrics change before event polling.",
+      "applied": true
+    },
+    {
+      "summary": "Reuse SDL shader ownership for vertex-input metadata cleanup.",
+      "applied": true
+    },
+    {
+      "summary": "Remove duplicate SPIR-V input state and rewrite recorded location offsets without a second instruction walk.",
+      "applied": true
+    },
+    {
+      "summary": "Reserve compact pipeline attributes from the retained shader layout.",
+      "applied": true
+    },
+    {
+      "summary": "Reuse native fixture extraction helpers in the GPU picking coordinate regression.",
       "applied": true
     }
   ],
