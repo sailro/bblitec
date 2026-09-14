@@ -174,6 +174,15 @@ template <typename Driver> void exercise(int index) {
     ++state.frame; assert(driver.prepare() == FramePreparation::ready);
     ++state.frame; assert(driver.prepare() == FramePreparation::ready);
     assert((wheels == std::vector<double>{-100,100,-100,100}));
+    // Replayed mouse packets survive touch-emulation filtering on every driver.
+    replay_source = "UiClick@20:30"; state.input_replay = PlatformInputReplay{};
+    engine.input_replay_next_frame = 0;
+    engine.input_replay_pointer_x = 16; engine.input_replay_pointer_y = 35;
+    state.frame_options.test_pass = true;
+    ++state.frame; assert(driver.prepare() == FramePreparation::ready);
+    ++state.frame; assert(driver.prepare() == FramePreparation::ready);
+    assert(downs == 3 && clicks == 2);
+    state.frame_options.test_pass = false;
     replay_source.clear(); state.input_replay = PlatformInputReplay{};
     engine.options.width = 1; engine.options.height = 1;
     engine.canvas_client_width = 1; engine.canvas_client_height = 1;

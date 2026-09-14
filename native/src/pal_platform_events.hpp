@@ -227,8 +227,8 @@ inline void release_pointer_lock_on_escape(
     sync_pointer_lock(window, engine);
 }
 
-inline constexpr SDL_MouseID replay_ui_mouse_id =
-    static_cast<SDL_MouseID>(~0u);
+// SDL reserves -1 and -2 for touch/pen mouse emulation.
+inline constexpr SDL_MouseID replay_ui_mouse_id = static_cast<SDL_MouseID>(~0u - 2u);
 
 class PlatformInputReplay {
 public:
