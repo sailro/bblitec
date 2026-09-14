@@ -25,6 +25,7 @@ Texture2D<uint> indices : register(t7, space1);`;
     const output = resolve("artifacts/test-sdl-integer-textures");
     mkdirSync(output, { recursive: true });
     const source = `#include "pal_sdl_gpu_resources.hpp"
+#include "pal_spirv_vertex.hpp"
 #include <algorithm>
 #include <array>
 #include <cassert>
