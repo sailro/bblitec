@@ -34,6 +34,7 @@ inline void trace_run_window(const char* action, SDL_Window* window) {
 
 inline void configure_run_surface(const EngineOptions& options) {
 #ifdef __ANDROID__
+    SDL_SetHint(SDL_HINT_ORIENTATIONS, "LandscapeLeft LandscapeRight");
     auto* env = static_cast<JNIEnv*>(SDL_GetAndroidJNIEnv());
     auto activity = static_cast<jobject>(SDL_GetAndroidActivity());
     if (!env || !activity) throw std::runtime_error("Android activity unavailable.");
@@ -48,6 +49,13 @@ inline void configure_run_surface(const EngineOptions& options) {
 #else
     (void)options;
 #endif
+}
+
+inline SDL_WindowFlags run_window_flags(SDL_WindowFlags flags) {
+#ifdef __ANDROID__
+    flags |= SDL_WINDOW_FULLSCREEN;
+#endif
+    return flags;
 }
 
 class SdlWindowRun {
@@ -86,7 +94,7 @@ class SdlWindowRun {
         }
         configure_run_surface(options);
         window_ = SDL_CreateWindow(options.title.c_str(), options.width,
-                                   options.height, flags);
+                                   options.height, run_window_flags(flags));
         if (window_) trace_run_window("create", window_);
         return window_;
     }
@@ -115,7 +123,7 @@ inline SDL_Window* acquire_run_window(
     const EngineOptions& options, SDL_WindowFlags flags) {
     if (active_window_run) return active_window_run->acquire(options, flags);
     configure_run_surface(options);
-    return SDL_CreateWindow(options.title.c_str(), options.width, options.height, flags);
+    return SDL_CreateWindow(options.title.c_str(), options.width, options.height, run_window_flags(flags));
 }
 
 inline void release_run_window(SDL_Window* window) {

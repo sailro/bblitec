@@ -46,7 +46,7 @@ canvas at its page position. Build switches are in [development](development.md#
 | Content | textContent/innerText, bounded innerHTML, id/class/type, static attributes | Compound text writes; unsupported root replacement/removal |
 | Styles/classes | cssText, static style fields/methods, classList add/remove/forced toggle | Nonempty setProperty priority; dynamic property names |
 | Queries | Literal querySelector/querySelectorAll/matches/closest; attached document ID lookup | Interaction states, :scope, dynamic selectors, pseudo-element queries |
-| Pointer/keyboard | Movement, buttons, boundaries, click/dblclick, wheel, contextmenu, keyboard | One mouse pointer; no AbortSignal, explicit capture lifecycle or coalesced events |
+| Pointer/keyboard | Mouse and multi-touch pointers, boundaries, click/dblclick, wheel, contextmenu, keyboard | No AbortSignal, explicit capture lifecycle or coalesced events |
 | Focus/forms | Focus, activeElement, button navigation, text/password inputs, textarea, range values/input | Full browser form behavior and broader constructed input types |
 | Boolean attributes | hidden/disabled reflect presence; disabled controls cannot focus/activate | hidden=until-found refuses |
 
@@ -57,6 +57,8 @@ Generated boxes are excluded. Root documentElement/head/body identities are dist
 Common input dispatch preserves target/capture/bubble, callback identity, removal, once, capture,
 passive, stopPropagation and stopImmediatePropagation. Passive listeners cannot cancel defaults.
 UI runs before cameras; preventDefault suppresses default UI actions and camera propagation.
+Touch contacts retain independent IDs and their initial targets through release or cancellation;
+only the primary contact emits compatibility mouse events. Focus loss cancels active contacts.
 Window keyboard listeners precede default actions. Focus/form callbacks use per-element dispatch.
 
 Event flags, phases, modifiers, pointer IDs/types and target/currentTarget/relatedTarget are represented.

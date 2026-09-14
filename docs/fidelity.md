@@ -33,6 +33,7 @@ This page lists source/native contracts and substitutions. [Features](features.m
 | Graphics guards | Async Window/worker realms expose existing host graphics identity; computation-only realms may lack it |
 | Device recovery | Ordinary engine reconstruction retains CPU owners; shared worker/window recovery refuses |
 | UI | RmlUi and retained Canvas2D; [compatibility limits](ui.md) |
+| Camera touch | One finger uses pointer rotation; two-finger span changes feed the existing wheel zoom accumulator |
 | Skinning | Eight loaded influences reduced to four |
 | Thin-instance culling | Admitted paths may use the pin's all-active fallback |
 | Splats | Synchronous render-thread sorting |

@@ -109,6 +109,10 @@ class DomEventListeners {
 /** Script listeners stay with their Engine/realm. A display Engine installs only
  * native mailbox sinks; no script callback is copied to its rendering thread. */
 struct DomEventBatch;
+struct DomTouchContact {
+    PlatformMouseEvent pointer;
+    std::vector<DomEventTarget> path;
+};
 struct DomInput {
     DomEventListeners<PlatformMouseEvent> pointer;
     DomEventListeners<PlatformKeyboardEvent> keyboard;
@@ -123,7 +127,8 @@ struct DomInput {
     std::function<bool(DomEventTarget)> can_activate;
     std::vector<DomEventTarget> hover_path;
     std::vector<DomEventTarget> pressed_path;
-    bool suppress_compatibility_mouse = false;
+    std::set<double> suppress_compatibility_mouse;
+    std::map<std::pair<std::uint64_t, std::uint64_t>, DomTouchContact> touches;
     bool native_pointer_default = false;
 
 #if defined(BBLITE_WORKERS) && BBLITE_WORKERS
@@ -226,7 +231,8 @@ struct DomEventBatch {
     };
     std::vector<Entry> events;
     bool default_prevented = false;
-    bool releases_pointer = false;
+    std::vector<double> released_pointers;
+    bool primary_touch = false;
     std::atomic<bool> completed = false;
 
     template <typename Event> void add(Event event, bool controls_default = false) {
@@ -242,16 +248,18 @@ struct DomEventBatch {
                 using PayloadType = std::decay_t<decltype(event)>;
                 if constexpr (std::is_same_v<PayloadType, PlatformMouseEvent>) {
                     const auto& type = event.dom->type;
-                    if (engine.dom_input->suppress_compatibility_mouse &&
+                    auto& suppressed = engine.dom_input->suppress_compatibility_mouse;
+                    if (primary_touch && suppressed.contains(event.pointer_id)) default_prevented = true;
+                    if (suppressed.contains(event.pointer_id) &&
                         (type == "mousedown" || type == "mouseup" || type == "mousemove")) return;
                     engine.dom_input->pointer.dispatch(event, invoke, &engine);
-                    if (type == "pointerdown" && event.default_prevented) engine.dom_input->suppress_compatibility_mouse = true;
+                    if (type == "pointerdown" && event.default_prevented) suppressed.insert(event.pointer_id);
                 }
                 else engine.dom_input->keyboard.dispatch(event, invoke, &engine);
             }
             if (entry.controls_default && event.default_prevented) default_prevented = true;
         }, entry.payload);
-        if (releases_pointer && engine.dom_input) engine.dom_input->suppress_compatibility_mouse = false;
+        if (engine.dom_input) for (const auto id : released_pointers) engine.dom_input->suppress_compatibility_mouse.erase(id);
     }
     void dispatch(Engine& engine) {
         dispatch(engine, [](auto& callback, const auto& event) { callback(event); });
@@ -310,22 +318,22 @@ inline void append_dom_pointer_boundary(DomEventBatch& batch, const PlatformMous
     while (old_count && new_count && previous[old_count - 1] == next[new_count - 1]) { --old_count; --new_count; }
     if (previous_target) {
         batch.add(dom_event(payload, "pointerout", previous, true, true, next_target));
-        batch.add(dom_event(payload, "mouseout", previous, true, true, next_target));
+        if (payload.is_primary) batch.add(dom_event(payload, "mouseout", previous, true, true, next_target));
         for (std::size_t index = 0; index < old_count; ++index) {
             if (previous[index].kind == DomEventTargetKind::Document || previous[index].kind == DomEventTargetKind::Window) continue;
             const std::vector<DomEventTarget> path(previous.begin() + static_cast<std::ptrdiff_t>(index), previous.end());
             batch.add(dom_event(payload, "pointerleave", path, false, false, next_target));
-            batch.add(dom_event(payload, "mouseleave", path, false, false, next_target));
+            if (payload.is_primary) batch.add(dom_event(payload, "mouseleave", path, false, false, next_target));
         }
     }
     if (next_target) {
         batch.add(dom_event(payload, "pointerover", next, true, true, previous_target));
-        batch.add(dom_event(payload, "mouseover", next, true, true, previous_target));
+        if (payload.is_primary) batch.add(dom_event(payload, "mouseover", next, true, true, previous_target));
         for (std::size_t index = new_count; index > 0; --index) {
             if (next[index - 1].kind == DomEventTargetKind::Document || next[index - 1].kind == DomEventTargetKind::Window) continue;
             const std::vector<DomEventTarget> path(next.begin() + static_cast<std::ptrdiff_t>(index - 1), next.end());
             batch.add(dom_event(payload, "pointerenter", path, false, false, previous_target));
-            batch.add(dom_event(payload, "mouseenter", path, false, false, previous_target));
+            if (payload.is_primary) batch.add(dom_event(payload, "mouseenter", path, false, false, previous_target));
         }
     }
 }
@@ -366,13 +374,51 @@ inline std::shared_ptr<DomEventBatch> dom_pointer_input(Engine& engine, DomPoint
                 }
                 input.pressed_path.clear();
             }
-            batch->releases_pointer = payload.buttons == 0;
+            if (payload.buttons == 0) batch->released_pointers.push_back(payload.pointer_id);
             break;
         case DomPointerAction::Wheel: add("wheel", true); break;
         case DomPointerAction::Cancel:
             batch->add(dom_event(payload, "pointercancel", path, true, false));
-            input.pressed_path.clear(); batch->releases_pointer = true; break;
+            input.pressed_path.clear(); batch->released_pointers.push_back(payload.pointer_id); break;
         case DomPointerAction::Leave: break;
+    }
+    return batch;
+}
+
+/** Direct touch retains its initial target until release (implicit capture).
+ * Contact identity and primary status survive motion, sibling releases and cancel. */
+inline std::shared_ptr<DomEventBatch> dom_touch_input(Engine& engine, DomPointerAction action,
+    const DomTouchContact& contact) {
+    auto batch = std::make_shared<DomEventBatch>();
+    const auto& pointer = contact.pointer;
+    const auto& path = contact.path;
+    batch->primary_touch = pointer.is_primary;
+    if (path.empty()) return batch;
+    const auto add = [&](std::string type, bool controls_default = false) {
+        batch->add(dom_event(pointer, std::move(type), path), controls_default);
+    };
+    switch (action) {
+        case DomPointerAction::Down:
+            append_dom_pointer_boundary(*batch, pointer, {}, path);
+            add("pointerdown", true);
+            if (pointer.is_primary) add("mousedown", true);
+            break;
+        case DomPointerAction::Move:
+            add("pointermove");
+            if (pointer.is_primary) add("mousemove");
+            break;
+        case DomPointerAction::Up:
+            add("pointerup");
+            if (pointer.is_primary) add("mouseup");
+            if ((path.front().kind == DomEventTargetKind::Element || path.front().kind == DomEventTargetKind::Canvas) &&
+                (!engine.dom_input->can_activate || engine.dom_input->can_activate(path.front()))) add("click", true);
+            break;
+        case DomPointerAction::Cancel: batch->add(dom_event(pointer, "pointercancel", path, true, false)); break;
+        default: throw std::logic_error("Unsupported direct-touch action.");
+    }
+    if (action == DomPointerAction::Up || action == DomPointerAction::Cancel) {
+        append_dom_pointer_boundary(*batch, pointer, path, {});
+        batch->released_pointers.push_back(pointer.pointer_id);
     }
     return batch;
 }

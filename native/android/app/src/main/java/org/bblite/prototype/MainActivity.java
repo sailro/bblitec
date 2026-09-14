@@ -3,7 +3,10 @@ package org.bblite.prototype;
 import org.libsdl.app.SDLActivity;
 import org.libsdl.app.SDLSurface;
 import android.content.Context;
+import android.os.Build;
 import android.view.SurfaceHolder;
+import android.view.WindowInsets;
+import android.view.WindowInsetsController;
 import android.widget.RelativeLayout;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
@@ -18,6 +21,18 @@ import java.nio.file.StandardCopyOption;
 
 public final class MainActivity extends SDLActivity {
     private CappedSurface surface;
+
+    @Override public void onWindowFocusChanged(boolean hasFocus) {
+        super.onWindowFocusChanged(hasFocus);
+        if (hasFocus && Build.VERSION.SDK_INT >= 30) {
+            getWindow().setDecorFitsSystemWindows(false);
+            WindowInsetsController controller = getWindow().getInsetsController();
+            if (controller != null) {
+                controller.setSystemBarsBehavior(WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE);
+                controller.hide(WindowInsets.Type.systemBars());
+            }
+        }
+    }
 
     @Override protected SDLSurface createSDLSurface(Context context) {
         surface = new CappedSurface(context);

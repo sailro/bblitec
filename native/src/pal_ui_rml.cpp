@@ -4212,6 +4212,16 @@ struct UiRmlRuntime {
         }
     }
 
+    void project_markup_styles(Rml::Element& parent) {
+        for (int index = 0; index < parent.GetNumChildren(); ++index) {
+            auto& child = *parent.GetChild(index);
+            if (const auto* style = child.GetAttribute("style")) {
+                child.SetAttribute("style", project_css(style->Get<Rml::String>()));
+            }
+            project_markup_styles(child);
+        }
+    }
+
     void append_element(Rml::Element& parent, UiElementHandle handle) {
         invalidate_gradient_text();
         ensure_projection_size();
@@ -4256,6 +4266,7 @@ struct UiRmlRuntime {
         if (!record.inner_rml.empty()) {
             raw->SetInnerRML(
                 normalize_html_entities_for_rml(record.inner_rml));
+            project_markup_styles(*raw);
             bind_markup_descendants(handle, *raw);
         } else if (record.tag == "textarea") {
             auto* control = rmlui_dynamic_cast<Rml::ElementFormControl*>(raw);
@@ -4528,6 +4539,7 @@ struct UiRmlRuntime {
             if (!record.inner_rml.empty()) {
                 raw.SetInnerRML(
                     normalize_html_entities_for_rml(record.inner_rml));
+                project_markup_styles(raw);
                 bind_markup_descendants(handle, raw);
             } else if (!record.text.empty()) {
                 append_text_content(
@@ -5446,6 +5458,7 @@ struct UiRmlRuntime {
     UiElementHandle resizing{};
     float resize_start_y = 0;
     float resize_start_height = 0;
+    std::map<Rml::TouchId, Rml::Touch> native_touches;
     bool initialized = false;
     UiScrollbarProperties scrollbar_properties{};
 };
@@ -5465,12 +5478,30 @@ void destroy_ui_rml_runtime(UiRmlRuntime* runtime) noexcept {
 bool handle_ui_rml_event(UiRmlRuntime& runtime, SDL_Event& event) {
     const auto input = runtime.engine.dom_input;
     const bool previous_pointer_default = input && input->native_pointer_default;
-    if (input) input->native_pointer_default = event.type == SDL_EVENT_MOUSE_BUTTON_UP;
+    if (input) input->native_pointer_default = event.type == SDL_EVENT_MOUSE_BUTTON_UP ||
+        event.type == SDL_EVENT_FINGER_UP || event.type == SDL_EVENT_FINGER_CANCELED;
     struct RestorePointerDefault {
         std::shared_ptr<DomInput> input;
         bool previous;
         ~RestorePointerDefault() { if (input) input->native_pointer_default = previous; }
     } restore_pointer_default{input, previous_pointer_default};
+    if (event.type == SDL_EVENT_WINDOW_FOCUS_LOST) {
+        Rml::TouchList cancelled;
+        for (const auto& [id, touch] : runtime.native_touches) { (void)id; cancelled.push_back(touch); }
+        runtime.context->ProcessTouchCancel(cancelled);
+        runtime.native_touches.clear();
+    }
+    if (event.type == SDL_EVENT_FINGER_DOWN || event.type == SDL_EVENT_FINGER_MOTION ||
+        event.type == SDL_EVENT_FINGER_UP || event.type == SDL_EVENT_FINGER_CANCELED) {
+        const auto id = static_cast<Rml::TouchId>(event.tfinger.fingerID);
+        const Rml::Touch touch{id, Rml::Vector2f{event.tfinger.x, event.tfinger.y} * Rml::Vector2f{runtime.context->GetDimensions()}};
+        if (event.type == SDL_EVENT_FINGER_CANCELED) {
+            runtime.native_touches.erase(id);
+            return runtime.context->ProcessTouchCancel(Rml::TouchList{touch});
+        }
+        if (event.type == SDL_EVENT_FINGER_UP) runtime.native_touches.erase(id);
+        else runtime.native_touches.insert_or_assign(id, touch);
+    }
     if (event.type == SDL_EVENT_MOUSE_BUTTON_DOWN && event.button.button == SDL_BUTTON_LEFT) {
         for (std::uint32_t i = 0; i < runtime.projected_elements.size(); ++i) {
             const auto& record = runtime.engine.ui_elements.at(i);

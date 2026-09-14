@@ -106,6 +106,62 @@ int main() {
         assert(!send(up));
         assert(clicks == 1);
     }
+    {
+        Engine engine;
+        pal::update_engine_canvas_metrics(engine, 640, 480, 1, 1);
+        std::array<UiElementHandle, 2> buttons;
+        std::array<std::set<double>, 2> held;
+        std::map<double, bool> primary;
+        int mouse_downs = 0, cancelled = 0;
+        for (std::size_t i = 0; i < buttons.size(); ++i) {
+            const auto button = buttons[i] = ui_create_element(engine, "div");
+            ui_set_attribute(engine, button, "style", "position:absolute;left:" + std::to_string(20 + i * 120) + "px;top:20px;width:80px;height:60px");
+            ui_append_to_root(engine, button);
+            on_dom_pointer(engine, DomEventTarget::node(button.value), "pointerdown", 1, [&, i](const PlatformMouseEvent& event) {
+                assert(event.pointer_type == "touch" && event.buttons == 1);
+                held[i].insert(event.pointer_id);
+                primary[event.pointer_id] = event.is_primary;
+                if (i == 0) event.prevent_default();
+            });
+            for (const auto type : {"pointerup", "pointercancel"}) on_dom_pointer(engine, DomEventTarget::node(button.value), type, 2,
+                [&, i](const PlatformMouseEvent& event) {
+                    assert(event.dom->target == DomEventTarget::node(buttons[i].value));
+                    assert(event.buttons == 0);
+                    assert(primary.at(event.pointer_id) == event.is_primary);
+                    assert(held[i].erase(event.pointer_id) == 1);
+                    if (event.dom->type == "pointercancel") ++cancelled;
+                });
+            on_dom_pointer(engine, DomEventTarget::node(button.value), "mousedown", 3, [&](const PlatformMouseEvent&) { ++mouse_downs; });
+        }
+        pal::UiRmlRuntime runtime(engine, window, 640, 480);
+        pal::update_ui_rml_runtime(runtime, 640, 480);
+        const auto touch = [&](SDL_EventType type, SDL_FingerID id, float x, float y) {
+            SDL_Event event{};
+            event.type = type; event.tfinger.windowID = SDL_GetWindowID(window);
+            event.tfinger.touchID = 9; event.tfinger.fingerID = id;
+            event.tfinger.x = x / 640; event.tfinger.y = y / 480;
+            const auto batch = pal::prepare_dom_platform_input(engine, event);
+            dispatch_dom_batch(engine, batch);
+            return batch->default_prevented;
+        };
+        assert(touch(SDL_EVENT_FINGER_DOWN, 100, 40, 40));
+        assert(!touch(SDL_EVENT_FINGER_DOWN, 200, 160, 40));
+        assert(held[0].size() == 1 && held[1].size() == 1);
+        assert(*held[0].begin() != *held[1].begin());
+        assert(mouse_downs == 0); // Cancelled primary and secondary contacts do not emit mousedown.
+        assert(touch(SDL_EVENT_FINGER_MOTION, 100, 600, 400));
+        assert(touch(SDL_EVENT_FINGER_UP, 100, 600, 400));
+        assert(held[0].empty() && held[1].size() == 1); // Implicit capture survives sliding off.
+        assert(!touch(SDL_EVENT_FINGER_DOWN, 300, 160, 40));
+        assert(held[1].size() == 2);
+        for (const auto id : held[1]) assert(!primary.at(id)); // No promotion while another contact remains.
+        assert(!touch(SDL_EVENT_FINGER_CANCELED, 200, 600, 400));
+        assert(held[1].size() == 1 && cancelled == 1);
+        SDL_Event blur{}; blur.type = SDL_EVENT_WINDOW_FOCUS_LOST;
+        dispatch_dom_batch(engine, pal::prepare_dom_platform_input(engine, blur));
+        assert(held[1].empty() && cancelled == 2 && engine.dom_input->touches.empty());
+        assert(engine.dom_input->suppress_compatibility_mouse.empty());
+    }
     SDL_DestroyWindow(window);
     SDL_Quit();
 }
