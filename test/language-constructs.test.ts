@@ -1525,3 +1525,25 @@ test("unsupported language shapes refuse explicitly", () => {
         ["function f(xs: number[]): void { xs[Math.trunc(Math.random())] ??= 2; } f([1]);", /must not contain a call/],
     ] as const) assert.throws(() => compileSource(source), message);
 });
+
+check("immediate-catch-parameter", `
+    let seen = "";
+    let calm = 0;
+    async function risky(kind: string): Promise<void> {
+        if (kind === "boom") throw new Error("boom");
+        calm++;
+    }
+    void risky("boom").catch((error) => {
+        if (!(error instanceof Error) || error.message !== "boom") throw new Error("catch binding");
+        seen = error.message;
+    });
+    void risky("boom").catch(error => { seen += ":" + error.message; });
+    void risky("fine").catch((error) => { throw new Error("unexpected " + error.message); });
+`);
+
+test("immediate promise catch bindings require one identifier parameter", () => {
+    assert.throws(() => compileSource('async function risky(): Promise<void> { throw new Error("boom"); }\n' +
+        'void risky().catch(({ message }) => localStorage.setItem("caught", message));'), /bindings require an identifier/);
+    assert.throws(() => compileSource('async function risky(): Promise<void> { throw new Error("boom"); }\n' +
+        'void risky().catch((error, extra) => localStorage.setItem("caught", String(extra)));'), /at most one parameter/);
+});

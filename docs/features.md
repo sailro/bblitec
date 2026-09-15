@@ -78,7 +78,7 @@ early returns refuse.
 | Promise operation | Contract |
 | --- | --- |
 | `resolve` / constructor | Object identity; synchronous executor; first settlement wins; represented promise adoption |
-| `then` / `catch` | Owned captures, queued reactions, compatible result storage; callback throws reject |
+| `then` / `catch` | Owned captures, queued reactions, compatible result storage; callback throws reject; an immediate `catch` binds one identifier parameter to the caught Error |
 | `finally` | Waits for cleanup; preserves original result unless cleanup throws/rejects |
 | `all` | Ordered literal tuples and stored arrays of value promises; first rejection wins |
 | `race` | Homogeneous represented arrays/tuples; empty input stays pending |

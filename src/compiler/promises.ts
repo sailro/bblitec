@@ -1,5 +1,6 @@
 import type { LoweringServices } from "./lowering-services.js";
 import ts from "typescript";
+import { errorValue } from "./error-values.js";
 import { argumentAt } from "./syntax.js";
 import type { Value } from "./types.js";
 
@@ -13,6 +14,7 @@ export interface PromiseLoweringContext
         | "increaseIndent"
         | "decreaseIndent"
         | "bindLocalValue"
+        | "cppString"
         | "pushScope"
         | "popScope"
         | "allocateBlockPrefix"
@@ -225,12 +227,16 @@ function compileImmediateCatch(
     if (
         (!ts.isArrowFunction(callback) &&
             !ts.isFunctionExpression(callback)) ||
-        callback.parameters.length !== 0
+        callback.parameters.length > 1
     ) {
         context.fail(
             callback,
-            "Immediate promise catch requires a zero-parameter inline callback.",
+            "Immediate promise catch requires an inline callback with at most one parameter.",
         );
+    }
+    const parameter = callback.parameters[0];
+    if (parameter && !ts.isIdentifier(parameter.name)) {
+        context.fail(parameter, "Immediate promise catch bindings require an identifier.");
     }
     const settled = context.allocateTemporaryCppName(
         "promise_settled",
@@ -249,11 +255,21 @@ function compileImmediateCatch(
     }
     emitValue(context, value);
     context.decreaseIndent();
-    context.emit("} catch (...) {");
+    // A bound parameter is the caught Error, as a statement catch binds it.
+    const caught = parameter ? context.allocateTemporaryCppName("caught_error") : undefined;
+    context.emit(caught ? `} catch (const std::exception& ${caught}) {` : "} catch (...) {");
     context.increaseIndent();
     context.emit(`${settled} = false;`);
     context.pushScope(context.allocateBlockPrefix());
     try {
+        if (caught && parameter && ts.isIdentifier(parameter.name)) {
+            const message: Extract<Value, { kind: "data" }> = {
+                kind: "data",
+                cpp: `std::string(${caught}.what())`,
+                dataType: { kind: "string" },
+            };
+            context.bindLocalValue(parameter.name, errorValue(message, "Error", text => context.cppString(text), message));
+        }
         if (ts.isBlock(callback.body)) {
             for (const statement of callback.body.statements) {
                 context.emitStatement(statement);
