@@ -29,6 +29,7 @@ import { staticNumberValue } from "./option-helpers.js";
 import { argumentAt, isLogicalAssignmentOperator, isUpdateExpression, iteratorMethodCall, unwrappedIdentifier } from "./syntax.js";
 import { caughtErrorValue, compileErrorConstruction, errorConstructor, thrownMessage } from "./error-values.js";
 import { emitStringAppend } from "./expressions.js";
+import { isStringValue } from "./types.js";
 import { enclosingLoopControl, firstReturn } from "./loop-control.js";
 // The handle-collection concept owns the collection targets, the loop
 // frame, and the recursive imported-mesh walk proof; the emitters here are
@@ -2962,8 +2963,7 @@ export class StatementLowerer {
                     );
                 } else if (
                     operator === "+=" &&
-                    (target.kind === "string" ||
-                        (target.kind === "data" && target.dataType?.kind === "string"))
+                    isStringValue(target)
                 ) {
                     emitStringAppend(context, target.cpp, unwrapped.right);
                 } else if (
@@ -2973,10 +2973,7 @@ export class StatementLowerer {
                     const value = context.compileValue(
                         unwrapped.right,
                     );
-                    if (
-                        value.kind !== "string" &&
-                        !(value.kind === "data" && value.dataType?.kind === "string")
-                    ) {
+                    if (!isStringValue(value)) {
                         context.fail(
                             unwrapped.right,
                             `String assignment requires a string, received ${value.kind}.`,

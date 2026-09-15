@@ -89,7 +89,7 @@ import type {
     UserFunctionContext,
 } from "./user-functions.js";
 import { tryResolveFunctionDeclaration } from "./user-functions.js";
-import { booleanValue, commonResourceValue, staticStringValue } from "./types.js";
+import { booleanValue, commonResourceValue, isStringValue, staticStringValue } from "./types.js";
 
 /**
  * Number formatters the language owns rather than the scene.
@@ -252,7 +252,12 @@ export function emitStringAppend(
     right: ts.Expression,
 ): void {
     const value = context.compileValue(right);
-    if (value.kind === "string" || (value.kind === "data" && value.dataType?.kind === "string")) {
+    if (value.kind === "string" && value.staticString !== undefined) {
+        // A chain of known parts appends as one literal.
+        context.emit(`${targetCpp} += ${context.cppString(value.staticString)};`);
+        return;
+    }
+    if (isStringValue(value)) {
         context.emit(`${targetCpp} += ${value.cpp};`);
         return;
     }

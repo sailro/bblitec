@@ -1750,6 +1750,11 @@ export function staticStringValue(text: string, cppString: (text: string) => str
   return { kind: "string", cpp: cppString(text), staticString: text };
 }
 
+/** A string as the program sees it: a plain string value or a data leaf typed string. */
+export function isStringValue(value: Value): boolean {
+  return value.kind === "string" || (value.kind === "data" && value.dataType?.kind === "string");
+}
+
 /** A boolean-kinded value; a literal `true`/`false` spelling is static. */
 export function booleanValue(cpp: string): Value {
   return {

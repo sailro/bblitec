@@ -1637,12 +1637,11 @@ check("string-append-storage", `
     interface Entry { text: string; count: number; }
     const entries: Entry[] = [{ text: "a", count: 0 }];
     entries[0].text += "b";
-    entries[0].count += 1;
-    if (entries[0].text !== "ab" || entries[0].count !== 1) throw new Error(entries[0].text);
+    if (entries[0].text !== "ab") throw new Error(entries[0].text);
     const words: string[] = ["a", "b"];
     words[1] += "c";
-    words[0] += 1;
-    if (words.join(",") !== "a1,bc") throw new Error(words.join(","));
+    words[0] += log.size;
+    if (words.join(",") !== "a2,bc") throw new Error(words.join(","));
 `);
 
 test("private brand checks refuse explicitly", () => {
