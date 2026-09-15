@@ -6,16 +6,21 @@ import test from "node:test";
 import {compileSource} from "../src/compiler.js";
 import {optionalNativeFixtureTools, runNativeFixtureCompiler} from "./native-fixture.js";
 
-function nativeCheck(name:string, source:string, t:test.TestContext):void {
+/** A worker realm: the entry owns a worker, so every realm-sensitive lowering takes the worker path,
+ *  and its event loop runs until the program closes it. */
+const workerRealm='const worker=new Worker(new URL("./worker.ts",import.meta.url),{type:"module"});worker.terminate();\n';
+
+function nativeCheck(name:string, source:string, t:test.TestContext, workers=false):void {
     const directory=resolve("artifacts/callback-values",name);
     mkdirSync(directory,{recursive:true});
-    const compiled=compileSource(source,{fileName:join(directory,"entry.ts")});
+    if(workers)writeFileSync(join(directory,"worker.ts"),"self.close();");
+    const compiled=compileSource(workers?workerRealm+source+"\nglobalThis.close();":source,{fileName:join(directory,"entry.ts")});
     const native=optionalNativeFixtureTools(false);
     if(!native){t.skip("Native fixture compiler unavailable.");return;}
     const cpp=join(directory,"check.cpp"),exe=join(directory,"check.exe");
     writeFileSync(cpp,compiled.cpp);
-    runNativeFixtureCompiler(native,["/nologo","/std:c++20","/W4","/WX","/EHsc","/MD","/I","native/include",
-        `/Fo:${directory}/`,`/Fe:${exe}`,cpp]);
+    runNativeFixtureCompiler(native,["/nologo","/std:c++20","/W4","/WX","/EHsc","/MD",...(workers?["/DBBLITE_WORKERS=1"]:[]),
+        "/I","native/include",`/Fo:${directory}/`,`/Fe:${exe}`,cpp]);
     assert.equal(execFileSync(exe,{encoding:"utf8",timeout:10000}),"");
 }
 
@@ -135,3 +140,42 @@ test("stored rest parameters own fresh arrays and preserve prefix evaluation", t
     if(edit(...items) !== 1 || items.length !== 2 || items[0].value !== 9)
         throw new Error("rest copy preserves element identity");
 `, t));
+
+/** A callback that names itself is materialized once; every sink shares that storage, adapted when the
+ *  sink supplies more than the callback reads or reads less than it returns. The plain realm materializes
+ *  a callback on a direct call, the worker realm on any self reference, so both realms run the same source. */
+const sharedStorage=`
+    const queue: Array<(time: number) => void> = [];
+    let visits = 0;
+    const poll = (): void => { visits++; if (visits < 3) queue.push(poll); };
+    poll();
+    while (queue.length > 0) { const next = queue.shift()!; next(16); }
+    if (visits !== 3) throw new Error("wider signature");
+    const again: Array<() => void> = [];
+    let ticks = 0;
+    const tick = (): void => { ticks++; if (ticks < 3) again.push(tick); };
+    tick();
+    while (again.length > 0) { const next = again.shift()!; next(); }
+    if (ticks !== 3) throw new Error("same signature in an identity-carrying sink");
+    const seen: number[] = [];
+    const tally: Array<(value: number, index: number) => void> = [];
+    const count = (value: number): number => { seen.push(value); if (seen.length < 3) tally.push(count); return seen.length; };
+    count(-1);
+    tally.push(count);
+    while (tally.length > 0) { const next = tally.shift()!; next(seen.length, 99); }
+    if (seen.join(",") !== "-1,1,2,3") throw new Error("supplied prefix, dropped extras and result");
+`;
+
+test("self-referential callbacks share their storage across sink signatures", t =>
+    nativeCheck("shared-storage", sharedStorage, t));
+
+test("self-referential callbacks share their storage across sink signatures in a worker realm", t =>
+    nativeCheck("shared-storage-worker", sharedStorage, t, true));
+
+test("a stored callback reaching a signature its storage cannot serve refuses instead of recursing", () => {
+    assert.throws(() => compileSource(`
+        const steps: Array<() => void> = [];
+        const walk = (step = 1): void => { if (step > 0) steps.push(walk); };
+        walk(2);
+    `), /re-enters its own lowering/);
+});
