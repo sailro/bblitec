@@ -30,7 +30,7 @@ Open gaps only. [Features](docs/features.md) owns support; [fidelity](docs/fidel
 - [ ] Vertical ranges, tick marks and Firefox control semantics (`pal_ui_range.hpp`).
 - [ ] Scroll edge handoff, bounce/navigation, both-edge/vertical/viewport gutters (RmlUi scroll patches).
 - [ ] Authored innerHTML query trees, interaction snapshots, :scope and computed selectors (`platform-calls.ts`).
-- [ ] Class inheritance/private/static blocks/static mutation; Error names and causes (`classes.ts`, `error-values.ts`).
+- [ ] Class inheritance/static blocks/static mutation; one member table for the class lowerers' nine name loops; Error names and causes (`classes.ts`, `native-functions.ts`, `error-values.ts`).
 - [ ] Generators/async iteration, Proxy, WeakRef and Symbol storage (`expressions.ts`, `statements.ts`, `data-types.ts`).
 - [ ] Object.assign on engine handles erases writes (`object-statics.ts`).
 - [ ] Shared lowering for logical assignment, dictionary property access and Array.from callbacks (`data-lowering.ts`).
