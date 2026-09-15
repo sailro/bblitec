@@ -966,6 +966,13 @@ export class UserFunctionLowerer {
     }
 
     private readonly cache = new EmissionMap<SupportedFunction, UserFunctionIr>();
+    /**
+     * Declarations whose stored lowering is in progress. A use inside
+     * their own body that lowers them again -- a stored value reaching a
+     * sink its storage cannot serve -- would never end, so it refuses.
+     */
+    private readonly loweringStoredDataFunctions = new EmissionSet<SupportedFunction>();
+
     private readonly activeStoredDataFunctions = new EmissionMap<
         SupportedFunction,
         {
@@ -2390,6 +2397,26 @@ export class UserFunctionLowerer {
                 "Stored function must resolve to a local function declaration or literal.",
             );
         }
+        if (this.loweringStoredDataFunctions.has(declaration)) {
+            context.fail(
+                expression,
+                `Stored function '${storedFunctionName(declaration)}' re-enters its own lowering; its storage cannot serve this use's signature.`,
+            );
+        }
+        this.loweringStoredDataFunctions.add(declaration);
+        try {
+            return this.lowerStoredDataFunction(context, declaration, dataType, owner);
+        } finally {
+            this.loweringStoredDataFunctions.delete(declaration);
+        }
+    }
+
+    private lowerStoredDataFunction(
+        context: UserFunctionContext,
+        declaration: SupportedFunction,
+        dataType: DataType & { kind: "function" },
+        owner?: Value,
+    ): string {
         const signature = this.checker.getSignatureFromDeclaration(declaration);
         if (
             dataType.result &&
@@ -3464,4 +3491,16 @@ export class UserFunctionLowerer {
         );
         return context.dataTypes.withTypeArguments(substitution, work);
     }
+}
+
+/** The source name a stored function is known by, for diagnostics. */
+function storedFunctionName(declaration: SupportedFunction): string {
+    if ((ts.isFunctionDeclaration(declaration) || ts.isMethodDeclaration(declaration)) &&
+        declaration.name && ts.isIdentifier(declaration.name)) {
+        return declaration.name.text;
+    }
+    if (ts.isVariableDeclaration(declaration.parent) && ts.isIdentifier(declaration.parent.name)) {
+        return declaration.parent.name.text;
+    }
+    return "(anonymous)";
 }

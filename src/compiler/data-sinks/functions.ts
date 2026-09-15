@@ -49,84 +49,92 @@ function expressionFunction(dataType: DataType<"function">, lowerer: DataSinkHos
 }
 
 /**
- * A function value handed to a sink that supplies more arguments than the
- * value declares. JavaScript ignores the extras, so the value keeps its
- * storage and identity behind an adapter that drops them; lowering the
- * declaration again for the wider signature would duplicate its body and,
- * for a callback that names itself, never end.
+ * The signature a value already holds native storage for: a data function
+ * value's own type, or the parameter and result types a materialized
+ * callback was stored with (its declaration's type when the storage
+ * recorded none). A value without storage has no stored signature and is
+ * lowered for each sink it reaches.
  */
-function adaptToWiderSignature(
+function storedSignature(lowerer: DataSinkHost, value: Value): DataType<"function"> | undefined {
+    if (value.cpp.length === 0) return undefined;
+    if (value.kind === "data") return value.dataType?.kind === "function" ? value.dataType : undefined;
+    if (value.kind !== "callback") return undefined;
+    const parameters = value.nativeCallbackParameterTypes;
+    if (parameters === undefined) {
+        const declared = value.callbackDeclaration ? lowerer.dataTypeAt(value.callbackDeclaration) : undefined;
+        return declared?.kind === "function" ? declared : undefined;
+    }
+    return parameters.every((parameter): parameter is DataType => parameter !== undefined)
+        ? { kind: "function", parameters: [...parameters], ...(value.nativeCallbackReturnType ? { result: value.nativeCallbackReturnType } : {}) }
+        : undefined;
+}
+
+/**
+ * How a sink of `sink` type invokes a stored value of `source` type: the
+ * leading sink parameters the value declares, by name (JavaScript ignores
+ * the extras), or for a value declared with a rest parameter the leading
+ * ones plus the remaining sink parameters packed into its array; a result
+ * the sink does not read is dropped. `undefined` when the value needs
+ * something the sink does not supply.
+ */
+function adaptedArguments(
     lowerer: DataSinkHost,
-    cpp: string,
-    source: { parameters: DataType[]; result?: DataType | undefined },
-    dataType: DataType<"function">,
-): string | undefined {
-    if (dataType.restParameter !== undefined || dataType.erasedParameters?.length ||
-        source.parameters.length >= dataType.parameters.length ||
-        !source.parameters.every((parameter, index) => dataTypesEqual(parameter, dataType.parameters[index]!)) ||
-        (dataType.result !== undefined &&
-            (source.result === undefined || !dataTypesEqual(source.result, dataType.result)))) {
+    source: DataType<"function">,
+    sink: DataType<"function">,
+): { named: number; arguments_: string[] } | undefined {
+    if (sink.restParameter !== undefined || sink.erasedParameters?.length || source.erasedParameters?.length) return undefined;
+    if (sink.result !== undefined && (source.result === undefined || !dataTypesEqual(source.result, sink.result))) return undefined;
+    const fixed = source.restParameter ?? source.parameters.length;
+    if (sink.parameters.length < fixed ||
+        !source.parameters.slice(0, fixed).every((parameter, index) => dataTypesEqual(parameter, sink.parameters[index]!))) {
         return undefined;
     }
+    const names = sink.parameters.map((_, index) => `argument_${index}`);
+    if (source.restParameter === undefined) return { named: fixed, arguments_: names.slice(0, fixed) };
+    const rest = source.parameters[source.restParameter];
+    if (rest?.kind !== "vector" || !sink.parameters.slice(fixed).every((parameter) => dataTypesEqual(parameter, rest.element))) return undefined;
+    return {
+        named: sink.parameters.length,
+        arguments_: [...names.slice(0, fixed), `${lowerer.context.dataTypes.cppType(rest)}{${names.slice(fixed).join(", ")}}`],
+    };
+}
+
+/**
+ * The runtime's signature adapter around a stored value: a capture-less
+ * invoker receives the sink's parameters, the first `named` by name, and
+ * calls the value with `arguments_`; the value keeps its identity and
+ * environment. The invoker spells its parameter from the storage itself,
+ * because materialized storage may declare parameters by reference where
+ * the data type spells them by value.
+ */
+function renderSignatureAdapter(
+    lowerer: DataSinkHost,
+    cpp: string,
+    sink: DataType<"function">,
+    named: number,
+    arguments_: readonly string[],
+): string {
     const cppType = (type: DataType): string => lowerer.context.dataTypes.cppType(type);
-    const supplied = source.parameters.map((_, index) => `argument_${index}`);
-    const parameters = dataType.parameters.map((type, index) =>
-        `, ${cppType(type)}${index < supplied.length ? ` ${supplied[index]}` : ""}`).join("");
-    const result = dataType.result ? cppType(dataType.result) : "void";
-    return `bbl::js::adapt_callback<${cppType(dataType)}>(${cpp}, [](auto& callback${parameters}) -> ${result} { ` +
-        `${dataType.result ? "return " : "static_cast<void>("}callback(${supplied.join(", ")})${dataType.result ? "" : ")"}; })`;
+    const parameters = sink.parameters.map((type, index) => `, ${cppType(type)}${index < named ? ` argument_${index}` : ""}`).join("");
+    const result = sink.result ? cppType(sink.result) : "void";
+    return `bbl::js::adapt_callback<${cppType(sink)}>(${cpp}, [](std::remove_cvref_t<decltype(${cpp})>& callback${parameters}) -> ${result} { ` +
+        `${sink.result ? "return " : "static_cast<void>("}callback(${arguments_.join(", ")})${sink.result ? "" : ")"}; })`;
 }
 
 function valueFunction(dataType: DataType<"function">, lowerer: DataSinkHost, value: Value, _node: ts.Node): string | undefined {
     if (value.kind === "json-null") {
         return `${lowerer.context.dataTypes.cppType(dataType)}{}`;
     }
-    if (value.kind === "callback" &&
-        value.cpp.length > 0 &&
-        value.callbackDeclaration &&
-        !dataType.identity) {
-        const nativeType = lowerer.dataTypeAt(value.callbackDeclaration);
-        if (nativeType?.kind === "function" &&
-            dataTypesEqual(nativeType, dataType)) {
-            // A self-referential local is already materialized as
-            // native callback storage so its own body can refer to
-            // the initialized binding. Plain function sinks share
-            // that storage instead of attempting to lower the
-            // declaration a second time.
-            return value.cpp;
-        }
-    }
-    if (value.kind === "data" &&
-        value.dataType?.kind === "function" &&
-        dataTypesEqual({...value.dataType, identity:true}, {...dataType, identity:true})) {
-        return value.cpp;
-    }
-    if (value.kind === "callback" &&
-        value.cpp.length > 0 &&
-        value.nativeCallbackParameterTypes !== undefined &&
-        dataType.restParameter === undefined &&
-        !dataType.identity &&
-        value.nativeCallbackParameterTypes.length ===
-            dataType.parameters.length &&
-        value.nativeCallbackParameterTypes.every((parameter, index) => parameter !== undefined &&
-            dataTypesEqual(parameter, dataType.parameters[index]!)) &&
-        ((value.nativeCallbackReturnType === undefined &&
-            dataType.result === undefined) ||
-            (value.nativeCallbackReturnType !== undefined &&
-                dataType.result !== undefined &&
-                dataTypesEqual(value.nativeCallbackReturnType, dataType.result)))) {
-        return value.cpp;
-    }
-    const materialized = value.kind === "callback" && value.cpp.length > 0 &&
-        value.nativeCallbackParameterTypes?.every((parameter) => parameter !== undefined)
-        ? { parameters: value.nativeCallbackParameterTypes as DataType[], result: value.nativeCallbackReturnType }
-        : value.kind === "data" && value.dataType?.kind === "function" &&
-            value.dataType.restParameter === undefined && !value.dataType.erasedParameters?.length
-          ? value.dataType
-          : undefined;
-    if (materialized) {
-        const adapted = adaptToWiderSignature(lowerer, value.cpp, materialized, dataType);
-        if (adapted !== undefined) return adapted;
+    // A value with storage is shared as it is or adapted to the sink; its
+    // identity is the storage's own, whether or not the sink compares it.
+    // Only a declaration without storage, or one whose storage cannot serve
+    // the sink, is lowered for the sink -- and a lowering that reaches
+    // itself again refuses rather than recursing.
+    const stored = storedSignature(lowerer, value);
+    if (stored) {
+        if (dataTypesEqual({ ...stored, identity: true }, { ...dataType, identity: true })) return value.cpp;
+        const adapted = adaptedArguments(lowerer, stored, dataType);
+        if (adapted) return renderSignatureAdapter(lowerer, value.cpp, dataType, adapted.named, adapted.arguments_);
     }
     if (value.kind === "callback" &&
         value.callbackDeclaration) {
@@ -136,32 +144,6 @@ function valueFunction(dataType: DataType<"function">, lowerer: DataSinkHost, va
             return lowerer.compileKnownValueForSink(lowerer.leafValue(cpp, nativeType), dataType, value.callbackDeclaration);
         }
         return lowerer.context.compileStoredDataFunction(value.callbackDeclaration, dataType, value.callbackRecordOwner);
-    }
-    if (value.kind === "data" &&
-        value.dataType &&
-        dataTypesEqual(value.dataType, dataType)) {
-        return value.cpp;
-    }
-    const source = value.dataType;
-    if (source?.kind === "function" && source.restParameter !== undefined &&
-        dataType.restParameter === undefined && !source.erasedParameters?.length &&
-        !dataType.erasedParameters?.length && dataType.parameters.length >= source.restParameter &&
-        (dataType.result === undefined || (source.result && dataTypesEqual(source.result, dataType.result)))) {
-        const rest = source.parameters[source.restParameter];
-        if (rest?.kind !== "vector") return undefined;
-        const parameters = dataType.parameters.map((type, index) => ({
-            type, name:`argument_${index}`,
-        }));
-        if (!parameters.every(({type}, index) => dataTypesEqual(type,
-            index < source.restParameter! ? source.parameters[index]! : rest.element))) return undefined;
-        const values = parameters.map(({name}) => name);
-        const args = values.slice(0, source.restParameter);
-        args.push(`${lowerer.context.dataTypes.cppType(rest)}{${values.slice(source.restParameter).join(", ")}}`);
-        const result = dataType.result ? lowerer.context.dataTypes.cppType(dataType.result) : "void";
-        return `bbl::js::adapt_callback<${lowerer.context.dataTypes.cppType(dataType)}>(${value.cpp}, ` +
-            `[](${lowerer.context.dataTypes.cppType(source)}& callback${parameters.map(({type, name}) =>
-                `, ${lowerer.context.dataTypes.cppType(type)} ${name}`).join("")}) -> ${result} { ` +
-            `${dataType.result ? "return " : "static_cast<void>("}callback(${args.join(", ")})${dataType.result ? "" : ")"}; })`;
     }
     return undefined;
 }

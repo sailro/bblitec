@@ -141,24 +141,41 @@ test("stored rest parameters own fresh arrays and preserve prefix evaluation", t
         throw new Error("rest copy preserves element identity");
 `, t));
 
-/** A callback that names itself is materialized once; wider sinks adapt that storage instead of lowering the body again. */
-const widerSignatures=`
+/** A callback that names itself is materialized once; every sink shares that storage, adapted when the
+ *  sink supplies more than the callback reads or reads less than it returns. The plain realm materializes
+ *  a callback on a direct call, the worker realm on any self reference, so both realms run the same source. */
+const sharedStorage=`
     const queue: Array<(time: number) => void> = [];
     let visits = 0;
     const poll = (): void => { visits++; if (visits < 3) queue.push(poll); };
     poll();
     while (queue.length > 0) { const next = queue.shift()!; next(16); }
-    if (visits !== 3) throw new Error("self-scheduling through a wider signature");
+    if (visits !== 3) throw new Error("wider signature");
+    const again: Array<() => void> = [];
+    let ticks = 0;
+    const tick = (): void => { ticks++; if (ticks < 3) again.push(tick); };
+    tick();
+    while (again.length > 0) { const next = again.shift()!; next(); }
+    if (ticks !== 3) throw new Error("same signature in an identity-carrying sink");
     const seen: number[] = [];
     const tally: Array<(value: number, index: number) => void> = [];
-    const count = (value: number): void => { seen.push(value); if (seen.length < 2) tally.push(count); };
+    const count = (value: number): number => { seen.push(value); if (seen.length < 3) tally.push(count); return seen.length; };
+    count(-1);
     tally.push(count);
     while (tally.length > 0) { const next = tally.shift()!; next(seen.length, 99); }
-    if (seen.join(",") !== "0,1") throw new Error("supplied prefix and dropped extras");
+    if (seen.join(",") !== "-1,1,2,3") throw new Error("supplied prefix, dropped extras and result");
 `;
 
-test("self-referential callbacks reach wider signatures through their own storage", t =>
-    nativeCheck("wider-signatures", widerSignatures, t));
+test("self-referential callbacks share their storage across sink signatures", t =>
+    nativeCheck("shared-storage", sharedStorage, t));
 
-test("self-referential callbacks reach wider signatures through their own storage in a worker realm", t =>
-    nativeCheck("wider-signatures-worker", widerSignatures, t, true));
+test("self-referential callbacks share their storage across sink signatures in a worker realm", t =>
+    nativeCheck("shared-storage-worker", sharedStorage, t, true));
+
+test("a stored callback reaching a signature its storage cannot serve refuses instead of recursing", () => {
+    assert.throws(() => compileSource(`
+        const steps: Array<() => void> = [];
+        const walk = (step = 1): void => { if (step > 0) steps.push(walk); };
+        walk(2);
+    `), /re-enters its own lowering/);
+});
