@@ -12937,6 +12937,26 @@ class Compiler
             this.describeNativeValue(pinned);
             return pinned;
         }
+        if (value.kind === "data" && value.dataType?.kind === "struct" && !value.nativeLvalue &&
+            !cppIdentifierPattern.test(value.cpp)) {
+            // A struct held under a plain name or read from storage reads
+            // twice for free. A computed one -- a call, an indexed read, a
+            // member of a computed record -- is bound once, and the identity
+            // and presence spellings derived from it follow the temporary; a
+            // flag another source supplied (a search's own found variable)
+            // stays as it is.
+            const cpp = this.allocateTemporaryCppName(label);
+            this.emit({ kind: "declaration", type: "const auto", name: cpp, initializer: value.cpp });
+            const derived = this.dataLowerer.leafValue(value.cpp, value.dataType);
+            const fresh = this.dataLowerer.leafValue(cpp, value.dataType);
+            const pinned: Value = { ...value, cpp, nativeBinding: true as const };
+            for (const key of ["objectIdentityCpp", "optionalFoundCpp"] as const) {
+                const spelling = fresh[key];
+                if (spelling !== undefined && pinned[key] === derived[key]) pinned[key] = spelling;
+            }
+            this.describeNativeValue(pinned);
+            return pinned;
+        }
         if (value.kind === "record") {
             if (
                 value.dataType?.kind === "struct" &&

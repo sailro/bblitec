@@ -1608,6 +1608,11 @@ export class DataLowerer {
      * Anything else returns undefined and the caller's refusal names the
      * routes.
      */
+    /** Whether a reference struct spelled `cpp` holds an object: the one presence spelling a leaf derives. */
+    private referencePresence(cpp: string): string {
+        return `static_cast<bool>(${cpp})`;
+    }
+
     public compileNullishCoalesce(
         expression: ts.BinaryExpression,
     ): Value | undefined {
@@ -1616,8 +1621,17 @@ export class DataLowerer {
         const leftNode = this.context.unwrap(expression.left);
         const storage = ts.isIdentifier(leftNode) || ts.isPropertyAccessExpression(leftNode)
             ? this.context.probeEmission(() => this.compileDataPath(expression.left, "read")) : undefined;
-        const left = storage ??
+        const computed = storage ??
             this.context.compileValue(expression.left);
+        // A struct a call produced carries its presence flag spelled from
+        // the call itself; testing the flag and then reading the value
+        // would run the call twice, so the call is pinned first and the
+        // spellings follow the temporary. A name reads twice for free, and
+        // a flag another source supplied selects the value once already.
+        const left = !storage && computed.dataType?.kind === "struct" &&
+            computed.optionalFoundCpp === this.referencePresence(computed.cpp) && !cppIdentifierPattern.test(computed.cpp)
+            ? this.context.pinValueToTemporary(computed, "nullish", expression.left)
+            : computed;
         if (left.kind === "json-null") {
             return this.context.compileValue(
                 expression.right,
@@ -3350,7 +3364,7 @@ export class DataLowerer {
                   )
                     ? {
                           objectIdentityCpp: `${cpp}.get()`,
-                          optionalFoundCpp: `static_cast<bool>(${cpp})`,
+                          optionalFoundCpp: this.referencePresence(cpp),
                       }
                     : { objectIdentityCpp: `std::addressof(${cpp})` }
                 : {}),

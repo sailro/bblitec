@@ -1595,6 +1595,29 @@ check("private-class-members", `
     if (total !== 15) throw new Error("stored generic private fields " + total);
 `);
 
+check("struct-results-evaluate-once", `
+    interface Item { id: number; }
+    const queue: Item[] = [{ id: 1 }, { id: 2 }, { id: 3 }];
+    let current: Item | null = null;
+    current = queue.shift() ?? null;
+    if (current?.id !== 1 || queue.length !== 2) throw new Error("shift once");
+    const spare: Item = { id: 9 };
+    const last = queue.pop() ?? spare;
+    if (last.id !== 3 || queue.length !== 1) throw new Error("pop once");
+    function next(): Item | undefined { return queue.pop(); }
+    const inlined = next() ?? spare;
+    if (inlined.id !== 2 || queue.length !== 0) throw new Error("inlined call once");
+    let taken = 0;
+    const pool: Item[] = [{ id: 5 }, { id: 6 }];
+    function take(): Item { taken++; return pool[taken - 1]; }
+    const sum = take().id + take().id;
+    if (sum !== 11 || taken !== 2) throw new Error("snapshot once " + sum);
+    class Node { id: number; constructor(id: number) { this.id = id; } bump(): void { this.id++; } }
+    const nodes: Node[] = [new Node(1), new Node(2)];
+    nodes.pop()?.bump();
+    if (nodes.length !== 1 || nodes[0].id !== 1) throw new Error("receiver once");
+`);
+
 test("private brand checks refuse explicitly", () => {
     assert.throws(() => compileSource(`
         class Tagged { #mark = 1; static has(value: object): boolean { return #mark in value; } }

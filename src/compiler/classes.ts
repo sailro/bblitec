@@ -1,4 +1,4 @@
-import { valueForKind } from "./types.js";
+import { valueForKind, withNativeMetadata } from "./types.js";
 import { EmissionSet, EmissionMap, EmissionWeakMap } from "./emission-transaction.js";
 import type { LoweringServices } from "./lowering-services.js";
 import ts from "typescript";
@@ -911,8 +911,14 @@ export class ClassLowerer {
             binding.declaration,
             binding.type,
         );
+        // A computed receiver's identity and presence spellings follow the
+        // binding, or an optional call would spell the call a second time;
+        // a storage read is stable and keeps its own.
+        const receiver = instanceCpp === value.cpp || value.nativeLvalue
+            ? value
+            : withNativeMetadata(this.context.dataValue(instanceCpp, value.dataType), value);
         return valueForKind("record", {
-            ...value,
+            ...receiver,
             cpp: instanceCpp,
 
             recordProperties: fields,
