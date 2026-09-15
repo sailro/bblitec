@@ -1618,6 +1618,33 @@ check("struct-results-evaluate-once", `
     if (nodes.length !== 1 || nodes[0].id !== 1) throw new Error("receiver once");
 `);
 
+check("string-append-storage", `
+    class Log {
+        private parts: string[] = ["a", "b"];
+        private text = "";
+        describe(): string { return this.parts.join("/"); }
+        get size(): number { return this.parts.length; }
+        add(entry: string): void { this.text += entry + ";"; }
+        get all(): string { return this.text; }
+    }
+    const log = new Log();
+    let text = log.describe();
+    text += "|" + log.describe() + "|" + log.size;
+    text += 2;
+    if (text !== "a/b|a/b|22") throw new Error(text);
+    log.add("x"); log.add("y");
+    if (log.all !== "x;y;") throw new Error(log.all);
+    interface Entry { text: string; count: number; }
+    const entries: Entry[] = [{ text: "a", count: 0 }];
+    entries[0].text += "b";
+    entries[0].count += 1;
+    if (entries[0].text !== "ab" || entries[0].count !== 1) throw new Error(entries[0].text);
+    const words: string[] = ["a", "b"];
+    words[1] += "c";
+    words[0] += 1;
+    if (words.join(",") !== "a1,bc") throw new Error(words.join(","));
+`);
+
 test("private brand checks refuse explicitly", () => {
     assert.throws(() => compileSource(`
         class Tagged { #mark = 1; static has(value: object): boolean { return #mark in value; } }

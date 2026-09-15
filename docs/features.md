@@ -100,7 +100,7 @@ buffers; MessagePort, shared memory and broader transferable values refuse.
 | Tuples | Shared identity, typed and dynamic lanes, mutations, shallow rest arrays, destructuring | Sparse length growth and ambiguous null/undefined defaults refuse |
 | Map/Set | Ordered construction, queries, mutation, spreads, entries, live `forEach` | WeakMap/WeakSet retain keys strongly |
 | Iterators | Direct array/Map/Set iteration; retained Set keys/values/entries cursors, `next`, spreads, `Array.from` | Generators and general `Symbol.iterator` objects refuse |
-| Strings | UTF-16 indexing/length, substring/repeat/concat, padding/trimming, replacement strings/callbacks | Native WTF-8 storage; embedded NUL value sinks remain limited |
+| Strings | UTF-16 indexing/length, substring/repeat/concat, padding/trimming, replacement strings/callbacks, `+=` on locals, fields and elements | Native WTF-8 storage; embedded NUL value sinks remain limited |
 | RegExp | Supported `g`/`i` patterns and replacement callbacks with captures/offset/original string | RegExp `replaceAll` with string replacement refuses |
 | Unicode | NFC/NFD/NFKC/NFKD normalization; `localeCompare` locale/options | Host ICU data; option getters and non-string locale entries refuse |
 | Objects | Supported keys/values/entries, assign/fromEntries/hasOwn/is, shallow spreads, delete/in | Fixed own-key proof required for optional structs; freeze/seal/preventExtensions are identity operations |

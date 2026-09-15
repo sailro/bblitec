@@ -1,4 +1,5 @@
 import { booleanValue, nativeDataMetadata, staticStringValue, valueForKind, withNativeMetadata } from "./types.js";
+import { emitStringAppend } from "./expressions.js";
 import { compileDataExpressionSink, compileDataValueSink } from "./data-sinks/operations.js";
 import { someAnalysisNode, forEachAnalysisNode } from "./analysis-walk.js";
 import { EmissionSet, EmissionMap, EmissionWeakMap } from "./emission-transaction.js";
@@ -7109,6 +7110,11 @@ export class DataLowerer {
             target.kind === "data" &&
             target.dataType
         ) {
+            if (operator === "+=" && target.dataType.kind === "string") {
+                emitStringAppend(this.context, target.cpp, expression.right);
+                invalidateRootRecordSnapshot();
+                return true;
+            }
             if (operator !== "=") {
                 this.context.fail(
                     expression,
