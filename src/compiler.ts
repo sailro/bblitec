@@ -7,6 +7,7 @@ import { renderNativeDeclaration, type NativeDeclaration } from "./compiler/nati
 import { persistContinuationLocals } from "./compiler/continuation-storage.js";
 import ts from "typescript";
 import { traceSourceApplication, traceSourceProgram, traceSourceNode } from "./compiler/source-trace.js";
+import { activeSurvey, SurveyCollector, withSurvey, type SurveyReport } from "./compiler/survey.js";
 import {hasDynamicObjectSpread, isJsonValue} from "./compiler/json-bridge.js";
 import {DynamicBindingStorageRequired} from "./compiler/dynamic-binding-storage.js";
 import {NativeRecordStorageRequired, type NativeRecordStorageDemand} from "./compiler/native-record-storage.js";
@@ -458,10 +459,38 @@ export function compileSource(
     return traceSourceApplication(() => compileSourceApplication(source, options));
 }
 
+export interface SurveyOutcome {
+    report: SurveyReport;
+    /** Present when every realm lowered to the end; its output has holes where statements refused. */
+    result?: CompileResult;
+}
+
+/**
+ * Lowers `source` past every compile refusal and reports them all, instead
+ * of stopping at the first. A measurement of what an entry reaches; the
+ * result is never a program to build.
+ */
+export function surveySource(
+    source: string,
+    options: CompileOptions = {},
+): SurveyOutcome {
+    const collector = new SurveyCollector();
+    return withSurvey(collector, () => {
+        try {
+            const result = compileSourceApplication(source, options);
+            return { report: collector.report(true), result };
+        } catch (error) {
+            if (!(error instanceof Error)) throw error;
+            return { report: collector.report(false, error.message) };
+        }
+    });
+}
+
 function compileSourceApplication(source: string, options: CompileOptions): CompileResult {
     const fileName = options.fileName ?? "input.ts";
     const environment = deploymentEnvironment(options);
     const frontend = createCompilerProgram(source, fileName);
+    const survey = activeSurvey();
     const compile = (input: typeof frontend, workers?: ResolvedCompileOptions["workers"]): CompileResult => {
         const resolved: ResolvedCompileOptions = {
             fileName: workers?.namespace ? input.sourceFile.fileName : fileName,
@@ -482,6 +511,9 @@ function compileSourceApplication(source: string, options: CompileOptions): Comp
         const dynamicBindings = new Set<ts.VariableDeclaration>();
         const ownedRecords = new Map<NativeRecordStorageDemand["identity"], NativeRecordStorageDemand>();
         for (;;) {
+            // A replay lowers the realm again from the start, so a survey
+            // keeps only the attempt that ran to the end.
+            const surveyed = survey?.beginAttempt(input.sourceFile.fileName);
             try {
                 const compiler = new Compiler(input.program, input.sourceFile, input.checker, resolved, dynamicBindings, ownedRecords);
                 const result = traceSourceProgram(input.program, () => compiler.compile());
@@ -493,6 +525,8 @@ function compileSourceApplication(source: string, options: CompileOptions): Comp
                 } else if (error instanceof NativeRecordStorageRequired && !ownedRecords.has(error.demand.identity)) {
                     ownedRecords.set(error.demand.identity, error.demand);
                 } else throw error;
+            } finally {
+                survey?.resume(surveyed);
             }
         }
     };
@@ -9533,6 +9567,25 @@ class Compiler
     public probeEmission<T>(
         probe: () => T,
         answered: (result: T) => boolean = (result) => result !== undefined,
+    ): T {
+        // A probe decides its own refusals, so a survey stands aside while
+        // one is open (nested probes included).
+        const survey = activeSurvey();
+        survey?.enterSpeculation();
+        try {
+            return this.emissionTransaction(probe, answered);
+        } finally {
+            survey?.leaveSpeculation();
+        }
+    }
+
+    public surveyEmission<T>(emit: () => T): T {
+        return this.emissionTransaction(emit, () => true);
+    }
+
+    private emissionTransaction<T>(
+        probe: () => T,
+        answered: (result: T) => boolean,
     ): T {
         return new EmissionTransaction(this, [this.program, this.checker, this.sourceFile, this.options])
             .run(probe, answered);

@@ -141,6 +141,7 @@ folders by stem and have diagnostic-only comparisons without configured threshol
 
 ```powershell
 node tools/project-requirements.mjs <entry.ts> <ignored-report.json>
+node dist/src/cli.js <entry.ts> --survey <ignored-census.json>
 node tools/project-progress.mjs <ignored-acceptance-ledger.json> [ignored-progress.md]
 ```
 
@@ -148,6 +149,12 @@ The scan inventories imports, library members, event shapes and language forms w
 It includes potentially unused bodies and does not prove compilation. Group findings by shared capability,
 match TODOs, and run independent source-shape probes before implementation batches. Record generation,
 native build and execution separately. Retry the unchanged entry at batch boundaries.
+
+The survey lowers the entry past every compile refusal: each statement runs in an emission transaction,
+a refusal rolls it back and is recorded, and lowering continues. The census lists every refusal reached
+(site, message, message class, enclosing function, cascades from refused declarations) with attempted and
+refused lowering counts; it writes no tree. Refusals inside speculative probes belong to the probe, storage
+replays keep only their final attempt, and an error outside statement lowering ends the survey as incomplete.
 
 Progress is closed acceptance groups / fixed baseline groups, with equal credit per group. Every inventoried
 requirement needs one owner. Closure requires passing evidence with file hashes and completed dependencies;
