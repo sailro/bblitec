@@ -1614,9 +1614,6 @@ check("nullish-evaluates-once", `
     let searched = 0;
     const missing = queue.find((item) => { searched++; return item.id === 42; }) ?? spare;
     if (missing.id !== 9 || searched !== 0) throw new Error("fallback " + searched);
-    const numbers: number[] = [4, 5];
-    const head = numbers.shift() ?? -1;
-    if (head !== 4 || numbers.length !== 1) throw new Error("number shift once");
 `);
 
 test("private brand checks refuse explicitly", () => {

@@ -12937,25 +12937,6 @@ class Compiler
             this.describeNativeValue(pinned);
             return pinned;
         }
-        if (value.kind === "data" && value.dataType?.kind === "struct" && !value.nativeBinding) {
-            // A struct value's identity and presence spellings may be
-            // derived from its expression; those follow the temporary, so
-            // the expression runs once. A flag another source supplied (a
-            // search's own found variable) stays as it is.
-            const cpp = this.allocateTemporaryCppName(label);
-            this.emit({ kind: "declaration", type: "const auto", name: cpp, initializer: value.cpp });
-            const derived = this.dataLowerer.leafValue(value.cpp, value.dataType);
-            const fresh = this.dataLowerer.leafValue(cpp, value.dataType);
-            const pinned: Value = { ...value, cpp, nativeBinding: true as const };
-            for (const key of ["objectIdentityCpp", "optionalFoundCpp"] as const) {
-                if (pinned[key] === undefined || pinned[key] !== derived[key]) continue;
-                const spelling = fresh[key];
-                if (spelling === undefined) delete pinned[key];
-                else pinned[key] = spelling;
-            }
-            this.describeNativeValue(pinned);
-            return pinned;
-        }
         if (value.kind === "record") {
             if (
                 value.dataType?.kind === "struct" &&

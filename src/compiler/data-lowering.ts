@@ -1608,6 +1608,13 @@ export class DataLowerer {
      * Anything else returns undefined and the caller's refusal names the
      * routes.
      */
+    /** The struct a call produced, held in a temporary its identity and presence spellings follow. */
+    private pinStructOperand(value: Value, dataType: DataType): Value {
+        const temporary = this.context.allocateTemporaryCppName("nullish");
+        this.context.emit({ kind: "declaration", type: "const auto", name: temporary, initializer: value.cpp });
+        return withNativeMetadata(this.leafValue(temporary, dataType), value);
+    }
+
     public compileNullishCoalesce(
         expression: ts.BinaryExpression,
     ): Value | undefined {
@@ -1620,11 +1627,12 @@ export class DataLowerer {
             this.context.compileValue(expression.left);
         // A struct a call produced carries its presence flag spelled from
         // the call itself; testing the flag and then reading the value
-        // would run the call twice, so it is pinned first. Storage and
-        // bindings are already stable names.
+        // would run the call twice, so the call is pinned first and the
+        // spellings follow the temporary. A name reads twice for free, and
+        // a flag another source supplied selects the value once already.
         const left = !storage && computed.kind === "data" && computed.dataType?.kind === "struct" &&
-            computed.optionalFoundCpp !== undefined && !computed.nativeBinding && !computed.parameterBinding
-            ? this.context.pinValueToTemporary(computed, "nullish", expression.left)
+            computed.optionalFoundCpp === `static_cast<bool>(${computed.cpp})` && !cppIdentifierPattern.test(computed.cpp)
+            ? this.pinStructOperand(computed, computed.dataType)
             : computed;
         if (left.kind === "json-null") {
             return this.context.compileValue(
