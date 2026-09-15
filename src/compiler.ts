@@ -1548,6 +1548,10 @@ class Compiler
         return this.statements.terminatesAfterLowering(statement);
     }
 
+    public catchBindingIsErased(binding: ts.Identifier, body: ts.Node): boolean {
+        return this.statements.catchBindingIsErased(this, binding, body);
+    }
+
     private nullableResourceKind(
         node: ts.Node,
         allowDirect = false,

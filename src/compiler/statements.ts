@@ -27,7 +27,7 @@ import {
 import { writesThroughTrackedRoot } from "./user-functions.js";
 import { staticNumberValue } from "./option-helpers.js";
 import { argumentAt, isLogicalAssignmentOperator, isUpdateExpression, iteratorMethodCall, unwrappedIdentifier } from "./syntax.js";
-import { compileErrorConstruction, errorConstructor, errorValue, thrownMessage } from "./error-values.js";
+import { caughtErrorValue, compileErrorConstruction, errorConstructor, thrownMessage } from "./error-values.js";
 import { stringConcatPart } from "./expressions.js";
 import { enclosingLoopControl, firstReturn } from "./loop-control.js";
 // The handle-collection concept owns the collection targets, the loop
@@ -1231,7 +1231,8 @@ export class StatementLowerer {
     /**
      * Native work may throw at runtime (for example, a platform service that
      * cannot initialize), so a binding-free JavaScript catch maps directly
-     * to C++ `catch (...)`. Catch bindings remain outside the value model.
+     * to C++ `catch (...)`, as does a binding the block only reports. A read
+     * binding catches `std::exception` and is the caught Error value.
      *
      * A finally block is a scope guard, so it runs on normal completion,
      * early return, and exception just as the JavaScript block does.
@@ -1282,9 +1283,11 @@ export class StatementLowerer {
                 statement.catchClause.variableDeclaration;
             const erasedCatchBinding =
                 catchDeclaration !== undefined &&
+                ts.isIdentifier(catchDeclaration.name) &&
                 this.catchBindingIsErased(
                     context,
-                    statement.catchClause,
+                    catchDeclaration.name,
+                    statement.catchClause.block,
                 );
             if (
                 catchDeclaration &&
@@ -1331,18 +1334,9 @@ export class StatementLowerer {
                     catchDeclaration &&
                     ts.isIdentifier(catchDeclaration.name)
                 ) {
-                    // The caught value is the message the native exception
-                    // carries, and an Error whose `.message` is that string:
-                    // `String(e)` reads the text, `(e as Error).message` and
-                    // `e instanceof Error` read the Error.
-                    const caught: Extract<Value, { kind: "data" }> = {
-                        kind: "data",
-                        cpp: `std::string(${catchCpp}.what())`,
-                        dataType: { kind: "string" },
-                    };
                     context.bindLocalValue(
                         catchDeclaration.name,
-                        errorValue(caught, "Error", (text) => context.cppString(text), caught),
+                        caughtErrorValue(context, catchCpp),
                     );
                 }
                 for (const child of statement.catchClause
@@ -1375,28 +1369,29 @@ export class StatementLowerer {
         }
     }
 
-    /** A caught JavaScript value needs no native representation when unread. */
-    private catchBindingIsErased(
+    /**
+     * A caught JavaScript value needs no native representation when the
+     * handler `body` only reports it: a catch clause block or a rejection
+     * callback's body.
+     */
+    public catchBindingIsErased(
         context: StatementLoweringContext,
-        clause: ts.CatchClause,
+        binding: ts.Identifier,
+        body: ts.Node,
     ): boolean {
-        const declaration = clause.variableDeclaration;
-        if (!declaration || !ts.isIdentifier(declaration.name)) {
-            return false;
-        }
-        const symbol = context.symbols.valueSymbol(declaration.name);
+        const symbol = context.symbols.valueSymbol(binding);
         if (!symbol) return false;
 
-        const erased = !someAnalysisNode(clause.block, (node) => {
+        const erased = !someAnalysisNode(body, (node) => {
             if (
                 ts.isIdentifier(node) &&
-                node !== declaration.name &&
+                node !== binding &&
                 context.symbols.valueSymbol(node) === symbol
             ) {
                 let statement: ts.Node = node;
                 while (
                     statement.parent &&
-                    statement.parent !== clause.block
+                    statement.parent !== body
                 ) {
                     statement = statement.parent;
                 }

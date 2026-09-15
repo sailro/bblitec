@@ -485,6 +485,8 @@ export interface LoweringServices {
     rebindVariable(identifier: ts.Identifier, value: Value): void;
     defineVariable(identifier: ts.Identifier, value: Value): void;
     bindLocalValue(identifier: ts.Identifier, value: Value): void;
+    /** Whether a caught value bound to `binding` is only reported by `body`, so it needs no native representation. */
+    catchBindingIsErased(binding: ts.Identifier, body: ts.Node): boolean;
     bindCompileTimeValue(identifier: ts.Identifier, value: Value): void;
     rebindCompileTimeValue(identifier: ts.Identifier, value: Value): void;
     materializeStaticNativeValue(identifier: ts.Identifier, value: Value): Value;

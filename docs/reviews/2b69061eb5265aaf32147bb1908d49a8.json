@@ -1,0 +1,30 @@
+{
+  "angles": [
+    "reuse",
+    "simplification",
+    "efficiency",
+    "altitude"
+  ],
+  "findings": [
+    {
+      "summary": "Statement catch clauses and promise rejection callbacks build the caught Error through one helper that pins the native message once, instead of two hand-rolled copies of the same value.",
+      "applied": true
+    },
+    {
+      "summary": "The catch header and the values its parameter receives are decided in one place for the immediate catch and the then rejection path, so a reporter-only parameter still lowers to catch (...) on both.",
+      "applied": true
+    },
+    {
+      "summary": "The bound rejection callback is compiled through the existing value-passing callback compiler rather than a bespoke parameter binding.",
+      "applied": true
+    },
+    {
+      "summary": "The erased-binding probe takes any identifier and body and is exposed through the lowering services, so every catch shape asks the same question instead of a statement-only one.",
+      "applied": true
+    },
+    {
+      "summary": "One native fixture covers the catch binding, the then rejection binding and the early-return shape, driven by a runtime flag so the fulfilled branch stays reachable under /W4 /WX; the feature rows state the contract in one sentence.",
+      "applied": true
+    }
+  ]
+}

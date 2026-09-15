@@ -1525,3 +1525,31 @@ test("unsupported language shapes refuse explicitly", () => {
         ["function f(xs: number[]): void { xs[Math.trunc(Math.random())] ??= 2; } f([1]);", /must not contain a call/],
     ] as const) assert.throws(() => compileSource(source), message);
 });
+
+check("promise-rejection-parameters", `
+    let seen = "";
+    let calm = 0;
+    let armed = true;
+    async function risky(): Promise<void> {
+        if (armed) throw new Error("boom");
+        calm++;
+    }
+    void risky().catch((error) => {
+        if (!(error instanceof Error) || error.message !== "boom") throw new Error("catch binding");
+        seen = error.message;
+    });
+    void risky().then(() => { if (calm >= 0) throw new Error("fulfilled"); }, (error) => {
+        if (error.message !== "boom") throw new Error("rejection binding");
+    });
+    void risky().catch((error) => { if (error.message.length !== 4) return; seen += "!"; });
+    armed = false;
+    void risky().catch((error) => { throw new Error("unexpected " + error.message); });
+`);
+
+test("promise rejection callbacks refuse parameters the rejection cannot supply", () => {
+    assert.throws(() => compileSource(`
+        let calm = 0;
+        async function risky(): Promise<void> { calm++; }
+        void risky().catch((error, extra) => { if (error || extra) calm++; });
+    `), /declares more parameters than the operation supplies/);
+});

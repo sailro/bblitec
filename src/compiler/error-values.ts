@@ -34,6 +34,21 @@ export function errorConstructor(
 }
 
 /**
+ * The Error a native catch binds. The exception's message is copied into
+ * one temporary, and the value is that string itself, so `String(e)`,
+ * `e.message` and `instanceof Error` all read it without another copy.
+ */
+export function caughtErrorValue(
+    context: Pick<LoweringServices, "emit" | "allocateTemporaryCppName" | "cppString">,
+    exceptionCpp: string,
+): Value {
+    const pinned = context.allocateTemporaryCppName("caught_message");
+    context.emit(`const std::string ${pinned} = std::string(${exceptionCpp}.what());`);
+    const message: Extract<Value, { kind: "data" }> = { kind: "data", cpp: pinned, dataType: { kind: "string" } };
+    return errorValue(message, "Error", context.cppString, message);
+}
+
+/**
  * An Error as a value: `nativeError` is what `instanceof Error` and
  * `throw` read, and the record properties answer `.message` and `.name`.
  * `base` carries the representation the value already has (a caught

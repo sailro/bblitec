@@ -1,5 +1,6 @@
 import type { LoweringServices } from "./lowering-services.js";
 import ts from "typescript";
+import { caughtErrorValue } from "./error-values.js";
 import { argumentAt } from "./syntax.js";
 import type { Value } from "./types.js";
 
@@ -8,17 +9,35 @@ export interface PromiseLoweringContext
         | "isDefaultLibraryIdentifier"
         | "compileValue"
         | "compileCallbackWithValues"
-        | "emitStatement"
+        | "catchBindingIsErased"
         | "emit"
         | "increaseIndent"
         | "decreaseIndent"
-        | "bindLocalValue"
-        | "pushScope"
-        | "popScope"
-        | "allocateBlockPrefix"
+        | "cppString"
         | "allocateTemporaryCppName"
         | "fail"
     > {}
+
+type InlineCallback = ts.ArrowFunction | ts.FunctionExpression;
+
+/**
+ * The C++ clause that catches a rejection for `callback`, and the values
+ * its parameter receives inside it: the caught Error when the body reads
+ * the parameter, a browser stand-in when the body only reports it, nothing
+ * when it declares none. `values` runs inside the clause it opens.
+ */
+function rejectionClause(
+    context: PromiseLoweringContext,
+    callback: InlineCallback,
+): { header: string; values: () => Value[] } {
+    const parameter = callback.parameters[0];
+    if (!parameter) return { header: "} catch (...) {", values: () => [] };
+    if (ts.isIdentifier(parameter.name) && context.catchBindingIsErased(parameter.name, callback.body)) {
+        return { header: "} catch (...) {", values: () => [{ kind: "browser", cpp: "" }] };
+    }
+    const caught = context.allocateTemporaryCppName("caught_error");
+    return { header: `} catch (const std::exception& ${caught}) {`, values: () => [caughtErrorValue(context, caught)] };
+}
 
 export function compileImmediatePromise(
     context: PromiseLoweringContext,
@@ -148,15 +167,12 @@ export function compileImmediatePromise(
     const rejection = call.arguments[1];
     if (
         rejection &&
-        ((!ts.isArrowFunction(rejection) &&
-            !ts.isFunctionExpression(rejection)) ||
-            rejection.parameters.length > 1 ||
-            (rejection.parameters.length === 1 &&
-                !ts.isIdentifier(rejection.parameters[0]!.name)))
+        !ts.isArrowFunction(rejection) &&
+        !ts.isFunctionExpression(rejection)
     ) {
         context.fail(
             rejection,
-            "Immediate promise rejection callback must be inline and accept zero parameters or one identifier parameter.",
+            "Immediate promise rejection callback must be inline.",
         );
     }
     const fulfilled = rejection
@@ -189,16 +205,12 @@ export function compileImmediatePromise(
         true,
     );
     if (rejection && fulfilled) {
+        const clause = rejectionClause(context, rejection as InlineCallback);
         context.decreaseIndent();
-        context.emit("} catch (...) {");
+        context.emit(clause.header);
         context.increaseIndent();
         context.emit(`if (${fulfilled}) { throw; }`);
-        context.compileCallbackWithValues(
-            rejection as ts.ArrowFunction | ts.FunctionExpression,
-            [{ kind: "browser", cpp: "" }],
-            call,
-            true,
-        );
+        context.compileCallbackWithValues(rejection, clause.values(), call, true);
         context.decreaseIndent();
         context.emit("}");
     }
@@ -223,13 +235,12 @@ function compileImmediateCatch(
     }
     const callback = argumentAt(call, 0);
     if (
-        (!ts.isArrowFunction(callback) &&
-            !ts.isFunctionExpression(callback)) ||
-        callback.parameters.length !== 0
+        !ts.isArrowFunction(callback) &&
+        !ts.isFunctionExpression(callback)
     ) {
         context.fail(
             callback,
-            "Immediate promise catch requires a zero-parameter inline callback.",
+            "Immediate promise catch requires an inline callback.",
         );
     }
     const settled = context.allocateTemporaryCppName(
@@ -249,24 +260,11 @@ function compileImmediateCatch(
     }
     emitValue(context, value);
     context.decreaseIndent();
-    context.emit("} catch (...) {");
+    const clause = rejectionClause(context, callback);
+    context.emit(clause.header);
     context.increaseIndent();
     context.emit(`${settled} = false;`);
-    context.pushScope(context.allocateBlockPrefix());
-    try {
-        if (ts.isBlock(callback.body)) {
-            for (const statement of callback.body.statements) {
-                context.emitStatement(statement);
-            }
-        } else {
-            emitValue(
-                context,
-                context.compileValue(callback.body),
-            );
-        }
-    } finally {
-        context.popScope();
-    }
+    context.compileCallbackWithValues(callback, clause.values(), call, true);
     context.decreaseIndent();
     context.emit("}");
     return {
