@@ -1526,24 +1526,30 @@ test("unsupported language shapes refuse explicitly", () => {
     ] as const) assert.throws(() => compileSource(source), message);
 });
 
-check("immediate-catch-parameter", `
+check("promise-rejection-parameters", `
     let seen = "";
     let calm = 0;
-    async function risky(kind: string): Promise<void> {
-        if (kind === "boom") throw new Error("boom");
+    let armed = true;
+    async function risky(): Promise<void> {
+        if (armed) throw new Error("boom");
         calm++;
     }
-    void risky("boom").catch((error) => {
+    void risky().catch((error) => {
         if (!(error instanceof Error) || error.message !== "boom") throw new Error("catch binding");
         seen = error.message;
     });
-    void risky("boom").catch(error => { seen += ":" + error.message; });
-    void risky("fine").catch((error) => { throw new Error("unexpected " + error.message); });
+    void risky().then(() => { if (calm >= 0) throw new Error("fulfilled"); }, (error) => {
+        if (error.message !== "boom") throw new Error("rejection binding");
+    });
+    void risky().catch((error) => { if (error.message.length !== 4) return; seen += "!"; });
+    armed = false;
+    void risky().catch((error) => { throw new Error("unexpected " + error.message); });
 `);
 
-test("immediate promise catch bindings require one identifier parameter", () => {
-    assert.throws(() => compileSource('async function risky(): Promise<void> { throw new Error("boom"); }\n' +
-        'void risky().catch(({ message }) => localStorage.setItem("caught", message));'), /bindings require an identifier/);
-    assert.throws(() => compileSource('async function risky(): Promise<void> { throw new Error("boom"); }\n' +
-        'void risky().catch((error, extra) => localStorage.setItem("caught", String(extra)));'), /at most one parameter/);
+test("promise rejection callbacks refuse parameters the rejection cannot supply", () => {
+    assert.throws(() => compileSource(`
+        let calm = 0;
+        async function risky(): Promise<void> { calm++; }
+        void risky().catch((error, extra) => { if (error || extra) calm++; });
+    `), /declares more parameters than the operation supplies/);
 });

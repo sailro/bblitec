@@ -108,8 +108,8 @@ test("refusal classes elide names, numbers and parenthesised detail", () => {
     assert.equal(refusalClass("Expected 1 arguments, received 0."), "Expected N arguments, received N.");
     assert.equal(refusalClass("Static record has no property '__hook' (fields: none; getters: none; class: none)."),
         "Static record has no property '…' (…).");
-    assert.equal(refusalClass("Immediate promise catch requires a zero-parameter inline callback."),
-        "Immediate promise catch requires a zero-parameter inline callback.");
+    assert.equal(refusalClass("Immediate promise catch requires an inline callback."),
+        "Immediate promise catch requires an inline callback.");
 });
 
 test("an error outside statement lowering ends the survey as incomplete", () => {

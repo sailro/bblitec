@@ -47,7 +47,7 @@ with its unrouted functions and pin gaps listed separately. See [collection comm
 | Area | Supported | Limits |
 | --- | --- | --- |
 | Modules | Named/namespace imports, re-exports, constant aliases, external local TS/JS, JSDoc, `?raw`, ordered initialization | Runtime-selected modules; unrepresented mutable initializer dependencies |
-| Control flow | Blocks, conditionals, switches, loops, break/continue, throw, catch, bounded finally | Suspended catch/finally; arbitrary cleanup across `startEngine` |
+| Control flow | Blocks, conditionals, switches, loops, break/continue, throw, catch bound to an Error carrying the native message, bounded finally | Suspended catch/finally; arbitrary cleanup across `startEngine` |
 | Functions | Typed/generic functions, defaults, rest parameters, destructuring, supported recursion | Unresolved type arguments; unbounded resource specialization |
 | Classes | Fields, methods, accessors, generics, retained callbacks, receiver-preserving structural views | Inheritance, `#private`, static blocks; unsupported field storage |
 | Closures | Shared mutable cells, function identity, optional calls, escaping recursive groups | Captures need owned representations; events cannot escape dispatch |
@@ -78,7 +78,7 @@ early returns refuse.
 | Promise operation | Contract |
 | --- | --- |
 | `resolve` / constructor | Object identity; synchronous executor; first settlement wins; represented promise adoption |
-| `then` / `catch` | Owned captures, queued reactions, compatible result storage; callback throws reject; an immediate `catch` binds one identifier parameter to the caught Error |
+| `then` / `catch` | Owned captures, queued reactions, compatible result storage; callback throws reject; `catch` and rejection callbacks bind their parameter to the caught Error |
 | `finally` | Waits for cleanup; preserves original result unless cleanup throws/rejects |
 | `all` | Ordered literal tuples and stored arrays of value promises; first rejection wins |
 | `race` | Homogeneous represented arrays/tuples; empty input stays pending |
