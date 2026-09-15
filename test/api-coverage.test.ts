@@ -316,3 +316,29 @@ test("API report safely embeds declarations containing closing script tags", () 
     const report = apiCoverageReport(data.snapshot, scanApiUsage(data.program, data, data.root), []);
     assert.ok(!apiReportHtml(report).includes("</script><script>bad()"));
 });
+
+test("API project report keeps referenced declarations only and states readiness, unrouted functions and pin gaps", () => {
+    const data = fixture(`export interface Options { used?: number; unused?: number }
+        export declare function f(options: Options): void;
+        export declare function h(): void;
+        export declare function idle(): void;`, `import { f, h, g } from './index';
+        const options = { used: 3 }; f(options); h(); g();`);
+    const usage = scanApiUsage(data.program, data, data.root);
+    assert.ok(usage.diagnostics.some(diagnostic => /'g'/.test(diagnostic.message)));
+    const baseline: ApiBaseline = { schemaVersion: 2, inputs: "current", compilations: 1, testsPassed: 1, translations: [],
+        suites: ["test/sample.test.ts"], files: [],
+        uses: usage.uses.filter(use => !use.id.startsWith("h:")).map(use => ({ ...use, suite: "test/sample.test.ts", source: "source-hash" })) };
+    const bindings = [{ name: "f", owner: "f", status: "route-found" as const, lowerer: "compileFixture" },
+        { name: "h", owner: "h", status: "no-route-observed" as const },
+        { name: "idle", owner: "idle", status: "no-route-observed" as const }];
+    const report = apiCoverageReport(data.snapshot, usage, [], "", baseline, bindings, { referencedOnly: true });
+    assert.deepEqual(report.rows.map(row => row.id.replace(/:[0-9a-f]{16}$/, "")).sort(),
+        ["Options:interface.used:property", "f:function", "h:function"]);
+    assert.ok(report.readiness);
+    assert.deepEqual(report.readiness.declarations, { supported: 2, total: 3 });
+    assert.deepEqual(report.readiness.sites, { supported: 2, total: 3, percent: 200 / 3 });
+    assert.deepEqual(report.readiness.unrouted, ["h"]);
+    assert.deepEqual(report.readiness.pinGap, ["g"]);
+    assert.equal(apiCoverageReport(data.snapshot, usage, [], "", baseline, bindings).readiness, undefined);
+    assert.match(apiReportHtml(report), /Project readiness/);
+});

@@ -317,12 +317,17 @@ API updates: `npm run api -- diff`, update affected cases/fingerprints, then
 ```powershell
 npm run api -- report --run
 npm run api -- report --filter BoxOptions
+npm run api -- report --project <entry.ts>
 npm run api -- check
 npm run api -- diff --baseline <previous-snapshot.json>
 ```
 
 Searchable HTML/JSON reports, logs and receipts live in ignored `artifacts/api-coverage`;
 `--output <directory>` changes the destination. [Features](features.md#api-coverage-inventory) owns the metrics.
+`--project` restricts the report to the declarations one external entry references, credited by the
+repository's collected receipts, and adds its readiness: use sites and declarations with generation evidence,
+referenced exported functions without a routing hook, and imported names the pin does not export. It writes
+under `artifacts/api-coverage/projects/<entry>` and collects nothing.
 
 `report --run` collects compiler evidence from all tests and registered scenes/demos, then runs semantic cases.
 Scenes use their registered query and host companion. Missing corpus entries, failed/skipped tests or missing

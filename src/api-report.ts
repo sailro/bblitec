@@ -4,8 +4,22 @@ import { assessApiCases } from "./api-evidence.js";
 import { type ApiBaseline } from "./api-baseline.js";
 import { type ApiBinding } from "./api-bindings.js";
 
+/** How far the evidence already covers what one project references. */
+export interface ApiReadiness {
+    scope: string;
+    declarations: { supported: number; total: number };
+    sites: { supported: number; total: number; percent: number };
+    /** Referenced exported functions with no identified routing hook. */
+    unrouted: string[];
+    /** Imported names the pinned package does not export: a pin gap, not a support gap. */
+    pinGap: string[];
+}
+
+const missingExport = /has no exported member '([^']+)'/;
+
 export function apiCoverageReport(snapshot: ApiSnapshot, usage: ApiUsage,
-    cases: ReturnType<typeof assessApiCases>, filter = "", baseline?: ApiBaseline, bindings: readonly ApiBinding[] = []) {
+    cases: ReturnType<typeof assessApiCases>, filter = "", baseline?: ApiBaseline, bindings: readonly ApiBinding[] = [],
+    options: { referencedOnly?: boolean } = {}) {
     const uses = new Map<string, ApiUsage["uses"]>();
     for (const use of usage.uses) {
         const sites = uses.get(use.id) ?? [];
@@ -31,7 +45,8 @@ export function apiCoverageReport(snapshot: ApiSnapshot, usage: ApiUsage,
         entries.push(entry);
         byTarget.set(target.id, entries);
     }
-    const rows = snapshot.items.filter(item => !filter || item.id.toLowerCase().includes(filter.toLowerCase())).map(item => {
+    const rows = snapshot.items.filter(item => (!filter || item.id.toLowerCase().includes(filter.toLowerCase())) &&
+        (!options.referencedOnly || uses.has(item.id))).map(item => {
         const evidence = byTarget.get(item.id) ?? [];
         const sites = uses.get(item.id) ?? [];
         const generation = generated.get(item.id) ?? [];
@@ -70,10 +85,33 @@ export function apiCoverageReport(snapshot: ApiSnapshot, usage: ApiUsage,
         bodies: new Set((baseline?.translations ?? []).map(body => `${body.modulePath}#${body.symbolName}`)).size,
         publicFunctions: bodies.size,
         completeFunctionTranslations: [...bodies.values()].filter(entries => entries.some(entry => entry.extent === "function")).length };
+    const readiness = options.referencedOnly ? projectReadiness(rows, usage, selectedBindings) : undefined;
     return { schemaVersion: 2, pin: snapshot.pin,
         scope: "Implementation and validation are separate. Pinned source translation supplies Babylon behavior; entry and member adapters connect supported forms to native/PAL storage and services. Exercise percentages are validation coverage, not the amount of PAL implementation completed.",
         adapters, automatic, metrics, baseline: baseline ? { compilations: baseline.compilations, testsPassed: baseline.testsPassed, suites: baseline.suites } : undefined,
-        counts, total: rows.length, exports: snapshot.exports, cases, usage: { ...usage, uses: undefined }, rows };
+        counts, total: rows.length, exports: snapshot.exports, cases, usage: { ...usage, uses: undefined }, rows,
+        ...(readiness ? { readiness } : {}) };
+}
+
+function projectReadiness(rows: readonly { kind: string; supported: boolean; sites: readonly unknown[]; bindings: readonly ApiBinding[] }[],
+    usage: ApiUsage, bindings: readonly ApiBinding[]): ApiReadiness {
+    const measured = rows.filter(row => row.kind !== "interface" && row.kind !== "type" && row.kind !== "class" &&
+        row.kind !== "enum" && row.kind !== "namespace");
+    const sites = (selected: typeof measured): number => selected.reduce((count, row) => count + row.sites.length, 0);
+    const total = sites(measured);
+    const supported = sites(measured.filter(row => row.supported));
+    const referencedOwners = new Set(rows.flatMap(row => row.bindings.map(binding => binding.owner)));
+    return {
+        scope: "The declarations one entry references, credited by the repository's evidence. Generation evidence is compile evidence, not native or parity proof; a use site inside a dead branch still counts.",
+        declarations: { supported: measured.filter(row => row.supported).length, total: measured.length },
+        sites: { supported, total, percent: total ? 100 * supported / total : 0 },
+        unrouted: bindings.filter(binding => binding.status === "no-route-observed" && referencedOwners.has(binding.owner))
+            .map(binding => binding.name).sort(),
+        pinGap: [...new Set(usage.diagnostics.flatMap(diagnostic => {
+            const match = missingExport.exec(diagnostic.message);
+            return match ? [match[1]!] : [];
+        }))].sort(),
+    };
 }
 
 export function apiReportHtml(report: ReturnType<typeof apiCoverageReport>): string {
@@ -112,6 +150,7 @@ const cases=new Map(data.cases.map(c=>[c.id,c]));
 const el=id=>document.getElementById(id), make=(tag,text)=>{const n=document.createElement(tag);n.textContent=text;return n};
 el('pin').textContent=data.pin.package+' '+data.pin.version+' · '+data.pin.sourceVersion;
 el('implementation').textContent=data.adapters.routed+'/'+data.adapters.total+' exported function names have identified routing hooks ('+data.adapters.routedPercent.toFixed(2)+'%); '+data.adapters.exercised+' have passing source-form evidence; '+data.adapters.unclassified+' need classification; '+data.adapters.unresolved+' probe errors. '+data.automatic.bodies+' pinned function/helper bodies were translated, including '+data.automatic.publicFunctions+' public functions. Method and field adapters remain visible by declaration; there is no combined PAL completion percentage.';
+if(data.readiness){const r=data.readiness;el('implementation').append(make('p','Project readiness: '+r.sites.supported+'/'+r.sites.total+' use sites ('+r.sites.percent.toFixed(2)+'%) and '+r.declarations.supported+'/'+r.declarations.total+' referenced declarations have generation evidence; unrouted functions: '+(r.unrouted.join(', ')||'none')+'; pin gap: '+(r.pinGap.join(', ')||'none')+'. '+r.scope))}
 for(const [name,m] of Object.entries(data.metrics))el('metrics').append(make('span',name+': '+m.percent.toFixed(2)+'% ('+m.covered+'/'+m.total+')'));
 for(const [status,count] of Object.entries(data.counts)){el('counts').append(make('span',status+': '+count));const o=make('option',status);o.value=status;el('status').append(o)}
 el('evidence').textContent=(data.baseline?data.baseline.compilations+' successful compilations across '+data.baseline.suites.length+' test files and registered scenes. ':'Full-suite baseline is missing or stale. ')+data.cases.filter(c=>c.status==='passed').length+'/'+data.cases.length+' scoped semantic cases passed with current inputs. '+data.usage.diagnostics.length+' TypeScript diagnostics in the discovery scan (includes negative fixtures).';
