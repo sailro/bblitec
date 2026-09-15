@@ -115,7 +115,7 @@ test("pins the public camera view-projection cache body", () => {
     );
     assert.match(
         source,
-        /mat4MultiplyInto\(vp, 0, getProjectionMatrix\(camera, aspectRatio\) as unknown as Mat4Storage, 0, getViewMatrix\(camera\) as unknown as Mat4Storage, 0\);/,
+        /multiplyMat4IntoBuffer\(vp, 0, getProjectionMatrix\(camera, aspectRatio\) as unknown as Mat4Storage, 0, getViewMatrix\(camera\) as unknown as Mat4Storage, 0\);/,
     );
     assert.match(source, /camera\._vpVer = ver;/);
     assert.match(source, /camera\._vpAspect = aspectRatio;/);
@@ -1498,7 +1498,7 @@ test("generates ArcRotate and default camera factories from upstream constants",
     );
     assert.match(arc.source, /if \(sinB == 0\.0\) \{\n        sinB = 0\.0001;\n    \}/);
     assert.match(arc.source, /return arc_rotate_local_eye_position\(camera\);/);
-    // The camera-to-world matrix is mat4LookAtWorldLHToRef translated
+    // The camera-to-world matrix is writeLookAtWorldMat4LHIntoBuffer translated
     // whole at the camera scalar width -- f32 stores by default -- and
     // camera_world_matrix only feeds it the eye, target and up vector.
     assert.match(
@@ -1547,7 +1547,7 @@ test("lowers the reverse-Z orthographic projection from its pinned writer", () =
     const plan = new RendererLowerer(
         new LoweringContext(),
     ).lowerRenderPlan({ orthographicCamera: true });
-    // src/math/mat4-ortho-lh-to-ref.ts translated whole — all sixteen
+    // src/math/write-ortho-off-center-mat4-lh-into-buffer.ts translated whole — all sixteen
     // stores from the pinned declaration's own AST, double locals, one
     // f32 rounding per store — with the planes src/camera/orthographic.ts
     // derives from the half-extent folded at the call site.
@@ -1594,7 +1594,7 @@ test("lowers the reverse-Z orthographic projection from its pinned writer", () =
 
 test("translates the pinned perspective writer whole for every plan", () => {
     const plan = new RendererLowerer(new LoweringContext()).lowerRenderPlan();
-    // src/math/mat4-perspective-lh-to-ref.ts: the five lanes from the
+    // src/math/write-perspective-mat4-lh-into-buffer.ts: the five lanes from the
     // pinned AST, `Math.tan` as std::tan over doubles, near/far spelled
     // around the Windows macro names.
     assert.match(
@@ -2043,7 +2043,7 @@ test("composes the thin-instance parent world from the pinned TRS formulas", () 
         plan.header,
         /build_instance_parent_world\(\s*const MeshRecord& mesh\)/,
     );
-    // mat4ComposeInto's quaternion basis and eulerToQuat's half-angle terms
+    // composeMat4IntoBuffer's quaternion basis and eulerXYZToQuatTuple's half-angle terms
     // flow from the pinned ASTs into the always-emitted world-transform
     // header's one composition (through the shared PinnedNumericLowerer,
     // whose parenthesization is explicit), which the helper calls at the
@@ -3134,9 +3134,9 @@ test("anchors the pinned CSG contracts the executed solid depends on", () => {
     // Every plane and every interpolated normal is normalized through the
     // pin's own helper, whose length is `Math.hypot` -- which the
     // specification leaves implementation-approximated.
-    assert.match(source, /import \{ normalizeVec3 \} from "\.\.\/math\/normalize-vec3\.js";/);
+    assert.match(source, /import \{ normalizeVec3TupleOrUp \} from "\.\.\/math\/normalize-vec3-tuple-or-up\.js";/);
     assert.match(
-        new UpstreamSourceStore().getSource("src/math/normalize-vec3.ts"),
+        new UpstreamSourceStore().getSource("src/math/normalize-vec3-tuple-or-up.ts"),
         /const len = Math\.hypot\(x, y, z\);/,
     );
     // The one place a solid becomes geometry, which is what the bake reads

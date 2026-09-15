@@ -55,7 +55,7 @@ async function lowerDemoGraph(): Promise<{
         (await import(pathToFileURL(join(lib, path)).href)) as Record<string, Function>;
     const { parseNodeParticleSource } = await load("particle/node/npe-parser.js");
     const { buildNodeParticleSet } = await load("particle/node/npe-build.js");
-    const { mat4Translation } = await load("math/mat4-translation.js");
+    const { createTranslationMat4 } = await load("math/create-translation-mat4.js");
     const graph = parseNodeParticleSource!(document) as {
         blocks: Map<number, LiveGraph["blocks"][number]>;
         systemBlockIds: number[];
@@ -92,7 +92,7 @@ async function lowerDemoGraph(): Promise<{
         slots,
         hooks,
         emitter: [0, 0, 0],
-        emitterWorldMatrix: Array.from(mat4Translation!(0, 0, 0) as Float32Array),
+        emitterWorldMatrix: Array.from(createTranslationMat4!(0, 0, 0) as Float32Array),
         visitOrder: visits,
     };
     const liveGraph: LiveGraph = {

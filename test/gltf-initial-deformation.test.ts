@@ -74,8 +74,8 @@ async function sourcePalette(context: LoweringContext, document: JsonObject, bin
 
 test("initial palettes come from source construction, independent of clips and including singular mesh worlds", async () => {
     const contexts = [new LoweringContext(), doctoredContext(animationModule,
-        "mat4MultiplyInto(data, i * 16, tmp, 0, skin.inverseBindMatrices, i * 16);",
-        "mat4MultiplyInto(data, i * 16, skin.inverseBindMatrices, i * 16, tmp, 0);")];
+        "multiplyMat4IntoBuffer(data, i * 16, tmp, 0, skin.inverseBindMatrices, i * 16);",
+        "multiplyMat4IntoBuffer(data, i * 16, skin.inverseBindMatrices, i * 16, tmp, 0);")];
     for (const context of contexts) for (const animated of [false, true]) for (const singular of [false, true]) {
         const {document, bin} = fixture(true, true, animated, singular);
         const expected = await sourcePalette(context, document, bin);
@@ -109,9 +109,9 @@ test("native initial deformation carries source palette products and static morp
     const native = optionalNativeFixtureTools();
     if (!native) { t.skip("Native fixture compiler unavailable."); return; }
     const context = new LoweringContext();
-    const {mat4MultiplyInto} = await importPinnedModule<{
-        mat4MultiplyInto(out: Float32Array, offset: number, left: Float32Array, leftOffset: number, right: Float32Array, rightOffset: number): void;
-    }>("math/mat4-multiply-into.js");
+    const {multiplyMat4IntoBuffer} = await importPinnedModule<{
+        multiplyMat4IntoBuffer(out: Float32Array, offset: number, left: Float32Array, leftOffset: number, right: Float32Array, rightOffset: number): void;
+    }>("math/multiply-mat4-into-buffer.js");
     const cases: object[] = [];
     for (const [skinned, morphed, animated] of [[true, false, false], [false, true, false], [true, true, false], [true, true, true], [false, false, true]]) {
         const {document, bin} = fixture(skinned!, morphed!, animated!);
@@ -123,7 +123,7 @@ test("native initial deformation carries source palette products and static morp
         const matrices = [];
         for (let bone = 0; bone < (mesh.skin?.boneCount ?? 1); ++bone) {
             const result = new Float32Array(16);
-            if (mesh.skin) mat4MultiplyInto(result, 0, world, 0, palette, bone * 16);
+            if (mesh.skin) multiplyMat4IntoBuffer(result, 0, world, 0, palette, bone * 16);
             else result.set(world);
             for (let column = 0; column < 4; ++column) for (let row = 0; row < 4; ++row)
                 result[column * 4 + row] = result[column * 4 + row]! * (row === 0 ? -1 : 1) * (column === 0 ? -1 : 1);

@@ -356,7 +356,7 @@ ParsedGlbContainer parse_glb_container(const ts::ArrayBuffer& buffer) {
             "src/loader-gltf/gltf-parser.ts",
         );
         const composeFile = this.context.sourceFile(
-            "src/math/mat4-compose-into.ts",
+            "src/math/compose-mat4-into-buffer.ts",
         );
         const matrixLocal = gltfMatrixReaderCpp();
         const matrixCompose = lowerMatrixComposeCpp(composeFile,true);

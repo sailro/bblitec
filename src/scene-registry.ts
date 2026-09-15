@@ -2177,6 +2177,20 @@ const sceneInputs: readonly SceneInput[] = [
         },
     },
     {
+        id: "scene290",
+        name: "Scene 290 - Havok Thin Instances",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene290.ts",
+        title: "Babylon Lite Native - Havok Thin Instances",
+        parity: {
+            referenceSearch: "?captureFrame=180",
+            maxFullMad: 0.5,
+            maxForegroundMad: 0.5,
+            backgroundColor: [51, 51, 76],
+            backgroundThreshold: 30,
+            nativeEnvironment: { BBLITE_SCREENSHOT_FRAME: "190" },
+        },
+    },
+    {
         id: "scene106",
         name: "Scene 106 - Physics Motion and Prestep Grid",
         source: "corpus/babylon-lite/lab/lite/src/lite/scene106.ts",

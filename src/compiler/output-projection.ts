@@ -143,6 +143,7 @@ export const featureSources: Record<Feature, string[]> = {
     "mesh:clone": [],
     "mesh:geometry-access": [],
     "math:normalize-vec3": [],
+    "math:mat4-create": [],
     "math:mat4-invert": [],
     "math:look-direction": [],
     "picking:gpu": [],
@@ -202,6 +203,7 @@ export const featureSources: Record<Feature, string[]> = {
     // translation unit; what the feature records is that a scene opted the
     // world into region-local simulation.
     "physics:floating-origin": [],
+    "physics:thin-instances": [],
     // The Detour/Recast surface the pin calls on the module
     // createNavigationPluginAsync loads -- the same third-party-
     // library-behind-a-fixed-entry-point boundary the physics PAL
@@ -510,6 +512,7 @@ export function renderMainCpp(projection: MainCppProjection): string {
         ? "#include <bblite/upstream/pinned_mat4_invert.hpp>\n"
         : "";
     const jsDataInclude =
+        (features.includes("math:mat4-create") ? "#include <bblite/upstream/pinned_mat4_create.hpp>\n" : "") +
         (jsDataReached || jsRandomReached
             ? "#include <bblite/js_data.hpp>\n"
             : "") +

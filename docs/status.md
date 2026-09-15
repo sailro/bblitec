@@ -254,6 +254,7 @@ Numbered scene coverage starts with its registry name. Colors: below 0.5 green,
 | 282 | <img src="images/scenes/scene282.png" alt="Scene 282 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Standard UV Transform |
 | 283 | <img src="images/scenes/scene283.png" alt="Scene 283 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | NPE Multiply Blend |
 | 284 | <img src="images/scenes/scene284.png" alt="Scene 284 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | NPE MultiplyAdd Blend |
+| 290 | <img src="images/scenes/scene290.png" alt="Scene 290 rendering" width="160"> | 0.017 / 0.027 | 0.017 / 0.027 | Havok Thin Instances; 2,009 bodies at frame 180 |
 | 300 | <img src="images/scenes/scene300.png" alt="Scene 300 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Frozen NPE Sprite2D Sheet; frozen buffer and shared sprite sheet |
 | 301 | <img src="images/scenes/scene301.png" alt="Scene 301 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | NPE Sprite2D Blend Modes |
 | 302 | <img src="images/scenes/scene302.png" alt="Scene 302 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | NPE Moving Emitter |

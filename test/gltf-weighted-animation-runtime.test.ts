@@ -53,8 +53,8 @@ function sourceResult(context: LoweringContext, overrides: boolean): unknown {
     const constantNames = ["PATH_TRANSLATION", "PATH_ROTATION", "PATH_SCALE", "INTERP_STEP", "INTERP_CUBICSPLINE"];
     const constants = constantNames.map(name => context.numericValue(ts.factory.createIdentifier(name), types));
     const body = text("src/animation/evaluate.ts") + "\n" + text(module) + "\n" +
-        context.functionDeclaration("src/math/mat4-compose-into.ts", "mat4ComposeInto").declaration.getText().replace(/^export /, "") + "\n" +
-        context.functionDeclaration("src/math/mat4-multiply-into.ts", "mat4MultiplyInto").declaration.getText().replace(/^export /, "") + "\n" +
+        context.functionDeclaration("src/math/compose-mat4-into-buffer.ts", "composeMat4IntoBuffer").declaration.getText().replace(/^export /, "") + "\n" +
+        context.functionDeclaration("src/math/multiply-mat4-into-buffer.ts", "multiplyMat4IntoBuffer").declaration.getText().replace(/^export /, "") + "\n" +
         context.functionDeclaration("src/skeleton/bone-control.ts", "applyOverridesToTRS").declaration.getText() + `
 const _boneApplier = (overrides, trs, count, hiddenOnly) => {
     events.push(["bones", !!hiddenOnly]); applyOverridesToTRS(overrides, trs, count, hiddenOnly);
@@ -105,7 +105,7 @@ const _boneApplier = (overrides, trs, count, hiddenOnly) => {
 /** Fixture matrix callbacks use the shared numeric body lowerer. */
 function numericCallbacks(context: LoweringContext): string {
     const functions = [
-        ["src/math/mat4-compose-into.ts", "mat4ComposeInto", [0]], ["src/math/mat4-multiply-into.ts", "mat4MultiplyInto", [0, 2, 4]],
+        ["src/math/compose-mat4-into-buffer.ts", "composeMat4IntoBuffer", [0]], ["src/math/multiply-mat4-into-buffer.ts", "multiplyMat4IntoBuffer", [0, 2, 4]],
     ] as const;
     return functions.map(([path, name, arrays]) => {
         const {file, declaration} = context.functionDeclaration(path, name), bindings = new Map<string, PinnedBinding>();
@@ -213,7 +213,7 @@ Json run(const Json& input, bool has_overrides) {
         gltf_accumulate_weighted_group(scratch, groups[1], clip, 250, groups[1].speed_ratio, true, get_target, evaluate);
         gltf_advance_weighted_animation(groups[2], 250, groups[2].speed_ratio);
         gltf_accumulate_additive_group(scratch, groups[2], clip, get_target, evaluate);
-        gltf_upload_weighted_target(target, true, apply, mat4ComposeInto, mat4MultiplyInto, upload);
+        gltf_upload_weighted_target(target, true, apply, composeMat4IntoBuffer, multiplyMat4IntoBuffer, upload);
         snapshots.push_back({{"trs", bits(target.currentTRS)}, {"local", bits(target.localMat)}, {"world", bits(target.worldMat)},
             {"weights", {bits(target.tWeight), bits(target.rWeight), bits(target.sWeight)}}, {"base", target.baseRot ? bits(*target.baseRot) : Json(nullptr)},
             {"times", {groups[0].time, groups[1].time, groups[2].time}}, {"events", events}, {"palettes", palettes}});
@@ -222,7 +222,7 @@ Json run(const Json& input, bool has_overrides) {
     Json errors = Json::array();
     try { gltf_accumulate_weighted_group(scratch, groups[0], clip, 1, groups[0].speed_ratio, false, get_target, evaluate); }
     catch (const std::exception& error) { errors.push_back(error.what()); }
-    try { gltf_upload_weighted_target(target, false, apply, mat4ComposeInto, mat4MultiplyInto, upload); }
+    try { gltf_upload_weighted_target(target, false, apply, composeMat4IntoBuffer, multiplyMat4IntoBuffer, upload); }
     catch (const std::exception& error) { errors.push_back(error.what()); }
     return {{"snapshots", snapshots}, {"errors", errors}};
 }

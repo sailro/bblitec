@@ -106,16 +106,16 @@ const projectionWriters: readonly {
     rows: readonly (readonly [number, string])[];
 }[] = [
     {
-        module: "src/math/mat4-perspective-lh-to-ref.ts",
-        symbol: "mat4PerspectiveLHToRef",
+        module: "src/math/write-perspective-mat4-lh-into-buffer.ts",
+        symbol: "writePerspectiveMat4LHIntoBuffer",
         rows: [
             [10, "-near / range"],
             [14, "(far * near) / range"],
         ],
     },
     {
-        module: "src/math/mat4-ortho-lh-to-ref.ts",
-        symbol: "mat4OrthoOffCenterLHToRef",
+        module: "src/math/write-ortho-off-center-mat4-lh-into-buffer.ts",
+        symbol: "writeOrthoOffCenterMat4LHIntoBuffer",
         rows: [
             [10, "-1 / range"],
             [14, "far / range"],

@@ -39,13 +39,13 @@ export function lowerPhysicsContainer(context: LoweringContext): { header: strin
             ["parentNode.worldMatrix", {cpp: "physics_node_world(engine, parentNode)", type: "f32"}],
             ["childNode.worldMatrix", {cpp: "physics_node_world(engine, childNode)", type: "f32"}],
         ]),
-        nullableMatrixCalls: new Set(["mat4Invert"]),
-        matrixCalls: new Set(["mat4Multiply"]),
-        recordCalls: new Map([["mat4Decompose", ["translation", "rotation", "scale"]]]),
+        nullableMatrixCalls: new Set(["invertMat4"]),
+        matrixCalls: new Set(["multiplyMat4"]),
+        recordCalls: new Map([["decomposeMat4", ["translation", "rotation", "scale"]]]),
         calls: new Map([
-            ["mat4Invert", args => `mat4_invert(${args[0]})`],
-            ["mat4Multiply", args => `physics_matrix_product(${args.join(", ")})`],
-            ["mat4Decompose", args => `pinned_parent_mat4_decompose(${args[0]})`],
+            ["invertMat4", args => `mat4_invert(${args[0]})`],
+            ["multiplyMat4", args => `physics_matrix_product(${args.join(", ")})`],
+            ["decomposeMat4", args => `pinned_parent_mat4_decompose(${args[0]})`],
             ["addPhysicsShapeChild", args => `(static_cast<void>(${args[0]}), pal::physics_shape_add_child(` +
                 `${args[1]}.handle, ${args[2]}.handle, {{${args[3]}.x, ${args[3]}.y, ${args[3]}.z}, ` +
                 `{${args[4]}.x, ${args[4]}.y, ${args[4]}.z, ${args[4]}.w}}, ` +

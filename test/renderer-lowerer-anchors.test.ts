@@ -202,7 +202,7 @@ test("derives the thin-instance TRS terms from the pinned writers", () => {
     );
     assert.doesNotMatch(plan.source, /const double cx = std::cos/);
     const header = pinnedWorldTransformHeader(new LoweringContext());
-    // eulerToQuat's four products, printed from the pinned tuple through
+    // eulerXYZToQuatTuple's four products, printed from the pinned tuple through
     // the shared translator (double operands, explicit parenthesization).
     assert.match(
         header,
@@ -220,7 +220,7 @@ test("derives the thin-instance TRS terms from the pinned writers", () => {
         header,
         /qw = \(\(\(cx \* cy\) \* cz\) - \(\(sx \* sy\) \* sz\)\);/,
     );
-    // mat4ComposeInto's quaternion basis, printed from the pinned stores.
+    // composeMat4IntoBuffer's quaternion basis, printed from the pinned stores.
     assert.match(header, /const double xx = \(qx \* qx\);/);
     assert.match(header, /const double wz = \(qw \* qz\);/);
     assert.match(

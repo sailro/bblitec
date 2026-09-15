@@ -7,7 +7,10 @@ struct PhysicsWorld {};
 struct PhysicsShape { bool released = false; double height = 0, radius = 0; };
 struct TransformNode {};
 struct QueryCollector { double capacity = 0; };
+struct PhysicsBody;
+struct NativeBody { PhysicsBody* body = nullptr; };
 struct PhysicsBody {
+    js::Ref<NativeBody> native;
     double id = 0, motion = 0, mass = 1;
     js::Array<double> matrix{1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1};
     js::Array<double> com{0,0,0}, linear{0,0,0}, angular{0,0,0};
@@ -45,13 +48,22 @@ struct Kernel final : CharacterControllerKernel {
     double _world_step_seconds() override { return dt; }
     double _body_motion_type(js::Ref<PhysicsBody> body) override { return body->motion; }
     std::optional<double> _body_identity(js::Ref<PhysicsBody> body) override { return body->id; }
+    js::Ref<NativeBody> _native_body(js::Ref<PhysicsBody> body) override {
+        if (!body->native) { body->native = js::make_ref<NativeBody>(); body->native->body = body.get(); }
+        return body->native;
+    }
+    std::optional<std::tuple<js::Ref<PhysicsBody>, js::Ref<NativeBody>, double>> _thin_resolve(std::optional<double>) override { return std::nullopt; }
+    js::Ref<Vec3> _thin_com(js::Ref<PhysicsBody>, js::Ref<NativeBody>, js::Array<double>) override { return {}; }
+    std::optional<js::Array<double>> _thin_matrix(js::Ref<PhysicsBody>, js::Ref<NativeBody>) override { return std::nullopt; }
     js::Array<double> _body_world_matrix(js::Ref<PhysicsBody> body) override { return body->matrix; }
-    std::tuple<js::Array<double>, double, js::Array<double>, js::Array<double>> _mass_properties(js::Ref<PhysicsBody> body) override {
+    std::tuple<js::Array<double>, double, js::Array<double>, js::Array<double>> _mass_properties(js::Ref<NativeBody> native) override {
+        auto* body = native->body;
         return {body->com, body->mass, {1,1,1}, {0,0,0,1}};
     }
-    js::Array<double> _angular_velocity(js::Ref<PhysicsBody> body) override { return body->angular; }
-    js::Array<double> _linear_velocity(js::Ref<PhysicsBody> body) override { return body->linear; }
-    void _apply_impulse(js::Ref<PhysicsBody> body, js::Array<double> position, js::Array<double> impulse) override {
+    js::Array<double> _angular_velocity(js::Ref<NativeBody> native) override { return native->body->angular; }
+    js::Array<double> _linear_velocity(js::Ref<NativeBody> native) override { return native->body->linear; }
+    void _apply_impulse(js::Ref<NativeBody> native, js::Array<double> position, js::Array<double> impulse) override {
+        auto* body = native->body;
         events.push_back(1); events.push_back(body->id);
         for (auto value : position) events.push_back(value);
         for (auto value : impulse) events.push_back(value);

@@ -742,17 +742,21 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
         consumers: ["features.cmake", "render_capabilities.hpp"],
     },
     "math:normalize-vec3": {
-        provenance: "src/math/normalize-vec3.ts",
+        provenance: "src/math/normalize-vec3-tuple-or-up.ts + src/math/normalize-vec3.ts",
         consumers: CMAKE,
     },
     "math:mat4-invert": {
-        provenance: "src/math/mat4-invert.ts",
+        provenance: "src/math/invert-mat4.ts",
+        consumers: CMAKE,
+    },
+    "math:mat4-create": {
+        provenance: "src/math/compose-mat4.ts + src/math/create-identity-mat4.ts + src/math/create-translation-mat4.ts",
         consumers: CMAKE,
     },
     "math:look-direction": {
         provenance:
-            "src/math/quat-from-look-direction-rh.ts + " +
-            "src/math/quat-from-rotation-matrix.ts",
+            "src/math/create-quat-from-look-direction-rh.ts + " +
+            "src/math/create-quat-from-rotation-mat4.ts",
         consumers: CMAKE,
     },
     "picking:gpu": {
@@ -1109,6 +1113,10 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
             "src/physics/havok-trigger.ts setPhysicsShapeIsTrigger + " +
             "onPhysicsTrigger (upstream keeps the trigger path in its own " +
             "module so a scene that imports neither pays nothing for it)",
+        consumers: INVENTORY,
+    },
+    "physics:thin-instances": {
+        provenance: "src/physics/havok-thin-instances.ts, enabled by enableHavokThinInstancePhysics",
         consumers: INVENTORY,
     },
     "physics:floating-origin": {

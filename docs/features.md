@@ -117,7 +117,7 @@ Numeric index-signature writes preserve element conversion and grow ordinary arr
 Array/object aliases retain identity. Spreads copy own scalar fields and share nested objects.
 Object enumeration places numeric index keys before insertion-ordered names. Fixed record key
 snapshots retain initialized keys; module namespace keys are lexical and values remain live.
-String-literal-union searches accept outside strings as misses. `mat4Invert` returns nullable fresh
+String-literal-union searches accept outside strings as misses. `invertMat4` returns nullable fresh
 Float32 storage; Float64/high-precision combinations refuse.
 
 ## Asset materialization
@@ -328,6 +328,10 @@ Bullet provides bodies, primitive/convex/mesh shapes, forces, motion, aggregates
 collisions/triggers, raycasts, floating origin and character control. Constraints admit ball/socket,
 distance, hinge, prismatic, lock, slider and six-DOF with inline two-sided limits and discarded handles.
 Springs/motors, retained constraint handles and inertia orientation refuse.
+
+Thin-instance physics uses one native body per matrix, shared shape/property fanout and instance-indexed
+ray/character/collision results. Collision callbacks retain removed bodies through after-step dispatch.
+Thin physics with floating origin, body-aware trigger callbacks and retained trigger disposers are unsupported.
 
 Heightfields require square ground-mesh grids/static bodies. Container construction precedes attachment;
 convex children admit finite nonzero scale. Mixed child filters/materials/triggers and triangle children

@@ -921,7 +921,7 @@ test("nullable pool helpers can return before native thin-instance updates", () 
             writeInstance(pools, handle);
         }
     `, `
-        import { mat4Compose, setThinInstances, setThinInstanceMatrix, setThinInstanceColors } from "@babylonjs/lite";
+        import { composeMat4, setThinInstances, setThinInstanceMatrix, setThinInstanceColors } from "@babylonjs/lite";
         interface Pool {
             mesh: Mesh;
             colors: Float32Array;
@@ -934,7 +934,7 @@ test("nullable pool helpers can return before native thin-instance updates", () 
             const pool = poolOf(pools, handle);
             if (!pool) return;
             const slot = pool.slots.get(handle)!;
-            const matrix = mat4Compose(handle, 0, 0, 0, 0, 0, 1, 1, 1, 1);
+            const matrix = composeMat4(handle, 0, 0, 0, 0, 0, 1, 1, 1, 1);
             setThinInstanceMatrix(pool.mesh, slot, matrix);
             setThinInstanceColors(pool.mesh, pool.colors);
         }
@@ -982,13 +982,13 @@ test("materializes large generation-known record members for native instance upd
         setThinInstances(mesh, matrices, 1);
         updateRows({ rows: [${Array.from({ length: 87 }, (_, id) => `{ id: ${id} }`).join(",")}] }, mesh);
     `, `
-        import { mat4Compose, setThinInstances, setThinInstanceMatrix } from "@babylonjs/lite";
+        import { composeMat4, setThinInstances, setThinInstanceMatrix } from "@babylonjs/lite";
         interface Row { id: number }
         function updateRows(json: unknown, mesh: Mesh): void {
             const file = json as { rows?: Row[] } | null;
             if (!file || !Array.isArray(file.rows)) return;
             for (const row of file.rows) {
-                const matrix = mat4Compose(row.id, 0, 0, 0, 0, 0, 1, 1, 1, 1);
+                const matrix = composeMat4(row.id, 0, 0, 0, 0, 0, 1, 1, 1, 1);
                 setThinInstanceMatrix(mesh, 0, matrix);
             }
         }

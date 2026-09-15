@@ -24,7 +24,7 @@ test("public character APIs transport collision values, vector aliases and dispo
         const observations: number[] = [];
         const names: string[] = [];
         const dispose = controller.onTriggerCollisionObservable.add(event => {
-            observations.push(event.impulse.x + event.impulsePosition.y);
+            observations.push(event.impulse.x + event.impulsePosition.y + event.colliderIndex);
             names.push(event.collider.node.name);
         });
         setPhysicsBodyMassProperties(world, getPhysicsCharacterControllerBody(controller), {inertia:{x:0,y:0,z:0}});
@@ -40,6 +40,7 @@ test("public character APIs transport collision values, vector aliases and dispo
     `);
     assert(result.manifest.features.includes("physics:character-controller"));
     assert.match(result.cpp, /CharacterCollisionEvent/);
+    assert.match(result.cpp, /\.colliderIndex/);
     assert.match(result.cpp, /physics_body_node_name/);
     assert.match(result.cpp, /onTriggerCollisionObservable\.add/);
     assert.match(result.cpp, /setShapeOptions/);

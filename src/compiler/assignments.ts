@@ -1815,7 +1815,7 @@ export function emitPropertyAssignment(
       // Euler PROXY over `rotationQuaternion` (`createEulerProxy`,
       // scene-node.ts) rather than storage of its own: a component
       // write re-applies the whole cached triple through the pin's
-      // `eulerToQuat`. This record keeps the two lanes apart and
+      // `eulerXYZToQuatTuple`. This record keeps the two lanes apart and
       // `build_splat_world` derives the quaternion from the Euler lane
       // through that same pinned writer, so the composed matrix is the
       // proxy's — and the transform bake, which is where the pin's

@@ -120,7 +120,7 @@ test("the step gate and its four phases are emitted in the pin's order", () => {
         "sync_node_to_body(",
         "pal::physics_world_step(",
         "sync_body_to_node(",
-        "world.after_step",
+        "physics_dispatch_after_step(world, dt)",
     ];
     let cursor = -1;
     for (const marker of order) {

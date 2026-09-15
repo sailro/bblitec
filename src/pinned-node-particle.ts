@@ -629,7 +629,7 @@ function buildCalls(sets: readonly NodeParticleSetRequest[]): string {
                 `    visits[${index}] = [];`,
                 `    graphs[${index}].blocks = recordVisits(graphs[${index}].blocks, visits[${index}]);`,
                 `    sets[${index}] = await ${set.builder}(engine, scene,`,
-                `        graphs[${index}], ${set.native ? `withNodeParticleEmitterProvider(() => mat4Translation(${set.emitter.join(", ")}), ` : ""}{`,
+                `        graphs[${index}], ${set.native ? `withNodeParticleEmitterProvider(() => createTranslationMat4(${set.emitter.join(", ")}), ` : ""}{`,
                 `        emitter: { x: ${set.emitter[0]}, ` +
                     `y: ${set.emitter[1]}, z: ${set.emitter[2]} },`,
                 ...(set.textureBaseUrl === undefined
@@ -678,7 +678,7 @@ function driverImports(sets: readonly NodeParticleSetRequest[]): string[] {
 function driverModule(request: NodeParticleBakeRequest): string {
     const builders = driverImports(request.sets).join(`,\n         `);
     return `import { createEngine, createSceneContext, enableDeviceLostSceneRecovery,
-         createArcRotateCamera, parseNodeParticleSource, startParticleSystem, mat4Translation,
+         createArcRotateCamera, parseNodeParticleSource, startParticleSystem, createTranslationMat4,
          stopParticleSystem, animateParticleSystem, createParticleBillboard,
          syncParticleBillboard, createTexture2DFromPixels,
          ${builders} } from ${JSON.stringify(pinnedPackage)};
@@ -927,7 +927,7 @@ ${stepProgram(request.steps)}
                     slots,
                     hooks,
                     emitter,
-                    emitterWorldMatrix: Array.from(mat4Translation(emitter[0], emitter[1], emitter[2])),
+                    emitterWorldMatrix: Array.from(createTranslationMat4(emitter[0], emitter[1], emitter[2])),
                     visitOrder: visits[entry.set],
                 },
                 texture: {

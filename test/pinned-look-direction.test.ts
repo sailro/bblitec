@@ -4,7 +4,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import test from "node:test";
 
-import { quatFromLookDirectionRH } from "@babylonjs/lite";
+import { createQuatFromLookDirectionRH } from "@babylonjs/lite";
 
 import { compileSource } from "../src/compiler.js";
 import { LoweringContext } from "../src/lowering/context.js";
@@ -46,8 +46,8 @@ test("look-direction quaternion is emitted from its pinned declarations", () => 
     assert.match(header, /bbl::js::or_number\(/);
 
     const result = compileSource(`
-        import { quatFromLookDirectionRH } from "@babylonjs/lite";
-        const q = quatFromLookDirectionRH(
+        import { createQuatFromLookDirectionRH } from "@babylonjs/lite";
+        const q = createQuatFromLookDirectionRH(
             { x: 3, y: -2, z: 8 },
             { x: 0.2, y: 4, z: -1 },
         );
@@ -117,7 +117,7 @@ test("generated math headers link across translation units and match the pinned 
         .map((row) => row.split(",").map(Number));
     assert.equal(rows.length, cases.length);
     for (let index = 0; index < cases.length; index += 1) {
-        const expected = quatFromLookDirectionRH(
+        const expected = createQuatFromLookDirectionRH(
             cases[index]!.forward,
             cases[index]!.up,
         );

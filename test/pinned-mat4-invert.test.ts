@@ -6,15 +6,16 @@ import test from "node:test";
 import { compileSource } from "../src/compiler.js";
 import { LoweringContext } from "../src/lowering/context.js";
 import { pinnedMat4InvertHeader } from "../src/lowering/pinned-mat4-invert.js";
+import { pinnedMat4CreateHeader } from "../src/lowering/pinned-mat4-create.js";
 import { importPinnedModule } from "../src/pinned-shader-composer.js";
 import { optionalNativeFixtureTools, runNativeFixtureCompiler } from "./native-fixture.js";
 
 const tools = optionalNativeFixtureTools();
 
 test("matrix inverse preserves pinned Float32 lanes, null singulars, and fresh result storage", { skip: !tools }, async () => {
-    const { mat4Invert } = await importPinnedModule<{
-        mat4Invert(input: Float32Array): Float32Array | null;
-    }>("math/mat4-invert.js");
+    const { invertMat4 } = await importPinnedModule<{
+        invertMat4(input: Float32Array): Float32Array | null;
+    }>("math/invert-mat4.js");
     const cases = [
         new Float32Array(16),
         new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]),
@@ -28,11 +29,12 @@ test("matrix inverse preserves pinned Float32 lanes, null singulars, and fresh r
     const include = join(output, "bblite/upstream");
     mkdirSync(include, { recursive: true });
     writeFileSync(join(include, "pinned_mat4_invert.hpp"), pinnedMat4InvertHeader(new LoweringContext()));
+    writeFileSync(join(include, "pinned_mat4_create.hpp"), pinnedMat4CreateHeader(new LoweringContext()));
     const bits = (data: Float32Array): string => [...new Uint32Array(data.buffer)].map(
         (value) => `std::bit_cast<float>(${value}u)`,
     ).join(", ");
     const checks = cases.map((input) => {
-        const expected = mat4Invert(input);
+        const expected = invertMat4(input);
         return `{ const bbl::js::F32Array input{${bits(input)}};
             auto actual = bbl::upstream::mat4_invert_array(input);
             assert(actual.has_value() == ${expected !== null});
@@ -45,17 +47,17 @@ test("matrix inverse preserves pinned Float32 lanes, null singulars, and fresh r
         }`;
     }).join("\n");
     const compiled = compileSource(`
-        import { mat4Compose, mat4Invert } from "babylon-lite";
+        import { composeMat4, invertMat4 } from "babylon-lite";
         import type { Mat4 } from "babylon-lite";
         function translation(matrix: Mat4): number { return matrix[12]!; }
         function invertTranslation(matrix: Mat4): number {
-            const inverse = mat4Invert(matrix);
+            const inverse = invertMat4(matrix);
             if (!inverse) return -99;
             return translation(inverse);
         }
-        if (invertTranslation(mat4Compose(7, 0, 0, 0, 0, 0, 1, 1, 1, 1)) !== -7)
+        if (invertTranslation(composeMat4(7, 0, 0, 0, 0, 0, 1, 1, 1, 1)) !== -7)
             throw new Error("Mat4 parameter or inverse changed");
-        if (invertTranslation(mat4Compose(7, 0, 0, 0, 0, 0, 1, 0, 1, 1)) !== -99)
+        if (invertTranslation(composeMat4(7, 0, 0, 0, 0, 0, 1, 0, 1, 1)) !== -99)
             throw new Error("singular inverse did not take its guard");
     `);
     writeFileSync(join(output, "program.hpp"), compiled.cpp);
@@ -87,22 +89,22 @@ test("Mat4 recognition follows the pinned symbol and refuses unsupported F64 sto
     `);
     assert.doesNotMatch(local.cpp, /pinned_mat4_invert/);
     for (const body of [
-        `const inverse = mat4Invert(input as unknown as Mat4);`,
-        `function inverse(matrix: Mat4) { return mat4Invert(matrix); }
+        `const inverse = invertMat4(input as unknown as Mat4);`,
+        `function inverse(matrix: Mat4) { return invertMat4(matrix); }
          const result = inverse(input as unknown as Mat4);`,
         `function matrix(): Mat4 { return input as unknown as Mat4; }
-         const result = mat4Invert(matrix());`,
+         const result = invertMat4(matrix());`,
     ]) {
         assert.throws(() => compileSource(`
-            import { mat4Invert } from "babylon-lite";
+            import { invertMat4 } from "babylon-lite";
             import type { Mat4 } from "babylon-lite";
             const input = new Float64Array(16);
             ${body}
         `, { fileName: "matrix-storage.ts" }), /matrix-storage.ts:.*(?:Float32Array|f32array)/);
     }
     assert.throws(() => compileSource(`
-        import { createEngine, mat4Identity, mat4Invert } from "babylon-lite";
+        import { createEngine, createIdentityMat4, invertMat4 } from "babylon-lite";
         const engine = await createEngine({}, { useHighPrecisionMatrix: true });
-        const inverse = mat4Invert(mat4Identity());
+        const inverse = invertMat4(createIdentityMat4());
     `, { fileName: "matrix-precision.ts" }), /matrix-precision.ts:.*high-precision matrix allocation/);
 });

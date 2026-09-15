@@ -111,8 +111,8 @@ inline bool get_text_alpha_to_coverage(const TextRenderableState& r) { return r.
     private quaternionMath(): string {
         const calls = pinnedNumericMathCalls();
         calls.set("Math.asin", (args) => `std::asin(${args.join(", ")})`);
-        return ([ ["eulerToQuat", "euler_to_quat", ["rx", "ry", "rz"], 4],
-            ["quatToEulerXYZ", "quat_to_euler_xyz", ["qx", "qy", "qz", "qw"], 3] ] as const)
+        return ([ ["eulerXYZToQuatTuple", "euler_to_quat", ["rx", "ry", "rz"], 4],
+            ["quatToEulerXYZTuple", "quat_to_euler_xyz", ["qx", "qy", "qz", "qw"], 3] ] as const)
             .map(([symbol, cppName, parameters, arity]) => lowerPinnedFunction(this.context,
                 "src/math/quat-euler.ts", symbol,
                 parameters.map((pinned) => ({ pinned, cpp: pinned, kind: "number" })), {
@@ -238,11 +238,11 @@ inline TextRenderable create_text_renderable(TextData data, const TextRenderable
             ...["x", "y", "z", "w"].map((lane): [string, PinnedBinding] => [`rq.${lane}`, scalar(`r.rotation_quaternion.${lane}`)]),
             ...["x", "y", "z", "v"].map((lane): [string, PinnedBinding] => [lane, scalar(lane)])]);
         const scope: PinnedNumericScope = { bindings, calls: new Map<string, (args: readonly string[]) => string>([
-            ["quatToEulerXYZ", (args) => `text_detail::quat_to_euler_xyz(${args.join(", ")})`],
-            ["eulerToQuat", (args) => `text_detail::euler_to_quat(${args.join(", ")})`],
+            ["quatToEulerXYZTuple", (args) => `text_detail::quat_to_euler_xyz(${args.join(", ")})`],
+            ["eulerXYZToQuatTuple", (args) => `text_detail::euler_to_quat(${args.join(", ")})`],
             ["rq.set", (args) => `text_set_rotation_quaternion(r, ${args.join(", ")})`],
             ["sync", () => "text_sync_rotation(r)"], ["apply", (args) => `text_set_rotation(r, ${args.join(", ")})`],
-        ]), fixedTupleCalls: new Map([["quatToEulerXYZ", 3]]), tupleCalls: new Map([["eulerToQuat", 4]]) };
+        ]), fixedTupleCalls: new Map([["quatToEulerXYZTuple", 3]]), tupleCalls: new Map([["eulerXYZToQuatTuple", 4]]) };
         for (const [name, cpp, parameters] of [["sync", "text_sync_rotation", ""], ["apply", "text_set_rotation", ", double x, double y, double z"]]) {
             const arrow = c.variableInitializer(proxy.declaration, name!);
             if (!ts.isArrowFunction(arrow) || !ts.isBlock(arrow.body)) c.contractError(arrow, "Expected the pinned Euler closure.");
@@ -264,15 +264,15 @@ inline TextRenderable create_text_renderable(TextData data, const TextRenderable
         // takes that branch; its double intermediates narrow only at matrix stores.
         const composition = pinnedTrsComposition(c, "transform").composeWorldBody;
         const composeLocal = c.functionDeclaration("src/scene/world-matrix-state.ts", "composeTrsLocalMatrix");
-        c.expectShapeCount(composeLocal.declaration, "isIdentity ? mat4Identity() : mat4Compose(position.x, position.y, position.z, rotation.x, rotation.y, rotation.z, rotation.w, scaling.x, scaling.y, scaling.z)", "Text local matrix dispatch");
+        c.expectShapeCount(composeLocal.declaration, "isIdentity ? createIdentityMat4() : composeMat4(position.x, position.y, position.z, rotation.x, rotation.y, rotation.z, rotation.w, scaling.x, scaling.y, scaling.z)", "Text local matrix dispatch");
         const localBindings = new Map<string, PinnedBinding>();
         for (const [source, field, lanes] of [["position", "position", ["x", "y", "z"]], ["rotation", "rotation_quaternion", ["x", "y", "z", "w"]], ["scaling", "scaling", ["x", "y", "z"]]] as const)
             for (const lane of lanes) localBindings.set(`${source}.${lane}`, scalar(`r.${field}.${lane}`));
         const isIdentity = new PinnedNumericLowerer(composeLocal.file, {bindings: localBindings, calls: new Map(), booleanAnd: true})
             .expression(c.variableInitializer(composeLocal.declaration, "isIdentity"));
-        const identity = c.functionDeclaration("src/math/mat4-identity.ts", "mat4Identity");
+        const identity = c.functionDeclaration("src/math/create-identity-mat4.ts", "createIdentityMat4");
         c.assertExpressionShape(c.variableInitializer(identity.declaration, "m"), "allocateMat4()", "Zero-filled text identity matrix");
-        c.assertStatementInventory(identity.declaration, identity.declaration.body!.statements, "mat4Identity", "allocated identity stores", ["variable statement", "expression statement", "expression statement", "expression statement", "expression statement", "return statement"]);
+        c.assertStatementInventory(identity.declaration, identity.declaration.body!.statements, "createIdentityMat4", "allocated identity stores", ["variable statement", "expression statement", "expression statement", "expression statement", "expression statement", "return statement"]);
         const identityStores = new PinnedNumericLowerer(identity.file, {bindings: new Map([["m", {cpp: "r.world", type: "f32"}]]), calls: new Map()})
             .statements(identity.declaration.body!.statements.slice(1,-1), "            ").join("\n");
         out += `inline const std::array<float, 16>& text_world_matrix(TextRenderableState& r) {
@@ -320,7 +320,7 @@ ${composition}
         const calls = new Map<string, (args: readonly string[]) => string>([
             ["getEffectiveAspectRatio", () => "camera->effective_aspect"], ["_cameraChangeKey", () => "camera->change_key"],
             ["getViewProjectionMatrix", () => "camera->view_projection"], ["r._worldMatrix", () => "text_world_matrix(r)"],
-            ["mat4MultiplyInto", (args) => `text_detail::mat4_multiply_into(${args.map((arg, index) => index % 2 === 1 ? `static_cast<std::int64_t>(${arg})` : arg).join(", ")})`],
+            ["multiplyMat4IntoBuffer", (args) => `text_detail::mat4_multiply_into(${args.map((arg, index) => index % 2 === 1 ? `static_cast<std::int64_t>(${arg})` : arg).join(", ")})`],
             ["device.queue.writeBuffer", (args) => `text_write_uniform(write, ${args.slice(1).join(", ")})`],
         ]);
         const lowerer = new PinnedNumericLowerer(file, {bindings, calls, booleanOr: true,

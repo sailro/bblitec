@@ -71,6 +71,48 @@ int main() {
     assert(js::collect_cycles() > 0);
     assert(js::managed_node_count() == nodes);
 
+    {
+        js::WeakMap<js::Ref<Point>> map;
+        auto alias = map;
+        auto key = js::make_ref<Point>(Point{1, 2, 3});
+        auto same_key = key;
+        const auto identity = key.weak_identity();
+        auto value = js::make_ref<Point>(Point{4, 5, 6});
+        const auto value_identity = value.weak_identity();
+        map.set(identity, value);
+        value = {};
+        key = {};
+        assert(!identity.expired() && alias.get(same_key.weak_identity())->x == 4);
+        assert(!map.get(js::make_ref<Point>(Point{1, 2, 3}).weak_identity()));
+        same_key = {};
+        assert(identity.expired());
+        assert(!alias.get(identity));
+        assert(value_identity.expired());
+    }
+    assert(js::managed_node_count() == nodes);
+
+    {
+        js::WeakMap<js::Ref<Point>> map;
+        std::vector<js::Ref<Point>> keys;
+        std::vector<js::WeakIdentity> weak_values;
+        for (int i = 0; i < 65; ++i) {
+            auto key = js::make_ref<Point>();
+            auto value = js::make_ref<Point>();
+            weak_values.push_back(value.weak_identity());
+            map.set(key.weak_identity(), value);
+            keys.push_back(key);
+        }
+        auto live = keys.back();
+        keys.clear();
+        for (int i = 0; i < 9; ++i) assert(map.get(live.weak_identity()));
+        for (std::size_t i = 0; i + 1 < weak_values.size(); ++i) assert(weak_values[i].expired());
+        assert(!weak_values.back().expired());
+        live = {};
+        js::collect_cycles();
+        assert(weak_values.back().expired());
+    }
+    assert(js::managed_node_count() == nodes);
+
     SharedTextureBytes original{std::vector<std::uint8_t>{1, 2, 3}};
     auto copied = original;
     assert(std::as_const(original).data() == std::as_const(copied).data());

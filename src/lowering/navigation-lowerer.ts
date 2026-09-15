@@ -270,7 +270,7 @@ export class NavigationLowerer {
             );
         this.context.expectShapeCount(
             composeLocal,
-            "isIdentity ? mat4Identity() : mat4Compose(position.x, position.y, position.z, rotation.x, rotation.y, rotation.z, rotation.w, scaling.x, scaling.y, scaling.z)",
+            "isIdentity ? createIdentityMat4() : composeMat4(position.x, position.y, position.z, rotation.x, rotation.y, rotation.z, rotation.w, scaling.x, scaling.y, scaling.z)",
             "the unparented local world matrix",
         );
 

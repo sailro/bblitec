@@ -45,7 +45,7 @@ function offsetElementIndex(
     return undefined;
 }
 
-/** The pinned `mat4ComposeInto` body, walked once for both emitters. */
+/** The pinned `composeMat4IntoBuffer` body, walked once for both emitters. */
 interface ComposePinWalk {
     /** The pin's quaternion parameter names, in lane order. */
     quaternionNames: string[];
@@ -58,7 +58,7 @@ interface ComposePinWalk {
 }
 
 /**
- * Walks `mat4ComposeInto`: the quaternion parameters lift to double
+ * Walks `composeMat4IntoBuffer`: the quaternion parameters lift to double
  * lanes named x..w, the product locals and every store expression
  * render from the pin (doubles, one `static_cast<float>` per
  * Float32Array store), the constant lanes 3/7/11/15 are verified 0/1
@@ -67,7 +67,7 @@ interface ComposePinWalk {
  * from this one walk.
  */
 function composePinWalk(file: ts.SourceFile): ComposePinWalk {
-    const symbol = "mat4ComposeInto";
+    const symbol = "composeMat4IntoBuffer";
     const declaration = topLevelFunction(file, symbol);
     const parameters = identifierParameters(symbol, file, declaration);
     if (parameters.length !== 12) {
@@ -198,7 +198,7 @@ function composePinWalk(file: ts.SourceFile): ComposePinWalk {
     return { quaternionNames, scaleNames, productLines, rotationStores };
 }
 
-/** `mat4ComposeInto` → `trs_matrix` (float lanes lifted to double). */
+/** `composeMat4IntoBuffer` → `trs_matrix` (float lanes lifted to double). */
 export function lowerMatrixComposeCpp(file: ts.SourceFile, doubleInputs = false): string {
     const walk = composePinWalk(file);
     return [
@@ -206,7 +206,7 @@ export function lowerMatrixComposeCpp(file: ts.SourceFile, doubleInputs = false)
         `    ${doubleInputs ? "Vec3d" : "Vec3"} translation,`,
         `    ${doubleInputs ? "Vec4d" : "Vec4"} rotation,`,
         `    ${doubleInputs ? "Vec3d" : "Vec3"} scale) {`,
-        "    // Pinned mat4ComposeInto runs in JavaScript double precision and",
+        "    // Pinned composeMat4IntoBuffer runs in JavaScript double precision and",
         "    // rounds once at the Float32Array store; mirror its products and",
         "    // association exactly.",
         ...walk.quaternionNames.map(

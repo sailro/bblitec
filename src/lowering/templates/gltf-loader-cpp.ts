@@ -58,7 +58,7 @@ export interface GltfLoaderLoweredSegments {
      * `src/loader-gltf/gltf-parser.ts#computeNodeWorldMatrix` (the
      * authored-matrix arm, the three JSON keys and their whole-array
      * defaults, the compose argument order) through the same
-     * `mat4ComposeInto` walk `trs_matrix` uses — but reading the raw
+     * `composeMat4IntoBuffer` walk `trs_matrix` uses — but reading the raw
      * JSON doubles and rounding once per lane at the store, which is
      * the pin's own precision chain. See the round-3/4 notes in
      * `gltf-lowerer.ts`.
@@ -66,7 +66,7 @@ export interface GltfLoaderLoweredSegments {
     matrixLocal: string;
     /**
      * `trs_matrix`, lowered from
-     * `src/math/mat4-compose-into.ts#mat4ComposeInto` — every product
+     * `src/math/compose-mat4-into-buffer.ts#composeMat4IntoBuffer` — every product
      * local and store expression comes from the pin.
      */
     matrixCompose: string;

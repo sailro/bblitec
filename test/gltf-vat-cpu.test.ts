@@ -46,7 +46,7 @@ function sourceResult(context: LoweringContext): unknown[] {
     const types = context.sourceFile("src/animation/types.ts");
     const constants = paths.map(name => context.numericValue(context.moduleScopeConstant(types, name)!, types));
     let pose: () => void = () => {};
-    const api = new Function("F32", "I32", "U8", ...paths, "mat4ComposeInto", "mat4MultiplyInto", "evaluateSampler", "_boneApplier", "_setTickAnimationImpl", "GLTF_CLIP",
+    const api = new Function("F32", "I32", "U8", ...paths, "composeMat4IntoBuffer", "multiplyMat4IntoBuffer", "evaluateSampler", "_boneApplier", "_setTickAnimationImpl", "GLTF_CLIP",
         transpileCommonJs(source(controllerModule) + "\n" + source(groupModule), groupModule) +
         "\nreturn {createAnimationGroups,stopAnimation};")(
         Float32Array, Int32Array, Uint8Array, ...constants, () => pose(), () => {}, () => {}, undefined, () => {}, 0) as {

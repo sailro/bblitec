@@ -239,11 +239,12 @@ std::array<float, 16> transform_node_world(const Engine&, TransformNodeHandle) {
     });
 });
 
-test("exact scene103 retains automatic body lookup and default-query matrix picking", () => {
+test("exact scene103 retains thin-body ray indices and default-query matrix picking", () => {
     const fileName = "corpus/babylon-lite/lab/lite/src/lite/scene103.ts";
     const source = readFileSync(fileName, "utf8");
     const automatic = compileSource(source, { fileName, search: "?captureFrame=5" });
-    assert.match(automatic.cpp, /bodyToInstance\.get\(/);
+    assert.match(automatic.cpp, /\.body_index/);
+    assert(automatic.manifest.features.includes("physics:thin-instances"));
     const interactive = compileSource(source, { fileName });
     assert.ok(interactive.manifest.features.includes("math:mat4-invert"));
     assert.match(interactive.cpp, /mat4_invert_array/);

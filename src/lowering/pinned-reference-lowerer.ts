@@ -40,9 +40,12 @@ export class PinnedReferenceLowerer {
         if (node.kind === ts.SyntaxKind.BooleanKeyword) return "boolean";
         if (node.kind === ts.SyntaxKind.StringKeyword) return "string";
         if (node.kind === ts.SyntaxKind.VoidKeyword) return "void";
+        if (node.kind === ts.SyntaxKind.ObjectKeyword) return "object";
         if (ts.isArrayTypeNode(node)) return `${this.type(node.elementType)}[]`;
         if (ts.isParenthesizedTypeNode(node)) return this.type(node.type);
         if (ts.isUnionTypeNode(node)) {
+            const defined = node.types.filter(type => type.kind !== ts.SyntaxKind.UndefinedKeyword);
+            if (defined.length === 1 && defined.length < node.types.length) return `optional:${this.type(defined[0]!)}`;
             const present = node.types.filter(type => !(ts.isLiteralTypeNode(type) && type.literal.kind === ts.SyntaxKind.NullKeyword));
             if (present.length === 1) return this.type(present[0]!);
         }
@@ -52,6 +55,7 @@ export class PinnedReferenceLowerer {
             if (this.schema.records.has(name)) return name;
             if (name === "ArrayLike" && node.typeArguments?.length === 1) return `${this.type(node.typeArguments[0]!)}[]`;
             if (name === "Map" && node.typeArguments?.length === 2) return `map:${JSON.stringify(node.typeArguments.map(type => this.type(type)))}`;
+            if (name === "WeakMap" && node.typeArguments?.length === 2 && this.type(node.typeArguments[0]!) === "object") return `weakmap:${this.type(node.typeArguments[1]!)}`;
         }
         return this.context.contractError(node, "Pinned reference type has no native representation.");
     }
@@ -63,6 +67,8 @@ export class PinnedReferenceLowerer {
         if (type === "boolean") return CPP_SCALAR.boolean;
         if (type === "string") return CPP_SCALAR.string;
         if (type === "void") return "void";
+        if (type === "object") return "js::WeakIdentity";
+        if (type.startsWith("weakmap:")) return `js::WeakMap<${this.storage(type.slice(8))}>`;
         if (type.startsWith("optional:")) return `std::optional<${this.storage(type.slice(9))}>`;
         const tuple = tupleTypes(type);
         if (tuple) return `std::tuple<${tuple.map(type => this.storage(type)).join(", ")}>`;
@@ -152,14 +158,17 @@ export class PinnedReferenceLowerer {
     public expression(input: ts.Expression, expected?: string): ReferenceValue {
         const node = this.context.unwrapExpression(input);
         const exact = this.schema.bindings.get(node.getText(node.getSourceFile()));
-        if (exact) return exact.type === `optional:${expected}` ? { cpp: `${exact.cpp}.value()`, type: expected! } : exact;
+        if (exact) {
+            if (expected === "object" && this.schema.records.has(exact.type)) return { cpp: `${exact.cpp}.weak_identity()`, type: "object" };
+            return exact.type === `optional:${expected}` ? { cpp: `${exact.cpp}.value()`, type: expected! } : exact;
+        }
         const adapted = this.schema.expression?.(node, expected, this);
         if (adapted) return adapted;
         if (ts.isNumericLiteral(node)) return { cpp: doubleLiteral(Number(node.text)), type: "number" };
         if (ts.isStringLiteral(node)) return { cpp: JSON.stringify(node.text), type: "string" };
         if (node.kind === ts.SyntaxKind.TrueKeyword || node.kind === ts.SyntaxKind.FalseKeyword)
             return { cpp: node.kind === ts.SyntaxKind.TrueKeyword ? "true" : "false", type: "boolean" };
-        if (node.kind === ts.SyntaxKind.NullKeyword && expected && (this.schema.records.has(expected) || expected.startsWith("optional:"))) return { cpp: `${this.storage(expected)}{}`, type: expected };
+        if ((node.kind === ts.SyntaxKind.NullKeyword || ts.isIdentifier(node) && node.text === "undefined") && expected && (this.schema.records.has(expected) || expected.startsWith("optional:"))) return { cpp: `${this.storage(expected)}{}`, type: expected };
         if (ts.isIdentifier(node)) return this.context.contractError(node, "Unbound pinned reference identifier.");
         if (ts.isPropertyAccessExpression(node)) {
             const owner = this.expression(node.expression);
@@ -170,7 +179,8 @@ export class PinnedReferenceLowerer {
             return { cpp: `${owner.cpp}->${node.name.text}`, type };
         }
         if (ts.isElementAccessExpression(node)) {
-            const owner = this.expression(node.expression);
+            const value = this.expression(node.expression);
+            const owner = value.type.startsWith("optional:") ? { cpp: `${value.cpp}.value()`, type: value.type.slice(9) } : value;
             const tuple = tupleTypes(owner.type);
             if (tuple) {
                 const index = this.context.numericValue(node.argumentExpression, node.getSourceFile());
@@ -211,6 +221,10 @@ export class PinnedReferenceLowerer {
                 const type = `map:${JSON.stringify(node.typeArguments.map(type => this.type(type)))}`;
                 return { cpp: `${this.storage(type)}{}`, type };
             }
+            if (node.expression.text === "WeakMap" && !node.arguments?.length) {
+                const type = node.typeArguments?.length === 2 && this.type(node.typeArguments[0]!) === "object" ? `weakmap:${this.type(node.typeArguments[1]!)}` : expected;
+                if (type?.startsWith("weakmap:")) return { cpp: `${this.storage(type)}{}`, type };
+            }
         }
         if (ts.isPrefixUnaryExpression(node) || ts.isPostfixUnaryExpression(node)) {
             const value = this.expression(node.operand);
@@ -224,6 +238,12 @@ export class PinnedReferenceLowerer {
                 if (array.type.endsWith("[]")) return { cpp: `js::array_truncate(${array.cpp}, ${this.expression(node.right).cpp})`, type: "void" };
             }
             const left = this.expression(node.left);
+            if ([ts.SyntaxKind.QuestionQuestionToken, ts.SyntaxKind.QuestionQuestionEqualsToken].includes(node.operatorToken.kind) && this.schema.records.has(left.type)) {
+                const right = this.expression(node.right, left.type);
+                return { cpp: node.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken
+                    ? `([&]() { auto value = ${left.cpp}; return value ? value : ${right.cpp}; }())`
+                    : `([&]() { auto& value = ${left.cpp}; if (!value) value = ${right.cpp}; return value; }())`, type: left.type };
+            }
             if (node.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken && left.type.startsWith("optional:")) {
                 const type = left.type.slice(9), right = this.expression(node.right, type);
                 return { cpp: `([&]() { const auto optional = ${left.cpp}; return optional ? *optional : ${right.cpp}; }())`, type };
@@ -265,8 +285,9 @@ export class PinnedReferenceLowerer {
         if (ts.isPropertyAccessExpression(node.expression)) {
             const owner = this.expression(node.expression.expression);
             const method = node.expression.name.text;
-            if (owner.type.startsWith("map:")) {
-                const [key, value] = JSON.parse(owner.type.slice(4)) as [string, string];
+            if (owner.type.startsWith("weakmap:") || owner.type.startsWith("map:")) {
+                const [key, value]: [string, string] = owner.type.startsWith("weakmap:")
+                    ? ["object", owner.type.slice(8)] : JSON.parse(owner.type.slice(4));
                 if (method === "get" && node.arguments.length === 1 && this.schema.records.has(value)) return { cpp: `${owner.cpp}.get(${this.expression(node.arguments[0]!, key).cpp})`, type: value };
                 if (method === "set" && node.arguments.length === 2) return { cpp: `${owner.cpp}.set(${this.expression(node.arguments[0]!, key).cpp}, ${this.expression(node.arguments[1]!, value).cpp})`, type: owner.type };
             }

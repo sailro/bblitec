@@ -100,12 +100,12 @@ test("reference-preserving simplex, friction and movement kernels match unchange
     writeFileSync(join(directory, "check.cpp"), `
 #include <iostream>
 #include <iomanip>
-namespace bbl::character { struct PhysicsBody {}; }
+namespace bbl::character { struct PhysicsBody {}; struct NativeBody {}; }
 #include "kernel.hpp"
 using namespace bbl::character;
 using namespace bbl;
 struct Kernel final : CharacterControllerKernel {
-    js::Ref<Vec3> _getPointVelocity(js::Ref<PhysicsBody>, js::Ref<Vec3>) override { return v(); }
+    js::Ref<Vec3> _getPointVelocity(js::Ref<PhysicsBody>, js::Ref<Vec3>, js::Ref<NativeBody>) override { return v(); }
     js::Ref<SurfaceConstraint> _createSurfaceConstraint(double, js::Ref<Contact>, double) override { return js::make_ref<SurfaceConstraint>(); }
 };
 js::Ref<SurfaceConstraint> plane(js::Ref<Vec3> normal, js::Ref<Vec3> velocity, double priority, double sf, double df, double up, double down) {

@@ -183,9 +183,9 @@ test("compiled CSM matches the executed pin across fitting, widths and degenerat
     const { getViewProjectionMatrix } = await importPinnedModule<{
         getViewProjectionMatrix: (camera: PinCamera, aspect: number) => ArrayLike<number>;
     }>("camera/camera.js");
-    const { mat4InvertToRefOrIdentity } = await importPinnedModule<{
-        mat4InvertToRefOrIdentity: (input: Float64Array, out: Float32Array) => void;
-    }>("math/mat4-invert-to-ref.js");
+    const { invertMat4ToRefOrIdentity } = await importPinnedModule<{
+        invertMat4ToRefOrIdentity: (input: Float64Array, out: Float32Array) => void;
+    }>("math/invert-mat4-to-ref-or-identity.js");
     const cases: string[] = [];
     const variants = [
         {}, { count: 1, lambda: 0 }, { count: 2, lambda: 1, maxZ: 25 },
@@ -272,7 +272,7 @@ test("compiled CSM matches the executed pin across fitting, widths and degenerat
         const input = Float64Array.of(scale, 0, 0, 0, 0, 1.25, 0, 0, 0, 0, 0.75, 0,
             1000000.0001220703, 0.000000000125, -0.75, 1);
         const expected = new Float32Array(16);
-        mat4InvertToRefOrIdentity(input, expected);
+        invertMat4ToRefOrIdentity(input, expected);
         cases.push(`{
     std::array<float, 16> inverse{};
     mat4_invert_to_ref_or_identity(${cppArray(input)}, inverse);

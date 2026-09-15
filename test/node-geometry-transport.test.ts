@@ -23,8 +23,8 @@ test("node geometry binds raw lanes and the pin world independently of ordinary 
         computeNodeWorldMatrix(json: object, index: number, parents: Map<number, number>, cache: Map<number, Float32Array>): Float32Array;
     }>("loader-gltf/gltf-parser.js");
     const matrix = await importPinnedModule<{
-        mat4ComposeInto(out: Float32Array, offset: number, ...values: number[]): void;
-    }>("math/mat4-compose-into.js");
+        composeMat4IntoBuffer(out: Float32Array, offset: number, ...values: number[]): void;
+    }>("math/compose-mat4-into-buffer.js");
     const meshModule = await importPinnedModule<{
         initMeshTransform(partial: object, ...trs: number[]): PinMesh;
     }>("mesh/mesh.js");
@@ -38,8 +38,8 @@ test("node geometry binds raw lanes and the pin world independently of ordinary 
     // The native loader's matrix_product/native_matrix adapter is executed below.
     for (const sign of [1, -1]) {
         const parent = new Float32Array(16), child = new Float32Array(16);
-        matrix.mat4ComposeInto(parent, 0, 3.2, -4.3, 2.1, 0.1, -0.2, 0.3, 0.9273618495495703, sign * 2.0, 0.5, 1.7);
-        matrix.mat4ComposeInto(child, 0, -1.1, 2.3, 0.7, -0.15, 0.25, 0.05, 0.95524865872714, 0.6, 1.2, 2.4);
+        matrix.composeMat4IntoBuffer(parent, 0, 3.2, -4.3, 2.1, 0.1, -0.2, 0.3, 0.9273618495495703, sign * 2.0, 0.5, 1.7);
+        matrix.composeMat4IntoBuffer(child, 0, -1.1, 2.3, 0.7, -0.15, 0.25, 0.05, 0.95524865872714, 0.6, 1.2, 2.4);
         const expected = parser.computeNodeWorldMatrix({ nodes: [
             { matrix: [...parent], children: [1] }, { matrix: [...child] },
         ] }, 1, new Map([[1, 0]]), new Map());

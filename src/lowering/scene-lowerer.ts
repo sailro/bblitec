@@ -802,7 +802,7 @@ void set_transform_node_rotation(
     record.rotation = rotation;
     // The pinned Euler proxy writes its quaternion source of truth. The
     // record expresses that same selection by composing the Euler lane when
-    // this flag is false; pinnedTrsComposition performs eulerToQuat from the
+    // this flag is false; pinnedTrsComposition performs eulerXYZToQuatTuple from the
     // upstream function before the matrix write.
     record.has_rotation_quaternion = false;
     if (runtime_transform) mark_transform_node_runtime_transform(engine, node);

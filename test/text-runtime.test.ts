@@ -53,11 +53,11 @@ test("retained text CPU state matches pinned transforms, Euler cache, uniform wr
     const js = ts.transpileModule(`${declaration.getText(file).replace(/^export\s+/, "")}\nreturn updateTextRenderable;`, {
         compilerOptions: {target: ts.ScriptTarget.ES2022},
     }).outputText;
-    const instantiate = new Function("ensureStyleGpu", "ensureSharedAtlasGpu", "ensureInstanceCapacity", "getEffectiveAspectRatio", "_cameraChangeKey", "getViewProjectionMatrix", "mat4MultiplyInto", "_mvpScratch", js);
-    const {mat4MultiplyInto} = await importPinnedModule<{mat4MultiplyInto(...args: unknown[]): void}>("math/mat4-multiply-into.js");
+    const instantiate = new Function("ensureStyleGpu", "ensureSharedAtlasGpu", "ensureInstanceCapacity", "getEffectiveAspectRatio", "_cameraChangeKey", "getViewProjectionMatrix", "multiplyMat4IntoBuffer", "_mvpScratch", js);
+    const {multiplyMat4IntoBuffer} = await importPinnedModule<{multiplyMat4IntoBuffer(...args: unknown[]): void}>("math/multiply-mat4-into-buffer.js");
     const update = instantiate(() => false, () => {throw new Error("No atlas upload in the uniform control");}, () => {},
         (camera: {aspect: number}) => camera.aspect, (camera: {key: number}) => camera.key,
-        (camera: {vp: Float32Array}) => camera.vp, mat4MultiplyInto, new Float32Array(16)) as
+        (camera: {vp: Float32Array}) => camera.vp, multiplyMat4IntoBuffer, new Float32Array(16)) as
         (r: Renderable, engine: object, gpu: object, layout: object, context: object) => void;
     const vp = Float32Array.from([1.1,.2,.3,0, .4,1.3,.6,0, .7,.8,1.9,.2, 2,3,4,1]);
     const camera = {vp, key: 4, aspect: 1.25};

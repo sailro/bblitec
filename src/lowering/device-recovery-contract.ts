@@ -479,6 +479,7 @@ function trackDerivedTexture(base: Texture2D, derived: Texture2D): void {
     }
 }
 `);
+    // External-image capture stays unreachable while its factory has no compiler route.
     check("device-lost-recovery-capture", "attachRecoveryCapture", `
 function attachRecoveryCapture(engine: EngineContext): void {
     const state = engine._deviceLostRecovery!;
@@ -488,8 +489,34 @@ function attachRecoveryCapture(engine: EngineContext): void {
         stampTexture(state, tex, source);
     };
     _setDerivedTexture2DHook(trackDerivedTexture);
+    _setTextureReleaseHook(releaseCapturedTexture);
     engine._dlr = {
         t: stamp,
+        async x(source, width, height, format, levels, samplerDesc, flipY, premultipliedAlpha, upload): Promise<Texture2D> {
+            const bitmap = await createImageBitmap(source, {
+                premultiplyAlpha: premultipliedAlpha ? "premultiply" : "none",
+                colorSpaceConversion: "none",
+            });
+            try {
+                const tex = await upload(bitmap);
+                stamp(tex, {
+                    kind: "external",
+                    bitmap,
+                    width,
+                    height,
+                    format,
+                    levels,
+                    samplerDesc,
+                    flipY,
+                    premultipliedAlpha,
+                });
+                return tex;
+            }
+            catch (error) {
+                bitmap.close();
+                throw error;
+            }
+        },
         d: trackDerivedTexture,
         u(tex: Texture2D, url: string, opts: Texture2DOptions): void {
             stamp(tex, { kind: "url", url, opts: { ...opts } });

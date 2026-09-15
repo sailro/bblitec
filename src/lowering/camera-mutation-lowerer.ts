@@ -2,7 +2,7 @@ import ts from "typescript";
 import { cameraRecordField } from "../compiler/properties.js";
 import { snakeCase } from "../cpp-literals.js";
 import { LoweringContext } from "./context.js";
-import { PinnedNumericLowerer, type PinnedBinding } from "./pinned-numeric-lowerer.js";
+import { absentBinding, PinnedNumericLowerer, type PinnedBinding } from "./pinned-numeric-lowerer.js";
 import { lowerPinnedBody } from "./pinned-body-lowerer.js";
 
 const ARC = "src/camera/arc-rotate.ts";
@@ -168,6 +168,10 @@ ${bulkBody}
         }
         for (const axis of axes) bindings.set(`camera.target.${axis}`, { cpp: `camera.target.${axis}`, type: "scalar" });
         const attach = this.context.findNodes(file, (node): node is ts.FunctionDeclaration => ts.isFunctionDeclaration(node) && node.name?.text === "attachControl")[0]!;
+        // The keyboard enabler and keyboard options are refused by the scene intrinsic.
+        this.context.assertExpressionShape(this.context.variableInitializer(attach, "keyboardAttachment"),
+            "_arcRotateKeyboardFactory?.(camera, canvas, options?.keyboard)", "Optional keyboard attachment");
+        bindings.set("keyboardAttachment", absentBinding());
         for (const constant of ["ROTATION_EPSILON", "RADIUS_EPSILON", "PANNING_EPSILON"]) {
             bindings.set(constant, { cpp: this.context.doubleLiteral(this.context.numericValue(this.context.variableInitializer(attach, constant), file)), type: "scalar" });
         }

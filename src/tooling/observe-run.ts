@@ -216,7 +216,7 @@ export async function runObserve(options: ObserveRunOptions): Promise<string> {
                 pageErrors.push(error.message);
             });
             for (const frame of spec.captureFrames ?? []) {
-                await navigateReady(page, origin, spec.ready, `?captureFrame=${frame}`);
+                await navigateReady(page, origin, spec.captureReady ?? spec.ready, `?captureFrame=${frame}`);
                 const state: unknown = await page.evaluate(stateExpression);
                 const name = `frame-${frame}.png`;
                 await checkGolden(page, name);

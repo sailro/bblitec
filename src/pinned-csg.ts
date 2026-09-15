@@ -16,7 +16,7 @@
  *     moves a vertex across that threshold, which does not perturb a
  *     position — it changes the polygon COUNT and with it the whole tree
  *     the next operation is built from.
- *   - **Every normal goes through `Math.hypot`.** `normalizeVec3` is the
+ *   - **Every normal goes through `Math.hypot`.** `normalizeVec3TupleOrUp` is the
  *     pin's, `planeFromVertices` and `interpolateVertex` both call it, and
  *     the specification leaves `Math.hypot` implementation-approximated —
  *     the same fact this port already records as

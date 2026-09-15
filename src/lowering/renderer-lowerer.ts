@@ -163,8 +163,8 @@ const sceneUniformsModule = "src/frame-graph/scene-uniforms-pack.ts";
 const fogWgslModule = "src/shader/wgsl-fog.ts";
 const skyboxCubemapModule =
     "src/material/standard/skybox-cubemap.ts";
-const orthoMatrixModule = "src/math/mat4-ortho-lh-to-ref.ts";
-const perspectiveMatrixModule = "src/math/mat4-perspective-lh-to-ref.ts";
+const orthoMatrixModule = "src/math/write-ortho-off-center-mat4-lh-into-buffer.ts";
+const perspectiveMatrixModule = "src/math/write-perspective-mat4-lh-into-buffer.ts";
 const cameraModule = "src/camera/camera.ts";
 const cameraViewportModule = "src/camera/viewport.ts";
 const backgroundGroundModule = "src/material/pbr/background-ground.ts";
@@ -428,7 +428,7 @@ export class RendererLowerer {
         const perspectiveWriter = lowerPinnedFunction(
             this.context,
             perspectiveMatrixModule,
-            "mat4PerspectiveLHToRef",
+            "writePerspectiveMat4LHIntoBuffer",
             [
                 { pinned: "out", kind: "mat4", cpp: "out" },
                 { pinned: "fov", kind: "number", cpp: "fov" },
@@ -446,7 +446,7 @@ export class RendererLowerer {
             ? lowerPinnedFunction(
                   this.context,
                   orthoMatrixModule,
-                  "mat4OrthoOffCenterLHToRef",
+                  "writeOrthoOffCenterMat4LHIntoBuffer",
                   [
                       { pinned: "out", kind: "mat4", cpp: "out" },
                       { pinned: "left", kind: "number", cpp: "left" },
@@ -700,15 +700,15 @@ export class RendererLowerer {
         // CPU vertex bake reads it for any scene that draws a mesh -- so
         // the assertion is unconditional too. It used to sit behind
         // `gpuInstancing`, which was the only consumer at the time.
-        // (mat4MultiplyInto needs no entry: the multiply writer resolves
+        // (multiplyMat4IntoBuffer needs no entry: the multiply writer resolves
         // its declaration on every plan.)
         this.context.functionDeclaration(
-            "src/math/mat4-compose-into.ts",
-            "mat4ComposeInto",
+            "src/math/compose-mat4-into-buffer.ts",
+            "composeMat4IntoBuffer",
         );
         this.context.functionDeclaration(
             "src/math/quat-euler.ts",
-            "eulerToQuat",
+            "eulerXYZToQuatTuple",
         );
         this.context.functionDeclaration(
             "src/scene/world-matrix-state.ts",
@@ -1992,7 +1992,7 @@ ${options.nodeGeometryViews
 // changes it -- an orthographic volume, a different up axis -- has to
 // change it everywhere at once.
 // The basis is read out of the pinned camera world matrix rather than
-// recomputed: src/math/mat4-look-at-world-lh.ts writes columns
+// recomputed: src/math/write-look-at-world-mat4-lh-into-buffer.ts writes columns
 // [xAxis, yAxis, zAxis, eye] and src/camera/camera.ts getCameraPosition
 // reads the eye straight back out of column 3, so these are the same
 // float32 values every pinned consumer sees.
@@ -2182,7 +2182,7 @@ ${options.orthographicCamera
         // derives from the half-extent (the derivation and all seven
         // call arguments are shape-asserted where the single-extent
         // record is emitted), and the writer itself is the pinned
-        // mat4OrthoOffCenterLHToRef translated whole above.
+        // writeOrthoOffCenterMat4LHIntoBuffer translated whole above.
         const double half_height =
             static_cast<double>(camera.ortho_half_height);
         const double half_width =
@@ -2324,7 +2324,7 @@ ${options.mirroredMeshes
 
 // The imported clone root's outer transform on the left of a mesh's world,
 // at the composition's own double width: the same pinned Euler-to-quaternion
-// and mat4ComposeInto walk the draw path narrows to f32
+// and composeMat4IntoBuffer walk the draw path narrows to f32
 // (outer_transform_matrix), multiplied through the pinned writer's F64 arm.
 // Shadow fitting and floating-origin packing share it, and both subtract an
 // eye from the result before narrowing.
@@ -2367,14 +2367,14 @@ std::array<float, 16> mesh_world_eye_relative(
     : ""}\
 ${options.gpuInstancing
     ? `// src/scene/world-matrix-state.ts composeTrsLocalMatrix +
-// src/math/mat4-compose-into.ts mat4ComposeInto: a thin-instanced mesh
+// src/math/compose-mat4-into-buffer.ts composeMat4IntoBuffer: a thin-instanced mesh
 // reaches the vertex stage's mesh.world (the instance parent-world
 // uniform) from its record TRS, composed in JavaScript double precision
 // and stored to f32 exactly like the pinned Float32Array world matrix.
-// src/math/quat-euler.ts eulerToQuat converts Euler records the way the
+// src/math/quat-euler.ts eulerXYZToQuatTuple converts Euler records the way the
 // pinned Euler proxy writes the quaternion source of truth (non-zero
 // Euler angles inherit the recorded std::sin/cos-versus-V8 ULP caveat).
-// The pinned-parent multiply keeps the src/math/mat4-multiply-into.ts
+// The pinned-parent multiply keeps the src/math/multiply-mat4-into-buffer.ts
 // accumulation order, so a loader-built glTF pool (identity record TRS)
 // reproduces instance_parent_matrix byte for byte and a user pool
 // (identity parent) reproduces the composed TRS byte for byte.

@@ -192,6 +192,9 @@ struct PhysicsCollisionEvent {
     std::array<double, 3> point{};
     std::array<double, 3> normal{};
     double impulse = 0.0;
+    std::uint32_t collider_identity = 0;
+    std::uint32_t collided_against_identity = 0;
+    std::array<double, 3> point_other{};
 };
 
 /**

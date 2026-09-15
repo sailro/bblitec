@@ -34,16 +34,16 @@ test("generated matrix and pick projections match the executed pin bit for bit",
 }, async () => {
     // One pinned writer over either storage width: f32 output for the draw
     // path, F64 output for the outer transform's double product.
-    const { mat4MultiplyInto } = await importPinnedModule<{
-        mat4MultiplyInto: (out: Float32Array | Float64Array, d: number,
+    const { multiplyMat4IntoBuffer } = await importPinnedModule<{
+        multiplyMat4IntoBuffer: (out: Float32Array | Float64Array, d: number,
             left: Float32Array | Float64Array, i: number, right: Float64Array,
             j: number) => void;
-    }>("math/mat4-multiply-into.js");
-    const { mat4ComposeInto } = await importPinnedModule<{
-        mat4ComposeInto: (out: Float64Array, off: number, tx: number, ty: number,
+    }>("math/multiply-mat4-into-buffer.js");
+    const { composeMat4IntoBuffer } = await importPinnedModule<{
+        composeMat4IntoBuffer: (out: Float64Array, off: number, tx: number, ty: number,
             tz: number, qx: number, qy: number, qz: number, qw: number,
             sx: number, sy: number, sz: number) => void;
-    }>("math/mat4-compose-into.js");
+    }>("math/compose-mat4-into-buffer.js");
     const { computePickVP } = await importPinnedModuleWithExports<{
         computePickVP: (out: Float32Array, vp: Float32Array, x: number,
             y: number, width: number, height: number) => void;
@@ -52,8 +52,8 @@ test("generated matrix and pick projections match the executed pin bit for bit",
         computeGsPickMatrix: (out: Float32Array, x: number, y: number,
             width: number, height: number) => void;
     }>("picking/gs-picking-pipeline.js");
-    const { eulerToQuat } = await importPinnedModule<{
-        eulerToQuat: (x: number, y: number, z: number) => [number, number, number, number];
+    const { eulerXYZToQuatTuple } = await importPinnedModule<{
+        eulerXYZToQuatTuple: (x: number, y: number, z: number) => [number, number, number, number];
     }>("math/quat-euler.js");
     const { composeTrsLocalMatrix } = await importPinnedModule<{
         composeTrsLocalMatrix: (position: { x: number; y: number; z: number },
@@ -80,7 +80,7 @@ test("generated matrix and pick projections match the executed pin bit for bit",
         const right = Float64Array.from({ length: 16 }, (_, lane) =>
             Math.cos(sample * 11 + lane) * (lane % 2 ? 1e-4 : 100));
         const product = new Float32Array(16);
-        mat4MultiplyInto(product, 0, left, 0, right, 0);
+        multiplyMat4IntoBuffer(product, 0, left, 0, right, 0);
         const rotation = (sample === 1
             ? [-0.000018417835235595703, 1.5707963705062866, -0.00016731875075493008]
             : [sample * 0.15, -sample * 0.2, sample * 0.33]
@@ -89,7 +89,7 @@ test("generated matrix and pick projections match the executed pin bit for bit",
             ? [-10, 0.15000005066394806, -15]
             : [sample * 1e-6, sample * -100000.125, sample * 13.3]
         ).map(Math.fround);
-        const [qx, qy, qz, qw] = eulerToQuat(...rotation);
+        const [qx, qy, qz, qw] = eulerXYZToQuatTuple(...rotation);
         // SceneNode applies the pin's identity fast path, which also makes
         // an all-zero Euler tuple containing -0 produce canonical +0 lanes.
         const outer = composeTrsLocalMatrix(
@@ -98,7 +98,7 @@ test("generated matrix and pick projections match the executed pin bit for bit",
             { x: 1, y: 1, z: 1 },
         );
         const appliedOuter = new Float32Array(16);
-        mat4MultiplyInto(appliedOuter, 0, outer, 0, Float64Array.from(left), 0);
+        multiplyMat4IntoBuffer(appliedOuter, 0, outer, 0, Float64Array.from(left), 0);
         // The double arm: the unrounded composition on the left of a double
         // world, compared after one f32 narrowing (the pin's own quaternion
         // trigonometry may differ from the CRT's by an ulp in double), and
@@ -106,15 +106,15 @@ test("generated matrix and pick projections match the executed pin bit for bit",
         // translation-only root, whose product is exactly the world with
         // the translation added.
         const outerDouble = new Float64Array(16);
-        mat4ComposeInto(outerDouble, 0, translation[0]!, translation[1]!, translation[2]!,
+        composeMat4IntoBuffer(outerDouble, 0, translation[0]!, translation[1]!, translation[2]!,
             qx, qy, qz, qw, 1, 1, 1);
         const productDouble = new Float64Array(16);
-        mat4MultiplyInto(productDouble, 0, outerDouble, 0, right, 0);
+        multiplyMat4IntoBuffer(productDouble, 0, outerDouble, 0, right, 0);
         const translatedOnly = new Float64Array(16);
-        mat4ComposeInto(translatedOnly, 0, translation[0]!, translation[1]!, translation[2]!,
+        composeMat4IntoBuffer(translatedOnly, 0, translation[0]!, translation[1]!, translation[2]!,
             0, 0, 0, 1, 1, 1, 1);
         const translatedProduct = new Float64Array(16);
-        mat4MultiplyInto(translatedProduct, 0, translatedOnly, 0, right, 0);
+        multiplyMat4IntoBuffer(translatedProduct, 0, translatedOnly, 0, right, 0);
         const x = sample * 123.125 - 17.5;
         const y = sample * 31.0625 + 0.5;
         const width = 1280 + sample;

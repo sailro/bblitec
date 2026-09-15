@@ -196,7 +196,7 @@ ${cloud}`, { compactPragma: true });
             "!pickFilter && scene._pickSources.length > 0",
             "pick sources skipped under a filter",
         );
-        const mat4Invert = lowerMat4InvertCpp(this.context);
+        const invertMat4 = lowerMat4InvertCpp(this.context);
         const unprojectPoint = this.lowerUnprojectPoint();
         return {
             modulePath,
@@ -218,7 +218,7 @@ namespace bbl {
 
 namespace {
 
-${mat4Invert}
+${invertMat4}
 
 // One clip-space point through an inverse view projection, ending at the
 // pin's own \`1 / w\` divide. The picked point is this function, and so
@@ -439,7 +439,7 @@ ${billboardPick ? this.lowerBillboardWrapper() : ""}
      */
     private lowerDetailedHelpers(): string {
         const calls = pinnedNumericMathCallsWithHypot();
-        calls.set("normalizeVec3", normalizeVec3Call);
+        calls.set("normalizeVec3TupleOrUp", normalizeVec3Call);
         calls.set(
             "clampTinyBarycentric",
             (args) => `clamp_tiny_barycentric(${args.join(", ")})`,
@@ -590,7 +590,7 @@ ${billboardPick ? this.lowerBillboardWrapper() : ""}
                 booleanAnd: true,
                 booleanOr: true,
                 fixedTupleCalls: new Map([
-                    ["normalizeVec3", 3],
+                    ["normalizeVec3TupleOrUp", 3],
                     ["transformNormal", 3],
                 ]),
                 memberBindings: new Map<string, PinnedBinding>([
@@ -711,7 +711,7 @@ std::array<double, 3> detail_rest_point(
                     "const std::vector<std::uint32_t>& mesh_indices",
                     "const std::array<float, 16>& mesh_world",
                 ],
-                fixedTupleCalls: new Map([["normalizeVec3", 3]]),
+                fixedTupleCalls: new Map([["normalizeVec3TupleOrUp", 3]]),
                 memberBindings: new Map<string, PinnedBinding>([
                     ...PICK_INFO_SCALARS,
                     [
@@ -870,7 +870,7 @@ js::Nullable<js::Tuple<3>> picked_normal(
      */
     private lowerPickRay(): string {
         const calls = pinnedNumericMathCallsWithHypot();
-        calls.set("mat4Invert", (args) => `mat4_invert(${args.join(", ")})`);
+        calls.set("invertMat4", (args) => `mat4_invert(${args.join(", ")})`);
         calls.set(
             "unprojectPoint",
             (args) => `unproject_point(${args.join(", ")})`,
@@ -889,7 +889,7 @@ js::Nullable<js::Tuple<3>> picked_normal(
             {
                 cppName: "create_picking_ray",
                 calls,
-                nullableMatrixCalls: new Set(["mat4Invert"]),
+                nullableMatrixCalls: new Set(["invertMat4"]),
                 fixedTupleCalls: new Map([["unprojectPoint", 3]]),
                 returns: {
                     type: "std::optional<PickRay>",

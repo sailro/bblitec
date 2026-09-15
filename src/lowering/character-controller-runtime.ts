@@ -3,7 +3,7 @@ import type { LoweringContext } from "./context.js";
 import { characterControllerModule, lowerCharacterControllerKernel } from "./character-controller-lowerer.js";
 
 /** The pinned controller class above the existing physics/node APIs. */
-export function characterControllerHeader(context: LoweringContext): string {
+export function characterControllerHeader(context: LoweringContext, thinInstances = false): string {
     for (const [name, source] of [
         ["createPhysicsCharacterController", "return new PhysicsCharacterController(world, position, options);"],
         ["getPhysicsCharacterControllerBody", "return controller.getBody();"],
@@ -21,8 +21,10 @@ export function characterControllerHeader(context: LoweringContext): string {
     if (![ts.SyntaxKind.TrueKeyword, ts.SyntaxKind.FalseKeyword].includes(asleep.kind)) context.contractError(asleep, "Character body creation requires the pinned boolean startsAsleep default.");
     return `#pragma once
 #include <bblite/upstream/physics.hpp>
+#include <unordered_set>
 namespace bbl::character {
-struct PhysicsBody { upstream::PhysicsBody value; };
+struct NativeBody { pal::PhysicsBodyHandle handle; };
+struct PhysicsBody { upstream::PhysicsBody value; js::Ref<NativeBody> native; };
 struct PhysicsWorld { upstream::PhysicsWorldHandle value; };
 struct PhysicsShape { upstream::PhysicsShape value; };
 struct TransformNode { TransformNodeHandle value; };
@@ -32,7 +34,7 @@ ${lowerCharacterControllerKernel(context, true)}
 namespace bbl::character {
 using Query = std::tuple<double, js::Ref<QueryPoint>, js::Ref<QueryPoint>>;
 ${observableSource}
-${characterControllerAdapter(defaultRotation, defaultScale, asleep.kind === ts.SyntaxKind.TrueKeyword)}
+${characterControllerAdapter(defaultRotation, defaultScale, asleep.kind === ts.SyntaxKind.TrueKeyword, thinInstances)}
 } // namespace bbl::character
 `;
 }
@@ -69,11 +71,12 @@ public:
 `;
 }
 
-function characterControllerAdapter(defaultRotation: string, defaultScale: string, startsAsleep: boolean): string {
+function characterControllerAdapter(defaultRotation: string, defaultScale: string, startsAsleep: boolean, thinInstances: boolean): string {
     return `
 class PhysicsCharacterController final : public CharacterControllerKernel {
     Engine* engine_;
     js::Map<double, js::Ref<PhysicsBody>> body_wrappers_;
+${thinInstances ? "    js::Map<double, js::Ref<NativeBody>> instance_wrappers_;" : ""}
     js::Array<Query> proximity_, casts_;
     template<std::size_t N> static std::array<double, N> lanes(const js::Array<double>& values) {
         if (values.size() != N) throw std::runtime_error("Character PAL vector has an invalid lane count.");
@@ -102,6 +105,11 @@ class PhysicsCharacterController final : public CharacterControllerKernel {
 public:
     CharacterCollisionObservable onTriggerCollisionObservable;
     explicit PhysicsCharacterController(Engine& engine) : engine_(&engine) {}
+    void dispose() {
+        CharacterControllerKernel::dispose();
+        body_wrappers_.clear();
+${thinInstances ? "        instance_wrappers_.clear();" : ""}
+    }
     js::Ref<PhysicsShape> _create_shape(js::Ref<PhysicsWorld> world, js::Ref<ShapeDescription> shape) override {
         auto result = js::make_ref<PhysicsShape>();
         upstream::PhysicsShapeParameters parameters;
@@ -135,26 +143,65 @@ public:
     void _release_collector(js::Ref<QueryCollector> collector) override { collector->capacity = 0; }
     js::Array<js::Ref<PhysicsBody>> _world_bodies() override {
         js::Array<js::Ref<PhysicsBody>> result;
-        for (const auto& body : upstream::physics_world_state(_world->value).bodies) result.push_back(wrap_body(body));
+        std::unordered_set<double> live_bodies;
+        for (const auto& body : upstream::physics_world_state(_world->value).bodies) {
+            result.push_back(wrap_body(body));
+            live_bodies.insert(body.handle.value);
+        }
+        for (const auto& [id, wrapper] : body_wrappers_) {
+            static_cast<void>(wrapper);
+            if (!live_bodies.contains(id)) static_cast<void>(body_wrappers_.erase(id));
+        }
+${thinInstances ? `        std::unordered_set<double> live_instances;
+        for (const auto& [id, state] : upstream::physics_world_state(_world->value).thin_states) {
+            static_cast<void>(id);
+            for (const auto& handle : state.handles) live_instances.insert(handle.value);
+        }
+        for (const auto& [id, wrapper] : instance_wrappers_) {
+            static_cast<void>(wrapper);
+            if (!live_instances.contains(id)) static_cast<void>(instance_wrappers_.erase(id));
+        }` : ""}
         return result;
     }
     double _world_step_seconds() override { return upstream::physics_world_step_seconds(_world->value); }
     double _body_motion_type(js::Ref<PhysicsBody> body) override { return static_cast<double>(upstream::owning_body_record(body->value).motion_type); }
     std::optional<double> _body_identity(js::Ref<PhysicsBody> body) override { return body->value.handle.value; }
+    js::Ref<NativeBody> _native_body(js::Ref<PhysicsBody> body) override {
+        if (!body->native) body->native = js::make_ref<NativeBody>();
+        body->native->handle = body->value.handle;
+        return body->native;
+    }
+    std::optional<std::tuple<js::Ref<PhysicsBody>, js::Ref<NativeBody>, double>> _thin_resolve([[maybe_unused]] std::optional<double> id) override {
+${thinInstances ? `        if (!id) return std::nullopt;
+        const auto resolved = upstream::resolve_physics_thin_instance(_world->value, *id);
+        if (!resolved) return std::nullopt;
+        auto native = instance_wrappers_.get(*id);
+        if (!native) { native = js::make_ref<NativeBody>(); native->handle = resolved->handle; instance_wrappers_.set(*id, native); }
+        return std::tuple{wrap_body(resolved->body), native, resolved->index};` : "        return std::nullopt;"}
+    }
+    js::Ref<Vec3> _thin_com([[maybe_unused]] js::Ref<PhysicsBody> body, [[maybe_unused]] js::Ref<NativeBody> native, [[maybe_unused]] js::Array<double> center) override {
+${thinInstances ? `        const auto value = upstream::physics_thin_center(_world->value, body->value, native->handle, lanes<3>(center));
+        return value ? v(value->x, value->y, value->z) : js::Ref<Vec3>{};` : "        return {};"}
+    }
+    std::optional<js::Array<double>> _thin_matrix([[maybe_unused]] js::Ref<PhysicsBody> body, [[maybe_unused]] js::Ref<NativeBody> native) override {
+${thinInstances ? `        const auto value = upstream::physics_thin_world_matrix(_world->value, body->value, native->handle);
+        if (!value) return std::nullopt;
+        return js::Array<double>{value->begin(), value->end()};` : "        return std::nullopt;"}
+    }
     js::Array<double> _body_world_matrix(js::Ref<PhysicsBody> body) override {
         const auto& live = upstream::owning_body_record(body->value);
         const auto& engine = *live.owner.lock()->engine;
         const auto matrix = upstream::physics_node_world(engine, live.node);
         return {matrix.begin(), matrix.end()};
     }
-    std::tuple<js::Array<double>, double, js::Array<double>, js::Array<double>> _mass_properties(js::Ref<PhysicsBody> body) override {
-        auto properties = pal::physics_body_get_mass_properties(body->value.handle);
+    std::tuple<js::Array<double>, double, js::Array<double>, js::Array<double>> _mass_properties(js::Ref<NativeBody> body) override {
+        auto properties = pal::physics_body_get_mass_properties(body->handle);
         for (double& inertia : properties.inertia) inertia = properties.mass > 0 ? inertia / properties.mass : 0;
         return {array(properties.center_of_mass), properties.mass, array(properties.inertia), array(properties.inertia_orientation)};
     }
-    js::Array<double> _angular_velocity(js::Ref<PhysicsBody> body) override { return array(pal::physics_body_get_angular_velocity(body->value.handle)); }
-    js::Array<double> _linear_velocity(js::Ref<PhysicsBody> body) override { return array(pal::physics_body_get_linear_velocity(body->value.handle)); }
-    void _apply_impulse(js::Ref<PhysicsBody> body, js::Array<double> position, js::Array<double> impulse) override { pal::physics_body_apply_impulse(body->value.handle, lanes<3>(position), lanes<3>(impulse)); }
+    js::Array<double> _angular_velocity(js::Ref<NativeBody> body) override { return array(pal::physics_body_get_angular_velocity(body->handle)); }
+    js::Array<double> _linear_velocity(js::Ref<NativeBody> body) override { return array(pal::physics_body_get_linear_velocity(body->handle)); }
+    void _apply_impulse(js::Ref<NativeBody> body, js::Array<double> position, js::Array<double> impulse) override { pal::physics_body_apply_impulse(body->handle, lanes<3>(position), lanes<3>(impulse)); }
     void _set_node_position(double x, double y, double z) override { set_transform_node_position(*engine_, _node->value, {x,y,z}, true); }
     void _notify(js::Ref<CharacterCollisionEvent> event) override { onTriggerCollisionObservable.notify(*event); }
     js::Array<Query> _start_hits() override { return proximity_; }

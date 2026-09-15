@@ -10,7 +10,7 @@ export function pinnedMat4InvertHeader(context: LoweringContext): string {
     std::array<float, 16> lanes{};
     for (std::size_t i = 0; i < lanes.size(); ++i) {
         // An out-of-range typed-array read is undefined, hence NaN in the
-        // pin's arithmetic. Extra lanes are never read by mat4Invert.
+        // pin's arithmetic. Extra lanes are never read by invertMat4.
         lanes[i] = i < input.size() ? input[i] : std::numeric_limits<float>::quiet_NaN();
     }
     const auto inverse = mat4_invert_storage(lanes);

@@ -1,6 +1,6 @@
 /**
  * The camera's world matrix and the ArcRotate eye are the pinned
- * `mat4LookAtWorldLHToRef` and nested `localEyePosition` translated whole.
+ * `writeLookAtWorldMat4LHIntoBuffer` and nested `localEyePosition` translated whole.
  * These tests prove the translations are live: a doctored pin moves the
  * emitted literal, and a nested declaration that moves out of its factory
  * refuses. The un-doctored emission, both store widths included, is
@@ -12,7 +12,7 @@ import { CameraLowerer } from "../src/lowering/camera-lowerer.js";
 import { LoweringContext } from "../src/lowering/context.js";
 import { doctoredContext } from "./doctored-store.js";
 
-const LOOK_AT_MODULE = "src/math/mat4-look-at-world-lh.ts";
+const LOOK_AT_MODULE = "src/math/write-look-at-world-mat4-lh-into-buffer.ts";
 const ARC_ROTATE_MODULE = "src/camera/arc-rotate.ts";
 
 function arcRotateSource(context: LoweringContext): string {

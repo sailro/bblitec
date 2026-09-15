@@ -49,9 +49,9 @@ import { bakeCsg2Meshes, csg2BooleanNames, csg2MaterialSlotCount, type Csg2Solid
  */
 export const nativeMeshDataIntrinsics: ReadonlySet<string> = new EmissionSet([
     "createTransformNode",
-    "mat4Identity",
-    "mat4Compose",
-    "mat4Invert",
+    "createIdentityMat4",
+    "composeMat4",
+    "invertMat4",
     "setThinInstanceMatrix",
     "setThinInstanceColors",
     "setThinInstanceColor",
@@ -180,8 +180,8 @@ function compileVec3Temporary(
 type BinaryVec3Intrinsic =
     | "addVec3"
     | "addVec3ToRef"
-    | "subVec3"
-    | "subVec3ToRef"
+    | "subtractVec3"
+    | "subtractVec3ToRef"
     | "crossVec3"
     | "crossVec3ToRef";
 
@@ -197,7 +197,7 @@ function binaryVec3Components(
             `${left}.z + ${right}.z`,
         ];
     }
-    if (intrinsic === "subVec3" || intrinsic === "subVec3ToRef") {
+    if (intrinsic === "subtractVec3" || intrinsic === "subtractVec3ToRef") {
         return [
             `${left}.x - ${right}.x`,
             `${left}.y - ${right}.y`,
@@ -670,7 +670,7 @@ function compileQuatFromLookDirectionRH(context: MeshIntrinsicContext, call: ts.
     return quatRecord(temporary);
 }
 
-function compileAddVec3(context: MeshIntrinsicContext, call: ts.CallExpression, importedName: "addVec3" | "subVec3" | "crossVec3"): Value | undefined {
+function compileAddVec3(context: MeshIntrinsicContext, call: ts.CallExpression, importedName: "addVec3" | "subtractVec3" | "crossVec3"): Value | undefined {
     context.expectArgumentCount(call, 2, 2);
     const left = compileVec3Temporary(context, argumentAt(call, 0), "vec3_left");
     const right = compileVec3Temporary(context, argumentAt(call, 1), "vec3_right");
@@ -680,7 +680,7 @@ function compileAddVec3(context: MeshIntrinsicContext, call: ts.CallExpression, 
     return vec3Record(temporary);
 }
 
-function compileAddVec3ToRef(context: MeshIntrinsicContext, call: ts.CallExpression, importedName: "addVec3ToRef" | "subVec3ToRef" | "crossVec3ToRef"): Value | undefined {
+function compileAddVec3ToRef(context: MeshIntrinsicContext, call: ts.CallExpression, importedName: "addVec3ToRef" | "subtractVec3ToRef" | "crossVec3ToRef"): Value | undefined {
     context.expectArgumentCount(call, 3, 3);
     const left = compileVec3Temporary(context, argumentAt(call, 0), "vec3_left");
     const right = compileVec3Temporary(context, argumentAt(call, 1), "vec3_right");
@@ -781,9 +781,10 @@ function compileMat4Invert(context: MeshIntrinsicContext, call: ts.CallExpressio
 function compileMat4Compose(context: MeshIntrinsicContext, call: ts.CallExpression): Value | undefined {
     context.expectArgumentCount(call, 10, 10);
     context.reachJsData();
+    context.reachFeature("math:mat4-create", call);
     return {
         kind: "data",
-        cpp: `bbl::js::mat4_compose(` +
+        cpp: `bbl::upstream::compose_mat4(` +
             call.arguments
                 .map((argument) => context.compileNumber(argument, "double"))
                 .join(", ") +
@@ -852,13 +853,10 @@ function compileNormalizeVec3ToRef(context: MeshIntrinsicContext, call: ts.CallE
 function compileMat4Identity(context: MeshIntrinsicContext, call: ts.CallExpression): Value | undefined {
     context.expectArgumentCount(call, 0, 0);
     context.reachJsData();
-    // The pin allocates an identity Float32Array. Neutral translation,
-    // rotation, and scale are the exact specialization of the pinned
-    // mat4Compose stores, including the fresh array identity.
+    context.reachFeature("math:mat4-create", call);
     return {
         kind: "data",
-        cpp: `bbl::js::mat4_compose(` +
-            `0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0)`,
+        cpp: "bbl::upstream::create_identity_mat4()",
         dataType: { kind: "f32array" },
         freshData: true,
     };
@@ -867,16 +865,14 @@ function compileMat4Identity(context: MeshIntrinsicContext, call: ts.CallExpress
 function compileMat4Translation(context: MeshIntrinsicContext, call: ts.CallExpression): Value | undefined {
     context.expectArgumentCount(call, 3, 3);
     context.reachJsData();
-    // Pinned mat4Translation starts from mat4Identity and writes only
-    // indices 12..14. This is the corresponding neutral-rotation,
-    // unit-scale specialization of the already pinned compose path.
+    context.reachFeature("math:mat4-create", call);
     return {
         kind: "data",
-        cpp: `bbl::js::mat4_compose(` +
+        cpp: `bbl::upstream::create_translation_mat4(` +
             call.arguments
                 .map((argument) => context.compileNumber(argument, "double"))
                 .join(", ") +
-            `, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0)`,
+            `)`,
         dataType: { kind: "f32array" },
         freshData: true,
     };
@@ -1273,7 +1269,7 @@ function compileAddThinInstance(context: MeshIntrinsicContext, call: ts.CallExpr
     // The growing half of the pool. Unlike `setThinInstances`, the
     // matrix is copied rather than aliased -- the pin's own
     // `matrices.set(matrix, index * 16)` reads it once -- so an
-    // inline `mat4Identity()` needs no named binding here.
+    // inline `createIdentityMat4()` needs no named binding here.
     context.expectArgumentCount(call, 2, 2);
     const mesh = context.compileValue(argumentAt(call, 0));
     context.expectKind(mesh, "mesh", argumentAt(call, 0));
@@ -2170,12 +2166,12 @@ const meshIntrinsicHandlers = new EmissionMap<string, (context: MeshIntrinsicCon
     ["disposeCsg2", compileDisposeCsg2],
     ["createMeshFromCsg2", (context, call) => compileCreateMeshFromCsg2(context, call, "createMeshFromCsg2")],
     ["createMeshesFromCsg2", (context, call) => compileCreateMeshFromCsg2(context, call, "createMeshesFromCsg2")],
-    ["quatFromLookDirectionRH", compileQuatFromLookDirectionRH],
+    ["createQuatFromLookDirectionRH", compileQuatFromLookDirectionRH],
     ["addVec3", (context, call) => compileAddVec3(context, call, "addVec3")],
-    ["subVec3", (context, call) => compileAddVec3(context, call, "subVec3")],
+    ["subtractVec3", (context, call) => compileAddVec3(context, call, "subtractVec3")],
     ["crossVec3", (context, call) => compileAddVec3(context, call, "crossVec3")],
     ["addVec3ToRef", (context, call) => compileAddVec3ToRef(context, call, "addVec3ToRef")],
-    ["subVec3ToRef", (context, call) => compileAddVec3ToRef(context, call, "subVec3ToRef")],
+    ["subtractVec3ToRef", (context, call) => compileAddVec3ToRef(context, call, "subtractVec3ToRef")],
     ["crossVec3ToRef", (context, call) => compileAddVec3ToRef(context, call, "crossVec3ToRef")],
     ["scaleVec3", compileScaleVec3],
     ["scaleVec3ToRef", compileScaleVec3ToRef],
@@ -2184,13 +2180,13 @@ const meshIntrinsicHandlers = new EmissionMap<string, (context: MeshIntrinsicCon
     ["dotVec3", compileDotVec3],
     ["setMeshVisible", compileSetMeshVisible],
     ["setSubtreeVisible", compileSetMeshVisible],
-    ["mat4Invert", compileMat4Invert],
-    ["mat4Compose", compileMat4Compose],
-    ["normalizeVec3", compileNormalizeVec3],
-    ["normalizeVec3Object", compileNormalizeVec3Object],
+    ["invertMat4", compileMat4Invert],
+    ["composeMat4", compileMat4Compose],
+    ["normalizeVec3TupleOrUp", compileNormalizeVec3],
+    ["normalizeVec3", compileNormalizeVec3Object],
     ["normalizeVec3ToRef", compileNormalizeVec3ToRef],
-    ["mat4Identity", compileMat4Identity],
-    ["mat4Translation", compileMat4Translation],
+    ["createIdentityMat4", compileMat4Identity],
+    ["createTranslationMat4", compileMat4Translation],
     ["setParent", compileSetParent],
     ["cloneTransformNode", compileCloneTransformNode],
     ["createMeshFromData", compileCreateMeshFromData],

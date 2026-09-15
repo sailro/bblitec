@@ -14313,6 +14313,7 @@ public:
         ++frame;
         const double end = monotonic_milliseconds();
         const long completed_frame = frame - 1;
+        data_.frame_rate_profile.complete(completed_frame);
         if (cpu_profile && completed_frame % 30 == 0) {
             std::size_t draw_commands =
                 render_plan.draw_lists.opaque.commands.size() +

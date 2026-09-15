@@ -2586,6 +2586,7 @@ export type Feature =
   | "physics:heightfield"
   | "physics:trigger"
   | "physics:floating-origin"
+  | "physics:thin-instances"
   | "scene:remove"
   | "scene:node-transforms"
   // `src/math/normalize-vec3.ts`, which a scene calls directly and the
@@ -2594,7 +2595,8 @@ export type Feature =
   // two reaches it.
   | "math:normalize-vec3"
   | "math:mat4-invert"
-  // `src/math/quat-from-look-direction-rh.ts` and its rotation-basis helper,
+  | "math:mat4-create"
+  // `src/math/create-quat-from-look-direction-rh.ts` and its rotation-basis helper,
   // translated together only when scene code calls the public function.
   | "math:look-direction"
   // GPU picking. The pin's own split is by PIPELINE rather than by entry
