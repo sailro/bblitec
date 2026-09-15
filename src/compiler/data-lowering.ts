@@ -657,8 +657,12 @@ export class DataLowerer {
     }
 
     public dataTypeAt(node: ts.Node): DataType | undefined {
+        // The checker types a private name only through its symbol; the
+        // name node itself answers `any`.
+        const checker = this.context.checker;
+        const symbol = ts.isPrivateIdentifier(node) ? checker.getSymbolAtLocation(node) : undefined;
         return this.context.dataTypes.fromTsType(
-            this.context.checker.getTypeAtLocation(node),
+            symbol ? checker.getTypeOfSymbolAtLocation(symbol, node) : checker.getTypeAtLocation(node),
             node,
         );
     }

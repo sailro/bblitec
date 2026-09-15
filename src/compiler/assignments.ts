@@ -1480,12 +1480,6 @@ export function emitPropertyAssignment(
     if (existing) {
       failClassFieldRebind(context, expression, left.name.text);
     }
-    if (!ts.isIdentifier(left.name)) {
-      context.fail(
-        left.name,
-        "Private class fields are outside the supported subset.",
-      );
-    }
     context.bindClassField(left.name, expression.right);
     fields[left.name.text] = context.compileValue(left.name);
     return;

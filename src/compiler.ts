@@ -6615,7 +6615,7 @@ class Compiler
         const method = declaration.members.find(
             (member): member is ts.MethodDeclaration =>
                 ts.isMethodDeclaration(member) &&
-                ts.isIdentifier(member.name) &&
+                ts.isMemberName(member.name) &&
                 member.name.text === callee.name.text &&
                 (ts.getCombinedModifierFlags(member) &
                     ts.ModifierFlags.Static) !==
@@ -8204,8 +8204,12 @@ class Compiler
     }
 
     public allocateTemporaryCppName(label: string): string {
+        // The label is a readability hint the index makes unique; a label
+        // taken from source (a private name's sigil) must still spell an
+        // identifier.
+        const safe = sanitizeCppIdentifier(label);
         while (true) {
-            const candidate = `v_bblite_${label}_${this.temporaryIndex++}`;
+            const candidate = `v_bblite_${safe}_${this.temporaryIndex++}`;
             if (!this.sourceCppNames.has(candidate)) {
                 this.sourceCppNames.add(candidate);
                 return candidate;
@@ -9170,7 +9174,7 @@ class Compiler
      * would otherwise fold to.
      */
     public bindClassField(
-        name: ts.Identifier,
+        name: ts.MemberName,
         initializer: ts.Expression,
         declared?: DataType,
     ): void {
@@ -9232,7 +9236,7 @@ class Compiler
         );
     }
 
-    private classFieldNeedsSharedStorage(name: ts.Identifier): boolean {
+    private classFieldNeedsSharedStorage(name: ts.MemberName): boolean {
         const symbol = this.symbols.valueSymbol(name);
         const declaration = symbol?.declarations?.find(
             (candidate) =>
@@ -9253,7 +9257,7 @@ class Compiler
     }
 
     /** Predeclare an uninitialized nullable resource class field. */
-    public bindNullableClassField(name: ts.Identifier): Value | undefined {
+    public bindNullableClassField(name: ts.MemberName): Value | undefined {
         const resource = this.nullableResourceKind(name);
         if (!resource) return undefined;
         const sharedStorage = this.classFieldNeedsSharedStorage(name);
@@ -9289,7 +9293,7 @@ class Compiler
      * parameter's non-owning span representation.
      */
     public bindUninitializedClassDataField(
-        name: ts.Identifier,
+        name: ts.MemberName,
         declared?: DataType,
     ): Value | undefined {
         const dataType = declared ?? this.dataLowerer.dataTypeAt(name);
@@ -9347,7 +9351,7 @@ class Compiler
      * so projecting its members into typed storage cannot rerun factories.
      */
     public bindClassDataField(
-        name: ts.Identifier,
+        name: ts.MemberName,
         initializer: ts.Expression,
         declared?: DataType,
         knownValue?: Value,
@@ -11563,7 +11567,7 @@ class Compiler
             : undefined;
     }
 
-    public lookupOptional(identifier: ts.Identifier): Value | undefined {
+    public lookupOptional(identifier: ts.MemberName): Value | undefined {
         const symbol = this.symbols.valueSymbol(identifier);
         if (!symbol) {
             return undefined;
@@ -11611,7 +11615,7 @@ class Compiler
      * it; refusing is what makes the rebind safe to allow at all.
      */
     private refusePoisonedRebind(
-        identifier: ts.Identifier,
+        identifier: ts.MemberName,
         binding: VariableBinding,
     ): void {
         if (!binding.reboundInNestedScope) return;
@@ -11625,7 +11629,7 @@ class Compiler
     }
 
     private refuseDeadDeferredCapture(
-        identifier: ts.Identifier,
+        identifier: ts.MemberName,
         scopeIndex: number,
         frameLocal: boolean,
     ): void {
@@ -11648,7 +11652,7 @@ class Compiler
     }
 
     private refuseEscapingPlatformEventCapture(
-        identifier: ts.Identifier,
+        identifier: ts.MemberName,
         scopeIndex: number,
         value: Value,
         floor = this.escapingPlatformEventCaptureFloor,
@@ -12374,7 +12378,7 @@ class Compiler
     }
 
     /** The value symbol a name binds, or a failure naming it. */
-    private requireValueSymbol(identifier: ts.Identifier): ts.Symbol {
+    private requireValueSymbol(identifier: ts.MemberName): ts.Symbol {
         const symbol = this.symbols.valueSymbol(identifier);
         if (!symbol) {
             this.fail(
@@ -12567,7 +12571,7 @@ class Compiler
         innermost.set(symbol, rebound);
     }
 
-    public defineVariable(identifier: ts.Identifier, value: Value): void {
+    public defineVariable(identifier: ts.MemberName, value: Value): void {
         if (this.options.workers && value.kind === "engine" && value.optionalStorageCpp && !value.ownedEngineCpp) {
             const ownedEngineCpp = value.cpp;
             value = { ...value, ownedEngineCpp, cpp: `(*${ownedEngineCpp})`, engineCpp: `(*${ownedEngineCpp})` };
@@ -13485,13 +13489,17 @@ class Compiler
     }
 
     private bindLocalOrParameterValue(
-        identifier: ts.Identifier,
+        identifier: ts.MemberName,
         value: Value,
         parameter: boolean,
         explicitCppName?: string,
         sharedStorage = false,
     ): void {
         this.useNativeValue(value);
+        // A parameter the function never rebinds keeps its argument as the
+        // binding; a private name is never a parameter.
+        const readOnlyParameter = parameter && ts.isIdentifier(identifier) && ts.isParameter(identifier.parent) &&
+            isSupportedFunction(identifier.parent.parent) && parameterIsReadOnly(this.checker, identifier.parent.parent, identifier);
         if (value.kind === "void") {
             this.fail(
                 identifier,
@@ -13510,9 +13518,7 @@ class Compiler
             return;
         }
         if (
-            (value.kind === "string" && (!parameter ||
-                (ts.isParameter(identifier.parent) && isSupportedFunction(identifier.parent.parent) &&
-                    parameterIsReadOnly(this.checker, identifier.parent.parent, identifier)))) ||
+            (value.kind === "string" && (!parameter || readOnlyParameter)) ||
             value.kind === "callback" ||
             isCompileTimeOnlyValue(value.kind)
         ) {
@@ -13571,10 +13577,8 @@ class Compiler
             );
         }
         const storedCpp = sharedStorage ? `(*${cppName})` : cppName;
-        const constantParameter = parameter && value.kind === "number" &&
-            value.staticNumber !== undefined && !value.parameterBinding &&
-            ts.isParameter(identifier.parent) && isSupportedFunction(identifier.parent.parent) &&
-            parameterIsReadOnly(this.checker, identifier.parent.parent, identifier);
+        const constantParameter = readOnlyParameter && value.kind === "number" &&
+            value.staticNumber !== undefined && !value.parameterBinding;
         const stored: Value = {
             ...value,
             cpp: storedCpp,

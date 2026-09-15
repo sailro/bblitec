@@ -475,7 +475,14 @@ export class ExpressionLowerer {
             }
             return instance;
         }
-        if (ts.isIdentifier(unwrapped)) {
+        if (ts.isMemberName(unwrapped)) {
+            // A private name is an expression only as the left operand of a
+            // brand check, which nothing represents, and as the read-back of
+            // a class field the constructor just bound.
+            if (ts.isPrivateIdentifier(unwrapped) && ts.isBinaryExpression(unwrapped.parent) &&
+                unwrapped.parent.operatorToken.kind === ts.SyntaxKind.InKeyword) {
+                this.context.fail(unwrapped.parent, "Private brand checks are outside the supported subset.");
+            }
             const value = this.context.lookupOptional(unwrapped);
             if (value) {
                 const narrowed =
@@ -489,6 +496,9 @@ export class ExpressionLowerer {
                     unwrapped,
                     narrowed,
                 );
+            }
+            if (ts.isPrivateIdentifier(unwrapped)) {
+                this.context.fail(unwrapped, `Private name '${unwrapped.text}' is a member, not a value.`);
             }
             if (
                 unwrapped.text === "devicePixelRatio" &&

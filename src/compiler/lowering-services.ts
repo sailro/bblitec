@@ -361,11 +361,11 @@ export interface LoweringServices {
     compileRecordSetter(owner: Value, setter: ts.SetAccessorDeclaration, value: ts.Expression): void;
     withRecordScopes<T>(owner: Value, work: () => T, method?: ts.Node): T;
     captureRecordScopes(): Pick<Value, "recordScopes" | "recordTypeArguments">;
-    bindClassField(name: ts.Identifier, initializer: ts.Expression, declared?: DataType): void;
-    bindNullableClassField(name: ts.Identifier): Value | undefined;
-    bindUninitializedClassDataField(name: ts.Identifier, declared?: DataType): Value | undefined;
+    bindClassField(name: ts.MemberName, initializer: ts.Expression, declared?: DataType): void;
+    bindNullableClassField(name: ts.MemberName): Value | undefined;
+    bindUninitializedClassDataField(name: ts.MemberName, declared?: DataType): Value | undefined;
     bindOptionalResourceValue(name: ts.Identifier): Value | undefined;
-    bindClassDataField(name: ts.Identifier, initializer: ts.Expression, declared?: DataType, knownValue?: Value): Value | undefined;
+    bindClassDataField(name: ts.MemberName, initializer: ts.Expression, declared?: DataType, knownValue?: Value): Value | undefined;
     resolveThisField(name: string): Value | undefined;
     activeThis(): Value | undefined;
     registerClassInstance(instance: Value, declaration: ts.ClassDeclaration): void;
@@ -475,7 +475,7 @@ export interface LoweringServices {
     emitStartContinuationGate(expression: ts.Expression, latch: string): void;
     constantInitializer(identifier: ts.Identifier): ts.Expression | undefined;
     moduleFunctionDeclaration(identifier: ts.Identifier): ts.FunctionDeclaration | undefined;
-    lookupOptional(identifier: ts.Identifier): Value | undefined;
+    lookupOptional(identifier: ts.MemberName): Value | undefined;
     refuseBorrowedPlatformEventEscape(value: Value, node: ts.Node, destination: string): void;
     declaredDataProperty(expression: ts.PropertyAccessExpression): Value | undefined;
     readResolvedProperty(owner: Value, expression: ts.PropertyAccessExpression): Value | undefined;
