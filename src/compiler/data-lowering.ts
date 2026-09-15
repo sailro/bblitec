@@ -1616,8 +1616,16 @@ export class DataLowerer {
         const leftNode = this.context.unwrap(expression.left);
         const storage = ts.isIdentifier(leftNode) || ts.isPropertyAccessExpression(leftNode)
             ? this.context.probeEmission(() => this.compileDataPath(expression.left, "read")) : undefined;
-        const left = storage ??
+        const computed = storage ??
             this.context.compileValue(expression.left);
+        // A struct a call produced carries its presence flag spelled from
+        // the call itself; testing the flag and then reading the value
+        // would run the call twice, so it is pinned first. Storage and
+        // bindings are already stable names.
+        const left = !storage && computed.kind === "data" && computed.dataType?.kind === "struct" &&
+            computed.optionalFoundCpp !== undefined && !computed.nativeBinding && !computed.parameterBinding
+            ? this.context.pinValueToTemporary(computed, "nullish", expression.left)
+            : computed;
         if (left.kind === "json-null") {
             return this.context.compileValue(
                 expression.right,

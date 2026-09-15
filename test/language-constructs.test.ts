@@ -1595,6 +1595,30 @@ check("private-class-members", `
     if (total !== 15) throw new Error("stored generic private fields " + total);
 `);
 
+check("nullish-evaluates-once", `
+    interface Item { id: number; text: string; }
+    const queue: Item[] = [{ id: 1, text: "one" }, { id: 2, text: "two" }, { id: 3, text: "three" }, { id: 4, text: "four" }];
+    let current: Item | null = null;
+    current = queue.shift() ?? null;
+    if (current?.id !== 1 || queue.length !== 3) throw new Error("shift once");
+    const spare: Item = { id: 9, text: "spare" };
+    const last = queue.pop() ?? spare;
+    if (last.id !== 4 || queue.length !== 2) throw new Error("pop once");
+    const tail = queue.at(-1) ?? spare;
+    if (tail.id !== 3) throw new Error("at once");
+    let calls = 0;
+    function next(): Item | undefined { calls++; return queue.pop(); }
+    const first = next() ?? spare;
+    const second = next() ?? spare;
+    if (first.id !== 3 || second.id !== 2 || calls !== 2 || queue.length !== 0) throw new Error("call once " + calls);
+    let searched = 0;
+    const missing = queue.find((item) => { searched++; return item.id === 42; }) ?? spare;
+    if (missing.id !== 9 || searched !== 0) throw new Error("fallback " + searched);
+    const numbers: number[] = [4, 5];
+    const head = numbers.shift() ?? -1;
+    if (head !== 4 || numbers.length !== 1) throw new Error("number shift once");
+`);
+
 test("private brand checks refuse explicitly", () => {
     assert.throws(() => compileSource(`
         class Tagged { #mark = 1; static has(value: object): boolean { return #mark in value; } }
