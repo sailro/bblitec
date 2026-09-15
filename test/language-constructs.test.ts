@@ -1595,25 +1595,27 @@ check("private-class-members", `
     if (total !== 15) throw new Error("stored generic private fields " + total);
 `);
 
-check("nullish-evaluates-once", `
-    interface Item { id: number; text: string; }
-    const queue: Item[] = [{ id: 1, text: "one" }, { id: 2, text: "two" }, { id: 3, text: "three" }, { id: 4, text: "four" }];
+check("struct-results-evaluate-once", `
+    interface Item { id: number; }
+    const queue: Item[] = [{ id: 1 }, { id: 2 }, { id: 3 }];
     let current: Item | null = null;
     current = queue.shift() ?? null;
-    if (current?.id !== 1 || queue.length !== 3) throw new Error("shift once");
-    const spare: Item = { id: 9, text: "spare" };
+    if (current?.id !== 1 || queue.length !== 2) throw new Error("shift once");
+    const spare: Item = { id: 9 };
     const last = queue.pop() ?? spare;
-    if (last.id !== 4 || queue.length !== 2) throw new Error("pop once");
-    const tail = queue.at(-1) ?? spare;
-    if (tail.id !== 3) throw new Error("at once");
-    let calls = 0;
-    function next(): Item | undefined { calls++; return queue.pop(); }
-    const first = next() ?? spare;
-    const second = next() ?? spare;
-    if (first.id !== 3 || second.id !== 2 || calls !== 2 || queue.length !== 0) throw new Error("call once " + calls);
-    let searched = 0;
-    const missing = queue.find((item) => { searched++; return item.id === 42; }) ?? spare;
-    if (missing.id !== 9 || searched !== 0) throw new Error("fallback " + searched);
+    if (last.id !== 3 || queue.length !== 1) throw new Error("pop once");
+    function next(): Item | undefined { return queue.pop(); }
+    const inlined = next() ?? spare;
+    if (inlined.id !== 2 || queue.length !== 0) throw new Error("inlined call once");
+    let taken = 0;
+    const pool: Item[] = [{ id: 5 }, { id: 6 }];
+    function take(): Item { taken++; return pool[taken - 1]; }
+    const sum = take().id + take().id;
+    if (sum !== 11 || taken !== 2) throw new Error("snapshot once " + sum);
+    class Node { id: number; constructor(id: number) { this.id = id; } bump(): void { this.id++; } }
+    const nodes: Node[] = [new Node(1), new Node(2)];
+    nodes.pop()?.bump();
+    if (nodes.length !== 1 || nodes[0].id !== 1) throw new Error("receiver once");
 `);
 
 test("private brand checks refuse explicitly", () => {

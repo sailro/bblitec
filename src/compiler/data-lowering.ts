@@ -1608,11 +1608,9 @@ export class DataLowerer {
      * Anything else returns undefined and the caller's refusal names the
      * routes.
      */
-    /** The struct a call produced, held in a temporary its identity and presence spellings follow. */
-    private pinStructOperand(value: Value, dataType: DataType): Value {
-        const temporary = this.context.allocateTemporaryCppName("nullish");
-        this.context.emit({ kind: "declaration", type: "const auto", name: temporary, initializer: value.cpp });
-        return withNativeMetadata(this.leafValue(temporary, dataType), value);
+    /** Whether a reference struct spelled `cpp` holds an object: the one presence spelling a leaf derives. */
+    private referencePresence(cpp: string): string {
+        return `static_cast<bool>(${cpp})`;
     }
 
     public compileNullishCoalesce(
@@ -1630,9 +1628,9 @@ export class DataLowerer {
         // would run the call twice, so the call is pinned first and the
         // spellings follow the temporary. A name reads twice for free, and
         // a flag another source supplied selects the value once already.
-        const left = !storage && computed.kind === "data" && computed.dataType?.kind === "struct" &&
-            computed.optionalFoundCpp === `static_cast<bool>(${computed.cpp})` && !cppIdentifierPattern.test(computed.cpp)
-            ? this.pinStructOperand(computed, computed.dataType)
+        const left = !storage && computed.dataType?.kind === "struct" &&
+            computed.optionalFoundCpp === this.referencePresence(computed.cpp) && !cppIdentifierPattern.test(computed.cpp)
+            ? this.context.pinValueToTemporary(computed, "nullish", expression.left)
             : computed;
         if (left.kind === "json-null") {
             return this.context.compileValue(
@@ -3366,7 +3364,7 @@ export class DataLowerer {
                   )
                     ? {
                           objectIdentityCpp: `${cpp}.get()`,
-                          optionalFoundCpp: `static_cast<bool>(${cpp})`,
+                          optionalFoundCpp: this.referencePresence(cpp),
                       }
                     : { objectIdentityCpp: `std::addressof(${cpp})` }
                 : {}),
