@@ -2,6 +2,7 @@ import { someAnalysisNode, forEachAnalysisNode } from "./analysis-walk.js";
 import { emissionArray, EmissionMap, EmissionSet, EmissionWeakSet } from "./emission-transaction.js";
 import type { LoweringServices } from "./lowering-services.js";
 import ts from "typescript";
+import { traceSourceNode } from "./source-trace.js";
 import { cppIdentifierPattern, doubleLiteral } from "../cpp-literals.js";
 import { emitParticleAliveGuard } from "./particle-buffer.js";
 import {
@@ -2829,6 +2830,7 @@ export class StatementLowerer {
         context: StatementLoweringContext,
         expression: ts.Expression,
     ): void {
+        traceSourceNode(expression);
         context.checkNodeGeometryMutation(expression);
         const input = context.compileNodeInputMutation(expression);
         if (input) { context.emitDiscardedValue(input); return; }

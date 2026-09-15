@@ -1,5 +1,6 @@
 import { EmissionSet } from "../emission-transaction.js";
 import ts from "typescript";
+import { CompileError } from "../compile-error.js";
 import { compileCharacterIntrinsic } from "./character-controller.js";
 import {
     compileAnimationIntrinsic,
@@ -182,6 +183,16 @@ const intrinsicCompilers: readonly IntrinsicCompiler[] = [
     compileVatIntrinsic,
 ];
 
+export interface IntrinsicRoute { name: string; lowerer?: string; outcome: "accepted" | "refused" | "missing"; }
+let routeObserver: ((route: IntrinsicRoute) => void) | undefined;
+
+/** Tooling can distinguish a claimed name from an unregistered fallthrough. */
+export function observeIntrinsicRouting(next: (route: IntrinsicRoute) => void): () => void {
+    const previous = routeObserver;
+    routeObserver = next;
+    return () => { routeObserver = previous; };
+}
+
 /**
  * A pinned constant a scene imports by name. Same shape as the call
  * dispatch: each family answers for its own exports, and an unknown name
@@ -201,14 +212,20 @@ export function compileRegisteredIntrinsic(
     call: ts.CallExpression,
 ): Value | undefined {
     for (const compile of intrinsicCompilers) {
-        const value = compile(
+        let value: Value | undefined;
+        try { value = compile(
             context,
             importedName,
             call,
-        );
+        ); } catch (error) {
+            if (error instanceof CompileError) routeObserver?.({ name: importedName, lowerer: compile.name, outcome: "refused" });
+            throw error;
+        }
         if (value) {
+            routeObserver?.({ name: importedName, lowerer: compile.name, outcome: "accepted" });
             return value;
         }
     }
+    routeObserver?.({ name: importedName, outcome: "missing" });
     return undefined;
 }

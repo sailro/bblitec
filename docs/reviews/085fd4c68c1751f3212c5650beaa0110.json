@@ -1,0 +1,23 @@
+{
+  "angles": ["reuse", "simplification", "efficiency", "altitude"],
+  "findings": [
+    {"summary": "Reuse atomic writeJsonRecord for reports and receipts.", "applied": true},
+    {"summary": "Reuse shared assignment, update, property-name and source-location helpers.", "applied": true},
+    {"summary": "Share fingerprint construction for ordinary and merged declarations.", "applied": true},
+    {"summary": "Format usage types and locations only after an API target matches.", "applied": true},
+    {"summary": "Reuse the shared pinned source store in inventory and compilation.", "applied": true},
+    {"summary": "Index cases by target and receipts by case ID.", "applied": true},
+    {"summary": "Precompute report search text and case lookup maps.", "applied": true},
+    {"summary": "Reuse runLoggedProcess for baseline collection.", "applied": true},
+    {"summary": "Separate baseline validation into typed readers and consolidate identifier handling.", "applied": true},
+    {"summary": "Journal reached nodes using EmissionWeakSet and emissionArray.", "applied": true},
+    {"summary": "Cache declaration kinds and reuse contentDigest for file hashes.", "applied": true},
+    {"summary": "Stream trace files during baseline consolidation.", "applied": true},
+    {"summary": "Use scoped observers instead of excluding test filenames.", "applied": true},
+    {"summary": "Resolve option provenance with the TypeScript checker instead of duplicating source evaluation.", "applied": true},
+    {"summary": "Prepare translation metadata lazily when observation is enabled.", "applied": true},
+    {"summary": "Deduplicate translation events before hashing pinned source text.", "applied": true},
+    {"summary": "Record actual adapter dispatches at the shared numeric translator.", "applied": true},
+    {"summary": "Recover translated source owners from visited original nodes using ts.findAncestor.", "applied": true}
+  ]
+}

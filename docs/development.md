@@ -299,6 +299,33 @@ Update pin, package lock, corpus catalog and reference provenance together. Run 
 full generation, corpus:verify and validation. `corpus:manifest -- --previous-version <version>
 --previous-commit <sha>` previews changes before `--write`; offline mode cannot verify uncached origins.
 
+API updates: `npm run api -- diff`, update affected cases/fingerprints, then
+`npm run api -- snapshot --write` and `npm run api -- report --run`.
+`test:upstream` rejects snapshot or coverage-target drift from the installed pin.
+
+## API coverage
+
+```powershell
+npm run api -- report --run
+npm run api -- report --filter BoxOptions
+npm run api -- check
+npm run api -- diff --baseline <previous-snapshot.json>
+```
+
+Searchable HTML/JSON reports, logs and receipts live in ignored `artifacts/api-coverage`;
+`--output <directory>` changes the destination. [Features](features.md#api-coverage-inventory) owns the metrics.
+
+`report --run` collects compiler evidence from all tests and registered scenes/demos, then runs semantic cases.
+Scenes use their registered query and host companion. Missing corpus entries, failed/skipped tests or missing
+scene receipts prevent publication. Collection leaves native outputs intact.
+`report` reuses current receipts, scans corpus/fixture references (including unused code), and probes
+entry routing with omitted arguments. It executes no test suite or native programs.
+
+Semantic cases contain `id`, `level` (`generation`, `native`, `parity`, `refusal`), `scope`, `limitations`,
+`test: {file, name}`, and `targets: [{id, fingerprint}]`. Targets describe the named test's assertions.
+Receipts bind cases, pin/descriptor, compiler/runtime/test/tooling/corpus inputs and Node/platform identity;
+changed external toolchains/assets and other hosts require separate qualification. Snapshot acceptance is explicit.
+
 ## Windows troubleshooting
 
 | Failure | Action |

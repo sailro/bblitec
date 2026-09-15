@@ -22,6 +22,25 @@ uploads and rendering run natively. There is no general JavaScript interpreter o
 `upstream/feature-activation.json` records sites, decisions and consumers. Reaching a factory can
 activate its module even when one of its options is disabled.
 
+### API coverage inventory
+
+The pinned `index.d.ts` supplies [`upstream/babylon-lite-api.json`](../upstream/babylon-lite-api.json):
+exports, overloads, methods, fields/accessors, index signatures and reachable types. Fingerprints include
+type dependencies. Inherited fields belong to their declaring type; external peer APIs and stripped internals are excluded.
+
+| Evidence | Scope |
+| --- | --- |
+| Exercised forms | Successful AST lowering across the full test suite and every registered scene/demo, including dynamic test inputs |
+| Source translation | Generated pinned bodies, configured bindings/specializations, and dispatched call/method/expression/statement adapters |
+| Entry adapters | Registry probes and passing source forms; imported Babylon calls require an entry adapter even when their bodies translate |
+| Semantic cases | Scoped native/parity assertions and refusals in [`upstream/api-coverage.json`](../upstream/api-coverage.json) |
+
+Exercise percentages separate signatures, fields/accessors, constants and callbacks; type containers are excluded.
+They qualify exercised forms only. Failed compilations, discarded probes and stale receipts earn no credit.
+Unassessed declarations and type-dependent probe fallthrough mean unknown; `partial` combines positive and refusal evidence.
+The remaining adapter boundary is unclassified, so no overall PAL completion percentage is available.
+See [collection commands](development.md#api-coverage).
+
 ## Program compilation
 
 | Area | Supported | Limits |

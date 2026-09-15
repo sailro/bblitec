@@ -24,6 +24,7 @@
  * keeps a changed pinned body visible instead of silently stale.
  */
 import ts from "typescript";
+import { pinnedTranslationObserved, TranslationActivity } from "./translation-trace.js";
 import { cppIdentifier } from "../cpp-literals.js";
 import { isAssignmentExpression, isUpdateExpression } from "../compiler/syntax.js";
 import { sourceLocation } from "../source-location.js";
@@ -481,6 +482,7 @@ const TYPED_ARRAY_CONVERSIONS: ReadonlyMap<
 ]);
 
 export class PinnedNumericLowerer {
+    readonly translationActivity = pinnedTranslationObserved() ? new TranslationActivity() : undefined;
     public constructor(
         private readonly file: ts.SourceFile,
         private readonly scope: PinnedNumericScope,
@@ -532,8 +534,12 @@ export class PinnedNumericLowerer {
     }
 
     public statement(statement: ts.Statement, indent: string): string[] {
+        this.translationActivity?.node(statement);
         const adapted = this.scope.statement?.(statement, this, indent);
-        if (adapted !== undefined) return [...adapted];
+        if (adapted !== undefined) {
+            this.translationActivity?.request("statement", statement, this.file);
+            return [...adapted];
+        }
         if (ts.isContinueStatement(statement) && !statement.label) {
             return [`${indent}continue;`];
         }
@@ -2103,6 +2109,7 @@ export class PinnedNumericLowerer {
     }
 
     public renderExpression(expression: ts.Expression): RenderedCpp {
+        this.translationActivity?.node(expression);
         if (this.scope.expressionSpelling?.parentheses === "source" && ts.isNonNullExpression(expression)) {
             return this.renderExpression(expression.expression);
         }
@@ -2110,7 +2117,9 @@ export class PinnedNumericLowerer {
             return cppPrimary(`(${this.expression(expression.expression)})`);
         }
         const node = unwrapExpression(expression);
-        const domain = this.scope.expression?.(node, this) ?? this.expressionDomain(node);
+        const adapted = this.scope.expression?.(node, this);
+        if (adapted !== undefined) this.translationActivity?.request("expression", node, this.file);
+        const domain = adapted ?? this.expressionDomain(node);
         if (domain !== undefined) return typeof domain === "string" ? cppPrimary(domain) : domain;
         return renderPinnedArithmetic(node, child => this.renderExpression(child), this.scope.expressionSpelling)
             ?? this.fail(node, ts.isBinaryExpression(node) ? "binary operator" : "expression");
@@ -2769,7 +2778,11 @@ export class PinnedNumericLowerer {
         // scratch it was specialized over. Only the caller can give that
         // spelling, so it is keyed by the call rather than the callee.
         const site = this.scope.calls.get(node.getText(this.file));
-        if (site) return site(args);
+        if (site) {
+            const result = site(args);
+            this.translationActivity?.request("call", node, this.file);
+            return result;
+        }
         // `steps[s]!(i)` -- a call through a bound function list.
         const indexed = unwrapExpression(callee);
         if (ts.isElementAccessExpression(indexed)) {
@@ -2850,7 +2863,9 @@ export class PinnedNumericLowerer {
                 callee.expression.getText(this.file),
             );
             if (method && receiver) {
-                return method(receiver.cpp, args, receiver);
+                const result = method(receiver.cpp, args, receiver);
+                this.translationActivity?.request("method", node, this.file);
+                return result;
             }
             // `edges[ei]!.place(...)` -- the receiver is an ELEMENT of a
             // bound list rather than a name. The element resolves through
@@ -2860,7 +2875,11 @@ export class PinnedNumericLowerer {
             const element = unwrapExpression(callee.expression);
             if (method && ts.isElementAccessExpression(element)) {
                 const owner = this.elementOwner(element);
-                if (owner) return method(this.elementAccess(element), args, owner);
+                if (owner) {
+                    const result = method(this.elementAccess(element), args, owner);
+                    this.translationActivity?.request("method", node, this.file);
+                    return result;
+                }
             }
         }
         const name = ts.isPropertyAccessExpression(callee)
@@ -2871,7 +2890,9 @@ export class PinnedNumericLowerer {
         if (!name) this.fail(node, "call target");
         const spelling = this.scope.calls.get(name);
         if (!spelling) this.fail(node, `call '${name}'`);
-        return spelling(args);
+        const result = spelling(args);
+        this.translationActivity?.request("call", node, this.file);
+        return result;
     }
 
     private binary(node: ts.BinaryExpression): string | undefined {

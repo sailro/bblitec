@@ -6,6 +6,7 @@ import { SharedNativeFunctions } from "./compiler/shared-native-functions.js";
 import { renderNativeDeclaration, type NativeDeclaration } from "./compiler/native-declarations.js";
 import { persistContinuationLocals } from "./compiler/continuation-storage.js";
 import ts from "typescript";
+import { traceSourceApplication, traceSourceProgram, traceSourceNode } from "./compiler/source-trace.js";
 import {hasDynamicObjectSpread, isJsonValue} from "./compiler/json-bridge.js";
 import {DynamicBindingStorageRequired} from "./compiler/dynamic-binding-storage.js";
 import {NativeRecordStorageRequired, type NativeRecordStorageDemand} from "./compiler/native-record-storage.js";
@@ -454,6 +455,10 @@ export function compileSource(
     source: string,
     options: CompileOptions = {},
 ): CompileResult {
+    return traceSourceApplication(() => compileSourceApplication(source, options));
+}
+
+function compileSourceApplication(source: string, options: CompileOptions): CompileResult {
     const fileName = options.fileName ?? "input.ts";
     const environment = deploymentEnvironment(options);
     const frontend = createCompilerProgram(source, fileName);
@@ -479,7 +484,7 @@ export function compileSource(
         for (;;) {
             try {
                 const compiler = new Compiler(input.program, input.sourceFile, input.checker, resolved, dynamicBindings, ownedRecords);
-                const result = compiler.compile();
+                const result = traceSourceProgram(input.program, () => compiler.compile());
                 result.manifest.inputs = input.localFiles;
                 return result;
             } catch (error) {
@@ -4575,6 +4580,7 @@ class Compiler
     }
 
     public emitAssignment(expression: ts.BinaryExpression): void {
+        traceSourceNode(expression.left);
         this.checkNodeGeometryMutation(expression);
         const input = this.compileNodeInputMutation(expression);
         if (input) { this.emitDiscardedValue(input); return; }
@@ -4820,6 +4826,7 @@ class Compiler
     }
 
     public compileValue(expression: ts.Expression): Value {
+        traceSourceNode(expression);
         this.checkNodeGeometryMutation(expression);
         const boundary = this.nextNativeBindingSequence;
         const dependencies = new EmissionSet<NativeCaptureBinding>();
@@ -6829,6 +6836,7 @@ class Compiler
     }
 
     public compileCondition(expression: ts.Expression): string {
+        traceSourceNode(expression);
         const unwrapped = this.options.workers ? unwrapExpression(expression) : this.unwrap(expression);
         if (this.options.workers && ts.isAwaitExpression(unwrapped)) {
             const value = this.compileValue(unwrapped);

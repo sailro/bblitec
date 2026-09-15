@@ -1,4 +1,5 @@
 import { someAnalysisNode } from "./analysis-walk.js";
+import { traceSourceNode } from "./source-trace.js";
 
 /**
  * The `Object` statics that return their argument unchanged: freezing,
@@ -414,6 +415,7 @@ export class StaticEvaluator {
     }
 
     public compileBoolean(expression: ts.Expression): string {
+        traceSourceNode(expression);
         const unwrapped =
             this.resolveStaticExpression(expression);
         if (unwrapped.kind === ts.SyntaxKind.TrueKeyword) {
@@ -491,6 +493,7 @@ export class StaticEvaluator {
         expression: ts.Expression,
         precision: "float" | "double" = "float",
     ): string {
+        traceSourceNode(expression);
         const narrowNumeric = (value: Value, node: ts.Expression, assertedNonNull = false): Value => {
             // A mutable tuple can hold a number where its declared fixed lane was
             // a string. TypeScript calls the guarded numeric branch never; native
