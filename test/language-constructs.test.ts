@@ -1642,6 +1642,10 @@ check("string-append-storage", `
     words[1] += "c";
     words[0] += log.size;
     if (words.join(",") !== "a2,bc") throw new Error(words.join(","));
+    const emoji = "😀";
+    let joined = emoji.at(0) ?? "";
+    joined += emoji.at(1) ?? "";
+    if (joined !== emoji || joined.codePointAt(0) !== 128512) throw new Error("surrogate append");
 `);
 
 test("private brand checks refuse explicitly", () => {

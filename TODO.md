@@ -33,7 +33,7 @@ Open gaps only. [Features](docs/features.md) owns support; [fidelity](docs/fidel
 - [ ] Class inheritance/static blocks/static mutation; one member table for the class lowerers' nine name loops; Error names and causes (`classes.ts`, `native-functions.ts`, `error-values.ts`).
 - [ ] Generators/async iteration, Proxy, WeakRef and Symbol storage (`expressions.ts`, `statements.ts`, `data-types.ts`).
 - [ ] Object.assign on engine handles erases writes (`object-statics.ts`).
-- [ ] Shared lowering for logical assignment, dictionary property access and Array.from callbacks; derived identity and presence spellings marked at the leaf instead of compared against a second leaf (`data-lowering.ts`).
+- [ ] Shared lowering for logical assignment, dictionary property access and Array.from callbacks; derived identity and presence spellings marked at the leaf instead of compared against a second leaf; a string leaf given the number/boolean treatment so plain and data strings share one kind, and plain-string `=` through the string sink with the original expression (`data-lowering.ts`, `statements.ts`).
 - [ ] Consolidate library-global recognition and type/storage classification (`expressions.ts`, `static-evaluator.ts`, `module-initializers.ts`, `data-types.ts`).
 - [ ] General exception completion across startEngine cleanup (`compiler.ts`).
 - [ ] WGSL IR support for helpers/constants/loops; remove rawSource and regex fallbacks (`shader-ir.ts`).
