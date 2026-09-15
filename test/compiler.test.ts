@@ -2844,11 +2844,9 @@ test("guards optional class method calls before evaluating their body", () => {
         owner.clear();
     `);
 
-    // The receiver is bound once and the guard tests that binding, so the
-    // field read is spelled exactly once before the body.
     assert.match(
         result.cpp,
-        /bblscene::Target v_bblite_target_receiver_(\d+) = \(\*v_bblite_class_field_target_\d+\);\s*if \(static_cast<bool>\(v_bblite_target_receiver_\1\)\) \{\s*\[&\]\(\) -> void \{/,
+        /if \(static_cast<bool>\(\(\*v_bblite_class_field_target_\d+\)\)\) \{\s*\[&\]\(\) -> void \{/,
     );
     assert.match(
         result.cpp,

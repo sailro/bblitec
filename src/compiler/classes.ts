@@ -911,9 +911,10 @@ export class ClassLowerer {
             binding.declaration,
             binding.type,
         );
-        // A bound receiver's identity and presence spellings follow the
-        // binding, or an optional call would spell the call a second time.
-        const receiver = instanceCpp === value.cpp
+        // A computed receiver's identity and presence spellings follow the
+        // binding, or an optional call would spell the call a second time;
+        // a storage read is stable and keeps its own.
+        const receiver = instanceCpp === value.cpp || value.nativeLvalue
             ? value
             : withNativeMetadata(this.context.dataValue(instanceCpp, value.dataType), value);
         return valueForKind("record", {
