@@ -241,6 +241,23 @@ function staticStringCoercion(value: Value): string | undefined {
     return undefined;
 }
 
+/**
+ * `target += right` on string storage, wherever that storage lives. The
+ * operand is spelled exactly as a concatenation part, so a chain of known
+ * parts appends as one literal and a number as its JavaScript spelling,
+ * and the runtime's append joins a surrogate pair split across the two
+ * strings, which a plain `+=` on the native string would not.
+ */
+export function emitStringAppend(
+    context: Pick<LoweringServices, "compileValue" | "cppString" | "dataTypes" | "fail" | "emit" | "reachJsData">,
+    targetCpp: string,
+    right: ts.Expression,
+): void {
+    const value = context.compileValue(right);
+    context.reachJsData();
+    context.emit(`bbl::js::concat_append(${targetCpp}, ${stringConcatPart(context, value, right)});`);
+}
+
 export function stringConcatPart(
     context: Pick<LoweringServices, "cppString" | "dataTypes" | "fail">,
     value: Value,

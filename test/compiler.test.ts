@@ -3143,7 +3143,7 @@ test("stores and mutates a runtime string local", () => {
     `);
 
     assert.match(result.cpp, /std::string v_\w*name = ""/);
-    assert.match(result.cpp, /v_\w*name \+= bbl::js::string_from_char_code/);
+    assert.match(result.cpp, /bbl::js::concat_append\(v_\w*name, bbl::js::string_from_char_code/);
     assert.match(result.cpp, /v_\w*name = bbl::js::string_upper/);
 });
 

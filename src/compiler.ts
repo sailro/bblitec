@@ -1,4 +1,4 @@
-import { assetRootMutationStates, nativeDataMetadata, valueForKind, withNativeMetadata } from "./compiler/types.js";
+import { assetRootMutationStates, isStringValue, nativeDataMetadata, valueForKind, withNativeMetadata } from "./compiler/types.js";
 import { forEachAnalysisNode, findAnalysisNodeWithState, someAnalysisNode } from "./compiler/analysis-walk.js";
 import { emissionArray, EmissionMap, EmissionSet, EmissionTransaction, EmissionWeakMap, EmissionWeakSet } from "./compiler/emission-transaction.js";
 import type { LoweringServices, NativeFunctionBodyOptions, NativeReturnValueCompiler } from "./compiler/lowering-services.js";
@@ -7173,9 +7173,6 @@ class Compiler
                     return folded ? "true" : "false";
                 }
             }
-            const isStringValue = (value: Value): boolean =>
-                value.kind === "string" ||
-                (value.kind === "data" && value.dataType?.kind === "string");
             if (
                 isStringValue(leftValue) &&
                 isStringValue(rightValue) &&

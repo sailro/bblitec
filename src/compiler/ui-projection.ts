@@ -1,4 +1,4 @@
-import { valueForKind } from "./types.js";
+import { isStringValue, valueForKind } from "./types.js";
 import { emissionArray, EmissionSet, EmissionMap, EmissionWeakMap } from "./emission-transaction.js";
 import ts from "typescript";
 import { doubleLiteral } from "../cpp-literals.js";
@@ -477,10 +477,7 @@ export class UiProjection {
         ) {
             const left = this.context.compileValue(logical.left);
             const right = this.context.compileValue(logical.right);
-            const isString = (value: Value): boolean =>
-                value.kind === "string" ||
-                (value.kind === "data" && value.dataType?.kind === "string");
-            if (isString(left) && isString(right)) {
+            if (isStringValue(left) && isStringValue(right)) {
                 return (
                     `(!std::string(${left.cpp}).empty()` +
                     ` ? std::string(${left.cpp})` +

@@ -28,7 +28,8 @@ import { writesThroughTrackedRoot } from "./user-functions.js";
 import { staticNumberValue } from "./option-helpers.js";
 import { argumentAt, isLogicalAssignmentOperator, isUpdateExpression, iteratorMethodCall, unwrappedIdentifier } from "./syntax.js";
 import { caughtErrorValue, compileErrorConstruction, errorConstructor, thrownMessage } from "./error-values.js";
-import { stringConcatPart } from "./expressions.js";
+import { emitStringAppend } from "./expressions.js";
+import { isStringValue } from "./types.js";
 import { enclosingLoopControl, firstReturn } from "./loop-control.js";
 // The handle-collection concept owns the collection targets, the loop
 // frame, and the recursive imported-mesh walk proof; the emitters here are
@@ -2961,33 +2962,24 @@ export class StatementLowerer {
                         `${target.cpp} = ${context.compileCondition(unwrapped.right)};`,
                     );
                 } else if (
+                    operator === "+=" &&
+                    isStringValue(target)
+                ) {
+                    emitStringAppend(context, target.cpp, unwrapped.right);
+                } else if (
                     target.kind === "string" &&
-                    (operator === "=" || operator === "+=")
+                    operator === "="
                 ) {
                     const value = context.compileValue(
                         unwrapped.right,
                     );
-                    const isString =
-                        value.kind === "string" ||
-                        (value.kind === "data" && value.dataType?.kind === "string");
-                    if (operator === "+=" && !isString) {
-                        // `text += 1` appends the number's JavaScript
-                        // spelling, as the concatenation operator does.
-                        context.reachJsData();
-                        context.emit(
-                            `bbl::js::concat_append(${target.cpp}, ${stringConcatPart(context, value, unwrapped.right)});`,
-                        );
-                    } else {
-                        if (!isString) {
-                            context.fail(
-                                unwrapped.right,
-                                `String assignment requires a string, received ${value.kind}.`,
-                            );
-                        }
-                        context.emit(
-                            `${target.cpp} ${operator} ${value.cpp};`,
+                    if (!isStringValue(value)) {
+                        context.fail(
+                            unwrapped.right,
+                            `String assignment requires a string, received ${value.kind}.`,
                         );
                     }
+                    context.emit(`${target.cpp} = ${value.cpp};`);
                 } else if (
                     target.kind === "audio-node" &&
                     operator === "="
