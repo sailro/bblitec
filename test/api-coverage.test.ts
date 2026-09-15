@@ -83,9 +83,7 @@ test("API collection resolves named option bags and metrics exclude type contain
     visit(file);
     const usage = scanApiUsage(data.program, data, data.root, reached);
     assert.ok(usage.uses.some(use => use.id === "Options:interface.used:property"));
-    const baseline: ApiBaseline = { schemaVersion: 2, inputs: "current", compilations: 1, testsPassed: 1, translations: [],
-        suites: ["test/sample.test.ts"], files: [],
-        uses: usage.uses.map(use => ({ ...use, suite: "test/sample.test.ts", source: "source-hash" })) };
+    const baseline = baselineOf(usage.uses);
     const report = apiCoverageReport(data.snapshot, usage, [], "", baseline);
     assert.equal(report.total, 4);
     assert.deepEqual(report.metrics.surface, { covered: 2, total: 3, percent: 200 / 3 });
@@ -152,6 +150,12 @@ test("API body tracing follows original expressions through synthetic statements
     assert.equal(traces[0]?.symbolName, "original");
     assert.deepEqual(traces[0]?.requests, ["call: Math.sqrt"]);
 });
+function baselineOf(uses: ReturnType<typeof scanApiUsage>["uses"]): ApiBaseline {
+    return { schemaVersion: 2, inputs: "current", compilations: 1, testsPassed: 1, translations: [],
+        suites: ["test/sample.test.ts"], files: [],
+        uses: uses.map(use => ({ ...use, suite: "test/sample.test.ts", source: "source-hash" })) };
+}
+
 function fixture(declarations: string, consumer = "") {
     const root = resolve("artifacts/api-inventory-unit");
     const entry = join(root, "index.d.ts");
@@ -324,21 +328,24 @@ test("API project report keeps referenced declarations only and states readiness
         export declare function idle(): void;`, `import { f, h, g } from './index';
         const options = { used: 3 }; f(options); h(); g();`);
     const usage = scanApiUsage(data.program, data, data.root);
-    assert.ok(usage.diagnostics.some(diagnostic => /'g'/.test(diagnostic.message)));
-    const baseline: ApiBaseline = { schemaVersion: 2, inputs: "current", compilations: 1, testsPassed: 1, translations: [],
-        suites: ["test/sample.test.ts"], files: [],
-        uses: usage.uses.filter(use => !use.id.startsWith("h:")).map(use => ({ ...use, suite: "test/sample.test.ts", source: "source-hash" })) };
+    assert.deepEqual(usage.unresolved, ["g"]);
+    const baseline = baselineOf(usage.uses.filter(use => !use.id.startsWith("h:")));
     const bindings = [{ name: "f", owner: "f", status: "route-found" as const, lowerer: "compileFixture" },
         { name: "h", owner: "h", status: "no-route-observed" as const },
         { name: "idle", owner: "idle", status: "no-route-observed" as const }];
-    const report = apiCoverageReport(data.snapshot, usage, [], "", baseline, bindings, { referencedOnly: true });
+    const report = apiCoverageReport(data.snapshot, usage, [], "", baseline, bindings, true);
     assert.deepEqual(report.rows.map(row => row.id.replace(/:[0-9a-f]{16}$/, "")).sort(),
         ["Options:interface.used:property", "f:function", "h:function"]);
+    assert.deepEqual(report.metrics.surface, { covered: 2, total: 3, percent: 200 / 3 });
+    assert.deepEqual(report.metrics.sites, { covered: 2, total: 3, percent: 200 / 3 });
+    assert.equal(report.adapters.total, 2, "the adapter census follows the referenced functions");
     assert.ok(report.readiness);
-    assert.deepEqual(report.readiness.declarations, { supported: 2, total: 3 });
-    assert.deepEqual(report.readiness.sites, { supported: 2, total: 3, percent: 200 / 3 });
+    assert.equal(report.readiness.evidence, "current");
     assert.deepEqual(report.readiness.unrouted, ["h"]);
     assert.deepEqual(report.readiness.pinGap, ["g"]);
     assert.equal(apiCoverageReport(data.snapshot, usage, [], "", baseline, bindings).readiness, undefined);
-    assert.match(apiReportHtml(report), /Project readiness/);
+    assert.equal(apiCoverageReport(data.snapshot, usage, [], "", undefined, bindings, true).readiness?.evidence, "stale");
+    const html = apiReportHtml(report);
+    assert.ok(html.includes('"pinGap":["g"]'));
+    assert.ok(!html.includes('"exports":'), "the page embeds no export table");
 });

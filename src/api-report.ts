@@ -4,22 +4,9 @@ import { assessApiCases } from "./api-evidence.js";
 import { type ApiBaseline } from "./api-baseline.js";
 import { type ApiBinding } from "./api-bindings.js";
 
-/** How far the evidence already covers what one project references. */
-export interface ApiReadiness {
-    scope: string;
-    declarations: { supported: number; total: number };
-    sites: { supported: number; total: number; percent: number };
-    /** Referenced exported functions with no identified routing hook. */
-    unrouted: string[];
-    /** Imported names the pinned package does not export: a pin gap, not a support gap. */
-    pinGap: string[];
-}
-
-const missingExport = /has no exported member '([^']+)'/;
-
 export function apiCoverageReport(snapshot: ApiSnapshot, usage: ApiUsage,
     cases: ReturnType<typeof assessApiCases>, filter = "", baseline?: ApiBaseline, bindings: readonly ApiBinding[] = [],
-    options: { referencedOnly?: boolean } = {}) {
+    referencedOnly = false) {
     const uses = new Map<string, ApiUsage["uses"]>();
     for (const use of usage.uses) {
         const sites = uses.get(use.id) ?? [];
@@ -46,7 +33,7 @@ export function apiCoverageReport(snapshot: ApiSnapshot, usage: ApiUsage,
         byTarget.set(target.id, entries);
     }
     const rows = snapshot.items.filter(item => (!filter || item.id.toLowerCase().includes(filter.toLowerCase())) &&
-        (!options.referencedOnly || uses.has(item.id))).map(item => {
+        (!referencedOnly || uses.has(item.id))).map(item => {
         const evidence = byTarget.get(item.id) ?? [];
         const sites = uses.get(item.id) ?? [];
         const generation = generated.get(item.id) ?? [];
@@ -64,20 +51,25 @@ export function apiCoverageReport(snapshot: ApiSnapshot, usage: ApiUsage,
         .map(status => [status, rows.filter(row => row.status === status).length]));
     const groups = { callables: ["function", "method", "constructor", "construct"],
         fields: ["property", "get", "set", "index"], constants: ["variable", "enum-member"], callbacks: ["call"] };
-    const metric = (kinds: readonly string[]) => {
+    const surfaceKinds = Object.values(groups).flat();
+    const metric = (kinds: readonly string[], weight: (row: (typeof rows)[number]) => number = () => 1) => {
         const entries = rows.filter(row => kinds.includes(row.kind));
-        const covered = entries.filter(row => row.supported).length;
-        return { covered, total: entries.length, percent: entries.length ? 100 * covered / entries.length : 0 };
+        const sum = (selected: typeof entries): number => selected.reduce((count, row) => count + weight(row), 0);
+        const covered = sum(entries.filter(row => row.supported));
+        const total = sum(entries);
+        return { covered, total, percent: total ? 100 * covered / total : 0 };
     };
-    const metrics = { surface: metric(Object.values(groups).flat()),
+    const metrics = { surface: metric(surfaceKinds), sites: metric(surfaceKinds, row => row.sites.length),
         ...Object.fromEntries(Object.entries(groups).map(([name, kinds]) => [name, metric(kinds)])) };
     const exercisedOwners = new Set(rows.filter(row => row.kind === "function" && row.supported).map(row => row.owner));
-    const selectedBindings = bindings.filter(binding => !filter || rows.some(row => row.owner === binding.owner));
+    // A filter or a project scopes the adapter census to the functions its rows own.
+    const selectedBindings = bindings.filter(binding => (!filter && !referencedOnly) || rows.some(row => row.owner === binding.owner));
+    const unclassified = selectedBindings.filter(binding => binding.status === "no-route-observed" && !exercisedOwners.has(binding.owner));
     const present = selectedBindings.filter(binding => binding.status === "route-found" || exercisedOwners.has(binding.owner)).length;
     const exercised = selectedBindings.filter(binding => exercisedOwners.has(binding.owner)).length;
     const adapters = { scope: "Exported function entry adapters identified by live dispatch probes or passing source forms. A hook can refuse overloads. Probe fallthrough is unclassified because routing can depend on argument types.",
         total: selectedBindings.length, routed: present, exercised,
-        unclassified: selectedBindings.filter(binding => binding.status === "no-route-observed" && !exercisedOwners.has(binding.owner)).length,
+        unclassified: unclassified.length,
         unresolved: selectedBindings.filter(binding => binding.status === "probe-error").length,
         routedPercent: selectedBindings.length ? 100 * present / selectedBindings.length : 0,
         exercisedPercent: selectedBindings.length ? 100 * exercised / selectedBindings.length : 0 };
@@ -85,37 +77,22 @@ export function apiCoverageReport(snapshot: ApiSnapshot, usage: ApiUsage,
         bodies: new Set((baseline?.translations ?? []).map(body => `${body.modulePath}#${body.symbolName}`)).size,
         publicFunctions: bodies.size,
         completeFunctionTranslations: [...bodies.values()].filter(entries => entries.some(entry => entry.extent === "function")).length };
-    const readiness = options.referencedOnly ? projectReadiness(rows, usage, selectedBindings) : undefined;
+    // A project's readiness is its restricted metrics plus what no evidence can supply.
+    const readiness = referencedOnly ? {
+        scope: "The declarations one entry references, scanned against this repository's pin and credited by its collected receipts. Supported means compile or scoped native/parity evidence, not proof for the project's own forms; a use site inside a dead branch still counts.",
+        evidence: baseline ? "current" as const : "stale" as const,
+        unrouted: unclassified.map(binding => binding.name).sort(),
+        pinGap: usage.unresolved,
+    } : undefined;
     return { schemaVersion: 2, pin: snapshot.pin,
         scope: "Implementation and validation are separate. Pinned source translation supplies Babylon behavior; entry and member adapters connect supported forms to native/PAL storage and services. Exercise percentages are validation coverage, not the amount of PAL implementation completed.",
         adapters, automatic, metrics, baseline: baseline ? { compilations: baseline.compilations, testsPassed: baseline.testsPassed, suites: baseline.suites } : undefined,
-        counts, total: rows.length, exports: snapshot.exports, cases, usage: { ...usage, uses: undefined }, rows,
-        ...(readiness ? { readiness } : {}) };
-}
-
-function projectReadiness(rows: readonly { kind: string; supported: boolean; sites: readonly unknown[]; bindings: readonly ApiBinding[] }[],
-    usage: ApiUsage, bindings: readonly ApiBinding[]): ApiReadiness {
-    const measured = rows.filter(row => row.kind !== "interface" && row.kind !== "type" && row.kind !== "class" &&
-        row.kind !== "enum" && row.kind !== "namespace");
-    const sites = (selected: typeof measured): number => selected.reduce((count, row) => count + row.sites.length, 0);
-    const total = sites(measured);
-    const supported = sites(measured.filter(row => row.supported));
-    const referencedOwners = new Set(rows.flatMap(row => row.bindings.map(binding => binding.owner)));
-    return {
-        scope: "The declarations one entry references, credited by the repository's evidence. Generation evidence is compile evidence, not native or parity proof; a use site inside a dead branch still counts.",
-        declarations: { supported: measured.filter(row => row.supported).length, total: measured.length },
-        sites: { supported, total, percent: total ? 100 * supported / total : 0 },
-        unrouted: bindings.filter(binding => binding.status === "no-route-observed" && referencedOwners.has(binding.owner))
-            .map(binding => binding.name).sort(),
-        pinGap: [...new Set(usage.diagnostics.flatMap(diagnostic => {
-            const match = missingExport.exec(diagnostic.message);
-            return match ? [match[1]!] : [];
-        }))].sort(),
-    };
+        counts, total: rows.length, exports: snapshot.exports, cases, usage: { ...usage, uses: undefined }, rows, readiness };
 }
 
 export function apiReportHtml(report: ReturnType<typeof apiCoverageReport>): string {
-    const data = JSON.stringify(report).replaceAll("<", "\\u003c");
+    // The page reads rows, cases and summaries; the export table and file digests are provenance for report.json.
+    const data = JSON.stringify({ ...report, exports: undefined, usage: { ...report.usage, files: undefined } }).replaceAll("<", "\\u003c");
     return `<!doctype html>
 <html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Babylon Lite API coverage</title>
@@ -150,7 +127,7 @@ const cases=new Map(data.cases.map(c=>[c.id,c]));
 const el=id=>document.getElementById(id), make=(tag,text)=>{const n=document.createElement(tag);n.textContent=text;return n};
 el('pin').textContent=data.pin.package+' '+data.pin.version+' · '+data.pin.sourceVersion;
 el('implementation').textContent=data.adapters.routed+'/'+data.adapters.total+' exported function names have identified routing hooks ('+data.adapters.routedPercent.toFixed(2)+'%); '+data.adapters.exercised+' have passing source-form evidence; '+data.adapters.unclassified+' need classification; '+data.adapters.unresolved+' probe errors. '+data.automatic.bodies+' pinned function/helper bodies were translated, including '+data.automatic.publicFunctions+' public functions. Method and field adapters remain visible by declaration; there is no combined PAL completion percentage.';
-if(data.readiness){const r=data.readiness;el('implementation').append(make('p','Project readiness: '+r.sites.supported+'/'+r.sites.total+' use sites ('+r.sites.percent.toFixed(2)+'%) and '+r.declarations.supported+'/'+r.declarations.total+' referenced declarations have generation evidence; unrouted functions: '+(r.unrouted.join(', ')||'none')+'; pin gap: '+(r.pinGap.join(', ')||'none')+'. '+r.scope))}
+if(data.readiness){const r=data.readiness;el('implementation').insertAdjacentElement('afterend',make('p','Project readiness ('+r.evidence+' evidence): '+data.metrics.sites.covered+'/'+data.metrics.sites.total+' use sites ('+data.metrics.sites.percent.toFixed(2)+'%) and '+data.metrics.surface.covered+'/'+data.metrics.surface.total+' referenced declarations are supported; unrouted functions: '+(r.unrouted.join(', ')||'none')+'; pin gap: '+(r.pinGap.join(', ')||'none')+'. '+r.scope))}
 for(const [name,m] of Object.entries(data.metrics))el('metrics').append(make('span',name+': '+m.percent.toFixed(2)+'% ('+m.covered+'/'+m.total+')'));
 for(const [status,count] of Object.entries(data.counts)){el('counts').append(make('span',status+': '+count));const o=make('option',status);o.value=status;el('status').append(o)}
 el('evidence').textContent=(data.baseline?data.baseline.compilations+' successful compilations across '+data.baseline.suites.length+' test files and registered scenes. ':'Full-suite baseline is missing or stale. ')+data.cases.filter(c=>c.status==='passed').length+'/'+data.cases.length+' scoped semantic cases passed with current inputs. '+data.usage.diagnostics.length+' TypeScript diagnostics in the discovery scan (includes negative fixtures).';

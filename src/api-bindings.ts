@@ -10,10 +10,14 @@ export interface ApiBinding {
     diagnostic?: string;
 }
 
-/** Name-level dispatch only. Missing arguments never establish overload support. */
-export function inspectApiBindings(snapshot: ApiSnapshot): ApiBinding[] {
+/**
+ * Name-level dispatch only. Missing arguments never establish overload
+ * support. `owners` restricts the probes to the functions a report is about.
+ */
+export function inspectApiBindings(snapshot: ApiSnapshot, owners?: ReadonlySet<string>): ApiBinding[] {
     const functions = new Set(snapshot.items.filter(item => item.kind === "function").map(item => item.owner));
-    return Object.entries(snapshot.exports).filter(([, owner]) => functions.has(owner)).map(([name, owner]) => {
+    return Object.entries(snapshot.exports).filter(([, owner]) => functions.has(owner) && (owners === undefined || owners.has(owner)))
+        .map(([name, owner]) => {
         let route: IntrinsicRoute | undefined;
         let failure: unknown;
         const restore = observeIntrinsicRouting(value => { if (value.name === name) route = value; });

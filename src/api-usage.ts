@@ -1,3 +1,4 @@
+import { resolve } from "node:path";
 import ts from "typescript";
 import { apiHash, declarationKey, type ApiSurface } from "./api-surface.js";
 import { repositoryRelativePath } from "./upstream-source.js";
@@ -17,6 +18,8 @@ export interface ApiUsage {
     scope: string;
     files: { path: string; sha256: string }[];
     diagnostics: { file: string; line: number; message: string }[];
+    /** Names imported from the surface's entry that it does not export (discovery scans only). */
+    unresolved: string[];
     uses: ApiUse[];
 }
 
@@ -88,7 +91,19 @@ export function scanApiUsage(program: ts.Program, surface: ApiSurface, root: str
             }
         }
     };
+    const unresolved = new Set<string>();
+    const importsSurface = (specifier: ts.Expression): boolean => {
+        const file = checker.getSymbolAtLocation(specifier)?.declarations?.find(ts.isSourceFile);
+        return file !== undefined && resolve(file.fileName) === surface.entry;
+    };
     const visit = (node: ts.Node): void => {
+        if (ts.isImportDeclaration(node) && node.importClause?.namedBindings && ts.isNamedImports(node.importClause.namedBindings) &&
+            importsSurface(node.moduleSpecifier)) {
+            for (const element of node.importClause.namedBindings.elements) {
+                const name = (element.propertyName ?? element.name).text;
+                if (!Object.hasOwn(surface.snapshot.exports, name)) unresolved.add(name);
+            }
+        }
         if (ts.isCallExpression(node) || ts.isNewExpression(node)) {
             const signature = checker.getResolvedSignature(node);
             const declaration = signature?.declaration;
@@ -138,6 +153,7 @@ export function scanApiUsage(program: ts.Program, surface: ApiSurface, root: str
             "Static source references, including unused bodies. Resolution and contextual fields are candidates, not proof of native support.",
         files: files.map(file => ({ path: repositoryRelativePath(root, file.fileName), sha256: apiHash(file.text) }))
             .sort((a, b) => a.path.localeCompare(b.path)), diagnostics,
+        unresolved: [...unresolved].sort(),
         uses: [...uses.values()].sort((a, b) => a.id.localeCompare(b.id) || a.file.localeCompare(b.file) || a.line - b.line || a.column - b.column),
     };
 }

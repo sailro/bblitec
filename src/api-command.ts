@@ -1,17 +1,25 @@
 import { readdirSync, readFileSync, writeFileSync } from "node:fs";
-import { basename, dirname, extname, join, resolve } from "node:path";
+import { basename, dirname, join, parse, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createCompilerProgram } from "./compiler/program.js";
 import { findRepositoryRoot, repositoryRelativePath } from "./upstream-source.js";
-import { isMainModule, parseFlags } from "./tooling/flags.js";
-import { diffApi, loadApiSurface, readApiSnapshot } from "./api-surface.js";
+import { isMainModule, parseFlags, usageFromSpec, type FlagSpec } from "./tooling/flags.js";
+import { diffApi, loadApiSurface, readApiSnapshot, type ApiSurface } from "./api-surface.js";
 import { apiEvidenceInputs, assessApiCases, readApiCases, readApiReceipt, runApiCases, staleApiCases } from "./api-evidence.js";
-import { scanApiUsage } from "./api-usage.js";
+import { scanApiUsage, type ApiUsage } from "./api-usage.js";
 import { apiCoverageReport, apiReportHtml } from "./api-report.js";
 import { scenes } from "./scene-registry.js";
 import { writeJsonRecord } from "./validation-resume.js";
 import { apiBaselineCurrent, readApiBaseline, runApiBaseline } from "./api-baseline.js";
 import { inspectApiBindings } from "./api-bindings.js";
+
+/** The parser and the help line read one table. */
+const commands: Readonly<Record<string, FlagSpec>> = {
+    snapshot: { boolean: ["--write"] },
+    check: {},
+    diff: { value: ["--baseline"] },
+    report: { boolean: ["--run"], value: ["--filter", "--output", "--project"] },
+};
 
 function typescriptFiles(directory: string): string[] {
     return readdirSync(directory, { withFileTypes: true }).flatMap(entry => {
@@ -21,7 +29,7 @@ function typescriptFiles(directory: string): string[] {
 }
 
 /** Every registered scene, the corpus source graph and the TypeScript fixtures, as one discovery program. */
-function repositoryUsage(root: string, surface: ReturnType<typeof loadApiSurface>): ReturnType<typeof scanApiUsage> {
+function repositoryUsage(root: string, surface: ApiSurface): ApiUsage {
     console.log("Resolving API references in registered scenes, the corpus source graph, and TypeScript fixtures.");
     const roots = [...new Set([...scenes.map(scene => resolve(root, scene.source)),
         ...typescriptFiles(join(root, "corpus/babylon-lite/lab/lite/src")), ...typescriptFiles(join(root, "test/fixtures"))])].sort();
@@ -33,23 +41,28 @@ function repositoryUsage(root: string, surface: ReturnType<typeof loadApiSurface
 }
 
 /** One external entry and everything it imports, named relative to the entry's directory. */
-function projectUsage(entry: string, surface: ReturnType<typeof loadApiSurface>): ReturnType<typeof scanApiUsage> {
+function projectUsage(entry: string, surface: ApiSurface): ApiUsage {
     console.log(`Resolving API references reached from ${entry}.`);
     const { program } = createCompilerProgram(readFileSync(entry, "utf8"), entry);
     return scanApiUsage(program, surface, dirname(entry));
+}
+
+/** The owners of the exported functions a usage references: the only entry adapters a project report probes. */
+function referencedFunctionOwners(surface: ApiSurface, usage: ApiUsage): ReadonlySet<string> {
+    const owners = new Map(surface.snapshot.items.filter(item => item.kind === "function").map(item => [item.id, item.owner]));
+    return new Set(usage.uses.flatMap(use => { const owner = owners.get(use.id); return owner === undefined ? [] : [owner]; }));
 }
 
 export async function apiCommand(args: readonly string[]): Promise<void> {
     const root = findRepositoryRoot(dirname(fileURLToPath(import.meta.url)));
     const [command = "help", ...rest] = args;
     if (command === "help") {
-        console.log("npm run api -- snapshot [--write] | check | diff [--baseline <snapshot.json>] | report [--run] [--filter <text>] [--output <directory>] [--project <entry.ts>]");
+        console.log(`npm run api -- ${Object.entries(commands).map(([name, spec]) => [name, usageFromSpec(spec)].filter(part => part !== "").join(" ")).join(" | ")}`);
         return;
     }
-    if (!["snapshot", "check", "diff", "report"].includes(command)) throw new Error(`Unknown API command: ${command}`);
-    const flags = parseFlags(rest, command === "snapshot" ? { boolean: ["--write"] } :
-        command === "report" ? { boolean: ["--run"], value: ["--filter", "--output", "--project"] } :
-        command === "diff" ? { value: ["--baseline"] } : {}, `api ${command}`);
+    const spec = commands[command];
+    if (!spec) throw new Error(`Unknown API command: ${command}`);
+    const flags = parseFlags(rest, spec, `api ${command}`);
     const surface = loadApiSurface();
     const { snapshot } = surface;
     const baseline = resolve(root, flags.values.get("--baseline") ?? "upstream/babylon-lite-api.json");
@@ -76,23 +89,21 @@ export async function apiCommand(args: readonly string[]): Promise<void> {
         }
         return;
     }
-    // A project report reads the repository's receipts and writes beside them.
     const project = flags.values.get("--project");
-    const receipts = resolve(root, "artifacts/api-coverage");
-    const output = resolve(root, flags.values.get("--output") ??
-        (project ? join(receipts, "projects", basename(project, extname(project))) : receipts));
-    const receiptPath = join(receipts, "evidence.json");
+    const entry = project === undefined ? undefined : resolve(root, project);
+    if (entry !== undefined && flags.flags.has("--run")) throw new Error("A project report only reads collected evidence; run 'report --run' without --project first.");
+    // Receipts live in the coverage directory; a project's report nests beside them.
+    const coverage = resolve(root, flags.values.get("--output") ?? "artifacts/api-coverage");
+    const output = entry === undefined ? coverage : join(coverage, "projects", `${basename(dirname(entry))}-${parse(entry).name}`);
+    const receiptPath = join(coverage, "evidence.json");
     const inputs = apiEvidenceInputs(root, snapshot);
     let receipt = readApiReceipt(receiptPath);
-    const baselinePath = join(receipts, "baseline.json");
+    const baselinePath = join(coverage, "baseline.json");
     let collected = readApiBaseline(baselinePath);
-    if (project !== undefined && flags.flags.has("--run")) {
-        throw new Error("Collect evidence with 'report --run' first; a project report only reads it.");
-    }
     if (flags.flags.has("--run")) {
         const stale = staleApiCases(cases, snapshot);
         if (stale.length) throw new Error(`Review changed declarations before running evidence: ${stale.join(", ")}`);
-        collected = await runApiBaseline(root, output, inputs, snapshot);
+        collected = await runApiBaseline(root, coverage, inputs, snapshot);
         if (apiEvidenceInputs(root, snapshot) !== inputs) throw new Error("API baseline inputs changed while collecting coverage.");
         writeJsonRecord(baselinePath, collected);
         console.log(`Running ${cases.length} scoped API evidence cases.`);
@@ -100,18 +111,18 @@ export async function apiCommand(args: readonly string[]): Promise<void> {
         if (apiEvidenceInputs(root, snapshot) !== inputs) throw new Error("API evidence inputs changed while tests were running.");
         writeJsonRecord(receiptPath, receipt);
     }
-    const usage = project === undefined ? repositoryUsage(root, surface) : projectUsage(resolve(project), surface);
+    const usage = entry === undefined ? repositoryUsage(root, surface) : projectUsage(entry, surface);
     const assessed = assessApiCases(cases, snapshot, receipt, inputs);
     const currentBaseline = apiBaselineCurrent(collected, inputs, root) ? collected : undefined;
     console.log("Inspecting exported function routes through the intrinsic registry.");
-    const bindings = inspectApiBindings(snapshot);
-    const report = apiCoverageReport(snapshot, usage, assessed, flags.values.get("--filter"), currentBaseline, bindings,
-        { referencedOnly: project !== undefined });
+    const bindings = inspectApiBindings(snapshot, entry === undefined ? undefined : referencedFunctionOwners(surface, usage));
+    const report = apiCoverageReport(snapshot, usage, assessed, flags.values.get("--filter"), currentBaseline, bindings, entry !== undefined);
     writeJsonRecord(join(output, "report.json"), report);
     writeFileSync(join(output, "report.html"), apiReportHtml(report));
     console.log(JSON.stringify({ total: report.total, counts: report.counts, adapters: report.adapters, automatic: report.automatic, exerciseMetrics: report.metrics,
-        ...(report.readiness ? { readiness: report.readiness } : {}),
+        readiness: report.readiness,
         cases: assessed.map(entry => ({ id: entry.id, status: entry.status })), files: usage.files.length, diagnostics: usage.diagnostics.length }, null, 2));
+    if (report.readiness?.evidence === "stale") console.log("Evidence is missing or stale for the current inputs; run 'report --run' to credit supported forms.");
     console.log(`Report: ${join(output, "report.html")}`);
     if (flags.flags.has("--run") && assessed.some(entry => entry.status !== "passed")) {
         throw new Error("API evidence is incomplete: failed, skipped, missing, or stale cases receive no coverage credit.");
