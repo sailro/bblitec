@@ -48,6 +48,35 @@ function expressionFunction(dataType: DataType<"function">, lowerer: DataSinkHos
     lowerer.context.fail(unwrapped, "Expected a local function with a native data signature.");
 }
 
+/**
+ * A function value handed to a sink that supplies more arguments than the
+ * value declares. JavaScript ignores the extras, so the value keeps its
+ * storage and identity behind an adapter that drops them; lowering the
+ * declaration again for the wider signature would duplicate its body and,
+ * for a callback that names itself, never end.
+ */
+function adaptToWiderSignature(
+    lowerer: DataSinkHost,
+    cpp: string,
+    source: { parameters: DataType[]; result?: DataType | undefined },
+    dataType: DataType<"function">,
+): string | undefined {
+    if (dataType.restParameter !== undefined || dataType.erasedParameters?.length ||
+        source.parameters.length >= dataType.parameters.length ||
+        !source.parameters.every((parameter, index) => dataTypesEqual(parameter, dataType.parameters[index]!)) ||
+        (dataType.result !== undefined &&
+            (source.result === undefined || !dataTypesEqual(source.result, dataType.result)))) {
+        return undefined;
+    }
+    const cppType = (type: DataType): string => lowerer.context.dataTypes.cppType(type);
+    const supplied = source.parameters.map((_, index) => `argument_${index}`);
+    const parameters = dataType.parameters.map((type, index) =>
+        `, ${cppType(type)}${index < supplied.length ? ` ${supplied[index]}` : ""}`).join("");
+    const result = dataType.result ? cppType(dataType.result) : "void";
+    return `bbl::js::adapt_callback<${cppType(dataType)}>(${cpp}, [](auto& callback${parameters}) -> ${result} { ` +
+        `${dataType.result ? "return " : "static_cast<void>("}callback(${supplied.join(", ")})${dataType.result ? "" : ")"}; })`;
+}
+
 function valueFunction(dataType: DataType<"function">, lowerer: DataSinkHost, value: Value, _node: ts.Node): string | undefined {
     if (value.kind === "json-null") {
         return `${lowerer.context.dataTypes.cppType(dataType)}{}`;
@@ -87,6 +116,17 @@ function valueFunction(dataType: DataType<"function">, lowerer: DataSinkHost, va
                 dataType.result !== undefined &&
                 dataTypesEqual(value.nativeCallbackReturnType, dataType.result)))) {
         return value.cpp;
+    }
+    const materialized = value.kind === "callback" && value.cpp.length > 0 &&
+        value.nativeCallbackParameterTypes?.every((parameter) => parameter !== undefined)
+        ? { parameters: value.nativeCallbackParameterTypes as DataType[], result: value.nativeCallbackReturnType }
+        : value.kind === "data" && value.dataType?.kind === "function" &&
+            value.dataType.restParameter === undefined && !value.dataType.erasedParameters?.length
+          ? value.dataType
+          : undefined;
+    if (materialized) {
+        const adapted = adaptToWiderSignature(lowerer, value.cpp, materialized, dataType);
+        if (adapted !== undefined) return adapted;
     }
     if (value.kind === "callback" &&
         value.callbackDeclaration) {

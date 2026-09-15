@@ -6,16 +6,21 @@ import test from "node:test";
 import {compileSource} from "../src/compiler.js";
 import {optionalNativeFixtureTools, runNativeFixtureCompiler} from "./native-fixture.js";
 
-function nativeCheck(name:string, source:string, t:test.TestContext):void {
+/** A worker realm: the entry owns a worker, so every realm-sensitive lowering takes the worker path,
+ *  and its event loop runs until the program closes it. */
+const workerRealm='const worker=new Worker(new URL("./worker.ts",import.meta.url),{type:"module"});worker.terminate();\n';
+
+function nativeCheck(name:string, source:string, t:test.TestContext, workers=false):void {
     const directory=resolve("artifacts/callback-values",name);
     mkdirSync(directory,{recursive:true});
-    const compiled=compileSource(source,{fileName:join(directory,"entry.ts")});
+    if(workers)writeFileSync(join(directory,"worker.ts"),"self.close();");
+    const compiled=compileSource(workers?workerRealm+source+"\nglobalThis.close();":source,{fileName:join(directory,"entry.ts")});
     const native=optionalNativeFixtureTools(false);
     if(!native){t.skip("Native fixture compiler unavailable.");return;}
     const cpp=join(directory,"check.cpp"),exe=join(directory,"check.exe");
     writeFileSync(cpp,compiled.cpp);
-    runNativeFixtureCompiler(native,["/nologo","/std:c++20","/W4","/WX","/EHsc","/MD","/I","native/include",
-        `/Fo:${directory}/`,`/Fe:${exe}`,cpp]);
+    runNativeFixtureCompiler(native,["/nologo","/std:c++20","/W4","/WX","/EHsc","/MD",...(workers?["/DBBLITE_WORKERS=1"]:[]),
+        "/I","native/include",`/Fo:${directory}/`,`/Fe:${exe}`,cpp]);
     assert.equal(execFileSync(exe,{encoding:"utf8",timeout:10000}),"");
 }
 
@@ -135,3 +140,25 @@ test("stored rest parameters own fresh arrays and preserve prefix evaluation", t
     if(edit(...items) !== 1 || items.length !== 2 || items[0].value !== 9)
         throw new Error("rest copy preserves element identity");
 `, t));
+
+/** A callback that names itself is materialized once; wider sinks adapt that storage instead of lowering the body again. */
+const widerSignatures=`
+    const queue: Array<(time: number) => void> = [];
+    let visits = 0;
+    const poll = (): void => { visits++; if (visits < 3) queue.push(poll); };
+    poll();
+    while (queue.length > 0) { const next = queue.shift()!; next(16); }
+    if (visits !== 3) throw new Error("self-scheduling through a wider signature");
+    const seen: number[] = [];
+    const tally: Array<(value: number, index: number) => void> = [];
+    const count = (value: number): void => { seen.push(value); if (seen.length < 2) tally.push(count); };
+    tally.push(count);
+    while (tally.length > 0) { const next = tally.shift()!; next(seen.length, 99); }
+    if (seen.join(",") !== "0,1") throw new Error("supplied prefix and dropped extras");
+`;
+
+test("self-referential callbacks reach wider signatures through their own storage", t =>
+    nativeCheck("wider-signatures", widerSignatures, t));
+
+test("self-referential callbacks reach wider signatures through their own storage in a worker realm", t =>
+    nativeCheck("wider-signatures-worker", widerSignatures, t, true));
