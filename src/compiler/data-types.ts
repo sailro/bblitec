@@ -15,6 +15,7 @@ import { nativeReturnTsType } from "./native-return-type.js";
 import { classInstanceProperties } from "./class-properties.js";
 import { forEachAnalysisNode } from "./analysis-walk.js";
 import { unwrapExpression } from "./syntax.js";
+import { isMemberName, memberCppName, type MemberName } from "./syntax.js";
 
 type Fail = (node: ts.Node, message: string) => never;
 
@@ -1839,13 +1840,15 @@ export class DataTypeRegistry {
   ): DataStructField[] {
     const fields: DataStructField[] = [];
     for (const member of classInstanceProperties(declaration)) {
-      if (!ts.isIdentifier(member.name)) {
+      if (!isMemberName(member.name)) {
         this.fail(
           member,
-          "Private class fields are outside the supported subset.",
+          "Computed class field names are outside the supported subset.",
         );
       }
-      const property = type.getProperty(member.name.text);
+      const property = ts.isPrivateIdentifier(member.name)
+        ? this.checker.getSymbolAtLocation(member.name)
+        : type.getProperty(member.name.text);
       const propertyType = property
         ? this.checker.getTypeOfSymbolAtLocation(property, member.name)
         : this.checker.getTypeAtLocation(member.name);
@@ -1869,7 +1872,7 @@ export class DataTypeRegistry {
       }
       fields.push({
         sourceName: member.name.text,
-        name: sanitizeIdentifier(member.name.text),
+        name: sanitizeIdentifier(memberCppName(member.name.text)),
         type: this.markStoredObjectReferences(markIdentityFunctions(mapped)),
         ...(member.modifiers?.some(
           (modifier) => modifier.kind === ts.SyntaxKind.ReadonlyKeyword,
@@ -1928,9 +1931,11 @@ export class DataTypeRegistry {
    */
   public classFieldDataType(
     type: ts.Type,
-    name: ts.Identifier,
+    name: MemberName,
   ): DataType | undefined {
-    const property = type.getProperty(name.text);
+    const property = ts.isPrivateIdentifier(name)
+      ? this.checker.getSymbolAtLocation(name)
+      : type.getProperty(name.text);
     if (!property) {
       return undefined;
     }

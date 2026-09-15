@@ -1546,6 +1546,52 @@ check("promise-rejection-parameters", `
     void risky().catch((error) => { throw new Error("unexpected " + error.message); });
 `);
 
+check("private-class-members", `
+    interface Request { id: number; text: string; }
+    class Queue<T extends Request> {
+        readonly #pending: T[] = [];
+        #priorityCount = 0;
+        #current: T | null = null;
+        get current(): T | null { return this.#current; }
+        get size(): number { return this.#pending.length; }
+        get #head(): T | undefined { return this.#pending[0]; }
+        push(request: T, priority = false): void {
+            if (this.#current) {
+                if (priority) { this.#pending.splice(this.#priorityCount, 0, request); this.#priorityCount++; }
+                else this.#pending.push(request);
+                return;
+            }
+            this.#current = request;
+        }
+        advance(): T | null {
+            if (this.#priorityCount > 0) this.#priorityCount--;
+            const next = this.#pending.shift();
+            this.#current = next ?? null;
+            return this.#current;
+        }
+        #describe(): string { return this.#current ? this.#current.text : "idle"; }
+        describe(): string { return this.#describe() + "/" + (this.#head?.text ?? "-"); }
+    }
+    const queue = new Queue<Request>();
+    queue.push({ id: 1, text: "one" });
+    queue.push({ id: 2, text: "two" });
+    queue.push({ id: 3, text: "three" }, true);
+    const before = queue.describe();
+    const advanced = queue.advance();
+    const after = queue.describe();
+    if (before !== "one/three" || advanced?.id !== 3 || after !== "three/two" || queue.size !== 1 || queue.current?.text !== "three") {
+        throw new Error(before + " " + after + " " + queue.size);
+    }
+`);
+
+test("private brand checks refuse explicitly", () => {
+    assert.throws(() => compileSource(`
+        class Tagged { #mark = 1; static has(value: object): boolean { return #mark in value; } read(): number { return this.#mark; } }
+        const tagged = new Tagged();
+        if (tagged.read() !== 1 || !Tagged.has(tagged)) throw new Error("brand");
+    `), /Private brand checks are outside the supported subset/);
+});
+
 test("promise rejection callbacks refuse parameters the rejection cannot supply", () => {
     assert.throws(() => compileSource(`
         let calm = 0;

@@ -175,6 +175,9 @@ import {
     stringLiteralText,
     unwrapExpression,
     unwrappedIdentifier,
+    isMemberName,
+    memberCppName,
+    type MemberName,
 } from "./compiler/syntax.js";
 import { CompileError } from "./compiler/compile-error.js";
 import { isStoringDataCall, mutatingArrayMethods } from "./compiler/data-methods.js";
@@ -4434,7 +4437,7 @@ class Compiler
                         `Unsupported physics aggregate property '${property}'.`,
                     );
                 const cppName = this.allocateTemporaryCppName(
-                    `class_field_${name.text}`,
+                    `class_field_${memberCppName(name.text)}`,
                 );
                 this.emit({ kind: "declaration", type: "const auto", name: cppName, initializer: propertyValue.cpp });
                 this.defineVariable(name, {
@@ -4455,7 +4458,7 @@ class Compiler
         for (const element of pattern.elements) {
             const { name, property } = this.bindingProperty(element);
             const cppName = this.allocateTemporaryCppName(
-                `class_field_${name.text}`,
+                `class_field_${memberCppName(name.text)}`,
             );
             // The same properties `rtt.rt` and `rtt.texture` name, read
             // off the temporary the destructuring bound.
@@ -6615,7 +6618,7 @@ class Compiler
         const method = declaration.members.find(
             (member): member is ts.MethodDeclaration =>
                 ts.isMethodDeclaration(member) &&
-                ts.isIdentifier(member.name) &&
+                isMemberName(member.name) &&
                 member.name.text === callee.name.text &&
                 (ts.getCombinedModifierFlags(member) &
                     ts.ModifierFlags.Static) !==
@@ -8565,7 +8568,7 @@ class Compiler
         return this.evaluator.resolveStaticExpression(expression, resolving);
     }
 
-    public lookupIdentifierValue(identifier: ts.Identifier): Value | undefined {
+    public lookupIdentifierValue(identifier: MemberName): Value | undefined {
         return this.lookupOptional(identifier);
     }
 
@@ -9170,7 +9173,7 @@ class Compiler
      * would otherwise fold to.
      */
     public bindClassField(
-        name: ts.Identifier,
+        name: MemberName,
         initializer: ts.Expression,
         declared?: DataType,
     ): void {
@@ -9199,7 +9202,7 @@ class Compiler
             : undefined;
         if (nullableResource && nullableInitializer?.kind === "json-null") {
             const cppName = this.allocateTemporaryCppName(
-                `class_field_${name.text}`,
+                `class_field_${memberCppName(name.text)}`,
             );
             const storage = sharedStorage ? `(*${cppName})` : cppName;
             this.emit(
@@ -9227,12 +9230,12 @@ class Compiler
             name,
             nullableInitializer ?? this.compileValue(initializer),
             false,
-            this.allocateTemporaryCppName(`class_field_${name.text}`),
+            this.allocateTemporaryCppName(`class_field_${memberCppName(name.text)}`),
             sharedStorage,
         );
     }
 
-    private classFieldNeedsSharedStorage(name: ts.Identifier): boolean {
+    private classFieldNeedsSharedStorage(name: MemberName): boolean {
         const symbol = this.symbols.valueSymbol(name);
         const declaration = symbol?.declarations?.find(
             (candidate) =>
@@ -9253,12 +9256,12 @@ class Compiler
     }
 
     /** Predeclare an uninitialized nullable resource class field. */
-    public bindNullableClassField(name: ts.Identifier): Value | undefined {
+    public bindNullableClassField(name: MemberName): Value | undefined {
         const resource = this.nullableResourceKind(name);
         if (!resource) return undefined;
         const sharedStorage = this.classFieldNeedsSharedStorage(name);
         const cppName = this.allocateTemporaryCppName(
-            `class_field_${name.text}`,
+            `class_field_${memberCppName(name.text)}`,
         );
         const storage = sharedStorage ? `(*${cppName})` : cppName;
         this.emit(
@@ -9289,7 +9292,7 @@ class Compiler
      * parameter's non-owning span representation.
      */
     public bindUninitializedClassDataField(
-        name: ts.Identifier,
+        name: MemberName,
         declared?: DataType,
     ): Value | undefined {
         const dataType = declared ?? this.dataLowerer.dataTypeAt(name);
@@ -9298,7 +9301,7 @@ class Compiler
         }
         const sharedStorage = this.classFieldNeedsSharedStorage(name);
         const cppName = this.allocateTemporaryCppName(
-            `class_field_${name.text}`,
+            `class_field_${memberCppName(name.text)}`,
         );
         const storage = sharedStorage ? `(*${cppName})` : cppName;
         const cppType = this.dataTypes.cppType(dataType);
@@ -9320,7 +9323,7 @@ class Compiler
         const resource = this.nullableResourceKind(name, true);
         if (!resource) return undefined;
         const cppName = this.allocateTemporaryCppName(
-            `class_field_${name.text}`,
+            `class_field_${memberCppName(name.text)}`,
         );
         this.emit(`std::optional<${resource.cppType}> ${cppName};`);
         const value: Value = valueForKind(resource.kind, {
@@ -9347,7 +9350,7 @@ class Compiler
      * so projecting its members into typed storage cannot rerun factories.
      */
     public bindClassDataField(
-        name: ts.Identifier,
+        name: MemberName,
         initializer: ts.Expression,
         declared?: DataType,
         knownValue?: Value,
@@ -9357,7 +9360,7 @@ class Compiler
             return undefined;
         }
         const cppName = this.allocateTemporaryCppName(
-            `class_field_${name.text}`,
+            `class_field_${memberCppName(name.text)}`,
         );
         const sharedStorage = this.classFieldNeedsSharedStorage(name);
         const storage = sharedStorage ? `(*${cppName})` : cppName;
@@ -11563,7 +11566,7 @@ class Compiler
             : undefined;
     }
 
-    public lookupOptional(identifier: ts.Identifier): Value | undefined {
+    public lookupOptional(identifier: MemberName): Value | undefined {
         const symbol = this.symbols.valueSymbol(identifier);
         if (!symbol) {
             return undefined;
@@ -11611,7 +11614,7 @@ class Compiler
      * it; refusing is what makes the rebind safe to allow at all.
      */
     private refusePoisonedRebind(
-        identifier: ts.Identifier,
+        identifier: MemberName,
         binding: VariableBinding,
     ): void {
         if (!binding.reboundInNestedScope) return;
@@ -11625,7 +11628,7 @@ class Compiler
     }
 
     private refuseDeadDeferredCapture(
-        identifier: ts.Identifier,
+        identifier: MemberName,
         scopeIndex: number,
         frameLocal: boolean,
     ): void {
@@ -11648,7 +11651,7 @@ class Compiler
     }
 
     private refuseEscapingPlatformEventCapture(
-        identifier: ts.Identifier,
+        identifier: MemberName,
         scopeIndex: number,
         value: Value,
         floor = this.escapingPlatformEventCaptureFloor,
@@ -12374,7 +12377,7 @@ class Compiler
     }
 
     /** The value symbol a name binds, or a failure naming it. */
-    private requireValueSymbol(identifier: ts.Identifier): ts.Symbol {
+    private requireValueSymbol(identifier: MemberName): ts.Symbol {
         const symbol = this.symbols.valueSymbol(identifier);
         if (!symbol) {
             this.fail(
@@ -12400,7 +12403,7 @@ class Compiler
         return undefined;
     }
 
-    public lookup(identifier: ts.Identifier): Value {
+    public lookup(identifier: MemberName): Value {
         const symbol = this.symbols.valueSymbol(identifier);
         if (!symbol) {
             this.fail(
@@ -12567,7 +12570,7 @@ class Compiler
         innermost.set(symbol, rebound);
     }
 
-    public defineVariable(identifier: ts.Identifier, value: Value): void {
+    public defineVariable(identifier: MemberName, value: Value): void {
         if (this.options.workers && value.kind === "engine" && value.optionalStorageCpp && !value.ownedEngineCpp) {
             const ownedEngineCpp = value.cpp;
             value = { ...value, ownedEngineCpp, cpp: `(*${ownedEngineCpp})`, engineCpp: `(*${ownedEngineCpp})` };
@@ -13485,7 +13488,7 @@ class Compiler
     }
 
     private bindLocalOrParameterValue(
-        identifier: ts.Identifier,
+        identifier: MemberName,
         value: Value,
         parameter: boolean,
         explicitCppName?: string,
@@ -13512,7 +13515,7 @@ class Compiler
         if (
             (value.kind === "string" && (!parameter ||
                 (ts.isParameter(identifier.parent) && isSupportedFunction(identifier.parent.parent) &&
-                    parameterIsReadOnly(this.checker, identifier.parent.parent, identifier)))) ||
+                    (ts.isIdentifier(identifier) && parameterIsReadOnly(this.checker, identifier.parent.parent, identifier))))) ||
             value.kind === "callback" ||
             isCompileTimeOnlyValue(value.kind)
         ) {
@@ -13574,7 +13577,7 @@ class Compiler
         const constantParameter = parameter && value.kind === "number" &&
             value.staticNumber !== undefined && !value.parameterBinding &&
             ts.isParameter(identifier.parent) && isSupportedFunction(identifier.parent.parent) &&
-            parameterIsReadOnly(this.checker, identifier.parent.parent, identifier);
+            (ts.isIdentifier(identifier) && parameterIsReadOnly(this.checker, identifier.parent.parent, identifier));
         const stored: Value = {
             ...value,
             cpp: storedCpp,

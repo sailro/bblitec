@@ -137,7 +137,7 @@ export class CompilerSymbols {
     }
 
     public valueSymbol(
-        identifier: ts.Identifier,
+        identifier: ts.Identifier | ts.PrivateIdentifier,
     ): ts.Symbol | undefined {
         const symbol =
             ts.isShorthandPropertyAssignment(

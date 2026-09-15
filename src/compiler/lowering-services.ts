@@ -1,3 +1,4 @@
+import type { MemberName } from "./syntax.js";
 import type ts from "typescript";
 import type {AssetDecoderConfiguration} from "../asset-decoders.js";
 import type { CompiledMeshWalk } from "../gltf-mesh-walks.js";
@@ -322,7 +323,7 @@ export interface LoweringServices {
         }>;
     };
     resolveStaticExpression(expression: ts.Expression, resolving?: ReadonlySet<ts.Symbol>): ts.Expression;
-    lookupIdentifierValue(identifier: ts.Identifier): Value | undefined;
+    lookupIdentifierValue(identifier: MemberName): Value | undefined;
     compileTypedArrayArgument(expression: ts.Expression, kind: TypedArrayKind): string;
     compileForDataSink(expression: ts.Expression, dataType: DataType): string;
     compileSpriteAtlasRecord(value: Value, node: ts.Node): string | undefined;
@@ -361,9 +362,9 @@ export interface LoweringServices {
     compileRecordSetter(owner: Value, setter: ts.SetAccessorDeclaration, value: ts.Expression): void;
     withRecordScopes<T>(owner: Value, work: () => T, method?: ts.Node): T;
     captureRecordScopes(): Pick<Value, "recordScopes" | "recordTypeArguments">;
-    bindClassField(name: ts.Identifier, initializer: ts.Expression, declared?: DataType): void;
-    bindNullableClassField(name: ts.Identifier): Value | undefined;
-    bindUninitializedClassDataField(name: ts.Identifier, declared?: DataType): Value | undefined;
+    bindClassField(name: MemberName, initializer: ts.Expression, declared?: DataType): void;
+    bindNullableClassField(name: MemberName): Value | undefined;
+    bindUninitializedClassDataField(name: MemberName, declared?: DataType): Value | undefined;
     bindOptionalResourceValue(name: ts.Identifier): Value | undefined;
     bindClassDataField(name: ts.Identifier, initializer: ts.Expression, declared?: DataType, knownValue?: Value): Value | undefined;
     resolveThisField(name: string): Value | undefined;
@@ -475,7 +476,7 @@ export interface LoweringServices {
     emitStartContinuationGate(expression: ts.Expression, latch: string): void;
     constantInitializer(identifier: ts.Identifier): ts.Expression | undefined;
     moduleFunctionDeclaration(identifier: ts.Identifier): ts.FunctionDeclaration | undefined;
-    lookupOptional(identifier: ts.Identifier): Value | undefined;
+    lookupOptional(identifier: MemberName): Value | undefined;
     refuseBorrowedPlatformEventEscape(value: Value, node: ts.Node, destination: string): void;
     declaredDataProperty(expression: ts.PropertyAccessExpression): Value | undefined;
     readResolvedProperty(owner: Value, expression: ts.PropertyAccessExpression): Value | undefined;
@@ -483,7 +484,7 @@ export interface LoweringServices {
     lookup(identifier: ts.Identifier): Value;
     bindPendingLet(identifier: ts.Identifier, value: Value): void;
     rebindVariable(identifier: ts.Identifier, value: Value): void;
-    defineVariable(identifier: ts.Identifier, value: Value): void;
+    defineVariable(identifier: MemberName, value: Value): void;
     bindLocalValue(identifier: ts.Identifier, value: Value): void;
     /** Whether a caught value bound to `binding` is only reported by `body`, so it needs no native representation. */
     catchBindingIsErased(binding: ts.Identifier, body: ts.Node): boolean;

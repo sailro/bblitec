@@ -330,3 +330,23 @@ export function objectProperty(
     }
     return undefined;
 }
+
+/**
+ * A class member's declared name when it is a plain identifier or a
+ * private name; both key the member by their text, the private one with
+ * its sigil.
+ */
+export type MemberName = ts.Identifier | ts.PrivateIdentifier;
+
+export function isMemberName(name: ts.Node | undefined): name is MemberName {
+    return name !== undefined && (ts.isIdentifier(name) || ts.isPrivateIdentifier(name));
+}
+
+/**
+ * The identifier a member name spells in generated C++: the sigil of a
+ * private name is not an identifier character, and the prefix keeps a
+ * private name apart from a public one of the same spelling.
+ */
+export function memberCppName(text: string): string {
+    return text.startsWith("#") ? `private_${text.slice(1)}` : text;
+}

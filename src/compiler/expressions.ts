@@ -475,6 +475,12 @@ export class ExpressionLowerer {
             }
             return instance;
         }
+        if (ts.isPrivateIdentifier(unwrapped)) {
+            // A private name is a value only where a class field binds it.
+            const value = this.context.lookupOptional(unwrapped);
+            if (!value) this.context.fail(unwrapped, `Private name '${unwrapped.text}' is not bound here.`);
+            return value.kind === "data" ? this.context.dataLowerer.narrowOptional(value, unwrapped) : value;
+        }
         if (ts.isIdentifier(unwrapped)) {
             const value = this.context.lookupOptional(unwrapped);
             if (value) {

@@ -6355,6 +6355,9 @@ export class DataLowerer {
 
     /** `key in object` as a condition. */
     public compileInOperator(expression: ts.BinaryExpression): string {
+        if (ts.isPrivateIdentifier(expression.left)) {
+            this.context.fail(expression, "Private brand checks are outside the supported subset.");
+        }
         const key = this.context.compileValue(expression.left);
         const owner = this.context.compileValue(expression.right);
         return this.membershipCpp(owner, expression.right, key, expression.left, "in");

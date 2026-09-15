@@ -2,6 +2,7 @@ import { valueForKind } from "./types.js";
 import { EmissionSet, EmissionMap, EmissionWeakMap } from "./emission-transaction.js";
 import type { LoweringServices } from "./lowering-services.js";
 import ts from "typescript";
+import { isMemberName, type MemberName } from "./syntax.js";
 import { cppIdentifierPattern } from "../cpp-literals.js";
 import type {
     DataStructField,
@@ -29,7 +30,7 @@ interface StoredClassField extends DataStructField {
 }
 
 /** A class body's own instance property declarations, named plainly. */
-type InstanceProperty = (ts.PropertyDeclaration | ts.ParameterDeclaration) & { name: ts.Identifier };
+type InstanceProperty = (ts.PropertyDeclaration | ts.ParameterDeclaration) & { name: MemberName };
 
 /** The instance property declarations a class body writes, in order. */
 function instanceProperties(
@@ -37,7 +38,7 @@ function instanceProperties(
 ): InstanceProperty[] {
     return classInstanceProperties(declaration).filter(
         (member): member is InstanceProperty =>
-            ts.isIdentifier(member.name),
+            isMemberName(member.name),
     );
 }
 
@@ -51,13 +52,13 @@ function accessorsOf(declaration: ts.ClassDeclaration): {
     for (const member of declaration.members) {
         if (
             ts.isGetAccessorDeclaration(member) &&
-            ts.isIdentifier(member.name)
+            isMemberName(member.name)
         ) {
             getters[member.name.text] = member;
         }
         if (
             ts.isSetAccessorDeclaration(member) &&
-            ts.isIdentifier(member.name)
+            isMemberName(member.name)
         ) {
             setters[member.name.text] = member;
         }
@@ -204,7 +205,7 @@ export class ClassLowerer {
         return declaration.members.find(
             (member): member is ts.MethodDeclaration =>
                 ts.isMethodDeclaration(member) &&
-                ts.isIdentifier(member.name) &&
+                isMemberName(member.name) &&
                 member.name.text === callee.name.text &&
                 (ts.getCombinedModifierFlags(member) &
                     ts.ModifierFlags.Static) !==
@@ -230,7 +231,7 @@ export class ClassLowerer {
         return declaration.members.find(
             (member): member is ts.PropertyDeclaration =>
                 ts.isPropertyDeclaration(member) &&
-                ts.isIdentifier(member.name) &&
+                isMemberName(member.name) &&
                 member.name.text === access.name.text &&
                 member.initializer !== undefined &&
                 (ts.getCombinedModifierFlags(member) &
@@ -770,7 +771,7 @@ export class ClassLowerer {
             if (
                 !ts.isPropertyAccessExpression(left) ||
                 left.expression.kind !== ts.SyntaxKind.ThisKeyword ||
-                !ts.isIdentifier(left.name) ||
+                !isMemberName(left.name) ||
                 !ts.isIdentifier(right) ||
                 stored.has(left.name.text) ||
                 !declared.has(left.name.text)
@@ -962,7 +963,7 @@ export class ClassLowerer {
         const method = declaration.members.find(
             (member): member is ts.MethodDeclaration =>
                 ts.isMethodDeclaration(member) &&
-                ts.isIdentifier(member.name) &&
+                isMemberName(member.name) &&
                 member.name.text === methodName,
         );
         if (!method) {
@@ -1412,7 +1413,7 @@ export class ClassLowerer {
         for (const member of declaration.members) {
             if (
                 ts.isMethodDeclaration(member) &&
-                ts.isIdentifier(member.name) &&
+                isMemberName(member.name) &&
                 member.body
             ) {
                 methods.set(member.name.text, member);

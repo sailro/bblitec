@@ -1480,10 +1480,10 @@ export function emitPropertyAssignment(
     if (existing) {
       failClassFieldRebind(context, expression, left.name.text);
     }
-    if (!ts.isIdentifier(left.name)) {
+    if (!isMemberName(left.name)) {
       context.fail(
         left.name,
-        "Private class fields are outside the supported subset.",
+        "Computed class field names are outside the supported subset.",
       );
     }
     context.bindClassField(left.name, expression.right);
@@ -2077,6 +2077,7 @@ function requireSimpleAssignment(
 
 import ts from "typescript";
 import { argumentAt } from "./syntax.js";
+import { isMemberName } from "./syntax.js";
 import { emitAudioPropertyAssignment } from "./audio-surface.js";
 import { TEXTURE_UV_PROPERTIES } from "../lowering/standard-uv-transform-lowerer.js";
 import { requireGltfGroupSource } from "./intrinsics/animation.js";
