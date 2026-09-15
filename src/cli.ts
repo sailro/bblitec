@@ -27,6 +27,7 @@ import type {
     Feature,
 } from "./compiler/types.js";
 import { reachedGeneratedSources } from "./generated-sources.js";
+import { writeJsonRecord } from "./validation-resume.js";
 import {
     predeclaredShaderProgram,
     shaderMaterialPrograms,
@@ -124,12 +125,14 @@ import type {
     NodeParticleSystemEmit,
 } from "./lowering/node-particle-lowerer.js";
 
+/** What a run produces: a generated tree, or a survey's census in its place. */
+type CliTarget =
+    | { kind: "generate"; output: string }
+    | { kind: "survey"; census: string };
+
 interface CliOptions {
     input: string;
-    /** The generated tree; absent only for a survey, which writes no tree. */
-    output?: string;
-    /** Where a generation survey writes its census instead of generating. */
-    survey?: string;
+    target: CliTarget;
     title?: string;
     width?: number;
     height?: number;
@@ -234,14 +237,15 @@ function parseArguments(arguments_: string[]): CliOptions {
         }
     }
 
-    if (!output && !survey) {
-        usage();
-    }
+    const target: CliTarget = survey
+        ? { kind: "survey", census: survey }
+        : output
+          ? { kind: "generate", output }
+          : usage();
 
     return {
         input,
-        ...(output ? { output } : {}),
-        ...(survey ? { survey } : {}),
+        target,
         idDiagnostics,
         environment: Object.fromEntries(environment),
         ...(title ? { title } : {}),
@@ -629,11 +633,6 @@ async function bakeNodeParticleSystems(
 }
 
 /**
- * How many passes one baked system's billboard draws, by the pin's own rule:
- * the pass count rides `createParticleBlend`'s descriptor, and only the
- * exact-blend chain reaches it. Zero is the stock program.
- */
-/**
  * `--survey`: lower the entry past every refusal and write the census in
  * place of a tree. The exit status reports whether the survey ran to the
  * end, not whether the entry generates.
@@ -644,8 +643,7 @@ function writeSurvey(
     compileOptions: CompileOptions,
 ): void {
     const { report } = surveySource(source, compileOptions);
-    mkdirSync(dirname(censusPath), { recursive: true });
-    writeFileSync(censusPath, `${JSON.stringify(report, null, 2)}\n`);
+    writeJsonRecord(censusPath, report);
     console.log(
         `Survey: ${report.statements.attempted} statement lowerings, ${report.statements.refused} refused ` +
             `(${report.refusals.length} sites, ${report.classes.length} classes) -> ${censusPath}`,
@@ -682,12 +680,11 @@ async function main(): Promise<void> {
             ? { nativeHostUi: readNativeHostUi(options.hostUi) }
             : {}),
     };
-    if (options.survey !== undefined) {
-        writeSurvey(resolve(options.survey), source, compileOptions);
+    if (options.target.kind === "survey") {
+        writeSurvey(resolve(options.target.census), source, compileOptions);
         return;
     }
-    if (options.output === undefined) usage();
-    const outputPath = resolve(options.output);
+    const outputPath = resolve(options.target.output);
     const result = compileSource(source, compileOptions);
 
     // The frozen node-particle bake is a Chromium run that nothing between

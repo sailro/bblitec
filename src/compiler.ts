@@ -26,7 +26,7 @@ import { compileCanvasValue, emitCanvasAssignment, readMediaQueryProperty } from
 import { compileWindowIdentity } from "./compiler/window-events.js";
 import { writesUnobservedCanvasMetadata } from "./compiler/canvas-instrumentation.js";
 import { AsyncLowerer } from "./compiler/async.js";
-import { sourceLocation } from "./source-location.js";
+import { sourceLocation, syntaxKindName } from "./source-location.js";
 import { cppIdentifierPattern, doubleLiteral, sanitizeCppIdentifier, stringLiteral } from "./cpp-literals.js";
 import { CPP_SCALAR } from "./lowering/cpp-types.js";
 import { compileAdaptations } from "./compiler/adaptations.js";
@@ -452,6 +452,9 @@ function callbackClosureContainer(
 
 export { CompileError };
 
+/** A transaction that is not a probe: its work stands unless it throws. */
+const commitAlways = (): boolean => true;
+
 export function compileSource(
     source: string,
     options: CompileOptions = {},
@@ -478,10 +481,10 @@ export function surveySource(
     return withSurvey(collector, () => {
         try {
             const result = compileSourceApplication(source, options);
-            return { report: collector.report(true), result };
+            return { report: collector.report(), result };
         } catch (error) {
             if (!(error instanceof Error)) throw error;
-            return { report: collector.report(false, error.message) };
+            return { report: collector.report(error.message) };
         }
     });
 }
@@ -510,23 +513,23 @@ function compileSourceApplication(source: string, options: CompileOptions): Comp
         // frontend and rebuild emission so earlier aliases use the same storage.
         const dynamicBindings = new Set<ts.VariableDeclaration>();
         const ownedRecords = new Map<NativeRecordStorageDemand["identity"], NativeRecordStorageDemand>();
+        // A replay lowers the realm again from the start, so a survey keeps
+        // only the attempt that ran to the end.
+        const lower = (): CompileResult => {
+            const compiler = new Compiler(input.program, input.sourceFile, input.checker, resolved, dynamicBindings, ownedRecords);
+            const result = traceSourceProgram(input.program, () => compiler.compile());
+            result.manifest.inputs = input.localFiles;
+            return result;
+        };
         for (;;) {
-            // A replay lowers the realm again from the start, so a survey
-            // keeps only the attempt that ran to the end.
-            const surveyed = survey?.beginAttempt(input.sourceFile.fileName);
             try {
-                const compiler = new Compiler(input.program, input.sourceFile, input.checker, resolved, dynamicBindings, ownedRecords);
-                const result = traceSourceProgram(input.program, () => compiler.compile());
-                result.manifest.inputs = input.localFiles;
-                return result;
+                return survey ? survey.attempt(input.sourceFile.fileName, lower) : lower();
             } catch (error) {
                 if (error instanceof DynamicBindingStorageRequired && !dynamicBindings.has(error.declaration)) {
                     dynamicBindings.add(error.declaration);
                 } else if (error instanceof NativeRecordStorageRequired && !ownedRecords.has(error.demand.identity)) {
                     ownedRecords.set(error.demand.identity, error.demand);
                 } else throw error;
-            } finally {
-                survey?.resume(surveyed);
             }
         }
     };
@@ -9564,23 +9567,27 @@ class Compiler
     }
 
     /** Commit a successful probe; restore all compiler-owned state on decline or throw. */
+    /** How many speculative probes are open; a probe decides its own refusals. */
+    private probeDepth = 0;
+
+    public get speculating(): boolean {
+        return this.probeDepth > 0;
+    }
+
     public probeEmission<T>(
         probe: () => T,
         answered: (result: T) => boolean = (result) => result !== undefined,
     ): T {
-        // A probe decides its own refusals, so a survey stands aside while
-        // one is open (nested probes included).
-        const survey = activeSurvey();
-        survey?.enterSpeculation();
+        this.probeDepth++;
         try {
             return this.emissionTransaction(probe, answered);
         } finally {
-            survey?.leaveSpeculation();
+            this.probeDepth--;
         }
     }
 
-    public surveyEmission<T>(emit: () => T): T {
-        return this.emissionTransaction(emit, () => true);
+    public transaction(work: () => void): void {
+        this.emissionTransaction(work, commitAlways);
     }
 
     private emissionTransaction<T>(
@@ -12489,7 +12496,7 @@ class Compiler
             }
             this.fail(
                 identifier,
-                `'${identifier.text}' is assigned inside a ${ts.SyntaxKind[node.kind]}; ` +
+                `'${identifier.text}' is assigned inside a ${syntaxKindName(node.kind)}; ` +
                     "an untyped 'let' binds only where its declaring scope reaches " +
                     "the assignment unconditionally.",
             );
@@ -15256,6 +15263,7 @@ class Compiler
             character,
             message,
             reason,
+            node,
         );
     }
 

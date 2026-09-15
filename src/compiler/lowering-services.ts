@@ -375,8 +375,10 @@ export interface LoweringServices {
     reachJsRandom(): void;
     emitNativeCallbackStorage(cppName: string, signature: string, escapesEmittingScope: boolean): Value<"callback">;
     probeEmission<T>(probe: () => T, answered?: (result: T) => boolean): T;
-    /** A survey's statement transaction: committed on return, rolled back on a throw, never speculative. */
-    surveyEmission<T>(emit: () => T): T;
+    /** True while a speculative probe is open: a refusal inside is the probe's to decide. */
+    readonly speculating: boolean;
+    /** Runs `work` in an emission transaction: committed on return, rolled back on a throw. */
+    transaction(work: () => void): void;
     captureEmittedLines(emitBody: () => void): string[];
     recordAccessor(owner: Value, mapType: string, entries: readonly string[], canHoist: boolean): string;
     registerNativeFunction(prototype: string, definitionLines: string[]): void;

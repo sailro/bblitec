@@ -1,13 +1,13 @@
 import assert from "node:assert/strict";
-import { execFileSync, spawnSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
 import { compileSource, surveySource } from "../src/compiler.js";
-import { refusalClass } from "../src/compiler/survey.js";
-import { readNativeHostUi } from "../src/native-host-ui.js";
-import { scenes } from "../src/scene-registry.js";
+import { refusalClass, type SurveyReport } from "../src/compiler/survey.js";
+import { registrySceneCompileOptions } from "../src/native-host-ui.js";
+import { getScene } from "../src/scene-registry.js";
 
 // Three refusals in two functions, each followed by a statement that still
 // lowers: the survey must reach all of them and continue past each.
@@ -33,50 +33,53 @@ third();
 localStorage.setItem("total", String(total));
 `;
 
+const listed = (report: SurveyReport): string =>
+    report.refusals.map(refusal => `${refusal.site.line}: ${refusal.message}`).join("\n");
+
 test("a survey records every refusal it reaches and continues past each", () => {
     const { report, result } = surveySource(refusing, { fileName: resolve("survey-refusals.ts") });
     assert.equal(report.complete, true);
     assert.equal(report.terminal, undefined);
     assert.ok(result, "every realm lowered to the end");
-    const messages = report.refusals.map(refusal => `${refusal.site.line}: ${refusal.message}`);
-    assert.equal(report.refusals.length, 3, messages.join("\n"));
+    assert.equal(report.refusals.length, 3, listed(report));
     assert.equal(report.statements.refused, 3);
     assert.ok(report.statements.attempted > report.statements.refused);
     // The class refuses where it is declared; the statement rolled back is
     // the construction that reached it.
     const inheritance = report.refusals.find(refusal => /inheritance/i.test(refusal.message));
-    assert.ok(inheritance, messages.join("\n"));
+    assert.ok(inheritance, listed(report));
     assert.equal(inheritance.site.line, 5);
     assert.equal(inheritance.statement.line, 6);
     assert.equal(inheritance.statement.kind, "ExpressionStatement");
     assert.equal(inheritance.statement.function, "first");
     assert.equal(inheritance.cascade, undefined);
     const proxy = report.refusals.find(refusal => refusal.message === "Unsupported constructor expression.");
-    assert.ok(proxy, messages.join("\n"));
+    assert.ok(proxy, listed(report));
     assert.equal(proxy.statement.function, "second");
     assert.equal(proxy.statement.kind, "VariableStatement");
     assert.equal(proxy.cascade, undefined);
     // `p` was declared by the refused statement: its later read is a cascade
     // of that refusal, not a gap of its own.
     const cascade = report.refusals.find(refusal => refusal.cascade !== undefined);
-    assert.ok(cascade, messages.join("\n"));
+    assert.ok(cascade, listed(report));
     assert.match(cascade.message, /^Unknown or unsupported variable 'p'\./);
     assert.deepEqual(cascade.cascade, proxy.site);
     assert.equal(cascade.statement.line, 11);
     assert.equal(cascade.statement.kind, "IfStatement");
+    assert.equal(cascade.class, refusalClass(cascade.message));
     // Classes group by message shape and count sites, not lowerings.
     const classes = Object.fromEntries(report.classes.map(entry => [entry.class, entry]));
     assert.equal(classes[proxy.class]?.sites, 1);
     assert.equal(classes[proxy.class]?.cascades, 0);
-    assert.equal(classes[refusalClass(cascade.message)]?.example, cascade.message);
-    assert.equal(classes[refusalClass(cascade.message)]?.cascades, 1);
+    assert.equal(classes[cascade.class]?.example, cascade.message);
+    assert.equal(classes[cascade.class]?.cascades, 1);
     for (const refusal of report.refusals) assert.equal(refusal.occurrences, 1);
 });
 
-test("a refused return is the calling statement's refusal", () => {
+test("a refused value return is the calling statement's refusal", () => {
     // `pick` refuses inside its return; the survey must not hand `chosen` a
     // hole, so each declaration that calls it refuses at the one site inside
-    // `pick`, and every later read cascades from that site.
+    // `pick`, and the reads reach that site again through the initializers.
     const { report } = surveySource(`
         function pick(name: string): number {
             const raw = new URLSearchParams(location.search).get(name);
@@ -88,10 +91,7 @@ test("a refused return is the calling statement's refusal", () => {
         localStorage.setItem("other", String(other + 1));
     `, { fileName: resolve("survey-return.ts") });
     assert.equal(report.complete, true);
-    const messages = report.refusals.map(refusal => `${refusal.site.line}: ${refusal.message}`);
-    // One site: the two declarations reach it through the call, and the
-    // two reads reach it again by re-deriving the top-level initializers.
-    assert.equal(report.refusals.length, 1, messages.join("\n"));
+    assert.equal(report.refusals.length, 1, listed(report));
     const [declaration] = report.refusals;
     assert.ok(declaration);
     assert.equal(declaration.statement.line, 6);
@@ -128,16 +128,9 @@ test("an error outside statement lowering ends the survey as incomplete", () => 
 // probe's and not the survey's.
 for (const id of ["scene2", "scene3", "scene240", "regression-compiler-state"]) {
     test(`a survey of ${id} generates identical bytes and records nothing`, () => {
-        const scene = scenes.find(entry => entry.id === id);
-        assert.ok(scene, id);
-        const fileName = resolve(scene.source);
-        const options = {
-            fileName,
-            title: scene.title,
-            search: scene.parity?.referenceSearch ?? "",
-            ...(scene.nativeHostUi ? { nativeHostUi: readNativeHostUi(scene.nativeHostUi) } : {}),
-        };
-        const source = readFileSync(fileName, "utf8");
+        const scene = getScene(id);
+        const options = registrySceneCompileOptions(scene);
+        const source = readFileSync(scene.source, "utf8");
         const expected = compileSource(source, options);
         const { report, result } = surveySource(source, options);
         assert.equal(report.complete, true);
@@ -158,16 +151,17 @@ test("the CLI writes the census in place of a tree and reports completion in its
     writeFileSync(entry, refusing);
     const census = join(directory, "out", "census.json");
     // The CLI locates the pinned library from the repository it runs in.
-    const stdout = execFileSync(process.execPath, [resolve("dist/src/cli.js"), entry, "--survey", census],
-        { encoding: "utf8" });
-    assert.match(stdout, /Survey: \d+ statement lowerings, 3 refused \(3 sites, 3 classes\)/);
+    const runCli = (...extra: string[]) => spawnSync(process.execPath,
+        [resolve("dist/src/cli.js"), entry, "--survey", census, ...extra], { encoding: "utf8" });
+    const complete = runCli();
+    assert.equal(complete.status, 0, complete.stderr);
+    assert.match(complete.stdout, /Survey: \d+ statement lowerings, 3 refused \(3 sites, 3 classes\)/);
     const report = JSON.parse(readFileSync(census, "utf8"));
     assert.equal(report.schemaVersion, 1);
     assert.equal(report.complete, true);
     assert.equal(report.refusals.length, 3);
     assert.equal(existsSync(join(directory, "out", "main.cpp")), false);
-    const incomplete = spawnSync(process.execPath,
-        [resolve("dist/src/cli.js"), entry, "--survey", census, "--env", "DEV=true"], { encoding: "utf8" });
+    const incomplete = runCli("--env", "DEV=true");
     assert.equal(incomplete.status, 1);
     assert.match(incomplete.stderr, /Survey incomplete:/);
     assert.equal(JSON.parse(readFileSync(census, "utf8")).complete, false);

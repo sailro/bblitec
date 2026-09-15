@@ -4,6 +4,7 @@ import type { LoweringServices } from "./lowering-services.js";
 import ts from "typescript";
 import { traceSourceNode } from "./source-trace.js";
 import { activeSurvey } from "./survey.js";
+import { syntaxKindName } from "../source-location.js";
 import { cppIdentifierPattern, doubleLiteral } from "../cpp-literals.js";
 import { emitParticleAliveGuard } from "./particle-buffer.js";
 import {
@@ -47,7 +48,8 @@ export interface StatementLoweringContext
         | "noteCameraVectorSet"
         | "workerCheckpointCpp"
         | "workerAbortCpp"
-        | "surveyEmission"
+        | "speculating"
+        | "transaction"
         | "checker"
         | "symbols"
         | "dataTypes"
@@ -463,14 +465,14 @@ export class StatementLowerer {
         statement: ts.Statement,
     ): void {
         // A survey lowers the statement under a transaction and continues
-        // past its refusal; inside a speculative probe the refusal belongs
-        // to the probe, and ordinary generation has no survey at all. A
-        // return feeds its value to the call that lowered the body, so its
-        // refusal is the caller's statement to record: swallowing it would
-        // hand the caller a binding with no value and every later read of
-        // that binding would count as a gap of its own.
+        // past its refusal; ordinary generation has no survey at all. Inside
+        // a speculative probe the refusal belongs to the probe. A statement
+        // that returns a value feeds it to the call that lowered the body,
+        // so its refusal is the caller's statement to record: swallowing it
+        // would hand the caller a binding with no value, and every later
+        // read of that binding would count as a gap of its own.
         const survey = activeSurvey();
-        if (survey === undefined || survey.speculating || ts.isReturnStatement(statement)) {
+        if (survey === undefined || context.speculating || firstReturn([statement], { valued: true })) {
             this.lowerStatement(context, statement);
             return;
         }
@@ -639,7 +641,7 @@ export class StatementLowerer {
         }
         context.fail(
             statement,
-            `Unsupported statement: ${ts.SyntaxKind[statement.kind]}.`,
+            `Unsupported statement: ${syntaxKindName(statement.kind)}.`,
         );
     }
 

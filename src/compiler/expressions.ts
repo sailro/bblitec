@@ -29,6 +29,7 @@ import {hasDynamicObjectSpread, isJsonValue} from "./json-bridge.js";
 import { isHandleKind } from "./data-types.js";
 
 import { doubleLiteral } from "../cpp-literals.js";
+import { syntaxKindName } from "../source-location.js";
 import {isAbsentTypeofIdentifier} from "./symbols.js";
 import { compileNumberPredicate, numberConstant, numberConstantValue } from "./number-intrinsics.js";
 import {
@@ -1181,7 +1182,7 @@ export class ExpressionLowerer {
                 : target;
         }
 
-        this.context.fail(unwrapped, `Unsupported value expression: ${ts.SyntaxKind[unwrapped.kind]}.`);
+        this.context.fail(unwrapped, `Unsupported value expression: ${syntaxKindName(unwrapped.kind)}.`);
     }
 
     private assertedTypeIncludesImportedName(

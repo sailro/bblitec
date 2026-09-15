@@ -1,4 +1,5 @@
 import ts from "typescript";
+import { syntaxKindName } from "../source-location.js";
 
 /** The source-navigation surface shared by pinned and application builders. */
 export interface ShaderTextContext {
@@ -877,7 +878,7 @@ export class PinnedShaderText {
         }
         return this.context.contractError(
             node,
-            `Unsupported expression in pinned shader text: ${ts.SyntaxKind[node.kind]}.`,
+            `Unsupported expression in pinned shader text: ${syntaxKindName(node.kind)}.`,
         );
     }
 

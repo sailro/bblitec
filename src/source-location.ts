@@ -30,6 +30,25 @@ export function sourceLocation(node: ts.Node): SourceLocation {
     };
 }
 
+let kindNames: Map<number, string> | undefined;
+
+/**
+ * The name of a syntax kind as a reader knows it. `ts.SyntaxKind[kind]`
+ * answers with a range marker (`FirstStatement`, `LastLiteralToken`) for
+ * the kinds that begin or end one; the first named kind for each value is
+ * the one to print.
+ */
+export function syntaxKindName(kind: ts.SyntaxKind): string {
+    if (!kindNames) {
+        kindNames = new Map();
+        for (const [name, value] of Object.entries(ts.SyntaxKind)) {
+            if (typeof value !== "number" || /^(?:First|Last)[A-Z]/.test(name) || kindNames.has(value)) continue;
+            kindNames.set(value, name);
+        }
+    }
+    return kindNames.get(kind) ?? String(kind);
+}
+
 /**
  * `<file>:<line>:<column>` with the file named relative to the corpus
  * scene root (`/lab/lite/src/`), falling back to the base name for a

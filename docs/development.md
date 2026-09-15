@@ -155,6 +155,8 @@ a refusal rolls it back and is recorded, and lowering continues. The census list
 (site, message, message class, enclosing function, cascades from refused declarations) with attempted and
 refused lowering counts; it writes no tree. Refusals inside speculative probes belong to the probe, storage
 replays keep only their final attempt, and an error outside statement lowering ends the survey as incomplete.
+Nested statement transactions journal into every open transaction, so a survey of a large entry costs up to
+about 1.6 times its generation.
 
 Progress is closed acceptance groups / fixed baseline groups, with equal credit per group. Every inventoried
 requirement needs one owner. Closure requires passing evidence with file hashes and completed dependencies;

@@ -10,14 +10,14 @@
  * consults it.
  *
  * Refusals raised inside speculative probes are the probe's to decide, not
- * the survey's: `probeEmission` counts its depth and the wrapper stands
- * aside while any probe is open. A compile attempt that restarts for a
- * storage replay discards its realm's records; a refusal raised outside
- * statement lowering ends the survey as incomplete.
+ * the survey's, and the statement lowerer stands aside while one is open.
+ * A compile attempt that restarts for a storage replay discards its realm's
+ * records; a refusal raised outside statement lowering ends the survey as
+ * incomplete.
  */
 import ts from "typescript";
 import { CompileError } from "./compile-error.js";
-import { sourceLocation } from "../source-location.js";
+import { sourceLocation, syntaxKindName } from "../source-location.js";
 
 export interface SurveySite {
     file: string;
@@ -62,34 +62,22 @@ export interface SurveyReport {
 }
 
 /** What a surveyed statement lowering needs from its context. */
-export interface SurveyEmissionContext {
+interface StatementContext {
     readonly checker: ts.TypeChecker;
-    surveyEmission<T>(emit: () => T): T;
+    transaction(work: () => void): void;
 }
 
-/** One compile attempt's census; a replay of the same realm replaces it. */
-export interface SurveyAttempt {
+/** A refusal while it is being counted: the statements it rolled back, by node. */
+interface Census extends SurveyRefusal {
+    rolledBack: Set<ts.Statement>;
+}
+
+/** One compile attempt of one realm; a replay of that realm replaces it. */
+interface Attempt {
     attempted: number;
-    refused: number;
-    refusals: Map<string, SurveyRefusal>;
-    /** The statements each refusal rolled back, by refusal key. */
-    rolledBack: Map<string, Set<string>>;
+    refusals: Map<string, Census>;
+    /** Bindings the rolled-back statements would have declared, by symbol. */
     declarations: Map<ts.Symbol, SurveySite>;
-}
-
-const UNKNOWN_VARIABLE = /^Unknown or unsupported variable '([^']+)'\.$/;
-
-// `ts.SyntaxKind[kind]` answers with an alias (`FirstStatement`) for the
-// kinds that mark a range; the first named kind for each value is the one
-// a reader recognises.
-const kindNames = new Map<number, string>();
-for (const [name, value] of Object.entries(ts.SyntaxKind)) {
-    if (typeof value !== "number" || /^(?:First|Last)[A-Z]/.test(name) || kindNames.has(value)) continue;
-    kindNames.set(value, name);
-}
-
-function syntaxKindName(kind: ts.SyntaxKind): string {
-    return kindNames.get(kind) ?? String(kind);
 }
 
 /** The message shape: names, numbers and parenthesised detail elided. */
@@ -126,56 +114,25 @@ function declaredNames(statement: ts.Statement): ts.Identifier[] {
     return names;
 }
 
-function identifierAt(statement: ts.Statement, text: string, line: number, column: number): ts.Identifier | undefined {
-    let found: ts.Identifier | undefined;
-    const visit = (node: ts.Node): void => {
-        if (found) return;
-        if (ts.isIdentifier(node) && node.text === text) {
-            const location = sourceLocation(node);
-            if (location.line === line && location.character === column) { found = node; return; }
-        }
-        ts.forEachChild(node, visit);
-    };
-    visit(statement);
-    return found;
-}
-
 export class SurveyCollector {
-    private speculation = 0;
-    private readonly realms = new Map<string, SurveyAttempt>();
-    private current: SurveyAttempt | undefined;
+    private readonly realms = new Map<string, Attempt>();
+    private current: Attempt | undefined;
 
-    /** True while a speculative probe is open: its refusals are the probe's to decide. */
-    public get speculating(): boolean {
-        return this.speculation > 0;
-    }
-
-    public enterSpeculation(): void {
-        this.speculation++;
-    }
-
-    public leaveSpeculation(): void {
-        this.speculation--;
-    }
-
-    /**
-     * Starts a realm's compile attempt, replacing the census a previous
-     * attempt of the same realm left. Returns what to `resume` afterwards.
-     */
-    public beginAttempt(realm: string): SurveyAttempt | undefined {
+    /** Runs one realm's compile attempt, replacing the census a previous attempt of that realm left. */
+    public attempt<T>(realm: string, run: () => T): T {
         const previous = this.current;
-        const attempt: SurveyAttempt = { attempted: 0, refused: 0, refusals: new Map(), rolledBack: new Map(), declarations: new Map() };
+        const attempt: Attempt = { attempted: 0, refusals: new Map(), declarations: new Map() };
         this.realms.set(realm, attempt);
         this.current = attempt;
-        return previous;
-    }
-
-    public resume(previous: SurveyAttempt | undefined): void {
-        this.current = previous;
+        try {
+            return run();
+        } finally {
+            this.current = previous;
+        }
     }
 
     /** Lowers one statement under a transaction; a refusal rolls it back and is recorded. */
-    public attemptStatement(context: SurveyEmissionContext, statement: ts.Statement, lower: () => void): void {
+    public attemptStatement(context: StatementContext, statement: ts.Statement, lower: () => void): void {
         const attempt = this.current;
         if (!attempt) {
             lower();
@@ -183,79 +140,72 @@ export class SurveyCollector {
         }
         attempt.attempted++;
         try {
-            context.surveyEmission(() => { lower(); return true; });
+            context.transaction(lower);
         } catch (error) {
             if (!(error instanceof CompileError)) throw error;
-            attempt.refused++;
             this.record(attempt, context.checker, statement, error);
         }
     }
 
-    private record(attempt: SurveyAttempt, checker: ts.TypeChecker, statement: ts.Statement, error: CompileError): void {
-        const prefix = `${error.fileName}:${error.line}:${error.column}: `;
-        const message = error.message.startsWith(prefix) ? error.message.slice(prefix.length) : error.message;
-        const key = `${prefix}${message}`;
-        const location = sourceLocation(statement);
-        const rolledBack = attempt.rolledBack.get(key) ?? new Set<string>();
-        rolledBack.add(`${location.file.fileName}:${location.line}`);
-        attempt.rolledBack.set(key, rolledBack);
-        let refusal = attempt.refusals.get(key);
-        if (refusal) {
-            refusal.occurrences++;
-            refusal.statements = rolledBack.size;
-        } else {
-            refusal = {
+    private record(attempt: Attempt, checker: ts.TypeChecker, statement: ts.Statement, error: CompileError): void {
+        let census = attempt.refusals.get(error.message);
+        if (!census) {
+            const location = sourceLocation(statement);
+            census = {
                 site: { file: error.fileName, line: error.line, column: error.column },
-                message,
-                class: refusalClass(message),
+                message: error.detail,
+                class: refusalClass(error.detail),
                 statement: {
                     file: location.file.fileName,
                     line: location.line,
                     kind: syntaxKindName(statement.kind),
                     function: enclosingFunctionName(statement),
                 },
-                occurrences: 1,
-                statements: 1,
+                occurrences: 0,
+                statements: 0,
+                rolledBack: new Set(),
             };
-            const cascade = this.cascadeOf(attempt, checker, statement, error, message);
-            if (cascade) refusal.cascade = cascade;
-            attempt.refusals.set(key, refusal);
+            const cascade = this.cascadeOf(attempt, checker, error);
+            if (cascade) census.cascade = cascade;
+            attempt.refusals.set(error.message, census);
         }
+        census.occurrences++;
+        if (census.rolledBack.has(statement)) return;
+        census.rolledBack.add(statement);
         // Every statement this refusal rolled back loses its declarations,
         // whichever caller reached the site first.
         for (const name of declaredNames(statement)) {
             const symbol = checker.getSymbolAtLocation(name);
-            if (symbol && !attempt.declarations.has(symbol)) attempt.declarations.set(symbol, refusal.site);
+            if (symbol && !attempt.declarations.has(symbol)) attempt.declarations.set(symbol, census.site);
         }
     }
 
-    /** A refusal naming a binding that a refused statement would have declared. */
-    private cascadeOf(attempt: SurveyAttempt, checker: ts.TypeChecker, statement: ts.Statement,
-        error: CompileError, message: string): SurveySite | undefined {
-        const unknown = UNKNOWN_VARIABLE.exec(message);
-        if (!unknown || attempt.declarations.size === 0) return undefined;
-        const identifier = identifierAt(statement, unknown[1]!, error.line, error.column);
-        const symbol = identifier ? checker.getSymbolAtLocation(identifier) : undefined;
+    /** A refusal raised at a name that a refused statement would have declared. */
+    private cascadeOf(attempt: Attempt, checker: ts.TypeChecker, error: CompileError): SurveySite | undefined {
+        const subject = error.subject;
+        if (!subject || !ts.isIdentifier(subject) || attempt.declarations.size === 0) return undefined;
+        const symbol = checker.getSymbolAtLocation(subject);
         return symbol ? attempt.declarations.get(symbol) : undefined;
     }
 
-    public report(complete: boolean, terminal?: string): SurveyReport {
-        const merged = new Map<string, SurveyRefusal>();
+    public report(terminal?: string): SurveyReport {
+        const merged = new Map<string, Census>();
         let attempted = 0;
-        let refused = 0;
         for (const attempt of this.realms.values()) {
             attempted += attempt.attempted;
-            refused += attempt.refused;
-            for (const [key, refusal] of attempt.refusals) {
+            for (const [key, census] of attempt.refusals) {
                 const existing = merged.get(key);
-                if (existing) {
-                    existing.occurrences += refusal.occurrences;
-                    existing.statements += refusal.statements;
-                } else merged.set(key, { ...refusal, site: { ...refusal.site }, statement: { ...refusal.statement } });
+                if (!existing) {
+                    merged.set(key, { ...census, rolledBack: new Set(census.rolledBack) });
+                } else {
+                    existing.occurrences += census.occurrences;
+                    for (const statement of census.rolledBack) existing.rolledBack.add(statement);
+                }
             }
         }
-        const refusals = [...merged.values()].sort((a, b) =>
-            a.site.file.localeCompare(b.site.file) || a.site.line - b.site.line || a.site.column - b.site.column);
+        const refusals = [...merged.values()]
+            .map(({ rolledBack, ...refusal }): SurveyRefusal => ({ ...refusal, statements: rolledBack.size }))
+            .sort((a, b) => a.site.file.localeCompare(b.site.file) || a.site.line - b.site.line || a.site.column - b.site.column);
         const classes = new Map<string, SurveyClass>();
         for (const refusal of refusals) {
             const entry = classes.get(refusal.class) ??
@@ -267,11 +217,12 @@ export class SurveyCollector {
         }
         return {
             schemaVersion: 1,
-            complete,
+            complete: terminal === undefined,
             ...(terminal === undefined ? {} : { terminal }),
-            statements: { attempted, refused },
+            statements: { attempted, refused: refusals.reduce((count, refusal) => count + refusal.occurrences, 0) },
             refusals,
-            classes: [...classes.values()].sort((a, b) => b.sites - a.sites || b.occurrences - a.occurrences || a.class.localeCompare(b.class)),
+            classes: [...classes.values()].sort((a, b) =>
+                b.sites - a.sites || b.occurrences - a.occurrences || a.class.localeCompare(b.class)),
         };
     }
 }
