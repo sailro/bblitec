@@ -20,7 +20,13 @@ void check_mass_frame() {
     std::vector<std::array<double, 3>> vertices;
     for (double x : {-1., 1.}) for (double y : {-2., 2.}) for (double z : {-3., 3.})
         vertices.push_back({3 + .28*x - .96*y, -2 + .96*x + .28*y, 5 + z});
+    const auto corners = vertices;
+    for (int x = -4; x <= 4; ++x) for (int y = -4; y <= 4; ++y) for (int z = -4; z <= 4; ++z)
+        vertices.push_back({3 + .28*x*.2 - .96*y*.4, -2 + .96*x*.2 + .28*y*.4, 5 + z*.6});
     const auto shape = physics_shape_create_convex_hull(vertices);
+    assert(shape_at(shape).shape->getShapeType() == CONVEX_HULL_SHAPE_PROXYTYPE);
+    const auto& collision = static_cast<const btConvexHullShape&>(*shape_at(shape).shape);
+    assert(collision.getNumPoints() == 8);
     const auto mass = physics_shape_build_mass_properties(shape, 12);
     assert(mass.mass == 12);
     for (std::size_t i = 0; i < 3; ++i)
@@ -49,7 +55,7 @@ void check_mass_frame() {
         assert(rigid.getCollisionShape()->getShapeType() == CONVEX_HULL_SHAPE_PROXYTYPE);
         const auto* hull = static_cast<const btConvexHullShape*>(rigid.getCollisionShape());
         assert(hull && hull->getNumPoints() == 8);
-        for (const auto& vertex : vertices) {
+        for (const auto& vertex : corners) {
             btScalar nearest = BT_LARGE_FLOAT;
             for (int i = 0; i < hull->getNumPoints(); ++i)
                 nearest = std::min(nearest, (rigid.getWorldTransform() * hull->getUnscaledPoints()[i] - node * to_bt(vertex)).length());

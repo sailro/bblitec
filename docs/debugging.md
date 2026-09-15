@@ -53,6 +53,7 @@ npm run scene -- check <check-id> [--backend sdl_gpu|dawn] [--phase <id>] [--kee
 
 Checks live in checks/<id>.json; plugins hold scene-specific arithmetic. Phases define frames/input/env;
 expectations compare captures, state, images and logs. A twin builds the unchanged no-query source.
+`observe.captureReady` selects the canvas dataset flag awaited for `captureFrames`.
 Results are in artifacts/check/<id>/. Use numeric checks where small missing objects could pass image gates.
 
 | Area | Check IDs |
@@ -105,6 +106,7 @@ Artifact suffix gpu means SDL_GPU; CLI values are sdl_gpu/dawn.
 | `BBLITE_WINDOW_TRACE`, `BBLITE_CAPTURE_ENGINE_FRAME` | Worker presentation trace/per-engine frame |
 | `BBLITE_UI_STYLE_TRACE`, `BBLITE_PHYSICS_TRACE`, `BBLITE_TRACE_PHYSICS_RAYS` | Subsystem traces |
 | `BBLITE_CPU_PROFILE`, `BBLITE_MEM_PROFILE` | Timing/counters and memory samples |
+| `BBLITE_FPS_PROFILE` | Scene FPS over one-second windows, with p99 and maximum frame intervals |
 | `BBLITE_AUDIO_CAPTURE`, `BBLITE_AUDIO_CAPTURE_SECONDS` | WAV path/duration in enabled builds |
 | `BBLITE_LOCAL_STORAGE_ROOT` | Isolated storage |
 | `BBLITE_FILE_DIALOG_SAVE_PATH`, `BBLITE_FILE_DIALOG_OPEN_PATH` | Noninteractive dialog paths |
@@ -113,7 +115,7 @@ Artifact suffix gpu means SDL_GPU; CLI values are sdl_gpu/dawn.
 | `BBLITE_TEST_PASS` | Hidden test pass: camera controls disabled (set by the harness) |
 | `BBLITE_GROUND`, `BBLITE_BACKGROUND` | Suppress ground/background (set by `parity --without`) |
 | `BBLITE_ID_BUFFER`, `BBLITE_CLUSTER_BUFFER`, `BBLITE_COPY_TASK` | Attribution outputs and copy-task filter (set by `parity` for id-diagnostic scenes) |
-| `BBLITE_BENCHMARK_FRAMES`, `BBLITE_BUILD_STAMP_OUT` | Frame count and stamp path of a measured run (set by `memory`/`parity`) |
+| `BBLITE_BENCHMARK_FRAMES`, `BBLITE_BUILD_STAMP_OUT` | Frame count and stamp path of a measured run; `BBLITE_BENCHMARK_FRAMES=0` disables VSync without a frame limit |
 | `BBLITE_AUDIO_LOG` | LabSound log level (`trace`, `debug`, ...) |
 
 Prefer `--gpu-debug` over `BBLITE_GPU_DEBUG=1`: it also prevents blocking SDL

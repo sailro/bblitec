@@ -59,8 +59,8 @@ function mutatedStore(
 
 const evaluateModule = "src/animation/evaluate.ts";
 const parserModule = "src/loader-gltf/gltf-parser.ts";
-const multiplyModule = "src/math/mat4-multiply-into.ts";
-const composeModule = "src/math/mat4-compose-into.ts";
+const multiplyModule = "src/math/multiply-mat4-into-buffer.ts";
+const composeModule = "src/math/compose-mat4-into-buffer.ts";
 const assemblyModule = "src/loader-gltf/ibl-env-assembly.ts";
 const loadEnvModule = "src/loader-env/load-env.ts";
 
@@ -373,7 +373,7 @@ const expectedMatrixCompose = `Matrix trs_matrix(
     Vec3 translation,
     Vec4 rotation,
     Vec3 scale) {
-    // Pinned mat4ComposeInto runs in JavaScript double precision and
+    // Pinned composeMat4IntoBuffer runs in JavaScript double precision and
     // rounds once at the Float32Array store; mirror its products and
     // association exactly.
     const double x = rotation.x;
@@ -432,7 +432,7 @@ test("lowers the pinned matrix multiply through the shared translation", () => {
             `multiply emission lost: ${line}`,
         );
     }
-    assert.match(header, /mat4-multiply-into\.ts#mat4MultiplyInto\./);
+    assert.match(header, /multiply-mat4-into-buffer\.ts#multiplyMat4IntoBuffer\./);
 });
 
 test("lowers the pinned TRS compose byte-identically to the shipped loader text", () => {

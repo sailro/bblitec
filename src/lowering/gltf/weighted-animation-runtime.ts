@@ -85,8 +85,8 @@ ${lowerPinnedBody(file, declaration.body!.statements, {bindings,
                 ...[...quaternionCpp].map(([source, cpp]) => [source, (args: readonly string[]) => `${cpp}(${args.join(", ")})`] as const),
                 ["resetTarget", () => "gltf_reset_weighted_rest(target)"],
                 ["evaluateSampler", (args: readonly string[]) => `evaluate_sampler(${args.join(", ")})`],
-                ["mat4ComposeInto", (args: readonly string[]) => `compose_matrix(${args.join(", ")})`],
-                ["mat4MultiplyInto", (args: readonly string[]) => `multiply_matrix(${args.join(", ")})`],
+                ["composeMat4IntoBuffer", (args: readonly string[]) => `compose_matrix(${args.join(", ")})`],
+                ["multiplyMat4IntoBuffer", (args: readonly string[]) => `multiply_matrix(${args.join(", ")})`],
             ]),
             expression(node, lowerer) {
                 if (ts.isConditionalExpression(node) && context.expressionMatchesShape(node.condition, "baseRot"))

@@ -29,6 +29,7 @@ export function lowerCharacterControllerKernel(context: LoweringContext, full = 
         return [property.name.text, "number"];
     })));
     records.set("PhysicsBody", new Map());
+    records.set("NativeBody", new Map());
     if (full) {
         records.set("QueryPoint", new Map([["identity", "number[]"], ["position", "number[]"], ["normal", "number[]"]]));
         records.set("Quat", new Map(["x", "y", "z", "w"].map(name => [name, "number"])));
@@ -49,7 +50,10 @@ export function lowerCharacterControllerKernel(context: LoweringContext, full = 
         for (const member of record.members) {
             if (!ts.isPropertySignature(member) || !ts.isIdentifier(member.name) || !member.type)
                 return context.contractError(member, "Pinned controller record must have typed data fields.");
-            fields.set(member.name.text, lowerer.type(member.type));
+            if (record.name.text === "Contact" && member.name.text === "nativeBody") {
+                if (member.type.getText(file) !== "any | null") return context.contractError(member, "Contact native handle type changed.");
+                fields.set(member.name.text, "NativeBody");
+            } else fields.set(member.name.text, lowerer.type(member.type));
         }
     }
     if (full) for (const [name, type] of records.get("PhysicsCharacterControllerOptions")!) records.get("PhysicsCharacterControllerOptions")!.set(name, `optional:${type}`);
@@ -73,7 +77,7 @@ export function lowerCharacterControllerKernel(context: LoweringContext, full = 
     const helpers = file.statements.filter((node): node is ts.FunctionDeclaration => ts.isFunctionDeclaration(node) &&
         !!node.name && (node.name.text === "clamp" || full && ["transformCoord", "matToArray"].includes(node.name.text) || /^v(?:clone|copy|set|add|sub|scale|addIn|subIn|scaleIn|dot|cross|lenSq|len|normIn|equalsEps)?$/.test(node.name.text)));
     const methodNames = full ? [...kernelMethods, "getPosition", "getBody", "setPosition", "getVelocity", "setVelocity", "moveWithCollisions", "integrate", "checkSupport",
-        "_integrateManifolds", "_castWithCollectors", "_findBody", "_contactFromCast", "_validateManifold", "_updateManifold", "_getMassProperties", "_getComWorld", "_getPointVelocity", "_getInvMass", "_createSurfaceConstraint", "_resolveContacts", "setShapeOptions", "dispose"] : kernelMethods;
+        "_integrateManifolds", "_castWithCollectors", "_findBody", "_contactFromCast", "_validateManifold", "_updateManifold", "_getMassProperties", "_getComWorld", "_getBodyWorldMatrix", "_getPointVelocity", "_getInvMass", "_createSurfaceConstraint", "_resolveContacts", "setShapeOptions", "dispose"] : kernelMethods;
     const methods = methodNames.map(name => {
         const method = controller.members.find((member): member is ts.MethodDeclaration => ts.isMethodDeclaration(member) && ts.isIdentifier(member.name) && member.name.text === name);
         if (!method) return context.contractError(controller, `Pinned controller method ${name} is missing.`);
@@ -81,8 +85,15 @@ export function lowerCharacterControllerKernel(context: LoweringContext, full = 
     });
     const signature = (name: string, declaration: ts.FunctionDeclaration | ts.MethodDeclaration): ReferenceFunction => {
         if (!declaration.type) return context.contractError(declaration, "Pinned controller function requires a return type.");
-        const parameters = declaration.parameters.map(parameter => parameter.type?.kind === ts.SyntaxKind.AnyKeyword && name === "_contactFromCast" ? "QueryPoint" : parameter.type ? lowerer.type(parameter.type) :
-            parameter.initializer ? lowerer.expression(parameter.initializer).type : context.contractError(parameter, "Pinned controller parameter requires a represented type."));
+        const parameters = declaration.parameters.map(parameter => {
+            if (parameter.name.getText(file) === "nativeBody") {
+                if (parameter.initializer) context.assertExpressionShape(parameter.initializer, "body._hkBody", "Default native body identity");
+                else if (parameter.type?.kind !== ts.SyntaxKind.AnyKeyword) return context.contractError(parameter, "Native body handle annotation changed.");
+                return "NativeBody";
+            }
+            return parameter.type?.kind === ts.SyntaxKind.AnyKeyword && name === "_contactFromCast" ? "QueryPoint" : parameter.type ? lowerer.type(parameter.type) :
+                parameter.initializer ? lowerer.expression(parameter.initializer).type : context.contractError(parameter, "Pinned controller parameter requires a represented type.");
+        });
         return { cpp: name, parameters, requiredParameters: declaration.parameters.filter(parameter => !parameter.initializer && !parameter.questionToken).length,
             returns: declaration.type.kind === ts.SyntaxKind.AnyKeyword && name === "_getMassProperties" ? massPropertiesType : lowerer.type(declaration.type) };
     };
@@ -95,7 +106,7 @@ export function lowerCharacterControllerKernel(context: LoweringContext, full = 
     if (full) {
         functions.set("this._node.position.set", { cpp: "_set_node_position", parameters: ["number", "number", "number"], requiredParameters: 3, returns: "void" });
         functions.set("this.onTriggerCollisionObservable.notify", { cpp: "_notify", parameters: ["CharacterCollisionEvent"], requiredParameters: 1, returns: "void" });
-        functions.set("mat4Invert", { cpp: "_matrix_inverse", parameters: ["number[]"], requiredParameters: 1, returns: "optional:number[]" });
+        functions.set("invertMat4", { cpp: "_matrix_inverse", parameters: ["number[]"], requiredParameters: 1, returns: "optional:number[]" });
         const zero = context.variableInitializer(file, "ZERO");
         bindings.set("ZERO", lowerer.expression(zero, "Vec3"));
         for (const [name, cpp, parameters, returns] of [
@@ -116,11 +127,22 @@ export function lowerCharacterControllerKernel(context: LoweringContext, full = 
             context.contractError(field, "Pinned controller field requires a represented type.");
         bindings.set(`this.${field.name.getText(file)}`, { cpp: field.name.getText(file), type });
     }
-    const prototype = (name: string, declaration: ts.FunctionDeclaration | ts.MethodDeclaration, defaults: boolean): string => {
+    const hasDependentDefault = (declaration: ts.FunctionDeclaration | ts.MethodDeclaration): boolean => {
+        const preceding = new Set<string>();
+        return declaration.parameters.some(parameter => {
+            const visit = (node: ts.Node): boolean => ts.isIdentifier(node) && preceding.has(node.text) || ts.forEachChild(node, visit) === true;
+            const dependent = parameter.initializer ? visit(parameter.initializer) : false;
+            preceding.add(parameter.name.getText(file));
+            return dependent;
+        });
+    };
+    const prototype = (name: string, declaration: ts.FunctionDeclaration | ts.MethodDeclaration, defaults: boolean, count = declaration.parameters.length): string => {
         const fn = functions.get(ts.isMethodDeclaration(declaration) ? `this.${name}` : name)!;
-        const parameters = declaration.parameters.map((parameter, index) => {
+        const nativeDefaults = defaults && !hasDependentDefault(declaration);
+        const parameters = declaration.parameters.slice(0, count).map((parameter, index) => {
             if (!ts.isIdentifier(parameter.name) || parameter.dotDotDotToken) return context.contractError(parameter, "Pinned controller parameter must be ordinary and named.");
-            return `[[maybe_unused]] ${lowerer.storage(fn.parameters[index]!)} ${parameter.name.text}${defaults && parameter.initializer ? ` = ${lowerer.expression(parameter.initializer, fn.parameters[index]).cpp}` : ""}`;
+            const initializer = parameter.initializer;
+            return `[[maybe_unused]] ${lowerer.storage(fn.parameters[index]!)} ${parameter.name.text}${nativeDefaults && initializer ? ` = ${lowerer.expression(initializer, fn.parameters[index]).cpp}` : nativeDefaults && parameter.questionToken ? " = {}" : ""}`;
         });
         return `${lowerer.storage(fn.returns)} ${name}(${parameters.join(", ")})`;
     };
@@ -131,7 +153,16 @@ export function lowerCharacterControllerKernel(context: LoweringContext, full = 
         for (const [index, parameter] of declaration.parameters.entries()) locals.set(parameter.name.getText(file), { cpp: parameter.name.getText(file), type: fn.parameters[index]! });
         const body = new PinnedReferenceLowerer(context, { ...schema, bindings: locals, returnType: fn.returns });
         const source = full && name === "_castWithCollectors" ? lowerCharacterCollectorCasts(context, declaration as ts.MethodDeclaration, body) : body.statements(declaration.body!.statements);
-        return `// ${context.provenance(characterControllerModule, ts.isMethodDeclaration(declaration) ? `PhysicsCharacterController.${name}` : name)}\n${prototype(name, declaration, ts.isMethodDeclaration(declaration))} {\n${source}\n}`;
+        const overloads: string[] = [];
+        if (hasDependentDefault(declaration)) for (let count = fn.requiredParameters; count < declaration.parameters.length; count++) {
+            const initializers = declaration.parameters.slice(count).map((parameter, offset) => {
+                const type = fn.parameters[count + offset]!;
+                const value = parameter.initializer ? body.expression(parameter.initializer, type).cpp : "{}";
+                return `    ${lowerer.storage(type)} ${parameter.name.getText(file)} = ${value};`;
+            });
+            overloads.push(`${prototype(name, declaration, false, count)} {\n${initializers.join("\n")}\n    return ${name}(${declaration.parameters.map(parameter => parameter.name.getText(file)).join(", ")});\n}`);
+        }
+        return `// ${context.provenance(characterControllerModule, ts.isMethodDeclaration(declaration) ? `PhysicsCharacterController.${name}` : name)}\n${prototype(name, declaration, ts.isMethodDeclaration(declaration))} {\n${source}\n}\n${overloads.join("\n")}`;
     };
     const recordTypes = ["Vec3", ...(full ? ["QueryPoint", "Quat", "CapsuleParameters", "ShapeDescription", "InertiaOverride"] : []), ...interfaces.map(record => record.name.text)];
     let initialize = "";
@@ -146,6 +177,7 @@ export function lowerCharacterControllerKernel(context: LoweringContext, full = 
 #include <tuple>
 namespace bbl::character {
 struct PhysicsBody;
+struct NativeBody;
 ${full ? "struct PhysicsWorld; struct PhysicsShape; struct TransformNode; struct QueryCollector;" : ""}
 ${recordTypes.map(name => `struct ${name};`).join("\n")}
 ${recordTypes.map(name => `struct ${name} {\n${[...records.get(name)!].map(([field, type]) => `    ${lowerer.storage(type)} ${field}{};`).join("\n")}\n};`).join("\n")}
@@ -175,17 +207,21 @@ ${full ? `    virtual js::Array<js::Ref<PhysicsBody>> _world_bodies() = 0;
     virtual double _world_step_seconds() = 0;
     virtual double _body_motion_type(js::Ref<PhysicsBody>) = 0;
     virtual std::optional<double> _body_identity(js::Ref<PhysicsBody>) = 0;
+    virtual js::Ref<NativeBody> _native_body(js::Ref<PhysicsBody>) = 0;
+    virtual std::optional<std::tuple<js::Ref<PhysicsBody>, js::Ref<NativeBody>, double>> _thin_resolve(std::optional<double>) = 0;
+    virtual js::Ref<Vec3> _thin_com(js::Ref<PhysicsBody>, js::Ref<NativeBody>, js::Array<double>) = 0;
+    virtual std::optional<js::Array<double>> _thin_matrix(js::Ref<PhysicsBody>, js::Ref<NativeBody>) = 0;
     virtual js::Array<double> _body_world_matrix(js::Ref<PhysicsBody>) = 0;
-    virtual ${lowerer.storage(massPropertiesType)} _mass_properties(js::Ref<PhysicsBody>) = 0;
-    virtual js::Array<double> _angular_velocity(js::Ref<PhysicsBody>) = 0;
-    virtual js::Array<double> _linear_velocity(js::Ref<PhysicsBody>) = 0;
-    virtual void _apply_impulse(js::Ref<PhysicsBody>, js::Array<double>, js::Array<double>) = 0;
+    virtual ${lowerer.storage(massPropertiesType)} _mass_properties(js::Ref<NativeBody>) = 0;
+    virtual js::Array<double> _angular_velocity(js::Ref<NativeBody>) = 0;
+    virtual js::Array<double> _linear_velocity(js::Ref<NativeBody>) = 0;
+    virtual void _apply_impulse(js::Ref<NativeBody>, js::Array<double>, js::Array<double>) = 0;
     virtual void _set_node_position(double, double, double) = 0;
     virtual void _notify(js::Ref<CharacterCollisionEvent>) = 0;
     virtual js::Array<${lowerer.storage(queryResultType)}> _start_hits() = 0;
     virtual js::Array<${lowerer.storage(queryResultType)}> _cast_hits() = 0;
     virtual void _collect_proximity(js::Array<double>, js::Array<double>, double, bool) = 0;
-    virtual void _collect_cast(js::Array<double>, js::Array<double>, js::Array<double>, bool) = 0;` : `    virtual js::Ref<Vec3> _getPointVelocity(js::Ref<PhysicsBody>, js::Ref<Vec3>) = 0;
+    virtual void _collect_cast(js::Array<double>, js::Array<double>, js::Array<double>, bool) = 0;` : `    virtual js::Ref<Vec3> _getPointVelocity(js::Ref<PhysicsBody>, js::Ref<Vec3>, js::Ref<NativeBody>) = 0;
     virtual js::Ref<SurfaceConstraint> _createSurfaceConstraint(double, js::Ref<Contact>, double) = 0;`}
 ${fields.map(field => {
     const binding = bindings.get(`this.${field.name.getText(file)}`)!;

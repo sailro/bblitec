@@ -353,8 +353,8 @@ export function lowerMat4MultiplyWriterCpp(
 ): string {
     return lowerPinnedFunction(
         context,
-        "src/math/mat4-multiply-into.ts",
-        "mat4MultiplyInto",
+        "src/math/multiply-mat4-into-buffer.ts",
+        "multiplyMat4IntoBuffer",
         [
             {
                 pinned: "dst",
@@ -417,8 +417,8 @@ export function lowerMat4InvertCpp(
     context: LoweringContext,
     options: { inline?: boolean; cppName?: string } = {},
 ): string {
-    const module = "src/math/mat4-invert.ts";
-    const symbol = "mat4Invert";
+    const module = "src/math/invert-mat4.ts";
+    const symbol = "invertMat4";
     const at = context.functionDeclaration(module, symbol).declaration;
     return lowerPinnedFunction(context, module, symbol, [
         { pinned: "input", kind: "mat4Const", cpp: "input" },
@@ -432,7 +432,7 @@ export function lowerMat4InvertCpp(
         ],
         calls: new Map([["Math.abs", (args) => {
             if (args.length !== 1) {
-                return context.contractError(at, "Expected pinned mat4Invert Math.abs to take one argument.");
+                return context.contractError(at, "Expected pinned invertMat4 Math.abs to take one argument.");
             }
             return "std::abs(" + args[0] + ")";
         }]]),
@@ -442,7 +442,7 @@ export function lowerMat4InvertCpp(
                 const returned = expression ? context.unwrapExpression(expression) : undefined;
                 if (returned?.kind === ts.SyntaxKind.NullKeyword) return "std::nullopt";
                 if (returned && ts.isIdentifier(returned) && returned.text === "out") return "out";
-                return context.contractError(returned ?? at, "Expected pinned mat4Invert to return null or out.");
+                return context.contractError(returned ?? at, "Expected pinned invertMat4 to return null or out.");
             },
         },
     });

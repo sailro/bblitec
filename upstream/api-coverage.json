@@ -104,19 +104,19 @@
       },
       "targets": [
         {
-          "id": "mat4Invert:function:b760d30493c3b995",
-          "fingerprint": "c6db4491dbcb6ea8b803d60fbbce692f74d8c64556e0dfe38bbeac2389d8077c"
+          "id": "invertMat4:function:9359413869daeeae",
+          "fingerprint": "85762b66d3c05f5c2293ad3f619e1012f90d9e6bab0b63d3166e22fe14dd854c"
         },
         {
-          "id": "mat4Compose:function:9bf8ba9c307c3ca5",
-          "fingerprint": "4779d7deb699f7f987d57bdbed208d945c0e4b09d23cdc6380bcd681a140bbd8"
+          "id": "composeMat4:function:6ddc45e4da8ea6f2",
+          "fingerprint": "8a4fc5505bcd1cf92764d09fbb99ccdb2f64033015e7173cbee94f653cb3a451"
         }
       ]
     },
     {
       "id": "matrix-inverse-storage-refusals",
       "level": "refusal",
-      "scope": "Compiler rejects mat4Invert through Float64-backed Mat4 values and under high-precision engine allocation.",
+      "scope": "Compiler rejects invertMat4 through Float64-backed Mat4 values and under high-precision engine allocation.",
       "limitations": "Refusal evidence only; it does not negate support for the Float32 cases.",
       "test": {
         "file": "test/pinned-mat4-invert.test.ts",
@@ -124,8 +124,264 @@
       },
       "targets": [
         {
-          "id": "mat4Invert:function:b760d30493c3b995",
-          "fingerprint": "c6db4491dbcb6ea8b803d60fbbce692f74d8c64556e0dfe38bbeac2389d8077c"
+          "id": "invertMat4:function:9359413869daeeae",
+          "fingerprint": "85762b66d3c05f5c2293ad3f619e1012f90d9e6bab0b63d3166e22fe14dd854c"
+        }
+      ]
+    },
+    {
+      "id": "matrix-construction-native",
+      "level": "native",
+      "scope": "Generated composeMat4, createIdentityMat4 and createTranslationMat4 match pinned Float32 bits for the fixture values; identity constructors allocate independent storage.",
+      "limitations": "CPU/MSVC test over finite input cases; high-precision matrix allocation is outside this case.",
+      "test": {
+        "file": "test/pinned-mat4-create.test.ts",
+        "name": "generated matrix constructors match upstream Float32 bits and fresh allocation"
+      },
+      "targets": [
+        {
+          "id": "composeMat4:function:6ddc45e4da8ea6f2",
+          "fingerprint": "8a4fc5505bcd1cf92764d09fbb99ccdb2f64033015e7173cbee94f653cb3a451"
+        },
+        {
+          "id": "createIdentityMat4:function:f019bc6f806a932b",
+          "fingerprint": "dfa9544c92fc96ef1e96b46b58f76f513987298fd6a0d495e818ea39d2deb202"
+        },
+        {
+          "id": "createTranslationMat4:function:d940738781c8df68",
+          "fingerprint": "7dcf19627a390f96ba037a2ac96910788c24dfbb4a7c9bfef022e885a39f5952"
+        }
+      ]
+    },
+    {
+      "id": "thin-physics-native",
+      "level": "native",
+      "scope": "Generated thin transforms match pinned arithmetic; native bodies preserve fanout, ray indices and lifetime. Character aliases distinguish instance zero from the primary fanout handle, target impulses to one instance, and release cached aliases on disposal.",
+      "limitations": "CPU/Bullet fixture with three instances. Floating-origin and empty thin buffers refuse; collision-event lifetime and character-controller interactions are not qualified by this case.",
+      "test": {
+        "file": "test/physics-thin-instances.test.ts",
+        "name": "thin bodies preserve matrix transforms, fanout, ray indices and native lifetime"
+      },
+      "targets": [
+        {
+          "id": "enableHavokThinInstancePhysics:function:fc62ac542e887fe1",
+          "fingerprint": "1bedb4424d0f712c118058293e7e72070527e777b376e3fe3ca6e4a549e745ea"
+        },
+        {
+          "id": "getPhysicsBodyInstanceCount:function:d1feb39f5d9cf011",
+          "fingerprint": "722f93954bbe800276b0fb613bab7f2d00a15225c997fed7c97a80c7edcb083b"
+        }
+      ]
+    },
+    {
+      "id": "collision-event-fields-generation",
+      "level": "generation",
+      "scope": "Collision callback body identities, instance indices and distance reach generated expressions; separation arithmetic follows the pinned AST.",
+      "limitations": "Generation evidence; native event behavior is qualified by separate cases.",
+      "test": {
+        "file": "test/physics-events.test.ts",
+        "name": "collision fields and separation are read from the pinned event object"
+      },
+      "targets": [
+        {
+          "id": "onPhysicsCollision:function:6cee00ba31744e3c",
+          "fingerprint": "dc19b34affc7408fdeecdd29368ffeb439223cf5182102c7010b3dece0041cab"
+        },
+        {
+          "id": "PhysicsCollisionInfo:interface.collidedAgainst:property",
+          "fingerprint": "c5afe4c5267da5feae43876919eff7addbceb15d4c26f3eb801b59ea2ec8b659"
+        },
+        {
+          "id": "PhysicsCollisionInfo:interface.collidedAgainstIndex:property",
+          "fingerprint": "8b9a69f800330af82dfaaa8aa00b604e08b9ead538fde37e792606a5bd8507db"
+        },
+        {
+          "id": "PhysicsCollisionInfo:interface.collider:property",
+          "fingerprint": "f8c8d31f88f55f6f0c8c12e2c1463fd9597d1eda367feb69489afdde7e062f0e"
+        },
+        {
+          "id": "PhysicsCollisionInfo:interface.colliderIndex:property",
+          "fingerprint": "3b00adb6c28371a2fdd81ccd31228f45992532c737247f51a43c6b3f85294e9a"
+        },
+        {
+          "id": "PhysicsCollisionInfo:interface.distance:property",
+          "fingerprint": "fd8c3309831b2edffc99a2000c792fcc2e1dee5fee3b7188b54ce69c5428327e"
+        },
+        {
+          "id": "PhysicsCollisionInfo:interface.impulse:property",
+          "fingerprint": "11a4393166adc85a88b3ea1d34a92d80be3875f277531a8b98c401bb95e3ebf0"
+        },
+        {
+          "id": "PhysicsCollisionInfo:interface.normal:property",
+          "fingerprint": "92a2c5bc02189cfa970b1248409ceea9fd316f20b7f4b0a24f8d41d6d434505b"
+        },
+        {
+          "id": "PhysicsCollisionInfo:interface.point:property",
+          "fingerprint": "b717c517da1443439757cfe20666086014b2b66c5af1ef55c6c7bc48fc992442"
+        },
+        {
+          "id": "PhysicsCollisionInfo:interface.type:property",
+          "fingerprint": "4b1b298900ed4a5a2314fc7cbfee6007c057a963bf80ea824133458c370e1c05"
+        },
+        {
+          "id": "removePhysicsBody:function:85f1a0533be3e3a1",
+          "fingerprint": "795492f690a58cdbabf4d43345e4bc8c5db48b4124fa9a4888cbe382b49b47fa"
+        }
+      ]
+    },
+    {
+      "id": "collision-events-ordinary-native",
+      "level": "native",
+      "scope": "Generated event callbacks preserve ordinary/thin body identities and indices, contact fields, deferred removal, callback snapshots and exception cleanup. Bullet contacts preserve both native IDs and signed separation.",
+      "limitations": "CPU/ClangCL fixture over ordinary and three-instance bodies. Trigger callbacks and floating origin are outside this case.",
+      "test": {
+        "file": "test/physics-events.test.ts",
+        "name": "collision callbacks preserve identities, deferred release and finally semantics (thin=false, compiler=clangcl)"
+      },
+      "targets": [
+        {
+          "id": "onPhysicsAfterStep:function:038baf95c395878c",
+          "fingerprint": "7a6a5ec38623f46d7dca2e2bcf4a78da473d73639cca55cbf404e7e7aed5aa09"
+        },
+        {
+          "id": "onPhysicsCollision:function:6cee00ba31744e3c",
+          "fingerprint": "dc19b34affc7408fdeecdd29368ffeb439223cf5182102c7010b3dece0041cab"
+        },
+        {
+          "id": "PhysicsCollisionInfo:interface.collidedAgainst:property",
+          "fingerprint": "c5afe4c5267da5feae43876919eff7addbceb15d4c26f3eb801b59ea2ec8b659"
+        },
+        {
+          "id": "PhysicsCollisionInfo:interface.collidedAgainstIndex:property",
+          "fingerprint": "8b9a69f800330af82dfaaa8aa00b604e08b9ead538fde37e792606a5bd8507db"
+        },
+        {
+          "id": "PhysicsCollisionInfo:interface.collider:property",
+          "fingerprint": "f8c8d31f88f55f6f0c8c12e2c1463fd9597d1eda367feb69489afdde7e062f0e"
+        },
+        {
+          "id": "PhysicsCollisionInfo:interface.colliderIndex:property",
+          "fingerprint": "3b00adb6c28371a2fdd81ccd31228f45992532c737247f51a43c6b3f85294e9a"
+        },
+        {
+          "id": "PhysicsCollisionInfo:interface.distance:property",
+          "fingerprint": "fd8c3309831b2edffc99a2000c792fcc2e1dee5fee3b7188b54ce69c5428327e"
+        },
+        {
+          "id": "PhysicsCollisionInfo:interface.impulse:property",
+          "fingerprint": "11a4393166adc85a88b3ea1d34a92d80be3875f277531a8b98c401bb95e3ebf0"
+        },
+        {
+          "id": "PhysicsCollisionInfo:interface.normal:property",
+          "fingerprint": "92a2c5bc02189cfa970b1248409ceea9fd316f20b7f4b0a24f8d41d6d434505b"
+        },
+        {
+          "id": "PhysicsCollisionInfo:interface.point:property",
+          "fingerprint": "b717c517da1443439757cfe20666086014b2b66c5af1ef55c6c7bc48fc992442"
+        },
+        {
+          "id": "PhysicsCollisionInfo:interface.type:property",
+          "fingerprint": "4b1b298900ed4a5a2314fc7cbfee6007c057a963bf80ea824133458c370e1c05"
+        },
+        {
+          "id": "removePhysicsBody:function:85f1a0533be3e3a1",
+          "fingerprint": "795492f690a58cdbabf4d43345e4bc8c5db48b4124fa9a4888cbe382b49b47fa"
+        },
+        {
+          "id": "setPhysicsBodyCollisionEventsEnabled:function:1075f0e7c06c5237",
+          "fingerprint": "054e50a41ea7966a9b55664edcee33df7f5083fce42e9cd69f81b20b8f6770f6"
+        }
+      ]
+    },
+    {
+      "id": "collision-events-thin-native",
+      "level": "native",
+      "scope": "Generated event callbacks preserve ordinary/thin body identities and indices, contact fields, deferred removal, callback snapshots and exception cleanup. Bullet contacts preserve both native IDs and signed separation.",
+      "limitations": "CPU/ClangCL fixture over ordinary and three-instance bodies. Trigger callbacks and floating origin are outside this case.",
+      "test": {
+        "file": "test/physics-events.test.ts",
+        "name": "collision callbacks preserve identities, deferred release and finally semantics (thin=true, compiler=clangcl)"
+      },
+      "targets": [
+        {
+          "id": "onPhysicsAfterStep:function:038baf95c395878c",
+          "fingerprint": "7a6a5ec38623f46d7dca2e2bcf4a78da473d73639cca55cbf404e7e7aed5aa09"
+        },
+        {
+          "id": "onPhysicsCollision:function:6cee00ba31744e3c",
+          "fingerprint": "dc19b34affc7408fdeecdd29368ffeb439223cf5182102c7010b3dece0041cab"
+        },
+        {
+          "id": "PhysicsCollisionInfo:interface.collidedAgainst:property",
+          "fingerprint": "c5afe4c5267da5feae43876919eff7addbceb15d4c26f3eb801b59ea2ec8b659"
+        },
+        {
+          "id": "PhysicsCollisionInfo:interface.collidedAgainstIndex:property",
+          "fingerprint": "8b9a69f800330af82dfaaa8aa00b604e08b9ead538fde37e792606a5bd8507db"
+        },
+        {
+          "id": "PhysicsCollisionInfo:interface.collider:property",
+          "fingerprint": "f8c8d31f88f55f6f0c8c12e2c1463fd9597d1eda367feb69489afdde7e062f0e"
+        },
+        {
+          "id": "PhysicsCollisionInfo:interface.colliderIndex:property",
+          "fingerprint": "3b00adb6c28371a2fdd81ccd31228f45992532c737247f51a43c6b3f85294e9a"
+        },
+        {
+          "id": "PhysicsCollisionInfo:interface.distance:property",
+          "fingerprint": "fd8c3309831b2edffc99a2000c792fcc2e1dee5fee3b7188b54ce69c5428327e"
+        },
+        {
+          "id": "PhysicsCollisionInfo:interface.impulse:property",
+          "fingerprint": "11a4393166adc85a88b3ea1d34a92d80be3875f277531a8b98c401bb95e3ebf0"
+        },
+        {
+          "id": "PhysicsCollisionInfo:interface.normal:property",
+          "fingerprint": "92a2c5bc02189cfa970b1248409ceea9fd316f20b7f4b0a24f8d41d6d434505b"
+        },
+        {
+          "id": "PhysicsCollisionInfo:interface.point:property",
+          "fingerprint": "b717c517da1443439757cfe20666086014b2b66c5af1ef55c6c7bc48fc992442"
+        },
+        {
+          "id": "PhysicsCollisionInfo:interface.type:property",
+          "fingerprint": "4b1b298900ed4a5a2314fc7cbfee6007c057a963bf80ea824133458c370e1c05"
+        },
+        {
+          "id": "removePhysicsBody:function:85f1a0533be3e3a1",
+          "fingerprint": "795492f690a58cdbabf4d43345e4bc8c5db48b4124fa9a4888cbe382b49b47fa"
+        },
+        {
+          "id": "setPhysicsBodyCollisionEventsEnabled:function:1075f0e7c06c5237",
+          "fingerprint": "054e50a41ea7966a9b55664edcee33df7f5083fce42e9cd69f81b20b8f6770f6"
+        }
+      ]
+    },
+    {
+      "id": "character-collision-fields-generation",
+      "level": "generation",
+      "scope": "Character collision callback exposes the source-generated collider index alongside collider and impulse fields.",
+      "limitations": "Generation evidence; no blanket coverage of the character controller API.",
+      "test": {
+        "file": "test/character-controller-api.test.ts",
+        "name": "public character APIs transport collision values, vector aliases and disposer identity"
+      },
+      "targets": [
+        {
+          "id": "CharacterCollisionEvent:interface.collider:property",
+          "fingerprint": "f8c8d31f88f55f6f0c8c12e2c1463fd9597d1eda367feb69489afdde7e062f0e"
+        },
+        {
+          "id": "CharacterCollisionEvent:interface.colliderIndex:property",
+          "fingerprint": "3b00adb6c28371a2fdd81ccd31228f45992532c737247f51a43c6b3f85294e9a"
+        },
+        {
+          "id": "CharacterCollisionEvent:interface.impulse:property",
+          "fingerprint": "fa6148a11dcf87a14e0d025ebfd7f917e58374590f6c4c98250225d68f906c4b"
+        },
+        {
+          "id": "CharacterCollisionEvent:interface.impulsePosition:property",
+          "fingerprint": "ff0204472b92410295183b6407703640d752cba13d1da1648e5b5b83e1dad90b"
         }
       ]
     }

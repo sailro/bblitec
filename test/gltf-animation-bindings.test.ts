@@ -87,7 +87,7 @@ test("packaged binding matrices preserve source Float32 products and refuse inva
     assert.equal(translated[12], -Math.fround(Math.fround(1.123456789) + 4));
     const changed = fixture(true, true);
     const changedBytes = await packageGltfMeshPlan(changed.document, changed.bin, doctoredContext(module,
-        "const invMeshWorld = mat4Invert(meshWorldMatrix) ?? mat4Identity();", "const invMeshWorld = mat4Identity();"));
+        "const invMeshWorld = invertMat4(meshWorldMatrix) ?? createIdentityMat4();", "const invMeshWorld = createIdentityMat4();"));
     const changedPlan = packagedGltfMeshPlan(changed.document).animationBindings!;
     assert.equal(readPackedGltfAttribute(changed.document, changedBytes, changedPlan.skeletons[0]!.invMeshWorld)[12], 0);
     assert.throws(() => readAnimationBindings({...plan, nodeTargets: [99]}, 2, 4, 100), /animation targets/);

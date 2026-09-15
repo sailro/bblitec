@@ -344,11 +344,8 @@ export function physicsEventInfoType(
 /**
  * The value a physics event handler's own parameter binds to.
  *
- * `havok-collision.ts` hands its callback `{ type, point, normal, impulse }`
- * and `havok-trigger.ts` hands its callback `{ type }`. Both types are the
- * pin's own uppercase strings, read back through the generated name
- * function so a comparison in scene code is against the same text the
- * browser compares.
+ * Collision records include body identities, instance indices and contact
+ * data. Trigger records carry their type. Enum strings use the pinned names.
  */
 export function physicsEventInfoValue(
   event: "collision" | "trigger" | "character",
@@ -356,6 +353,7 @@ export function physicsEventInfoValue(
 ): Value {
   if (event === "character") return { kind: "record", cpp: "", recordProperties: {
     collider: { kind: "physics-body", cpp: `${cpp}.collider->value` },
+    colliderIndex: { kind: "number", cpp: `${cpp}.colliderIndex` },
     impulse: characterVectorValue(`${cpp}.impulse`),
     impulsePosition: characterVectorValue(`${cpp}.impulsePosition`),
   } };
@@ -380,6 +378,11 @@ export function physicsEventInfoValue(
       point: vec3("point"),
       normal: vec3("normal"),
       impulse: { kind: "number", cpp: `${cpp}.impulse` },
+      collider: { kind: "physics-body", cpp: `${cpp}.collider` },
+      colliderIndex: { kind: "number", cpp: `${cpp}.collider_index` },
+      collidedAgainst: { kind: "physics-body", cpp: `${cpp}.collided_against` },
+      collidedAgainstIndex: { kind: "number", cpp: `${cpp}.collided_against_index` },
+      distance: { kind: "number", cpp: `${cpp}.distance` },
     },
   };
 }
@@ -1361,6 +1364,7 @@ function compilePhysicsRaycast(context: PhysicsIntrinsicContext, call: ts.CallEx
             hitPoint: vec3Record(`${result}.hit_point`),
             hitNormal: vec3Record(`${result}.hit_normal`),
             hitDistance: { kind: "number", cpp: `${result}.hit_distance` },
+            bodyIndex: { kind: "number", cpp: `${result}.body_index` },
             body: {
                 kind: "data",
                 cpp: `${result}.body`,
@@ -1393,6 +1397,19 @@ function compileApplyPhysicsImpulse(context: PhysicsIntrinsicContext, call: ts.C
 }
 
 const physicsIntrinsicHandlers = new EmissionMap<string, (context: PhysicsIntrinsicContext, call: ts.CallExpression) => Value | undefined>([
+    ["enableHavokThinInstancePhysics", (context, call) => {
+        context.expectArgumentCount(call, 1, 1);
+        const world = context.compileValue(argumentAt(call, 0));
+        context.expectKind(world, "physics-world", argumentAt(call, 0));
+        context.reachFeature("physics:thin-instances", call);
+        return { kind: "void", cpp: `bbl::upstream::enable_havok_thin_instance_physics(${world.cpp})` };
+    }],
+    ["getPhysicsBodyInstanceCount", (context, call) => {
+        context.expectArgumentCount(call, 1, 1);
+        const body = context.compileValue(argumentAt(call, 0));
+        context.expectKind(body, "physics-body", argumentAt(call, 0));
+        return { kind: "number", cpp: `bbl::upstream::get_physics_body_instance_count(${body.cpp})` };
+    }],
     ["createHeightFieldShape", compileCreateHeightFieldShape],
     ["createPhysicsConstraint", compileCreatePhysicsConstraint],
     ["createPhysicsViewer", compileCreatePhysicsViewer],
@@ -1407,6 +1424,15 @@ const physicsIntrinsicHandlers = new EmissionMap<string, (context: PhysicsIntrin
     ["addPhysicsShapeChildFromParent", compileAddPhysicsShapeChildFromParent],
     ["setPhysicsShapeIsTrigger", compileSetPhysicsShapeIsTrigger],
     ["createPhysicsBody", compileCreatePhysicsBody],
+    ["removePhysicsBody", (context, call) => {
+        context.expectArgumentCount(call, 2, 2);
+        const world = context.compileValue(argumentAt(call, 0));
+        const body = context.compileValue(argumentAt(call, 1));
+        context.expectKind(world, "physics-world", argumentAt(call, 0));
+        context.expectKind(body, "physics-body", argumentAt(call, 1));
+        context.expectSameEngine(world, body, call);
+        return { kind: "void", cpp: `bbl::upstream::remove_physics_body(${world.cpp}, ${body.cpp})` };
+    }],
     ["setPhysicsBodyShape", compileSetPhysicsBodyShape],
     ["onPhysicsTrigger", compileOnPhysicsTrigger],
     ["onPhysicsAfterStep", compileOnPhysicsAfterStep],

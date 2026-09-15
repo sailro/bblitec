@@ -1,8 +1,8 @@
 {
   "package": "@babylonjs/lite",
-  "version": "1.27.0",
+  "version": "1.29.0",
   "repository": "https://github.com/BabylonJS/Babylon-Lite.git",
-  "sourceVersion": "64710b56f9dfe175d919c635812f84c8872d467c",
+  "sourceVersion": "fbbf158d48f07b5b3e278e62616d2c463e5df609",
   "scenes": [
     {
       "id": "scene1",
@@ -272,13 +272,13 @@
       "id": "scene113",
       "upstreamPath": "lab/lite/src/lite/scene113.ts",
       "source": "corpus/babylon-lite/lab/lite/src/lite/scene113.ts",
-      "sha256": "c34afe911c384e95c0b57980946d07a2c2140805ad111cecaf0431dd71c66d0c"
+      "sha256": "bf28242ebe4dba6bddfe51825d6bb1cf6a5035286f9d82dd6e3ba2839503e13f"
     },
     {
       "id": "scene115",
       "upstreamPath": "lab/lite/src/lite/scene115.ts",
       "source": "corpus/babylon-lite/lab/lite/src/lite/scene115.ts",
-      "sha256": "1363966f8d59b9872e7fd4ded1e650353ffb6a57108e08d373e57fe5c3ff5a22"
+      "sha256": "b6c197cd1777923d02b347b89efe6e3f4d2e6fc1ab4c8ab07cb48d322d3d6bbc"
     },
     {
       "id": "scene116",
@@ -1172,7 +1172,7 @@
       "id": "scene17",
       "upstreamPath": "lab/lite/src/lite/scene17.ts",
       "source": "corpus/babylon-lite/lab/lite/src/lite/scene17.ts",
-      "sha256": "5972bad29881d2e46aad820b12a88a4e8eb3cad47dceb2b1937c5f5a5feac794"
+      "sha256": "9790c0aab9cb0b61e23b1daa9be1d14d159391d3eaa394ce9f7775a39c959ef0"
     },
     {
       "id": "scene20",
@@ -1376,7 +1376,7 @@
       "id": "scene103",
       "upstreamPath": "lab/lite/src/lite/scene103.ts",
       "source": "corpus/babylon-lite/lab/lite/src/lite/scene103.ts",
-      "sha256": "335b572d7512baa348d0ebba78a987c451416524e436d19472e24b025625936a"
+      "sha256": "af248577397b063ce4bee983fb973a88d3951517c1640699bf21f9b4db1f327e"
     },
     {
       "id": "scene106",
@@ -1436,7 +1436,7 @@
       "id": "scene302",
       "upstreamPath": "lab/lite/src/lite/scene302.ts",
       "source": "corpus/babylon-lite/lab/lite/src/lite/scene302.ts",
-      "sha256": "58a6ecbf8bd43186b0621304211e9b1ba4eef231be644e0f17e24f16fa3a53c2"
+      "sha256": "eac5731b19ad1010ba7075a09567730726e52e00fa4f07198dcdae4c6a58915a"
     },
     {
       "id": "scene153",
@@ -1497,6 +1497,12 @@
       "upstreamPath": "lab/lite/src/lite/scene180.ts",
       "source": "corpus/babylon-lite/lab/lite/src/lite/scene180.ts",
       "sha256": "b001d71298d739cdcf9734854b1e0b9db88f45c1b89b4c1fd4d419f343dde9e1"
+    },
+    {
+      "id": "scene290",
+      "upstreamPath": "lab/lite/src/lite/scene290.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/lite/scene290.ts",
+      "sha256": "3be4e2dde44fb2bbddb4e192bd1d8d9fa8e6e7c9630536d47792a9d97ff49283"
     }
   ],
   "modules": [
@@ -2959,7 +2965,7 @@
         {
           "upstreamPath": "lab/lite/src/demos/racer/skid.ts",
           "source": "corpus/babylon-lite/lab/lite/src/demos/racer/skid.ts",
-          "sha256": "731e6099a0e232e803bd566360b4976204cb41871dcfccc96bff57555c1f4b35"
+          "sha256": "69aa4032fdede467ba0cd56319a012cb54ed1ef97c57ac0ff0b7e1b5a04ee7c9"
         },
         {
           "upstreamPath": "lab/lite/src/demos/racer/smoke.ts",
@@ -3200,17 +3206,17 @@
         {
           "upstreamPath": "lab/lite/src/demos/antigravity-racer/rocks.ts",
           "source": "corpus/babylon-lite/lab/lite/src/demos/antigravity-racer/rocks.ts",
-          "sha256": "6b9a15e082f18c8b3d3318aa03556658b31b0acfea56758e9eb8edda8c6e09db"
+          "sha256": "3f01fa2a2bb441720a1d2b607acfd0fc9e13f00697650de78a95991286b6bb78"
         },
         {
           "upstreamPath": "lab/lite/src/demos/antigravity-racer/ship-fleet.ts",
           "source": "corpus/babylon-lite/lab/lite/src/demos/antigravity-racer/ship-fleet.ts",
-          "sha256": "7a3ed6034a53e1bfe3399fb9f1bfb6819efc7af2b7d7226adf812eddf27adef6"
+          "sha256": "c72b8d16c9cf864cc7195d4b9f59cbd000cda280fcc38f9aa62ac50cb887bef4"
         },
         {
           "upstreamPath": "lab/lite/src/demos/antigravity-racer/simulation.ts",
           "source": "corpus/babylon-lite/lab/lite/src/demos/antigravity-racer/simulation.ts",
-          "sha256": "be026cf12988fded752a1468a80c4779d6f7644ff7263d71e369640f88703eaa"
+          "sha256": "3ce5834efb8a9c8a192df1513212b2c2be719864b7f1a0fc8e8a35b76a175d32"
         },
         {
           "upstreamPath": "lab/lite/src/demos/antigravity-racer/spawn.ts",
@@ -3230,7 +3236,7 @@
         {
           "upstreamPath": "lab/lite/src/demos/antigravity-racer/track.ts",
           "source": "corpus/babylon-lite/lab/lite/src/demos/antigravity-racer/track.ts",
-          "sha256": "0a5ff3fdc01a524e4cea71710a6b28505bbf4e5379ef44e04ca9ce5cf68bc358"
+          "sha256": "f06e02c4f561353ce103b632f24b09b339a07bf4dad8bd0a5cfea496e2fed7d8"
         },
         {
           "upstreamPath": "lab/lite/src/demos/antigravity-racer/trail.ts",
@@ -3638,12 +3644,12 @@
         {
           "upstreamPath": "lab/lite/src/demos/sandblox/adornments/handles.ts",
           "source": "corpus/babylon-lite/lab/lite/src/demos/sandblox/adornments/handles.ts",
-          "sha256": "325afa19efff9839c0eb165ef1c1c967cbe7d2c7988091adfd2ab691e459c664"
+          "sha256": "dd1398a079513faf46f4f1edbe4e743d1f9d38a9e3340deea5df753b18f46dd3"
         },
         {
           "upstreamPath": "lab/lite/src/demos/sandblox/adornments/selection-box.ts",
           "source": "corpus/babylon-lite/lab/lite/src/demos/sandblox/adornments/selection-box.ts",
-          "sha256": "24dcf45079516b2f794c5d41dfafffbe94ced4683237ea1d8b0a5d6f56279ba7"
+          "sha256": "f8b1dc6ca8fe1092e3fb4a54fe9f7cc8bca66e692a4394bdfbc1e8f347ef4cb3"
         },
         {
           "upstreamPath": "lab/lite/src/demos/sandblox/animation-controller.ts",
@@ -3708,7 +3714,7 @@
         {
           "upstreamPath": "lab/lite/src/demos/sandblox/part-renderer.ts",
           "source": "corpus/babylon-lite/lab/lite/src/demos/sandblox/part-renderer.ts",
-          "sha256": "f6b7876e44862066336d9ba0ed6e892059474a842da9d54241bdacb503909ab0"
+          "sha256": "20ee749bfdfa2363900ebe7acf7935c0f24b9cd1f5b119a15224bb785b35d305"
         },
         {
           "upstreamPath": "lab/lite/src/demos/sandblox/part.ts",

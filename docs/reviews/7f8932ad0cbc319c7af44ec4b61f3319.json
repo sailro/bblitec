@@ -1,0 +1,46 @@
+{
+  "angles": [
+    "reuse",
+    "simplification",
+    "efficiency",
+    "altitude"
+  ],
+  "findings": [
+    {
+      "summary": "Thin raycast resolution reuses the generated thin_resolve helper.",
+      "applied": true
+    },
+    {
+      "summary": "Map and WeakMap share get/set emission.",
+      "applied": true
+    },
+    {
+      "summary": "Character wrapper cleanup uses live ID sets instead of nested scans.",
+      "applied": true
+    },
+    {
+      "summary": "Deferred event release moves its vector instead of copying body handles.",
+      "applied": true
+    },
+    {
+      "summary": "WeakMap lookups prune a bounded number of entries; collection reclaims all expired entries.",
+      "applied": true
+    },
+    {
+      "summary": "Catch-free bounded try/finally uses the shared pinned statement lowerer.",
+      "applied": true
+    },
+    {
+      "summary": "Dependent-default overloads derive parameter lists and forwarding values from the source declarations.",
+      "applied": true
+    },
+    {
+      "summary": "Convex hull reduction sorts the existing Bullet index buffer.",
+      "applied": true
+    },
+    {
+      "summary": "Bounce membership indexes retain scheduled entries across steps.",
+      "applied": true
+    }
+  ]
+}

@@ -16808,6 +16808,7 @@ public:
         const double end =
             cpu_profile ? monotonic_milliseconds() : 0.0;
         const long completed_frame = frame - 1;
+        data_.frame_rate_profile.complete(completed_frame);
         if (mem_profile && completed_frame % memory_profile_frames == 0) {
             print_memory_frame_profile(
                 completed_frame,

@@ -34,8 +34,8 @@ function sourceCase(context:LoweringContext, count:number, masked:boolean, uploa
     const events:unknown[]=[];
     const math=(path:string,symbol:string) => new Function(transpileCommonJs(
         context.functionDeclaration(path,symbol).declaration.getText().replace(/^export /, ""),path)+`\nreturn ${symbol};`)() as (...args:unknown[])=>void;
-    const compose=math("src/math/mat4-compose-into.ts","mat4ComposeInto");
-    const multiply=math("src/math/mat4-multiply-into.ts","mat4MultiplyInto");
+    const compose=math("src/math/compose-mat4-into-buffer.ts","composeMat4IntoBuffer");
+    const multiply=math("src/math/multiply-mat4-into-buffer.ts","multiplyMat4IntoBuffer");
     const names=["PATH_TRANSLATION","PATH_ROTATION","PATH_SCALE","PATH_WEIGHTS","PATH_POINTER"];
     const types=context.sourceFile("src/animation/types.ts");
     const constants=names.map(name=>context.numericValue(context.moduleScopeConstant(types,name)!,types));
@@ -46,7 +46,7 @@ function sourceCase(context:LoweringContext, count:number, masked:boolean, uploa
     const overrides=(_map:Map<number,unknown>,trs:Float32Array,_count:number,visibility=false)=>{
         events.push(["override",visibility]); trs[visibility?7:0]=visibility?0:42;
     };
-    const runtime=new Function("F32","I32","U8",...names,"mat4ComposeInto","mat4MultiplyInto","evaluateSampler","_boneApplier",
+    const runtime=new Function("F32","I32","U8",...names,"composeMat4IntoBuffer","multiplyMat4IntoBuffer","evaluateSampler","_boneApplier",
         transpileCommonJs(source,modulePath)+"\nreturn {createAnimationController,_installAnimationMaskResolver};")(
         Float32Array,Int32Array,Uint8Array,...constants,compose,multiply,sampler,overrides) as {
             createAnimationController(clip:object,nodes:NodeRest[],skeletons:Skeleton[],morphs:Morph[],targets:object[],excluded:Set<number>,overrides:Map<number,unknown>,names:string[]):Captured;
@@ -107,7 +107,7 @@ using Floats=std::vector<float>;
 using Matrix=std::array<float,16>;
 using bbl::Vec3;using bbl::Vec4;
 Matrix identity_matrix(){return {1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1};}
-${lowerMatrixComposeCpp(variants[0]!.sourceFile("src/math/mat4-compose-into.ts"))}
+${lowerMatrixComposeCpp(variants[0]!.sourceFile("src/math/compose-mat4-into-buffer.ts"))}
 Json bits(const Floats& values){Json result=Json::array();for(float v:values)result.push_back(std::bit_cast<std::uint32_t>(v));return result;}
 struct Node{double tx,ty,tz,rx,ry,rz,rw,sx,sy,sz,parentIdx;std::optional<Floats> matrix;};
 struct Channel{double nodeIdx,samplerIdx,path,pointerArity;bool pointerQuaternion,pointer_writer;};

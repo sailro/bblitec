@@ -1,7 +1,7 @@
 /**
  * A `MeshRecord`'s local world matrix, emitted from the pin's own
- * writers: `src/math/quat-euler.ts`'s `eulerToQuat` and
- * `src/math/mat4-compose-into.ts`'s `mat4ComposeInto`, term for term.
+ * writers: `src/math/quat-euler.ts`'s `eulerXYZToQuatTuple` and
+ * `src/math/compose-mat4-into-buffer.ts`'s `composeMat4IntoBuffer`, term for term.
  *
  * Four emissions consume it, and they are the places a record's transform
  * has to leave that record as a matrix: the thin-instance parent world the
@@ -112,7 +112,7 @@ export function pinnedTrsComposition(
 ): PinnedTrsComposition {
     const euler = context.functionDeclaration(
         "src/math/quat-euler.ts",
-        "eulerToQuat",
+        "eulerXYZToQuatTuple",
     );
     // The half-angle locals, emitted from the pinned initializers with
     // the Euler parameters renamed to the record's rotation lanes. One
@@ -177,8 +177,8 @@ export function pinnedTrsComposition(
         .join("");
 
     const compose = context.functionDeclaration(
-        "src/math/mat4-compose-into.ts",
-        "mat4ComposeInto",
+        "src/math/compose-mat4-into-buffer.ts",
+        "composeMat4IntoBuffer",
     );
     const productNames = [
         "xx",
@@ -228,7 +228,7 @@ export function pinnedTrsComposition(
     if (stores.length !== 16) {
         context.contractError(
             compose.declaration,
-            `Pinned mat4ComposeInto gained or lost stores (${stores.length} of 16); the instance emission no longer covers it.`,
+            `Pinned composeMat4IntoBuffer gained or lost stores (${stores.length} of 16); the instance emission no longer covers it.`,
         );
     }
     let basisStores = "";
@@ -253,7 +253,7 @@ export function pinnedTrsComposition(
             if (translation === undefined) {
                 context.contractError(
                     rhs,
-                    `Pinned mat4ComposeInto stores '${rhs.text}', which the instance emission does not map.`,
+                    `Pinned composeMat4IntoBuffer stores '${rhs.text}', which the instance emission does not map.`,
                 );
             }
             basisStores += `    local[${offset}] = ${translation};\n`;

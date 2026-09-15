@@ -27,6 +27,7 @@
 #include <limits>
 #include <list>
 #include <memory>
+#include <map>
 #include <optional>
 #include <regex>
 #include <initializer_list>
@@ -379,8 +380,7 @@ template <typename Values>
  * copy performed was paid for a race that cannot happen, and a voxel
  * mesher that reads a chunk record per block query spent a fifth of its
  * time in them. The count and the object share one allocation, as
- * `make_shared` fuses them; there is no weak reference and no aliasing
- * constructor because no generated code needs either.
+ * `make_shared` fuses them. WeakMap keys allocate a lifetime token on demand.
  */
 template <typename T>
 class Ref {
@@ -418,6 +418,11 @@ class Ref {
     [[nodiscard]] T* operator->() const { return get(); }
     explicit operator bool() const { return block_ != nullptr; }
     void gc_trace(const TraceVisitor& visitor) const { visitor.edge(block_); }
+    [[nodiscard]] std::weak_ptr<const void> weak_identity() const {
+        if (!block_) return {};
+        if (!block_->identity) block_->identity = std::make_shared<int>(0);
+        return block_->identity;
+    }
 
     [[nodiscard]] friend bool operator==(const Ref& left, const Ref& right) {
         return left.block_ == right.block_;
@@ -430,8 +435,9 @@ class Ref {
         ~Block() override { clear(); }
         std::size_t count = 1;
         std::optional<T> value;
+        std::shared_ptr<const void> identity;
         void trace(const TraceVisitor& visitor) const override { if (value) visitor(*value); }
-        void clear() noexcept override { this->payload_alive = false; value.reset(); }
+        void clear() noexcept override { this->payload_alive = false; identity.reset(); value.reset(); }
         std::size_t owners() const noexcept override { return count; }
         void pin() noexcept override { ++count; }
         void unpin() noexcept override { if (--count == 0) delete this; }
@@ -1611,6 +1617,55 @@ class Map : public IndexedInsertionOrdered<std::pair<K, V>, K> {
         }
         return *this;
     }
+};
+
+using WeakIdentity = std::weak_ptr<const void>;
+
+/** Weak object keys do not retain their payloads. Expired entries are reclaimed on access. */
+template <typename V>
+class WeakMap {
+    struct Storage {
+        using Entries = std::map<WeakIdentity, V, std::owner_less<WeakIdentity>>;
+        mutable Entries entries;
+        mutable typename Entries::iterator cursor = entries.end();
+        void erase(typename Entries::iterator entry) const {
+            if (cursor == entry) ++cursor;
+            entries.erase(entry);
+        }
+        void prune(std::size_t budget = 8) const {
+            const auto count = std::min(budget, entries.size());
+            for (std::size_t i = 0; i < count; ++i) {
+                if (cursor == entries.end()) cursor = entries.begin();
+                const auto entry = cursor++;
+                if (entry->first.expired()) entries.erase(entry);
+            }
+        }
+        void gc_trace(const TraceVisitor& visitor) const {
+            prune(entries.size());
+            for (const auto& [key, value] : entries) {
+                static_cast<void>(key);
+                visitor(value);
+            }
+        }
+    };
+    std::shared_ptr<Storage> storage_ = make_gc_shared<Storage>();
+public:
+    [[nodiscard]] typename MapGetResult<V>::Type get(const WeakIdentity& key) const {
+        storage_->prune();
+        const auto found = storage_->entries.find(key);
+        if (found != storage_->entries.end() && key.expired()) {
+            storage_->erase(found);
+            return MapGetResult<V>::missing();
+        }
+        return found == storage_->entries.end() ? MapGetResult<V>::missing() : MapGetResult<V>::found(found->second);
+    }
+    WeakMap& set(const WeakIdentity& key, const V& value) {
+        storage_->prune();
+        if (key.expired()) throw std::runtime_error("WeakMap key is not a live object.");
+        storage_->entries.insert_or_assign(key, value);
+        return *this;
+    }
+    void gc_trace(const TraceVisitor& visitor) const { visitor(storage_); }
 };
 
 /** Immediate snapshot of JavaScript Map.prototype.values iteration order. */
@@ -3300,36 +3355,6 @@ class NumericArrayView {
     };
     std::shared_ptr<Owner> owner_;
 };
-
-// src/math/mat4-compose.ts + mat4-compose-into.ts: JavaScript evaluates the
-// quaternion products in double precision, then each Float32Array store
-// narrows once. Keep that boundary explicit here.
-[[nodiscard]] inline F32Array mat4_compose(
-    double tx, double ty, double tz,
-    double qx, double qy, double qz, double qw,
-    double sx, double sy, double sz) {
-    const double xx = qx * qx, yy = qy * qy, zz = qz * qz;
-    const double xy = qx * qy, xz = qx * qz, yz = qy * qz;
-    const double wx = qw * qx, wy = qw * qy, wz = qw * qz;
-    F32Array result(16);
-    result[0] = static_cast<float>((1.0 - 2.0 * (yy + zz)) * sx);
-    result[1] = static_cast<float>(2.0 * (xy + wz) * sx);
-    result[2] = static_cast<float>(2.0 * (xz - wy) * sx);
-    result[3] = 0.0f;
-    result[4] = static_cast<float>(2.0 * (xy - wz) * sy);
-    result[5] = static_cast<float>((1.0 - 2.0 * (xx + zz)) * sy);
-    result[6] = static_cast<float>(2.0 * (yz + wx) * sy);
-    result[7] = 0.0f;
-    result[8] = static_cast<float>(2.0 * (xz + wy) * sz);
-    result[9] = static_cast<float>(2.0 * (yz - wx) * sz);
-    result[10] = static_cast<float>((1.0 - 2.0 * (xx + yy)) * sz);
-    result[11] = 0.0f;
-    result[12] = static_cast<float>(tx);
-    result[13] = static_cast<float>(ty);
-    result[14] = static_cast<float>(tz);
-    result[15] = 1.0f;
-    return result;
-}
 
 // ECMAScript ToUint32: modulo 2^32 with truncation toward zero.
 [[nodiscard]] inline std::uint32_t to_uint32(double value) {

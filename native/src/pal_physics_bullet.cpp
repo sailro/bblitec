@@ -18,6 +18,7 @@
 
 #include "bblite/pal_physics.hpp"
 #include "pal_handle_identity.hpp"
+#include "pal_physics_profile.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -39,6 +40,7 @@
 #include <BulletCollision/CollisionShapes/btTriangleMesh.h>
 #include <BulletCollision/Gimpact/btGImpactCollisionAlgorithm.h>
 #include <BulletCollision/Gimpact/btGImpactShape.h>
+#include <LinearMath/btConvexHullComputer.h>
 // The six family gates are the runtime features `pal_physics.hpp` names,
 // written 0/1 by the build; each family below sits behind its own.
 #if BBLITE_HAS_PHYSICS_CONSTRAINTS
@@ -319,6 +321,9 @@ struct ContactSnapshot {
     std::array<double, 3> point{};
     std::array<double, 3> normal{};
     double impulse = 0.0;
+    std::uint32_t collider_identity = 0;
+    std::uint32_t collided_against_identity = 0;
+    std::array<double, 3> point_other{};
 };
 
 } // namespace
@@ -381,6 +386,8 @@ struct PhysicsWorldState {
      */
     std::vector<HavokBounce> scheduled_bounces;
     std::vector<HavokBounce> active_bounces;
+    std::unordered_set<std::uint64_t> pending_bounce_pairs;
+    std::unordered_set<const btRigidBody*> scheduled_bounce_bodies;
     /**
      * `HP_World_GetSpeedLimit` / `HP_World_SetSpeedLimit`. Havok keeps the
      * ceiling on the world, and the floating-origin module reads one
@@ -420,6 +427,8 @@ struct PhysicsWorldState {
 #endif
         scheduled_bounces.clear();
         active_bounces.clear();
+        pending_bounce_pairs.clear();
+        scheduled_bounce_bodies.clear();
     }
 };
 
@@ -482,28 +491,26 @@ std::uint64_t pair_key(const btCollisionObject* a, const btCollisionObject* b) {
            std::max(index_a, index_b);
 }
 
+void index_pending_bounces(PhysicsWorldState& world) {
+    world.pending_bounce_pairs.clear();
+    world.scheduled_bounce_bodies.clear();
+    for (const auto& bounce : world.scheduled_bounces) {
+        world.pending_bounce_pairs.insert(pair_key(bounce.body_a, bounce.body_b));
+        world.scheduled_bounce_bodies.insert(bounce.body_a);
+        world.scheduled_bounce_bodies.insert(bounce.body_b);
+    }
+    for (const auto& bounce : world.active_bounces) world.pending_bounce_pairs.insert(pair_key(bounce.body_a, bounce.body_b));
+}
+
 bool pair_has_pending_bounce(const PhysicsWorldState& world_entry, std::uint64_t key) {
-    const auto matches = [&](const HavokBounce& bounce) {
-        return pair_key(bounce.body_a, bounce.body_b) == key;
-    };
-    return std::any_of(
-               world_entry.scheduled_bounces.begin(),
-               world_entry.scheduled_bounces.end(), matches) ||
-           std::any_of(
-               world_entry.active_bounces.begin(),
-               world_entry.active_bounces.end(), matches);
+    return world_entry.pending_bounce_pairs.contains(key);
 }
 
 /** Whether a landing of this step has scheduled a rebound for the body. */
 bool pending_bounce_involves(
     const PhysicsWorldState& world_entry,
     const btRigidBody* body) {
-    return std::any_of(
-        world_entry.scheduled_bounces.begin(),
-        world_entry.scheduled_bounces.end(),
-        [&](const HavokBounce& bounce) {
-            return bounce.body_a == body || bounce.body_b == body;
-        });
+    return world_entry.scheduled_bounce_bodies.contains(body);
 }
 
 btVector3 gravity_of(const btRigidBody* body) {
@@ -883,10 +890,15 @@ void collect_collision_events(PhysicsWorldState& world_entry) {
                 continue;
             }
             const btVector3 position = point.getPositionWorldOnB();
+            const btVector3 other_position = point.getPositionWorldOnA();
             const btVector3 normal = point.m_normalWorldOnB;
             ContactSnapshot& snapshot = current[key];
             snapshot.point = {position.x(), position.y(), position.z()};
             snapshot.normal = {normal.x(), normal.y(), normal.z()};
+            // Bullet's normal points outward from B, the first event body.
+            snapshot.collider_identity = body_b->identity;
+            snapshot.collided_against_identity = body_a->identity;
+            snapshot.point_other = {other_position.x(), other_position.y(), other_position.z()};
             snapshot.impulse = std::max(
                 snapshot.impulse,
                 static_cast<double>(point.getAppliedImpulse()));
@@ -904,6 +916,9 @@ void collect_collision_events(PhysicsWorldState& world_entry) {
             snapshot.point,
             snapshot.normal,
             snapshot.impulse,
+            snapshot.collider_identity,
+            snapshot.collided_against_identity,
+            snapshot.point_other,
         });
     }
     for (const auto& [key, snapshot] : world_entry.previous_contacts) {
@@ -913,6 +928,9 @@ void collect_collision_events(PhysicsWorldState& world_entry) {
                 snapshot.point,
                 snapshot.normal,
                 0.0,
+                snapshot.collider_identity,
+                snapshot.collided_against_identity,
+                snapshot.point_other,
             });
         }
     }
@@ -1298,6 +1316,9 @@ void schedule_landing_bounces(
         bounce.separating_speed = separating_speed;
         bounce.gravity_into = gravity_into;
         world_entry.scheduled_bounces.push_back(bounce);
+        world_entry.pending_bounce_pairs.insert(pair_key(body_a, body_b));
+        world_entry.scheduled_bounce_bodies.insert(body_a);
+        world_entry.scheduled_bounce_bodies.insert(body_b);
     }
 }
 
@@ -1410,11 +1431,12 @@ PhysicsWorldHandle physics_world_create() {
     entry.broadphase = std::make_unique<btDbvtBroadphase>();
     entry.solver =
         std::make_unique<OverlapRecoverySolver>();
-    entry.world = std::make_unique<btDiscreteDynamicsWorld>(
-        entry.dispatcher.get(),
-        entry.broadphase.get(),
-        entry.solver.get(),
-        entry.configuration.get());
+    const char* profile = std::getenv("BBLITE_CPU_PROFILE");
+    if (profile && profile[0] == '1' && profile[1] == '\0') {
+        entry.world = std::make_unique<ProfiledDynamicsWorld>(entry.dispatcher.get(), entry.broadphase.get(), entry.solver.get(), entry.configuration.get());
+    } else {
+        entry.world = std::make_unique<btDiscreteDynamicsWorld>(entry.dispatcher.get(), entry.broadphase.get(), entry.solver.get(), entry.configuration.get());
+    }
     entry.world->getPairCache()->setOverlapFilterCallback(
         &motion_type_overlap_filter());
     return PhysicsWorldHandle{owned->identity, std::move(owned)};
@@ -1557,6 +1579,7 @@ void physics_world_remove_body(PhysicsWorldHandle world, PhysicsBodyHandle body)
     };
     std::erase_if(owner.scheduled_bounces, involves);
     std::erase_if(owner.active_bounces, involves);
+    index_pending_bounces(owner);
 #if BBLITE_HAS_PHYSICS_TRIGGER
     if (entry.shape && entry.shape->is_trigger) --owner.trigger_body_count;
 #endif
@@ -1611,6 +1634,8 @@ void physics_world_step(PhysicsWorldHandle world, double seconds) {
         return value && value[0] == '1' && value[1] == '\0';
     }();
     using ProfileClock = std::chrono::steady_clock;
+    auto* profiled_world = cpu_profile ? dynamic_cast<ProfiledDynamicsWorld*>(entry.world.get()) : nullptr;
+    if (profiled_world) profiled_world->times = {};
     const auto profile_start =
         cpu_profile ? ProfileClock::now() : ProfileClock::time_point{};
     int pending_readds = 0;
@@ -1659,12 +1684,26 @@ void physics_world_step(PhysicsWorldHandle world, double seconds) {
     // list is emptied below once they have, so the swap leaves the schedule
     // empty for this step's landings.
     entry.active_bounces.swap(entry.scheduled_bounces);
+    entry.scheduled_bounce_bodies.clear();
+    double prepare_ms = 0, bullet_ms = 0, bounce_ms = 0;
     for (int i = 0; i < substeps; ++i) {
+        const auto prepare_start = cpu_profile ? ProfileClock::now() : ProfileClock::time_point{};
         refresh_speculative_thresholds(entry, substep_seconds);
         apply_active_bounces(entry, substep_seconds);
         cache_velocities(entry, &PhysicsBodyState::substep_start);
+        const auto bullet_start = cpu_profile ? ProfileClock::now() : ProfileClock::time_point{};
         entry.world->stepSimulation(substep_seconds, 0, substep_seconds);
+        const auto bounce_start = cpu_profile ? ProfileClock::now() : ProfileClock::time_point{};
         schedule_landing_bounces(entry, substep_seconds, seconds);
+        if (cpu_profile) {
+            prepare_ms += std::chrono::duration<double, std::milli>(bullet_start - prepare_start).count();
+            bullet_ms += std::chrono::duration<double, std::milli>(bounce_start - bullet_start).count();
+            bounce_ms += std::chrono::duration<double, std::milli>(ProfileClock::now() - bounce_start).count();
+        }
+    }
+    const auto post_start = cpu_profile ? ProfileClock::now() : ProfileClock::time_point{};
+    for (const auto& bounce : entry.active_bounces) {
+        entry.pending_bounce_pairs.erase(pair_key(bounce.body_a, bounce.body_b));
     }
     entry.active_bounces.clear();
     if (!entry.recovering_overlaps.empty()) {
@@ -1692,6 +1731,7 @@ void physics_world_step(PhysicsWorldHandle world, double seconds) {
 #if BBLITE_HAS_PHYSICS_TRIGGER
     collect_trigger_events(entry);
 #endif
+    const auto stabilize_start = cpu_profile ? ProfileClock::now() : ProfileClock::time_point{};
     const int stabilized_bodies =
         stabilize_contacting_bodies(entry, seconds);
     entry.stabilized_total += static_cast<std::uint64_t>(stabilized_bodies);
@@ -1747,7 +1787,7 @@ void physics_world_step(PhysicsWorldHandle world, double seconds) {
                 "active_dynamic=%d "
                 "moving=%d max_linear=%.3f max_angular=%.3f rms_linear=%.3f "
                 "manifolds=%d stabilized_total=%llu pending_readds=%d "
-                "flush_ms=%.3f solver_ms=%.3f\n",
+                "flush_ms=%.3f solver_ms=%.3f prepare_ms=%.3f bullet_ms=%.3f bounce_ms=%.3f post_ms=%.3f stabilize_ms=%.3f\n",
                 static_cast<unsigned long long>(profile_step),
                 stepped.getNumCollisionObjects(),
                 dynamic_bodies,
@@ -1764,7 +1804,13 @@ void physics_world_step(PhysicsWorldHandle world, double seconds) {
                 static_cast<unsigned long long>(entry.stabilized_total),
                 pending_readds,
                 flush_ms,
-                solver_ms);
+                solver_ms, prepare_ms, bullet_ms, bounce_ms,
+                std::chrono::duration<double, std::milli>(stabilize_start - post_start).count(),
+                std::chrono::duration<double, std::milli>(solver_end - stabilize_start).count());
+            if (profiled_world) {
+                const auto& t = profiled_world->times;
+                std::fprintf(stderr, "[cpu][bullet] step=%llu collision_ms=%.3f aabbs_ms=%.3f broadphase_ms=%.3f constraints_ms=%.3f islands_ms=%.3f predict_ms=%.3f integrate_ms=%.3f activate_ms=%.3f synchronize_ms=%.3f\n", static_cast<unsigned long long>(profile_step), t.collision, t.aabbs, t.broadphase, t.constraints, t.islands, t.predict, t.integrate, t.activate, t.synchronize);
+            }
         }
         ++profile_step;
     }
@@ -2410,10 +2456,19 @@ PhysicsShapeHandle physics_shape_create_convex_hull(
 
     auto hull = std::make_unique<btConvexHullShape>();
     const btTransform body_from_node = principal.inverse();
-    for (const std::array<double, 3>& position : positions) {
-        hull->addPoint(body_from_node * to_bt(position), false);
+    btConvexHullComputer cooked;
+    cooked.compute(&source_hull->getUnscaledPoints()[0].getX(), sizeof(btVector3),
+        source_hull->getNumPoints(), 0, 0);
+    // Retain original coordinates and order; Bullet's output vertices are quantized.
+    cooked.original_vertex_index.quickSort([](int left, int right) { return left < right; });
+    for (int i = 0; i < cooked.original_vertex_index.size(); ++i) {
+        const int index = cooked.original_vertex_index[i];
+        hull->addPoint(body_from_node * to_bt(positions[static_cast<std::size_t>(index)]), false);
     }
     hull->recalcLocalAabb();
+    if (const char* profile = std::getenv("BBLITE_CPU_PROFILE"); profile && profile[0] == '1' && profile[1] == '\0') {
+        std::fprintf(stderr, "[cpu][physics-hull] input_points=%zu collision_points=%d\n", positions.size(), hull->getNumPoints());
+    }
     const btVector3 center = principal.getOrigin();
     const btQuaternion orientation = principal.getRotation();
     return record_debug_inputs(push_shape(

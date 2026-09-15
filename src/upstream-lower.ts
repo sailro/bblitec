@@ -60,6 +60,7 @@ import { pinnedMatrixHeader } from "./lowering/pinned-matrix.js";
 import { pinnedMat4InvertHeader } from "./lowering/pinned-mat4-invert.js";
 import { pinnedInverseImageProcessingHeader } from "./lowering/pinned-inverse-image-processing.js";
 import { pinnedNormalizeVec3Header } from "./lowering/pinned-normalize-vec3.js";
+import { pinnedMat4CreateHeader } from "./lowering/pinned-mat4-create.js";
 import { pinnedLookDirectionHeader } from "./lowering/pinned-look-direction.js";
 import { RendererLowerer } from "./lowering/renderer-lowerer.js";
 import type { MeshProfileTable } from "./lowering/resource-profiles.js";
@@ -897,6 +898,10 @@ class GeneratedSourceWriter {
                 pinnedMat4InvertHeader(new LoweringContext(this.store)),
             );
         }
+        if (features.includes("math:mat4-create")) {
+            this.tree.write("upstream/include/bblite/upstream/pinned_mat4_create.hpp",
+                pinnedMat4CreateHeader(new LoweringContext(this.store)));
+        }
         // The public look-direction quaternion and the private basis fold it
         // delegates to, both translated from the pin only where scene code
         // reaches that public helper.
@@ -1276,7 +1281,7 @@ class GeneratedSourceWriter {
         // the pin itself draws by taking `hknp` as a parameter.
         this.emitPhysicsWorld(features, context, generated);
         if (features.includes("physics:character-controller")) {
-            this.tree.write("upstream/include/bblite/upstream/character_controller.hpp", characterControllerHeader(context));
+            this.tree.write("upstream/include/bblite/upstream/character_controller.hpp", characterControllerHeader(context, features.includes("physics:thin-instances")));
         }
         if (
             features.includes("mesh:tube") ||
@@ -1882,8 +1887,8 @@ ${metallicReflectanceCapabilityDefines(pbrBindingNames)}
                 { modulePath: "src/loader-gltf/gltf-ext-lights-image-based.ts", symbolName: "applyAsset" },
                 { modulePath: "src/loader-gltf/gltf-ext-dielectric.ts", symbolName: "applyMaterial" },
                 { modulePath: "src/loader-gltf/gltf-ext-iridescence.ts", symbolName: "applyMaterial" },
-                { modulePath: "src/math/mat4-multiply-into.ts", symbolName: "mat4MultiplyInto" },
-                { modulePath: "src/math/mat4-compose-into.ts", symbolName: "mat4ComposeInto" },
+                { modulePath: "src/math/multiply-mat4-into-buffer.ts", symbolName: "multiplyMat4IntoBuffer" },
+                { modulePath: "src/math/compose-mat4-into-buffer.ts", symbolName: "composeMat4IntoBuffer" },
                 { modulePath: "src/loader-gltf/gltf-parser.ts", symbolName: "RH_TO_LH_ROOT" },
                 { modulePath: "src/loader-gltf/gltf-ext-lights-image-based.ts", symbolName: "irradianceCoefficientsToPolynomial" },
                 { modulePath: "src/loader-gltf/gltf-ext-lights-image-based.ts", symbolName: "envYawFromQuaternion" },
@@ -2871,6 +2876,7 @@ ${composed.wgsl}`,
                     heightfield: features.includes("physics:heightfield"),
                     trigger: features.includes("physics:trigger"),
                     floatingOrigin: features.includes("physics:floating-origin"),
+                    thinInstances: features.includes("physics:thin-instances"),
                 }),
                 generated,
                 "upstream/include/bblite/upstream/physics.hpp",

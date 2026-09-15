@@ -68,7 +68,7 @@ function pinned(initial = vector(), options: ShapeOptions = { capsuleHeight: 1.8
         new Function("exports", "require", output)(exports, () => imports);
         return exports;
     };
-    const inverse = evaluate("src/math/mat4-invert.ts", { allocateMat4: () => new Float32Array(16) });
+    const inverse = evaluate("src/math/invert-mat4.ts", { allocateMat4: () => new Float32Array(16) });
     const world: World = { _bodies: [], dt: 1 / 60, proximity: [], casts: [], events: [], queries: [], lifecycle: [], collectors: new Map() };
     const lookup = (id: number[]): Body => {
         const result = world._bodies.find(b => b._hkBody[0] === id[0]);

@@ -105,9 +105,9 @@ export class TubeLowerer {
                 ),
         });
         const lengthModule = "src/math/length-vec3.ts";
-        const subModule = "src/math/sub-vec3.ts";
+        const subModule = "src/math/subtract-vec3.ts";
         const crossModule = "src/math/cross-vec3.ts";
-        const normalizeModule = "src/math/normalize-vec3-object.ts";
+        const normalizeModule = "src/math/normalize-vec3.ts";
         return [
             lowerPinnedFunction(
                 this.context,
@@ -124,11 +124,11 @@ export class TubeLowerer {
             lowerPinnedFunction(
                 this.context,
                 subModule,
-                "subVec3",
+                "subtractVec3",
                 [vec3Parameter("a"), vec3Parameter("b")],
                 {
                     cppName: "tube_sub",
-                    returns: returnsVec3(subModule, "subVec3"),
+                    returns: returnsVec3(subModule, "subtractVec3"),
                     calls,
                     memberBindings: vec3Members("a", "b"),
                 },
@@ -388,7 +388,7 @@ MeshHandle create_extrude_shape(
         );
         this.context.expectShapeCount(
             path3d,
-            "distances[i - 1] + lengthVec3(subVec3(curve[i], curve[i - 1]))",
+            "distances[i - 1] + lengthVec3(subtractVec3(curve[i], curve[i - 1]))",
             "Path distance accumulation",
         );
         this.context.expectShapeCount(

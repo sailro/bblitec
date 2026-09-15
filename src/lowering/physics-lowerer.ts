@@ -58,6 +58,8 @@ import { lowerPhysicsViewer } from "./physics-viewer-lowerer.js";
 import { lowerPhysicsConstraints } from "./physics-constraint-lowerer.js";
 import { lowerPhysicsGravity } from "./physics-gravity-lowerer.js";
 import { lowerPhysicsHeightfield } from "./physics-heightfield-lowerer.js";
+import { lowerPhysicsThinInstances } from "./physics-thin-instance-lowerer.js";
+import { lowerPhysicsAfterStep, lowerPhysicsCollisionInfo, lowerPhysicsEvents } from "./physics-event-lowerer.js";
 import {
   SHAPE_PARAMETERS,
   shapeParameterStorage,
@@ -130,6 +132,7 @@ export interface PhysicsLoweringOptions {
   readonly trigger?: boolean;
   /** `physics:floating-origin`: `havok-floating-origin.ts`, the regions. */
   readonly floatingOrigin?: boolean;
+  readonly thinInstances?: boolean;
 }
 
 /** The pinned builder every aggregate's shape parameters come from. */
@@ -1674,6 +1677,8 @@ ${locals}            return pal::${palFunction}(${args.join(", ")});
       [
         // const motionType = options.mass === 0 ? STATIC : DYNAMIC;
         "variable statement",
+        // Validate thin instances before allocating an owned shape.
+        "expression statement",
         // let shape = options.shape;
         "variable statement",
         // the primitive-shape build, and its refusal
@@ -1700,14 +1705,17 @@ ${locals}            return pal::${palFunction}(${args.join(", ")});
       [
         // const { _hknp: hknp, _hkWorld: hkWorld } = world;
         "variable statement",
+        // const thinBody = world._thin?.create(...);
+        "variable statement",
+        "if statement",
+        // const hkMotion = <the three-arm motion-type mapping>;
+        "variable statement",
         // const hkBody = hknp.HP_Body_Create()[1];
         "variable statement",
-        // const hkMotion = <the three-arm motion-type mapping>;
+        // the body record itself
         "variable statement",
         // hknp.HP_Body_SetMotionType(hkBody, hkMotion);
         "expression statement",
-        // the body record itself
-        "variable statement",
         // the floating-origin arm against the plain add-then-transform
         "if statement",
         // world._bodies.push(body);
@@ -1820,6 +1828,10 @@ ${locals}            return pal::${palFunction}(${args.join(", ")});
     this.assertPinnedContracts();
     const trigger = options.trigger === true;
     const floatingOrigin = options.floatingOrigin === true;
+    const thin = options.thinInstances ? lowerPhysicsThinInstances(this.context, floatingOrigin) : undefined;
+    const events = lowerPhysicsEvents(this.context, thin !== undefined);
+    const afterStep = lowerPhysicsAfterStep(this.context);
+    const collisionInfo = lowerPhysicsCollisionInfo(this.context);
     const massSetter = this.context.functionDeclaration(havokModule, "setPhysicsBodyMassProperties").declaration;
     this.context.assertStatementShapes(massSetter, massSetter.body!.statements, `
       const massProps = buildMassProperties(world, body);
@@ -1837,7 +1849,7 @@ ${locals}            return pal::${palFunction}(${args.join(", ")});
       if (i < 0) { return; }
       bodies.splice(i, 1);
       hknp.HP_World_RemoveBody(hkWorld, body._hkBody);
-      hknp.HP_Body_Release(body._hkBody);
+      if (!world._events?.remove(body)) { hknp.HP_Body_Release(body._hkBody); }
     `, "physics body removal and release order");
     const queries = options.queries ? lowerPhysicsQueries(this.context) : undefined;
     const mesh = lowerPhysicsMesh(this.context);
@@ -1866,7 +1878,7 @@ ${locals}            return pal::${palFunction}(${args.join(", ")});
       (symbol) => this.context.functionDeclaration(queryModule, symbol).declaration,
       [
         ["physicsRaycast", ["findBodyById(world, hitData[0][0])", "query.shouldHitTriggers ?? false"]],
-        ["findBodyById", ["world._bodies", "bodies[i]!._hkBody[0] === hitBodyId"]],
+        ["findBodyById", ["world._bodies", "body._hkBody[0] === hitBodyId"]],
       ],
     );
 
@@ -1896,6 +1908,7 @@ ${locals}            return pal::${palFunction}(${args.join(", ")});
 #include <functional>
 #include <optional>
 #include <vector>
+#include <unordered_map>
 
 #include "bblite/js_data.hpp"
 #include "bblite/pal_physics.hpp"
@@ -2095,6 +2108,7 @@ ${floatingOrigin ? `    /**
     pal::PhysicsWorldHandle region{};
 ` : ""}};
 
+${thin?.state ?? ""}
 /** ${havokModule} \`PhysicsAggregate\`. */
 struct PhysicsAggregate {
     PhysicsBody body{};
@@ -2112,6 +2126,11 @@ struct PhysicsCollisionInfo {
     Vec3d point{};
     Vec3d normal{};
     double impulse = 0.0;
+    PhysicsBody collider{};
+    double collider_index = 0.0;
+    PhysicsBody collided_against{};
+    double collided_against_index = 0.0;
+    double distance = 0.0;
 };
 
 [[nodiscard]] const char* physics_collision_type_name(
@@ -2144,6 +2163,7 @@ struct PhysicsTriggerInfo {
     Vec3d hit_normal{};
     double hit_distance = 0.0;
     js::Nullable<PhysicsBody> body{};
+    double body_index = -1.0;
 };
 
 ${floatingOrigin ? `/**
@@ -2177,6 +2197,10 @@ struct PhysicsFloatingOrigin {
  * \`_hkWorld\`; here the module is the PAL and only the world handle
  * travels.
  */
+struct PhysicsEventState {
+    bool draining = false;
+    std::optional<std::vector<PhysicsBody>> removed;
+};
 struct PhysicsWorld {
     ~PhysicsWorld();
     pal::PhysicsWorldHandle handle{};
@@ -2189,6 +2213,10 @@ struct PhysicsWorld {
      */
     std::shared_ptr<Scene> scene;
     std::vector<PhysicsBody> bodies;
+    std::optional<PhysicsEventState> events;
+${thin ? `    bool thin_enabled = false;
+    std::unordered_map<std::uint32_t, ThinPhysicsState> thin_states;
+` : ""}
     /**
      * \`_fixedDeltaMs\`: the world's own step, independent of the scene.
      * Stays at the pin's own default because the only things that write it
@@ -2237,6 +2265,13 @@ struct PhysicsWorldHandle {
 [[nodiscard]] PhysicsWorldHandle create_havok_world(
     Scene& scene,
     Vec3d gravity);
+struct PhysicsBodyInstance { PhysicsBody body; pal::PhysicsBodyHandle handle; double index; };
+${thin ? `
+std::optional<PhysicsBodyInstance> resolve_physics_thin_instance(PhysicsWorldHandle world, double native_id);
+std::optional<Vec3d> physics_thin_center(PhysicsWorldHandle world, PhysicsBody body, pal::PhysicsBodyHandle native_body, const std::array<double, 3>& local_center);
+std::optional<std::vector<float>> physics_thin_world_matrix(PhysicsWorldHandle world, PhysicsBody body, pal::PhysicsBodyHandle native_body);
+void enable_havok_thin_instance_physics(PhysicsWorldHandle world);
+` : ""}double get_physics_body_instance_count(PhysicsBody body);
 ${floatingOrigin ? `void enable_havok_floating_origin(
     PhysicsWorldHandle world,
     double floating_origin_world_radius);
@@ -2366,6 +2401,7 @@ ${viewer ? "#include <bblite/pal_physics_debug.hpp>" : ""}
 
 #include <algorithm>
 #include <cstddef>
+#include <ranges>
 #include <stdexcept>
 #include <utility>
 
@@ -2485,7 +2521,16 @@ void write_node_pose(
 }
 
 /** \`_syncBodyToNode\`: the integrated pose written back onto the node. */
+${thin?.helpers ?? ""}
+void physics_release_native_body([[maybe_unused]] PhysicsWorld& world, pal::PhysicsBodyHandle handle) {
+${thin ? `    thin_for_each(world, handle, [](auto native) { pal::physics_body_release(native); });
+    world.thin_states.erase(handle.value);` : `    pal::physics_body_release(handle);`}
+}
+${events}
+${afterStep}
 void sync_body_to_node(Engine& engine, const PhysicsBody& body) {
+${thin ? `    if (thin_from(*body.owner.lock(), body)) return;
+` : ""}
     const pal::PhysicsTransform transform =
         pal::physics_body_get_transform(body.handle);
     write_node_pose(
@@ -2504,6 +2549,9 @@ void sync_node_to_body(
     const Engine& engine,
     const PhysicsBody& body,
     bool as_target) {
+${thin ? `    auto& world = *body.owner.lock();
+    if (as_target ? thin_target(world, body) : thin_to(world, body)) return;
+` : ""}
     const PhysicsNodePose pose = physics_node_pose(engine, body.node);
     const pal::PhysicsTransform transform{
         {pose.position.x, pose.position.y, pose.position.z},
@@ -2825,14 +2873,13 @@ ${floatingOrigin ? `
         }
     }
 
-    for (const auto& callback : world.after_step) {
-        callback(static_cast<float>(dt));
-    }
+    physics_dispatch_after_step(world, dt);
 }
 
 }  // namespace
 
 PhysicsWorld::~PhysicsWorld() {
+    if (events) physics_events_dispose(*this);
 ${floatingOrigin ? `    if (fo) {
         for (const auto& region : fo->regions) {
             if (region.world.value != handle.value) {
@@ -2963,8 +3010,9 @@ void set_physics_body_motion_type(
     PhysicsMotionType motion_type) {
     PhysicsWorld& world = physics_world_record(handle);
     PhysicsBody& live = physics_body_record(world, body);
-    pal::physics_body_set_motion_type(
-        live.handle, pinned_motion_type(motion_type));
+${thin ? `    thin_for_each(world, live.handle, [&](auto native_handle) {
+        pal::physics_body_set_motion_type(native_handle, pinned_motion_type(motion_type));
+    });` : `    pal::physics_body_set_motion_type(live.handle, pinned_motion_type(motion_type));`}
     live.motion_type = motion_type;
 }
 
@@ -2980,7 +3028,9 @@ void set_physics_body_mass(
     // setPhysicsBodyMass preserves the shape-derived tensor and overrides
     // only the mass scalar.
     properties.mass = mass;
-    pal::physics_body_set_mass_properties(live.handle, properties);
+${thin ? `    thin_for_each(world, live.handle, [&](auto native_handle) {
+        pal::physics_body_set_mass_properties(native_handle, properties);
+    });` : `    pal::physics_body_set_mass_properties(live.handle, properties);`}
 }
 
 void set_physics_body_mass_properties(
@@ -3008,7 +3058,9 @@ void set_physics_body_mass_properties(
         const Vec3d& inertia = *overrides.inertia;
         properties.inertia = {inertia.x * mass, inertia.y * mass, inertia.z * mass};
     }
-    pal::physics_body_set_mass_properties(live.handle, properties);
+${thin ? `    thin_for_each(world, live.handle, [&](auto native_handle) {
+        pal::physics_body_set_mass_properties(native_handle, properties);
+    });` : `    pal::physics_body_set_mass_properties(live.handle, properties);`}
 }
 
 void set_physics_shape_material(
@@ -3050,6 +3102,16 @@ PhysicsBody& owning_body_record(const PhysicsBody& body) {
 }
 
 PhysicsWorld& physics_world_state(const PhysicsWorldHandle& handle) { return physics_world_record(handle); }
+${thin ? `std::optional<PhysicsBodyInstance> resolve_physics_thin_instance(PhysicsWorldHandle world, double native_id) { return thin_resolve(physics_world_record(world), native_id); }
+std::optional<Vec3d> physics_thin_center(PhysicsWorldHandle world, PhysicsBody body, pal::PhysicsBodyHandle native_body, const std::array<double, 3>& local_center) { return thin_com(physics_world_record(world), body, native_body, local_center); }
+std::optional<std::vector<float>> physics_thin_world_matrix(PhysicsWorldHandle world, PhysicsBody body, pal::PhysicsBodyHandle native_body) { return thin_matrix(physics_world_record(world), body, native_body); }
+void enable_havok_thin_instance_physics(PhysicsWorldHandle handle) { physics_world_record(handle).thin_enabled = true; }
+` : ""}double get_physics_body_instance_count(PhysicsBody body) {
+${thin ? `    auto& world = *body.owner.lock();
+    if (auto* state = thin_state(world, body.handle)) return static_cast<double>(state->handles.size());
+` : `    static_cast<void>(body);
+`}    return 1.0;
+}
 double physics_world_step_seconds(PhysicsWorldHandle handle) { return world_step_seconds(physics_world_record(handle)); }
 std::string physics_body_node_name(PhysicsBody body) {
     const auto& live = owning_body_record(body);
@@ -3063,8 +3125,10 @@ void remove_physics_body(PhysicsWorldHandle handle, PhysicsBody body) {
     const auto found = std::find(world.bodies.begin(), world.bodies.end(), body);
     if (found == world.bodies.end()) return;
     world.bodies.erase(found);
-    pal::physics_world_remove_body(world.handle, body.handle);
-    pal::physics_body_release(body.handle);
+${thin ? `    thin_for_each(world, body.handle, [&](auto native_handle) {
+        pal::physics_world_remove_body(world.handle, native_handle);
+    });` : `    pal::physics_world_remove_body(world.handle, body.handle);`}
+    if (!world.events || !physics_events_remove(world, body)) physics_release_native_body(world, body.handle);
 }
 
 /**
@@ -3097,12 +3161,13 @@ void apply_physics_impulse(
     std::optional<Vec3d> point) {
     PhysicsWorld& world = physics_world_record(handle);
     PhysicsBody& live = physics_body_record(world, body);
+${thin ? `    thin_for_each(world, live.handle, [&](auto native_handle) {` : ""}
     Vec3d location{};
     if (point) {
         location = *point;
     } else {
         const pal::PhysicsTransform transform =
-            pal::physics_body_get_transform(live.handle);
+            pal::physics_body_get_transform(${thin ? "native_handle" : "live.handle"});
         location = Vec3d{
             transform.position[0],
             transform.position[1],
@@ -3110,9 +3175,10 @@ void apply_physics_impulse(
         };
     }
     pal::physics_body_apply_impulse(
-        live.handle,
+        ${thin ? "native_handle" : "live.handle"},
         {location.x, location.y, location.z},
         {impulse.x, impulse.y, impulse.z});
+${thin ? `    });` : ""}
 }
 
 void set_physics_shape_filter_membership_mask(
@@ -3163,7 +3229,9 @@ void set_physics_body_collision_events_enabled(
     bool enabled) {
     PhysicsWorld& world = physics_world_record(handle);
     const PhysicsBody& live = physics_body_record(world, body);
-    pal::physics_body_set_collision_events_enabled(live.handle, enabled);
+${thin ? `    thin_for_each(world, live.handle, [&](auto native_handle) {
+        pal::physics_body_set_collision_events_enabled(native_handle, enabled);
+    });` : `    pal::physics_body_set_collision_events_enabled(live.handle, enabled);`}
 }
 
 const char* physics_collision_type_name(PhysicsCollisionType type) {
@@ -3178,23 +3246,22 @@ const char* physics_collision_type_name(PhysicsCollisionType type) {
 void on_physics_collision(
     PhysicsWorldHandle handle,
     std::function<void(const PhysicsCollisionInfo&)> callback) {
+    auto& state = physics_world_record(handle);
+    if (!state.events) state.events.emplace();
     on_physics_after_step(
         handle,
         [handle, callback = std::move(callback)](float) {
-            const PhysicsWorld& world = physics_world_record(handle);
+            PhysicsWorld& world = physics_world_record(handle);
             for (const pal::PhysicsCollisionEvent& event :
                  pal::physics_world_collision_events(world.handle)) {
-                const PhysicsCollisionType type =
-                    event.type == pal::PhysicsCollisionEventType::started
-                        ? PhysicsCollisionType::STARTED
-                        : event.type == pal::PhysicsCollisionEventType::continued
-                            ? PhysicsCollisionType::CONTINUED
-                            : PhysicsCollisionType::FINISHED;
+                const auto body_a = physics_events_resolve(world, event.collider_identity);
+                const auto body_b = physics_events_resolve(world, event.collided_against_identity);
+                if (${collisionInfo.guard}) continue;
+                const Vec3d point_a{event.point[0], event.point[1], event.point[2]};
+                const Vec3d point_b{event.point_other[0], event.point_other[1], event.point_other[2]};
+                const Vec3d normal{event.normal[0], event.normal[1], event.normal[2]};
                 callback(PhysicsCollisionInfo{
-                    type,
-                    Vec3d{event.point[0], event.point[1], event.point[2]},
-                    Vec3d{event.normal[0], event.normal[1], event.normal[2]},
-                    event.impulse,
+                    ${collisionInfo.fields},
                 });
             }
         });
@@ -3212,7 +3279,7 @@ PhysicsRaycastResult physics_raycast(
     std::uint32_t membership,
     std::uint32_t collide_with,
     bool should_hit_triggers) {
-    const PhysicsWorld& world = physics_world_record(handle);
+    PhysicsWorld& world = physics_world_record(handle);
     const pal::PhysicsRaycastResult hit = pal::physics_world_raycast(
         world.handle,
         {from.x, from.y, from.z},
@@ -3223,13 +3290,21 @@ PhysicsRaycastResult physics_raycast(
     // src/physics/havok-queries.ts#findBodyById searches the tracked world
     // list and returns the original body's identity, or null if it is absent.
     js::Nullable<PhysicsBody> body;
+    double body_index = -1.0;
     double distance = 0.0;
     if (hit.has_hit) {
 ${distanceLocals}
         distance = ${distanceExpression};
+${thin ? `        if (const auto instance = thin_resolve(world, hit.body_identity)) {
+            body = instance->body;
+            body_index = instance->index;
+        }
+` : ""}
         for (const PhysicsBody& candidate : world.bodies) {
+            if (body) break;
             if (candidate.handle.value == hit.body_identity) {
                 body = candidate;
+                body_index = 0.0;
                 break;
             }
         }
@@ -3240,6 +3315,7 @@ ${distanceLocals}
         Vec3d{hit.normal[0], hit.normal[1], hit.normal[2]},
         distance,
         std::move(body),
+        body_index,
     };
 }
 
@@ -3253,6 +3329,13 @@ PhysicsBody create_physics_body(
     PhysicsWorld& world = physics_world_record(handle);
     Engine& engine = *world.engine;
     PhysicsBody body{};
+${thin ? `    if (world.thin_enabled) {
+        if (auto instance_body = thin_create(world, handle.ownership, node, motion_type, starts_asleep)) {
+            world.bodies.push_back(*instance_body);
+            return *instance_body;
+        }
+    }
+` : ""}
     body.owner = handle.ownership;
     body.node = node;
     body.motion_type = motion_type;
@@ -3301,7 +3384,9 @@ void set_physics_body_shape(
     // there.
     PhysicsWorld& world = physics_world_record(handle);
     PhysicsBody& live = physics_body_record(world, body);
-    pal::physics_body_set_shape(live.handle, shape.handle);
+${thin ? `    thin_for_each(world, live.handle, [&](auto native_handle) {
+        pal::physics_body_set_shape(native_handle, shape.handle);
+    });` : `    pal::physics_body_set_shape(live.handle, shape.handle);`}
     live.shape = shape;
 }
 
@@ -3362,6 +3447,8 @@ PhysicsAggregate create_physics_aggregate(
     mark_mesh_runtime_transform(engine, mesh);
     const MeshRecord& record = engine.meshes[mesh.value];
     const MeshBounds bounds = mesh_bounds(engine, record);
+${thin ? `    if (world.thin_enabled) thin_validate(world, PhysicsNodeRef{PhysicsNodeKind::mesh, mesh.value});
+` : ""}
 
     // \`_buildShapeParams\` then the primitive factory, which is the pin's
     // own pair: the bounds-derived parameters take each explicit override

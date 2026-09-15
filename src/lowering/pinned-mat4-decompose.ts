@@ -1,8 +1,8 @@
 /**
- * `mat4Decompose`'s rotation, folded from its own declaration, with the two
+ * `decomposeMat4`'s rotation, folded from its own declaration, with the two
  * math helpers it calls folded beside it.
  *
- * None of this is splat behaviour: `src/math/mat4-decompose.ts` and its two
+ * None of this is splat behaviour: `src/math/decompose-mat4.ts` and its two
  * dependencies are general matrix maths, and a second consumer already
  * half-exists — `renderer-lowerer.ts` pins `mat4Determinant3`'s text as the
  * marker for the glTF mirrored-winding predicate. So it lives beside
@@ -20,15 +20,15 @@ import {
     lowerObjectComponents,
     lowerPinnedFunction,
 } from "./pinned-function-lowerer.js";
-import type { PinnedNumericLowerer } from "./pinned-numeric-lowerer.js";
+import { PinnedNumericLowerer } from "./pinned-numeric-lowerer.js";
 import {
     pinnedHypotCall,
     pinnedNumericMathCalls,
 } from "./pinned-operators.js";
 
-const DECOMPOSE_MODULE = "src/math/mat4-decompose.ts";
+const DECOMPOSE_MODULE = "src/math/decompose-mat4.ts";
 const DETERMINANT_MODULE = "src/math/mat4-determinant3.ts";
-const QUAT_BASIS_MODULE = "src/math/quat-from-rotation-matrix.ts";
+const QUAT_BASIS_MODULE = "src/math/create-quat-from-rotation-mat4.ts";
 
 /** The pin's own `{x, y, z, w}`, as its math helpers return one. */
 const PINNED_QUAT_DECLARATION = `/** The pin's own \`{x, y, z, w}\`, as its math helpers return one. */
@@ -95,7 +95,7 @@ export function lowerMat4DecomposeRotation(context: LoweringContext): string {
     const decompose = lowerPinnedFunction(
         context,
         DECOMPOSE_MODULE,
-        "mat4Decompose",
+        "decomposeMat4",
         [{ pinned: "m", kind: "mat4Const", cpp: "m" }],
         {
             cppName: PINNED_DECOMPOSE_ROTATION,
@@ -108,7 +108,7 @@ export function lowerMat4DecomposeRotation(context: LoweringContext): string {
                     if (!literal || !ts.isObjectLiteralExpression(literal)) {
                         return context.contractError(
                             expression ?? literal!,
-                            "Expected mat4Decompose to return an object " +
+                            "Expected decomposeMat4 to return an object " +
                                 "literal.",
                         );
                     }
@@ -142,13 +142,13 @@ export function lowerMat4DecomposeRotation(context: LoweringContext): string {
         PINNED_QUAT_DECLARATION,
         determinant,
         basis,
-        // mat4Decompose, specialized to the rotation its one caller reads.
+        // decomposeMat4, specialized to the rotation its one caller reads.
         decompose,
     ].join("\n\n");
 }
 
 /**
- * `mat4Decompose`, folded whole for `setParent`'s apply-local path.
+ * `decomposeMat4`, folded whole for `setParent`'s apply-local path.
  *
  * Keep this separate from {@link lowerMat4DecomposeRotation}: the splat bake
  * proves that it reads only the quaternion and deliberately retains the
@@ -178,7 +178,7 @@ export function lowerMat4DecomposeFull(context: LoweringContext): string {
     const decompose = lowerPinnedFunction(
         context,
         DECOMPOSE_MODULE,
-        "mat4Decompose",
+        "decomposeMat4",
         [{ pinned: "m", kind: "mat4Const", cpp: "m" }],
         {
             cppName: "pinned_parent_mat4_decompose",
@@ -191,7 +191,7 @@ export function lowerMat4DecomposeFull(context: LoweringContext): string {
                     if (!literal || !ts.isObjectLiteralExpression(literal)) {
                         return context.contractError(
                             expression ?? literal!,
-                            "Expected mat4Decompose to return a full TRS object literal.",
+                            "Expected decomposeMat4 to return a full TRS object literal.",
                         );
                     }
                     const translation = lowerObjectComponents(
@@ -269,33 +269,33 @@ export function lowerQuatFromRotationBasis(
     cppName: string,
     resultType: string,
     inline = false,
+    defaultOverload = true,
 ): string {
-    return lowerPinnedFunction(
+    const names = ["m11", "m12", "m13", "m21", "m22", "m23", "m31", "m32", "m33"];
+    const fields = ["x", "y", "z", "w"];
+    const { file, declaration } = context.functionDeclaration(QUAT_BASIS_MODULE, "_quatFromRotationBasis");
+    const initializer = declaration.parameters[9]?.initializer;
+    if (!initializer) context.contractError(declaration, "Expected a default quaternion output.");
+    const defaults = lowerObjectComponents(context, new PinnedNumericLowerer(file, { calls, bindings: new Map() }), initializer, fields);
+    const body = lowerPinnedFunction(
         context,
         QUAT_BASIS_MODULE,
         "_quatFromRotationBasis",
-        [
-            "m11",
-            "m12",
-            "m13",
-            "m21",
-            "m22",
-            "m23",
-            "m31",
-            "m32",
-            "m33",
-        ].map((pinned) => ({ pinned, kind: "number" as const, cpp: pinned })),
+        [...names.map((pinned) => ({ pinned, kind: "number" as const, cpp: pinned })),
+            { pinned: "out", kind: "record", cpp: "out", cppType: resultType, annotation: "Quat", mutableRecord: true }],
         {
             cppName,
             returns: {
                 type: resultType,
-                value: (lowerer, expression) =>
-                    `${resultType}{${quatComponents(
-                        context,
-                        lowerer,
-                        expression,
-                    ).join(", ")}}`,
+                value: (_lowerer, expression) => {
+                    if (!expression) context.contractError(declaration, "Expected quaternion output return.");
+                    context.assertExpressionShape(expression, "out", "quaternion output identity");
+                    return "out";
+                },
             },
+            memberBindings: new Map(fields.map((field, index) => [`out.${field}`, {
+                cpp: resultType.startsWith("std::array<") ? `out[${index}]` : `out.${field}`, type: "scalar" as const,
+            }])),
             calls,
             ...(inline ? { inline } : {}),
             // The trace method picks its branch with `&&` over numeric
@@ -303,6 +303,11 @@ export function lowerQuatFromRotationBasis(
             booleanAnd: true,
         },
     );
+    if (!defaultOverload) return body;
+    return `${body}\n\n${inline ? "inline " : ""}${resultType} ${cppName}(${names.map(name => `double ${name}`).join(", ")}) {
+    ${resultType} out{${defaults.join(", ")}};
+    return ${cppName}(${names.join(", ")}, out);
+}`;
 }
 
 /** A pinned `{x, y, z, w}` literal's four components, in that order. */

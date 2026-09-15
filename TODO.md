@@ -99,6 +99,7 @@ Open gaps only. [Features](docs/features.md) owns support; [fidelity](docs/fidel
 
 ## Backend and performance
 
+- [ ] Scene290: sustain 100 FPS uncapped through impact and settling; Bullet stepping remains the bottleneck (`pal_physics_bullet.cpp`).
 - [ ] Compare compiled slots with PAL binding tables; consolidate duplicated layout caches.
 - [ ] Gate morph-shadow and light/camera gizmo emission on reach.
 - [ ] Reclaim retired shadow resources without compacting handles.

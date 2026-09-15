@@ -212,7 +212,7 @@ inline std::array<float, 16> outer_transform_matrix(
 
 // \`outer * world\` at double width: the clone root's composition on the
 // left of a mesh's own world, the operand order world-matrix-state.ts
-// getWorldMatrix multiplies a parent by (\`mat4MultiplyInto(out, 0,
+// getWorldMatrix multiplies a parent by (\`multiplyMat4IntoBuffer(out, 0,
 // parent, 0, local, 0)\`), through the pinned writer's F64 storage arm.
 // The pin multiplies only under a parent, and an unrotated, untranslated
 // root is the identity: its product is the world itself, cell for cell,

@@ -1642,7 +1642,7 @@ ${members.map(([, declaration]) => `    ${declaration}`).join("\n")}
           capacity(static_cast<double>(capacity_)) {}
 };
 
-${this.provider ? "" : `// The emitter world matrix the build composed (mat4Translation of the
+${this.provider ? "" : `// The emitter world matrix the build composed (createTranslationMat4 of the
 // emitter option), as the executed pin reported it.
 const std::array<float, 16> emitter_world_matrix = {
     ${facts.emitterWorldMatrix.map((value) => floatLiteral(value)).join(", ")}};`}

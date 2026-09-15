@@ -47,8 +47,8 @@ export function lowerGltfSkeletonPose(context: LoweringContext): string {
     const scope: PinnedBodyScope = {
         bindings, calls: new Map([
             ["visit", args => `visit(${args.join(", ")})`],
-            ["mat4ComposeInto", args => `compose_matrix(${args.join(", ")})`],
-            ["mat4MultiplyInto", args => `multiply_matrix(${args.join(", ")})`],
+            ["composeMat4IntoBuffer", args => `compose_matrix(${args.join(", ")})`],
+            ["multiplyMat4IntoBuffer", args => `multiply_matrix(${args.join(", ")})`],
         ]), expression, booleanAnd: true, booleanOr: true,
         statement(node, numeric, indent) {
             if (ts.isFunctionDeclaration(node)) {

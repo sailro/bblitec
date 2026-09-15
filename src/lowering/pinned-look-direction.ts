@@ -1,5 +1,5 @@
 /**
- * `quatFromLookDirectionRH`, translated whole from its pinned declaration.
+ * `createQuatFromLookDirectionRH`, translated whole from its pinned declaration.
  *
  * The public helper normalizes two record vectors and delegates the final
  * basis conversion to the same pinned quaternion fold used by matrix
@@ -14,7 +14,7 @@ import { pinnedNumericMathCallsWithHypot } from "./pinned-operators.js";
 import { pinnedHeader } from "./pinned-header.js";
 
 const LOOK_DIRECTION_MODULE =
-    "src/math/quat-from-look-direction-rh.ts";
+    "src/math/create-quat-from-look-direction-rh.ts";
 
 /** The header carrying the pin's right-handed look-direction quaternion. */
 export function pinnedLookDirectionHeader(context: LoweringContext): string {
@@ -29,7 +29,7 @@ export function pinnedLookDirectionHeader(context: LoweringContext): string {
     const lookDirection = lowerPinnedFunction(
         context,
         LOOK_DIRECTION_MODULE,
-        "quatFromLookDirectionRH",
+        "createQuatFromLookDirectionRH",
         [
             {
                 pinned: "forward",
@@ -81,9 +81,9 @@ export function pinnedLookDirectionHeader(context: LoweringContext): string {
                         : context.contractError(
                               context.functionDeclaration(
                                   LOOK_DIRECTION_MODULE,
-                                  "quatFromLookDirectionRH",
+                                  "createQuatFromLookDirectionRH",
                               ).declaration,
-                              "Expected pinned quatFromLookDirectionRH to return a value.",
+                              "Expected pinned createQuatFromLookDirectionRH to return a value.",
                           ),
             },
         },

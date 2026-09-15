@@ -1394,7 +1394,7 @@ export function pinnedShadowHeader(context: LoweringContext, features: readonly 
     const defaults = pcfSpotDefaults(context);
     const esm = esmDefaults(context);
     const pcfDirectional = pcfDirectionalDefaults(context);
-    const mat4Invert = lowerMat4InvertCpp(context, { inline: true });
+    const invertMat4 = lowerMat4InvertCpp(context, { inline: true });
     const casterFallback = esmCasterBoundsFallback(context);
     // `computeAabb`'s local arm, the per-target delta range the morph
     // bounds provider caches.
@@ -1715,7 +1715,7 @@ ${lowerComputeDirectionalLightMatrix(context)}
 
 ${lowerBiasViewProjection(context)}
 
-${mat4Invert}
+${invertMat4}
 
 ${lowerShadowParamsBlock(context)}
 

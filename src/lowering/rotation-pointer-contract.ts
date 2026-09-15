@@ -76,7 +76,7 @@ export function assertRotationPointerContract(context: LoweringContext, factory:
         cumulativeAngle = 0;
         setMeshesMaterial([ring], materials.hover);
         const planeWorld = rotationDisplayPlane.worldMatrix;
-        const invPlane = mat4Invert(planeWorld);
+        const invPlane = invertMat4(planeWorld);
         if (invPlane) {
             const px = event.dragPlanePoint.x, py = event.dragPlanePoint.y, pz = event.dragPlanePoint.z;
             const lx = invPlane[0] * px + invPlane[4] * py + invPlane[8] * pz + invPlane[12];

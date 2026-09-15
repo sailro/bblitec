@@ -26,8 +26,8 @@ function sourceCase(context: LoweringContext, disposed: boolean, override: boole
     const build = context.functionDeclaration("src/skeleton/bone-control.ts", "buildSkeletons");
     const bake = context.variableInitializer(build.declaration, "bake").getText();
     const run = new Function("F32", "I32", "U8", transpileCommonJs(`
-        ${math("mat4ComposeInto", "src/math/mat4-compose-into.ts")}
-        ${math("mat4MultiplyInto", "src/math/mat4-multiply-into.ts")}
+        ${math("composeMat4IntoBuffer", "src/math/compose-mat4-into-buffer.ts")}
+        ${math("multiplyMat4IntoBuffer", "src/math/multiply-mat4-into-buffer.ts")}
         ${text}
         return (nodes, skeletons, overrides, worldOverrides) => {
             const events = [], numNodes = nodes.length, topoOrder = computeTopoOrder(nodes);
@@ -73,7 +73,7 @@ test("eager skeleton baking follows source scratch, override order, matrix produ
 #include "pinned_matrix.hpp"
 using Json=nlohmann::json;using Floats=std::vector<float>;using Matrix=std::array<float,16>;using bbl::Vec3;using bbl::Vec4;
 Matrix identity_matrix(){return {1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1};}
-${lowerMatrixComposeCpp(variants[0]!.sourceFile("src/math/mat4-compose-into.ts"))}
+${lowerMatrixComposeCpp(variants[0]!.sourceFile("src/math/compose-mat4-into-buffer.ts"))}
 Json bits(const Floats& values){Json result=Json::array();for(float v:values)result.push_back(std::bit_cast<std::uint32_t>(v));return result;}
 struct Node{double parentIdx,tx,ty,tz,rx,ry,rz,rw,sx,sy,sz;std::optional<Floats> matrix;};
 struct Skeleton{double boneCount;std::vector<double> jointNodes;Floats invMeshWorld,inverseBindMatrices;std::shared_ptr<Floats> boneMatrices;bool disposed;int texture;};

@@ -6,6 +6,32 @@
 
 namespace bbl::pal {
 
+/** Wall time between completed frames, including event handling and presentation. */
+class FrameRateProfile {
+    const bool enabled_ = environment_variable("BBLITE_FPS_PROFILE") == "1";
+    double previous_ = 0, window_ms_ = 0;
+    std::vector<double> intervals_;
+public:
+    void complete(long frame) {
+        if (!enabled_) return;
+        const double now = monotonic_milliseconds();
+        if (previous_ != 0) {
+            const double elapsed = now - previous_;
+            intervals_.push_back(elapsed);
+            window_ms_ += elapsed;
+        }
+        previous_ = now;
+        if (window_ms_ < 1000) return;
+        std::sort(intervals_.begin(), intervals_.end());
+        const auto count = intervals_.size();
+        const auto p99 = std::min(count - 1, static_cast<std::size_t>(std::ceil(count * 0.99)) - 1);
+        std::fprintf(stderr, "[fps] frame=%ld frames=%zu elapsed_ms=%.3f fps=%.2f p99_ms=%.3f max_ms=%.3f\n",
+            frame, count, window_ms_, count * 1000.0 / window_ms_, intervals_[p99], intervals_.back());
+        intervals_.clear();
+        window_ms_ = 0;
+    }
+};
+
 /** Clock, capture progress and completion shared by native rendering contexts. */
 struct FrameSession {
     Engine& engine;
@@ -17,6 +43,7 @@ struct FrameSession {
     long frame = 0;
     double frame_start = 0;
     std::vector<double> samples_ms;
+    FrameRateProfile frame_rate_profile;
 
     explicit FrameSession(Engine& target)
         : engine(target), frame_options(read_frame_options()),

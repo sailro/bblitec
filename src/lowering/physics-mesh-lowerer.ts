@@ -10,10 +10,10 @@ const modulePath = "src/physics/havok.ts";
 const contracts = new Map([
     ["constructor", "this._collectIndices = collectIndices;"],
     ["addNodeMeshes", `
-        const invRoot = mat4Invert(root.worldMatrix as Mat4);
+        const invRoot = invertMat4(root.worldMatrix as Mat4);
         if (!invRoot) { throw new Error("Cannot create physics mesh shape from a singular root transform."); }
-        const rootScale = mat4Scale(root.scaling.x, root.scaling.y, root.scaling.z);
-        const rootToBody = mat4Multiply(rootScale, invRoot);
+        const rootScale = createScalingMat4(root.scaling.x, root.scaling.y, root.scaling.z);
+        const rootToBody = multiplyMat4(rootScale, invRoot);
         this._addNodeMesh(root, rootToBody);
         if (includeChildren) { for (const child of root.children) { this._addDescendantMeshes(child, rootToBody); } }
         if (this._vertices.length === 0) { throw new Error("Cannot create physics mesh shape without vertex positions."); }
@@ -30,7 +30,7 @@ const contracts = new Map([
         if (!isMesh(node)) { return; }
         const positions = node._cpuPositions;
         if (!positions || positions.length === 0) { return; }
-        const meshToBody = mat4Multiply(rootToBody, node.worldMatrix as Mat4);
+        const meshToBody = multiplyMat4(rootToBody, node.worldMatrix as Mat4);
         const indexOffset = this._vertices.length / 3;
         for (let i = 0; i < positions.length; i += 3) {
             transformPositionInto(this._vertices, meshToBody, positions[i]!, positions[i + 1]!, positions[i + 2]!);
@@ -89,7 +89,7 @@ export function lowerPhysicsMesh(context: LoweringContext): { helpers: string; s
     const numeric = new PinnedNumericLowerer(file, { bindings, calls: new Map() });
     const statement = transform.body!.statements[0]! as ts.ExpressionStatement;
     const lanes = (statement.expression as ts.CallExpression).arguments.map(node => `static_cast<float>(${numeric.expression(node)})`);
-    const scale = context.functionDeclaration("src/math/mat4-scale.ts", "mat4Scale");
+    const scale = context.functionDeclaration("src/math/create-scaling-mat4.ts", "createScalingMat4");
     context.assertExpressionShape(context.variableInitializer(scale.declaration, "out"), "allocateMat4() as unknown as Mat4Storage", "Physics root scale allocation");
 
     const scaleBody = lowerPinnedBody(scale.file, scale.declaration.body!.statements, {

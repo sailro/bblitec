@@ -9,9 +9,8 @@ export const massPropertiesType = referenceTuple(["number[]", "number", "number[
  * manifold and body-kinematics expressions remain ordinary pinned AST lowering. */
 export function characterTransportSchema(context: LoweringContext): Pick<ReferenceSchema, "expression" | "statement"> {
     const bodyArgument = (expression: ts.Expression, lowerer: PinnedReferenceLowerer): ReferenceValue => {
-        if (!ts.isPropertyAccessExpression(expression) || expression.name.text !== "_hkBody") return context.contractError(expression, "Character PAL call requires the body's Havok handle.");
-        const body = lowerer.expression(expression.expression);
-        if (body.type !== "PhysicsBody") return context.contractError(expression, "Character PAL body has an unrepresented owner.");
+        const body = lowerer.expression(expression);
+        if (body.type !== "NativeBody") return context.contractError(expression, "Character PAL call requires a represented native body handle.");
         return body;
     };
     const collector = (expression: ts.Expression): string => {
@@ -32,6 +31,10 @@ export function characterTransportSchema(context: LoweringContext): Pick<Referen
         },
         expression(node, _expected, lowerer) {
             if (ts.isPropertyAccessExpression(node)) {
+                if (node.name.text === "_hkBody") {
+                    const body = lowerer.expression(node.expression);
+                    if (body.type === "PhysicsBody") return { cpp: `_native_body(${body.cpp})`, type: "NativeBody" };
+                }
                 if (node.name.text === "motionType") {
                     const body = lowerer.expression(node.expression);
                     if (body.type === "PhysicsBody") return node.questionDotToken
@@ -45,7 +48,7 @@ export function characterTransportSchema(context: LoweringContext): Pick<Referen
             }
             if (ts.isElementAccessExpression(node) && ts.isNumericLiteral(node.argumentExpression)) {
                 if (ts.isPropertyAccessExpression(node.expression) && node.expression.name.text === "_hkBody" && node.argumentExpression.text === "0")
-                    return { cpp: `_body_identity(${bodyArgument(node.expression, lowerer).cpp})`, type: "optional:number" };
+                    return { cpp: `_body_identity(${lowerer.expression(node.expression.expression).cpp})`, type: "optional:number" };
                 if (ts.isCallExpression(node.expression) && node.argumentExpression.text === "1" && ts.isPropertyAccessExpression(node.expression.expression)) {
                     const call = node.expression, path = call.expression.getText(call.getSourceFile());
                     const name = (call.expression as ts.PropertyAccessExpression).name.text;
@@ -72,6 +75,12 @@ export function characterTransportSchema(context: LoweringContext): Pick<Referen
             }
             if (ts.isCallExpression(node)) {
                 const path = node.expression.getText(node.getSourceFile());
+                const thin = new Map([
+                    ["this._world._thin?.resolve", ["_thin_resolve", `optional:${referenceTuple(["PhysicsBody", "NativeBody", "number"])}`]],
+                    ["this._world._thin?.com", ["_thin_com", "Vec3"]],
+                    ["this._world._thin?.matrix", ["_thin_matrix", "optional:number[]"]],
+                ]).get(path);
+                if (thin) return { cpp: `${thin[0]}(${node.arguments.map(argument => lowerer.expression(argument).cpp).join(", ")})`, type: thin[1]! };
                 if (path === "worldStepSeconds" && node.arguments.length === 1 && node.arguments[0]!.getText(node.getSourceFile()) === "this._world")
                     return { cpp: "_world_step_seconds()", type: "number" };
                 if (path === "hknp.HP_Body_ApplyImpulse" && node.arguments.length === 3)

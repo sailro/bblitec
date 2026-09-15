@@ -1,0 +1,37 @@
+{
+  "scene": "scene290",
+  "twin": true,
+  "notes": "Thin-instance counts, free fall, post-impact transforms, draw counts, camera input and resize. CPU timings are reported without an FPS gate.",
+  "base": "fixed",
+  "phases": [
+    { "id": "frame-1", "frame": 0 },
+    { "id": "frame-60", "frame": 59 },
+    { "id": "frame-180", "frame": 179 },
+    { "id": "frame-360", "frame": 359 },
+    { "id": "frame-900", "frame": 899, "env": { "BBLITE_CPU_PROFILE": "1", "BBLITE_BENCHMARK_FRAMES": "0" } },
+    { "id": "orbit", "frame": 179, "tape": ["-*20", "+UiMouseLeft@850:340", "UiMove@910:355", "-UiMouseLeft@910:355"] },
+    { "id": "wheel", "frame": 179, "tape": ["-*20", "UiWheelDown"] },
+    { "id": "resize", "frame": 179, "tape": ["-*20", "WindowResize@1000:600"] }
+  ],
+  "expect": [
+    { "kind": "capture-differs", "phase": "orbit", "vs": "frame-180", "path": "camera.viewProjection" },
+    { "kind": "capture-differs", "phase": "wheel", "vs": "frame-180", "path": "camera.viewProjection" },
+    { "kind": "viewport", "phase": "resize", "equals": [1000, 600] },
+    { "kind": "backends-agree", "phase": "*", "imageMaxDiff": 0 },
+    { "kind": "plugin", "module": "checks/plugins/scene290-thin-instances.mjs" }
+  ],
+  "observe": {
+    "captureReady": "captureReady",
+    "state": "window.__scene290Observe()",
+    "captureFrames": [180, 1, 60, 360, 900],
+    "hooks": [
+      { "marker": "await registerScene(scene);", "position": "before", "inject": "window.__scene290Observe = () => ({ step: simulatedFrames, nativeBodies: Number(canvas.dataset.nativeBodies), camera: { alpha: camera.alpha, beta: camera.beta, radius: camera.radius }, viewport: [canvas.width, canvas.height], meshes: [box, sphere, convex].map(mesh => ({ count: mesh.thinInstances.count, matrices: Array.from(mesh.thinInstances.matrices), position: [mesh.position.x, mesh.position.y, mesh.position.z] })) });" }
+    ],
+    "steps": [
+      { "id": "baseline" },
+      { "id": "orbit", "actions": [{ "drag": [850, 340, 910, 355], "steps": 8 }, { "wait": 200 }] },
+      { "id": "wheel", "actions": [{ "wheel": 100 }, { "wait": 200 }] },
+      { "id": "resize", "actions": [{ "resize": [1000, 600] }, { "style": "html,body,canvas{width:1000px!important;height:600px!important}" }, { "waitFor": "window.__scene290Observe().viewport[0] === 1000" }] }
+    ]
+  }
+}

@@ -76,7 +76,7 @@ const CORE_MODULE = "src/gizmo/gizmo-core.ts";
 const CAMERA_MODULE = "src/gizmo/camera-gizmo.ts";
 const LIGHT_MODULE = "src/gizmo/light-gizmo.ts";
 const LENGTH_MODULE = "src/math/length-vec3.ts";
-const NORMALIZE_MODULE = "src/math/normalize-vec3-object.ts";
+const NORMALIZE_MODULE = "src/math/normalize-vec3.ts";
 const AXIS_DRAG_MODULE = "src/gizmo/axis-drag-gizmo.ts";
 const AXIS_SCALE_MODULE = "src/gizmo/axis-scale-gizmo.ts";
 const PLANE_DRAG_MODULE = "src/gizmo/plane-drag-gizmo.ts";
@@ -104,8 +104,8 @@ function vec4f(lanes: readonly string[]): string {
     return `Vec4{${lanes.map((lane) => `static_cast<float>(${lane})`).join(", ")}}`;
 }
 
-const MAT4_FROM_QUAT_MODULE = "src/math/mat4-from-quat.ts";
-const MAT4_COMPOSE_MODULE = "src/math/mat4-compose-into.ts";
+const MAT4_FROM_QUAT_MODULE = "src/math/create-mat4-from-quat.ts";
+const MAT4_COMPOSE_MODULE = "src/math/compose-mat4-into-buffer.ts";
 
 /**
  * Where a folded sub-gizmo call may be broken across lines. The composite
@@ -536,7 +536,7 @@ export class GizmoLowerer {
             },
         );
         // `rotationQuatFromMatrix` is the pin's own one-liner over
-        // `mat4Decompose`. Asserted rather than re-typed: what the emitted
+        // `decomposeMat4`. Asserted rather than re-typed: what the emitted
         // follow calls is the decomposition this repository already lowers.
         const rotationQuat = this.context.functionDeclaration(
             MATH_MODULE,
@@ -544,7 +544,7 @@ export class GizmoLowerer {
         );
         this.context.callExpression(
             rotationQuat.declaration,
-            "mat4Decompose",
+            "decomposeMat4",
         );
         if (
             !this.context.hasNode(
@@ -557,7 +557,7 @@ export class GizmoLowerer {
             this.context.contractError(
                 rotationQuat.declaration,
                 "Expected pinned rotationQuatFromMatrix to take " +
-                    "mat4Decompose(m).rotation.",
+                    "decomposeMat4(m).rotation.",
             );
         }
         // The four the editing widgets add. `lookAtQuat` is what orients
@@ -3304,15 +3304,15 @@ ${body}
 }`;
     }
 
-    /** `mat4FromQuat`, over the pinned compose the loader also uses. */
+    /** `createMat4FromQuat`, over the pinned compose the loader also uses. */
     private loweredMat4FromQuat(file: ts.SourceFile): string {
         const declaration = this.context.functionDeclaration(
             MAT4_FROM_QUAT_MODULE,
-            "mat4FromQuat",
+            "createMat4FromQuat",
         ).declaration;
         const call = this.context.callExpression(
             declaration,
-            "mat4ComposeInto",
+            "composeMat4IntoBuffer",
         );
         const lowerer = new PinnedNumericLowerer(file, {
             bindings: new Map<string, PinnedBinding>(
@@ -3327,7 +3327,7 @@ ${body}
         if (!ts.isIdentifier(allocated)) {
             this.context.contractError(
                 call,
-                "Expected pinned mat4FromQuat to compose into a local " +
+                "Expected pinned createMat4FromQuat to compose into a local " +
                     "matrix it allocated.",
             );
         }
@@ -3337,7 +3337,7 @@ ${body}
             .map((argument) => lowerer.expression(argument));
         return `// ${this.context.provenance(
             MAT4_FROM_QUAT_MODULE,
-            "mat4FromQuat",
+            "createMat4FromQuat",
         )}
 std::array<float, 16> bbox_mat4_from_quat(
     double qx,
@@ -3361,7 +3361,7 @@ std::array<float, 16> bbox_mat4_from_quat(
         factory: ts.Node,
         file: ts.SourceFile,
     ): string {
-        const call = this.context.callExpression(factory, "mat4FromQuat");
+        const call = this.context.callExpression(factory, "createMat4FromQuat");
         if (call.arguments.length !== 4) {
             this.context.contractError(
                 call,
@@ -3475,8 +3475,8 @@ std::array<float, 16> bbox_mat4_from_quat(
      * layer's main scene, one geometry's model vertices. Every number
      * either of them computes still comes from a lowered pinned body: the
      * attached node's rotation from `rotationQuatFromMatrix`, its inverse
-     * from `mat4FromQuat` over the pinned compose, the per-mesh matrix
-     * from `mat4MultiplyInto`, and the fold itself from `computeAabb`.
+     * from `createMat4FromQuat` over the pinned compose, the per-mesh matrix
+     * from `multiplyMat4IntoBuffer`, and the fold itself from `computeAabb`.
      *
      * The drag half is absent exactly as it is for the four editing
      * widgets (`display-only-editing-gizmo`): no collider registration, no
@@ -4009,7 +4009,7 @@ std::array<float, 16> bbox_mat4_from_quat(
                     )),
         );
 
-        // ---- rotatePoint, computeAabb and mat4FromQuat ----
+        // ---- rotatePoint, computeAabb and createMat4FromQuat ----
         const rotatePoint = this.loweredPinnedRotatePoint(file);
         // `computeAabb`'s WORLD arm: the cage always supplies a world
         // matrix, so the arm that transforms is the one emitted.
@@ -4162,7 +4162,7 @@ using upstream::mat4_multiply_into;
 ${lowerPinnedFunction(
     this.context,
     MAT4_COMPOSE_MODULE,
-    "mat4ComposeInto",
+    "composeMat4IntoBuffer",
     [
         { pinned: "dst", kind: "mat4", cpp: "dst" },
         { pinned: "off", kind: "number", cpp: "off" },

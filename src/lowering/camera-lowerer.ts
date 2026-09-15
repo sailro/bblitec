@@ -20,7 +20,7 @@ export class CameraLowerer {
      * The parented-world composition `camera_world_matrix` mirrors when a
      * record carries a parent: the pinned `getWorldMatrix`
      * (src/scene/world-matrix-state.ts) multiplies the parent's world by
-     * the local through `mat4MultiplyInto(out, 0, parent, 0, local, 0)`.
+     * the local through `multiplyMat4IntoBuffer(out, 0, parent, 0, local, 0)`.
      * The operand order is the whole contract — swapping it composes the
      * camera on the wrong side of its fixup node — so this reads the
      * pin's one multiply call and requires the parent world third and the
@@ -35,7 +35,7 @@ export class CameraLowerer {
                 (node): node is ts.CallExpression =>
                     ts.isCallExpression(node) &&
                     ts.isIdentifier(node.expression) &&
-                    node.expression.text === "mat4MultiplyInto",
+                    node.expression.text === "multiplyMat4IntoBuffer",
             );
         if (multiplies.length !== 1) {
             this.context.contractError(
@@ -115,7 +115,7 @@ export class CameraLowerer {
     }
 
     /**
-     * `mat4LookAtWorldLHToRef` translated whole, at the width the camera's
+     * `writeLookAtWorldMat4LHIntoBuffer` translated whole, at the width the camera's
      * world is kept at. The pin's `allocateMat4()` storage is a Float32Array
      * by default and a Float64Array once an engine asks for
      * `useHighPrecisionMatrix`, and the translation binds `out` to the store
@@ -132,8 +132,8 @@ export class CameraLowerer {
         });
         return lowerPinnedFunction(
             this.context,
-            "src/math/mat4-look-at-world-lh.ts",
-            "mat4LookAtWorldLHToRef",
+            "src/math/write-look-at-world-mat4-lh-into-buffer.ts",
+            "writeLookAtWorldMat4LHIntoBuffer",
             [
                 {
                     pinned: "out",
@@ -223,7 +223,7 @@ export class CameraLowerer {
         const parentArm = gltfCameras
             ? `
 // src/scene/world-matrix-state.ts getWorldMatrix: with a parent the world
-// is mat4MultiplyInto(out, 0, parent.worldMatrix, 0, local, 0) — parent
+// is multiplyMat4IntoBuffer(out, 0, parent.worldMatrix, 0, local, 0) — parent
 // on the left, the camera's own look-at local on the right. The record's
 // parent_world is the imported camera's fixup-node world, written by the
 // glTF loader.
@@ -453,12 +453,12 @@ CameraHandle create_arc_rotate_camera(
                     this.context
                         .propertyPath(call.expression)
                         ?.join(".") ===
-                    "mat4OrthoOffCenterLHToRef",
+                    "writeOrthoOffCenterMat4LHIntoBuffer",
             );
         if (!projection) {
             this.context.contractError(
                 writer,
-                "Expected the orthographic writer to call mat4OrthoOffCenterLHToRef.",
+                "Expected the orthographic writer to call writeOrthoOffCenterMat4LHIntoBuffer.",
             );
         }
         const planes = [

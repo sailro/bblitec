@@ -394,7 +394,7 @@ function lowerCsmMatrixHelpers(context: LoweringContext): string {
             { pinned: "out", kind: "mat4", annotation: "Float32Array", cpp: "out" },
             ...["dirX", "dirY", "dirZ", "px", "py", "pz"].map(scalar),
         ], { cppName: "build_light_view_matrix_into", inline: true, calls: numericScope().calls, returns: "void" }),
-        lowerPinnedFunction(context, "src/math/mat4-invert-to-ref.ts", "mat4InvertToRefOrIdentity", [
+        lowerPinnedFunction(context, "src/math/invert-mat4-to-ref-or-identity.ts", "invertMat4ToRefOrIdentity", [
             { pinned: "input", kind: "mat4Const", cpp: "input", cppType: "Matrix" },
             { pinned: "result", kind: "mat4", annotation: "Mat4", cpp: "result" },
         ], { cppName: "mat4_invert_to_ref_or_identity", inline: true, templateParameters: ["typename Matrix"],
@@ -601,7 +601,7 @@ function lowerCascades(context: LoweringContext): string {
         ["_castersWorldAabbInto", "csm_casters_world_aabb_into"],
         ["transformCoordInto", "csm_transform_coord_into"],
         ["buildLightViewMatrixInto", "build_light_view_matrix_into"],
-        ["mat4InvertToRefOrIdentity", "mat4_invert_to_ref_or_identity"],
+        ["invertMat4ToRefOrIdentity", "mat4_invert_to_ref_or_identity"],
         ["orthoViewInto", "ortho_view_into"],
     ] as const) {
         calls.set(pinned, (args) => `${cpp}(${args.join(", ")})`);

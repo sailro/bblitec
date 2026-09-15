@@ -40,6 +40,7 @@ test("parses a declared check and expands tape shorthands", () => {
             gpuDebug: false,
             observe: {
                 ready: "preLossReady",
+                captureReady: "captureReady",
                 reloadEachStep: true,
                 steps: [{ id: "s", actions: [{ drag: [1, 2, 3, 4], steps: 8 }, { fill: { selector: "#t", text: "x" } }], screenshot: "canvas" }],
             },
@@ -48,6 +49,7 @@ test("parses a declared check and expands tape shorthands", () => {
     );
     assert.equal(observed.gpuDebug, false);
     assert.equal(observed.observe?.ready, "preLossReady");
+    assert.equal(observed.observe?.captureReady, "captureReady");
     assert.equal(observed.observe?.reloadEachStep, true);
     assert.deepEqual(observed.observe?.steps[0]?.actions?.[0], { drag: [1, 2, 3, 4], steps: 8 });
 });

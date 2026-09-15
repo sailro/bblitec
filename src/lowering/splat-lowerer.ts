@@ -1521,7 +1521,7 @@ ${body}
      * `mat4ToRotationQuat` is the one restated line in the chain: its body
      * is a member selection and a four-component spread, carrying no
      * arithmetic to drift, and folding it would mean giving up the
-     * `mat4Decompose` specialization to bind a nested record. It is
+     * `decomposeMat4` specialization to bind a nested record. It is
      * asserted instead, and that assertion is what licenses both.
      */
     private lowerBakeHelpers(): string {
@@ -1637,7 +1637,7 @@ ${multiply}`;
         // function's own parameter would emit `m` regardless.
         this.context.assertExpressionShape(
             binding.initializer,
-            "mat4Decompose(m).rotation",
+            "decomposeMat4(m).rotation",
             "the mat4ToRotationQuat decomposition",
         );
         const returned = statements[1];

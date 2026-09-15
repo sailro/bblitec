@@ -563,7 +563,7 @@ export class GeospatialCameraLowerer {
         }
         const writer = this.context.callExpression(
             local,
-            "mat4LookAtWorldLHToRef",
+            "writeLookAtWorldMat4LHIntoBuffer",
         );
         if (writer.arguments.length !== 4) {
             this.context.contractError(

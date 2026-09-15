@@ -91,9 +91,9 @@ function node(
 }
 
 interface PinMath {
-    mat4Decompose: (matrix: Float32Array) => unknown;
+    decomposeMat4: (matrix: Float32Array) => unknown;
     computeAabb: (positions: Float32Array, matrix?: Float32Array) => number[][];
-    mat4Multiply: (a: Float32Array, b: Float32Array) => Float32Array;
+    multiplyMat4: (a: Float32Array, b: Float32Array) => Float32Array;
 }
 
 /** Execute the actual mapped TS declarations, recording only the resource/observable seam. */
@@ -180,11 +180,11 @@ async function cases(context: LoweringContext): Promise<GeometryCase[]> {
             "buildFrustumEdge({}, {}, {}, {}, args[0], {x:args[1],y:args[2],z:args[3]}, {x:args[4],y:args[5],z:args[6]});", input);
         result.push({ operation: "edge", input, expected: edge(value) });
     }
-    const decomposition = await importPinnedModule<Pick<PinMath, "mat4Decompose">>("math/mat4-decompose.js");
+    const decomposition = await importPinnedModule<Pick<PinMath, "decomposeMat4">>("math/decompose-mat4.js");
     const camera = Float32Array.from([1, 0, 0, 0, 0, 1, 0, 0, 0.1, -0.23, 0.973, 0, -7.123, 0.3125, 17.61, 1]);
     const target = Float32Array.from([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 16384.125, -3.75, 0.123456, 1]);
     for (const present of [false, true]) {
-        const scale = execute(context, ["src/math/normalize-vec3-object.ts", "src/gizmo/gizmo-math.ts", CORE, CAMERA], `
+        const scale = execute(context, ["src/math/normalize-vec3.ts", "src/gizmo/gizmo-math.ts", CORE, CAMERA], `
 const scene = {camera: args[0] ? {worldMatrix: args[1]} : null};
 const gizmo = createCameraGizmo({}, {scene});
 gizmo.attachedCamera = {worldMatrix: args[2]};
@@ -214,7 +214,7 @@ root.scaling;`, [camera, target, ratio]);
         });
     }
     const aabbMath = await importPinnedModule<Pick<PinMath, "computeAabb">>("math/compute-aabb.js");
-    const multiply = await importPinnedModule<Pick<PinMath, "mat4Multiply">>("math/mat4-multiply.js");
+    const multiply = await importPinnedModule<Pick<PinMath, "multiplyMat4">>("math/multiply-mat4.js");
     const geometrySets = [
         [],
         [new Float32Array([-1.1, -2.2, -3.3, 5.5, 6.6, 7.7])],
@@ -454,7 +454,7 @@ int main() {
     }>("gizmo/gizmo-math.js");
     const { normalizeVec3 } = await importPinnedModule<{
         normalizeVec3: (value: { x: number; y: number; z: number }) => { x: number; y: number; z: number };
-    }>("math/normalize-vec3-object.js");
+    }>("math/normalize-vec3.js");
     const { lengthVec3 } = await importPinnedModule<{
         lengthVec3: (value: { x: number; y: number; z: number }) => number;
     }>("math/length-vec3.js");

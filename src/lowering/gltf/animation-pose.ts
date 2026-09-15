@@ -83,8 +83,8 @@ export function lowerGltfAnimationPose(context: LoweringContext): string {
     };
     const calls = new Map<string, (args: readonly string[]) => string>([
         ["evaluateSampler", args => `evaluate_sampler(${args.join(", ")})`],
-        ["mat4ComposeInto", args => `compose_matrix(${args.join(", ")})`],
-        ["mat4MultiplyInto", args => `multiply_matrix(${args.join(", ")})`],
+        ["composeMat4IntoBuffer", args => `compose_matrix(${args.join(", ")})`],
+        ["multiplyMat4IntoBuffer", args => `multiply_matrix(${args.join(", ")})`],
         ["morphUploadF32.fill", args => `std::fill(state.morphUploadF32->begin(), state.morphUploadF32->end(), static_cast<float>(${args[0]}))`],
     ]);
     const aliases = new Set(["n", "ch", "sampler", "bindings", "mb", "b", "node", "skel", "boneData"]);

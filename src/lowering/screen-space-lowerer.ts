@@ -1465,7 +1465,7 @@ class FrameWalker {
             if (name === "invViewProj") {
                 this.context.assertExpressionShape(
                     initializer,
-                    "mat4Invert(viewProj)",
+                    "invertMat4(viewProj)",
                     "the inverse view-projection",
                 );
                 return [

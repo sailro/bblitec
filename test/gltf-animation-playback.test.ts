@@ -63,7 +63,7 @@ function sourceResult(context: LoweringContext): unknown[] {
     let events: unknown[] = [];
     const body = text(controllerModule) + "\n" + text(groupModule) + "\n" +
         context.functionDeclaration(mixerModule, "advanceGroupTime").declaration.getText();
-    const runtime = new Function("F32", "I32", "U8", ...names, "mat4ComposeInto", "mat4MultiplyInto", "evaluateSampler", "_boneApplier", "_setTickAnimationImpl", "GLTF_CLIP",
+    const runtime = new Function("F32", "I32", "U8", ...names, "composeMat4IntoBuffer", "multiplyMat4IntoBuffer", "evaluateSampler", "_boneApplier", "_setTickAnimationImpl", "GLTF_CLIP",
         transpileCommonJs(body, groupModule) + "\nreturn {createAnimationGroups, tickAnimationImpl, tickAnimationCore, goToFrame, advanceGroupTime};")(
         Float32Array, Int32Array, Uint8Array, ...constants,
         () => events.push(["pose", current!._ctrl.time]), () => {}, () => { throw new Error("No sampler is reached by this playback fixture."); },

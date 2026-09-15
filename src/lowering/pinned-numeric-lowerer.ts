@@ -540,6 +540,19 @@ export class PinnedNumericLowerer {
             this.translationActivity?.request("statement", statement, this.file);
             return [...adapted];
         }
+        if (ts.isTryStatement(statement)) {
+            if (statement.catchClause || !statement.finallyBlock) return this.fail(statement, "try requires a catch-free finally block");
+            const rejectExit = (node: ts.Node): void => {
+                if (ts.isReturnStatement(node) || ts.isLabeledStatement(node) || ts.isBreakStatement(node) || ts.isContinueStatement(node))
+                    this.fail(node, "finally lowering does not admit early returns or loop exits");
+                ts.forEachChild(node, rejectExit);
+            };
+            rejectExit(statement);
+            const body = this.withBindings(() => this.statements(statement.tryBlock.statements, `${indent}    `));
+            const cleanup = this.withBindings(() => this.statements(statement.finallyBlock!.statements, `${indent}    `));
+            return [`${indent}try {`, ...body, `${indent}} catch (...) {`, ...cleanup,
+                `${indent}    throw;`, `${indent}}`, `${indent}{`, ...cleanup, `${indent}}`];
+        }
         if (ts.isContinueStatement(statement) && !statement.label) {
             return [`${indent}continue;`];
         }
@@ -2453,13 +2466,13 @@ export class PinnedNumericLowerer {
      */
     private absentOptionalCall(expression: ts.Expression): boolean {
         const node = unwrapExpression(expression);
-        return (
-            ts.isCallExpression(node) &&
-            node.questionDotToken !== undefined &&
-            this.scope.bindings.get(
-                unwrapExpression(node.expression).getText(this.file),
-            )?.staticallyAbsent === true
-        );
+        if (!ts.isCallChain(node)) return false;
+        let chain: ts.Expression = node;
+        while (ts.isCallChain(chain) || ts.isPropertyAccessChain(chain) || ts.isElementAccessChain(chain)) {
+            if (chain.questionDotToken && this.scope.bindings.get(chain.expression.getText(this.file))?.staticallyAbsent) return true;
+            chain = chain.expression;
+        }
+        return false;
     }
 
     /**

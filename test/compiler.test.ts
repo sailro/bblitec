@@ -5335,11 +5335,11 @@ test("compiles scene17's file ORM and matrix-constructor chain", () => {
     );
     assert.match(
         result.cpp,
-        /bbl::js::mat4_compose\(\(-2\.0\), 2\.0, 0\.0, 0\.0, 0\.0, 0\.0, 1\.0, 1\.0, 1\.0, 1\.0\)/,
+        /bbl::upstream::create_translation_mat4\(\(-2\.0\), 2\.0, 0\.0\)/,
     );
     assert.match(
         result.cpp,
-        /bbl::js::mat4_compose\(0\.0, 0\.0, 0\.0, 0\.0, 0\.0, 0\.0, 1\.0, 1\.0, 1\.0, 1\.0\)/,
+        /bbl::upstream::create_identity_mat4\(\)/,
     );
     assert.match(result.cpp, /bbl::set_thin_instance_colors\(/);
 });
@@ -14293,7 +14293,7 @@ const thinInstancePoolSource = (body: string): string => `
         createEngine,
         createSceneContext,
         enableThinInstanceGpuCulling,
-        mat4Identity,
+        createIdentityMat4,
         removeThinInstance,
         setThinInstanceColors,
         setThinInstanceCount,
@@ -14315,8 +14315,8 @@ ${body}
 test("lowers the pinned thin-instance pool lifecycle", () => {
     const result = compileSource(
         thinInstancePoolSource(`
-        const first = addThinInstance(mesh, mat4Identity());
-        const second = addThinInstance(mesh, mat4Identity());
+        const first = addThinInstance(mesh, createIdentityMat4());
+        const second = addThinInstance(mesh, createIdentityMat4());
         removeThinInstance(mesh, first);
         removeThinInstance(mesh, second);
         const colors = new Float32Array(64);
@@ -14341,7 +14341,7 @@ test("lowers the pinned thin-instance pool lifecycle", () => {
     // The returned slot is a value the source binds and indexes with.
     assert.match(
         result.cpp,
-        /double v_first = bbl::add_thin_instance\(v_engine, v_mesh, bbl::js::mat4_compose\(/,
+        /double v_first = bbl::add_thin_instance\(v_engine, v_mesh, bbl::upstream::create_identity_mat4\(/,
     );
     assert.match(
         result.cpp,
@@ -14368,7 +14368,7 @@ test("lowers the pinned thin-instance pool lifecycle", () => {
 test("records the omitted thin-instance GPU culler as an adaptation", () => {
     const enabled = compileSource(
         thinInstancePoolSource(
-            "        addThinInstance(mesh, mat4Identity());",
+            "        addThinInstance(mesh, createIdentityMat4());",
         ),
     );
     const adaptation = enabled.manifest.adaptations.find(
@@ -14482,7 +14482,7 @@ test("refuses thin-instance pool calls the pin cannot serve", () => {
             addThinInstance,
             createBox,
             createEngine,
-            mat4Identity,
+            createIdentityMat4,
             removeThinInstance,
             setThinInstances,
         } from "@babylonjs/lite";

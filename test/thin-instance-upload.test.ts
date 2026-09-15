@@ -19,26 +19,26 @@ test("draw and shadow worlds preserve hierarchy, clone transforms and root mirro
     const { composeTrsLocalMatrix } = await importPinnedModule<{
         composeTrsLocalMatrix(position: Vector, rotation: Quaternion, scaling: Vector): ArrayLike<number>;
     }>("scene/world-matrix-state.js");
-    const { mat4MultiplyInto } = await importPinnedModule<{
-        mat4MultiplyInto(out: Float32Array | Float64Array, offset: number, left: ArrayLike<number>, leftOffset: number,
+    const { multiplyMat4IntoBuffer } = await importPinnedModule<{
+        multiplyMat4IntoBuffer(out: Float32Array | Float64Array, offset: number, left: ArrayLike<number>, leftOffset: number,
             right: ArrayLike<number>, rightOffset: number): void;
-    }>("math/mat4-multiply-into.js");
-    const { mat4ComposeInto } = await importPinnedModule<{
-        mat4ComposeInto(out: Float64Array, offset: number, tx: number, ty: number, tz: number,
+    }>("math/multiply-mat4-into-buffer.js");
+    const { composeMat4IntoBuffer } = await importPinnedModule<{
+        composeMat4IntoBuffer(out: Float64Array, offset: number, tx: number, ty: number, tz: number,
             qx: number, qy: number, qz: number, qw: number, sx: number, sy: number, sz: number): void;
-    }>("math/mat4-compose-into.js");
-    const { eulerToQuat } = await importPinnedModule<{
-        eulerToQuat(x: number, y: number, z: number): [number, number, number, number];
+    }>("math/compose-mat4-into-buffer.js");
+    const { eulerXYZToQuatTuple } = await importPinnedModule<{
+        eulerXYZToQuatTuple(x: number, y: number, z: number): [number, number, number, number];
     }>("math/quat-euler.js");
     const composeWide = (position: Vector, rotation: Quaternion, scaling: Vector): Float64Array => {
         const result = new Float64Array(16);
-        mat4ComposeInto(result, 0, position.x, position.y, position.z,
+        composeMat4IntoBuffer(result, 0, position.x, position.y, position.z,
             rotation.x, rotation.y, rotation.z, rotation.w, scaling.x, scaling.y, scaling.z);
         return result;
     };
     const multiply = (left: ArrayLike<number>, right: ArrayLike<number>): Float32Array => {
         const result = new Float32Array(16);
-        mat4MultiplyInto(result, 0, left, 0, right, 0);
+        multiplyMat4IntoBuffer(result, 0, left, 0, right, 0);
         return result;
     };
     const zero = { x: 0, y: 0, z: 0 }, unit = { x: 1, y: 1, z: 1 }, identity = { ...zero, w: 1 };
@@ -84,10 +84,10 @@ test("draw and shadow worlds preserve hierarchy, clone transforms and root mirro
         const parentLocal = composeWide({ x: 13, y: 17, z: -19 }, identity, { x: -2, y: 3, z: 4 });
         let expected = parentKind === "none" ? local : new Float64Array(multiply(new Float32Array(parentLocal), new Float32Array(local)));
         if (cloned) {
-            const [x, y, z, w] = eulerToQuat(.25, -.5, .75);
+            const [x, y, z, w] = eulerXYZToQuatTuple(.25, -.5, .75);
             const outer = composeWide({ x: -31, y: 37, z: 41 }, { x, y, z, w }, unit);
             const product = new Float64Array(16);
-            mat4MultiplyInto(product, 0, outer, 0, expected, 0);
+            multiplyMat4IntoBuffer(product, 0, outer, 0, expected, 0);
             expected = product;
         }
         rows.push(`{

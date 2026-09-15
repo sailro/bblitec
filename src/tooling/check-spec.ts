@@ -201,6 +201,8 @@ export interface ObserveSpec {
      * first); `none` navigates without waiting.
      */
     ready?: string;
+    /** Dataset readiness flag for captureFrames; defaults to ready. */
+    captureReady?: string;
     /** Serve the registry host page (default when the registry names one). */
     hostPage?: boolean;
     viewport?: [number, number];
@@ -662,7 +664,7 @@ function readObserve(value: unknown, location: string): ObserveSpec {
     if (!isRecord(value)) fail(location, "must be an object");
     refuseUnknown(
         value,
-        ["hooks", "initScriptFile", "state", "ready", "hostPage", "viewport", "headless", "captureFrames", "reloadEachStep", "golden", "steps", "notes"],
+        ["hooks", "initScriptFile", "state", "ready", "captureReady", "hostPage", "viewport", "headless", "captureFrames", "reloadEachStep", "golden", "steps", "notes"],
         location,
     );
     const hooks = value.hooks;
@@ -680,6 +682,7 @@ function readObserve(value: unknown, location: string): ObserveSpec {
     const initScriptFile = optionalString(value, "initScriptFile", location);
     const state = optionalString(value, "state", location);
     const ready = optionalString(value, "ready", location);
+    const captureReady = optionalString(value, "captureReady", location);
     const hostPage = optionalBoolean(value, "hostPage", location);
     const headless = optionalBoolean(value, "headless", location);
     const reloadEachStep = optionalBoolean(value, "reloadEachStep", location);
@@ -707,6 +710,7 @@ function readObserve(value: unknown, location: string): ObserveSpec {
         ...(initScriptFile !== undefined ? { initScriptFile } : {}),
         ...(state !== undefined ? { state } : {}),
         ...(ready !== undefined ? { ready } : {}),
+        ...(captureReady !== undefined ? { captureReady } : {}),
         ...(hostPage !== undefined ? { hostPage } : {}),
         ...(value.viewport !== undefined
             ? { viewport: pair(value.viewport, location, "viewport") }

@@ -14643,10 +14643,10 @@ class Compiler
      * to name — the already-formatted location of that file.
      */
     public reachFeature(feature: Feature, site?: ts.Node | string): void {
-        if ((feature === "math:mat4-invert" && this.features.has("renderer:high-precision-matrix")) ||
-            (feature === "renderer:high-precision-matrix" && this.features.has("math:mat4-invert"))) {
+        if (((feature === "math:mat4-invert" || feature === "math:mat4-create") && this.features.has("renderer:high-precision-matrix")) ||
+            (feature === "renderer:high-precision-matrix" && (this.features.has("math:mat4-invert") || this.features.has("math:mat4-create")))) {
             this.fail(typeof site === "object" ? site : this.sourceFile,
-                "mat4Invert currently requires Float32 Mat4 storage; high-precision matrix allocation is not supported by this scene-code intrinsic.");
+                "Scene-code matrix intrinsics currently require Float32 Mat4 storage; high-precision matrix allocation is not supported.");
         }
         // Every raw Web Audio node/asset feature is implemented by the same
         // engine PAL and can only be reached through one of its contexts.
