@@ -1,0 +1,40 @@
+{
+  "angles": [
+    "reuse",
+    "simplification",
+    "efficiency",
+    "altitude"
+  ],
+  "findings": [
+    {
+      "summary": "The shared pinning helper handles struct data values, which fell through every branch unchanged before, so the return snapshot and the shared-return pin do what their contracts say for structs; the nullish site pins through it rather than through its own copy.",
+      "applied": true
+    },
+    {
+      "summary": "A struct held under a plain name is never pinned (the rule the receiver binding and the native-value description already use), so a search result or method result already in a local reads twice for free instead of being copied.",
+      "applied": true
+    },
+    {
+      "summary": "The nullish site pins only an operand whose presence flag is the derived one, spelled through one helper the leaf constructor shares; a flag another source supplied, such as a bounds test, selects the value once already and is left alone.",
+      "applied": true
+    },
+    {
+      "summary": "The pin re-derives only the spellings equal to the ones the leaf constructor derived from the original expression, without a dead delete arm; a supplied flag survives, which the metadata-carrying rebind idiom would have overwritten.",
+      "applied": true
+    },
+    {
+      "summary": "A bound method receiver re-derives its identity and presence spellings from the binding, so an optional method call on a popped instance pops once; the guard test expects the binding to be tested.",
+      "applied": true
+    },
+    {
+      "summary": "The fixture asserts only shapes that can fail: shift and pop under the operator, an inlined nullable return, two calls of a state-changing struct-returning function, and an optional method call on a popped instance; the effect-free at, the empty-array find and the scalar shift the widening fixture already covers are gone.",
+      "applied": true
+    },
+    {
+      "summary": "The leaf constructor could mark the spellings it derives so pinning and the receiver binding stop comparing against a second leaf, or stop storing derived spellings at all behind a presence helper.",
+      "applied": false,
+      "blockedBy": "Every reader of the two derived spellings (about forty-five presence checks and the identity comparisons) would change with them, and no measurement shows which of the two designs keeps the generated tree neutral; the comparison against a second leaf is exact today.",
+      "filedIn": "TODO.md (the shared lowering entry)"
+    }
+  ]
+}
