@@ -1097,7 +1097,7 @@ export class NativeFunctionLowerer {
         for (const member of classDeclaration.members) {
             if (
                 !ts.isPropertyDeclaration(member) ||
-                !ts.isIdentifier(member.name) ||
+                !ts.isMemberName(member.name) ||
                 !closure.fieldNames.has(member.name.text)
             ) {
                 continue;
@@ -1183,7 +1183,7 @@ export class NativeFunctionLowerer {
         for (const member of classDeclaration.members) {
             if (
                 ts.isGetAccessorDeclaration(member) &&
-                ts.isIdentifier(member.name)
+                ts.isMemberName(member.name)
             ) {
                 getters[member.name.text] = member;
             }
@@ -1219,7 +1219,7 @@ export class NativeFunctionLowerer {
             return false;
         }
         if (
-            !ts.isIdentifier(member.name) ||
+            !ts.isMemberName(member.name) ||
             !member.body ||
             !ts.isBlock(member.body) ||
             member.asteriskToken !== undefined ||
@@ -1321,7 +1321,7 @@ export class NativeFunctionLowerer {
         for (const member of classDeclaration.members) {
             if (
                 ts.isMethodDeclaration(member) &&
-                ts.isIdentifier(member.name) &&
+                ts.isMemberName(member.name) &&
                 (ts.getCombinedModifierFlags(member) &
                     ts.ModifierFlags.Static) ===
                     0
@@ -1332,7 +1332,7 @@ export class NativeFunctionLowerer {
                 });
             } else if (
                 ts.isGetAccessorDeclaration(member) &&
-                ts.isIdentifier(member.name)
+                ts.isMemberName(member.name)
             ) {
                 membersByName.set(member.name.text, {
                     kind: "getter",
@@ -1340,7 +1340,7 @@ export class NativeFunctionLowerer {
                 });
             } else if (
                 ts.isPropertyDeclaration(member) &&
-                ts.isIdentifier(member.name) &&
+                ts.isMemberName(member.name) &&
                 (ts.getCombinedModifierFlags(member) &
                     ts.ModifierFlags.Static) ===
                     0
@@ -1392,7 +1392,7 @@ export class NativeFunctionLowerer {
                     !ts.isPropertyAccessExpression(access) ||
                     access.expression !== node ||
                     access.questionDotToken !== undefined ||
-                    !ts.isIdentifier(access.name)
+                    !ts.isMemberName(access.name)
                 ) {
                     return true;
                 }

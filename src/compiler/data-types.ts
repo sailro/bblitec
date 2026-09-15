@@ -15,7 +15,6 @@ import { nativeReturnTsType } from "./native-return-type.js";
 import { classInstanceProperties } from "./class-properties.js";
 import { forEachAnalysisNode } from "./analysis-walk.js";
 import { unwrapExpression } from "./syntax.js";
-import { isMemberName, memberCppName, type MemberName } from "./syntax.js";
 
 type Fail = (node: ts.Node, message: string) => never;
 
@@ -443,6 +442,16 @@ function markIdentityFunctions(dataType: DataType): DataType {
 
 function sanitizeIdentifier(name: string): string {
   return cppIdentifier(name);
+}
+
+/**
+ * The C++ spelling of a class field. A private name's sigil is not an
+ * identifier character, and the prefix keeps `#x` apart from a public `_x`
+ * on the same class; readers find fields by their source name, so this is
+ * the one place the spelling matters.
+ */
+function structFieldName(name: ts.MemberName): string {
+  return ts.isPrivateIdentifier(name) ? `private_${name.text.slice(1)}` : name.text;
 }
 
 /**
@@ -1840,15 +1849,13 @@ export class DataTypeRegistry {
   ): DataStructField[] {
     const fields: DataStructField[] = [];
     for (const member of classInstanceProperties(declaration)) {
-      if (!isMemberName(member.name)) {
+      if (!ts.isMemberName(member.name)) {
         this.fail(
           member,
           "Computed class field names are outside the supported subset.",
         );
       }
-      const property = ts.isPrivateIdentifier(member.name)
-        ? this.checker.getSymbolAtLocation(member.name)
-        : type.getProperty(member.name.text);
+      const property = this.classPropertySymbol(type, member.name);
       const propertyType = property
         ? this.checker.getTypeOfSymbolAtLocation(property, member.name)
         : this.checker.getTypeAtLocation(member.name);
@@ -1872,7 +1879,7 @@ export class DataTypeRegistry {
       }
       fields.push({
         sourceName: member.name.text,
-        name: sanitizeIdentifier(memberCppName(member.name.text)),
+        name: sanitizeIdentifier(structFieldName(member.name)),
         type: this.markStoredObjectReferences(markIdentityFunctions(mapped)),
         ...(member.modifiers?.some(
           (modifier) => modifier.kind === ts.SyntaxKind.ReadonlyKeyword,
@@ -1931,11 +1938,9 @@ export class DataTypeRegistry {
    */
   public classFieldDataType(
     type: ts.Type,
-    name: MemberName,
+    name: ts.MemberName,
   ): DataType | undefined {
-    const property = ts.isPrivateIdentifier(name)
-      ? this.checker.getSymbolAtLocation(name)
-      : type.getProperty(name.text);
+    const property = this.classPropertySymbol(type, name);
     if (!property) {
       return undefined;
     }
@@ -2054,14 +2059,24 @@ export class DataTypeRegistry {
         (ts.getCombinedModifierFlags(declaration) & ts.ModifierFlags.Abstract) !== 0 ||
         declaration.heritageClauses?.some(clause => clause.token === ts.SyntaxKind.ExtendsKeyword)) return undefined;
     for (const member of classInstanceProperties(declaration)) {
-      if (!ts.isIdentifier(member.name)) return undefined;
-      const property = concrete.getProperty(member.name.text);
+      if (!ts.isMemberName(member.name)) return undefined;
+      const property = this.classPropertySymbol(concrete, member.name);
       const fieldType = property ? this.checker.getTypeOfSymbolAtLocation(property, member.name)
         : this.checker.getTypeAtLocation(member.name);
       const field = this.fromClassFieldType(fieldType, member.name);
       if (!field || this.carriesFunction(field)) return undefined;
     }
     return this.fromStoredTsType(type, node);
+  }
+
+  /**
+   * The property `name` declares on `type`, read from the instantiated
+   * type's own member list: a type parameter answers as its argument, and
+   * a private name is found by its spelling, which the property table
+   * escapes.
+   */
+  private classPropertySymbol(type: ts.Type, name: ts.MemberName): ts.Symbol | undefined {
+    return type.getProperties().find((property) => property.name === name.text);
   }
 
   /**

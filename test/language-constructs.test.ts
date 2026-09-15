@@ -1582,13 +1582,23 @@ check("private-class-members", `
     if (before !== "one/three" || advanced?.id !== 3 || after !== "three/two" || queue.size !== 1 || queue.current?.text !== "three") {
         throw new Error(before + " " + after + " " + queue.size);
     }
+    class Slot<T extends Request> {
+        #value: T;
+        #hits = 0;
+        constructor(value: T) { this.#value = value; }
+        touch(): number { this.#hits++; return this.#value.id + this.#hits; }
+    }
+    const slots: Slot<Request>[] = [];
+    for (let index = 0; index < 3; index++) slots.push(new Slot<Request>({ id: index, text: "slot" }));
+    let total = 0;
+    for (const slot of slots) total += slot.touch() + slot.touch();
+    if (total !== 15) throw new Error("stored generic private fields " + total);
 `);
 
 test("private brand checks refuse explicitly", () => {
     assert.throws(() => compileSource(`
-        class Tagged { #mark = 1; static has(value: object): boolean { return #mark in value; } read(): number { return this.#mark; } }
-        const tagged = new Tagged();
-        if (tagged.read() !== 1 || !Tagged.has(tagged)) throw new Error("brand");
+        class Tagged { #mark = 1; static has(value: object): boolean { return #mark in value; } }
+        if (!Tagged.has(new Tagged())) throw new Error("brand");
     `), /Private brand checks are outside the supported subset/);
 });
 

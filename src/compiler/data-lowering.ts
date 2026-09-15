@@ -657,8 +657,12 @@ export class DataLowerer {
     }
 
     public dataTypeAt(node: ts.Node): DataType | undefined {
+        // The checker types a private name only through its symbol; the
+        // name node itself answers `any`.
+        const checker = this.context.checker;
+        const symbol = ts.isPrivateIdentifier(node) ? checker.getSymbolAtLocation(node) : undefined;
         return this.context.dataTypes.fromTsType(
-            this.context.checker.getTypeAtLocation(node),
+            symbol ? checker.getTypeOfSymbolAtLocation(symbol, node) : checker.getTypeAtLocation(node),
             node,
         );
     }
@@ -6355,9 +6359,6 @@ export class DataLowerer {
 
     /** `key in object` as a condition. */
     public compileInOperator(expression: ts.BinaryExpression): string {
-        if (ts.isPrivateIdentifier(expression.left)) {
-            this.context.fail(expression, "Private brand checks are outside the supported subset.");
-        }
         const key = this.context.compileValue(expression.left);
         const owner = this.context.compileValue(expression.right);
         return this.membershipCpp(owner, expression.right, key, expression.left, "in");
