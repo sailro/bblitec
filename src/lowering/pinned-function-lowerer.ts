@@ -4,6 +4,7 @@
  * statement semantics belong to PinnedNumericLowerer.
  */
 import ts from "typescript";
+import { tracePinnedTranslation } from "./translation-trace.js";
 import { doubleLiteral } from "../cpp-literals.js";
 import type { LoweringContext } from "./context.js";
 import { CPP_ELEMENT, CPP_RECORD, CPP_SCALAR, cppFixedArray, cppVector } from "./cpp-types.js";
@@ -729,6 +730,14 @@ export function lowerPinnedFunctionParts(
     const returnType = typeof options.returns === "string"
         ? options.returns
         : options.returns.type;
+    tracePinnedTranslation(() => ({ file, symbolName: options.enclosing ? `${options.enclosing}.${symbolName}` : symbolName,
+        extent: options.armOf || parameters.some(parameter => parameter.absent || parameter.specialized) ? "specialization" : "function",
+        adapters: [
+            ...parameters.filter(parameter => parameter.binding || parameter.cppType || parameter.absent || parameter.specialized).map(parameter => `parameter:${parameter.pinned}`),
+            ...(options.calls?.size ? ["calls"] : []), ...(options.methods?.size ? ["methods"] : []),
+            ...(options.memberBindings?.size ? ["members"] : []), ...(options.localStorage?.length ? ["local-storage"] : []),
+            ...(typeof options.returns === "object" ? ["return"] : []), ...(options.armOf ? ["selected-arm"] : []),
+        ], requests: [...(lowerer.translationActivity?.requests ?? [])].sort() }));
     return {
         provenance: context.provenance(
             modulePath,

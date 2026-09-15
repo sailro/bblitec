@@ -1,0 +1,133 @@
+{
+  "schemaVersion": 1,
+  "cases": [
+    {
+      "id": "box-data-generation",
+      "level": "generation",
+      "scope": "createBoxData with size and height preserves double literals and exposes shared Float32 positions in generated C++.",
+      "limitations": "Generation assertions only; no blanket claim for every numeric value or returned field.",
+      "test": {
+        "file": "test/mesh-data.test.ts",
+        "name": "mesh data calls share typed-array results and preserve double box options"
+      },
+      "targets": [
+        {
+          "id": "createBoxData:function:d9c553a974c129df",
+          "fingerprint": "2b189024f738df36512d2befa0888d10d57db4f76585200d8527d3cab3549b81"
+        },
+        {
+          "id": "BoxOptions:interface.size:property",
+          "fingerprint": "44a23f8ed6c1d03e1cfa8b984e67bef6538feb6d1a189297ec2d7b7cd3f4304c"
+        },
+        {
+          "id": "BoxOptions:interface.height:property",
+          "fingerprint": "f5fcbbd7478f83a18cab6e5084b2e1701927c795625ee690ca3908a02997064d"
+        },
+        {
+          "id": "BoxData:interface.positions:property",
+          "fingerprint": "b8400934ba48eb41090df41b8597d293079f6b2911d1200c0e0088162a3673cc"
+        }
+      ]
+    },
+    {
+      "id": "box-data-native",
+      "level": "native",
+      "scope": "Generated box payloads match pinned positions, normals, UVs, indices and counts for the test dimensions. Executed programs check default boxes, shared arrays, independent results, numeric size evaluation, option evaluation order and sphere position aliases.",
+      "limitations": "CPU/MSVC test. Sphere geometry beyond the tested position alias and wider ownership/value combinations are unqualified.",
+      "test": {
+        "file": "test/mesh-data.test.ts",
+        "name": "native box payload matches every pinned lane and returned arrays retain aliases"
+      },
+      "targets": [
+        {
+          "id": "createBoxData:function:d9c553a974c129df",
+          "fingerprint": "2b189024f738df36512d2befa0888d10d57db4f76585200d8527d3cab3549b81"
+        },
+        {
+          "id": "createSphereData:function:32577f8c99fb15a5",
+          "fingerprint": "7339f99d1aa13a730de9500b3cbf89818ea3dcf8ba34f7500753a20c720683d3"
+        },
+        {
+          "id": "BoxOptions:interface.size:property",
+          "fingerprint": "44a23f8ed6c1d03e1cfa8b984e67bef6538feb6d1a189297ec2d7b7cd3f4304c"
+        },
+        {
+          "id": "BoxOptions:interface.width:property",
+          "fingerprint": "0825ae36e1d3b54299e06b7091e9c982a441fba02f61c368cf14755e0fa76fa0"
+        },
+        {
+          "id": "BoxOptions:interface.height:property",
+          "fingerprint": "f5fcbbd7478f83a18cab6e5084b2e1701927c795625ee690ca3908a02997064d"
+        },
+        {
+          "id": "BoxOptions:interface.depth:property",
+          "fingerprint": "9d0cd52f672f8b4c103d2b78b1ac60ffd188ed311abf1700e5243d2186cb6ab5"
+        },
+        {
+          "id": "BoxData:interface.positions:property",
+          "fingerprint": "b8400934ba48eb41090df41b8597d293079f6b2911d1200c0e0088162a3673cc"
+        },
+        {
+          "id": "BoxData:interface.normals:property",
+          "fingerprint": "87ee8a7e3701da2bde3d8471eb721ba33b2d7ae308bfc6691788faa4f0286804"
+        },
+        {
+          "id": "BoxData:interface.uvs:property",
+          "fingerprint": "52221f8ef2975b69750ffa64b361eb79ab5253ea484cd8d5f367559ae11754bf"
+        },
+        {
+          "id": "BoxData:interface.indices:property",
+          "fingerprint": "30241e098a307a24aadfb7f5f1bc5f499543ad9d3c5df0e63b2beae2ab76f9e5"
+        },
+        {
+          "id": "BoxData:interface.vertexCount:property",
+          "fingerprint": "daea9645fb00d6c88a729151f491c35aca85186c327195bbf74d084d31491e97"
+        },
+        {
+          "id": "BoxData:interface.indexCount:property",
+          "fingerprint": "6e3499d975bb3455ac1f9c8e24cd1ed8070f387207983cda4e63ad120cb46d7f"
+        },
+        {
+          "id": "SphereMeshData:interface.positions:property",
+          "fingerprint": "b8400934ba48eb41090df41b8597d293079f6b2911d1200c0e0088162a3673cc"
+        }
+      ]
+    },
+    {
+      "id": "matrix-inverse-native",
+      "level": "native",
+      "scope": "Pinned Float32 inversion lane comparisons, singular-null handling and fresh result storage; compiled Mat4 parameters and translation inversions execute natively.",
+      "limitations": "CPU/MSVC test over its finite cases. Float64 and high-precision engine storage are refused.",
+      "test": {
+        "file": "test/pinned-mat4-invert.test.ts",
+        "name": "matrix inverse preserves pinned Float32 lanes, null singulars, and fresh result storage"
+      },
+      "targets": [
+        {
+          "id": "mat4Invert:function:b760d30493c3b995",
+          "fingerprint": "c6db4491dbcb6ea8b803d60fbbce692f74d8c64556e0dfe38bbeac2389d8077c"
+        },
+        {
+          "id": "mat4Compose:function:9bf8ba9c307c3ca5",
+          "fingerprint": "4779d7deb699f7f987d57bdbed208d945c0e4b09d23cdc6380bcd681a140bbd8"
+        }
+      ]
+    },
+    {
+      "id": "matrix-inverse-storage-refusals",
+      "level": "refusal",
+      "scope": "Compiler rejects mat4Invert through Float64-backed Mat4 values and under high-precision engine allocation.",
+      "limitations": "Refusal evidence only; it does not negate support for the Float32 cases.",
+      "test": {
+        "file": "test/pinned-mat4-invert.test.ts",
+        "name": "Mat4 recognition follows the pinned symbol and refuses unsupported F64 storage"
+      },
+      "targets": [
+        {
+          "id": "mat4Invert:function:b760d30493c3b995",
+          "fingerprint": "c6db4491dbcb6ea8b803d60fbbce692f74d8c64556e0dfe38bbeac2389d8077c"
+        }
+      ]
+    }
+  ]
+}

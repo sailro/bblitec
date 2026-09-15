@@ -1,4 +1,5 @@
 import { EmissionSet } from "./emission-transaction.js";
+import { traceSourceNode } from "./source-trace.js";
 import type { LoweringServices } from "./lowering-services.js";
 // Expression lowering: the value switch and its call dispatch.
 //
@@ -297,6 +298,7 @@ export class ExpressionLowerer {
     }
 
     public compileValue(expression: ts.Expression): Value {
+        traceSourceNode(expression);
         let assertedValue: Value | undefined;
         if (
             (ts.isAsExpression(expression) ||
