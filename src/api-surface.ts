@@ -87,6 +87,8 @@ const signatures = new Set(["function", "method", "constructor", "construct", "c
 
 export interface ApiSurface {
     snapshot: ApiSnapshot;
+    /** The resolved declaration entry the surface was extracted from. */
+    entry: string;
     /** Declaration identity also works with the compiler's augmented copy of index.d.ts. */
     byDeclaration: Map<string, string[]>;
 }
@@ -190,6 +192,7 @@ export function extractApi(program: ts.Program, entry: ts.SourceFile, pin: Upstr
         snapshot: { schemaVersion: 1, pin, typescript: ts.version, declarationsSha256: apiHash(entry.text),
             exports: Object.fromEntries(Object.entries(exports).sort(([a], [b]) => a.localeCompare(b))),
             items: [...items.values()].sort((a, b) => a.id.localeCompare(b.id)) },
+        entry: resolve(entry.fileName),
         byDeclaration,
     };
 }
