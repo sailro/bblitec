@@ -1,7 +1,6 @@
 import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
 import { compileSource } from "./compiler.js";
-import { readNativeHostUi } from "./native-host-ui.js";
+import { registrySceneCompileOptions } from "./native-host-ui.js";
 import { scenes } from "./scene-registry.js";
 import { readBabylonLiteCorpus } from "./upstream-corpus.js";
 
@@ -15,10 +14,6 @@ if (missing.length) throw new Error(`API collection omits corpus entries: ${miss
 // are overwritten by this measurement.
 for (const scene of scenes) {
     process.env.BBLITE_API_SCENE = `scene:${scene.id}`;
-    compileSource(readFileSync(scene.source, "utf8"), {
-        fileName: resolve(scene.source), title: scene.title,
-        search: scene.parity?.referenceSearch ?? "",
-        ...(scene.nativeHostUi ? { nativeHostUi: readNativeHostUi(scene.nativeHostUi) } : {}),
-    });
+    compileSource(readFileSync(scene.source, "utf8"), registrySceneCompileOptions(scene));
     console.log(`API generation passed: ${scene.id}`);
 }

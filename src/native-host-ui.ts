@@ -7,7 +7,8 @@
  */
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import type { NativeHostUi, NativeHostUiElement } from "./compiler/types.js";
+import type { CompileOptions, NativeHostUi, NativeHostUiElement } from "./compiler/types.js";
+import type { SceneDefinition } from "./scene-registry.js";
 import {isUiGeneratedPart} from "./ui-generated-content.js";
 import {
     isUiStyleSelectorKind,
@@ -84,6 +85,16 @@ export function nativeHostUiElement(
                   ),
               }
             : {}),
+    };
+}
+
+/** The generation options a registry scene's reference pose needs. */
+export function registrySceneCompileOptions(scene: SceneDefinition): CompileOptions {
+    return {
+        fileName: resolve(scene.source),
+        title: scene.title,
+        search: scene.parity?.referenceSearch ?? "",
+        ...(scene.nativeHostUi ? { nativeHostUi: readNativeHostUi(scene.nativeHostUi) } : {}),
     };
 }
 

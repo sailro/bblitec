@@ -7,6 +7,7 @@ import {prepareAssetDecoders, type AssetDecoders} from "./asset-decoders.js";
 import {
     CompileAsset,
     CompileError,
+    surveySource,
     compileSource,
     renderFeaturesCmake,
 } from "./compiler.js";
@@ -20,11 +21,13 @@ import {
 } from "./pinned-picking-shaders.js";
 import type { CompiledShaderProgram } from "./compiler.js";
 import type {
+    CompileOptions,
     CompileResult,
     CompiledNodeParticles,
     Feature,
 } from "./compiler/types.js";
 import { reachedGeneratedSources } from "./generated-sources.js";
+import { writeJsonRecord } from "./validation-resume.js";
 import {
     predeclaredShaderProgram,
     shaderMaterialPrograms,
@@ -122,9 +125,14 @@ import type {
     NodeParticleSystemEmit,
 } from "./lowering/node-particle-lowerer.js";
 
+/** What a run produces: a generated tree, or a survey's census in its place. */
+type CliTarget =
+    | { kind: "generate"; output: string }
+    | { kind: "survey"; census: string };
+
 interface CliOptions {
     input: string;
-    output: string;
+    target: CliTarget;
     title?: string;
     width?: number;
     height?: number;
@@ -137,7 +145,7 @@ interface CliOptions {
 }
 
 function usage(): never {
-    console.error("Usage: bblitec <entry.ts> --out <directory> [--title <text>] [--width <pixels>] [--height <pixels>] [--search <query>] [--public-dir <directory>] [--site-url <url>] [--env <NAME=value>] [--host-ui <json>] [--id-diagnostics]");
+    console.error("Usage: bblitec <entry.ts> (--out <directory> | --survey <census.json>) [--title <text>] [--width <pixels>] [--height <pixels>] [--search <query>] [--public-dir <directory>] [--site-url <url>] [--env <NAME=value>] [--host-ui <json>] [--id-diagnostics]");
     process.exit(2);
 }
 
@@ -156,6 +164,7 @@ function parseArguments(arguments_: string[]): CliOptions {
     }
 
     let output: string | undefined;
+    let survey: string | undefined;
     let title: string | undefined;
     let width: number | undefined;
     let height: number | undefined;
@@ -173,6 +182,11 @@ function parseArguments(arguments_: string[]): CliOptions {
             case "--out":
                 if (!value) usage();
                 output = value;
+                index += 1;
+                break;
+            case "--survey":
+                if (!value) usage();
+                survey = value;
                 index += 1;
                 break;
             case "--title":
@@ -223,13 +237,15 @@ function parseArguments(arguments_: string[]): CliOptions {
         }
     }
 
-    if (!output) {
-        usage();
-    }
+    const target: CliTarget = survey
+        ? { kind: "survey", census: survey }
+        : output
+          ? { kind: "generate", output }
+          : usage();
 
     return {
         input,
-        output,
+        target,
         idDiagnostics,
         environment: Object.fromEntries(environment),
         ...(title ? { title } : {}),
@@ -617,10 +633,31 @@ async function bakeNodeParticleSystems(
 }
 
 /**
- * How many passes one baked system's billboard draws, by the pin's own rule:
- * the pass count rides `createParticleBlend`'s descriptor, and only the
- * exact-blend chain reaches it. Zero is the stock program.
+ * `--survey`: lower the entry past every refusal and write the census in
+ * place of a tree. The exit status reports whether the survey ran to the
+ * end, not whether the entry generates.
  */
+function writeSurvey(
+    censusPath: string,
+    source: string,
+    compileOptions: CompileOptions,
+): void {
+    const { report } = surveySource(source, compileOptions);
+    writeJsonRecord(censusPath, report);
+    console.log(
+        `Survey: ${report.statements.attempted} statement lowerings, ${report.statements.refused} refused ` +
+            `(${report.refusals.length} sites, ${report.classes.length} classes) -> ${censusPath}`,
+    );
+    for (const entry of report.classes.slice(0, 12)) {
+        const cascades = entry.cascades > 0 ? `, ${entry.cascades} cascade(s)` : "";
+        console.log(`  ${entry.sites} site(s)${cascades}, ${entry.occurrences} lowering(s): ${entry.class}`);
+    }
+    if (!report.complete) {
+        console.error(`Survey incomplete: ${report.terminal}`);
+        process.exitCode = 1;
+    }
+}
+
 async function main(): Promise<void> {
     const options = parseArguments(process.argv.slice(2));
     // This process runs out of `dist/` too, and an ad-hoc generation probe is
@@ -629,9 +666,8 @@ async function main(): Promise<void> {
     // nothing here.
     holdDistLock(`generate ${options.input}`);
     const inputPath = resolve(options.input);
-    const outputPath = resolve(options.output);
     const source = readFileSync(inputPath, "utf8");
-    const result = compileSource(source, {
+    const compileOptions: CompileOptions = {
         fileName: inputPath,
         environment: options.environment,
         ...(options.title ? { title: options.title } : {}),
@@ -643,7 +679,13 @@ async function main(): Promise<void> {
         ...(options.hostUi
             ? { nativeHostUi: readNativeHostUi(options.hostUi) }
             : {}),
-    });
+    };
+    if (options.target.kind === "survey") {
+        writeSurvey(resolve(options.target.census), source, compileOptions);
+        return;
+    }
+    const outputPath = resolve(options.target.output);
+    const result = compileSource(source, compileOptions);
 
     // The frozen node-particle bake is a Chromium run that nothing between
     // here and the emitters depends on, so it is started rather than

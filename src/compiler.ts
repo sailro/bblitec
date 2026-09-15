@@ -7,6 +7,7 @@ import { renderNativeDeclaration, type NativeDeclaration } from "./compiler/nati
 import { persistContinuationLocals } from "./compiler/continuation-storage.js";
 import ts from "typescript";
 import { traceSourceApplication, traceSourceProgram, traceSourceNode } from "./compiler/source-trace.js";
+import { activeSurvey, SurveyCollector, withSurvey, type SurveyReport } from "./compiler/survey.js";
 import {hasDynamicObjectSpread, isJsonValue} from "./compiler/json-bridge.js";
 import {DynamicBindingStorageRequired} from "./compiler/dynamic-binding-storage.js";
 import {NativeRecordStorageRequired, type NativeRecordStorageDemand} from "./compiler/native-record-storage.js";
@@ -25,7 +26,7 @@ import { compileCanvasValue, emitCanvasAssignment, readMediaQueryProperty } from
 import { compileWindowIdentity } from "./compiler/window-events.js";
 import { writesUnobservedCanvasMetadata } from "./compiler/canvas-instrumentation.js";
 import { AsyncLowerer } from "./compiler/async.js";
-import { sourceLocation } from "./source-location.js";
+import { sourceLocation, syntaxKindName } from "./source-location.js";
 import { cppIdentifierPattern, doubleLiteral, sanitizeCppIdentifier, stringLiteral } from "./cpp-literals.js";
 import { CPP_SCALAR } from "./lowering/cpp-types.js";
 import { compileAdaptations } from "./compiler/adaptations.js";
@@ -451,6 +452,9 @@ function callbackClosureContainer(
 
 export { CompileError };
 
+/** A transaction that is not a probe: its work stands unless it throws. */
+const commitAlways = (): boolean => true;
+
 export function compileSource(
     source: string,
     options: CompileOptions = {},
@@ -458,10 +462,38 @@ export function compileSource(
     return traceSourceApplication(() => compileSourceApplication(source, options));
 }
 
+export interface SurveyOutcome {
+    report: SurveyReport;
+    /** Present when every realm lowered to the end; its output has holes where statements refused. */
+    result?: CompileResult;
+}
+
+/**
+ * Lowers `source` past every compile refusal and reports them all, instead
+ * of stopping at the first. A measurement of what an entry reaches; the
+ * result is never a program to build.
+ */
+export function surveySource(
+    source: string,
+    options: CompileOptions = {},
+): SurveyOutcome {
+    const collector = new SurveyCollector();
+    return withSurvey(collector, () => {
+        try {
+            const result = compileSourceApplication(source, options);
+            return { report: collector.report(), result };
+        } catch (error) {
+            if (!(error instanceof Error)) throw error;
+            return { report: collector.report(error.message) };
+        }
+    });
+}
+
 function compileSourceApplication(source: string, options: CompileOptions): CompileResult {
     const fileName = options.fileName ?? "input.ts";
     const environment = deploymentEnvironment(options);
     const frontend = createCompilerProgram(source, fileName);
+    const survey = activeSurvey();
     const compile = (input: typeof frontend, workers?: ResolvedCompileOptions["workers"]): CompileResult => {
         const resolved: ResolvedCompileOptions = {
             fileName: workers?.namespace ? input.sourceFile.fileName : fileName,
@@ -481,12 +513,17 @@ function compileSourceApplication(source: string, options: CompileOptions): Comp
         // frontend and rebuild emission so earlier aliases use the same storage.
         const dynamicBindings = new Set<ts.VariableDeclaration>();
         const ownedRecords = new Map<NativeRecordStorageDemand["identity"], NativeRecordStorageDemand>();
+        // A replay lowers the realm again from the start, so a survey keeps
+        // only the attempt that ran to the end.
+        const lower = (): CompileResult => {
+            const compiler = new Compiler(input.program, input.sourceFile, input.checker, resolved, dynamicBindings, ownedRecords);
+            const result = traceSourceProgram(input.program, () => compiler.compile());
+            result.manifest.inputs = input.localFiles;
+            return result;
+        };
         for (;;) {
             try {
-                const compiler = new Compiler(input.program, input.sourceFile, input.checker, resolved, dynamicBindings, ownedRecords);
-                const result = traceSourceProgram(input.program, () => compiler.compile());
-                result.manifest.inputs = input.localFiles;
-                return result;
+                return survey ? survey.attempt(input.sourceFile.fileName, lower) : lower();
             } catch (error) {
                 if (error instanceof DynamicBindingStorageRequired && !dynamicBindings.has(error.declaration)) {
                     dynamicBindings.add(error.declaration);
@@ -9530,9 +9567,32 @@ class Compiler
     }
 
     /** Commit a successful probe; restore all compiler-owned state on decline or throw. */
+    /** How many speculative probes are open; a probe decides its own refusals. */
+    private probeDepth = 0;
+
+    public get speculating(): boolean {
+        return this.probeDepth > 0;
+    }
+
     public probeEmission<T>(
         probe: () => T,
         answered: (result: T) => boolean = (result) => result !== undefined,
+    ): T {
+        this.probeDepth++;
+        try {
+            return this.emissionTransaction(probe, answered);
+        } finally {
+            this.probeDepth--;
+        }
+    }
+
+    public transaction(work: () => void): void {
+        this.emissionTransaction(work, commitAlways);
+    }
+
+    private emissionTransaction<T>(
+        probe: () => T,
+        answered: (result: T) => boolean,
     ): T {
         return new EmissionTransaction(this, [this.program, this.checker, this.sourceFile, this.options])
             .run(probe, answered);
@@ -12436,7 +12496,7 @@ class Compiler
             }
             this.fail(
                 identifier,
-                `'${identifier.text}' is assigned inside a ${ts.SyntaxKind[node.kind]}; ` +
+                `'${identifier.text}' is assigned inside a ${syntaxKindName(node.kind)}; ` +
                     "an untyped 'let' binds only where its declaring scope reaches " +
                     "the assignment unconditionally.",
             );
@@ -15203,6 +15263,7 @@ class Compiler
             character,
             message,
             reason,
+            node,
         );
     }
 
