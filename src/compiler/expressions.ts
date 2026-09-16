@@ -1535,20 +1535,9 @@ export class ExpressionLowerer {
                 };
             case "null":
                 return { kind: "json-null", cpp: "" };
-            case "search-params":
-                // The deployment query as `new URLSearchParams(text)`
-                // spells it: a read the fold could not answer (a key
-                // computed at run time) parses it natively instead.
-                this.context.reachJsData();
-                return {
-                    ...this.context.dataLowerer.leafValue(
-                        `bbl::js::SearchParams(${this.context.cppString(value.browserValue.search)})`,
-                        { kind: "search-params" },
-                    ),
-                    impure: true,
-                };
             case "dom-rect":
             case "object":
+            case "search-params":
                 return value;
         }
     }

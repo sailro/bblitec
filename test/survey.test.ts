@@ -82,7 +82,7 @@ test("a refused value return is the calling statement's refusal", () => {
     // `pick`, and the reads reach that site again through the initializers.
     const { report } = surveySource(`
         function pick(name: string): number {
-            const raw = new URLSearchParams(location.search).get(name);
+            const raw = document.getElementById(name);
             return raw !== null ? 1 : 0;
         }
         const chosen = pick("mode");

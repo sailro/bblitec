@@ -1685,37 +1685,21 @@ check("query-helpers-with-parameters", `
         const v = qs.get(k);
         return v !== null && Number.isFinite(Number(v)) ? Number(v) : d;
     };
-    const flag = (k: string, d = false): boolean => {
-        const v = qs.get(k);
-        if (v === null) return d;
-        return v === "" || v === "1" || v === "true";
-    };
     function str(k: string, d: string): string {
         const v = qs.get(k);
         return v !== null && v !== "" ? v : d;
     }
-    function parseVec(name: string, def: [number, number, number]): [number, number, number] {
-        const raw = qs.get(name);
-        if (!raw) return def;
-        const p = raw.split(",").map(Number);
-        return p.length === 3 && p.every((n) => Number.isFinite(n)) ? [p[0]!, p[1]!, p[2]!] : def;
-    }
     let report = "";
     function main(): void {
-        const width = num("w", 4);
-        const height = Math.round(num("h", 3));
-        const wire = flag("wire");
-        const shadows = flag("sh", true);
-        const mode = str("mode", "walk");
-        const sun = parseVec("sun", [0, 1, 0]);
-        const keys: string[] = ["w", "h"];
-        let dynamic = 0;
-        for (const key of keys) dynamic += num(key, 0);
-        report = width + "," + height + "," + wire + "," + shadows + "," + mode + "," + sun[0] + "/" + sun[1] + "/" + sun[2] + "," + dynamic;
+        const keys: string[] = ["w", "h", "mode"];
+        for (const key of keys) report += num(key, -1) + ":" + str(key, "none") + ";";
+        report += num("w", 4) + ":" + qs.has("wire");
     }
     main();
-    if (report !== "6,3,true,true,fly,1/2/3,6") throw new Error(report);
-`, { search: "?w=6&wire=1&mode=fly&sun=1,2,3" });
+    const moduleKeys: string[] = ["mode", "h"];
+    for (const key of moduleKeys) report += "," + (qs.get(key) ?? "-");
+    if (report !== "6:6;-1:none;-1:fly;6:true,fly,-") throw new Error(report);
+`, { search: "?w=6&wire=1&mode=fly" });
 
 test("private brand checks refuse explicitly", () => {
     assert.throws(() => compileSource(`
