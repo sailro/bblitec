@@ -6,7 +6,7 @@ import { deploymentUrl } from "./deployment.js";
 // the configured search string. Unrepresented browser instrumentation is
 // handled separately from observable platform operations.
 import ts from "typescript";
-import { argumentAt, identifierText } from "./syntax.js";
+import { argumentAt, identifierText, isAssignmentExpression } from "./syntax.js";
 import { promiseExecutor } from "./promise-executor.js";
 import { mathUnaryFold } from "./math-intrinsics.js";
 import type { Value } from "./types.js";
@@ -509,17 +509,34 @@ export class BrowserErasure {
             );
         }
         if (ts.isBinaryExpression(unwrapped)) {
-            const unresolvedBrowserOperand = (operand: ts.Expression) =>
+            const browserOperand = (operand: ts.Expression) =>
                 this.isBrowserOnlyExpression(operand) &&
                 !(
                     ts.isIdentifier(operand) &&
                     operand.text === "devicePixelRatio" &&
                     this.isDefaultBrowserGlobal(operand)
                 );
-            return (
-                unresolvedBrowserOperand(unwrapped.left) ||
-                unresolvedBrowserOperand(unwrapped.right)
+            const operands = [unwrapped.left, unwrapped.right].filter(
+                browserOperand,
             );
+            if (operands.length === 0) return false;
+            if (isAssignmentExpression(unwrapped)) return true;
+            // A browser operand the reference answers is a constant with a
+            // native spelling. The expression around it is browser state
+            // only while the whole expression folds; once a native operand
+            // keeps it from folding, the expression is native and the
+            // constant lowers beside that operand. A mixed
+            // `labTest || save === null` therefore neither refuses at its
+            // use nor erases the native half of a `live && bump()`.
+            if (
+                operands.every(
+                    (operand) =>
+                        this.evaluateBrowserValue(operand) !== undefined,
+                )
+            ) {
+                return this.evaluateBrowserValue(unwrapped) !== undefined;
+            }
+            return true;
         }
         if (ts.isPrefixUnaryExpression(unwrapped)) {
             return this.isBrowserOnlyExpression(

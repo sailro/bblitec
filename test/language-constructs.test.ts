@@ -674,12 +674,17 @@ async function executeGeneratedAssertions(t: TestContext, name: string, source: 
     });
 }
 
-function check(name: string, source: string): void {
+/**
+ * A `search` gives the snippet a deployment query on both sides: the Node
+ * run sees it as `location.search`, the compiler folds it as the reference
+ * query. Without one the Node context has no browser globals at all.
+ */
+function check(name: string, source: string, { search }: { search?: string } = {}): void {
     test(name, async t => {
         runInNewContext(ts.transpileModule(source, {
             compilerOptions: { target: ts.ScriptTarget.ESNext, module: ts.ModuleKind.None },
-        }).outputText);
-        const result = compileSource(source, { fileName: `${name}.ts` });
+        }).outputText, search === undefined ? undefined : { location: { search }, URLSearchParams });
+        const result = compileSource(source, { fileName: `${name}.ts`, ...(search === undefined ? {} : { search }) });
         await executeGeneratedAssertions(t,name,result.cpp);
     });
 }
@@ -1647,6 +1652,37 @@ check("string-append-storage", `
     joined += emoji.at(1) ?? "";
     if (joined !== emoji || joined.codePointAt(0) !== 128512) throw new Error("surrogate append");
 `);
+
+check("resolved-query-values-in-native-expressions", `
+    const qs = new URLSearchParams(location.search);
+    const labTest = qs.has("labtest");
+    const godMode = qs.has("godmode");
+    const cleanLab = qs.has("guidedtour") || qs.has("rocktest");
+    const enabled = Date.now() > 0;
+    interface Save { size: number; }
+    const saves: (Save | null)[] = [{ size: 3 }, null];
+    const loaded = saves[enabled ? 0 : 1];
+    function fits(size: number): boolean { return size === 3; }
+    const sizeOk = labTest || loaded === null || fits(loaded.size);
+    const content = loaded !== null && sizeOk ? loaded : null;
+    if (content === null || content.size !== 3) throw new Error("mixed chain");
+    const skipSplash = godMode || loaded === null;
+    const persist = !labTest && !cleanLab && enabled;
+    if (!skipSplash || !persist) throw new Error("folded and native operands");
+    const base = enabled ? 10 : 20;
+    const count = Number(qs.get("count") ?? "3") + base;
+    const modeName = qs.get("mode") ?? "walk";
+    const current = enabled ? "fly" : "walk";
+    let matched = 0;
+    if (current === modeName) matched += 1;
+    if (modeName !== current) matched += 10;
+    if (count !== 14 || matched !== 1) throw new Error("query constants beside natives " + count + " " + matched);
+    let bumps = 0;
+    function bump(): void { bumps += 1; }
+    labTest && bump();
+    if (labTest || bumps > 0) bumps += 10;
+    if (bumps !== 0) throw new Error("folded short-circuit " + bumps);
+`, { search: "?godmode&count=4&mode=fly" });
 
 test("private brand checks refuse explicitly", () => {
     assert.throws(() => compileSource(`
