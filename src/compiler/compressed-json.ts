@@ -28,7 +28,8 @@ import {
     type JsonValuePolicy,
 } from "./json-value.js";
 import type { Value } from "./types.js";
-import { runModuleJsonSync } from "./module-json-sync.js";
+import { moduleReachesPackage } from "../executed-module-graph.js";
+import { tryModuleJsonDocument } from "./module-json-sync.js";
 import { argumentAt, identifierText, unwrapExpression } from "./syntax.js";
 
 interface CompressedJsonContext
@@ -605,13 +606,13 @@ function derivedJsonPass(
         if (value.staticJson === undefined) return undefined;
         argumentsJson.push(value.staticJson);
     }
-    return {
-        value: runModuleJsonSync(
-            modulePath,
-            declaration.name?.text ?? "",
-            argumentsJson,
-        ),
-    };
+    // A module that reaches a package cannot execute; decline without a child.
+    if (moduleReachesPackage(declaration.getSourceFile())) return undefined;
+    return tryModuleJsonDocument(
+        modulePath,
+        declaration.name?.text ?? "",
+        argumentsJson,
+    );
 }
 
 /** Compile a reached compressed-JSON utility call, or decline another call. */

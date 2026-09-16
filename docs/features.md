@@ -105,7 +105,7 @@ buffers; MessagePort, shared memory and broader transferable values refuse.
 | RegExp | Supported `g`/`i` patterns and replacement callbacks with captures/offset/original string | RegExp `replaceAll` with string replacement refuses |
 | Unicode | NFC/NFD/NFKC/NFKD normalization; `localeCompare` locale/options | Host ICU data; option getters and non-string locale entries refuse |
 | Objects | Supported keys/values/entries, assign/fromEntries/hasOwn/is, shallow spreads, delete/in | Fixed own-key proof required for optional structs; freeze/seal/preventExtensions are identity operations |
-| JSON | Represented parse/stringify, actual dynamic fields, index-key order, undefined-property omission | Replacers and cyclic serialization refuse; a generation-time pass returning a Map or Set serializes it as an empty object |
+| JSON | Represented parse/stringify, actual dynamic fields, index-key order, undefined-property omission; a generation-time pass folds only when its result is a round-trip document, else it lowers as an ordinary call | Replacers and cyclic serialization refuse |
 | Dates | Current/numeric/copy construction, now/getTime/valueOf/setTime, UTC `toISOString` | No string/calendar constructors or broader methods |
 | Intl | Default DateTimeFormat and resolved time zone | No explicit locale/options, formatting or broader fields |
 | URLSearchParams | String constructor, get/has, duplicate order, decoding, optional has value; deployment-query reads fold, and a runtime-key read parses the deployment query natively | Mutation, serialization, iteration and other constructors refuse; a deployment bag parsed for a runtime key is one per function, not one object, and a bag passed to a helper stays browser state |
