@@ -28,6 +28,7 @@ import {
     type JsonValuePolicy,
 } from "./json-value.js";
 import type { Value } from "./types.js";
+import { moduleReachesPackage } from "../executed-module-graph.js";
 import { tryModuleJsonDocument } from "./module-json-sync.js";
 import { argumentAt, identifierText, unwrapExpression } from "./syntax.js";
 
@@ -605,10 +606,8 @@ function derivedJsonPass(
         if (value.staticJson === undefined) return undefined;
         argumentsJson.push(value.staticJson);
     }
-    // Folding is an optimization, not a commitment: a pass whose module
-    // cannot run at generation (it reaches the engine, or a sibling is
-    // missing) or whose result is not a round-trip document declines here,
-    // and the call lowers as ordinary code instead of aborting the compile.
+    // A module that reaches a package cannot execute; decline without a child.
+    if (moduleReachesPackage(declaration.getSourceFile())) return undefined;
     return tryModuleJsonDocument(
         modulePath,
         declaration.name?.text ?? "",

@@ -11,7 +11,7 @@ import { canonicalLocalAssetSource, resolveBundledAsset } from "./assets.js";
 import { closureModules, ownsCanvas, sameFileClosure } from "./browser-texture-function.js";
 import { runGenerationChild } from "./generation-child.js";
 import type { LoweringServices } from "./lowering-services.js";
-import { runModuleJsonSync } from "./module-json-sync.js";
+import { ModuleJsonDeclined, runModuleJsonSync } from "./module-json-sync.js";
 import { CompilerSymbols, isDefaultLibraryIdentifier } from "./symbols.js";
 import { unwrapExpression } from "./syntax.js";
 import { parameterIsReadOnly, tryResolveFunctionDeclaration } from "./user-functions.js";
@@ -68,7 +68,14 @@ function dataArgument(context: CanvasReadbackContext, expression: ts.Expression,
     const closure = sameFileClosure(context.checker, declaration, () => false);
     if (!closure) return context.fail(expression, "Canvas readback data arguments cannot reach foreign functions or pinned APIs.");
     checkClosedInputs(context, closure, dataGlobals);
-    return runModuleJsonSync(declaration.getSourceFile().fileName, declaration.name.text, []);
+    try {
+        return runModuleJsonSync(declaration.getSourceFile().fileName, declaration.name.text, []);
+    } catch (error) {
+        // A readback has no ordinary-lowering fallback: a data function whose
+        // result is not a plain-data document refuses at its site.
+        if (error instanceof ModuleJsonDeclined) return context.fail(expression, error.message);
+        throw error;
+    }
 }
 
 /** Capture one top-level Canvas2D readback from its active, closed invocation. */

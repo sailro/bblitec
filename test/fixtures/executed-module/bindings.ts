@@ -1,5 +1,7 @@
-// @ts-nocheck -- extensionless sibling imports, resolved by bblitec's executed-module graph.
+// The two extensionless imports are the corpus style bblitec's executed-module graph resolves; the repository's own NodeNext build rejects them.
+// @ts-expect-error TS2835
 import { KINDS, seedCount } from "./counts";
+// @ts-expect-error TS2835
 import type { Kind } from "./kinds";
 
 /** Executed at generation: siblings imported without an extension, a type imported from a module that reaches the engine. */

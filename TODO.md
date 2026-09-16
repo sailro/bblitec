@@ -40,8 +40,7 @@ Open gaps only. [Features](docs/features.md) owns support; [fidelity](docs/fidel
 
 ## Assets and composition
 
-- [ ] Guard the canvas-readback data function against a non-round-trip result: a closed data function returning a Map or Set serializes to `{}` and bakes wrong pixels silently; validate through `isRoundTripJsonData` at the `runModuleJsonSync` boundary and fail loudly there, letting the fold caller decline and the readback caller refuse (`canvas-readback.ts`, `module-json-sync.ts`, `executed-module-graph.ts`).
-- [ ] Share Chromium pages and transpiled graphs per generation (`browser-harness.ts`).
+- [ ] Share Chromium pages and transpiled graphs per generation (`browser-harness.ts`); and run a generation-time JSON pass in process instead of a child: `closureModules` (`browser-texture-function.ts`) already transpiles each module once to CommonJS with a require shim, so `executeModuleGraphCall` can evaluate that under `node:vm` at about a tenth of the child's cost with no data-URL inlining, decide type-only erasure from the emitted code rather than the source, and resolve siblings through the entry program's own resolutions (`program.ts` resolves CommonJS-style, so an extensionless sibling already resolves there) instead of a second file-system resolver (`module-json-sync.ts`, `executed-module-graph.ts`).
 - [ ] Replace handwritten voxel-save parsing with typed JSON (`js_voxel_file.hpp`).
 - [ ] Share plugin getCustomCode evaluation with PinnedShaderText (`material-plugin.ts`).
 - [ ] Refuse packaged-asset FNV name collisions (`compiler/assets.ts`).

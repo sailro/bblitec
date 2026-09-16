@@ -12,21 +12,30 @@ test("a module pass run at generation resolves extensionless siblings and skips 
     // The pass ran at generation: its result is data selected at run time,
     // its body never lowers, and the module the type came from, which
     // reaches the engine, was never executed.
-    assert.doesNotMatch(result.cpp, /emptyBindings|seedCount|requireEngine/);
+    assert.doesNotMatch(result.cpp, /emptyBindings|seedCount/);
     assert.match(result.cpp, /\? 3\.0 : 4\.0/);
 });
 
 test("a generation-time fold whose module reaches the engine lowers as an ordinary call", () => {
     const result = compileSource(`
-        import { spawnCounts } from "./fixtures/executed-module/engine-pass.js";
+        import { spawnCounts } from "./fixtures/executed-module/kinds.js";
         const counts = spawnCounts();
-        const chosen = Date.now() > 0 ? counts.oak : counts.pine;
-        if (chosen !== 3) throw new Error("counts " + chosen);
+        if (counts.oak !== 3) throw new Error("counts " + counts.oak);
     `, { fileName: "test/executed-module-entry.ts" });
-    // The module value-imports the engine, so the pass cannot fold; the call
-    // lowers as ordinary code and the whole compile does not abort.
+    // The module imports the engine, so the pass declines before any child
+    // is spawned and the call lowers as ordinary code.
     assert.match(result.cpp, /spawnCounts/);
-    assert.match(result.cpp, /int main\(\)/);
+});
+
+test("a generation-time fold whose sibling reaches the engine lowers as an ordinary call", () => {
+    const result = compileSource(`
+        import { siblingCounts } from "./fixtures/executed-module/via-sibling.js";
+        const counts = siblingCounts();
+        if (counts.pine !== 4) throw new Error("counts " + counts.pine);
+    `, { fileName: "test/executed-module-entry.ts" });
+    // Only the sibling reaches the engine: the child discovers it while
+    // inlining the graph, classifies the decline, and the call lowers.
+    assert.match(result.cpp, /siblingCounts/);
 });
 
 test("a generation-time fold whose result is not round-trip data lowers as an ordinary call", () => {

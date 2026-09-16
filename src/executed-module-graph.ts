@@ -19,7 +19,7 @@ import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import ts from "typescript";
 import { resolveRepositoryModuleFile } from "./bake-cache.js";
-import { transpileForBrowser } from "./browser-harness.js";
+import { transpileForBrowser } from "./typescript-transpile.js";
 import { javascriptModuleUrl } from "./data-url.js";
 import type { ExecutedModuleSource } from "./executed-module-assets.js";
 import { moduleImportKind } from "./module-imports.js";
@@ -63,36 +63,6 @@ export async function executeModuleGraph(
  * else would be a value this route cannot promise two engines agree on.
  */
 // Referenced by name from the generation-child script in src/compiler/module-json-sync.ts.
-/**
- * Whether a value survives `JSON.stringify` then `JSON.parse` unchanged, so
- * folding a pass to it is faithful. Plain objects, arrays and finite
- * primitives do; a Map or Set becomes `{}`, a Date a string, a function or
- * symbol vanishes, and a non-finite number becomes null -- each a value the
- * fold would silently rewrite, so the pass lowers as an ordinary call
- * instead. An undefined object property is dropped, which is the document
- * behavior `JSON.stringify` already defines, so it is allowed.
- */
-export function isRoundTripJsonData(
-    value: unknown,
-    seen: Set<object> = new Set(),
-): boolean {
-    if (value === null) return true;
-    const type = typeof value;
-    if (type === "string" || type === "boolean") return true;
-    if (type === "number") return Number.isFinite(value);
-    if (type !== "object") return false;
-    if (seen.has(value as object)) return false;
-    seen.add(value as object);
-    if (Array.isArray(value)) {
-        return value.every((element) => isRoundTripJsonData(element, seen));
-    }
-    const prototype = Object.getPrototypeOf(value);
-    if (prototype !== Object.prototype && prototype !== null) return false;
-    return Object.values(value as Record<string, unknown>).every(
-        (property) => property === undefined || isRoundTripJsonData(property, seen),
-    );
-}
-
 export async function executeModuleGraphCall(
     source: ExecutedModuleSource,
     argumentsJson: readonly unknown[],
@@ -162,15 +132,15 @@ function moduleDataUrl(
             continue;
         }
         const text = specifier.text;
-        if (!text.startsWith("./") && !text.startsWith("../")) {
+        if (!isRelativeSpecifier(text)) {
             throw new Error(
                 `Executed module ${modulePath} imports '${text}'; a graph ` +
                     "module may only import its own relative siblings.",
             );
         }
-        // The same resolver that keys this module's bake, so a sibling
+        // The resolver the suite server serves a sibling with, so a sibling
         // spelled with `.js`, no extension, or as a directory `index.ts`
-        // executes as the file the cache identity already named.
+        // executes here as the file it serves there.
         const sibling = resolveRepositoryModuleFile(
             resolve(dirname(modulePath), text),
         );
@@ -195,4 +165,25 @@ function moduleDataUrl(
     const url = javascriptModuleUrl(javascript);
     building.set(modulePath, url);
     return url;
+}
+
+/** A relative sibling: the only specifier an executed module may resolve. */
+function isRelativeSpecifier(text: string): boolean {
+    return text.startsWith("./") || text.startsWith("../");
+}
+
+/**
+ * Whether a module's own imports reach a package. The executed graph refuses
+ * such a module, so a caller can decline before spawning a child to learn it;
+ * a sibling that reaches one is still the child's to discover.
+ */
+export function moduleReachesPackage(file: ts.SourceFile): boolean {
+    return moduleSpecifiers(file).some((specifier) => {
+        const declaration = specifier.parent;
+        const erased =
+            (ts.isImportDeclaration(declaration) ||
+                ts.isExportDeclaration(declaration)) &&
+            moduleImportKind(declaration) === "type";
+        return !erased && !isRelativeSpecifier(specifier.text);
+    });
 }
