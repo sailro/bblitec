@@ -58,6 +58,8 @@ with its unrouted functions and pin gaps listed separately. See [collection comm
 
 Local JavaScript implementations take precedence over companion declarations. Type-only imports do not
 run initializers. `declare` creates no runtime value; bare `typeof` of an absent binding is `"undefined"`.
+A shared module's `Record`-returning pass over generation-known arguments runs at generation; the modules
+it executes may import relative siblings without an extension, and their type-only imports are not executed.
 
 `import.meta.env` uses production client constants: `MODE="production"`, `PROD=true`, `DEV=false`,
 `SSR=false`. `BASE_URL` follows deployment. Custom string fields use `--env NAME=value` or

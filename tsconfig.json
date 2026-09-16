@@ -17,5 +17,8 @@
   "include": [
     "src/**/*.ts",
     "test/**/*.ts"
+  ],
+  "exclude": [
+    "test/fixtures/executed-module/**"
   ]
 }
