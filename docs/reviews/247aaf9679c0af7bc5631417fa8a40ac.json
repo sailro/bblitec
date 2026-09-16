@@ -1,0 +1,56 @@
+{
+  "angles": [
+    "reuse",
+    "simplification",
+    "efficiency",
+    "altitude"
+  ],
+  "findings": [
+    {
+      "summary": "The round-trip check is unconditional: the requireDocument flag existed only to preserve the canvas readback's silent empty-object bake, so the flag, its cache-key element, its env payload and the TODO entry that described the fix are gone, and the readback refuses at its site through a typed decline (a paint over a record of Maps with an engine-free data function pins it; main refused deep inside the paint).",
+      "applied": true
+    },
+    {
+      "summary": "The child returns a classified envelope after a sentinel, so a pass module's own stdout, a package import, a thrown pass and a non-document result are each told apart from a broken child, which still aborts; only classified declines are cached, in one plain outcome map that also holds successes, a fact about the files rather than emission state.",
+      "applied": true
+    },
+    {
+      "summary": "The round-trip test is one line over JSON itself, `isDeepStrictEqual(JSON.parse(JSON.stringify(value)), value)`, in the child script; the 29-line walk and its export are gone, executeModuleGraphCall's displaced doc comment is back on it, and a shared non-cyclic reference, which the walk's seen-set wrongly refused, folds again.",
+      "applied": true
+    },
+    {
+      "summary": "A pass whose own module reaches a package declines before any child is spawned, through the graph's relative-specifier rule shared with the inliner, instead of relearning the fact once per export and argument list at about half a second each.",
+      "applied": true
+    },
+    {
+      "summary": "The graph imports the transpiler from its own module rather than through the browser harness, which kept playwright-core out of every child at about 45 percent of each spawn, with identical output.",
+      "applied": true
+    },
+    {
+      "summary": "The graph's comment no longer claims the sibling resolver keys a bake that neither of its callers has; the sync runner's header no longer claims a suite server or a bake cache, and describes the child and its memo as they are.",
+      "applied": true
+    },
+    {
+      "summary": "The two engine-reaching fixtures collapse into one whose bare engine import is the whole discriminator, a sibling fixture pins the child's own classification, the tests drop a copied run-time selection and a vacuous main() match, and the extensionless fixture expects its two diagnostics instead of disabling checking.",
+      "applied": true
+    },
+    {
+      "summary": "The textual Record return-type gate proves neither purity nor determinism: a pass over a module counter or Math.random folds on both trees into a program that throws where the JavaScript never does, an interface or alias return never folds, and a shadowed Record matches; the repository already owns the right predicates (checkClosedInputs, sameFileClosure, fromRecordType).",
+      "applied": false,
+      "blockedBy": "Gating the fold on the closed-inputs predicate over the inlined graph and resolving Record through the checker is a redesign of a pre-existing gate with its own corpus proof; widening the gate before that would fold more impure passes.",
+      "filedIn": "the review record and the private integration plan (next item)"
+    },
+    {
+      "summary": "A pass that throws at generation declines silently; the fallback is faithful, since the lowered program throws where the JavaScript would, but the child's threw class has no diagnostic sink to surface through.",
+      "applied": false,
+      "blockedBy": "The compiler has no notes or warnings channel to carry a generation-time observation into the survey or the CLI; the class is preserved in the envelope for when one exists.",
+      "filedIn": "the review record"
+    },
+    {
+      "summary": "The child itself is the cost: the repository's closureModules already transpiles each module once to CommonJS with a require shim, and evaluating that in process under node:vm measured about a tenth of the child with no data-URL inlining, deciding type-only erasure from emitted code and resolving siblings through the entry program, which already resolves extensionless siblings CommonJS-style.",
+      "applied": false,
+      "blockedBy": "Rebuilding executeModuleGraphCall on in-process evaluation is a redesign of the executor, separate from making the fold decline.",
+      "filedIn": "TODO.md (the transpiled-graphs entry, extended rather than added)"
+    }
+  ]
+}
