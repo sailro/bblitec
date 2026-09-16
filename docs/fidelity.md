@@ -73,6 +73,7 @@ Deterministic capture clocks do not alter authored timing contracts.
 
 Main and shadow passes retain their own depth conventions. SDL may use depth-only formats in place
 of depth24plus-stencil8. Stencil, winding, compare/write and readback need matching contracts.
+Color-less sampled depth uses R32 copies on Dawn and SDL Metal to preserve red-only material reads.
 
 ### Shadows
 
@@ -100,6 +101,8 @@ Native Euler/quaternion storage differs from the pin's rotation proxy; mixed wri
 ### Textures and compressed textures
 
 Mips, encoding, orientation and samplers follow their source producer. invertY may use UV transforms.
+SDL Metal generates mip levels with filtered blits to preserve linear-space sRGB filtering.
+SDL Metal standalone sprite/text clears use the nearest linear 8-bit UNORM value to avoid fast-clear truncation.
 Configured KTX2/Draco JS/WASM runs during packaging; resulting pixels/geometry enter native output.
 Decoder bytes key caches and local decoder files participate in input tracking.
 

@@ -15,6 +15,7 @@
 #include <charconv>
 #if defined(__APPLE__)
 #include <boost/charconv/to_chars.hpp>
+#include <CoreFoundation/CoreFoundation.h>
 #endif
 #include <chrono>
 #include <cmath>
@@ -1703,6 +1704,16 @@ std::string android_time_zone();
 [[nodiscard]] inline DateTimeFormat make_date_time_format() {
 #ifdef __ANDROID__
     return make_ref<std::string>(android_time_zone());
+#elif defined(__APPLE__)
+    const std::unique_ptr<std::remove_pointer_t<CFTimeZoneRef>, decltype(&CFRelease)> zone(
+        CFTimeZoneCopyDefault(), CFRelease);
+    if (!zone) throw std::runtime_error("Cannot resolve the default time zone.");
+    const auto name = CFTimeZoneGetName(zone.get());
+    const auto capacity = CFStringGetMaximumSizeForEncoding(CFStringGetLength(name), kCFStringEncodingUTF8) + 1;
+    std::vector<char> text(static_cast<std::size_t>(capacity));
+    if (!CFStringGetCString(name, text.data(), capacity, kCFStringEncodingUTF8))
+        throw std::runtime_error("Cannot encode the default time zone.");
+    return make_ref<std::string>(text.data());
 #else
     return make_ref<std::string>(std::chrono::current_zone()->name());
 #endif

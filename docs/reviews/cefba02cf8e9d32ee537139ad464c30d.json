@@ -1,0 +1,14 @@
+{
+  "angles": [
+    "reuse",
+    "simplification",
+    "efficiency",
+    "altitude"
+  ],
+  "findings": [
+    {
+      "summary": "Retain the fixed Metal depth-copy pipeline across frame-graph texture rebuilds; release it with the device.",
+      "applied": true
+    }
+  ]
+}

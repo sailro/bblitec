@@ -119,6 +119,8 @@ extern "C" void wgpuRenderPassEncoderRelease(WGPURenderPassEncoder) {}
 extern "C" void wgpuBufferRelease(WGPUBuffer) {}
 
 namespace bbl::pal {
+// These capture/attachment checks model the non-Metal transport.
+SDL_FColor gpu_clear_color(SDL_GPUDevice*, SDL_GPUTextureFormat, SDL_FColor color) { return color; }
 struct TextGpuCapture;
 #include "capture-options.hpp"
 void CaptureGate::maybe_write_standalone_render_capture(const char*, const Engine&, std::uint32_t, std::uint32_t, long, TextGpuCapture*) {}

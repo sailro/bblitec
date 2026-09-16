@@ -134,6 +134,7 @@ edits before concurrent builds. Logs belong in ignored `artifacts/`.
 
 `npm run sweep` is `validate all`; tests are separate. Ad-hoc sources use generated/build/reference
 folders by stem and have diagnostic-only comparisons without configured thresholds.
+For a full sweep on hosts with Node's 2 GiB default heap, set `NODE_OPTIONS=--max-old-space-size=6144`.
 
 ## Integrating a curated parity scene
 

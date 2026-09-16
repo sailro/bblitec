@@ -588,6 +588,8 @@ function percentage(count: number, total: number): number {
     return total > 0 ? count / total : 0;
 }
 
+class ParityRegressionError extends Error {}
+
 export async function runSceneParity(
     inputArguments: string[],
     sceneOverride?: SceneDefinition,
@@ -635,6 +637,8 @@ export async function runSceneParity(
     const artifactSuffix =
         backendFileToken(backend) +
         (without !== undefined ? `-without-${without}` : "");
+    const reportPath = parityReportPath(outputDirectory, artifactSuffix);
+    rmSync(reportPath, { force: true });
     const actual = resolve(
         arguments_.actual ??
             parityNativeImagePath(outputDirectory, artifactSuffix),
@@ -1032,7 +1036,6 @@ export async function runSceneParity(
                 : {}),
         },
     };
-    const reportPath = parityReportPath(outputDirectory, artifactSuffix);
     writeReport(
         reportPath,
         {
@@ -1129,7 +1132,7 @@ export async function runSceneParity(
     if (failures.length > 0) {
         const message = `Parity regression: ${failures.join(", ")}`;
         if (arguments_.noFail) console.warn(message);
-        else throw new Error(message);
+        else throw new ParityRegressionError(message);
     }
 }
 
@@ -1177,12 +1180,28 @@ export async function runSceneParityDifferential(
     const dawnImage = parityNativeImagePath(outputDirectory, "dawn");
     const sceneTarget = paritySceneTarget(scene);
     const captureArguments = [sceneTarget, ...(sceneOverride ? ["--attribute"] : [])];
-    await withEnvironment("BBLITE_GPU_BACKEND", undefined, () =>
-        runSceneParity(captureArguments, scene),
+    const reportPath = parityReportPath(outputDirectory, "differential");
+    rmSync(reportPath, { force: true });
+    const failures: Error[] = [];
+    let incomplete = false;
+    for (const backend of ["sdl_gpu", "dawn"] as const) {
+        try {
+            await withEnvironment(
+                "BBLITE_GPU_BACKEND",
+                backend === "dawn" ? "dawn" : undefined,
+                () => runSceneParity(captureArguments, scene),
+            );
+        } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            failures.push(new Error(`${backend}: ${message}`, { cause: error }));
+            if (!(error instanceof ParityRegressionError)) incomplete = true;
+        }
+    }
+    const failure = () => new AggregateError(
+        failures, failures.map(error => error.message).join("\n"),
     );
-    await withEnvironment("BBLITE_GPU_BACKEND", "dawn", () =>
-        runSceneParity(captureArguments, scene),
-    );
+    // A gate failure has fresh images and reports; a failed capture does not.
+    if (incomplete) throw failure();
     const backendDelta = compareImages(sdlImage, dawnImage);
     const readBackendReport = (suffix: string): ParityReportSummary =>
         JSON.parse(
@@ -1205,7 +1224,6 @@ export async function runSceneParityDifferential(
         },
         sdlGpuVersusDawn: backendDelta,
     };
-    const reportPath = parityReportPath(outputDirectory, "differential");
     writeReport(
         reportPath,
         {
@@ -1227,6 +1245,7 @@ export async function runSceneParityDifferential(
             ).toFixed(2)}%`,
     );
     console.log(`Report: ${reportPath}`);
+    if (failures.length > 0) throw failure();
 }
 
 // ---------------------------------------------------------------------------

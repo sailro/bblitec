@@ -301,7 +301,8 @@ list(FILTER BBLITE_RUNTIME_SOURCES EXCLUDE REGEX "${BBLITE_PAL_COMMON_PATTERN}")
 add_library(bblite_features INTERFACE)
 if(APPLE)
     find_package(boost_charconv CONFIG REQUIRED)
-    target_link_libraries(bblite_features INTERFACE Boost::charconv)
+    find_library(BBLITE_CORE_FOUNDATION CoreFoundation REQUIRED)
+    target_link_libraries(bblite_features INTERFACE Boost::charconv "${BBLITE_CORE_FOUNDATION}")
 endif()
 add_library(bblite_pal_common OBJECT ${BBLITE_PAL_COMMON_SOURCES})
 target_link_libraries(bblite_pal_common PRIVATE bblite_features)
@@ -525,6 +526,8 @@ target_compile_definitions(bblite_features INTERFACE BBLITE_HAS_SDL_GPU=$<BOOL:$
 # link (the vcpkg install's DLLs join them at the end of this file).
 set(BBLITE_RUNTIME_LIBRARIES "")
 if(BBLITE_BACKEND_DAWN)
+    # An existing package cache must not override a newly selected SDK.
+    set(Dawn_DIR "${BBLITE_DAWN_DIR}/lib/cmake/Dawn")
     find_package(
         Dawn CONFIG REQUIRED
         PATHS "${BBLITE_DAWN_DIR}/lib/cmake/Dawn"
@@ -772,10 +775,8 @@ if("ui:rml" IN_LIST BBLITE_RUNTIME_FEATURES)
     elseif(ANDROID)
         target_link_libraries(bblite_features INTERFACE android)
     elseif(APPLE)
-        find_library(BBLITE_CORE_FOUNDATION CoreFoundation REQUIRED)
         find_library(BBLITE_CORE_TEXT CoreText REQUIRED)
         target_link_libraries(bblite_features INTERFACE
-            "${BBLITE_CORE_FOUNDATION}"
             "${BBLITE_CORE_TEXT}"
         )
     else()

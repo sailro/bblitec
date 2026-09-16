@@ -70,7 +70,9 @@ try {
             });
             logger.stderr.on('data', chunk => appendLog(chunk.toString()));
         });
-        adb('shell', 'am', 'start', '-W', '-n', `${app}/org.bblite.prototype.MainActivity`,
+        // The native exit marker below owns completion, including captures
+        // that finish before Android reports the activity fully drawn.
+        adb('shell', 'am', 'start', '-n', `${app}/org.bblite.prototype.MainActivity`,
             '--es', 'BBLITE_RUN_ID', runId, '--es', 'captureFrame', captureFrame,
             ...Object.entries(captureEnvironment).flatMap(([key, value]) => ['--es', key, value]),
             '--ez', 'capture', 'true');

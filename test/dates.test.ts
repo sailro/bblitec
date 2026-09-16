@@ -4,11 +4,14 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import test from "node:test";
 import { compileSource } from "../src/compiler.js";
+import { developmentTriplet } from "../src/build-options.js";
+import { discoverDevelopmentTools } from "../src/development-tools.js";
 import { optionalNativeFixtureTools, runNativeFixtureCompiler } from "./native-fixture.js";
 
 const native = optionalNativeFixtureTools(false);
+const unixCompiler = process.platform !== "win32" ? discoverDevelopmentTools().cxx : undefined;
 
-test("Date values retain identity, mutable timestamps and UTC formatting", {skip: !native}, () => {
+test("Date values retain identity, mutable timestamps and UTC formatting", {skip: !native && !unixCompiler}, () => {
     const timestamps = [0, -1, 1, -0.9, 0.9, 951782400123, -62167219200000, -62198755200000,
         253402300800000, -8640000000000000, 8640000000000000];
     const result = compileSource(`
@@ -61,7 +64,15 @@ test("Date values retain identity, mutable timestamps and UTC formatting", {skip
     mkdirSync(directory, {recursive:true});
     const source = join(directory, "check.cpp"), executable = join(directory, "check.exe");
     writeFileSync(source, result.cpp);
-    runNativeFixtureCompiler(native!, ["/nologo", "/std:c++20", "/W4", "/WX", "/permissive-", "/EHsc", "/MD",
-        `/Fo:${directory}/`, `/Fe:${executable}`, "/I", "native/include", source]);
+    if (native) {
+        runNativeFixtureCompiler(native, ["/nologo", "/std:c++20", "/W4", "/WX", "/permissive-", "/EHsc", "/MD",
+            `/Fo:${directory}/`, `/Fe:${executable}`, "/I", "native/include", source]);
+    } else {
+        const dependencies = resolve("artifacts/vcpkg-installed/development-full", developmentTriplet());
+        execFileSync(unixCompiler!, ["-std=c++20", "-Wall", "-Wextra", "-Werror",
+            "-I", "native/include", "-I", join(dependencies, "include"), source, "-o", executable,
+            ...(process.platform === "darwin" ? [join(dependencies, "lib/libboost_charconv.a"), "-framework", "CoreFoundation"] : [])],
+        { stdio: "pipe" });
+    }
     assert.equal(execFileSync(executable, {encoding:"utf8"}), "");
 });
