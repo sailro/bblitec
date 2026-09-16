@@ -109,7 +109,6 @@ export function compileNullableHitRecord(
         }
     }
     const cppType = context.dataTypes.cppType(resultType);
-    const referenceBacked = resultType.kind === "struct";
     const aggregate = context.dataLowerer.structAggregate(
         resultStruct,
         declared.map((field) => record.fields[field.name]!.cpp),
@@ -118,10 +117,8 @@ export function compileNullableHitRecord(
         kind: "data",
         cpp:
             `([&]() -> ${cppType} { ${record.probe} ` +
-            `if (${record.miss}) return ${
-                referenceBacked ? `${cppType}{}` : `${cppType}{std::nullopt}`
-            }; ` +
-            `return ${referenceBacked ? aggregate : `${cppType}{${aggregate}}`}; }())`,
+            `if (${record.miss}) return ${context.dataTypes.absentValue(resultType)}; ` +
+            `return ${context.dataTypes.presentValue(resultType, aggregate)}; }())`,
         dataType: resultType,
     };
 }

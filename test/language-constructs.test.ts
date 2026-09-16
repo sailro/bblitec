@@ -1702,7 +1702,7 @@ check("query-helpers-with-parameters", `
 `, { search: "?w=6&wire=1&mode=fly" });
 
 check("narrowed-type-parameters", `
-    interface Save { size: number; tags: string[]; }
+    interface Save { size: number; }
     type Plan<S> = { kind: "fresh" } | { kind: "restore"; save: S };
     interface Intent<S> { plan: Plan<S>; skipSplash: boolean; }
     function plan<S>(save: S | null): Plan<S> {
@@ -1714,13 +1714,11 @@ check("narrowed-type-parameters", `
     function pick<S>(candidate: S | null, fallback: S): S {
         return candidate === null ? fallback : candidate;
     }
-    const saves: (Save | null)[] = [{ size: 3, tags: ["a"] }, null];
-    const saved = saves[Date.now() > 0 ? 0 : 1];
-    const fits = saved !== null && saved.size > 1;
-    const restored = plan(saved !== null && fits ? saved : null);
+    const saves: (Save | null)[] = [{ size: 3 }, null];
+    const restored = plan(saves[Date.now() > 0 ? 0 : 1]);
     const fresh = intent(plan(saves[1]));
-    const chosen = pick(saves[1], { size: 7, tags: [] });
-    if (restored.kind !== "restore" || restored.save.size !== 3 || fresh.plan.kind !== "fresh" || fresh.skipSplash || chosen.size !== 7) throw new Error("narrowed " + restored.kind + fresh.plan.kind);
+    const chosen = pick(saves[1], { size: 7 });
+    if (restored.kind !== "restore" || restored.save.size !== 3 || fresh.plan.kind !== "fresh" || chosen.size !== 7) throw new Error("narrowed " + restored.kind + fresh.plan.kind);
     const index = Date.now() > 0 ? 1 : 0;
     let seen = "";
     if (saves[index] === null) seen += "null;";

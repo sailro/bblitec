@@ -1115,13 +1115,10 @@ export class DataLowerer {
                 selectedType.name,
             )
         ) {
-            const cppType = this.context.dataTypes.cppType(
-                selectedType,
-            );
             return optionalResult(
                 selectedType,
                 selected.cpp,
-                `${cppType}{}`,
+                this.context.dataTypes.absentValue(selectedType),
             );
         }
         const resultType: DataType =
@@ -1143,10 +1140,9 @@ export class DataLowerer {
                           : resultType,
                       access,
                   );
-        const cppType =
-            this.context.dataTypes.cppType(resultType);
         this.context.reachJsData();
-        return optionalResult(resultType, `${cppType}{${selectedCpp}}`, `${cppType}{std::nullopt}`);
+        return optionalResult(resultType, this.context.dataTypes.presentValue(resultType, selectedCpp),
+            this.context.dataTypes.absentValue(resultType));
     }
 
     private optionalPropertyRead(
@@ -3238,6 +3234,17 @@ export class DataLowerer {
             `bbl::js::array_at_or_default(${owner.cpp}, ${indexTemporary})`;
         const found =
             `bbl::js::array_has_index(${owner.cpp}, ${indexTemporary})`;
+        const captures = [...(owner.nativeCaptures ?? []), this.context.registerNativeBinding(indexTemporary)];
+        const leaf = this.leafValue(indexed, element);
+        // A reference-struct element of an array whose element type admits
+        // null can be present at the index and still null. Its own presence
+        // answers `saves[i] === null` alone: the accessor yields the null
+        // reference out of range as well. Other arrays are absent at the
+        // index only.
+        const elementType = this.context.checker.getTypeAtLocation(access);
+        const admitsNull = elementType.isUnion() &&
+            elementType.types.some((member) => (member.flags & (ts.TypeFlags.Null | ts.TypeFlags.Undefined)) !== 0);
+        const present = admitsNull && leaf.optionalFoundCpp !== undefined ? leaf.optionalFoundCpp : found;
         const truthiness =
             element.kind === "boolean"
                   ? indexed
@@ -3245,20 +3252,13 @@ export class DataLowerer {
                   ? `bbl::js::number_truthy(${indexed})`
                   : element.kind === "string"
                     ? `!${indexed}.empty()`
-                    : found;
-        const captures = [...(owner.nativeCaptures ?? []), this.context.registerNativeBinding(indexTemporary)];
-        const leaf = this.leafValue(indexed, element);
-        // An element with an absent state of its own (a reference struct, an
-        // optional) can be present at the index and still be null, so
-        // JavaScript's `saves[i] === null` asks both; a value element is
-        // absent only when the index is.
-        const present = leaf.optionalFoundCpp === undefined ? found : `(${found} && ${leaf.optionalFoundCpp})`;
+                    : present;
         return {
             ...leaf,
             nativeCaptures: captures,
             nativeCompanionCaptures: { optionalFoundCpp: captures, truthinessCpp: captures },
             optionalFoundCpp: present,
-            truthinessCpp: truthiness === found ? present : truthiness,
+            truthinessCpp: truthiness,
         };
     }
 
@@ -5274,12 +5274,7 @@ export class DataLowerer {
                 const condition = this.context.compileCondition(
                     left.left,
                 );
-                const dataCpp =
-                    this.context.dataTypes.cppType(dataType);
-                const empty =
-                    dataType.kind === "optional"
-                        ? `${dataCpp}{std::nullopt}`
-                        : `${dataCpp}{}`;
+                const empty = this.context.dataTypes.absentValue(dataType);
                 if (condition === "false") return empty;
                 const selected = this.compileForSink(
                     left.right,

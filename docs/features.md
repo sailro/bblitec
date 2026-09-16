@@ -48,7 +48,7 @@ with its unrouted functions and pin gaps listed separately. See [collection comm
 | --- | --- | --- |
 | Modules | Named/namespace imports, re-exports, constant aliases, external local TS/JS, JSDoc, `?raw`, ordered initialization | Runtime-selected modules; unrepresented mutable initializer dependencies |
 | Control flow | Blocks, conditionals, switches, loops, break/continue, throw, catch bound to an Error carrying the native message, bounded finally | Suspended catch/finally; arbitrary cleanup across `startEngine` |
-| Functions | Typed/generic functions, defaults, rest parameters, destructuring, supported recursion, stored values shared or adapted across sink signatures, type parameters narrowed past null inside generic bodies | Unresolved type arguments; unbounded resource specialization; a stored value cannot take a narrower signature; an adapted value is rebuilt at each reach |
+| Functions | Typed/generic functions, defaults, rest parameters, destructuring, supported recursion, stored values shared or adapted across sink signatures, type parameters narrowed past null inside generic bodies | Unresolved type arguments; unbounded resource specialization; a stored value cannot take a narrower signature; an adapted value is rebuilt at each reach; a value-typed parameter narrowed past null keeps its nullable representation inside an object literal |
 | Classes | Fields, methods, accessors, generics, retained callbacks, receiver-preserving structural views, private names for fields, methods and accessors | Inheritance, private brand checks (`#x in value`), static blocks; unsupported field storage |
 | Closures | Shared mutable cells, function identity, optional calls, escaping recursive groups | Captures need owned representations; events cannot escape dispatch |
 | Data | Typed/nullable records, discriminated and mixed unions, arrays, tuples, dictionaries, Map/Set, JSON | Optional own-property presence; erased native mutation; storage ambiguities |
@@ -98,7 +98,7 @@ buffers; MessagePort, shared memory and broader transferable values refuse.
 | Variadic Math | `min`, `max`, `hypot`, numeric tails and array spreads | Native `hypot` approximation; NaN/signed-zero rules retained for min/max |
 | Arrays | Map/filter/find/reduce/predicates, flatMap/flat/concat, sorting, indexed searches, fill/copyWithin/splice, joins | Closed flatten depth; no callback `thisArg`; some scalar pop/shift paths require nonempty arrays |
 | Tuples | Shared identity, typed and dynamic lanes, mutations, shallow rest arrays, destructuring | Sparse length growth and ambiguous null/undefined defaults refuse |
-| Map/Set | Ordered construction, queries, mutation, spreads, entries, live `forEach` | WeakMap/WeakSet retain keys strongly |
+| Map/Set | Ordered construction, queries, mutation, spreads, entries, live `forEach` | WeakMap/WeakSet retain keys strongly; an iterator value of a nullable reference type reads as present |
 | Iterators | Direct array/Map/Set iteration; retained Set keys/values/entries cursors, `next`, spreads, `Array.from` | Generators and general `Symbol.iterator` objects refuse |
 | Strings | UTF-16 indexing/length, substring/repeat/concat, padding/trimming, replacement strings/callbacks, `+=` on locals, fields and elements | Native WTF-8 storage; embedded NUL value sinks remain limited; a concatenated operand is built before it is appended |
 | RegExp | Supported `g`/`i` patterns and replacement callbacks with captures/offset/original string | RegExp `replaceAll` with string replacement refuses |
