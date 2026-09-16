@@ -48,3 +48,20 @@ test("a generation-time fold whose result is not round-trip data lowers as an or
     // and the pass lowers to a real native Map instead of folding to {}.
     assert.match(result.cpp, /bbl::js::Map/);
 });
+
+test("a canvas readback data function whose result is not a document refuses at its site", () => {
+    assert.throws(
+        () =>
+            compileSource(`
+                import { createEngine } from "@babylonjs/lite";
+                import { paintCounts } from "./fixtures/browser-texture/readback.js";
+                import { seedBindings } from "./fixtures/executed-module/map-pass.js";
+                async function main() {
+                    const engine = await createEngine({});
+                    paintCounts(engine, seedBindings());
+                }
+                main();
+            `, { fileName: "test/readback-entry.ts" }),
+        /readback-entry\.ts:\d+:\d+: .*not a plain-data JSON document/,
+    );
+});

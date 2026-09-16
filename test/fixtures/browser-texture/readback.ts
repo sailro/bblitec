@@ -23,3 +23,14 @@ export function mutablePatch(engine: EngineContext, color: string) {
     const captured = brush.getImageData(0, 0, 2, 1);
     return createTexture2DFromPixels(engine, new Uint8Array(captured.data.buffer), 2, 1);
 }
+
+export function paintCounts(engine: EngineContext, counts: Record<"a" | "b", Map<number, number>>) {
+    const surface = document.createElement("canvas");
+    surface.width = 2;
+    surface.height = 1;
+    const brush = surface.getContext("2d")!;
+    brush.fillStyle = "red";
+    brush.fillRect(0, 0, counts.a.get(1) ?? 2, 1);
+    const captured = brush.getImageData(0, 0, 2, 1);
+    return createTexture2DFromPixels(engine, new Uint8Array(captured.data.buffer.slice(0)), 2, 1);
+}
