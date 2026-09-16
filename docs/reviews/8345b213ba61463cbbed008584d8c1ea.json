@@ -1,0 +1,48 @@
+{
+  "angles": [
+    "reuse",
+    "simplification",
+    "efficiency",
+    "altitude"
+  ],
+  "findings": [
+    {
+      "summary": "The type-only skip calls `moduleImportKind`, the repository's own erasure predicate (already used by module-initializers and upstream-graph), instead of a hand-rolled copy that missed `export { type A } from`.",
+      "applied": true
+    },
+    {
+      "summary": "A sibling specifier resolves through `resolveRepositoryModuleFile`, the same resolver that keys this module's bake cache, so a `.js`, extensionless or `index.ts` sibling executes as the file the cache identity already named; the hand-rolled resolver, its dead `.tsx` and `.mjs` arms and the `existsSync`/`join` imports are gone, and an unresolved sibling refuses naming the specifier.",
+      "applied": true
+    },
+    {
+      "summary": "The fixture that must spell an extensionless import carries a `// @ts-nocheck` line, the repository's established way to keep an unusual fixture compiling, instead of a first-of-its-kind tsconfig `exclude` block.",
+      "applied": true
+    },
+    {
+      "summary": "The module-rules note is one clause about extensionless siblings; the pre-existing pass and the type-only erasure it repeated from the paragraph above are gone.",
+      "applied": true
+    },
+    {
+      "summary": "The file-system probes and the type-only skip are both in the noise of the child-process spawn and transpile the route already pays (about 1.7 percent and a few property reads); nothing to change for efficiency.",
+      "applied": true
+    },
+    {
+      "summary": "A generation-time pass whose result contains a Map or Set serializes it as an empty object, which extensionless resolution now lets more passes reach.",
+      "applied": false,
+      "blockedBy": "Refusing a Map or Set in a `derivedJsonPass` result is a separate change to that route's contract with its own fixture and neutrality proof; the application's reached passes survived the survey, so the risk is latent.",
+      "filedIn": "docs/features.md (JSON limits: a generation-time pass returning a Map or Set serializes it as an empty object)"
+    },
+    {
+      "summary": "The graph resolves siblings against the file system rather than the entry program's TypeScript resolution, so a path alias or baseUrl import would still miss.",
+      "applied": false,
+      "blockedBy": "`ts.resolveModuleName` under the entry program's NodeNext options is exactly what rejects the extensionless import this change exists for; `resolveRepositoryModuleFile` is the repository's own answer and already keys the bake, so aligning with it is the right depth, and an aliased import would already break the cache key, a separate concern.",
+      "filedIn": "the review record"
+    },
+    {
+      "summary": "Inlining duplicates a shared sibling's URL in every importer, which compounds with graph depth and can exhaust the child's heap on a deep graph.",
+      "applied": false,
+      "blockedBy": "Emitting each module once (a bundle or an import map) is a redesign of the pre-existing inlining, outside a change that only widens which siblings resolve; shallow application graphs stay small.",
+      "filedIn": "the review record"
+    }
+  ]
+}
