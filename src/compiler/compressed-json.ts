@@ -28,7 +28,7 @@ import {
     type JsonValuePolicy,
 } from "./json-value.js";
 import type { Value } from "./types.js";
-import { runModuleJsonSync } from "./module-json-sync.js";
+import { tryModuleJsonDocument } from "./module-json-sync.js";
 import { argumentAt, identifierText, unwrapExpression } from "./syntax.js";
 
 interface CompressedJsonContext
@@ -605,13 +605,15 @@ function derivedJsonPass(
         if (value.staticJson === undefined) return undefined;
         argumentsJson.push(value.staticJson);
     }
-    return {
-        value: runModuleJsonSync(
-            modulePath,
-            declaration.name?.text ?? "",
-            argumentsJson,
-        ),
-    };
+    // Folding is an optimization, not a commitment: a pass whose module
+    // cannot run at generation (it reaches the engine, or a sibling is
+    // missing) or whose result is not a round-trip document declines here,
+    // and the call lowers as ordinary code instead of aborting the compile.
+    return tryModuleJsonDocument(
+        modulePath,
+        declaration.name?.text ?? "",
+        argumentsJson,
+    );
 }
 
 /** Compile a reached compressed-JSON utility call, or decline another call. */
