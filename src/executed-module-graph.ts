@@ -18,9 +18,11 @@
 import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import ts from "typescript";
+import { resolveRepositoryModuleFile } from "./bake-cache.js";
 import { transpileForBrowser } from "./browser-harness.js";
 import { javascriptModuleUrl } from "./data-url.js";
 import type { ExecutedModuleSource } from "./executed-module-assets.js";
+import { moduleImportKind } from "./module-imports.js";
 import { moduleSpecifiers } from "./typescript-module-specifiers.js";
 
 /**
@@ -119,6 +121,16 @@ function moduleDataUrl(
     // so substituting here is exact where a regex over the output is a guess.
     const edits: Array<{ start: number; end: number; text: string }> = [];
     for (const specifier of moduleSpecifiers(file)) {
+        // A type-only import is erased by the transpiler and never runs, so
+        // the module it names is not part of the executed graph.
+        const declaration = specifier.parent;
+        if (
+            (ts.isImportDeclaration(declaration) ||
+                ts.isExportDeclaration(declaration)) &&
+            moduleImportKind(declaration) === "type"
+        ) {
+            continue;
+        }
         const text = specifier.text;
         if (!text.startsWith("./") && !text.startsWith("../")) {
             throw new Error(
@@ -126,10 +138,18 @@ function moduleDataUrl(
                     "module may only import its own relative siblings.",
             );
         }
-        const sibling = resolve(
-            dirname(modulePath),
-            text.replace(/\.js$/, ".ts"),
+        // The same resolver that keys this module's bake, so a sibling
+        // spelled with `.js`, no extension, or as a directory `index.ts`
+        // executes as the file the cache identity already named.
+        const sibling = resolveRepositoryModuleFile(
+            resolve(dirname(modulePath), text),
         );
+        if (sibling === undefined) {
+            throw new Error(
+                `Executed module ${modulePath} imports '${text}'; no sibling ` +
+                    "module resolves to that path.",
+            );
+        }
         edits.push({
             start: specifier.getStart(file),
             end: specifier.getEnd(),
