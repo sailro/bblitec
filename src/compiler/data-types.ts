@@ -728,6 +728,26 @@ export class DataTypeRegistry {
     finally { this.dynamicJsonStorage = previous; }
   }
 
+  /**
+   * `{}` or `{} | undefined`: the checker's spelling of a non-null
+   * constraint inside an intersection, which adds no members of its own.
+   */
+  private isNonNullConstraint(type: ts.Type): boolean {
+    if (type.isUnion()) {
+      return type.types.every(
+        (member) => (member.flags & ts.TypeFlags.Undefined) !== 0 || this.isNonNullConstraint(member),
+      );
+    }
+    return (
+      (type.flags & ts.TypeFlags.Object) !== 0 &&
+      ((type as ts.ObjectType).objectFlags & ts.ObjectFlags.Anonymous) !== 0 &&
+      this.checker.getPropertiesOfType(type).length === 0 &&
+      type.getCallSignatures().length === 0 &&
+      type.getConstructSignatures().length === 0 &&
+      this.checker.getIndexInfosOfType(type).length === 0
+    );
+  }
+
   private fromNonNullableType(
     type: ts.Type,
     node: ts.Node,
@@ -762,6 +782,16 @@ export class DataTypeRegistry {
       return this.fromUnionType(type as ts.UnionType, node);
     }
     if ((type.flags & ts.TypeFlags.Intersection) !== 0) {
+      // The checker narrows `S | null` past a null check to `S & ({} | undefined)`
+      // and spells NonNullable<S> as `S & {}`: the empty object type is a
+      // constraint, not a shape. Map what it constrains, under the active
+      // substitution, instead of reading the constraint's absent members.
+      const constrained = (type as ts.IntersectionType).types.filter(
+        (member) => !this.isNonNullConstraint(member),
+      );
+      if (constrained.length === 1 && constrained.length < (type as ts.IntersectionType).types.length) {
+        return this.fromTsType(constrained[0]!, node);
+      }
       return this.fromStructType(type, node);
     }
     if ((type.flags & ts.TypeFlags.Object) === 0) {

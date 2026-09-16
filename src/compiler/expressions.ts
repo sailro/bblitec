@@ -1804,10 +1804,10 @@ export class ExpressionLowerer {
                         `Conditional record property '${name}' must have one non-optional native data type.`,
                     );
                 }
-                const optional: DataType = {
-                    kind: "optional",
-                    inner,
-                };
+                // A reference struct carries its own absent state, so the
+                // registry's nullable rule keeps it bare and its absent arm
+                // is the null reference, not `std::nullopt`.
+                const optional = this.context.dataTypes.nullableType(inner);
                 const optionalCpp =
                     this.context.dataTypes.cppType(optional);
                 const valueCpp =
@@ -1816,8 +1816,8 @@ export class ExpressionLowerer {
                         inner,
                         node,
                     );
-                const populated = `${optionalCpp}{${valueCpp}}`;
-                const absent = `${optionalCpp}{std::nullopt}`;
+                const populated = optional.kind === "optional" ? `${optionalCpp}{${valueCpp}}` : valueCpp;
+                const absent = optional.kind === "optional" ? `${optionalCpp}{std::nullopt}` : `${optionalCpp}{}`;
                 selected[name] = {
                     kind: "data",
                     cpp:

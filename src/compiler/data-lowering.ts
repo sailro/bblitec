@@ -3247,12 +3247,18 @@ export class DataLowerer {
                     ? `!${indexed}.empty()`
                     : found;
         const captures = [...(owner.nativeCaptures ?? []), this.context.registerNativeBinding(indexTemporary)];
+        const leaf = this.leafValue(indexed, element);
+        // An element with an absent state of its own (a reference struct, an
+        // optional) can be present at the index and still be null, so
+        // JavaScript's `saves[i] === null` asks both; a value element is
+        // absent only when the index is.
+        const present = leaf.optionalFoundCpp === undefined ? found : `(${found} && ${leaf.optionalFoundCpp})`;
         return {
-            ...this.leafValue(indexed, element),
+            ...leaf,
             nativeCaptures: captures,
             nativeCompanionCaptures: { optionalFoundCpp: captures, truthinessCpp: captures },
-            optionalFoundCpp: found,
-            truthinessCpp: truthiness,
+            optionalFoundCpp: present,
+            truthinessCpp: truthiness === found ? present : truthiness,
         };
     }
 
