@@ -34,7 +34,7 @@ import { emitPropertyAssignment, emitStructuralPropertyAssignment } from "./comp
 import { sceneNodeTransformDescriptor, type SceneNodeTransformDescriptor } from "./scene-node-transform-descriptor.js";
 import { probePixelsAsset, registerAsset, registerSpriteAtlasAsset, resolveBundledAsset } from "./compiler/assets.js";
 import { compileStaticFetch, compileStaticFetchMethod, staticFetchProperty } from "./compiler/static-fetch.js";
-import { BrowserErasure, browserGlobalNamed, browserDeploymentValue, browserEnvironmentPropertyValue, browserEnvironmentValue } from "./compiler/browser-erasure.js";
+import { BrowserErasure, browserGlobalNamed, browserDeploymentValue, browserEnvironmentPropertyValue, browserEnvironmentValue, isPrimitiveBrowserValue } from "./compiler/browser-erasure.js";
 import { deploymentUrl, deploymentEnvironment } from "./compiler/deployment.js";
 import { httpResponseProperty } from "./compiler/http.js";
 import { numberConstantValue } from "./compiler/number-intrinsics.js";
@@ -6565,7 +6565,7 @@ class Compiler
             const value = this.evaluateBrowserValue(argument);
             // A query-resolved primitive is ordinary input to a helper,
             // including helpers in modules with no Babylon imports.
-            return !value || !["number", "boolean", "string", "null"].includes(value.kind);
+            return !value || !isPrimitiveBrowserValue(value);
         });
         const returnsVoid = (observableResult.flags & ts.TypeFlags.Void) !== 0;
         if (
@@ -6984,37 +6984,21 @@ class Compiler
             if (condition !== undefined) {
                 return condition ? "true" : "false";
             }
-            const comparison =
-                ts.isBinaryExpression(unwrapped) &&
-                [
-                    ts.SyntaxKind.EqualsEqualsEqualsToken,
-                    ts.SyntaxKind.ExclamationEqualsEqualsToken,
-                    ts.SyntaxKind.LessThanToken,
-                    ts.SyntaxKind.LessThanEqualsToken,
-                    ts.SyntaxKind.GreaterThanToken,
-                    ts.SyntaxKind.GreaterThanEqualsToken,
-                ].includes(unwrapped.operatorToken.kind);
-            const browserOperands = comparison
+            // A browser-only expression that does not fold carries an
+            // operand the deployment does not answer: one answered beside a
+            // native operand already lowered as native. Name the browser
+            // operands of a binary expression so the refusal points at the
+            // unanswered one.
+            const browserOperands = ts.isBinaryExpression(unwrapped)
                 ? [unwrapped.left, unwrapped.right].filter((operand) =>
                       this.isBrowserOnlyExpression(operand),
                   )
                 : [];
-            const resolvedNumericOperands =
-                browserOperands.length > 0 &&
-                browserOperands.every(
-                    (operand) =>
-                        this.evaluateBrowserValue(operand)?.kind === "number",
-                );
-            if (!resolvedNumericOperands) {
-                this.fail(
-                    unwrapped,
-                    "Browser-dependent condition cannot be determined for native AOT lowering " +
-                        `(browser operands: ${browserOperands.map((operand) => operand.getText()).join(", ") || unwrapped.getText()}).`,
-                );
-            }
-            // This is a mixed native/browser comparison. The browser side
-            // is a resolved numeric constant; continue through the ordinary
-            // comparison lowering so the native side remains dynamic.
+            this.fail(
+                unwrapped,
+                "Browser-dependent condition cannot be determined for native AOT lowering " +
+                    `(browser operands: ${browserOperands.map((operand) => operand.getText()).join(", ") || unwrapped.getText()}).`,
+            );
         }
         if (
             ts.isPrefixUnaryExpression(unwrapped) &&

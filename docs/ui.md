@@ -31,9 +31,9 @@ needs performance and semantic verification. The easing/steps mapping is approxi
 - Navigator exposes native identity, OS platform, processor count and language. Heap snapshots and client
   hints are absent. Async graphics guards expose the existing Window service; adapter requests and
   GPU constructor/prototype instrumentation are unsupported.
-- Location follows deployment. A query value the deployment answers is a constant, alone or beside native
-  operands in comparisons, arithmetic and logical chains; a short-circuit it decides stays folded. Conditions
-  over browser values the deployment does not answer refuse. Reload completes the task/microtasks then
+- Location follows deployment. A query value the deployment answers is a constant: alone, beside native
+  operands in comparisons, arithmetic and logical chains, or as the receiver of a native string method; a
+  short-circuit it decides stays folded. Conditions over browser values the deployment does not answer refuse. Reload completes the task/microtasks then
   recreates realms, retaining durable storage. Other navigation refuses. Screen/viewport metrics use CSS
   pixels at display scale.
 - The Window service provides promise-backed clipboard text writes; reads/rich data are unsupported.

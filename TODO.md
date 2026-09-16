@@ -34,7 +34,7 @@ Open gaps only. [Features](docs/features.md) owns support; [fidelity](docs/fidel
 - [ ] Generators/async iteration, Proxy, WeakRef and Symbol storage (`expressions.ts`, `statements.ts`, `data-types.ts`).
 - [ ] Object.assign on engine handles erases writes (`object-statics.ts`).
 - [ ] Shared lowering for logical assignment, dictionary property access and Array.from callbacks; derived identity and presence spellings marked at the leaf instead of compared against a second leaf; a string leaf given the number/boolean treatment so plain and data strings share one kind, and plain-string `=` through the string sink with the original expression (`data-lowering.ts`, `statements.ts`).
-- [ ] Consolidate library-global recognition and type/storage classification (`expressions.ts`, `static-evaluator.ts`, `module-initializers.ts`, `data-types.ts`).
+- [ ] Consolidate library-global recognition and type/storage classification; bind a browser primitive the deployment answers as the native constant it materializes to and lower `devicePixelRatio` only natively, so the answered-equals-native rule lives in one place and a nested browser-operand chain folds once per node (`expressions.ts`, `static-evaluator.ts`, `module-initializers.ts`, `data-types.ts`, `compiler.ts`, `browser-erasure.ts`).
 - [ ] General exception completion across startEngine cleanup (`compiler.ts`).
 - [ ] WGSL IR support for helpers/constants/loops; remove rawSource and regex fallbacks (`shader-ir.ts`).
 

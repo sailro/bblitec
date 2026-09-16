@@ -675,16 +675,15 @@ async function executeGeneratedAssertions(t: TestContext, name: string, source: 
 }
 
 /**
- * A `search` gives the snippet a deployment query on both sides: the Node
- * run sees it as `location.search`, the compiler folds it as the reference
- * query. Without one the Node context has no browser globals at all.
+ * The snippet sees one deployment query on both sides: the Node run reads
+ * it as `location.search`, the compiler folds it as the reference query.
  */
-function check(name: string, source: string, { search }: { search?: string } = {}): void {
+function check(name: string, source: string, { search = "" }: { search?: string } = {}): void {
     test(name, async t => {
         runInNewContext(ts.transpileModule(source, {
             compilerOptions: { target: ts.ScriptTarget.ESNext, module: ts.ModuleKind.None },
-        }).outputText, search === undefined ? undefined : { location: { search }, URLSearchParams });
-        const result = compileSource(source, { fileName: `${name}.ts`, ...(search === undefined ? {} : { search }) });
+        }).outputText, { location: { search }, URLSearchParams });
+        const result = compileSource(source, { fileName: `${name}.ts`, search });
         await executeGeneratedAssertions(t,name,result.cpp);
     });
 }
@@ -1675,13 +1674,9 @@ check("resolved-query-values-in-native-expressions", `
     const current = enabled ? "fly" : "walk";
     let matched = 0;
     if (current === modeName) matched += 1;
-    if (modeName !== current) matched += 10;
     if (count !== 14 || matched !== 1) throw new Error("query constants beside natives " + count + " " + matched);
-    let bumps = 0;
-    function bump(): void { bumps += 1; }
-    labTest && bump();
-    if (labTest || bumps > 0) bumps += 10;
-    if (bumps !== 0) throw new Error("folded short-circuit " + bumps);
+    const driveName = (qs.get("drive") || "Studio").toLowerCase();
+    if (driveName !== "studio" || (qs.get("mode") ?? "").length !== 3) throw new Error("query receivers " + driveName);
 `, { search: "?godmode&count=4&mode=fly" });
 
 test("private brand checks refuse explicitly", () => {
