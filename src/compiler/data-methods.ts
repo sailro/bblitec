@@ -10,7 +10,7 @@ import { captureArrayReceiver, compileArrayValueMethod } from "./array-methods.j
 import { compileStringValueMethod } from "./string-methods.js";
 import { compileDateMethod, compileDateTimeFormatMethod } from "./dates.js";
 import { compileHttpResponseMethod } from "./http.js";
-import { compileSearchParamsMethod } from "./search-params.js";
+import { compileSearchParamsMethod, deploymentSearchParamsValue } from "./search-params.js";
 import { compileCollectionForEach } from "./collection-methods.js";
 
 import {
@@ -344,7 +344,7 @@ export function compileDataMethodCall(
             };
         }
     }
-    const dynamicOwner =
+    let dynamicOwner =
         ts.isCallExpression(ownerExpression) ||
         ts.isNewExpression(ownerExpression) ||
         ts.isArrayLiteralExpression(ownerExpression) ||
@@ -353,7 +353,9 @@ export function compileDataMethodCall(
             ? lowerer.context.compileValue(ownerExpression)
             : ts.isIdentifier(ownerExpression)
               ? (lowerer.context.lookupIdentifierValue(ownerExpression) ??
-                (lowerer.dataTypeAt(ownerExpression)?.kind === "string"
+                // A module string or query bag without a runtime binding
+                // is its value at the use site.
+                (["string", "search-params"].includes(lowerer.dataTypeAt(ownerExpression)?.kind ?? "")
                     ? lowerer.context.compileValue(ownerExpression)
                     : lowerer.compileStaticContainer(ownerExpression)))
               : (ts.isPropertyAccessExpression(ownerExpression) ||
@@ -364,6 +366,11 @@ export function compileDataMethodCall(
                   ts.isTemplateExpression(ownerExpression)
                 ? lowerer.context.compileValue(ownerExpression)
                 : undefined;
+    // A query bag the fold answered stays a browser value until a read it
+    // cannot answer arrives here; that read parses the deployment query.
+    if (dynamicOwner?.kind === "browser" && dynamicOwner.browserValue?.kind === "search-params") {
+        dynamicOwner = deploymentSearchParamsValue(lowerer, dynamicOwner.browserValue.search);
+    }
     if (dynamicOwner?.dataType?.kind === "date") return compileDateMethod(lowerer, call, dynamicOwner, method);
     if (dynamicOwner?.dataType?.kind === "http-response") return compileHttpResponseMethod(lowerer, call, dynamicOwner, method);
     if (dynamicOwner?.dataType?.kind === "search-params") return compileSearchParamsMethod(lowerer, call, dynamicOwner, method);

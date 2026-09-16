@@ -1679,6 +1679,28 @@ check("resolved-query-values-in-native-expressions", `
     if (driveName !== "studio" || (qs.get("mode") ?? "").length !== 3) throw new Error("query receivers " + driveName);
 `, { search: "?godmode&count=4&mode=fly" });
 
+check("query-helpers-with-parameters", `
+    const qs = new URLSearchParams(location.search);
+    const num = (k: string, d: number): number => {
+        const v = qs.get(k);
+        return v !== null && Number.isFinite(Number(v)) ? Number(v) : d;
+    };
+    function str(k: string, d: string): string {
+        const v = qs.get(k);
+        return v !== null && v !== "" ? v : d;
+    }
+    let report = "";
+    function main(): void {
+        const keys: string[] = ["w", "h", "mode"];
+        for (const key of keys) report += num(key, -1) + ":" + str(key, "none") + ";";
+        report += num("w", 4) + ":" + qs.has("wire");
+    }
+    main();
+    const moduleKeys: string[] = ["mode", "h"];
+    for (const key of moduleKeys) report += "," + (qs.get(key) ?? "-");
+    if (report !== "6:6;-1:none;-1:fly;6:true,fly,-") throw new Error(report);
+`, { search: "?w=6&wire=1&mode=fly" });
+
 test("private brand checks refuse explicitly", () => {
     assert.throws(() => compileSource(`
         class Tagged { #mark = 1; static has(value: object): boolean { return #mark in value; } }

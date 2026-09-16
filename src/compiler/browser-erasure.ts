@@ -78,14 +78,22 @@ const NATIVE_DOM_BRIDGE_KINDS = new EmissionSet<Value["kind"]>([
     "offscreen-canvas",
 ]);
 
-/**
- * A browser value with a native spelling: a number, string, boolean or
- * null, never a query bag or a rect.
- */
+/** A browser value the fold spells as a literal: a number, string, boolean or null. */
 export function isPrimitiveBrowserValue(
     value: NonNullable<Value["browserValue"]>,
 ): boolean {
     return ["number", "boolean", "string", "null"].includes(value.kind);
+}
+
+/**
+ * A browser value with a native spelling: a primitive, or the deployment
+ * query bag, which a read the fold cannot answer parses natively
+ * (`deploymentSearchParamsValue`). A rect or the primary canvas has none.
+ */
+export function hasNativeSpelling(
+    value: NonNullable<Value["browserValue"]>,
+): boolean {
+    return isPrimitiveBrowserValue(value) || value.kind === "search-params";
 }
 
 export interface BrowserErasureContext
@@ -798,10 +806,9 @@ export class BrowserErasure {
     /**
      * Whether a member read or call on `receiver` is browser state: the
      * operand rule, narrowed to receivers the deployment answers with a
-     * primitive. An answered string is a native string, so its methods
-     * lower natively unless the whole use folds; an answered object (a
-     * query bag, a rect) has no native spelling and keeps its members
-     * browser state.
+     * value that has a native spelling, whose members lower natively
+     * unless the whole use folds. Members of an answered value without one
+     * stay browser state.
      */
     private browserReceiverTaint(
         receiver: ts.Expression,
@@ -810,8 +817,7 @@ export class BrowserErasure {
         if (!this.isBrowserOnlyExpression(receiver)) return false;
         const answered = this.evaluateBrowserValue(receiver);
         return (
-            answered === undefined ||
-            !isPrimitiveBrowserValue(answered) ||
+            !(answered && hasNativeSpelling(answered)) ||
             this.evaluateBrowserValue(whole) !== undefined
         );
     }

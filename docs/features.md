@@ -107,7 +107,7 @@ buffers; MessagePort, shared memory and broader transferable values refuse.
 | JSON | Represented parse/stringify, actual dynamic fields, index-key order, undefined-property omission | Replacers and cyclic serialization refuse |
 | Dates | Current/numeric/copy construction, now/getTime/valueOf/setTime, UTC `toISOString` | No string/calendar constructors or broader methods |
 | Intl | Default DateTimeFormat and resolved time zone | No explicit locale/options, formatting or broader fields |
-| URLSearchParams | String constructor, get/has, duplicate order, decoding, optional has value | Mutation, serialization, iteration and other constructors refuse |
+| URLSearchParams | String constructor, get/has, duplicate order, decoding, optional has value; deployment-query reads fold, and a runtime-key read parses the deployment query natively | Mutation, serialization, iteration and other constructors refuse; a deployment bag parsed for a runtime key is one per function, not one object, and a bag passed to a helper stays browser state |
 | Binary data | ArrayBuffer, DataView getters/setters, Int8/Uint8/Int16/Uint16/Int32/Uint32/Float32/Float64 arrays | Unrepresented element/storage consumers refuse |
 
 Typed-array buffer views retain bytes, offset, length and identity. Constructors check ToIndex,
