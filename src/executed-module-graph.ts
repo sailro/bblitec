@@ -15,12 +15,14 @@
  * data fails here, at its own import, rather than being executed against a
  * shim — which is the same boundary the browser route draws, one engine over.
  */
-import { existsSync, readFileSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { readFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
 import ts from "typescript";
+import { resolveRepositoryModuleFile } from "./bake-cache.js";
 import { transpileForBrowser } from "./browser-harness.js";
 import { javascriptModuleUrl } from "./data-url.js";
 import type { ExecutedModuleSource } from "./executed-module-assets.js";
+import { moduleImportKind } from "./module-imports.js";
 import { moduleSpecifiers } from "./typescript-module-specifiers.js";
 
 /**
@@ -121,7 +123,14 @@ function moduleDataUrl(
     for (const specifier of moduleSpecifiers(file)) {
         // A type-only import is erased by the transpiler and never runs, so
         // the module it names is not part of the executed graph.
-        if (isTypeOnlySpecifier(specifier)) continue;
+        const declaration = specifier.parent;
+        if (
+            (ts.isImportDeclaration(declaration) ||
+                ts.isExportDeclaration(declaration)) &&
+            moduleImportKind(declaration) === "type"
+        ) {
+            continue;
+        }
         const text = specifier.text;
         if (!text.startsWith("./") && !text.startsWith("../")) {
             throw new Error(
@@ -129,7 +138,18 @@ function moduleDataUrl(
                     "module may only import its own relative siblings.",
             );
         }
-        const sibling = siblingModulePath(modulePath, text);
+        // The same resolver that keys this module's bake, so a sibling
+        // spelled with `.js`, no extension, or as a directory `index.ts`
+        // executes as the file the cache identity already named.
+        const sibling = resolveRepositoryModuleFile(
+            resolve(dirname(modulePath), text),
+        );
+        if (sibling === undefined) {
+            throw new Error(
+                `Executed module ${modulePath} imports '${text}'; no sibling ` +
+                    "module resolves to that path.",
+            );
+        }
         edits.push({
             start: specifier.getStart(file),
             end: specifier.getEnd(),
@@ -145,37 +165,4 @@ function moduleDataUrl(
     const url = javascriptModuleUrl(javascript);
     building.set(modulePath, url);
     return url;
-}
-
-/**
- * Whether an import or export names its module for types only, so the
- * transpiler erases it: `import type`, `export type ... from`, or a named
- * import whose every binding is `type`.
- */
-function isTypeOnlySpecifier(specifier: ts.StringLiteralLike): boolean {
-    const declaration = specifier.parent;
-    if (ts.isImportDeclaration(declaration)) {
-        const clause = declaration.importClause;
-        if (!clause) return false;
-        if (clause.isTypeOnly) return true;
-        const bindings = clause.namedBindings;
-        return !clause.name && bindings !== undefined && ts.isNamedImports(bindings) &&
-            bindings.elements.length > 0 && bindings.elements.every((element) => element.isTypeOnly);
-    }
-    return ts.isExportDeclaration(declaration) && declaration.isTypeOnly;
-}
-
-/**
- * The file a relative specifier names, spelled as the corpus and its
- * consumers write it: with `.js` for a `.ts` sibling, with no extension for
- * a `.ts` sibling or a directory's `index.ts`, or with its own extension.
- */
-function siblingModulePath(from: string, specifier: string): string {
-    const base = resolve(dirname(from), specifier);
-    if (/\.[cm]?jsx?$/.test(specifier)) return base.replace(/\.js$/, ".ts");
-    if (/\.[cm]?tsx?$/.test(specifier) || /\.(json|mjs)$/.test(specifier)) return base;
-    for (const candidate of [`${base}.ts`, `${base}.tsx`, join(base, "index.ts")]) {
-        if (existsSync(candidate)) return candidate;
-    }
-    return `${base}.ts`;
 }

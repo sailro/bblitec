@@ -1,3 +1,4 @@
+// @ts-nocheck -- extensionless sibling imports, resolved by bblitec's executed-module graph.
 import { KINDS, seedCount } from "./counts";
 import type { Kind } from "./kinds";
 
