@@ -36,18 +36,17 @@ export function runModuleJsonSync(
     // ordinary lowering instead of folding to wrong data.
     const script =
         `const source = JSON.parse(process.env.BBLITE_MODULE_JSON_SOURCE);\n` +
-        `import(process.env.BBLITE_MODULE_JSON_MODULE)\n` +
-        `    .then((graph) => Promise.resolve(graph.executeModuleGraphCall(\n` +
-        `        source, source.argumentsJson)).then((value) => {\n` +
-        `        if (source.requireDocument && !graph.isRoundTripJsonData(value)) {\n` +
-        `            throw new Error("returns a value that is not a plain-data JSON document");\n` +
-        `        }\n` +
-        `        process.stdout.write(JSON.stringify(value));\n` +
-        `    }))\n` +
-        `    .catch((error) => {\n` +
-        `        console.error(String(error?.message ?? error));\n` +
-        `        process.exit(1);\n` +
-        `    });\n`;
+        `(async () => {\n` +
+        `    const graph = await import(process.env.BBLITE_MODULE_JSON_MODULE);\n` +
+        `    const value = await graph.executeModuleGraphCall(source, source.argumentsJson);\n` +
+        `    if (source.requireDocument && !graph.isRoundTripJsonData(value)) {\n` +
+        `        throw new Error("returns a value that is not a plain-data JSON document");\n` +
+        `    }\n` +
+        `    process.stdout.write(JSON.stringify(value));\n` +
+        `})().catch((error) => {\n` +
+        `    console.error(String(error?.message ?? error));\n` +
+        `    process.exit(1);\n` +
+        `});\n`;
     const value: unknown = JSON.parse(
         runGenerationChild({
             script,
@@ -79,7 +78,7 @@ export function tryModuleJsonDocument(
     exportName: string,
     argumentsJson: readonly unknown[],
 ): { value: unknown } | undefined {
-    const key = JSON.stringify([modulePath, exportName, argumentsJson, "document"]);
+    const key = JSON.stringify([modulePath, exportName, argumentsJson, true]);
     if (declinedKeys.has(key)) return undefined;
     try {
         return { value: runModuleJsonSync(modulePath, exportName, argumentsJson, { requireDocument: true }) };

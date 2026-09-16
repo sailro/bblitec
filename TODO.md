@@ -40,6 +40,7 @@ Open gaps only. [Features](docs/features.md) owns support; [fidelity](docs/fidel
 
 ## Assets and composition
 
+- [ ] Guard the canvas-readback data function against a non-round-trip result: a closed data function returning a Map or Set serializes to `{}` and bakes wrong pixels silently; validate through `isRoundTripJsonData` at the `runModuleJsonSync` boundary and fail loudly there, letting the fold caller decline and the readback caller refuse (`canvas-readback.ts`, `module-json-sync.ts`, `executed-module-graph.ts`).
 - [ ] Share Chromium pages and transpiled graphs per generation (`browser-harness.ts`).
 - [ ] Replace handwritten voxel-save parsing with typed JSON (`js_voxel_file.hpp`).
 - [ ] Share plugin getCustomCode evaluation with PinnedShaderText (`material-plugin.ts`).

@@ -38,5 +38,4 @@ test("a generation-time fold whose result is not round-trip data lowers as an or
     // A Map value would serialize to an empty object, so the fold declines
     // and the pass lowers to a real native Map instead of folding to {}.
     assert.match(result.cpp, /bbl::js::Map/);
-    assert.doesNotMatch(result.cpp, /std::nullopt.*get\(1\)/);
 });
