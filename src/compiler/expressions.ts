@@ -437,6 +437,16 @@ export class ExpressionLowerer {
                     unwrapped,
                 );
             if (assignment) return assignment;
+            if (
+                this.context.isBrowserOnlyExpression(unwrapped) &&
+                this.context.evaluateBrowserValue(unwrapped) !== undefined
+            ) {
+                // A chain the deployment answers (`qs.get("drive") ||
+                // "Studio"`) is its folded constant wherever it is read,
+                // as a name or call answering the same way already is
+                // below; the native operator arms never see its null half.
+                return this.compileBrowserValue(unwrapped);
+            }
         }
 
         if (

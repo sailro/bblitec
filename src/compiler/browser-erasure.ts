@@ -6,7 +6,7 @@ import { deploymentUrl } from "./deployment.js";
 // the configured search string. Unrepresented browser instrumentation is
 // handled separately from observable platform operations.
 import ts from "typescript";
-import { argumentAt, identifierText } from "./syntax.js";
+import { argumentAt, identifierText, isAssignmentExpression } from "./syntax.js";
 import { promiseExecutor } from "./promise-executor.js";
 import { mathUnaryFold } from "./math-intrinsics.js";
 import type { Value } from "./types.js";
@@ -77,6 +77,16 @@ const NATIVE_DOM_BRIDGE_KINDS = new EmissionSet<Value["kind"]>([
     "worker-media-query",
     "offscreen-canvas",
 ]);
+
+/**
+ * A browser value with a native spelling: a number, string, boolean or
+ * null, never a query bag or a rect.
+ */
+export function isPrimitiveBrowserValue(
+    value: NonNullable<Value["browserValue"]>,
+): boolean {
+    return ["number", "boolean", "string", "null"].includes(value.kind);
+}
 
 export interface BrowserErasureContext
     extends Pick<LoweringServices,
@@ -504,22 +514,26 @@ export class BrowserErasure {
             ts.isPropertyAccessExpression(unwrapped) ||
             ts.isElementAccessExpression(unwrapped)
         ) {
-            return this.isBrowserOnlyExpression(
-                unwrapped.expression,
-            );
+            return this.browserReceiverTaint(unwrapped.expression, unwrapped);
         }
         if (ts.isBinaryExpression(unwrapped)) {
-            const unresolvedBrowserOperand = (operand: ts.Expression) =>
-                this.isBrowserOnlyExpression(operand) &&
-                !(
-                    ts.isIdentifier(operand) &&
-                    operand.text === "devicePixelRatio" &&
-                    this.isDefaultBrowserGlobal(operand)
-                );
-            return (
-                unresolvedBrowserOperand(unwrapped.left) ||
-                unresolvedBrowserOperand(unwrapped.right)
+            // `devicePixelRatio` alone has a native lowering of its own.
+            const operands = [unwrapped.left, unwrapped.right].filter(
+                (operand) =>
+                    !(
+                        ts.isIdentifier(operand) &&
+                        operand.text === "devicePixelRatio" &&
+                        this.isDefaultBrowserGlobal(operand)
+                    ),
             );
+            // An assignment to browser state stays browser state whatever
+            // the deployment answers about it: a folded value is not a
+            // place to write.
+            return isAssignmentExpression(unwrapped)
+                ? operands.some((operand) =>
+                      this.isBrowserOnlyExpression(operand),
+                  )
+                : this.browserOperandsTaint(operands, unwrapped);
         }
         if (ts.isPrefixUnaryExpression(unwrapped)) {
             return this.isBrowserOnlyExpression(
@@ -535,11 +549,10 @@ export class BrowserErasure {
                 return true;
             }
             if (
-                ts.isPropertyAccessExpression(
-                    unwrapped.expression,
-                ) &&
-                this.isBrowserOnlyExpression(
+                ts.isPropertyAccessExpression(unwrapped.expression) &&
+                this.browserReceiverTaint(
                     unwrapped.expression.expression,
+                    unwrapped,
                 )
             ) {
                 return true;
@@ -753,6 +766,53 @@ export class BrowserErasure {
                 ts.isIdentifier(receiver) &&
                 receiver.text === "document" &&
                 this.context.isDefaultLibraryIdentifier(receiver))
+        );
+    }
+
+    /**
+     * Whether an expression over `operands` is browser state.
+     *
+     * An operand the deployment does not answer keeps the whole expression
+     * browser state. Answered operands are constants with a native
+     * spelling, so the expression around them stays browser state only
+     * while it folds as a whole; once a native operand keeps it from
+     * folding, the expression is native and the constants lower beside
+     * that operand. A mixed `labTest || save === null` therefore neither
+     * refuses at its use nor, bound to a name, erases the native half of a
+     * later `live && bump()`, while a short-circuit the query decides
+     * stays folded.
+     */
+    private browserOperandsTaint(
+        operands: readonly ts.Expression[],
+        whole: ts.Expression,
+    ): boolean {
+        let answered = false;
+        for (const operand of operands) {
+            if (!this.isBrowserOnlyExpression(operand)) continue;
+            if (this.evaluateBrowserValue(operand) === undefined) return true;
+            answered = true;
+        }
+        return answered && this.evaluateBrowserValue(whole) !== undefined;
+    }
+
+    /**
+     * Whether a member read or call on `receiver` is browser state: the
+     * operand rule, narrowed to receivers the deployment answers with a
+     * primitive. An answered string is a native string, so its methods
+     * lower natively unless the whole use folds; an answered object (a
+     * query bag, a rect) has no native spelling and keeps its members
+     * browser state.
+     */
+    private browserReceiverTaint(
+        receiver: ts.Expression,
+        whole: ts.Expression,
+    ): boolean {
+        if (!this.isBrowserOnlyExpression(receiver)) return false;
+        const answered = this.evaluateBrowserValue(receiver);
+        return (
+            answered === undefined ||
+            !isPrimitiveBrowserValue(answered) ||
+            this.evaluateBrowserValue(whole) !== undefined
         );
     }
 
