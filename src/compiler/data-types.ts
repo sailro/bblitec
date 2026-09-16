@@ -254,6 +254,17 @@ interface DataTableDefinition {
   values: string;
 }
 
+/**
+ * A union member standing for an absent value: `null`, `undefined`, or an
+ * intersection the checker distributed one of them into (`S & undefined`,
+ * from narrowing `S | null` past a null check).
+ */
+function isAbsentMember(member: ts.Type): boolean {
+  const absent = ts.TypeFlags.Null | ts.TypeFlags.Undefined;
+  return (member.flags & absent) !== 0 ||
+    (member.isIntersection() && member.types.some((part) => (part.flags & absent) !== 0));
+}
+
 const numberType: DataType = { kind: "number" };
 const booleanType: DataType = { kind: "boolean" };
 
@@ -664,15 +675,12 @@ export class DataTypeRegistry {
     if (
       (type.flags & ts.TypeFlags.Union) !== 0 &&
       (type.flags & ts.TypeFlags.Boolean) === 0 &&
-      (type as ts.UnionType).types.some(
-        (member) =>
-          (member.flags & (ts.TypeFlags.Null | ts.TypeFlags.Undefined)) !== 0,
-      )
+      (type as ts.UnionType).types.some((member) => isAbsentMember(member))
     ) {
-      // Keep a lone T available to the active call substitution. The checker's
-      // NonNullable<T> intersection can otherwise discard that binding.
-      const present = (type as ts.UnionType).types.filter(member =>
-        (member.flags & (ts.TypeFlags.Null | ts.TypeFlags.Undefined)) === 0);
+      // A lone member maps as itself, which also registers it as its own
+      // record source; the checker's NonNullable<T> intersection would map
+      // through the intersection arm of `fromNonNullableType` instead.
+      const present = (type as ts.UnionType).types.filter(member => !isAbsentMember(member));
       const inner = present.length === 1
         ? this.fromTsType(present[0]!, node)
         : this.fromNonNullableType(this.checker.getNonNullableType(type), node);
@@ -689,6 +697,17 @@ export class DataTypeRegistry {
     return inner.kind === "optional" || inner.kind === "function" ||
       (inner.kind === "struct" && this.isReferenceStruct(inner.name))
       ? inner : { kind: "optional", inner, ...(undefinedOnly ? {undefinedOnly: true} : {}) };
+  }
+
+  /** The absent spelling of a nullable type: an empty optional, or the null reference of a shared object. */
+  public absentValue(type: DataType): string {
+    const cpp = this.cppType(type);
+    return type.kind === "optional" ? `${cpp}{std::nullopt}` : `${cpp}{}`;
+  }
+
+  /** `value` carried as the nullable `type`: wrapped for an optional, as itself for a shared object. */
+  public presentValue(type: DataType, value: string): string {
+    return type.kind === "optional" ? `${this.cppType(type)}{${value}}` : value;
   }
 
   public requireFromTsType(
@@ -728,6 +747,19 @@ export class DataTypeRegistry {
     finally { this.dynamicJsonStorage = previous; }
   }
 
+  /** `{}` or `object`: the checker's spelling of a non-null constraint, which adds no members of its own. */
+  private isNonNullConstraint(type: ts.Type): boolean {
+    if ((type.flags & ts.TypeFlags.NonPrimitive) !== 0) return true;
+    return (
+      (type.flags & ts.TypeFlags.Object) !== 0 &&
+      ((type as ts.ObjectType).objectFlags & ts.ObjectFlags.Anonymous) !== 0 &&
+      this.checker.getPropertiesOfType(type).length === 0 &&
+      type.getCallSignatures().length === 0 &&
+      type.getConstructSignatures().length === 0 &&
+      this.checker.getIndexInfosOfType(type).length === 0
+    );
+  }
+
   private fromNonNullableType(
     type: ts.Type,
     node: ts.Node,
@@ -762,6 +794,14 @@ export class DataTypeRegistry {
       return this.fromUnionType(type as ts.UnionType, node);
     }
     if ((type.flags & ts.TypeFlags.Intersection) !== 0) {
+      // `S & {}` is NonNullable<S>, the checker's type for a parameter
+      // narrowed past null: map `S` under the active substitution.
+      const constrained = (type as ts.IntersectionType).types.filter(
+        (member) => !this.isNonNullConstraint(member),
+      );
+      if (constrained.length === 1) {
+        return this.fromTsType(constrained[0]!, node);
+      }
       return this.fromStructType(type, node);
     }
     if ((type.flags & ts.TypeFlags.Object) === 0) {
@@ -1072,9 +1112,15 @@ export class DataTypeRegistry {
         members.map((member) => (member as ts.StringLiteralType).value),
       );
     }
+    const tuple = this.fromTupleUnion(type, node);
+    if (tuple) return tuple;
+    // A tagged union whose arm field cannot map has no representation: the
+    // common-field struct would hide that field and refuse at the literal
+    // that spells it, far from the cause.
+    const discriminated = this.fromDiscriminatedObjectUnion(type, node);
+    if (discriminated === null) return undefined;
     return (
-      this.fromTupleUnion(type, node) ??
-      this.fromDiscriminatedObjectUnion(type, node) ??
+      discriminated ??
       this.fromCommonObjectUnion(type, node) ??
       this.fromMixedUnion(type, node)
     );
@@ -1224,10 +1270,11 @@ export class DataTypeRegistry {
    * TypeScript's discriminant narrowing guarantees those inactive fields are
    * never observed by valid source code.
    */
+  /** `null` when the union is tagged but an arm's field has no representation. */
   private fromDiscriminatedObjectUnion(
     type: ts.UnionType,
     node: ts.Node,
-  ): DataType | undefined {
+  ): DataType | undefined | null {
     if (
       type.types.length < 2 ||
       type.types.some(
@@ -1336,7 +1383,7 @@ export class DataTypeRegistry {
           mapped = sharedProperty ? this.fromTsType(
             this.checker.getTypeOfSymbolAtLocation(sharedProperty, node), node,
           ) : undefined;
-          if (!mapped) return undefined;
+          if (!mapped) return null;
         } else {
           mapped = first;
         }

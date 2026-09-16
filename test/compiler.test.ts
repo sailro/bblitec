@@ -8096,6 +8096,21 @@ test("keeps a resolved browser number in a native counted loop", () => {
     assert.doesNotMatch(result.cpp, /Browser-dependent condition/);
 });
 
+test("a tagged union arm with an unrepresented field refuses at that field", () => {
+    assert.throws(
+        () =>
+            compileSource(`
+                type Outcome = { kind: "hit"; token: symbol } | { kind: "miss" };
+                function outcome(hit: boolean): Outcome {
+                    return hit ? { kind: "hit", token: Symbol("hit") } : { kind: "miss" };
+                }
+                const first = outcome(Date.now() > 0);
+                if (first.kind !== "hit") throw new Error("outcome");
+            `),
+        (error: Error) => /Symbol/.test(error.message) && !/unknown field/.test(error.message),
+    );
+});
+
 test("does not lower an unreachable logical right operand", () => {
     assert.doesNotThrow(() =>
         compileSource(`

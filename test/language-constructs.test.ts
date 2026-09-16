@@ -1701,6 +1701,31 @@ check("query-helpers-with-parameters", `
     if (report !== "6:6;-1:none;-1:fly;6:true,fly,-") throw new Error(report);
 `, { search: "?w=6&wire=1&mode=fly" });
 
+check("narrowed-type-parameters", `
+    interface Save { size: number; }
+    type Plan<S> = { kind: "fresh" } | { kind: "restore"; save: S };
+    interface Intent<S> { plan: Plan<S>; skipSplash: boolean; }
+    function plan<S>(save: S | null): Plan<S> {
+        return save === null ? { kind: "fresh" } : { kind: "restore", save };
+    }
+    function intent<S>(plan: Plan<S>): Intent<S> {
+        return { plan, skipSplash: false };
+    }
+    function pick<S>(candidate: S | null, fallback: S): S {
+        return candidate === null ? fallback : candidate;
+    }
+    const saves: (Save | null)[] = [{ size: 3 }, null];
+    const restored = plan(saves[Date.now() > 0 ? 0 : 1]);
+    const fresh = intent(plan(saves[1]));
+    const chosen = pick(saves[1], { size: 7 });
+    if (restored.kind !== "restore" || restored.save.size !== 3 || fresh.plan.kind !== "fresh" || chosen.size !== 7) throw new Error("narrowed " + restored.kind + fresh.plan.kind);
+    const index = Date.now() > 0 ? 1 : 0;
+    let seen = "";
+    if (saves[index] === null) seen += "null;";
+    if (saves[index]) seen += "truthy;";
+    if (seen !== "null;") throw new Error(seen);
+`);
+
 test("private brand checks refuse explicitly", () => {
     assert.throws(() => compileSource(`
         class Tagged { #mark = 1; static has(value: object): boolean { return #mark in value; } }
