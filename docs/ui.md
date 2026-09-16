@@ -33,7 +33,9 @@ needs performance and semantic verification. The easing/steps mapping is approxi
   GPU constructor/prototype instrumentation are unsupported.
 - Location follows deployment. A query value the deployment answers is a constant: alone, beside native
   operands in comparisons, arithmetic and logical chains, or as the receiver of a native string method; a
-  short-circuit it decides stays folded. Conditions over browser values the deployment does not answer refuse. Reload completes the task/microtasks then
+  short-circuit it decides stays folded. A query read the fold cannot answer, such as a key computed at run
+  time, parses the deployment query natively. Conditions over browser values the deployment does not answer
+  refuse. Reload completes the task/microtasks then
   recreates realms, retaining durable storage. Other navigation refuses. Screen/viewport metrics use CSS
   pixels at display scale.
 - The Window service provides promise-backed clipboard text writes; reads/rich data are unsupported.

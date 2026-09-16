@@ -353,7 +353,10 @@ export function compileDataMethodCall(
             ? lowerer.context.compileValue(ownerExpression)
             : ts.isIdentifier(ownerExpression)
               ? (lowerer.context.lookupIdentifierValue(ownerExpression) ??
-                (lowerer.dataTypeAt(ownerExpression)?.kind === "string"
+                // A module string or query bag without a runtime binding
+                // is its value at the use site: the query bag parses the
+                // deployment query natively when the read did not fold.
+                (["string", "search-params"].includes(lowerer.dataTypeAt(ownerExpression)?.kind ?? "")
                     ? lowerer.context.compileValue(ownerExpression)
                     : lowerer.compileStaticContainer(ownerExpression)))
               : (ts.isPropertyAccessExpression(ownerExpression) ||

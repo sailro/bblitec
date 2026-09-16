@@ -798,10 +798,12 @@ export class BrowserErasure {
     /**
      * Whether a member read or call on `receiver` is browser state: the
      * operand rule, narrowed to receivers the deployment answers with a
-     * primitive. An answered string is a native string, so its methods
-     * lower natively unless the whole use folds; an answered object (a
-     * query bag, a rect) has no native spelling and keeps its members
-     * browser state.
+     * value that has a native spelling. An answered string is a native
+     * string, so its methods lower natively unless the whole use folds;
+     * an answered query bag whose read the fold cannot answer (a key
+     * computed at run time) parses the deployment query natively; an
+     * answered rect or canvas has no native spelling and keeps its
+     * members browser state.
      */
     private browserReceiverTaint(
         receiver: ts.Expression,
@@ -811,7 +813,10 @@ export class BrowserErasure {
         const answered = this.evaluateBrowserValue(receiver);
         return (
             answered === undefined ||
-            !isPrimitiveBrowserValue(answered) ||
+            !(
+                isPrimitiveBrowserValue(answered) ||
+                answered.kind === "search-params"
+            ) ||
             this.evaluateBrowserValue(whole) !== undefined
         );
     }
