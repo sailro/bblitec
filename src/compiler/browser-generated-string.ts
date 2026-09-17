@@ -18,6 +18,7 @@ import { EmissionMap } from "./emission-transaction.js";
 import ts from "typescript";
 
 import { cachedBakeSync, moduleIdentity } from "../bake-cache.js";
+import { canvasBakeBrowserArgs } from "../browser-harness.js";
 import { tryResolveFunctionDeclaration } from "./user-functions.js";
 import { runGenerationChild } from "./generation-child.js";
 import { transpileCommonJs } from "../typescript-transpile.js";
@@ -161,7 +162,7 @@ export function cachedBrowserGeneratedString(
             version: "1",
             module: moduleIdentity(import.meta.url),
             browser: true,
-            parameters: { functionName, arguments: argumentsText },
+            parameters: { functionName, arguments: argumentsText, browserArgs: canvasBakeBrowserArgs },
             inputs: [Buffer.from(javascript, "utf8")],
         },
         () => Buffer.from(run(javascript, functionName), "utf8"),
@@ -173,7 +174,7 @@ export function cachedBrowserGeneratedString(
  * Execute the transpiled helper in the capture Chromium and return the
  * string it assigned to `__bbliteGeneratedString`. The subprocess
  * imports the one launch ceremony from `browser-harness.js`; like the
- * drawn-atlas Canvas2D bake it passes no Chromium flags, and the script
+ * drawn-atlas Canvas2D bake it uses the capture rasterizer on Linux. The script
  * runs on the fresh page exactly as it always has (`addScriptTag` on the
  * unnavigated page — the served shell exists only because the ceremony
  * hosts one).
@@ -201,6 +202,7 @@ function runCanvasHelperInChromium(
             {
                 serverName: "Canvas2D helper server",
                 browserRequirement: "Canvas2D texture generation requires Chromium.",
+                browserArgs: ${JSON.stringify(canvasBakeBrowserArgs)},
             },
             async (page) => {
                 await page.addScriptTag({ content: code });

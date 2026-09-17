@@ -5,6 +5,7 @@
 // surface as the generated parser misreading its own generated container.
 import assert from "node:assert/strict";
 import test from "node:test";
+import { readFileSync } from "node:fs";
 
 import {
     CompressedTextureLowerer,
@@ -14,6 +15,8 @@ import { LoweringContext } from "../src/lowering/context.js";
 import { UpstreamSourceStore } from "../src/upstream-source.js";
 import { writeKtx1 } from "../src/basis-transcode.js";
 import { isKtx1, packageKtx1 } from "../src/compressed-texture-package.js";
+import { compressedTextureUrls } from "../src/compiler/compressed-texture.js";
+import { compileSource } from "../src/compiler.js";
 
 function lowerer(): CompressedTextureLowerer {
     return new CompressedTextureLowerer(
@@ -61,7 +64,7 @@ test("reads the KTX1 header layout off the pinned parser", () => {
 test("emits the block-compressed rows both backends bind", () => {
     const emitted = lowerer().lower();
     const names = [
-        ...emitted.header.matchAll(/"(bc[^"]+)"/g),
+        ...emitted.header.matchAll(/"((?:bc|astc-)[^"]+)"/g),
     ].map((match) => match[1]!);
     assert.deepEqual(
         [...new Set(names)].sort(),
@@ -70,11 +73,11 @@ test("emits the block-compressed rows both backends bind", () => {
     // The pin maps two GL enums onto BC1 (its RGB and RGBA spellings), so
     // the row count exceeds the format count by exactly that pair.
     assert.equal(names.length, uploadableCompressedFormats.length + 1);
-    // ETC2 and ASTC rows exist in the pinned table and are not emitted:
-    // no D3D12 adapter reports either feature, and a container naming one
-    // refuses where the pin refuses an unknown format.
+    const nativeFormats = [...readFileSync("native/src/pal_compressed_formats.hpp", "utf8")
+        .matchAll(/F\(\w+, "([^"]+)"/g)].map(match => match[1]!);
+    assert.deepEqual(nativeFormats.sort(), [...uploadableCompressedFormats].sort());
     assert.ok(!emitted.header.includes("etc2-"));
-    assert.ok(!emitted.header.includes("astc-"));
+    assert.ok(emitted.header.includes("astc-8x8-unorm"));
 });
 
 test("resolves a KTX suffix through the pin's own feature mapping", () => {
@@ -190,11 +193,41 @@ test("refuses a transcode whose chain does not halve", () => {
 
 test("refuses to package a format the pinned table has no enum for", () => {
     assert.throws(
-        () => lowerer().glInternalFormat("astc-4x4-unorm"),
-        /no KTX1 enum for 'astc-4x4-unorm'/,
+        () => lowerer().glInternalFormat("etc2-rgb8unorm"),
+        /no KTX1 enum for 'etc2-rgb8unorm'/,
     );
 });
 
+test("preserves KTX candidate priority rather than selecting the generation host's BC variant", () => {
+    assert.deepEqual(compressedTextureUrls("https://host/grid.png?v=2", ["-astc.ktx", "-dxt.ktx", "-etc2.ktx"]), [
+        "https://host/grid-astc.ktx?v=2", "https://host/grid-dxt.ktx?v=2",
+    ]);
+    assert.deepEqual(compressedTextureUrls("https://host/grid.png", ["-dxt.ktx", "-astc.ktx"]), [
+        "https://host/grid-dxt.ktx", "https://host/grid-astc.ktx",
+    ]);
+    const result = compileSource(`
+import { createEngine, loadKtxTexture2D } from "@babylonjs/lite";
+const engine = await createEngine(document.getElementById("renderCanvas"));
+const texture = await loadKtxTexture2D(engine, "https://host/grid.png", ["-astc.ktx", "-dxt.ktx"]);
+`);
+    assert.match(result.cpp, /load_compressed_texture_variants\(/);
+    assert.deepEqual(result.manifest.assets.map(asset => asset.source), [
+        "https://host/grid-astc.ktx", "https://host/grid-dxt.ktx",
+    ]);
+});
+
+test("packages every pinned ASTC block size and its sRGB twin", async () => {
+    const compressed = lowerer();
+    for (const format of uploadableCompressedFormats.filter(format => format.startsWith("astc-"))) {
+        const block = compressed.blockSize(format);
+        const container = writeKtx1({
+            gpuFormat: format, width: block.width, height: block.height,
+            mips: [{ width: block.width, height: block.height, bytes: new Uint8Array(16) }],
+        }, compressed.magicBytes(), compressed.glInternalFormat(format), compressed.headerLayout());
+        await packageKtx1(container);
+    }
+    assert.equal(compressed.glInternalFormat("astc-8x8-unorm"), 0x93b7);
+});
 test("packages an sRGB KTX2 slot under the pin's own sRGB twin", () => {
     const compressed = lowerer();
     // A KTX2 transcode is colour-space-agnostic: uploadKtx2Texture2D decodes

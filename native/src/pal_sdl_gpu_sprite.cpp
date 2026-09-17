@@ -373,11 +373,11 @@ public:
                     engine, passes, first_index);
             SDL_GPUColorTargetInfo color_target{};
             color_target.texture = target;
-            color_target.clear_color = SDL_FColor{
+            color_target.clear_color = gpu_clear_color(device, swapchain_format, SDL_FColor{
                 first_renderer.clear_value.r,
                 first_renderer.clear_value.g,
                 first_renderer.clear_value.b,
-                first_renderer.clear_value.a};
+                first_renderer.clear_value.a});
             color_target.load_op = first_renderer.clear
                 ? SDL_GPU_LOADOP_CLEAR
                 : SDL_GPU_LOADOP_LOAD;

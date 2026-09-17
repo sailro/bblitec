@@ -100,6 +100,8 @@ The sweep builds four APKs concurrently after preparing dependencies, then captu
 registered pose and golden dimensions. It preserves thresholds, restores display size and distinguishes
 unsupported features, failures and mismatches. --scene is repeatable; --parallel and --jobs control builds.
 Evidence is in artifacts/android/sweep/<run-id>. Standalone builds must run outside an active sweep.
+For device-local rendering measurements instead of registered-reference comparisons, see
+[same-device diagnosis](debugging.md#same-device-rendering-comparisons).
 
 Use adb devices -l to select an authorized, unlocked phone or a Vulkan-capable emulator:
 

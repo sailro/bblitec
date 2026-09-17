@@ -97,6 +97,7 @@ var<uniform> nmeShadowParams: Node;`;
 });
 
 test("offline targets select only their executable format", () => {
+    assert.deepEqual(offlineShaderFormats("d3d12").binaries[0]!.flags, ["-O3"]);
     for (const [target, binaries, metal] of [
         ["d3d12", [".dxil"], false], ["vulkan", [".spv", ".demote.spv"], false],
         ["metal", [], true], ["all", [".dxil", ".spv", ".demote.spv"], true],
@@ -163,6 +164,27 @@ test("Vulkan discard has a helper-invocation variant and a baseline device fallb
         const opcodes = new Set([...spirvInstructions(readFileSync(join(directory, `simple.frag${extension}`)))].map(i => i.opcode));
         assert.ok(opcodes.has(discard), extension);
         assert.ok(!opcodes.has(absent), extension);
+    }
+});
+
+test("Vulkan preserves floating-point division and its dependent sampled branch", { skip: !tools.tint || !tools.dxc }, t => {
+    const root = fixtureRoot(t);
+    const directory = shaderDirectory(root, "division-branch", `
+@group(3) @binding(0) var<uniform> params: vec4f;
+@group(2) @binding(0) var color: texture_2d<f32>;
+@group(2) @binding(1) var colorSampler: sampler;
+@fragment fn main(@builtin(position) position: vec4f) -> @location(0) vec4f {
+    let ratio = params.x / params.x;
+    if (ratio == 1.0) { return vec4f(0.0, 1.0, 0.0, 1.0); }
+    return textureSample(color, colorSampler, position.xy / params.yz);
+}`);
+    compileOfflineShaders({ directories: [directory], repositoryRoot: root, target: "vulkan", tools });
+    for (const extension of [".spv", ".demote.spv"]) {
+        const opcodes = new Set([...spirvInstructions(readFileSync(join(directory, `simple.frag${extension}`)))].map(instruction => instruction.opcode));
+        assert.ok(opcodes.has(136), `${extension} retains OpFDiv instead of folding x/x to one`);
+        assert.ok(opcodes.has(180), `${extension} retains the source floating-point comparison`);
+        assert.ok(opcodes.has(27), `${extension} retains the branch's combined sampled-image type`);
+        assert.ok(!opcodes.has(26), `${extension} does not introduce separate SDL-incompatible samplers`);
     }
 });
 

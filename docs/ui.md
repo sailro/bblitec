@@ -179,7 +179,7 @@ can differ from Chromium. Relative transition units resolve at transition start.
 | `rmlui-object-fit.patch` | Image fitting |
 | `rmlui-overflow-wrap.patch` | Emergency wrapping |
 | `rmlui-transform-key-ownership.patch` | Transition key lifetime |
-| `rmlui-zzz-android-charconv.patch` | Locale-independent CSS number parsing with NDK libc++ |
+| `rmlui-zzz-android-charconv.patch` | Locale-independent CSS number parsing with Android/macOS libc++ |
 
 ## Rendering
 

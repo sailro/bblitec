@@ -6,6 +6,7 @@
 #include "pal_sdl_gpu_commands.hpp"
 #include "pal_dawn_resources.hpp"
 #include <cassert>
+#include <cmath>
 #include <deque>
 
 struct SDL_GPUTexture { SDL_GPUTextureCreateInfo info{}; bool released = false; };
@@ -73,6 +74,7 @@ extern "C" SDL_GPURenderPass* SDLCALL SDL_BeginGPURenderPass(
 }
 extern "C" void SDLCALL SDL_EndGPURenderPass(SDL_GPURenderPass*) {}
 extern "C" void SDLCALL SDL_BlitGPUTexture(SDL_GPUCommandBuffer*, const SDL_GPUBlitInfo* blit) { blits.push_back(*blit); }
+extern "C" const char* SDLCALL SDL_GetGPUDeviceDriver(SDL_GPUDevice*) { return "direct3d12"; }
 extern "C" SDL_GPUTransferBuffer* SDLCALL SDL_CreateGPUTransferBuffer(SDL_GPUDevice*, const SDL_GPUTransferBufferCreateInfo* info) {
     transfers.emplace_back(std::vector<std::uint8_t>(info->size)); return &transfers.back();
 }
@@ -124,6 +126,7 @@ struct TextGpuCapture;
 void CaptureGate::maybe_write_standalone_render_capture(const char*, const Engine&, std::uint32_t, std::uint32_t, long, TextGpuCapture*) {}
 [[noreturn]] void gpu_error(const char* operation) { throw std::runtime_error(operation); }
 [[noreturn]] void dawn_error(const std::string& operation) { throw std::runtime_error(operation); }
+#include "clear-color.hpp"
 #include "buffer-batch.hpp"
 SDL_GPUSampleCount gpu_sample_count_from(std::uint32_t samples) {
     assert(samples == 4); return SDL_GPU_SAMPLECOUNT_4;

@@ -25,7 +25,8 @@ class TextureUploadCache {
     static bool same_image(const TextureData& left, const TextureData& right) {
         if (left.bytes.data() != right.bytes.data() || left.bytes.size() != right.bytes.size() ||
             left.rgba_width != right.rgba_width || left.rgba_height != right.rgba_height ||
-            left.invert_y != right.invert_y || left.premultiply_alpha != right.premultiply_alpha) return false;
+            left.invert_y != right.invert_y || left.premultiply_alpha != right.premultiply_alpha ||
+            left.compressed_alternatives != right.compressed_alternatives) return false;
         const auto& a = left.compressed;
         const auto& b = right.compressed;
         if (a.storage != b.storage || a.format != b.format || a.width != b.width || a.height != b.height ||

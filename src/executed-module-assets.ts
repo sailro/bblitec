@@ -27,6 +27,7 @@ import { relative, resolve, sep } from "node:path";
 import { createSuiteSceneServer } from "./capture-suite-reference.js";
 import { parseDataUrl } from "./data-url.js";
 import {
+    canvasBakeBrowserArgs,
     pageBase64Script,
     runPageGlobal,
 } from "./browser-harness.js";
@@ -137,6 +138,7 @@ async function evaluateModuleExport(
                 parameters: {
                     module: relativePath,
                     exportName: source.exportName,
+                    browserArgs: canvasBakeBrowserArgs,
                 },
                 inputs: closure,
             },
@@ -183,6 +185,7 @@ window.__runModuleExport = () =>
             serverName: `${relativePath} server`,
             browserRequirement:
                 "Baking a scene module's own output requires Chrome or Edge.",
+            browserArgs: canvasBakeBrowserArgs,
         },
     );
     if (typeof result !== "string") {

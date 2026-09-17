@@ -1698,11 +1698,15 @@ using Storage = Ref<StorageTag>;
 using DateTimeFormat = Ref<std::string>;
 #ifdef __ANDROID__
 std::string android_time_zone();
+#elif defined(__APPLE__)
+std::string macos_time_zone();
 #endif
 
 [[nodiscard]] inline DateTimeFormat make_date_time_format() {
 #ifdef __ANDROID__
     return make_ref<std::string>(android_time_zone());
+#elif defined(__APPLE__)
+    return make_ref<std::string>(macos_time_zone());
 #else
     return make_ref<std::string>(std::chrono::current_zone()->name());
 #endif

@@ -37,3 +37,21 @@ export function startEngine(engine) {
 }
 `;
 }
+
+/** Evaluated in the browser; the caller must await this asynchronous polling loop. */
+export async function waitForCapturedEngines(timeoutMs: number): Promise<void> {
+    const deadline = Date.now() + timeoutMs;
+    for (;;) {
+        const response = await fetch("/__capture/engines");
+        if (!response.ok) throw new Error("Engine capture status request failed.");
+        const state: { completed: number; expected: number } = await response.json();
+        if (state.completed > state.expected) {
+            throw new Error("More engines started than the capture declares.");
+        }
+        if (state.completed === state.expected) return;
+        if (Date.now() >= deadline) {
+            throw new Error("Timed out waiting for every engine to reach the capture frame.");
+        }
+        await new Promise<void>((resolve) => setTimeout(resolve, 50));
+    }
+}

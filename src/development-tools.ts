@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { developmentTriplet } from "./build-options.js";
 
@@ -75,14 +75,14 @@ function findExecutable(
         isAbsolute(command) || command.includes("/") || command.includes("\\");
     if (hasDirectory) {
         const candidate = isAbsolute(command) ? command : resolve(cwd, command);
-        return existsSync(candidate) ? candidate : undefined;
+        return statSync(candidate, { throwIfNoEntry: false })?.isFile() ? candidate : undefined;
     }
     const path = environmentValue(environment, "PATH") ?? "";
     const pathDelimiter = platform === "win32" ? ";" : ":";
     for (const directory of path.split(pathDelimiter).filter(Boolean)) {
         for (const name of executableNames(command, platform)) {
             const candidate = resolve(cwd, directory.replace(/^"|"$/g, ""), name);
-            if (existsSync(candidate)) return candidate;
+            if (statSync(candidate, { throwIfNoEntry: false })?.isFile()) return candidate;
         }
     }
     return undefined;

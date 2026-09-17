@@ -113,6 +113,15 @@ int main() {
         other_blocks = blocks;
         other_blocks.compressed.format = "bc1-rgba-unorm-srgb";
         assert(acquire(other_blocks) != compressed);
+        auto variants = blocks;
+        variants.compressed_alternatives = std::make_shared<const std::vector<bbl::CompressedTexture>>(
+            std::vector<bbl::CompressedTexture>{other_blocks.compressed});
+        auto variant_image = acquire(variants);
+        assert(variant_image != compressed);
+        auto variant_alias = variants;
+        assert(acquire(variant_alias) == variant_image);
+        variant_alias.compressed_alternatives = std::make_shared<const std::vector<bbl::CompressedTexture>>();
+        assert(acquire(variant_alias) != variant_image);
     }
     assert(textures == 0 && samplers == 0);
     try {

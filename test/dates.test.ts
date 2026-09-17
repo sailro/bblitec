@@ -1,12 +1,30 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import test from "node:test";
 import { compileSource } from "../src/compiler.js";
-import { optionalNativeFixtureTools, runNativeFixtureCompiler } from "./native-fixture.js";
+import { cppFunction, optionalNativeFixtureTools, runNativeFixtureCompiler } from "./native-fixture.js";
 
 const native = optionalNativeFixtureTools(false);
+
+test("macOS default time zone matches the browser without libc++ timezone support", { skip: process.platform !== "darwin" }, () => {
+    const directory = resolve("artifacts/macos-time-zone");
+    mkdirSync(directory, { recursive: true });
+    const source = join(directory, "check.cpp"), executable = join(directory, "check");
+    const implementation = cppFunction(readFileSync("native/src/pal.cpp", "utf8"), "std::string js::macos_time_zone()");
+    writeFileSync(source, `#include <bblite/js_data.hpp>
+#include <CoreFoundation/CoreFoundation.h>
+#include <iostream>
+namespace bbl { ${implementation} }
+int main() { std::cout << *bbl::js::make_date_time_format(); }
+`);
+    const triplet = process.arch === "arm64" ? "arm64-osx" : "x64-osx";
+    execFileSync(process.env.CXX ?? "clang++", ["-std=c++20", "-Wall", "-Wextra", "-Werror",
+        "-I", "native/include", "-I", `artifacts/vcpkg-installed/development-full/${triplet}/include`,
+        source, "-framework", "CoreFoundation", "-o", executable], { stdio: "pipe" });
+    assert.equal(execFileSync(executable, { encoding: "utf8" }), Intl.DateTimeFormat().resolvedOptions().timeZone);
+});
 
 test("Date values retain identity, mutable timestamps and UTC formatting", {skip: !native}, () => {
     const timestamps = [0, -1, 1, -0.9, 0.9, 951782400123, -62167219200000, -62198755200000,

@@ -5,6 +5,32 @@ import { dirname, join, resolve } from "node:path";
 import test from "node:test";
 import { discoverDevelopmentTools } from "../src/development-tools.js";
 import { androidPackageArguments } from "../src/shipping-android.js";
+import { androidCaptureSettings } from "../src/android-capture.js";
+import { resolveScene } from "../src/scene-registry.js";
+
+test("Android canvas-only capture changes pixels, not the registered pose or frame budget", () => {
+    const scene = resolveScene("tetris");
+    const original = structuredClone(scene.parity?.nativeEnvironment);
+    const full = androidCaptureSettings(scene);
+    const canvas = androidCaptureSettings(scene, true);
+    const expected: typeof canvas = {
+        captureFrame: full.captureFrame,
+        captureEnvironment: { ...full.captureEnvironment, BBLITE_CAPTURE_UI: "0" },
+    };
+    assert.deepEqual(canvas, expected);
+    assert.equal(canvas.captureEnvironment.BBLITE_TEST_PASS, "1");
+    assert.equal(Number(canvas.captureEnvironment.BBLITE_MAX_FRAMES), Number(canvas.captureFrame) + 1);
+    assert.equal(canvas.captureEnvironment.BBLITE_SCREENSHOT_FRAME, undefined);
+    assert.deepEqual(scene.parity?.nativeEnvironment, original);
+    assert.deepEqual(androidCaptureSettings(undefined), {
+        captureFrame: "5", captureEnvironment: { BBLITE_MAX_FRAMES: "8" },
+    });
+    assert.deepEqual(androidCaptureSettings(undefined, true), {
+        captureFrame: "5", captureEnvironment: { BBLITE_MAX_FRAMES: "8", BBLITE_CAPTURE_UI: "0" },
+    });
+    const activity = readFileSync("native/android/app/src/main/java/org/bblite/prototype/MainActivity.java", "utf8");
+    assert.match(activity, /FLAG_DEBUGGABLE[\s\S]*"BBLITE_CAPTURE_UI"[\s\S]*nativeSetenv\(key, value\)/);
+});
 
 const cmake = discoverDevelopmentTools().cmake;
 test("Android sweep installs only dependencies reached by its selected scenes", { skip: !cmake }, t => {

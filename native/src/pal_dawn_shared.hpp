@@ -504,23 +504,20 @@ inline void create_dawn_device(
     WGPUDeviceDescriptor device_descriptor = WGPU_DEVICE_DESCRIPTOR_INIT;
     // `engine.ts` requests each optional feature the adapter offers rather
     // than the ones a scene reaches, so a later enable call needs no second
-    // device; this asks for the three that arm of the list this port uses.
+    // device; this asks for the features that arm of the list this port uses.
     // Float32-filterable is what the depth-copy r32float texture relies on,
     // primitive-index unlocks the triangle-cluster diagnostic shader's
     // `enable primitive_index` directive (attribution captures only), and
-    // texture-compression-bc is what a KTX or transcoded Basis texture
-    // uploads through.
-#if BBLITE_OFFSCREEN_SURFACES
-    std::array<WGPUFeatureName, 4> device_features{};
-#else
-    std::array<WGPUFeatureName, 3> device_features{};
-#endif
+    // BC/ASTC are the compressed formats used by packaged texture candidates.
+    constexpr std::array optional_features{
+        WGPUFeatureName_Float32Filterable,
+        WGPUFeatureName_PrimitiveIndex,
+        WGPUFeatureName_TextureCompressionBC,
+        WGPUFeatureName_TextureCompressionASTC,
+    };
+    std::array<WGPUFeatureName, optional_features.size() + 1> device_features{};
     std::size_t device_feature_count = 0;
-    for (const WGPUFeatureName feature : {
-             WGPUFeatureName_Float32Filterable,
-             WGPUFeatureName_PrimitiveIndex,
-             WGPUFeatureName_TextureCompressionBC,
-         }) {
+    for (const WGPUFeatureName feature : optional_features) {
         if (wgpuAdapterHasFeature(state.adapter, feature)) {
             device_features[device_feature_count++] = feature;
         }

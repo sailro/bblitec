@@ -9,7 +9,7 @@ import {
     sep,
 } from "node:path";
 import type { NativeHostUi } from "./compiler/types.js";
-import { engineCaptureEntryUrl, engineFrameCaptureModule } from "./capture-engine-frames.js";
+import { engineCaptureEntryUrl, engineFrameCaptureModule, waitForCapturedEngines } from "./capture-engine-frames.js";
 import {
     nativeHostUiStyleRules,
     uiStyleSelector,
@@ -870,12 +870,7 @@ export async function captureSuiteReference(
                 options.independentEngines === undefined ? options.fixedAnimationFrame : undefined,
             );
             if (options.independentEngines !== undefined) {
-                await page.waitForFunction(async () => {
-                    const response = await fetch("/__capture/engines");
-                    const state: { completed: number; expected: number } = await response.json();
-                    if (state.completed > state.expected) throw new Error("More engines started than the capture declares.");
-                    return state.completed === state.expected;
-                }, undefined, { timeout: 60_000, polling: 50 });
+                await page.evaluate(waitForCapturedEngines, 60_000);
             }
             mkdirSync(resolve(referencePath, ".."), { recursive: true });
             if (captureUiEnabled()) {
