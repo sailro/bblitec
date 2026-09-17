@@ -2434,22 +2434,19 @@ const sceneInputs: readonly SceneInput[] = [
             // The pin's own spec serves this scene at `?captureAfter=5`,
             // which the scene's `readCaptureAfterFrames` rounds to 300
             // physics steps and where it raises its `captureReady` flag.
-            // Both sides read the same query and both freeze themselves
-            // through `stopEngine`, so the pose is the scene's own.
+            // Both sides read the query and freeze through `stopEngine`.
+            // The wall-clock drop timer can select different physics states
+            // at different execution speeds (TODO.md's physics entry).
             referenceSearch: "?captureAfter=5",
-            // Named after the freeze, since the scene stops its own engine,
-            // on the fixed frame clock the browser harness pins: the scene's
-            // 2000 ms drop is a `setTimeout`, and the native timer reads wall
-            // time without `BBLITE_FRAME_DELTA_MS`.
+            // Capture after the scene's freeze; neither side pins the drop
+            // timer to a simulation step in this reference contract.
             nativeEnvironment: {
                 BBLITE_SCREENSHOT_FRAME: "310",
             },
             // MEASURED 0.005--0.006 / 0.033--0.037 on both backends across
             // runs (the drop is a wall-clock timer: TODO.md's physics entry).
-            // Step 300 is one second after the dropped box wakes the
-            // sleeping tower, so the pose is mid-collapse and the ceiling
-            // gates this port's own solver rather than asserting agreement
-            // with Havok: box-box landings keep Bullet's own restitution
+            // The ceiling gates this port's own solver rather than asserting
+            // agreement with Havok: box-box landings keep Bullet's restitution
             // (docs/fidelity.md#physics-contract).
             maxFullMad: 0.008,
             maxForegroundMad: 0.045,

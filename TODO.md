@@ -78,6 +78,7 @@ Open gaps only. [Features](docs/features.md) owns support; [fidelity](docs/fidel
 
 - [ ] ACTION prestep differs from Havok's deferred target/velocity (`pal_physics_bullet.cpp`).
 - [ ] Physics solver residuals require substep tracing at registry poses; preserve source and thresholds.
+- [ ] Scene44 mixes a wall-clock box-spawn timer with a 300-step capture; align capture clocks before adopting a deterministic reference pose.
 - [ ] Bounding-box and scale gizmo drags lack native editing.
 
 ## Worker and platform

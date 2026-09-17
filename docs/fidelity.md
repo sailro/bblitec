@@ -101,6 +101,7 @@ Native Euler/quaternion storage differs from the pin's rotation proxy; mixed wri
 ### Textures and compressed textures
 
 Mips, encoding, orientation and samplers follow their source producer. invertY may use UV transforms.
+Linux Canvas asset bakes use the reference capture's Chromium renderer settings.
 SDL Metal generates mip levels with filtered blits to preserve linear-space sRGB filtering.
 SDL Metal standalone sprite/text clears use the nearest linear 8-bit UNORM value to avoid fast-clear truncation.
 Configured KTX2/Draco JS/WASM runs during packaging; resulting pixels/geometry enter native output.

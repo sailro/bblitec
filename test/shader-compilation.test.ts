@@ -166,6 +166,24 @@ test("Vulkan discard has a helper-invocation variant and a baseline device fallb
     }
 });
 
+test("Vulkan retains runtime floating division and its result-dependent branch", { skip: !tools.tint || !tools.dxc }, t => {
+    const root = fixtureRoot(t);
+    const directory = shaderDirectory(root, "division", `
+@group(0) @binding(0) var<uniform> value: vec4f;
+@fragment fn main() -> @location(0) vec4f {
+    let ratio = value.x / value.x;
+    if (ratio == 1.0) { return vec4f(0.0, 1.0, 0.0, 1.0); }
+    return vec4f(1.0, 0.0, 0.0, 1.0);
+}`);
+    compileOfflineShaders({ directories: [directory], repositoryRoot: root, target: "vulkan", tools });
+    for (const extension of [".spv", ".demote.spv"]) {
+        const opcodes = new Set([...spirvInstructions(readFileSync(join(directory, `simple.frag${extension}`)))].map(i => i.opcode));
+        assert.ok(opcodes.has(136), `${extension} retains OpFDiv`);
+        assert.ok(opcodes.has(180), `${extension} retains OpFOrdEqual`);
+        assert.ok(opcodes.has(250), `${extension} retains OpBranchConditional`);
+    }
+});
+
 test("Metal uses SDL buffer slots and preserves bounds checks across reordered runtime arrays", { skip: !tools.tint }, t => {
     const root = fixtureRoot(t);
     const directory = shaderDirectory(root, "metal-bindings", `

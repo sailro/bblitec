@@ -23,8 +23,11 @@ interface BinaryFormat {
 
 const binaryFormats: readonly BinaryFormat[] = [
     { kind: "dxil", extension: ".dxil", flags: ["-O3"], magic: [0x44, 0x58, 0x42, 0x43] },
-    { kind: "spirv", extension: ".spv", flags: ["-spirv", "-fspv-target-env=vulkan1.0", "-O3"], magic: [3, 2, 0x23, 7] },
-    { kind: "spirv", extension: ".demote.spv", flags: ["-spirv", "-fspv-target-env=vulkan1.0", "-fspv-extension=SPV_EXT_demote_to_helper_invocation", "-O3"], magic: [3, 2, 0x23, 7] },
+    // Legalize resource/function transport, leaving arithmetic optimization to
+    // the Vulkan driver as Dawn does. DXC's -O3 folds x/x and its branches;
+    // -Gis retains them but leaves separate samplers incompatible with SDL.
+    { kind: "spirv", extension: ".spv", flags: ["-spirv", "-fspv-target-env=vulkan1.0", "-Oconfig=--legalize-hlsl"], magic: [3, 2, 0x23, 7] },
+    { kind: "spirv", extension: ".demote.spv", flags: ["-spirv", "-fspv-target-env=vulkan1.0", "-fspv-extension=SPV_EXT_demote_to_helper_invocation", "-Oconfig=--legalize-hlsl"], magic: [3, 2, 0x23, 7] },
 ];
 
 export function offlineShaderFormats(target: OfflineShaderTarget): { tint: string[]; binaries: readonly BinaryFormat[] } {

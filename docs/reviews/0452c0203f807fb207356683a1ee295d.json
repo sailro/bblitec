@@ -9,6 +9,10 @@
     {
       "summary": "Retain the fixed Metal depth-copy pipeline across frame-graph texture rebuilds; release it with the device.",
       "applied": true
+    },
+    {
+      "summary": "Reuse parseDataUrl in the Canvas atlas regression instead of duplicating data URL parsing.",
+      "applied": true
     }
   ]
 }

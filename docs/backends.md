@@ -29,6 +29,7 @@ Canvas metrics update before callbacks; RAF retains its registration phase and t
 - SDL integer texture loads occupy storage-texture slots. Vulkan sampled textures use combined
   image/sampler descriptors; integer and multisampled loads use separate images.
 - SPIR-V preserves varying locations. Vertex-buffer inputs compact with their pipeline attributes to fit mobile limits.
+- Vulkan offline compilation legalizes HLSL resource transport without algebraic folding; the GPU driver optimizes arithmetic.
 - Metal uses `main0`, flattened sidecar bindings and buffer lengths at reserved index 30 for robust access.
 - Dawn pipeline keys include format, samples, depth, blend, cull, topology and compare. Reached layouts
   determine device limits. Vulkan teardown releases the presentation surface before the device.
