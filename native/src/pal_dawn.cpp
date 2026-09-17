@@ -2821,16 +2821,9 @@ void generate_mipmaps(
  */
 WGPUTextureFormat compressed_texture_format(std::string_view name) {
     switch (compressed_block_format(name)) {
-        case CompressedBlockFormat::bc1_rgba_unorm:
-            return WGPUTextureFormat_BC1RGBAUnorm;
-        case CompressedBlockFormat::bc2_rgba_unorm:
-            return WGPUTextureFormat_BC2RGBAUnorm;
-        case CompressedBlockFormat::bc3_rgba_unorm:
-            return WGPUTextureFormat_BC3RGBAUnorm;
-        case CompressedBlockFormat::bc7_rgba_unorm:
-            return WGPUTextureFormat_BC7RGBAUnorm;
-        case CompressedBlockFormat::bc7_rgba_unorm_srgb:
-            return WGPUTextureFormat_BC7RGBAUnormSrgb;
+#define BBLITE_DAWN_COMPRESSED_FORMAT(id, text, sdl, dawn) case CompressedBlockFormat::id: return WGPUTextureFormat_##dawn;
+        BBLITE_COMPRESSED_FORMATS(BBLITE_DAWN_COMPRESSED_FORMAT)
+#undef BBLITE_DAWN_COMPRESSED_FORMAT
     }
     throw std::runtime_error(
         "Dawn has no compressed texture format for '" +
@@ -2982,9 +2975,12 @@ WGPUTexture upload_material_texture(
     // table's sRGB rule has nothing to select: the container states which
     // of the two views its blocks decode through.
     if (!texture_data.compressed.mips.empty()) {
-        out_mip_count =
-            static_cast<std::uint32_t>(texture_data.compressed.mips.size());
-        return upload_compressed_texture(state, texture_data.compressed);
+        const auto& compressed = select_compressed_texture(texture_data, [&](std::string_view format) {
+            return wgpuDeviceHasFeature(state.device, format.starts_with("astc-")
+                ? WGPUFeatureName_TextureCompressionASTC : WGPUFeatureName_TextureCompressionBC);
+        });
+        out_mip_count = static_cast<std::uint32_t>(compressed.mips.size());
+        return upload_compressed_texture(state, compressed);
     }
     const DecodedImage image =
         decode_uploadable_image(texture_data, fallback);

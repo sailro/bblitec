@@ -20,7 +20,7 @@ import {
     type BakeKey,
     type RepositoryModuleFile,
 } from "../bake-cache.js";
-import { pageBase64Script } from "../browser-harness.js";
+import { canvasBakeBrowserArgs, pageBase64Script } from "../browser-harness.js";
 import { doubleLiteral } from "../cpp-literals.js";
 import {
     loadTexture2DOptionFields,
@@ -513,6 +513,7 @@ export function bakeBrowserTextureFunction(
         function: shape.name,
         exported: shape.exported,
         returns: shape.returns,
+        browserArgs: canvasBakeBrowserArgs,
     };
     const key: BakeKey = {
         kind: "browser-texture-function",
@@ -842,6 +843,7 @@ function runBrowserTextureFunctionInChromium(
                 serverName: "browser texture bake server",
                 browserRequirement:
                     "Baking a scene function's browser-produced textures requires Chromium.",
+                browserArgs: ${JSON.stringify(canvasBakeBrowserArgs)},
             },
             async (page, origin) => {
                 await page.goto(origin);

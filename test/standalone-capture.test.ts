@@ -23,6 +23,8 @@ test("standalone renderers synchronize live contexts, batch uploads and capture 
     ].join("\n"));
     writeFileSync(join(directory, "buffer-batch.hpp"), cppRecord(
         readFileSync("native/src/pal_sdl_gpu_shared.hpp", "utf8"), "class GpuBufferUploadBatch {"));
+    writeFileSync(join(directory, "clear-color.hpp"), cppFunction(
+        readFileSync("native/src/pal_sdl_gpu_shared.hpp", "utf8"), "inline SDL_FColor gpu_clear_color("));
     for (const [name, file, signatures] of [
         ["SdlEffect", "pal_sdl_gpu_effect.cpp", ["bool acquire()", "void synchronize()", "void encode()", "void present()"]],
         ["SdlSprite", "pal_sdl_gpu_sprite.cpp", ["void sync_render_textures()", "void sync_renderer_passes()", "void synchronize()", "bool acquire()", "void encode()", "void present()"]],

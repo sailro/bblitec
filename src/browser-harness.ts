@@ -24,7 +24,8 @@
 //   `--force-color-profile=srgb` (golden bytes must not depend on the
 //   host color profile) plus `--enable-unsafe-webgpu`; the two WebGPU
 //   compute harnesses enable WebGPU; Linux also selects Vulkan for both.
-//   The canvas2D atlas passes none. The three baked-byte harnesses (HDR,
+//   Linux Canvas2D bakes share the capture renderer; other hosts retain
+//   their default Canvas2D flags. The three baked-byte harnesses (HDR,
 //   LUT, atlas) feed golden-checked or committed assets: `browserArgs`
 //   is exact per caller and never defaulted. Windows flags stay unchanged.
 // - Viewport. The screenshot harnesses pin 1280x720 at
@@ -71,6 +72,10 @@ export const screenshotCaptureBrowserArgs = [
     "--force-color-profile=srgb",
     ...webgpuComputeBrowserArgs,
 ] as const;
+
+/** Linux Canvas2D producers must use the same rasterizer as reference captures. */
+export const canvasBakeBrowserArgs: readonly string[] =
+    process.platform === "linux" ? screenshotCaptureBrowserArgs : [];
 
 export interface BrowserPageOptions {
     /** A separate visible test window can measure the display's real cadence. */

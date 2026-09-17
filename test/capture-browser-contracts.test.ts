@@ -3,7 +3,11 @@ import { readFileSync } from "node:fs";
 import { runInNewContext } from "node:vm";
 import test from "node:test";
 import ts from "typescript";
-import { pageBase64Script } from "../src/browser-harness.js";
+import { canvasBakeBrowserArgs, pageBase64Script, screenshotCaptureBrowserArgs } from "../src/browser-harness.js";
+
+test("Canvas2D bakes share Linux capture flags without changing Windows or macOS", () => {
+    assert.deepEqual(canvasBakeBrowserArgs, process.platform === "linux" ? screenshotCaptureBrowserArgs : []);
+});
 
 function functionSource(path: string, name: string): string {
     const file = ts.createSourceFile(path, readFileSync(path, "utf8"), ts.ScriptTarget.Latest, true);

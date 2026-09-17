@@ -132,7 +132,7 @@ public final class MainActivity extends SDLActivity {
                 Files.write(marker.toPath(), version.getBytes(StandardCharsets.UTF_8));
             }
             if ((getApplicationInfo().flags & android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0) {
-                for (String key : new String[] { "BBLITE_RUN_ID", "BBLITE_MAX_FRAMES", "BBLITE_RUNTIME_TRACE", "BBLITE_FRAME_DELTA_MS", "BBLITE_ANIMATION_SEEK_SECONDS", "BBLITE_TEST_PASS", "BBLITE_INPUT_REPLAY", "BBLITE_CAPTURE_ENGINE_FRAME", "BBLITE_GPU_DEBUG", "BBLITE_MSAA" }) {
+                for (String key : new String[] { "BBLITE_RUN_ID", "BBLITE_MAX_FRAMES", "BBLITE_RUNTIME_TRACE", "BBLITE_FRAME_DELTA_MS", "BBLITE_ANIMATION_SEEK_SECONDS", "BBLITE_TEST_PASS", "BBLITE_INPUT_REPLAY", "BBLITE_CAPTURE_ENGINE_FRAME", "BBLITE_CAPTURE_UI", "BBLITE_GPU_DEBUG", "BBLITE_MSAA" }) {
                     String value = getIntent().getStringExtra(key);
                     if (value != null) nativeSetenv(key, value);
                 }

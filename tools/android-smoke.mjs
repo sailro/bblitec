@@ -5,11 +5,14 @@ import { join, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 import { PNG } from 'pngjs';
 import { writeJsonRecord } from '../dist/src/validation-resume.js';
+import { androidCaptureSettings } from '../dist/src/android-capture.js';
+import { resolveScene } from '../dist/src/scene-registry.js';
 
 const { values } = parseArgs({ options: {
     adb: { type: 'string' }, device: { type: 'string' },
     output: { type: 'string' }, apk: { type: 'string' },
     scene: { type: 'string' },
+    'canvas-only': { type: 'boolean', default: false },
     app: { type: 'string', default: 'org.bblite.prototype' },
 } });
 if (!values.adb || !values.output || !values.apk) throw new Error('Use --adb, --output, --apk and optionally --device.');
@@ -22,17 +25,8 @@ function adb(...args) {
 const runId = randomUUID();
 const app = values.app;
 if (!/^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+$/.test(app)) throw new Error('Invalid application ID.');
-let captureEnvironment = { BBLITE_MAX_FRAMES: '8' };
-let captureFrame = '5';
-if (values.scene) {
-    const { resolveScene } = await import('../dist/src/scene-registry.js');
-    const { nativeCaptureFrameBudget } = await import('../dist/src/tooling/native-run.js');
-    const scene = resolveScene(values.scene);
-    captureEnvironment = { ...scene.parity?.nativeEnvironment, BBLITE_TEST_PASS: '1' };
-    captureFrame = captureEnvironment.BBLITE_SCREENSHOT_FRAME ?? '0';
-    captureEnvironment.BBLITE_MAX_FRAMES = String(nativeCaptureFrameBudget(captureEnvironment));
-    delete captureEnvironment.BBLITE_SCREENSHOT_FRAME;
-}
+const { captureEnvironment, captureFrame } = androidCaptureSettings(
+    values.scene ? resolveScene(values.scene) : undefined, values['canvas-only']);
 const receipt = {
     runId, apkSha256: createHash('sha256').update(readFileSync(values.apk)).digest('hex'),
     device: adb('get-serialno').toString().trim(),
@@ -70,7 +64,8 @@ try {
             });
             logger.stderr.on('data', chunk => appendLog(chunk.toString()));
         });
-        adb('shell', 'am', 'start', '-W', '-n', `${app}/org.bblite.prototype.MainActivity`,
+        // The native exit marker owns completion, even if the activity exits before its first presentation.
+        adb('shell', 'am', 'start', '-n', `${app}/org.bblite.prototype.MainActivity`,
             '--es', 'BBLITE_RUN_ID', runId, '--es', 'captureFrame', captureFrame,
             ...Object.entries(captureEnvironment).flatMap(([key, value]) => ['--es', key, value]),
             '--ez', 'capture', 'true');

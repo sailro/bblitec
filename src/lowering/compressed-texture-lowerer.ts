@@ -26,6 +26,8 @@ export const uploadableCompressedFormats: readonly string[] = [
     "bc3-rgba-unorm",
     "bc7-rgba-unorm",
     "bc7-rgba-unorm-srgb",
+    ...["4x4", "5x4", "5x5", "6x5", "6x6", "8x5", "8x6", "8x8", "10x5", "10x6", "10x8", "10x10", "12x10", "12x12"]
+        .flatMap(block => [`astc-${block}-unorm`, `astc-${block}-unorm-srgb`]),
 ];
 
 /** One row of the pinned GL-internal-format table. */
@@ -78,10 +80,7 @@ export class CompressedTextureLowerer {
     /**
      * The block-compression rows of `compressed-formats.ts`'s own table.
      *
-     * Read from the `add(...)` calls rather than by executing the module:
-     * the ASTC half is built by a loop over computed enum values, and every
-     * row this port keeps is literal, so the AST answers exactly the
-     * question without the loop having to be folded.
+     * Read literal BC rows and expand the pin's closed ASTC block table.
      */
     private formatRows(): CompressedFormatRow[] {
         if (this.rows) return this.rows;
@@ -114,10 +113,7 @@ export class CompressedTextureLowerer {
             }
             const [gl, format, featureArgument, blockW, blockH, blockBytes] =
                 call.arguments;
-            // The ETC2 and ASTC rows name their own feature constant, and
-            // the ASTC ones build both the enum and the format name; both
-            // are dropped here rather than read, because no D3D12 device
-            // reports either feature.
+            // ASTC rows are expanded from their enclosing loop below.
             if (
                 !ts.isIdentifier(featureArgument!) ||
                 featureArgument.text !== "BC" ||
@@ -134,6 +130,51 @@ export class CompressedTextureLowerer {
                 blockHeight: this.context.numericValue(blockH!, file),
                 blockBytes: this.context.numericValue(blockBytes!, file),
             });
+        }
+        const blocks = this.context.unwrapExpression(this.context.variableInitializer(file, "ASTC_BLOCKS"));
+        if (this.context.stringValue(this.context.variableInitializer(file, "ASTC"), file) !== "texture-compression-astc") {
+            this.context.contractError(file, "Pinned ASTC feature changed.");
+        }
+        if (!ts.isArrayLiteralExpression(blocks)) this.context.contractError(blocks, "Pinned ASTC blocks are not a closed array.");
+        const loop = this.context.findNodes(file, (node): node is ts.ForStatement =>
+            ts.isForStatement(node) && node.condition?.getText(file) === "i < ASTC_BLOCKS.length")[0];
+        if (!loop?.initializer || !loop.incrementor) this.context.contractError(file, "Pinned ASTC format loop changed.");
+        this.context.assertExpressionShape(loop.incrementor, "i++", "ASTC format loop increment");
+        if (loop.initializer.getText(file) !== "let i = 0") this.context.contractError(loop, "Pinned ASTC loop no longer starts at zero.");
+        this.context.assertExpressionShape(
+            this.context.variableInitializer(loop, "tag"), "`${w}x${h}`", "ASTC block tag");
+        const dimensions = this.context.findNodes(loop.statement, (node): node is ts.VariableDeclaration =>
+            ts.isVariableDeclaration(node) && ts.isArrayBindingPattern(node.name))[0];
+        if (!dimensions?.initializer || dimensions.name.getText(file) !== "[w, h]") {
+            this.context.contractError(loop, "Pinned ASTC dimension binding changed.");
+        }
+        this.context.assertExpressionShape(dimensions.initializer, "ASTC_BLOCKS[i]!", "ASTC dimensions");
+        const astcCalls = this.context.findNodes(loop.statement, (node): node is ts.CallExpression =>
+            ts.isCallExpression(node) && ts.isIdentifier(node.expression) && node.expression.text === "add");
+        for (const [index, block] of blocks.elements.entries()) {
+            if (!ts.isArrayLiteralExpression(block) || block.elements.length !== 2) {
+                this.context.contractError(block, "Pinned ASTC block is not a width/height pair.");
+            }
+            const width = this.context.numericValue(block.elements[0]!, file);
+            const height = this.context.numericValue(block.elements[1]!, file);
+            for (const call of astcCalls) {
+                if (call.arguments.length !== 6) this.context.contractError(call, "Pinned ASTC format row changed.");
+                const [gl, format, featureArgument, blockW, blockH, blockBytes] = call.arguments;
+                const formatExpression = this.context.unwrapExpression(format!);
+                if (!ts.isBinaryExpression(gl!) || gl.operatorToken.kind !== ts.SyntaxKind.PlusToken ||
+                    gl.right.getText(file) !== "i" || !ts.isTemplateExpression(formatExpression) ||
+                    formatExpression.templateSpans.length !== 1 || formatExpression.templateSpans[0]!.expression.getText(file) !== "tag" ||
+                    featureArgument!.getText(file) !== "ASTC" || blockW!.getText(file) !== "w" || blockH!.getText(file) !== "h") {
+                    this.context.contractError(call, "Pinned ASTC format derivation changed.");
+                }
+                const gpuFormat = `${formatExpression.head.text}${width}x${height}${formatExpression.templateSpans[0]!.literal.text}`;
+                if (!uploadableCompressedFormats.includes(gpuFormat)) continue;
+                rows.push({
+                    gl: this.context.numericValue(gl.left, file) + index,
+                    gpuFormat, blockWidth: width, blockHeight: height,
+                    blockBytes: this.context.numericValue(blockBytes!, file),
+                });
+            }
         }
         if (rows.length === 0) {
             this.context.contractError(
@@ -692,7 +733,29 @@ FileTexture load_compressed_texture(
         chain ? 4.0f : 1.0f,
         1000.0f};
     texture.data.uv_invert_y = invert_y;
+    texture.width = texture.data.compressed.width;
+    texture.height = texture.data.compressed.height;
     texture.identity = engine.next_file_texture_identity++;
+    return texture;
+}
+
+FileTexture load_compressed_texture_variants(
+    Engine& engine,
+    const std::vector<std::string>& paths,
+    bool invert_y) {
+    if (paths.empty()) throw std::runtime_error("Compressed texture variants are empty.");
+    FileTexture texture = load_compressed_texture(engine, paths.front(), invert_y);
+    auto alternatives = std::make_shared<std::vector<CompressedTexture>>();
+    alternatives->reserve(paths.size() - 1);
+    for (std::size_t index = 1; index < paths.size(); ++index) {
+        auto candidate = upstream::read_compressed_texture(pal::read_binary_file(paths[index]));
+        if (candidate.width != texture.width || candidate.height != texture.height ||
+            (candidate.mips.size() > 1) != (texture.data.compressed.mips.size() > 1)) {
+            throw std::runtime_error("Compressed texture variants require matching dimensions and sampler rules.");
+        }
+        alternatives->push_back(std::move(candidate));
+    }
+    texture.data.compressed_alternatives = std::move(alternatives);
     return texture;
 }
 

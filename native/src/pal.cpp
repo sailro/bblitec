@@ -21,9 +21,29 @@
 #define NOMINMAX
 #include <windows.h>
 #include <psapi.h>
+#elif defined(__APPLE__)
+#include <bblite/js_data.hpp>
+#include <CoreFoundation/CoreFoundation.h>
 #endif
 
 namespace bbl {
+
+#if defined(__APPLE__)
+std::string js::macos_time_zone() {
+    const std::unique_ptr<std::remove_pointer_t<CFTimeZoneRef>, decltype(&CFRelease)> zone(
+        CFTimeZoneCopyDefault(), CFRelease);
+    if (!zone) throw std::runtime_error("Cannot resolve the default time zone.");
+    const auto name = CFTimeZoneGetName(zone.get());
+    const auto capacity = CFStringGetMaximumSizeForEncoding(CFStringGetLength(name), kCFStringEncodingUTF8);
+    if (capacity < 0) throw std::runtime_error("Cannot size the default time zone.");
+    std::string text(static_cast<std::size_t>(capacity) + 1, '\0');
+    if (!CFStringGetCString(name, text.data(), static_cast<CFIndex>(text.size()), kCFStringEncodingUTF8)) {
+        throw std::runtime_error("Cannot encode the default time zone.");
+    }
+    text.resize(std::char_traits<char>::length(text.c_str()));
+    return text;
+}
+#endif
 
 std::string native_platform() { return SDL_GetPlatform(); }
 double logical_processor_count() { return static_cast<double>(SDL_GetNumLogicalCPUCores()); }

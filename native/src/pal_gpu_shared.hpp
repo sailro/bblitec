@@ -2,6 +2,7 @@
 // Moved verbatim from pal_sdl_gpu.cpp so both backends upload
 // byte-identical vertex data.
 #pragma once
+#include "pal_compressed_formats.hpp"
 #include "pal_record_sync.hpp"
 #if defined(BBLITE_HAS_AUDIO) && BBLITE_HAS_AUDIO
 #include <bblite/pal_audio.hpp>
@@ -5499,31 +5500,28 @@ inline CompressedMipCopy compressed_mip_copy(
  * parsed, which is the pin's own `if (!format) throw`.
  */
 enum class CompressedBlockFormat {
-    bc1_rgba_unorm,
-    bc2_rgba_unorm,
-    bc3_rgba_unorm,
-    bc7_rgba_unorm,
-    bc7_rgba_unorm_srgb,
+#define BBLITE_FORMAT_ENUM(id, name, sdl, dawn) id,
+    BBLITE_COMPRESSED_FORMATS(BBLITE_FORMAT_ENUM)
+#undef BBLITE_FORMAT_ENUM
 };
 
 inline CompressedBlockFormat compressed_block_format(std::string_view name) {
-    if (name == "bc1-rgba-unorm") {
-        return CompressedBlockFormat::bc1_rgba_unorm;
-    }
-    if (name == "bc2-rgba-unorm") {
-        return CompressedBlockFormat::bc2_rgba_unorm;
-    }
-    if (name == "bc3-rgba-unorm") {
-        return CompressedBlockFormat::bc3_rgba_unorm;
-    }
-    if (name == "bc7-rgba-unorm") {
-        return CompressedBlockFormat::bc7_rgba_unorm;
-    }
-    if (name == "bc7-rgba-unorm-srgb") {
-        return CompressedBlockFormat::bc7_rgba_unorm_srgb;
-    }
+#define BBLITE_FORMAT_NAME(id, text, sdl, dawn) if (name == text) return CompressedBlockFormat::id;
+    BBLITE_COMPRESSED_FORMATS(BBLITE_FORMAT_NAME)
+#undef BBLITE_FORMAT_NAME
     throw std::runtime_error(
         "No compressed texture format for '" + std::string(name) + "'.");
+}
+
+template <typename Supports>
+const CompressedTexture& select_compressed_texture(const TextureData& data, Supports supports) {
+    if (supports(data.compressed.format)) return data.compressed;
+    if (data.compressed_alternatives) {
+        for (const auto& candidate : *data.compressed_alternatives) {
+            if (supports(candidate.format)) return candidate;
+        }
+    }
+    throw std::runtime_error("This device cannot sample any packaged compressed texture variant.");
 }
 
 inline std::uint32_t full_mip_chain(std::uint32_t width, std::uint32_t height) {

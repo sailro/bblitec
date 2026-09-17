@@ -1,0 +1,17 @@
+{
+  "angles": ["reuse", "simplification", "efficiency", "altitude"],
+  "findings": [
+    {
+      "summary": "Derive Dawn feature-array capacity from its optional-feature list instead of maintaining separate counts.",
+      "applied": true
+    },
+    {
+      "summary": "Decode the macOS timezone directly into its returned string, avoiding a temporary vector and copy.",
+      "applied": true
+    },
+    {
+      "summary": "Keep SDL compressed-format capability validation in the candidate selector rather than repeating it in the sole uploader.",
+      "applied": true
+    }
+  ]
+}

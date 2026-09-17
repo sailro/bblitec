@@ -143,8 +143,10 @@ need fresh nested literals. Configuration is per loading realm and must precede 
 
 ### Compressed textures
 
-KTX1 packages mips/blocks. Basis/KTX2 uses the pinned browser transcoder and supported native compression
-families. Upload checks device support. Decoder bytes key caches; local decoder inputs are tracked.
+KTX1 packages BC/ASTC candidates in source order and selects a supported format on the rendering device.
+Candidates require matching dimensions and sampler rules. Missing assets, unsupported families and
+uncompressed fallback refuse. Basis/KTX2 uses the pinned browser transcoder; upload checks device support.
+Decoder bytes key caches; local decoder inputs are tracked.
 
 ### Gaussian splat row updates
 

@@ -14,6 +14,19 @@ function touch(path: string): void {
     writeFileSync(path, "");
 }
 
+test("tool discovery skips directories named like executables", t => {
+    const root = mkdtempSync(join(tmpdir(), "bblitec-tools-directories-"));
+    t.after(() => rmSync(root, { recursive: true, force: true }));
+    const bin = join(root, "bin");
+    mkdirSync(join(bin, "git"), { recursive: true });
+    touch(join(bin, "git.exe"));
+    const tools = discoverDevelopmentTools({ cwd: root, platform: "win32", environment: { PATH: bin } });
+    assert.equal(tools.git, join(bin, "git.exe"));
+    assert.equal(discoverDevelopmentTools({
+        cwd: root, platform: "win32", environment: { PATH: bin, CMAKE_COMMAND: join(bin, "git") },
+    }).cmake, undefined);
+});
+
 test("discovers the CMake, Ninja, clang-cl, and vcpkg bundled with Visual Studio", (t) => {
     const root = mkdtempSync(join(tmpdir(), "bblitec-tools-"));
     t.after(() => rmSync(root, { recursive: true, force: true }));

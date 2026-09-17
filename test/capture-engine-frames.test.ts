@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { runInNewContext } from "node:vm";
 import test from "node:test";
-import { engineFrameCaptureModule } from "../src/capture-engine-frames.js";
+import { engineFrameCaptureModule, waitForCapturedEngines } from "../src/capture-engine-frames.js";
 
 test("independent engines retain pinned readiness, render exact frame counts and flush without drawing again", async () => {
     const callbacks = new Map<number, () => void>();
@@ -52,4 +52,64 @@ test("independent engines retain pinned readiness, render exact frame counts and
     assert.deepEqual(right.timestamps, expected);
     assert.equal(callbacks.size, 0);
     assert.equal(new Set(completed).size, 2);
+});
+
+test("engine capture waits for asynchronous completion from every realm", async () => {
+    const polls: Array<() => void> = [];
+    let reads = 0;
+    let completed = false;
+    const waiting: Promise<void> = runInNewContext(`(${waitForCapturedEngines.toString()})(60000)`, {
+        Date: { now: () => 0 },
+        fetch: async () => ({
+            ok: true,
+            json: async () => ({ completed: reads++, expected: 2 }),
+        }),
+        setTimeout: (callback: () => void) => polls.push(callback),
+    });
+    void waiting.then(() => { completed = true; });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.equal(reads, 1);
+    assert.equal(completed, false);
+    assert.equal(polls.length, 1);
+    polls.shift()?.();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.equal(reads, 2);
+    assert.equal(completed, false);
+    assert.equal(polls.length, 1);
+    polls.shift()?.();
+    await waiting;
+    assert.equal(reads, 3);
+    assert.equal(completed, true);
+    assert.equal(polls.length, 0);
+});
+
+test("engine capture rejects undeclared engines and failed status requests", async () => {
+    for (const [ok, message] of [
+        [true, /More engines started/],
+        [false, /status request failed/],
+    ] as const) {
+        const waiting: Promise<void> = runInNewContext(`(${waitForCapturedEngines.toString()})(60000)`, {
+            Date: { now: () => 0 },
+            fetch: async () => ({ ok, json: async () => ({ completed: 3, expected: 2 }) }),
+        });
+        await assert.rejects(waiting, message);
+    }
+});
+
+test("engine capture times out instead of accepting an unfinished realm", async () => {
+    let now = 0;
+    let reads = 0;
+    const waiting: Promise<void> = runInNewContext(`(${waitForCapturedEngines.toString()})(50)`, {
+        Date: { now: () => now },
+        fetch: async () => {
+            reads++;
+            return { ok: true, json: async () => ({ completed: 1, expected: 2 }) };
+        },
+        setTimeout: (callback: () => void, delay: number) => {
+            now += delay;
+            queueMicrotask(callback);
+        },
+    });
+    await assert.rejects(waiting, /Timed out waiting for every engine/);
+    assert.equal(reads, 2);
 });

@@ -74,7 +74,7 @@ new file mode 100644
 +++ b/Source/Core/NumberParsing.h
 @@ -0,0 +1,8 @@
 +#pragma once
-+#ifdef __ANDROID__
++#if defined(__ANDROID__) || defined(__APPLE__)
 +#include <boost/charconv/from_chars.hpp>
 +namespace Rml { namespace number_parsing = boost::charconv; }
 +#else
@@ -89,7 +89,7 @@ diff --git a/CMake/Dependencies.cmake b/CMake/Dependencies.cmake
  	endif()
  endif()
 +
-+if(ANDROID)
++if(ANDROID OR APPLE)
 +    find_package(boost_charconv CONFIG REQUIRED)
 +endif()
 diff --git a/Source/Core/CMakeLists.txt b/Source/Core/CMakeLists.txt
@@ -100,6 +100,6 @@ diff --git a/Source/Core/CMakeLists.txt b/Source/Core/CMakeLists.txt
  )
  install_target_pdb(rmlui_core)
 +
-+if(ANDROID)
++if(ANDROID OR APPLE)
 +    target_link_libraries(rmlui_core PRIVATE Boost::charconv)
 +endif()

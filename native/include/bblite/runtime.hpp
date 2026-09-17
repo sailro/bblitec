@@ -1692,6 +1692,7 @@ struct TextureData {
     bool uv_invert_y = false;
     // GPU blocks viewed directly in their shared container storage.
     CompressedTexture compressed{};
+    std::shared_ptr<const std::vector<CompressedTexture>> compressed_alternatives;
 
     /**
      * Whether this slot carries an image at all.
@@ -5475,6 +5476,10 @@ FileTexture load_file_texture(
 FileTexture load_compressed_texture(
     Engine& engine,
     const std::string& path,
+    bool invert_y);
+FileTexture load_compressed_texture_variants(
+    Engine& engine,
+    const std::vector<std::string>& paths,
     bool invert_y);
 void set_material_base_color_file(
     Engine& engine,

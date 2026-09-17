@@ -24,6 +24,23 @@ Diff refreshes stale captures; --recapture forces refresh. Changed seek poses ne
 recapture. --no-fail, suppressed features and single-sample comparisons against MSAA goldens are diagnostic.
 Shared residuals point to common inputs/behavior; backend-specific residuals to translation or transport.
 
+## Same-device rendering comparisons
+
+Capture native and WebGPU pixels on the same device, at the same canvas dimensions, query and pose.
+Do not use Windows goldens for Linux, macOS or Android. Retain device/build identity and both images.
+Exclude physics through generated feature reach; keep UI-heavy applications and suppress only their UI pixels.
+
+Desktop canvas-only captures use `BBLITE_CAPTURE_UI=0`. Run parity with `--recapture-reference` on that
+host before comparing either native backend; its browser image stays in `artifacts/parity-canvas/`.
+Android native captures accept `tools/android-smoke.mjs --canvas-only`. Browser captures must run on
+the selected Android device, not the build host. Verify actual client dimensions and DPR: Android Chrome's
+toolbar can reduce the viewport despite Playwright's requested size. Direct CDP device-metrics emulation
+sets the rendering viewport. Emulator presentation failures require explicit GPU render-target readback,
+including worker canvases, rather than treating a black screenshot as a rendering result.
+
+`BBLITE_TEST_PASS` disables physical input but does not hide SDL windows. Run Windows regression
+captures on an inactive desktop when they must not appear on the user's desktop.
+
 ## Captured state and its limits
 
 | Evidence | Boundary |
@@ -112,7 +129,7 @@ Artifact suffix gpu means SDL_GPU; CLI values are sdl_gpu/dawn.
 | `BBLITE_FILE_DIALOG_SAVE_PATH`, `BBLITE_FILE_DIALOG_OPEN_PATH` | Noninteractive dialog paths |
 | `BBLITE_ASSET_DIR`, `BBLITE_GPU_SHADER_DIR`, `BBLITE_NATIVE_EXE` | Diagnostic overrides; the executable override reaches every measuring command (`parity`, `geometry`, `memory`, `stability`, `check`, `diff`, `capture --native`, `probe-variants`) |
 | `BBLITE_GPU_DEBUG` | SDL_GPU validation layer (Dawn validation is always on) |
-| `BBLITE_TEST_PASS` | Hidden test pass: camera controls disabled (set by the harness) |
+| `BBLITE_TEST_PASS` | Nonfocusable test pass: camera controls disabled (set by the harness) |
 | `BBLITE_GROUND`, `BBLITE_BACKGROUND` | Suppress ground/background (set by `parity --without`) |
 | `BBLITE_ID_BUFFER`, `BBLITE_CLUSTER_BUFFER`, `BBLITE_COPY_TASK` | Attribution outputs and copy-task filter (set by `parity` for id-diagnostic scenes) |
 | `BBLITE_BENCHMARK_FRAMES`, `BBLITE_BUILD_STAMP_OUT` | Frame count and stamp path of a measured run; `BBLITE_BENCHMARK_FRAMES=0` disables VSync without a frame limit |

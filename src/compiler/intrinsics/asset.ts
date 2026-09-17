@@ -9,7 +9,7 @@ import type {
 } from "../types.js";
 import type { IntrinsicCallContext } from "./context.js";
 import { splatContainerByLoader } from "../assets.js";
-import { compressedTextureUrl } from "../compressed-texture.js";
+import { compressedTextureUrls } from "../compressed-texture.js";
 import { isSplatFragmentExport } from "../../pinned-splat-fragments.js";
 import {
     addressModeByPin,
@@ -176,38 +176,35 @@ export function compileAssetConstant(
 /**
  * The container `loadKtxTexture2D(engine, baseUrl, suffixes)` fetches.
  *
- * The suffix list is the scene's own, and which of them this build can
- * sample is generation's answer — the pin asks the device, and a native
- * build has no network for a second candidate.
+ * Package native-supported suffixes in source order. Device selection is
+ * deferred until upload; every possible candidate must be available offline.
  */
-function ktxContainerUrl(
+function ktxContainerUrls(
     context: AssetIntrinsicContext,
     call: ts.CallExpression,
     baseUrl: string,
-): string {
+): string[] {
     const suffixes = context.unwrap(argumentAt(call, 2));
     if (!ts.isArrayLiteralExpression(suffixes)) {
         context.fail(
             argumentAt(call, 2),
             "A reached loadKtxTexture2D takes its suffixes as an array " +
-                "literal: generation resolves which one the compiled " +
-                "backends can sample.",
+                "literal so generation can package the supported candidates.",
         );
     }
     const listed = suffixes.elements.map((element) =>
         context.compileStringLiteral(element),
     );
-    const url = compressedTextureUrl(baseUrl, listed);
-    if (url === undefined) {
+    const urls = compressedTextureUrls(baseUrl, listed);
+    if (urls.length === 0) {
         context.fail(
             argumentAt(call, 2),
-            `A reached loadKtxTexture2D lists no block-compression suffix ` +
-                `(${listed.join(", ")}); the compiled backends report no ` +
-                "other compressed-format feature, and packaging the pin's " +
-                "uncompressed fallback would render a different texture.",
+            `A reached loadKtxTexture2D lists no native-supported block-compression suffix ` +
+                `(${listed.join(", ")}); only BC and ASTC containers are supported, ` +
+                "and uncompressed fallback is not represented.",
         );
     }
-    return url;
+    return urls;
 }
 
 export function compileAssetIntrinsic(
@@ -557,8 +554,8 @@ function compileLoadTexture2D(context: AssetIntrinsicContext, call: ts.CallExpre
 function compileLoadKtxTexture2D(context: AssetIntrinsicContext, call: ts.CallExpression, importedName: "loadKtxTexture2D" | "loadBasisTexture2D"): Value | undefined {
     // Both loaders end at the same native reader: the container's
     // blocks and its own mip chain. What differs is where the
-    // container comes from — a suffix generation resolves against
-    // the compiled backends' formats, or a `.basis` file the pin's
+    // container comes from — ordered device-selected KTX candidates,
+    // or a `.basis` file the pin's
     // own loader transcodes at generation — and the texture-OBJECT
     // `invertY`, which `uploadCompressed` leaves unset and
     // `basis-loader.ts` sets. Neither takes the sampler options
@@ -570,9 +567,10 @@ function compileLoadKtxTexture2D(context: AssetIntrinsicContext, call: ts.CallEx
     const engine = context.compileValue(argumentAt(call, 0));
     context.expectKind(engine, "engine", argumentAt(call, 0));
     const url = context.compileStringLiteral(argumentAt(call, 1));
-    const asset = basis
-        ? context.registerAsset(url, "basis")
-        : context.registerAsset(ktxContainerUrl(context, call, url), "texture");
+    const assets = basis
+        ? [context.registerAsset(url, "basis")]
+        : ktxContainerUrls(context, call, url).map(candidate => context.registerAsset(candidate, "texture"));
+    const paths = assets.map(asset => `bbl::asset_path(${context.cppString(asset.output)})`);
     context.reachFeature("texture:compressed", call);
     return {
         kind: "texture",
@@ -581,8 +579,8 @@ function compileLoadKtxTexture2D(context: AssetIntrinsicContext, call: ts.CallEx
         // separates these two loaders (`uploadCompressed` leaves it
         // unset, `basis-loader.ts` sets it).
         textureObjectInvertY: basis,
-        cpp: `bbl::load_compressed_texture(${engine.cpp}, ` +
-            `bbl::asset_path(${context.cppString(asset.output)}), ` +
+        cpp: `bbl::${assets.length === 1 ? "load_compressed_texture" : "load_compressed_texture_variants"}(${engine.cpp}, ` +
+            `${assets.length === 1 ? paths[0] : `{${paths.join(", ")}}`}, ` +
             `${basis ? "true" : "false"})`,
         textureFile: { srgb: false },
         engineCpp: engine.engineCpp ?? engine.cpp,

@@ -29,6 +29,7 @@ Canvas metrics update before callbacks; RAF retains its registration phase and t
 - SDL integer texture loads occupy storage-texture slots. Vulkan sampled textures use combined
   image/sampler descriptors; integer and multisampled loads use separate images.
 - SPIR-V preserves varying locations. Vertex-buffer inputs compact with their pipeline attributes to fit mobile limits.
+- SPIR-V compilation legalizes HLSL without DXC folding floating-point-dependent branches; the Vulkan driver optimizes the arithmetic.
 - Metal uses `main0`, flattened sidecar bindings and buffer lengths at reserved index 30 for robust access.
 - Dawn pipeline keys include format, samples, depth, blend, cull, topology and compare. Reached layouts
   determine device limits. Vulkan teardown releases the presentation surface before the device.
@@ -41,6 +42,11 @@ Canvas metrics update before callbacks; RAF retains its registration phase and t
 
 Maintained patches cover SDL descriptor-heap rollover, D3D12 multisampled lines/storage reads,
 Metal buffer lengths/fence queries and Dawn Metal primitive-index capability.
+
+SDL Metal generates mips with per-level linear blits, preserving sRGB decode/filter/encode.
+Color-less depth sampled by material slots uses an R32 copy with `(depth, 0, 0, 1)` semantics.
+Standalone sprite/text UNORM clears round to the nearest byte; floating-point and sRGB targets are unchanged.
+Linux Canvas2D texture bakes use the reference capture's Vulkan rasterizer; Windows/macOS bake flags are unchanged.
 
 ## Temporal post-process transport
 

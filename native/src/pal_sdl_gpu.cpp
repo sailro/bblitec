@@ -799,6 +799,7 @@ struct GpuRenderTarget {
     SDL_GPUTexture* color = nullptr;
     SDL_GPUTexture* sampled_color = nullptr;
     SDL_GPUTexture* depth = nullptr;
+    SDL_GPUTexture* depth_copy = nullptr;
     std::uint32_t width = 0;
     std::uint32_t height = 0;
     /** What its colour attachment resolved to, for a target that follows it. */
@@ -1284,6 +1285,7 @@ struct GpuState : SdlGpuDevice {
         shared_plugin_material_textures;
 #endif
     std::vector<GpuRenderTarget> render_targets;
+    OwnedSdlPipeline depth_copy_pipeline;
     /** The last `GpuRenderTarget::allocation` handed out. */
     std::uint32_t render_target_allocations = 0;
     std::vector<GpuGeometryTask> geometry_tasks;
@@ -4645,16 +4647,9 @@ void dump_deformation_uniforms(
 /** The SDL enumerator for one shared block format. */
 SDL_GPUTextureFormat compressed_texture_format(std::string_view name) {
     switch (compressed_block_format(name)) {
-        case CompressedBlockFormat::bc1_rgba_unorm:
-            return SDL_GPU_TEXTUREFORMAT_BC1_RGBA_UNORM;
-        case CompressedBlockFormat::bc2_rgba_unorm:
-            return SDL_GPU_TEXTUREFORMAT_BC2_RGBA_UNORM;
-        case CompressedBlockFormat::bc3_rgba_unorm:
-            return SDL_GPU_TEXTUREFORMAT_BC3_RGBA_UNORM;
-        case CompressedBlockFormat::bc7_rgba_unorm:
-            return SDL_GPU_TEXTUREFORMAT_BC7_RGBA_UNORM;
-        case CompressedBlockFormat::bc7_rgba_unorm_srgb:
-            return SDL_GPU_TEXTUREFORMAT_BC7_RGBA_UNORM_SRGB;
+#define BBLITE_SDL_COMPRESSED_FORMAT(id, text, sdl, dawn) case CompressedBlockFormat::id: return SDL_GPU_TEXTUREFORMAT_##sdl;
+        BBLITE_COMPRESSED_FORMATS(BBLITE_SDL_COMPRESSED_FORMAT)
+#undef BBLITE_SDL_COMPRESSED_FORMAT
     }
     throw std::runtime_error(
         "SDL_GPU has no compressed texture format for '" +
@@ -4678,15 +4673,6 @@ SDL_GPUTexture* upload_compressed_texture(
     texture_info.num_levels =
         static_cast<Uint32>(compressed.mips.size());
     texture_info.sample_count = SDL_GPU_SAMPLECOUNT_1;
-    if (!SDL_GPUTextureSupportsFormat(
-            device,
-            texture_info.format,
-            SDL_GPU_TEXTURETYPE_2D,
-            SDL_GPU_TEXTUREUSAGE_SAMPLER)) {
-        throw std::runtime_error(
-            "This device cannot sample '" +
-            std::string(compressed.format) + "' textures.");
-    }
     OwnedSdlTexture texture_owner{SDL_CreateGPUTexture(device, &texture_info), {device}};
     auto* texture = texture_owner.get();
     if (!texture) gpu_error("SDL_CreateGPUTexture compressed");
@@ -4742,7 +4728,11 @@ SDL_GPUTexture* upload_texture(
     // table's sRGB rule has nothing to select: the container states which
     // of the two views its blocks decode through.
     if (!texture_data.compressed.mips.empty()) {
-        return upload_compressed_texture(device, texture_data.compressed);
+        const auto& compressed = select_compressed_texture(texture_data, [&](std::string_view format) {
+            return SDL_GPUTextureSupportsFormat(device, compressed_texture_format(format),
+                SDL_GPU_TEXTURETYPE_2D, SDL_GPU_TEXTUREUSAGE_SAMPLER);
+        });
+        return upload_compressed_texture(device, compressed);
     }
     const DecodedImage image =
         decode_uploadable_image(texture_data, fallback);
@@ -4784,9 +4774,8 @@ SDL_GPUTexture* upload_texture(
         static_cast<Uint32>(image.width), static_cast<Uint32>(image.height), 1};
     SDL_UploadToGPUTexture(copy, &source, &destination, false);
     copy.end();
-    if (texture_info.num_levels > 1) {
-        SDL_GenerateMipmapsForGPUTexture(command, texture);
-    }
+    generate_texture_mipmaps(device, command, texture,
+        texture_info.width, texture_info.height, texture_info.num_levels);
     if (!command.submit()) gpu_error("SDL_SubmitGPUCommandBuffer");
     transfer_owner.reset();
     return texture_owner.release();
@@ -4886,9 +4875,9 @@ SDL_GPUTexture* upload_cube_texture(
             false);
     }
     copy.end();
-    if (texture_info.num_levels > 1) {
-        SDL_GenerateMipmapsForGPUTexture(command, texture);
-    }
+    generate_texture_mipmaps(device, command, texture,
+        texture_info.width, texture_info.height, texture_info.num_levels,
+        texture_info.layer_count_or_depth);
     if (!command.submit()) {
         gpu_error("SDL_SubmitGPUCommandBuffer reflection cube");
     }
@@ -5308,6 +5297,58 @@ SDL_FColor geometry_clear_color(GeometryTextureType type) {
     return SDL_FColor{value, value, value, value};
 }
 
+// Metal's float view of depth expands to (d,d,d,1). Material slots need
+// (d,0,0,1), matching the shared R32 depth-copy contract used by Dawn.
+void encode_metal_depth_copy(
+    GpuState& state, SDL_GPUCommandBuffer* command, const GpuRenderTarget& target) {
+    if (!state.depth_copy_pipeline) {
+        constexpr const char* source = R"msl(
+#include <metal_stdlib>
+using namespace metal;
+vertex float4 copy_vs(uint i [[vertex_id]]) {
+    return float4(float2(i == 1 ? 3.0 : -1.0, i == 2 ? 3.0 : -1.0), 0, 1);
+}
+fragment float copy_fs(float4 p [[position]], depth2d<float> t [[texture(0)]]) {
+    return t.read(uint2(p.xy));
+}
+)msl";
+        SDL_GPUShaderCreateInfo shader{};
+        shader.code = reinterpret_cast<const Uint8*>(source);
+        shader.code_size = std::strlen(source);
+        shader.format = SDL_GPU_SHADERFORMAT_MSL;
+        shader.entrypoint = "copy_vs";
+        shader.stage = SDL_GPU_SHADERSTAGE_VERTEX;
+        OwnedSdlShader vertex{SDL_CreateGPUShader(state.device, &shader), {state.device}};
+        if (!vertex) gpu_error("SDL_CreateGPUShader depth copy vertex");
+        shader.entrypoint = "copy_fs";
+        shader.stage = SDL_GPU_SHADERSTAGE_FRAGMENT;
+        shader.num_samplers = 1;
+        OwnedSdlShader fragment{SDL_CreateGPUShader(state.device, &shader), {state.device}};
+        if (!fragment) gpu_error("SDL_CreateGPUShader depth copy fragment");
+        SDL_GPUColorTargetDescription color{};
+        color.format = SDL_GPU_TEXTUREFORMAT_R32_FLOAT;
+        SDL_GPUGraphicsPipelineCreateInfo pipeline{};
+        pipeline.vertex_shader = vertex.get();
+        pipeline.fragment_shader = fragment.get();
+        pipeline.primitive_type = SDL_GPU_PRIMITIVETYPE_TRIANGLELIST;
+        pipeline.target_info.num_color_targets = 1;
+        pipeline.target_info.color_target_descriptions = &color;
+        state.depth_copy_pipeline = OwnedSdlPipeline{
+            create_sdl_graphics_pipeline(state.device, &pipeline), {state.device}};
+        if (!state.depth_copy_pipeline) gpu_error("SDL_CreateGPUGraphicsPipeline depth copy");
+    }
+    SDL_GPUColorTargetInfo color{};
+    color.texture = target.depth_copy;
+    color.load_op = SDL_GPU_LOADOP_DONT_CARE;
+    color.store_op = SDL_GPU_STOREOP_STORE;
+    SdlRenderPass pass{SDL_BeginGPURenderPass(command, &color, 1, nullptr)};
+    if (!pass) gpu_error("SDL_BeginGPURenderPass depth copy");
+    SDL_BindGPUGraphicsPipeline(pass, state.depth_copy_pipeline.get());
+    const SDL_GPUTextureSamplerBinding binding{target.depth, state.depth_sampler};
+    SDL_BindGPUFragmentSamplers(pass, 0, &binding, 1);
+    count_gpu_draw(SDL_DrawGPUPrimitives, pass, 3, 1, 0, 0);
+}
+
 void release_frame_graph_textures(GpuState& state) {
     for (GpuRenderTarget& target : state.render_targets) {
         if (target.sampled_color && target.sampled_color != target.color) {
@@ -5315,6 +5356,7 @@ void release_frame_graph_textures(GpuState& state) {
         }
         if (target.color) SDL_ReleaseGPUTexture(state.device, target.color);
         if (target.depth) SDL_ReleaseGPUTexture(state.device, target.depth);
+        if (target.depth_copy) SDL_ReleaseGPUTexture(state.device, target.depth_copy);
         target = {};
     }
     for (GpuGeometryTask& task : state.geometry_tasks) {
@@ -5446,6 +5488,16 @@ void create_frame_graph_textures(
                 // every other attachment. `create_render_target` normalises
                 // it, so the record's own invariant is at least one.
                 record.depth_layers);
+            if (record.sampled_depth && !record.shadow_map && !record.has_color &&
+                std::strcmp(SDL_GetGPUDeviceDriver(state.device), "metal") == 0) {
+                if (record.depth_layers != 1 || samples != SDL_GPU_SAMPLECOUNT_1) {
+                    throw std::runtime_error("Sampled color-less Metal depth requires one layer and one sample.");
+                }
+                target.depth_copy = create_frame_texture(
+                    state.device, SDL_GPU_TEXTUREFORMAT_R32_FLOAT,
+                    SDL_GPU_SAMPLECOUNT_1, target.width, target.height,
+                    SDL_GPU_TEXTUREUSAGE_COLOR_TARGET | SDL_GPU_TEXTUREUSAGE_SAMPLER);
+            }
         }
     }
 
@@ -5803,6 +5855,7 @@ void prune_shared_composed_material_textures(GpuState& state) {
 }
 
 void release(GpuState& state) {
+    state.depth_copy_pipeline.reset();
 #if defined(BBLITE_HAS_TEXT) && BBLITE_HAS_TEXT
     state.text.reset();
 #endif
@@ -10763,7 +10816,7 @@ public:
                     handle_at(state.render_targets, handle);
                 if (pal::render_target_samples_depth(record)) {
                     if (sampled && record.has_depth && target.depth) {
-                        return target.depth;
+                        return target.depth_copy ? target.depth_copy : target.depth;
                     }
                     pal::fail_render_target_has_no_texture();
                 }
@@ -12153,6 +12206,7 @@ public:
                             }
                         }
                         task_pass.end();
+                        if (target.depth_copy) encode_metal_depth_copy(state, command, target);
                         continue;
                     }
                     SDL_GPUColorTargetInfo target_info{};
@@ -13304,9 +13358,9 @@ public:
                     transmission_blit.flip_mode = SDL_FLIP_NONE;
                     transmission_blit.filter = SDL_GPU_FILTER_LINEAR;
                     SDL_BlitGPUTexture(command, &transmission_blit);
-                    SDL_GenerateMipmapsForGPUTexture(
-                        command,
-                        state.transmission_color);
+                    generate_texture_mipmaps(state.device, command,
+                        state.transmission_color, state.transmission_width,
+                        state.transmission_height, transmission_grab_mip_count());
                     color_info.load_op = SDL_GPU_LOADOP_LOAD;
                     // Image processing reads the multisample attachment after
                     // this pass. Resolving alone discards its updated samples.

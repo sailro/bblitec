@@ -3115,17 +3115,15 @@ function refusalRows(
             false,
             features.includes("texture:compressed")
                 ? "checked: every loadKtxTexture2D call lists a " +
-                    "block-compression suffix, so generation packages the " +
-                    "candidate the validated D3D12 adapter would pick"
+                    "supported block-compression suffix; packaged BC/ASTC " +
+                    "candidates retain source order for device selection"
                 : "no compressed-texture loads to check",
             "src/texture/compressed-formats.ts: the pin keeps every " +
                 "suffix whose device feature the adapter reports and falls " +
-                "back to the base image; generation makes the same choice " +
-                "once over texture-compression-bc " +
-                "(src/compiler/compressed-texture.ts), and a call listing " +
-                "no block-compression suffix refuses rather than packaging " +
-                "the pin's fallback image — a different texture the golden " +
-                "does not render",
+                "back to the base image; generation retains native BC/ASTC " +
+                "candidates (src/compiler/compressed-texture.ts). Unsupported " +
+                "families, missing assets, incompatible variant dimensions/" +
+                "samplers and uncompressed fallback refuse explicitly",
             gate,
         ),
         row(
