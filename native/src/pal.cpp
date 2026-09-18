@@ -16,6 +16,9 @@
 #include <utility>
 
 #include <SDL3/SDL.h>
+#if defined(SDL_PLATFORM_IOS) && !BBLITE_OFFSCREEN_SURFACES
+#include "pal_platform_events.hpp"
+#endif
 
 #if defined(_WIN32)
 #define NOMINMAX
@@ -291,6 +294,29 @@ Engine create_engine(EngineOptions options) {
     engine.options = std::move(options);
     engine.canvas_client_width = engine.options.width;
     engine.canvas_client_height = engine.options.height;
+#if defined(SDL_PLATFORM_IOS) && !BBLITE_OFFSCREEN_SURFACES
+#if defined(BBLITE_PHYSICS_VIEWER) && BBLITE_PHYSICS_VIEWER
+    if (extracting_constructor_inputs) return engine;
+#endif
+    if (!active_window_run) throw std::runtime_error("iOS engine creation requires the application window scope.");
+    if (!initialize_run_sdl(SDL_INIT_VIDEO | SDL_INIT_EVENTS)) {
+        throw std::runtime_error("iOS video initialization failed: " + std::string(SDL_GetError()));
+    }
+    const SDL_WindowFlags flags = SDL_WINDOW_RESIZABLE |
+        (environment_variable("BBLITE_TEST_PASS") == "1" ? SDL_WINDOW_NOT_FOCUSABLE : 0);
+    SDL_Window* window = acquire_run_window(engine.options, flags);
+    if (!window) throw std::runtime_error("iOS window creation failed: " + std::string(SDL_GetError()));
+    int width = 0, height = 0;
+    if (!SDL_GetWindowSizeInPixels(window, &width, &height) || width <= 0 || height <= 0) {
+        throw std::runtime_error("iOS initial canvas extent is unavailable: " + std::string(SDL_GetError()));
+    }
+    const auto pixel_density = SDL_GetWindowPixelDensity(window);
+    const auto display_scale = SDL_GetWindowDisplayScale(window);
+    if (!std::isfinite(pixel_density) || pixel_density <= 0 || !std::isfinite(display_scale) || display_scale <= 0) {
+        throw std::runtime_error("iOS initial canvas density is unavailable.");
+    }
+    update_engine_canvas_metrics(engine, width, height, display_scale, pixel_density);
+#endif
     return engine;
 }
 

@@ -21,13 +21,14 @@
 
 #include <SDL3/SDL.h>
 
-#include "pal_file_io.hpp"
+#include "pal_file_dialog.hpp"
 #include "pal_platform_events.hpp"
+#if defined(SDL_PLATFORM_IOS)
+#include "pal_file_ios.hpp"
+#endif
 
 namespace bbl::pal {
 namespace {
-
-constexpr std::size_t kMaximumSelectedFileBytes = 64u * 1024u * 1024u;
 
 // A host dialog takes the mouse. Leave pointer lock through the same transition
 // as every other loss so pointerlockchange remains observable before it opens.
@@ -39,28 +40,14 @@ void release_pointer_lock_for_dialog(Engine& engine) {
     sync_pointer_lock(window, engine);
 }
 
+#if !defined(SDL_PLATFORM_IOS)
 [[nodiscard]] std::string sdl_filter_pattern(std::string_view pattern) {
-    if (pattern == "*.*" || pattern == "*") return "*";
+    const auto extensions = detail::file_dialog_extensions(pattern);
+    if (extensions.empty()) return "*";
     std::string result;
-    std::size_t begin = 0;
-    while (begin <= pattern.size()) {
-        const std::size_t separator = pattern.find(';', begin);
-        const std::string_view item = pattern.substr(
-            begin,
-            separator == std::string_view::npos
-                ? std::string_view::npos
-                : separator - begin);
-        if (
-            item.size() <= 2u ||
-            item[0] != '*' ||
-            item[1] != '.') {
-            throw std::runtime_error(
-                "Native file dialog received an invalid extension filter.");
-        }
+    for (const auto& extension : extensions) {
         if (!result.empty()) result.push_back(';');
-        result.append(item.substr(2u));
-        if (separator == std::string_view::npos) break;
-        begin = separator + 1u;
+        result += extension;
     }
     return result;
 }
@@ -178,55 +165,60 @@ void set_dialog_property(
     if (result.failure) std::rethrow_exception(result.failure);
     return std::move(result.path);
 }
-
-[[nodiscard]] std::string display_name(
-    const std::filesystem::path& path) {
-    const std::u8string utf8 = path.filename().u8string();
-    if (utf8.empty()) {
-        throw std::runtime_error(
-            "The selected file has no stable display name.");
-    }
-    return std::string(
-        reinterpret_cast<const char*>(utf8.data()),
-        utf8.size());
-}
-
-[[nodiscard]] std::optional<std::string> choose_file_path(
-    Engine& engine,
-    const FileDialogOptions& options,
-    bool save) {
-    require_runtime_execution("file selection");
-    const std::string override_path = environment_variable(
-        save
-            ? "BBLITE_FILE_DIALOG_SAVE_PATH"
-            : "BBLITE_FILE_DIALOG_OPEN_PATH");
-    if (!override_path.empty()) return override_path;
-    release_pointer_lock_for_dialog(engine);
-    return choose_sdl_file(options, save);
-}
+#endif
 
 } // namespace
 
-std::optional<std::string> choose_save_file(
+bool save_file(
     Engine& engine,
-    const FileDialogOptions& options) {
-    return choose_file_path(engine, options, true);
+    const FileDialogOptions& options,
+    std::span<const std::uint8_t> bytes,
+    const std::function<void()>& validate) {
+    require_runtime_execution("file selection");
+    if (bytes.size() > detail::maximum_selected_file_bytes) {
+        throw std::runtime_error("Selected file exceeds the native write bound.");
+    }
+    std::optional<std::string> path;
+    const auto override_path = environment_variable("BBLITE_FILE_DIALOG_SAVE_PATH");
+    if (!override_path.empty()) path = override_path;
+    else {
+        release_pointer_lock_for_dialog(engine);
+#if defined(SDL_PLATFORM_IOS)
+        if (validate) validate();
+        return export_ios_file(options, bytes);
+#else
+        path = choose_sdl_file(options, true);
+#endif
+    }
+    if (!path) return false;
+    if (validate) validate();
+    detail::write_file_atomically(detail::utf8_file_path(*path), bytes,
+        detail::maximum_selected_file_bytes, "selected file");
+    return true;
+}
+
+bool save_file(
+    Engine& engine,
+    const FileDialogOptions& options,
+    std::string_view text,
+    const std::function<void()>& validate) {
+    return save_file(engine, options,
+        std::span<const std::uint8_t>(reinterpret_cast<const std::uint8_t*>(text.data()), text.size()), validate);
 }
 
 std::optional<SelectedFileSnapshot> choose_open_file(
     Engine& engine,
     const FileDialogOptions& options) {
-    const std::optional<std::string> selected =
-        choose_file_path(engine, options, false);
-    if (!selected) return std::nullopt;
-    const std::filesystem::path path = detail::utf8_file_path(*selected);
-    return SelectedFileSnapshot{
-        .bytes = detail::read_binary_file_bounded(
-            path,
-            kMaximumSelectedFileBytes,
-            "selected file"),
-        .display_name = display_name(path),
-    };
+    require_runtime_execution("file selection");
+    const auto override_path = environment_variable("BBLITE_FILE_DIALOG_OPEN_PATH");
+    if (!override_path.empty()) return detail::selected_file_snapshot(detail::utf8_file_path(override_path));
+    release_pointer_lock_for_dialog(engine);
+#if defined(SDL_PLATFORM_IOS)
+    return choose_ios_open_file(options);
+#else
+    const auto path = choose_sdl_file(options, false);
+    return path ? std::optional(detail::selected_file_snapshot(detail::utf8_file_path(*path))) : std::nullopt;
+#endif
 }
 
 void write_selected_file_atomically(
@@ -236,7 +228,7 @@ void write_selected_file_atomically(
     detail::write_file_atomically(
         detail::utf8_file_path(path),
         std::span<const std::uint8_t>(bytes),
-        kMaximumSelectedFileBytes,
+        detail::maximum_selected_file_bytes,
         "selected file");
 }
 
@@ -247,7 +239,7 @@ void write_selected_file_atomically(
     detail::write_file_atomically(
         detail::utf8_file_path(path),
         text,
-        kMaximumSelectedFileBytes,
+        detail::maximum_selected_file_bytes,
         "selected file");
 }
 

@@ -88,10 +88,12 @@ export interface BrowserPageOptions {
     browserRequirement?: string;
     /** Chromium flags, exact per harness (see the catalogue above). */
     browserArgs?: readonly string[];
-    /** Pin the page to this viewport at deviceScaleFactor 1. The
+    /** Pin the page to this viewport. The
      *  screenshot harnesses pass the golden's 1280x720; the compute
      *  harnesses omit it. */
     viewport?: { width: number; height: number };
+    /** Defaults to 1; mobile diagnostics must match the native display density. */
+    deviceScaleFactor?: number;
     /** Log `pageerror` events as `<prefix>: <message>`; silent without. */
     pageErrorPrefix?: string;
     /** Log console error messages as `<prefix>: <text>`; silent
@@ -137,7 +139,7 @@ export async function withBrowserPage<T>(
             options.viewport
                 ? {
                       viewport: options.viewport,
-                      deviceScaleFactor: 1,
+                      deviceScaleFactor: options.deviceScaleFactor ?? 1,
                   }
                 : undefined,
         );

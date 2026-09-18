@@ -31,27 +31,6 @@ $vcpkgRoot = $env:VCPKG_ROOT
 if (-not $vcpkgRoot -and $IsWindows) { $vcpkgRoot = Join-Path (Get-VisualStudioRoot) 'VC/vcpkg' }
 if (-not $vcpkgRoot) { throw 'Set VCPKG_ROOT to your vcpkg checkout.' }
 
-function Invoke-Checked([string]$Program, [string[]]$Arguments) {
-    & $Program @Arguments
-    if ($LASTEXITCODE -ne 0) { throw "$Program failed ($LASTEXITCODE)." }
-}
-
-function Build-AndroidDependency([string]$Name, [string]$Output, [string[]]$Inputs, [string[]]$Required, [scriptblock]$Build) {
-    $identity = @($Abi, [IO.Path]::GetFullPath($Ndk)) + @(
-        $Inputs + @("$Ndk/source.properties", "$PSScriptRoot/bblite-tools.psm1", "$PSScriptRoot/android.ps1") |
-            Sort-Object -Unique | ForEach-Object { "$_=" + (Get-FileHash -LiteralPath $_ -Algorithm SHA256).Hash }
-    )
-    $fingerprint = $identity -join "`n"
-    $stamp = "$Output/android-build-inputs.txt"
-    if ((Test-Path $stamp) -and (Get-Content $stamp -Raw) -eq $fingerprint -and
-        @($Required | Where-Object { -not (Test-Path (Join-Path $Output $_)) }).Count -eq 0) {
-        Write-Host "$Name Android artifact is current ($Abi)."
-        return
-    }
-    & $Build
-    Set-Content $stamp $fingerprint -NoNewline
-}
-
 Push-Location $root
 try {
     Invoke-Checked 'npm' @('run', 'build')
@@ -75,7 +54,7 @@ try {
     }
     $profile = "$staging/dependencies.txt"
     Invoke-Checked $cmake @("-DBBLITE_GENERATED_DIRS_FILE=$directoriesFile",
-        "-DBBLITE_PROFILE_OUTPUT=$profile", '-P', "$root/tools/android-sweep-dependencies.cmake")
+        "-DBBLITE_PROFILE_OUTPUT=$profile", '-P', "$root/tools/scene-dependencies.cmake")
     $dependencyFeatures = (Get-Content $profile -Raw).Trim()
     $runtimeFeatures = @(Get-Content $directoriesFile | ForEach-Object {
         (Get-Content (Join-Path $_ 'manifest.json') -Raw | ConvertFrom-Json).features
@@ -83,6 +62,8 @@ try {
     $rmlui = "$root/artifacts/tools/rmlui-android-$Abi"
     $labsound = "$root/artifacts/tools/labsound-android-$Abi"
     if (-not $UseInstalledDependencies) {
+        $dependencyIdentity = @($Abi, [IO.Path]::GetFullPath($Ndk))
+        $dependencyInputs = @("$Ndk/source.properties", "$PSScriptRoot/android.ps1")
         $vcpkg = Join-Path $vcpkgRoot "vcpkg$(if ($IsWindows) { '.exe' })"
         $installArguments = @('install', "--x-manifest-root=$root/native", "--x-install-root=$root/artifacts/android-vcpkg",
             "--overlay-triplets=$root/native/triplets", "--triplet=$triplet")
@@ -92,12 +73,12 @@ try {
             $inputs = @("$root/upstream/rmlui.json", "$PSScriptRoot/build-rmlui.ps1", "$PSScriptRoot/package-output.psm1", "$root/native/apply-rmlui-patch.cmake") +
                 @(Get-ChildItem "$root/native/patches" -Filter 'rmlui-*.patch' -File | ForEach-Object FullName) +
                 @('freetype', 'lunasvg', 'boost-charconv' | ForEach-Object { "$root/artifacts/android-vcpkg/$triplet/share/$_/vcpkg_abi_info.txt" })
-            Build-AndroidDependency 'RmlUi' $rmlui $inputs @('lib/librmlui.a', 'lib/cmake/RmlUi/RmlUiConfig.cmake', 'bblite-rmlui-features.cmake', 'include/RmlUi/Core.h', 'Backends/RmlUi_Platform_SDL.cpp', 'RmlUi-LICENSE.txt') {
+            Build-DependencyArtifact 'RmlUi Android' $rmlui $dependencyIdentity ($dependencyInputs + $inputs) @('lib/librmlui.a', 'lib/cmake/RmlUi/RmlUiConfig.cmake', 'bblite-rmlui-features.cmake', 'include/RmlUi/Core.h', 'Backends/RmlUi_Platform_SDL.cpp', 'RmlUi-LICENSE.txt') {
                 & "$PSScriptRoot/build-rmlui.ps1" -AndroidAbi $Abi -AndroidNdk $Ndk -FreetypeRoot "$root/artifacts/android-vcpkg/$triplet" -Jobs $Jobs -CMake $cmake
             }
         }
         if ('audio:engine' -in $runtimeFeatures) {
-            Build-AndroidDependency 'LabSound' $labsound @("$root/upstream/labsound.json", "$PSScriptRoot/build-labsound.ps1", "$PSScriptRoot/patches/labsound-lazy-decoders.patch") @('lib/libLabSound.a', 'lib/liblibnyquist.a', 'include/LabSound/LabSound.h', 'include/libnyquist/Decoders.h', 'bblite-labsound-features.cmake', 'LabSound-LICENSE.txt', 'LabSound-COPYING.txt', 'libnyquist-LICENSE.txt', 'libnyquist-COPYING.txt') {
+            Build-DependencyArtifact 'LabSound Android' $labsound $dependencyIdentity ($dependencyInputs + @("$root/upstream/labsound.json", "$PSScriptRoot/build-labsound.ps1", "$PSScriptRoot/patches/labsound-lazy-decoders.patch")) @('lib/libLabSound.a', 'lib/liblibnyquist.a', 'include/LabSound/LabSound.h', 'include/libnyquist/Decoders.h', 'bblite-labsound-features.cmake', 'LabSound-LICENSE.txt', 'LabSound-COPYING.txt', 'libnyquist-LICENSE.txt', 'libnyquist-COPYING.txt') {
                 & "$PSScriptRoot/build-labsound.ps1" -AndroidAbi $Abi -AndroidNdk $Ndk -Jobs $Jobs -CMake $cmake
             }
         }

@@ -18,7 +18,7 @@ function Assert-PackageChild([string]$Root, [string]$Path) {
 }
 
 function New-PackageOutput([string]$Root, [string]$Name) {
-    if ($Name -notmatch '^bblitec-[a-z0-9]+(?:-[a-z0-9]+)*-(?:(?:windows|linux|macos)-x64|macos-universal|android-(?:arm64-v8a|x86-64))$') {
+    if ($Name -notmatch '^bblitec-[a-z0-9]+(?:-[a-z0-9]+)*-(?:(?:windows|linux|macos)-x64|macos-universal|android-(?:arm64-v8a|x86-64)|ios-arm64)$') {
         throw "Invalid package name: $Name"
     }
     $rootPath = [IO.Path]::GetFullPath($Root)
@@ -32,8 +32,8 @@ function New-PackageOutput([string]$Root, [string]$Name) {
     }
 }
 
-# Called only after staged smoke and archive creation succeed. No prior package
-# is removed; any failure during publication retains its files in .replaced.
+# Called after the target's qualification and archive creation succeed. No prior
+# package is removed; publication failures retain its files in .replaced.
 function Publish-PackageOutput($Plan) {
     $names = @($Plan.Name, "$($Plan.Name).zip", "$($Plan.Name).json")
     foreach ($name in $names) {

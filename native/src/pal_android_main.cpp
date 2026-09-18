@@ -7,7 +7,7 @@
 #include <mutex>
 #include <streambuf>
 #include <string>
-#include <type_traits>
+#include "pal_generated_entry.hpp"
 
 #define main bblite_generated_main
 #include BBLITE_ANDROID_ENTRY
@@ -62,18 +62,13 @@ class AndroidLog final : public std::streambuf {
     ~AndroidLog() override { write_line(); }
 };
 
-template<class Entry>
-int run_entry(Entry entry, int argc, char** argv) {
-    if constexpr (std::is_invocable_r_v<int, Entry, int, char**>) return entry(argc, argv);
-    else return entry();
-}
 }
 
 extern "C" __attribute__((visibility("default"))) int SDL_main(int argc, char** argv) {
     AndroidLog log;
     auto* output = std::cout.rdbuf(&log);
     auto* errors = std::cerr.rdbuf(&log);
-    const int result = run_entry(bblite_generated_main, argc, argv);
+    const int result = bbl::pal::run_generated_entry(bblite_generated_main, argc, argv);
     std::cout.rdbuf(output);
     std::cerr.rdbuf(errors);
     const char* run_id = std::getenv("BBLITE_RUN_ID");

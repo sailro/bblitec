@@ -30,7 +30,7 @@ needs performance and semantic verification. The easing/steps mapping is approxi
   listeners. Wider queries, event payloads and removal refuse. ResizeObserver entries are unavailable.
 - Navigator exposes native identity, OS platform, processor count and language. Heap snapshots and client
   hints are absent. Async graphics guards expose the existing Window service; adapter requests and
-  GPU constructor/prototype instrumentation are unsupported.
+  GPU API instrumentation are unsupported.
 - Location follows deployment. A query value the deployment answers is a constant: alone, beside native
   operands in comparisons, arithmetic and logical chains, or as the receiver of a native string method; a
   short-circuit it decides stays folded. A query read the fold cannot answer, such as a key computed at run
@@ -80,10 +80,13 @@ drawable pixels; client dimensions and bounding rectangles are CSS pixels. Recta
 
 ### File transfer controls
 
-Save dialogs publish atomically; cancellation writes nothing. Single-file inputs snapshot bytes/name
+Save dialogs publish only accepted selections; cancellation publishes no file. Single-file inputs snapshot bytes/name
 before change dispatch. File aliases retain snapshots; selections have a 256 MiB live cap and per-file
 limits. Completion may occur before click returns. Multiple files/directories, unsupported accept values,
 arbitrary source paths and file-input type transitions refuse.
+
+iOS uses UIKit Files with local storage and security-scoped imports; other platforms use SDL dialogs.
+[Publication semantics](fidelity.md#semantic-contract) differ between direct paths and file providers.
 
 ### Markup
 
@@ -150,12 +153,12 @@ on realm microtasks; empty/broken images reject and source changes invalidate re
 sources, load/error events and distinct DOMException values are unsupported.
 
 Fonts use DirectWrite on Windows and FreeType with CoreText, Fontconfig or Android system-font discovery
-on macOS, Linux and Android. Android resolves generic families through its font matcher and named families
-through its installed-font list; variable fonts select the nearest named weight. Android's text renderer
-rasterizes color emoji, including COLRv1; bundled Noto Sans Symbols 2 supplies monochrome text symbols.
-Other color fonts retain PNG decoding. Font coverage,
-baseline/line-height rounding, emoji/ZWJ shaping and glyph rasterization
-can differ from Chromium. Relative transition units resolve at transition start.
+on macOS/iOS, Linux and Android. Android resolves generic families through its font matcher and named families
+through its installed-font list; variable fonts select the nearest named weight. Color glyphs use CoreText
+on iOS (including Apple's `emjc` bitmaps) and Android's text renderer (including COLRv1).
+Android bundles Noto Sans Symbols 2 for monochrome text symbols. Other FreeType color fonts retain
+PNG decoding. Font coverage, baseline/line-height rounding, emoji/ZWJ shaping and rasterization can
+differ from Chromium. Relative transition units resolve at transition start.
 
 | Maintained RmlUi patch | Contract |
 | --- | --- |

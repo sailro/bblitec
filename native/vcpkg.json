@@ -4,7 +4,7 @@
   "builtin-baseline": "ea1a7396b05637a53bf23c078647ecc0edee4b80",
   "dependencies": [
     "nlohmann-json",
-    { "name": "boost-charconv", "platform": "osx" },
+    { "name": "boost-charconv", "platform": "osx | ios" },
     { "name": "sdl3", "platform": "!linux & !android" },
     { "name": "sdl3", "platform": "android", "default-features": false, "features": ["vulkan"] },
     { "name": "sdl3", "platform": "linux", "features": ["vulkan", "alsa"] }
@@ -80,7 +80,7 @@
         },
         {
           "name": "freetype",
-          "platform": "linux | osx | android",
+          "platform": "linux | osx | android | ios",
           "default-features": false,
           "features": ["png"]
         }

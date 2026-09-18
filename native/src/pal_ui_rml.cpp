@@ -39,7 +39,7 @@
 #include "pal_ui_defaults.hpp"
 #include "pal_ui_form.hpp"
 #include "pal_ui_font_win32.hpp"
-#include "pal_ui_font_android.hpp"
+#include "pal_ui_font_color.hpp"
 #include "pal_ui_range.hpp"
 #include "pal_ui_scrollbars.hpp"
 #include "pal_ui_style_properties.hpp"
@@ -3458,10 +3458,10 @@ struct UiRmlRuntime {
             Rml::Factory::RegisterDecoratorInstancer("bbl-native-range", &range_decorator);
 #if defined(_WIN32)
             platform_fonts = std::make_unique<Win32UiFontEngine>(*Rml::GetFontEngineInterface());
-#elif defined(__ANDROID__)
-            platform_fonts = std::make_unique<AndroidUiFontEngine>(*Rml::GetFontEngineInterface());
+#elif defined(__ANDROID__) || defined(SDL_PLATFORM_IOS)
+            platform_fonts = std::make_unique<ColorUiFontEngine>(*Rml::GetFontEngineInterface());
 #endif
-#if defined(_WIN32) || defined(__ANDROID__)
+#if defined(_WIN32) || defined(__ANDROID__) || defined(SDL_PLATFORM_IOS)
             Rml::SetFontEngineInterface(platform_fonts.get());
 #endif
             // Let the retained stylesheet cascade these properties on all
@@ -5455,8 +5455,8 @@ struct UiRmlRuntime {
     std::optional<TextFormMetrics> text_form_metrics;
 #if defined(_WIN32)
     std::unique_ptr<Win32UiFontEngine> platform_fonts;
-#elif defined(__ANDROID__)
-    std::unique_ptr<AndroidUiFontEngine> platform_fonts;
+#elif defined(__ANDROID__) || defined(SDL_PLATFORM_IOS)
+    std::unique_ptr<ColorUiFontEngine> platform_fonts;
 #endif
     std::string projected_style_sheet_source;
     std::uint64_t projected_style_revision = 0;

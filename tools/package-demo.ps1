@@ -1,5 +1,5 @@
 param(
-    [ValidateSet('desktop', 'android')][string]$Platform = 'desktop',
+    [ValidateSet('desktop', 'android', 'ios')][string]$Platform = 'desktop',
     [string]$Scene = "scene1",
     [string]$Sdk = $env:ANDROID_HOME,
     [string]$Device,
@@ -8,6 +8,7 @@ param(
     [string]$OutputRoot = "artifacts\releases",
     [string]$BuildDirectory = "",
     [string]$Arm64BuildDirectory = "",
+    [switch]$SkipGenerate,
     [ValidateSet("", "SDL_GPU", "DAWN")]
     [string]$ExpectBackend = ""
 )
@@ -25,6 +26,15 @@ Import-Module (Join-Path $PSScriptRoot "bblite-tools.psm1") -Force
 Import-Module (Join-Path $PSScriptRoot "image-codecs.psm1") -Force
 Import-Module (Join-Path $PSScriptRoot "package-output.psm1") -Force
 $root = Get-RepositoryRoot
+if ($Platform -eq 'ios') {
+    if ($BuildDirectory -or $Arm64BuildDirectory -or $Device -or $ExpectBackend -eq 'DAWN' -or
+        $PSBoundParameters.ContainsKey('Abi') -or $PSBoundParameters.ContainsKey('Sdk')) {
+        throw 'iOS packaging builds an ARM64 SDL_GPU device bundle. Select Xcode with DEVELOPER_DIR; Android SDK/device and desktop build options do not apply.'
+    }
+    & (Join-Path $PSScriptRoot 'package-ios.ps1') -Scene $Scene -Jobs $Jobs -OutputRoot $OutputRoot -SkipGenerate:$SkipGenerate
+    return
+}
+if ($SkipGenerate) { throw '-SkipGenerate is only supported for iOS packaging.' }
 if ($Platform -eq 'android') {
     if ($BuildDirectory -or $Arm64BuildDirectory -or $ExpectBackend -eq 'DAWN') { throw 'Android packaging builds its own SDL_GPU APK.' }
     & (Join-Path $PSScriptRoot 'package-android.ps1') -Scene $Scene -Sdk $Sdk -Device $Device -Abi $Abi -Jobs $Jobs -OutputRoot $OutputRoot

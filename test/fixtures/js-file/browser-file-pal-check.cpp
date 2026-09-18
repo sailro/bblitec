@@ -1,6 +1,7 @@
 #include <bblite/js_file.hpp>
 
 #include "pal_file_io.hpp"
+#include "pal_file_dialog.hpp"
 #include "pal_platform_events.hpp"
 
 #include <cstdint>
@@ -57,6 +58,12 @@ std::string environment_variable(const char* name) {
 int main(int argc, char** argv) {
     require(argc == 2, "scratch root argument");
     const std::filesystem::path root = argv[1];
+    require(bbl::pal::detail::file_dialog_extensions("*.*").empty(), "all-file filter");
+    require(bbl::pal::detail::file_dialog_extensions("*.json;*.TXT") ==
+        std::vector<std::string>{"json", "TXT"}, "shared extension filter");
+    for (const auto invalid : {"json", "*.", "*.json;", "*.a/b", "*.json;../private"}) {
+        require_throws([&] { bbl::pal::detail::file_dialog_extensions(invalid); }, "invalid picker filter");
+    }
     const std::filesystem::path selected_path = root / "selected.json";
     const std::filesystem::path other_path = root / "other.json";
     write_text(selected_path, "selected bytes");
@@ -66,7 +73,7 @@ int main(int argc, char** argv) {
     bbl::Engine engine;
     bbl::pal::extracting_constructor_inputs = true;
     require_throws([&] { bbl::pal::choose_open_file(engine, {}); }, "construction refuses file selection before reading an override");
-    require_throws([&] { bbl::pal::choose_save_file(engine, {}); }, "construction refuses a save dialog");
+    require_throws([&] { bbl::pal::save_file(engine, {}, std::string_view("changed")); }, "construction refuses a save dialog");
     require_throws([&] { bbl::pal::write_selected_file_atomically(selected_path.string(), std::string_view("changed")); }, "construction refuses text writes");
     require_throws([&] { bbl::pal::write_selected_file_atomically(selected_path.string(), std::vector<std::uint8_t>{1}); }, "construction refuses byte writes");
     bbl::pal::extracting_constructor_inputs = false;
@@ -254,20 +261,22 @@ int main(int argc, char** argv) {
 
     const std::filesystem::path save_path = root / "saved.json";
     save_override = save_path.string();
-    const std::optional<std::string> chosen_save =
-        bbl::pal::choose_save_file(engine, options);
     require(
-        chosen_save.has_value() && *chosen_save == save_override,
+        bbl::pal::save_file(engine, options, std::string_view("saved bytes")),
         "environment-selected save file");
-    bbl::pal::write_selected_file_atomically(
-        *chosen_save,
-        std::string_view("saved bytes"));
     require(
         bbl::pal::detail::read_text_file_bounded(
             save_path,
             64u,
             "saved file") == "saved bytes",
         "real PAL atomic save");
+    require_throws([&] {
+        bbl::pal::save_file(engine, options, std::string_view("must not replace"), [] {
+            throw std::runtime_error("invalidated download activation");
+        });
+    }, "save validation precedes publication");
+    require(bbl::pal::detail::read_text_file_bounded(save_path, 64u, "saved file") == "saved bytes",
+        "failed save validation preserves the destination");
 
     write_text(selected_path, "replacement bytes");
     require(

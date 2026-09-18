@@ -20,7 +20,7 @@
 
 #include "pal_win32_text.hpp"
 #elif defined(__ANDROID__)
-#include "pal_android_font.hpp"
+#include "pal_freetype.hpp"
 #include <android/font.h>
 #include <android/font_matcher.h>
 #include <android/system_fonts.h>
@@ -145,7 +145,7 @@ std::optional<SystemFontFace> android_font_face(const AFont* font, int weight) {
     if (!font) return std::nullopt;
     const char* path = AFont_getFontFilePath(font);
     if (!path) return std::nullopt;
-    const auto library = android_font_library();
+    const auto library = platform_font_library();
     if (!library) return std::nullopt;
     FT_Face raw_face = nullptr;
     const auto collection_index = AFont_getCollectionIndex(font);
@@ -192,7 +192,7 @@ std::optional<SystemFontFace> find_platform_font(std::string_view family, int we
     };
     static const auto fonts = [] {
         std::vector<NamedFont> result;
-        const auto library = android_font_library();
+        const auto library = platform_font_library();
         FontOwner<ASystemFontIterator*, &ASystemFontIterator_close> iterator(
             ASystemFontIterator_open(), ASystemFontIterator_close);
         if (!iterator || !library) return result;

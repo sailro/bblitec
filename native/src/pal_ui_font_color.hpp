@@ -1,5 +1,6 @@
 #pragma once
-#ifdef __ANDROID__
+#include <SDL3/SDL_platform_defines.h>
+#if defined(__ANDROID__) || defined(SDL_PLATFORM_IOS)
 #include <RmlUi/Core/CallbackTexture.h>
 #include <RmlUi/Core/FontEngineInterface.h>
 #include <RmlUi/Core/FontEffect.h>
@@ -7,16 +8,31 @@
 #include <RmlUi/Core/RenderManager.h>
 #include <RmlUi/Core/StringUtilities.h>
 #include <SDL3/SDL.h>
-#include "pal_android_font.hpp"
+#include "pal_freetype.hpp"
+#if defined(__ANDROID__)
 #include <jni.h>
+#else
+#include <CoreText/CoreText.h>
+#include <CoreGraphics/CoreGraphics.h>
+#endif
+#include <algorithm>
+#include <cmath>
 #include <map>
 #include <set>
+#include <stdexcept>
+#include <string>
 #include <tuple>
+#include <vector>
 
 namespace bbl::pal {
-// Keep FreeType's ordinary text and layout; Android rasterizes the explicit
-// color-font spans, including system COLRv1 fonts unsupported by FT_Render_Glyph.
-class AndroidUiFontEngine final : public Rml::FontEngineInterface {
+// Keep FreeType's ordinary text and layout. System text APIs decode color
+// glyphs that FreeType cannot rasterize, including Android COLRv1 and iOS emjc.
+class ColorUiFontEngine final : public Rml::FontEngineInterface {
+    struct EmojiData {
+        int advance = 0;
+        Rml::Vector2i origin{}, dimensions{};
+        std::vector<Rml::byte> pixels;
+    };
     struct Raster {
         int advance;
         Rml::Vector2i origin, dimensions;
@@ -39,11 +55,38 @@ class AndroidUiFontEngine final : public Rml::FontEngineInterface {
     std::map<RasterKey, Raster> rasters;
     std::map<Rml::FontEffectsHandle, Rml::FontEffectList> effects;
     std::map<std::pair<Raster*, size_t>, EffectRaster> effect_rasters;
+#if defined(SDL_PLATFORM_IOS)
+    using AppleFont = FontOwner<CTFontRef, &CFRelease>;
+    std::map<std::tuple<std::string, int, int>, AppleFont> apple_fonts;
+
+    CTFontRef apple_font(int size) {
+        const auto key = std::tuple{path, face_index, size};
+        if (const auto found = apple_fonts.find(key); found != apple_fonts.end()) return found->second.get();
+        const auto library = platform_font_library();
+        FT_Face raw_face = nullptr;
+        if (!library || FT_New_Face(library, path.c_str(), face_index, &raw_face)) {
+            throw std::runtime_error("iOS emoji font face unavailable.");
+        }
+        FontOwner<FT_Face, &FT_Done_Face> face(raw_face, FT_Done_Face);
+        const char* postscript = FT_Get_Postscript_Name(face.get());
+        if (!postscript) throw std::runtime_error("iOS emoji font has no PostScript identity.");
+        FontOwner<CFStringRef, &CFRelease> name(
+            CFStringCreateWithCString(kCFAllocatorDefault, postscript, kCFStringEncodingUTF8), CFRelease);
+        if (!name) throw std::runtime_error("iOS emoji font name allocation failed.");
+        AppleFont font(CTFontCreateWithName(name.get(), size, nullptr), CFRelease);
+        if (!font) throw std::runtime_error("CoreText could not create the selected emoji font.");
+        FontOwner<CFStringRef, &CFRelease> resolved(CTFontCopyPostScriptName(font.get()), CFRelease);
+        if (!resolved || !CFEqual(name.get(), resolved.get())) {
+            throw std::runtime_error("CoreText substituted a different emoji font.");
+        }
+        return apple_fonts.emplace(key, std::move(font)).first->second.get();
+    }
+#endif
 
     void register_characters(const std::string& file, int index, bool color) {
         const auto key = std::tuple{file, index, color};
         if (registered_characters.contains(key)) return;
-        const auto library = android_font_library();
+        const auto library = platform_font_library();
         if (!library) throw std::runtime_error("Emoji fallback font discovery failed.");
         FT_Face face = nullptr;
         if (FT_New_Face(library, file.c_str(), index, &face)) throw std::runtime_error("Emoji fallback font face unavailable.");
@@ -74,7 +117,8 @@ class AndroidUiFontEngine final : public Rml::FontEngineInterface {
             return output.GenerateTexture(*pixels, dimensions);
         });
     }
-    std::vector<jint> emoji_data(int size, Rml::StringView text, float spacing, bool render) {
+    EmojiData emoji_data(int size, Rml::StringView text, float spacing, bool render) {
+#if defined(__ANDROID__)
         auto* env = static_cast<JNIEnv*>(SDL_GetAndroidJNIEnv());
         if (!env || env->PushLocalFrame(8) < 0) throw std::runtime_error("Android emoji JNI unavailable.");
         struct Frame { JNIEnv* env; ~Frame() { env->PopLocalFrame(nullptr); } } frame{env};
@@ -89,29 +133,84 @@ class AndroidUiFontEngine final : public Rml::FontEngineInterface {
         if (!output || env->GetArrayLength(output) < (render ? 5 : 1)) throw std::runtime_error("Invalid Android emoji result.");
         std::vector<jint> values(env->GetArrayLength(output));
         env->GetIntArrayRegion(output, 0, static_cast<jsize>(values.size()), values.data());
-        return values;
+        EmojiData result;
+        result.advance = values[0];
+        if (!render) return result;
+        result.origin = {values[1], values[2]};
+        result.dimensions = {values[3], values[4]};
+        const auto count = values.size() - 5;
+        if (result.dimensions.x <= 0 || result.dimensions.y <= 0 ||
+            static_cast<size_t>(result.dimensions.x) * result.dimensions.y != count) {
+            throw std::runtime_error("Invalid Android emoji dimensions.");
+        }
+        result.pixels.resize(count * 4);
+        for (size_t i = 0; i < count; ++i) {
+            const auto argb = static_cast<std::uint32_t>(values[i + 5]);
+            const auto alpha = argb >> 24;
+            for (unsigned c = 0; c < 3; ++c) result.pixels[i * 4 + c] = static_cast<Rml::byte>((((argb >> (16 - c * 8)) & 255) * alpha + 127) / 255);
+            result.pixels[i * 4 + 3] = static_cast<Rml::byte>(alpha);
+        }
+        return result;
+#else
+        FontOwner<CFStringRef, &CFRelease> string(CFStringCreateWithBytes(kCFAllocatorDefault,
+            reinterpret_cast<const UInt8*>(text.begin()), static_cast<CFIndex>(text.size()), kCFStringEncodingUTF8, false), CFRelease);
+        FontOwner<CFNumberRef, &CFRelease> kern(CFNumberCreate(kCFAllocatorDefault, kCFNumberFloatType, &spacing), CFRelease);
+        if (!string || !kern) throw std::runtime_error("CoreText emoji text allocation failed.");
+        const void* keys[] = {kCTFontAttributeName, kCTKernAttributeName};
+        const void* values[] = {apple_font(size), kern.get()};
+        FontOwner<CFDictionaryRef, &CFRelease> attributes(CFDictionaryCreate(kCFAllocatorDefault, keys, values, 2,
+            &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks), CFRelease);
+        if (!attributes) throw std::runtime_error("CoreText emoji attributes allocation failed.");
+        FontOwner<CFAttributedStringRef, &CFRelease> attributed(
+            CFAttributedStringCreate(kCFAllocatorDefault, string.get(), attributes.get()), CFRelease);
+        if (!attributed) throw std::runtime_error("CoreText emoji attributed string allocation failed.");
+        FontOwner<CTLineRef, &CFRelease> line(CTLineCreateWithAttributedString(attributed.get()), CFRelease);
+        if (!line) throw std::runtime_error("CoreText emoji layout failed.");
+        const double advance = CTLineGetTypographicBounds(line.get(), nullptr, nullptr, nullptr);
+        if (!std::isfinite(advance) || advance < 0 || advance > 1048576) {
+            throw std::runtime_error("Invalid CoreText emoji advance.");
+        }
+        EmojiData result;
+        result.advance = static_cast<int>(std::lround(advance));
+        if (!render) return result;
+        const CGRect bounds = CTLineGetImageBounds(line.get(), nullptr);
+        if (CGRectIsNull(bounds) || CGRectIsInfinite(bounds) || CGRectIsEmpty(bounds)) {
+            throw std::runtime_error("CoreText produced no emoji glyph image.");
+        }
+        const double left = std::floor(CGRectGetMinX(bounds)) - 1;
+        const double top = std::ceil(CGRectGetMaxY(bounds)) + 1;
+        const double width = std::ceil(CGRectGetMaxX(bounds)) + 1 - left;
+        const double height = top - std::floor(CGRectGetMinY(bounds)) + 1;
+        if (!std::isfinite(left) || !std::isfinite(top) || !std::isfinite(width) || !std::isfinite(height) ||
+            std::abs(left) > 1048576 || std::abs(top) > 1048576 || width <= 0 || height <= 0 ||
+            width > 16384 || height > 16384 || width * height > 16 * 1024 * 1024) {
+            throw std::runtime_error("Invalid CoreText emoji image bounds.");
+        }
+        result.origin = {static_cast<int>(left), -static_cast<int>(top)};
+        result.dimensions = {static_cast<int>(width), static_cast<int>(height)};
+        result.pixels.resize(static_cast<size_t>(result.dimensions.x) * result.dimensions.y * 4);
+        FontOwner<CGColorSpaceRef, &CGColorSpaceRelease> color_space(CGColorSpaceCreateWithName(kCGColorSpaceSRGB), CGColorSpaceRelease);
+        if (!color_space) throw std::runtime_error("CoreText emoji color space allocation failed.");
+        FontOwner<CGContextRef, &CGContextRelease> context(CGBitmapContextCreate(result.pixels.data(),
+            result.dimensions.x, result.dimensions.y, 8, static_cast<size_t>(result.dimensions.x) * 4,
+            color_space.get(), static_cast<CGBitmapInfo>(kCGImageAlphaPremultipliedLast) | kCGBitmapByteOrder32Big), CGContextRelease);
+        if (!context) throw std::runtime_error("CoreText emoji bitmap allocation failed.");
+        CGContextSetTextPosition(context.get(), -left, height - top);
+        CTLineDraw(line.get(), context.get());
+        return result;
+#endif
     }
     int advance(int size, Rml::StringView text, float spacing) {
         const RasterKey key{size, std::string(text.begin(), text.size()), spacing};
         if (const auto found = advances.find(key); found != advances.end()) return found->second;
-        return advances.emplace(key, emoji_data(size, text, spacing, false)[0]).first->second;
+        return advances.emplace(key, emoji_data(size, text, spacing, false).advance).first->second;
     }
     Raster& raster(int size, Rml::StringView text, float spacing) {
         const RasterKey key{size, std::string(text.begin(), text.size()), spacing};
         if (const auto found = rasters.find(key); found != rasters.end()) return found->second;
-        const auto values = emoji_data(size, text, spacing, true);
-        Raster value{values[0], {values[1], values[2]}, {values[3], values[4]}, {}, {}};
-        const auto count = values.size() - 5;
-        if (value.dimensions.x <= 0 || value.dimensions.y <= 0 ||
-            static_cast<size_t>(value.dimensions.x) * value.dimensions.y != count) throw std::runtime_error("Invalid Android emoji dimensions.");
-        auto pixels = std::make_shared<std::vector<Rml::byte>>(count * 4);
-        for (size_t i = 0; i < count; ++i) {
-            const auto argb = static_cast<std::uint32_t>(values[i + 5]);
-            const auto alpha = argb >> 24;
-            for (unsigned c = 0; c < 3; ++c) (*pixels)[i * 4 + c] = static_cast<Rml::byte>((((argb >> (16 - c * 8)) & 255) * alpha + 127) / 255);
-            (*pixels)[i * 4 + 3] = static_cast<Rml::byte>(alpha);
-        }
-        value.pixels = std::move(pixels);
+        auto data = emoji_data(size, text, spacing, true);
+        Raster value{data.advance, data.origin, data.dimensions,
+            std::make_shared<const std::vector<Rml::byte>>(std::move(data.pixels)), {}};
         value.texture = texture(value.pixels, value.dimensions);
         advances.insert_or_assign(key, value.advance);
         return rasters.emplace(key, std::move(value)).first->second;
@@ -146,7 +245,7 @@ class AndroidUiFontEngine final : public Rml::FontEngineInterface {
             Rml::Vector2f(value.dimensions), color.ToPremultiplied(), {0,0}, {1,1});
     }
 public:
-    explicit AndroidUiFontEngine(Rml::FontEngineInterface& fallback) : fallback(fallback) {}
+    explicit ColorUiFontEngine(Rml::FontEngineInterface& fallback) : fallback(fallback) {}
     void Shutdown() override { ReleaseFontResources(); fallback.Shutdown(); }
     bool LoadFontFace(const Rml::String& file, int index, bool is_fallback, Rml::Style::FontWeight weight) override {
         return fallback.LoadFontFace(file, index, is_fallback, weight);
@@ -209,7 +308,13 @@ public:
         return width;
     }
     int GetVersion(Rml::FontFaceHandle handle) override { return fallback.GetVersion(handle); }
-    void ReleaseFontResources() override { effect_rasters.clear(); rasters.clear(); advances.clear(); effects.clear(); sizes.clear(); color_faces.clear(); fallback.ReleaseFontResources(); }
+    void ReleaseFontResources() override {
+        effect_rasters.clear(); rasters.clear(); advances.clear(); effects.clear(); sizes.clear(); color_faces.clear();
+#if defined(SDL_PLATFORM_IOS)
+        apple_fonts.clear();
+#endif
+        fallback.ReleaseFontResources();
+    }
 };
 } // namespace bbl::pal
 #endif

@@ -287,14 +287,14 @@ test("the trimmed SDL build has a separate audio-capable variant", () => {
     assert.match(script, /SDL_AUDIO = \$audioSetting/);
     assert.match(script, /SDL_JOYSTICK = \$gamepadSetting/);
     assert.match(script, /SDL_HIDAPI = \$gamepadSetting/);
-    assert.match(script, /SDL_DIALOG = "ON"/);
+    assert.match(script, /SDL_DIALOG = \$dialogSetting/);
     assert.match(script, /"-D\$\(\$option\.Key\)=\$\(\$option\.Value\)"/);
     assert.doesNotMatch(script, /^\s*-D[A-Za-z_]+=\$/m);
     assert.doesNotMatch(script, /^\s*"?-DSDL_/m);
     assert.match(script, /Read-CMakeCache \(Join-Path \$build "CMakeCache\.txt"\)/);
     assert.match(script, /\$actual -ne \$option\.Value/);
     assert.match(script, /Contains\('\$'\)/);
-    assert.match(script, /BBLITE_SDL_DIALOG ON/);
+    assert.match(script, /BBLITE_SDL_DIALOG \$dialogSetting/);
     assert.match(script, /bblite-sdl-features\.cmake/);
     // The script-only patch lives beside the LabSound one, outside the
     // overlay port directory that keys the development vcpkg install.

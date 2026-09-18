@@ -46,12 +46,19 @@ void require_throws(Work&& work, std::string_view message) {
 
 namespace bbl::pal {
 
-std::optional<std::string> choose_save_file(
+bool save_file(
     Engine& engine,
-    const FileDialogOptions& options) {
+    const FileDialogOptions& options,
+    std::span<const std::uint8_t> bytes,
+    const std::function<void()>& validate) {
     last_save_options = options;
     if (save_dialog_hook) save_dialog_hook(engine);
-    return save_path;
+    if (!save_path) return false;
+    if (validate) validate();
+    ++writes;
+    if (fail_write) throw std::runtime_error("injected write failure");
+    written.assign(bytes.begin(), bytes.end());
+    return true;
 }
 
 std::optional<SelectedFileSnapshot> choose_open_file(
@@ -60,22 +67,6 @@ std::optional<SelectedFileSnapshot> choose_open_file(
     last_open_options = options;
     if (open_dialog_hook) open_dialog_hook(engine);
     return open_file;
-}
-
-void write_selected_file_atomically(
-    const std::string&,
-    const std::vector<std::uint8_t>& bytes) {
-    ++writes;
-    if (fail_write) throw std::runtime_error("injected write failure");
-    written = bytes;
-}
-
-void write_selected_file_atomically(
-    const std::string&,
-    std::string_view text) {
-    ++writes;
-    if (fail_write) throw std::runtime_error("injected write failure");
-    written.assign(text.begin(), text.end());
 }
 
 } // namespace bbl::pal

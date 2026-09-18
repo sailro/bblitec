@@ -1,6 +1,5 @@
 #pragma once
 
-#if defined(__ANDROID__)
 #include <ft2build.h>
 #include FT_FREETYPE_H
 #include <memory>
@@ -11,7 +10,7 @@ namespace bbl::pal {
 template <typename T, auto Destroy>
 using FontOwner = std::unique_ptr<std::remove_pointer_t<T>, decltype(Destroy)>;
 
-inline FT_Library android_font_library() {
+inline FT_Library platform_font_library() {
     static thread_local FontOwner<FT_Library, &FT_Done_FreeType> library([] {
         FT_Library value = nullptr;
         return FT_Init_FreeType(&value) ? nullptr : value;
@@ -20,4 +19,3 @@ inline FT_Library android_font_library() {
 }
 
 } // namespace bbl::pal
-#endif

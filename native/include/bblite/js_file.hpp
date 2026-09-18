@@ -481,23 +481,17 @@ inline void click_download_anchor(Engine& engine, UiElementHandle handle) {
     const pal::FileDialogOptions options = detail::download_options(
         download_name,
         mime_type);
-    const std::optional<std::string> path =
-        pal::choose_save_file(engine, options);
-    if (!path) return;
-    // The retained element must still exist and remain the kind whose default
-    // action was entered. Its URL may now be revoked; the download already
-    // owns the activation-time byte snapshot, matching immediate revocation.
-    const UiElementRecord& element =
-        browser_file_ui_element(engine, handle);
-    if (element.tag != "a") {
-        throw std::runtime_error(
-            "Native download anchor changed type while its dialog was open.");
-    }
     if (!bytes) {
         throw std::runtime_error(
             "Native download object URL has no payload.");
     }
-    pal::write_selected_file_atomically(*path, *bytes);
+    pal::save_file(engine, options, *bytes, [&engine, handle] {
+        // Pointer-lock loss may revoke the URL or change the retained element.
+        // The bytes remain the activation-time snapshot.
+        if (browser_file_ui_element(engine, handle).tag != "a") {
+            throw std::runtime_error("Native download anchor changed type while its dialog was open.");
+        }
+    });
 }
 
 /** Default action of a retained `<input type=file>`. */
