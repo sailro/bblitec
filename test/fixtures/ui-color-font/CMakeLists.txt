@@ -1,0 +1,21 @@
+cmake_minimum_required(VERSION 3.24)
+project(ui_color_font_check LANGUAGES CXX)
+if(NOT IOS OR NOT CMAKE_OSX_SYSROOT MATCHES "[Ss]imulator")
+    message(FATAL_ERROR "This fixture requires the iOS Simulator font environment.")
+endif()
+get_filename_component(BBLITE_ROOT "${CMAKE_CURRENT_LIST_DIR}/../../.." ABSOLUTE)
+find_package(RmlUi CONFIG REQUIRED NO_DEFAULT_PATH NO_CMAKE_FIND_ROOT_PATH
+    PATHS "${BBLITE_RMLUI_DIR}/lib/cmake/RmlUi")
+find_package(Freetype REQUIRED)
+find_package(SDL3 CONFIG REQUIRED)
+find_library(CORE_TEXT CoreText REQUIRED)
+find_library(CORE_GRAPHICS CoreGraphics REQUIRED)
+find_library(CORE_FOUNDATION CoreFoundation REQUIRED)
+add_executable(ui_color_font_check
+    "../ui-color-font-check.cpp" "${BBLITE_ROOT}/native/src/pal_system_fonts.cpp")
+set_target_properties(ui_color_font_check PROPERTIES MACOSX_BUNDLE FALSE)
+target_compile_features(ui_color_font_check PRIVATE cxx_std_20)
+target_compile_options(ui_color_font_check PRIVATE -Wall -Wextra -Wpedantic -Werror)
+target_include_directories(ui_color_font_check PRIVATE "${BBLITE_ROOT}/native/include" "${BBLITE_ROOT}/native/src")
+target_link_libraries(ui_color_font_check PRIVATE
+    RmlUi::Core Freetype::Freetype SDL3::SDL3 "${CORE_TEXT}" "${CORE_GRAPHICS}" "${CORE_FOUNDATION}")

@@ -60,6 +60,7 @@ endif()
 if(
     BBLITE_SDL_DIR
     AND "browser:file" IN_LIST BBLITE_RUNTIME_FEATURES
+    AND NOT CMAKE_SYSTEM_NAME STREQUAL "iOS"
     AND NOT BBLITE_SDL_DIALOG
 )
     message(
@@ -106,6 +107,27 @@ if(ANDROID)
     endif()
     if("ui:rml" IN_LIST BBLITE_RUNTIME_FEATURES AND ANDROID_PLATFORM_LEVEL LESS 29)
         message(FATAL_ERROR "Android system-font UI requires API 29 or newer.")
+    endif()
+endif()
+if(IOS)
+    set(BBLITE_IOS_BUNDLE_IDENTIFIER "org.bblite.prototype" CACHE STRING "iOS application identifier")
+    set(BBLITE_IOS_BUNDLE_NAME "Babylon Lite" CACHE STRING "iOS application name")
+    set(BBLITE_IOS_DOCUMENT_PROPERTIES "")
+    if("browser:file" IN_LIST BBLITE_RUNTIME_FEATURES)
+        set(BBLITE_IOS_DOCUMENT_PROPERTIES
+            "<key>UIFileSharingEnabled</key><true/><key>LSSupportsOpeningDocumentsInPlace</key><true/>")
+    endif()
+    if(CMAKE_OSX_SYSROOT MATCHES "[Ss]imulator")
+        set(BBLITE_IOS_SUPPORTED_PLATFORM "iPhoneSimulator")
+        set(BBLITE_IOS_SDK "iphonesimulator")
+        set(BBLITE_IOS_RUNTIME_NAME "clang_rt.iossim")
+        if(NOT BBLITE_BACKEND STREQUAL "DAWN")
+            message(FATAL_ERROR "iOS Simulator requires BBLITE_BACKEND=DAWN; the pinned SDL_GPU Metal backend does not support Simulator.")
+        endif()
+    else()
+        set(BBLITE_IOS_SUPPORTED_PLATFORM "iPhoneOS")
+        set(BBLITE_IOS_SDK "iphoneos")
+        set(BBLITE_IOS_RUNTIME_NAME "clang_rt.ios")
     endif()
 endif()
 include("${BBLITE_NATIVE_ROOT}/compiler-cache.cmake")
@@ -314,6 +336,16 @@ if(ANDROID)
     set_source_files_properties("${BBLITE_ENTRY_SOURCE}" PROPERTIES
         COMPILE_DEFINITIONS "BBLITE_ANDROID_ENTRY=\"${BBLITE_GENERATED_DIR}/main.cpp\"")
     target_link_libraries(bblite_features INTERFACE log)
+elseif(IOS)
+    set(BBLITE_ENTRY_SOURCE "${BBLITE_NATIVE_ROOT}/src/pal_ios_main.cpp")
+    add_executable(bblite_native MACOSX_BUNDLE "${BBLITE_ENTRY_SOURCE}")
+    set_source_files_properties("${BBLITE_ENTRY_SOURCE}" PROPERTIES
+        COMPILE_DEFINITIONS "BBLITE_IOS_ENTRY=\"${BBLITE_GENERATED_DIR}/main.cpp\"")
+    set_target_properties(bblite_native PROPERTIES
+        MACOSX_BUNDLE_INFO_PLIST "${BBLITE_NATIVE_ROOT}/ios/Info.plist.in"
+        MACOSX_BUNDLE_GUI_IDENTIFIER "${BBLITE_IOS_BUNDLE_IDENTIFIER}"
+        MACOSX_BUNDLE_BUNDLE_NAME "${BBLITE_IOS_BUNDLE_NAME}"
+        XCODE_ATTRIBUTE_CODE_SIGNING_ALLOWED NO)
 else()
     add_executable(bblite_native "${BBLITE_ENTRY_SOURCE}")
 endif()
@@ -483,7 +515,7 @@ if(BBLITE_SDL_DIR)
     endif()
     # Not REQUIRED: the shared guard below is the one refusal, and its
     # message names both ways to fix a missing SDL3.
-    find_package(SDL3 CONFIG QUIET NO_DEFAULT_PATH PATHS "${SDL3_DIR}")
+    find_package(SDL3 CONFIG QUIET NO_DEFAULT_PATH NO_CMAKE_FIND_ROOT_PATH PATHS "${SDL3_DIR}")
     # Trimmed installs carry a single configuration (MinSizeRel); map
     # every consumer configuration onto whichever exists.
     foreach(bblite_sdl_target SDL3::SDL3-static SDL3::SDL3-shared)
@@ -519,6 +551,15 @@ target_link_libraries(bblite_features INTERFACE SDL3::SDL3)
 bblite_feature_define(BBLITE_HAS_GAMEPAD "input:gamepad")
 bblite_feature_define(BBLITE_HAS_DOM_INPUT "input:dom")
 bblite_feature_define(BBLITE_HAS_BROWSER_FILE "browser:file")
+if(IOS AND "browser:file" IN_LIST BBLITE_RUNTIME_FEATURES)
+    enable_language(OBJCXX)
+    set_target_properties(bblite_pal_common PROPERTIES OBJCXX_STANDARD 20 OBJCXX_STANDARD_REQUIRED YES)
+    target_sources(bblite_pal_common PRIVATE "${BBLITE_NATIVE_ROOT}/src/pal_file_ios.mm")
+    set_source_files_properties("${BBLITE_NATIVE_ROOT}/src/pal_file_ios.mm" PROPERTIES
+        COMPILE_OPTIONS "-fobjc-arc" SKIP_PRECOMPILE_HEADERS ON)
+    find_library(BBLITE_UNIFORM_TYPE_IDENTIFIERS UniformTypeIdentifiers REQUIRED)
+    target_link_libraries(bblite_features INTERFACE "${BBLITE_UNIFORM_TYPE_IDENTIFIERS}")
+endif()
 
 target_compile_definitions(bblite_features INTERFACE BBLITE_HAS_SDL_GPU=$<BOOL:${BBLITE_BACKEND_SDL_GPU}>)
 
@@ -526,10 +567,15 @@ target_compile_definitions(bblite_features INTERFACE BBLITE_HAS_SDL_GPU=$<BOOL:$
 # link (the vcpkg install's DLLs join them at the end of this file).
 set(BBLITE_RUNTIME_LIBRARIES "")
 if(BBLITE_BACKEND_DAWN)
+    set(
+        Dawn_DIR "${BBLITE_DAWN_DIR}/lib/cmake/Dawn"
+        CACHE PATH "Dawn package selected by BBLITE_DAWN_DIR" FORCE
+    )
     find_package(
         Dawn CONFIG REQUIRED
         PATHS "${BBLITE_DAWN_DIR}/lib/cmake/Dawn"
         NO_DEFAULT_PATH
+        NO_CMAKE_FIND_ROOT_PATH
     )
     # The static monolithic Dawn export references Threads::Threads,
     # which DawnConfig.cmake does not resolve itself.
@@ -595,6 +641,17 @@ if(SDL3_FOUND AND BBLITE_REQUIRED_IMAGE_CODECS)
     # does not. Prefer its config there too; trimmed installs may omit it.
     find_package(WebP CONFIG QUIET)
     find_package(SDL3_image CONFIG REQUIRED)
+    foreach(BBLITE_IMAGE_CODEC IN LISTS BBLITE_REQUIRED_IMAGE_CODECS)
+        string(TOUPPER "${BBLITE_IMAGE_CODEC}" BBLITE_SDL_IMAGE_CODEC)
+        if(BBLITE_SDL_IMAGE_CODEC STREQUAL "JPEG")
+            set(BBLITE_SDL_IMAGE_CODEC "JPG")
+        endif()
+        if(NOT SDLIMAGE_${BBLITE_SDL_IMAGE_CODEC})
+            message(FATAL_ERROR
+                "The installed SDL_image lacks required codec '${BBLITE_IMAGE_CODEC}'. "
+                "Prepare the scene's dependency features before using installed dependencies.")
+        endif()
+    endforeach()
     target_link_libraries(bblite_features INTERFACE
         $<IF:$<TARGET_EXISTS:SDL3_image::SDL3_image-shared>,SDL3_image::SDL3_image-shared,SDL3_image::SDL3_image-static>
     )
@@ -731,6 +788,7 @@ if("ui:rml" IN_LIST BBLITE_RUNTIME_FEATURES)
         RmlUi CONFIG REQUIRED
         PATHS "${BBLITE_RMLUI_DIR}/lib/cmake/RmlUi"
         NO_DEFAULT_PATH
+        NO_CMAKE_FIND_ROOT_PATH
     )
     if(
         "ui:inline-svg" IN_LIST BBLITE_RUNTIME_FEATURES
@@ -777,6 +835,10 @@ if("ui:rml" IN_LIST BBLITE_RUNTIME_FEATURES)
         target_link_libraries(bblite_features INTERFACE
             "${BBLITE_CORE_TEXT}"
         )
+        if(IOS)
+            find_library(BBLITE_CORE_GRAPHICS CoreGraphics REQUIRED)
+            target_link_libraries(bblite_features INTERFACE "${BBLITE_CORE_GRAPHICS}")
+        endif()
     else()
         find_package(PkgConfig REQUIRED)
         pkg_check_modules(FONTCONFIG REQUIRED IMPORTED_TARGET fontconfig)
@@ -998,6 +1060,18 @@ if(
 )
     find_package(nlohmann_json CONFIG REQUIRED)
     target_link_libraries(bblite_features INTERFACE nlohmann_json::nlohmann_json)
+endif()
+
+if(IOS)
+    # External LLVM installations often omit iOS builtins, including the
+    # @available runtime used by SDL and Dawn. Use the selected Xcode's archive.
+    execute_process(COMMAND xcrun --sdk "${BBLITE_IOS_SDK}" clang -print-resource-dir
+        OUTPUT_VARIABLE BBLITE_IOS_CLANG_RESOURCES OUTPUT_STRIP_TRAILING_WHITESPACE
+        COMMAND_ERROR_IS_FATAL ANY)
+    find_library(BBLITE_IOS_RUNTIME NAMES "${BBLITE_IOS_RUNTIME_NAME}"
+        PATHS "${BBLITE_IOS_CLANG_RESOURCES}/lib/darwin"
+        NO_DEFAULT_PATH NO_CMAKE_FIND_ROOT_PATH NO_CACHE REQUIRED)
+    target_link_libraries(bblite_features INTERFACE "${BBLITE_IOS_RUNTIME}")
 endif()
 
 if(MSVC)

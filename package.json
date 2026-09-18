@@ -44,6 +44,7 @@
     "demos:release": "npm run build && node dist/src/shipping-demos.js",
     "android": "pwsh -File tools/android.ps1",
     "android:sweep": "npm run build && node tools/android-sweep.mjs",
+    "ios": "pwsh -File tools/ios.ps1",
     "shaders:build": "npm run build && node dist/src/compile-shaders.js",
     "simplify:verify": "npm run build && node dist/src/verify-simplify.js",
     "simplify:record": "npm run build && node dist/src/verify-simplify.js --path",

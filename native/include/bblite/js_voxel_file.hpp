@@ -40,8 +40,6 @@ template <typename SaveData>
     }
     pal::FileDialogOptions options = voxel_file_dialog_options;
     options.title = "Save Voxel World";
-    const auto path = pal::choose_save_file(engine, options);
-    if (!path) return false;
     const auto number = [](double value) { return NumberPart(value); };
     std::string text = concat(
         "{\"v\":1,\"seed\":", number(data->seed),
@@ -57,8 +55,7 @@ template <typename SaveData>
         concat_append(text, number(data->edits[index]));
     }
     text.append("]}");
-    pal::write_selected_file_atomically(*path, text);
-    return true;
+    return pal::save_file(engine, options, text);
 }
 
 /** The reader for the document `save_voxel_world` writes, key by key. */

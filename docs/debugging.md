@@ -38,6 +38,12 @@ toolbar can reduce the viewport despite Playwright's requested size. Direct CDP 
 sets the rendering viewport. Emulator presentation failures require explicit GPU render-target readback,
 including worker canvases, rather than treating a black screenshot as a rendering result.
 
+iOS Simulator captures use native GPU readback at the actual drawable size. `ios-smoke.mjs` supports
+`--canvas-only`, `--frame` and `--replay`; interactive captures require an isolated Simulator.
+iOS 16.2 WebKit has no WebGPU. Same-Mac Chrome comparisons are cross-platform diagnostics, not
+iOS-browser parity. Viewport, DPR and display dimensions must match; authored supersampling uses
+the browser compositor, never offline PNG resizing.
+
 `BBLITE_TEST_PASS` disables physical input but does not hide SDL windows. Run Windows regression
 captures on an inactive desktop when they must not appear on the user's desktop.
 

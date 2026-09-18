@@ -87,7 +87,7 @@ npm run demos:release -- --platform android --scene torus-states --sdk C:/Dev/an
 
 ARM64 is the default; use -Abi x86_64 (--abi x86_64 for npm workflows) for emulators.
 -Install opens the app; -Smoke requires native exit 0 and a PNG. APKs/logs are in
-artifacts/android/<scene>/<abi>. Development installs share org.bblite.prototype.
+artifacts/android/<scene>/<abi>. Development installs share the default application ID.
 Reached UI/audio dependencies build automatically into artifacts/tools/<library>-android-<abi>.
 Their input fingerprints permit reuse; sweep workers consume one prepared dependency set.
 
@@ -112,6 +112,25 @@ emulator -avd bblite-api35 -gpu host -no-snapshot
 ```
 
 Emulator captures do not qualify physical-device performance. See [limits](features.md#android).
+
+### iOS
+
+Requires macOS, full Xcode and Clang 18+. `DEVELOPER_DIR` selects Xcode; `CC`/`CXX` select Clang.
+
+```sh
+npm run ios -- -Scene scene2 -Device <simulator-udid> -Smoke
+npm run ios -- -Scene scene1 -Device <simulator-udid> -Install
+```
+
+The default is `iphonesimulator`, host architecture, Dawn/Metal. `-Install` launches the selected app;
+`-Smoke` requires a matching exit marker, build stamp and GPU readback. SDL_GPU/BOTH refuse on Simulator.
+`-Sdk iphoneos -Architecture arm64` selects an unsigned device bundle; SDL_GPU requires SDK 16.4+.
+`-MinSize` selects [trimmed device publishing](#minimal-size-shipping-builds).
+
+Static dependencies are SDK/architecture-specific. Generation and shared dependency preparation precede
+parallel builds; `-SkipGenerate -UseInstalledDependencies` reuses those inputs, not native binaries.
+`-SweepGeneratedDirectoriesFile` selects the dependency union; `-DawnDirectory` selects a compatible Dawn install.
+`BBLITE_IOS_TEST_DEVICE=<udid>` enables the headless system-emoji fixture on a booted Simulator.
 
 ## Core workflow
 
@@ -281,6 +300,7 @@ It prepares reached static dependencies, builds and packages application demos. 
 | Windows | MSVC, static CRT, SDL_GPU/D3D12, x64-windows-static |
 | Linux | Clang/LLD, SDL_GPU/Vulkan, section GC/LTO/strip; host glibc/ABI, fonts and audio remain dependencies |
 | macOS | Universal x86_64+arm64, Clang/Ninja, SDL_GPU/Metal, LTO/dead-strip/lipo, ad-hoc signing |
+| iOS | ARM64 iPhone+iPad, SDL_GPU/Metal, trimmed static dependencies, LTO/dead-strip, unsigned `.app` |
 
 Linux/macOS packages omit Dawn and retain executable permissions. RUNTIME-LIBRARIES.txt lists host
 libraries/frameworks. Linux requires `lld` for shipping. macOS packages are not Developer ID signed or
@@ -300,7 +320,16 @@ macOS packaging requires both slices via `-BuildDirectory <intel>` and `-Arm64Bu
 defaults are `native/build-<id>-min-sdl-x86_64` and `native/build-<id>-min-sdl-arm64`.
 Dependency builds accept `-MacArchitecture`; use matching vcpkg and CMAKE_OSX_ARCHITECTURES.
 
-The packager runs the staged executable for five frames with GPU validation, then publishes the ZIP
+```sh
+npm run package:demo -- -Platform ios -Scene tetris -Jobs 3
+npm run demos:release -- --platform ios --scene tetris,platformer --jobs 3
+```
+
+iOS publishing requires SDK 16.4+. Packages contain Metal shaders and reached static dependencies;
+capture is disabled. Each ZIP contains an unsigned iPhone/iPad app, not a Simulator binary.
+Receipts record hashes, sizes and `startup.status=not-run`; [device qualification](features.md#ios) is incomplete.
+
+The desktop packager runs the staged executable for five frames with GPU validation, then publishes the ZIP
 only after success. CMake presets provide Windows developer-prompt recipes. Linker size attribution:
 `node tools/map-size-report.mjs <executable.map>`.
 

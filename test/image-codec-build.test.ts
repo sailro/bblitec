@@ -100,3 +100,23 @@ test("native configure refuses an undeclared image codec", { skip: !tools.cmake 
     assert.notEqual(result.status, 0);
     assert.match(result.stdout + result.stderr, /Unknown BBLITE_IMAGE_CODECS entry 'unknown'/);
 });
+
+test("native configure rejects a prepared SDL_image that omits a reached codec", { skip: !tools.cmake }, t => {
+    const root = mkdtempSync(join(tmpdir(), "bblite-codec-installed-"));
+    t.after(() => rmSync(root, { recursive: true, force: true }));
+    const cmake = readFileSync("native/CMakeLists.txt", "utf8");
+    const start = cmake.indexOf("    foreach(BBLITE_IMAGE_CODEC IN LISTS BBLITE_REQUIRED_IMAGE_CODECS)");
+    const end = cmake.indexOf("    endforeach()", start);
+    assert.ok(start >= 0 && end > start);
+    const script = join(root, "installed.cmake");
+    writeFileSync(script, cmake.slice(start, end + "    endforeach()".length));
+    for (const [codec, option] of [["png", "PNG"], ["jpeg", "JPG"], ["webp", "WEBP"]]) {
+        const check = (enabled: string) => spawnSync(tools.cmake!,
+            [`-DBBLITE_REQUIRED_IMAGE_CODECS=${codec}`, `-DSDLIMAGE_${option}=${enabled}`, "-P", script],
+            { encoding: "utf8", windowsHide: true });
+        assert.equal(check("ON").status, 0);
+        const missing = check("OFF");
+        assert.notEqual(missing.status, 0);
+        assert.match(missing.stderr, new RegExp(`lacks required codec '${codec}'`));
+    }
+});

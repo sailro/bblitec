@@ -1,0 +1,41 @@
+{
+  "angles": ["reuse", "simplification", "efficiency", "altitude"],
+  "findings": [
+    {
+      "summary": "Share checked PowerShell execution and content-identified dependency reuse between Android and iOS; require complete artifact outputs before recording a reusable build.",
+      "applied": true
+    },
+    {
+      "summary": "Use one generated-main signature adapter for Android and iOS instead of duplicating the entry dispatch template.",
+      "applied": true
+    },
+    {
+      "summary": "Reuse bounded file reads, atomic staging, extension parsing and immutable selected-file snapshots in the UIKit adapter.",
+      "applied": true
+    },
+    {
+      "summary": "Compose desktop and Simulator measured-run environments through one helper, preserving registry timing, replay and override precedence.",
+      "applied": true
+    },
+    {
+      "summary": "Remove unreachable dual-backend Simulator smoke branches and redundant stamp refresh after an already-stamped Dawn generation.",
+      "applied": true
+    },
+    {
+      "summary": "Reuse a single checked SDK-version query for admission, dependency identity and the iOS build receipt.",
+      "applied": true
+    },
+    {
+      "summary": "Keep completed-byte export behind the shared PAL save operation instead of imposing desktop destination-path ordering on UIKit file providers.",
+      "applied": true
+    },
+    {
+      "summary": "Reuse the shared mobile package runner and existing shipping dependency predicates for iOS; SkipGenerate also reuses precompiled Metal so a release batch does not repeat shader generation inside each package.",
+      "applied": true
+    },
+    {
+      "summary": "Share Android/iOS color-font glyph caching, premultiplied textures, effects and ownership instead of duplicating the font engine; keep JNI and CoreText rasterization behind one typed pixel record and reuse FreeType resource ownership.",
+      "applied": true
+    }
+  ]
+}

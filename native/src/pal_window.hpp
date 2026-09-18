@@ -3,6 +3,7 @@
 
 #include <bblite/runtime.hpp>
 #include <bblite/pal_offscreen.hpp>
+#include <cmath>
 #include <SDL3/SDL.h>
 #ifdef __ANDROID__
 #include <jni.h>
@@ -46,14 +47,30 @@ inline void configure_run_surface(const EngineOptions& options) {
     env->DeleteLocalRef(type);
     env->DeleteLocalRef(activity);
     if (!configured || exception) throw std::runtime_error("Android surface configuration failed.");
+#elif defined(SDL_PLATFORM_IOS)
+    const double cap = options.max_device_pixel_ratio;
+    if (std::isnan(cap) || cap <= 0) {
+        throw std::runtime_error("iOS maxDevicePixelRatio must be positive.");
+    }
+    if (std::isfinite(cap) && cap != 1.0) {
+        const auto* mode = SDL_GetCurrentDisplayMode(SDL_GetPrimaryDisplay());
+        if (!mode) throw std::runtime_error("iOS display density is unavailable.");
+        if (cap < mode->pixel_density) {
+            throw std::runtime_error("iOS supports maxDevicePixelRatio=1 or a cap at least the native display density.");
+        }
+    }
 #else
     (void)options;
 #endif
 }
 
-inline SDL_WindowFlags run_window_flags(SDL_WindowFlags flags) {
+inline SDL_WindowFlags run_window_flags(SDL_WindowFlags flags, [[maybe_unused]] const EngineOptions& options) {
 #ifdef __ANDROID__
     flags |= SDL_WINDOW_FULLSCREEN;
+#elif defined(SDL_PLATFORM_IOS)
+    flags |= SDL_WINDOW_FULLSCREEN;
+    if (options.max_device_pixel_ratio == 1.0) flags &= ~SDL_WINDOW_HIGH_PIXEL_DENSITY;
+    else flags |= SDL_WINDOW_HIGH_PIXEL_DENSITY;
 #endif
     return flags;
 }
@@ -95,6 +112,11 @@ class SdlWindowRun {
     }
 
     SDL_Window* acquire(const EngineOptions& options, SDL_WindowFlags flags) {
+#if defined(SDL_PLATFORM_IOS)
+        // UIKit has one application window, acquired before source setup reads
+        // its canvas extent and borrowed by renderer/recovery scopes.
+        if (previous_) return previous_->acquire(options, flags);
+#endif
         if (window_) {
             // Do not reset size, position, maximization or focus when the
             // scene changes. The renderer reads the live canvas size next.
@@ -103,7 +125,7 @@ class SdlWindowRun {
         }
         configure_run_surface(options);
         window_ = SDL_CreateWindow(options.title.c_str(), options.width,
-                                   options.height, run_window_flags(flags));
+                                   options.height, run_window_flags(flags, options));
         if (window_) trace_run_window("create", window_);
         return window_;
     }
@@ -132,7 +154,7 @@ inline SDL_Window* acquire_run_window(
     const EngineOptions& options, SDL_WindowFlags flags) {
     if (active_window_run) return active_window_run->acquire(options, flags);
     configure_run_surface(options);
-    return SDL_CreateWindow(options.title.c_str(), options.width, options.height, run_window_flags(flags));
+    return SDL_CreateWindow(options.title.c_str(), options.width, options.height, run_window_flags(flags, options));
 }
 
 inline void release_run_window(SDL_Window* window) {

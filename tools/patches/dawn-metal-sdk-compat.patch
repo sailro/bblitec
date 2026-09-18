@@ -1,11 +1,12 @@
 --- a/src/dawn/native/metal/PhysicalDeviceMTL.mm
 +++ b/src/dawn/native/metal/PhysicalDeviceMTL.mm
-@@ -55,6 +55,12 @@
+@@ -55,6 +55,13 @@
  
  namespace {
  
-+#if DAWN_PLATFORM_IS(MACOS) && __MAC_OS_X_VERSION_MAX_ALLOWED < 140000
-+// Preserve Apple9 detection when building with a pre-macOS 14 SDK.
++#if (DAWN_PLATFORM_IS(MACOS) && __MAC_OS_X_VERSION_MAX_ALLOWED < 140000) || \
++    (DAWN_PLATFORM_IS(IOS) && __IPHONE_OS_VERSION_MAX_ALLOWED < 170000)
++// Preserve Apple9 detection when building with older Apple SDKs.
 +// Public value: apple/metal-cpp, Metal/MTLDevice.hpp (GPUFamilyApple9).
 +constexpr ::MTLGPUFamily MTLGPUFamilyApple9 = static_cast<::MTLGPUFamily>(1009);
 +#endif

@@ -218,6 +218,16 @@ Multiple native windows and Dawn remain unsupported. Full corpus and
 physical-device performance qualification remain open.
 [Commands](development.md#android).
 
+## iOS
+
+iOS 16+ bundles use SDL UIKit windows/input. Simulator requires Dawn/Metal; device builds support
+SDL_GPU/Metal or Dawn. Trimmed ARM64 packages support iPhone and iPad.
+Landscape fullscreen supports native density or `maxDevicePixelRatio=1`; intermediate caps refuse.
+UIKit file import/export and native color emoji are supported.
+Device bundles are unsigned and unqualified on hardware. Signing, device deployment and App Store
+distribution are not implemented; Simulator captures do not qualify device behavior.
+[Commands](development.md#ios).
+
 ## Asset loading and upload
 
 | Format | Supported | Limits |

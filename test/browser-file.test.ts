@@ -380,7 +380,7 @@ test("browser file ownership stays generic and PAL-isolated", () => {
         voxelShim,
         /<filesystem>|<fstream>|GetOpenFileName|MoveFile/,
     );
-    assert.match(shim, /pal::choose_save_file/);
+    assert.match(shim, /pal::save_file/);
     assert.doesNotMatch(shim, /read_selected_file_text/);
     const browserFileRecord = runtime.slice(
         runtime.indexOf("struct BrowserFileRecord {"),
@@ -453,6 +453,14 @@ test("browser file ownership stays generic and PAL-isolated", () => {
         /SDL_PollEvent|GetOpenFileName|GetSaveFileName|CommDlg|_WIN32/,
         "Windows, Linux, and macOS share SDL's dialog path without app-event dispatch",
     );
+    const iosFile = readFileSync(resolve("native/src/pal_file_ios.mm"), "utf8");
+    assert.match(iosFile, /initForOpeningContentTypes:types asCopy:NO/);
+    assert.match(iosFile, /initForExportingURLs:@\[export_url\] asCopy:YES/);
+    assert.match(iosFile, /startAccessingSecurityScopedResource/);
+    assert.match(iosFile, /@finally[\s\S]{0,130}stopAccessingSecurityScopedResource/);
+    assert.match(iosFile, /coordinateReadingItemAtURL/);
+    assert.match(iosFile, /SDL_RunOnMainThread/);
+    assert.doesNotMatch(iosFile, /SDL_PollEvent/);
     const platformEvents = readFileSync(
         resolve("native/src/pal_platform_events.hpp"),
         "utf8",
@@ -474,6 +482,7 @@ test("browser file ownership stays generic and PAL-isolated", () => {
     assert.match(fileIo, /::fsync/);
     const cmake = readFileSync(resolve("native/CMakeLists.txt"), "utf8");
     assert.doesNotMatch(cmake, /comdlg32/);
+    assert.match(cmake, /if\(IOS AND "browser:file" IN_LIST BBLITE_RUNTIME_FEATURES\)[\s\S]{0,600}pal_file_ios\.mm/);
 });
 
 const nativeTools = optionalNativeFixtureTools();

@@ -17,6 +17,32 @@ function Get-RepositoryRoot {
     return Split-Path -Parent $PSScriptRoot
 }
 
+function Invoke-Checked([string]$Program, [string[]]$Arguments) {
+    & $Program @Arguments
+    if ($LASTEXITCODE -ne 0) { throw "$Program failed ($LASTEXITCODE)." }
+}
+
+function Build-DependencyArtifact(
+    [string]$Name, [string]$Output, [string[]]$Identity, [string[]]$Inputs,
+    [string[]]$Required, [scriptblock]$Build
+) {
+    $fingerprint = (@($Identity) + @(
+        $Inputs + @("$PSScriptRoot/bblite-tools.psm1") | Sort-Object -Unique |
+            ForEach-Object { "$_=" + (Get-FileHash -LiteralPath $_ -Algorithm SHA256).Hash }
+    )) -join "`n"
+    $stamp = Join-Path $Output 'dependency-build-inputs.txt'
+    if ((Test-Path $stamp) -and (Get-Content $stamp -Raw) -eq $fingerprint -and
+        @($Required | Where-Object { -not (Test-Path (Join-Path $Output $_)) }).Count -eq 0) {
+        Write-Host "$Name artifact is current."
+        return
+    }
+    & $Build
+    foreach ($file in $Required) {
+        if (-not (Test-Path (Join-Path $Output $file))) { throw "$Name build did not produce $file." }
+    }
+    Set-Content $stamp $fingerprint -NoNewline
+}
+
 # An absolute path for a repository-relative or already absolute one.
 function Resolve-RepositoryPath([string]$Path) {
     if (-not $IsWindows) { $Path = $Path.Replace('\', '/') }
@@ -183,6 +209,24 @@ function Get-AndroidCompilerArguments([string]$Abi, [string]$Ndk) {
     return $arguments
 }
 
+function Get-IosCompilerArguments(
+    [ValidateSet('iphoneos', 'iphonesimulator')][string]$Sdk,
+    [ValidateSet('x86_64', 'arm64')][string]$Architecture
+) {
+    if (-not $IsMacOS) { throw 'iOS builds require macOS and a full Xcode installation.' }
+    if ($Sdk -eq 'iphoneos' -and $Architecture -ne 'arm64') { throw 'iOS devices require arm64.' }
+    $sdkPath = & xcrun --sdk $Sdk --show-sdk-path
+    if ($LASTEXITCODE -ne 0 -or -not (Test-Path $sdkPath)) {
+        throw "Xcode SDK $Sdk is unavailable. Set DEVELOPER_DIR to Xcode.app/Contents/Developer."
+    }
+    return @(Get-PosixCompilerArguments) + @(
+        '-G', 'Ninja', '-DCMAKE_SYSTEM_NAME=iOS',
+        "-DCMAKE_OSX_SYSROOT=$sdkPath", "-DCMAKE_SYSROOT=$sdkPath", "-DCMAKE_OSX_ARCHITECTURES=$Architecture",
+        '-DCMAKE_OSX_DEPLOYMENT_TARGET=16.0',
+        '-DCMAKE_XCODE_ATTRIBUTE_CODE_SIGNING_ALLOWED=NO'
+    )
+}
+
 function Get-BuildParallelArguments([int]$Jobs = 0) {
     if (-not $Jobs -and $env:CMAKE_BUILD_PARALLEL_LEVEL) {
         $Jobs = [int]$env:CMAKE_BUILD_PARALLEL_LEVEL
@@ -194,6 +238,8 @@ function Get-BuildParallelArguments([int]$Jobs = 0) {
 
 Export-ModuleMember -Function @(
     "Get-RepositoryRoot",
+    "Invoke-Checked",
+    "Build-DependencyArtifact",
     "Resolve-RepositoryPath",
     "Get-VisualStudioRoot",
     "Find-CMake",
@@ -203,4 +249,5 @@ Export-ModuleMember -Function @(
     "Get-BuildParallelArguments"
     "Get-PosixCompilerArguments"
     "Get-AndroidCompilerArguments"
+    "Get-IosCompilerArguments"
 )

@@ -25,6 +25,26 @@ test("captures full page UI unless canvas-only attribution is requested", () => 
     assert.equal(captureUiEnabled({ BBLITE_CAPTURE_UI: "0" }), false);
 });
 
+test("device-local capture sizes the host without changing canonical viewport defaults", async () => {
+    for (const viewport of [undefined, { width: 667, height: 375 }]) {
+        const server = createSuiteSceneServer("export {};", viewport ? { viewport } : {});
+        try {
+            await new Promise<void>(done => server.listen(0, "127.0.0.1", done));
+            const address = server.address();
+            assert.ok(address && typeof address !== "string");
+            const html = await (await fetch(`http://127.0.0.1:${address.port}/scene.html`)).text();
+            const { width, height } = viewport ?? { width: 1280, height: 720 };
+            assert.ok(html.includes(`width:${width}px;height:${height}px`));
+            assert.ok(html.includes(`width="${width}" height="${height}"`));
+        } finally {
+            await new Promise<void>(done => server.close(() => done()));
+        }
+    }
+    for (const width of [0, -1, 1.5, NaN]) {
+        assert.throws(() => createSuiteSceneServer("", { viewport: { width, height: 375 } }), /positive integer/);
+    }
+});
+
 // The instrumented capture must compose the page the golden was captured
 // from, and the fixed-frame derivation is the piece that can silently
 // drift: the golden capture (`runParity` in parity-scene.ts) falls back

@@ -2,8 +2,10 @@ param(
     [string]$Workspace = "",
     [string]$OutputDirectory = "",
     [ValidateSet('', 'x86_64', 'arm64')][string]$MacArchitecture = '',
+    [ValidateSet('', 'iphoneos')][string]$IosSdk = '',
     [switch]$EnableAudio,
     [switch]$EnableGamepad,
+    [ValidateRange(0, 1024)][int]$Jobs = 0,
     [string]$CMake = $env:CMAKE_COMMAND
 )
 
@@ -14,7 +16,8 @@ param(
 # and renders through SDL_GPU (D3D12 on Windows, Vulkan on Linux, Metal on macOS).
 # Unreached joystick/HIDAPI, haptic, sensor, camera, power, misc, locale,
 # GL plumbing and the SDL_Renderer core are compiled out entirely.
-# SDL's portable dialog subsystem remains available for browser:file scenes;
+# SDL's portable dialog subsystem remains available for desktop browser:file scenes;
+# iOS file dialogs use UIKit in PAL and do not need SDL_DIALOG.
 # static dead stripping removes it from executables that do not reach the PAL.
 # SDL_RENDER is one of them: bblitec requires a GPU and has no software
 # renderer to link it for. Audio stays off by default; EnableAudio creates a
@@ -24,6 +27,12 @@ param(
 $ErrorActionPreference = "Stop"
 Import-Module (Join-Path $PSScriptRoot "bblite-tools.psm1") -Force
 $root = Get-RepositoryRoot
+if ($IosSdk -and $MacArchitecture) { throw 'Select an iOS device or a macOS architecture, not both.' }
+$targetSuffix = if ($IosSdk) { "-ios-$IosSdk-arm64" } elseif ($MacArchitecture) { "-$MacArchitecture" } else { '' }
+$iosArguments = if ($IosSdk) { @(Get-IosCompilerArguments $IosSdk 'arm64') } else { @() }
+if ($IosSdk -and [version](Invoke-Checked 'xcrun' @('--sdk', $IosSdk, '--show-sdk-version')) -lt [version]'16.4') {
+    throw 'The pinned SDL_GPU backend requires iOS SDK 16.4 or newer.'
+}
 $enabledFeatures = @(
     if ($EnableAudio) { "audio" }
     if ($EnableGamepad) { "gamepad" }
@@ -36,14 +45,15 @@ $featureSuffix = if ($enabledFeatures.Count -gt 0) {
 }
 
 if (-not $Workspace) {
-    $Workspace = ".cache\sdl$featureSuffix$(if ($MacArchitecture) { "-$MacArchitecture" })"
+    $Workspace = ".cache\sdl$featureSuffix$targetSuffix"
 }
 if (-not $OutputDirectory) {
-    $OutputDirectory = "artifacts\tools\sdl-min$featureSuffix$(if ($MacArchitecture) { "-$MacArchitecture" })"
+    $OutputDirectory = "artifacts\tools\sdl-min$featureSuffix$targetSuffix"
 }
 $audioSetting = if ($EnableAudio) { "ON" } else { "OFF" }
 $gamepadSetting = if ($EnableGamepad) { "ON" } else { "OFF" }
-$variantFeatures = @("video", "events", "dialogs") + $enabledFeatures + @("gpu")
+$dialogSetting = if ($IosSdk) { 'OFF' } else { 'ON' }
+$variantFeatures = @("video", "events") + $(if (-not $IosSdk) { @("dialogs") } else { @() }) + $enabledFeatures + @("gpu")
 
 # Keep in lockstep with the vcpkg baseline's sdl3 version
 # (native/vcpkg.json builtin-baseline).
@@ -143,7 +153,7 @@ $sdlOptions = [ordered]@{
     SDL_SENSOR = "OFF"
     SDL_CAMERA = "OFF"
     SDL_POWER = "OFF"
-    SDL_DIALOG = "ON"
+    SDL_DIALOG = $dialogSetting
     SDL_MISC = "OFF"
     SDL_LOCALE = "OFF"
     SDL_OPENGL = "OFF"
@@ -168,7 +178,7 @@ if ($IsWindows) {
         '-DCMAKE_C_FLAGS_MINSIZEREL=/O1 /Ob1 /DNDEBUG /Gw'
     )
 } else {
-    $configureArguments += @(Get-PosixCompilerArguments $MacArchitecture)
+    $configureArguments += if ($IosSdk) { $iosArguments } else { @(Get-PosixCompilerArguments $MacArchitecture) }
     $configureArguments += @(
         "-G", "Ninja", "-DCMAKE_INSTALL_LIBDIR=lib",
         "-DCMAKE_C_FLAGS_MINSIZEREL=-Os -DNDEBUG -ffunction-sections -fdata-sections",
@@ -203,7 +213,7 @@ if ($unexpanded.Count -gt 0) {
     throw "SDL cache entries hold unexpanded script text: $listing"
 }
 
-$parallelArguments = Get-BuildParallelArguments
+$parallelArguments = Get-BuildParallelArguments $Jobs
 & $CMake --build $build --config MinSizeRel @parallelArguments
 if ($LASTEXITCODE -ne 0) {
     throw "SDL minimal build failed."
@@ -223,7 +233,7 @@ Copy-Item (Join-Path $source "LICENSE.txt") (Join-Path $output "LICENSE.txt") -F
 @(
     "set(BBLITE_SDL_AUDIO $audioSetting)"
     "set(BBLITE_SDL_GAMEPAD $gamepadSetting)"
-    "set(BBLITE_SDL_DIALOG ON)"
+    "set(BBLITE_SDL_DIALOG $dialogSetting)"
     "set(BBLITE_SDL_VULKAN $($sdlOptions.SDL_VULKAN))"
     "set(BBLITE_SDL_METAL $($sdlOptions.SDL_METAL))"
 ) -join "`n" |
@@ -238,6 +248,7 @@ Copy-Item (Join-Path $source "LICENSE.txt") (Join-Path $output "LICENSE.txt") -F
     vulkan = $IsLinux
     metal = $IsMacOS
     staticRuntime = $IsWindows
+    iosSdk = $IosSdk
     builtAt = (Get-Date).ToUniversalTime().ToString("o")
 } | ConvertTo-Json | Set-Content (Join-Path $output "provenance.json")
 

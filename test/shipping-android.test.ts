@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { dirname, join, resolve } from "node:path";
 import test from "node:test";
 import { discoverDevelopmentTools } from "../src/development-tools.js";
-import { androidPackageArguments } from "../src/shipping-android.js";
+import { mobilePackageArguments } from "../src/shipping-mobile.js";
 import { androidCaptureSettings } from "../src/android-capture.js";
 import { resolveScene } from "../src/scene-registry.js";
 
@@ -47,7 +47,7 @@ test("Android sweep installs only dependencies reached by its selected scenes", 
         `set(BBLITE_RUNTIME_FEATURES ${runtime})\nset(BBLITE_IMAGE_CODECS "")\n`);
     const profile = () => {
         execFileSync(cmake!, [`-DBBLITE_GENERATED_DIRS_FILE=${sourceList}`,
-            `-DBBLITE_PROFILE_OUTPUT=${output}`, "-P", "tools/android-sweep-dependencies.cmake"], { stdio: "pipe" });
+            `-DBBLITE_PROFILE_OUTPUT=${output}`, "-P", "tools/scene-dependencies.cmake"], { stdio: "pipe" });
         return readFileSync(output, "utf8").trim().split(";");
     };
     featureFile(scenes[0]!, "physics:world");
@@ -65,12 +65,12 @@ test("Android packaging passes the requested target and keeps shared work serial
         ["--abi", "x86_64"], ["--sdk", "C:/SDK with spaces"],
         ["--device", "emulator-5554"], ["--jobs", "3"], ["--workers", "1"],
     ]);
-    const args = androidPackageArguments("torus-states", values);
+    const args = mobilePackageArguments("android", "torus-states", values);
     for (const [flag, expected] of [["-Platform", "android"], ["-Scene", "torus-states"],
         ["-Abi", "x86_64"], ["-Sdk", "C:/SDK with spaces"], ["-Device", "emulator-5554"], ["-Jobs", "3"]]) {
         assert.equal(args[args.indexOf(flag!) + 1], expected);
     }
-    assert.throws(() => androidPackageArguments("torus-states", new Map([["--abi", "x86"]])), /ABI/);
-    assert.throws(() => androidPackageArguments("torus-states", new Map([["--jobs", "0"]])), /positive/);
-    assert.throws(() => androidPackageArguments("torus-states", new Map([["--workers", "2"]])), /share dependencies/);
+    assert.throws(() => mobilePackageArguments("android", "torus-states", new Map([["--abi", "x86"]])), /ABI/);
+    assert.throws(() => mobilePackageArguments("android", "torus-states", new Map([["--jobs", "0"]])), /positive/);
+    assert.throws(() => mobilePackageArguments("android", "torus-states", new Map([["--workers", "2"]])), /share dependencies/);
 });

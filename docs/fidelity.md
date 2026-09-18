@@ -26,12 +26,14 @@ This page lists source/native contracts and substitutions. [Features](features.m
 | Weak collections | Keys retained strongly |
 | Object immutability | freeze/seal/preventExtensions return the original value without enforcing immutability |
 | Storage/files | Host preferences, native URL tokens, synchronized picker completion |
+| File publication | Direct destinations use atomic replacement; iOS stages a complete private snapshot and UIKit/file providers own export publication |
 | HTTP | WinHTTP/libcurl; system TLS, no cookie jar/CORS; buffered 32 MiB request/response cap |
 | HTTP timeout | Windows: 5 s without progress; libcurl: 5 s connect/30 s request |
 | HTTP teardown | Realm close cancels requests and joins transport threads |
 | Environment | Native platform/language/CPU data; onLine=true, secure Window context; no client hints/device-memory estimate |
 | Graphics guards | Async Window/worker realms expose existing host graphics identity; computation-only realms may lack it |
 | Device recovery | Ordinary engine reconstruction retains CPU owners; shared worker/window recovery refuses |
+| iOS Simulator | Explicit Dawn/Metal target with SDL UIKit hosting; no emulation of an iPhone GPU's capabilities |
 | UI | RmlUi and retained Canvas2D; [compatibility limits](ui.md) |
 | Camera touch | One finger uses pointer rotation; two-finger span changes feed the existing wheel zoom accumulator |
 | Canvas touch | Primary contacts also drive mouse hooks; pinches on canvases with wheel listeners cancel dragging and emit wheel deltas |

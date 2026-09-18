@@ -10,7 +10,9 @@
 #endif
 
 #include <cstdint>
+#include <functional>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -62,9 +64,18 @@ std::string environment_variable(const char* name);
 std::optional<std::string> read_local_storage(const std::string& key);
 void write_local_storage(const std::string& key, const std::string& value);
 void remove_local_storage(const std::string& key);
-std::optional<std::string> choose_save_file(
+// Synchronous selection and publication; false is cancellation. Validation
+// runs on the caller's realm before committing or handing bytes to a provider.
+bool save_file(
     Engine& engine,
-    const FileDialogOptions& options);
+    const FileDialogOptions& options,
+    std::span<const std::uint8_t> bytes,
+    const std::function<void()>& validate = {});
+bool save_file(
+    Engine& engine,
+    const FileDialogOptions& options,
+    std::string_view text,
+    const std::function<void()>& validate = {});
 std::optional<SelectedFileSnapshot> choose_open_file(
     Engine& engine,
     const FileDialogOptions& options);

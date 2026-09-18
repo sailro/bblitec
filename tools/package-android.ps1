@@ -35,7 +35,7 @@ $Scene — Android $Abi, SDL_GPU/Vulkan
 
 Install $Scene.apk on Android API $($configuration.minSdk)+ with a compatible Vulkan GPU.
 Application ID: $applicationId
-Debug-signed prototype with Release native code; not a store release.
+Debug-signed app with Release native code; not a store release.
 Assets, shaders and dependency notices are embedded in the APK.
 "@ | Set-Content (Join-Path $directory 'README.txt') -Encoding utf8
 $archive = Join-Path $plan.Staging "$name.zip"

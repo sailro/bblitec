@@ -348,6 +348,8 @@ const seededRandomScript =
     " }; })();";
 
 export interface SuiteCaptureOptions {
+    /** CSS canvas size for device-local diagnostics; canonical references use 1280x720. */
+    viewport?: { width: number; height: number };
     seededRandom?: boolean;
     sourcePath?: string;
     /** Freeze requestAnimationFrame at an exact positive native 60 Hz frame. */
@@ -435,6 +437,10 @@ export function createSuiteSceneServer(
     options: SuiteCaptureOptions = {},
 ): ReturnType<typeof createServer> {
     const root = resolve(".");
+    const { width, height } = options.viewport ?? { width: 1280, height: 720 };
+    if (!Number.isSafeInteger(width) || !Number.isSafeInteger(height) || width < 1 || height < 1) {
+        throw new Error("Capture viewport must have positive integer dimensions.");
+    }
     const entryPath = options.sourcePath
         ? `/${relative(root, resolve(options.sourcePath))
               .split(sep)
@@ -454,9 +460,9 @@ export function createSuiteSceneServer(
         options.fixedAnimationFrame !== undefined &&
         !captureUiEnabled();
     let html = `<!doctype html><html><head><style>
-html,body,canvas{margin:0;width:1280px;height:720px;overflow:hidden;display:block}
+html,body,canvas{margin:0;width:${width}px;height:${height}px;overflow:hidden;display:block}
 ${hideNonCanvasAtFixedFrame ? "body>:not(#renderCanvas){visibility:hidden!important}" : ""}
-</style></head><body><canvas id="renderCanvas" width="1280" height="720"></canvas>
+</style></head><body><canvas id="renderCanvas" width="${width}" height="${height}"></canvas>
 ${seedScript}${fixedFrameScript}${hostUiScript}<script type="module" src="${entryPath}"></script></body></html>`;
     if (options.hostPage) {
         const original = readFileSync(resolve(options.hostPage), "utf8");

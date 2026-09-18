@@ -27,6 +27,8 @@ param(
     [ValidateSet('', 'arm64-v8a', 'x86_64')][string]$AndroidAbi = '',
     [string]$AndroidNdk = $env:ANDROID_NDK_HOME,
     [ValidateSet('', 'x86_64', 'arm64')][string]$MacArchitecture = '',
+    [ValidateSet('', 'iphoneos', 'iphonesimulator')][string]$IosSdk = '',
+    [ValidateSet('', 'x86_64', 'arm64')][string]$IosArchitecture = '',
     [switch]$StaticRuntime,
     [switch]$MinSize,
     [switch]$CoreOnly,
@@ -39,6 +41,11 @@ $ErrorActionPreference = "Stop"
 Import-Module (Join-Path $PSScriptRoot "bblite-tools.psm1") -Force
 $root = Get-RepositoryRoot
 if ($AndroidAbi -and ($StaticRuntime -or $MinSize -or $MacArchitecture)) { throw 'Android cannot be combined with desktop target options.' }
+if ($IosSdk) {
+    if ($AndroidAbi -or $MacArchitecture -or $StaticRuntime) { throw 'iOS cannot be combined with desktop/Android target options.' }
+    if (-not $IosArchitecture) { throw 'iOS requires -IosArchitecture.' }
+    $iosArguments = @(Get-IosCompilerArguments $IosSdk $IosArchitecture)
+} elseif ($IosArchitecture) { throw '-IosArchitecture requires -IosSdk.' }
 if ($StaticRuntime -and -not $IsWindows) { throw "-StaticRuntime selects the Windows shipping CRT." }
 if ($MinSize -and -not $IsLinux -and -not $IsMacOS) { throw "-MinSize selects Unix shipping; use -StaticRuntime on Windows." }
 $minimalBuild = $StaticRuntime -or $MinSize
@@ -54,6 +61,7 @@ if (-not $Workspace) {
     }
     if ($MacArchitecture) { $Workspace += "-$MacArchitecture" }
     if ($AndroidAbi) { $Workspace += "-android-$AndroidAbi" }
+    if ($IosSdk) { $Workspace += "-ios-$IosSdk-$IosArchitecture" }
 }
 if (-not $OutputDirectory) {
     $OutputDirectory = if ($minimalBuild) {
@@ -67,6 +75,7 @@ if (-not $OutputDirectory) {
     }
     if ($MacArchitecture) { $OutputDirectory += "-$MacArchitecture" }
     if ($AndroidAbi) { $OutputDirectory += "-android-$AndroidAbi" }
+    if ($IosSdk) { $OutputDirectory += "-ios-$IosSdk-$IosArchitecture" }
 }
 if ($CoreOnly -and $EnableCodecs) {
     throw "-CoreOnly and -EnableCodecs are mutually exclusive."
@@ -137,7 +146,7 @@ if ($MinSize -and -not $IsWindows) {
     $configureArguments += @("-DCMAKE_CXX_FLAGS_RELEASE=$cppFlags",
         '-DCMAKE_C_FLAGS_RELEASE=-Os -DNDEBUG -ffunction-sections -fdata-sections')
 }
-$configureArguments += if ($AndroidAbi) { @(Get-AndroidCompilerArguments $AndroidAbi $AndroidNdk) } else { @(Get-PosixCompilerArguments $MacArchitecture) }
+$configureArguments += if ($AndroidAbi) { @(Get-AndroidCompilerArguments $AndroidAbi $AndroidNdk) } elseif ($IosSdk) { $iosArguments } else { @(Get-PosixCompilerArguments $MacArchitecture) }
 & $CMake @configureArguments
 if ($LASTEXITCODE -ne 0) {
     throw "LabSound CMake configuration failed."
@@ -168,6 +177,7 @@ $labSoundLib = Resolve-BuiltLibrary @(
     (Join-Path $build "bin/$labSoundName"),
     (Join-Path $build "bin/Release/$labSoundName")
     if ($IsMacOS) { Join-Path $build "bin/LabSound.framework/Versions/A/LabSound" }
+    if ($IosSdk) { Join-Path $build "bin/LabSound.framework/LabSound" }
 ) "LabSound"
 $libraries = @{ $labSoundName = $labSoundLib }
 if (-not $coreOnlyBuild) {

@@ -22,18 +22,15 @@ Engine create_engine(EngineOptions) { return {}; }
 }
 
 namespace bbl::pal {
-std::optional<std::string> choose_save_file(Engine& engine, const FileDialogOptions& options) {
+bool save_file(Engine& engine, const FileDialogOptions& options, std::string_view text, const std::function<void()>& validate) {
     check_dialog(engine, options);
     assert(options.title == "Save Voxel World");
-    if (++saves == 1) return {};
-    return "selected/world.json";
-}
-
-void write_selected_file_atomically(const std::string& path, std::string_view text) {
-    assert(path == "selected/world.json");
+    if (++saves == 1) return false;
+    if (validate) validate();
     if (text != expected_json) throw std::runtime_error("Unexpected saved JSON: " + std::string(text));
     if (++writes == 2) throw std::runtime_error("injected write failure");
     saved = text;
+    return true;
 }
 
 std::optional<SelectedFileSnapshot> choose_open_file(Engine& engine, const FileDialogOptions& options) {

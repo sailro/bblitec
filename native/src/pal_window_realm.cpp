@@ -468,7 +468,7 @@ int run_window_application(WorkerEntry initialize, EngineOptions options) {
         configure_run_surface(options);
         using Window = std::unique_ptr<SDL_Window, decltype(&SDL_DestroyWindow)>;
         Window window(SDL_CreateWindow(options.title.c_str(), options.width, options.height, run_window_flags(SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY |
-            (frame_options.test_pass ? SDL_WINDOW_NOT_FOCUSABLE : 0))), &SDL_DestroyWindow);
+            (frame_options.test_pass ? SDL_WINDOW_NOT_FOCUSABLE : 0), options)), &SDL_DestroyWindow);
         if (!window) throw std::runtime_error(SDL_GetError());
         std::shared_ptr<WindowPresenter> presenter;
         const bool dawn = environment_variable("BBLITE_GPU_BACKEND") == "dawn";

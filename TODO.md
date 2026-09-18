@@ -83,6 +83,8 @@ Open gaps only. [Features](docs/features.md) owns support; [fidelity](docs/fidel
 ## Worker and platform
 
 - [ ] Extend Android coverage and qualification, including emulator Offscreen rendering corruption ([remaining limits](docs/features.md#android)).
+- [ ] iOS: fractional render-density caps, wider lifecycle/interaction coverage and physical-device signing/qualification ([current boundary](docs/features.md#ios)).
+- [ ] Preserve runtime canvas dimensions in render targets and particle initialization, or refuse unsupported specialization.
 
 - [ ] Different rendering products across worker realms (`worker-modules.ts`).
 - [ ] ArrayBuffer/MessagePort transfer and Date/Map/Set/typed-view cloning (`workers.ts`, `pal_structured_clone.hpp`).

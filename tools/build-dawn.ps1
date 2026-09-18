@@ -1,6 +1,9 @@
 param(
-    [string]$Workspace = ".cache\tint",
-    [string]$OutputDirectory = "artifacts\tools\dawn",
+    [string]$Workspace = "",
+    [string]$OutputDirectory = "",
+    [ValidateSet('', 'iphoneos', 'iphonesimulator')][string]$IosSdk = '',
+    [ValidateSet('', 'x86_64', 'arm64')][string]$IosArchitecture = '',
+    [ValidateRange(0, 1024)][int]$Jobs = 0,
     [string]$CMake = $env:CMAKE_COMMAND
 )
 
@@ -11,6 +14,16 @@ param(
 $ErrorActionPreference = "Stop"
 Import-Module (Join-Path $PSScriptRoot "bblite-tools.psm1") -Force
 $root = Get-RepositoryRoot
+if ($IosSdk) {
+    if (-not $IosArchitecture) { throw 'iOS requires -IosArchitecture.' }
+    $iosArguments = @(Get-IosCompilerArguments $IosSdk $IosArchitecture)
+} elseif ($IosArchitecture) { throw '-IosArchitecture requires -IosSdk.' }
+if (-not $Workspace) {
+    $Workspace = if ($IosSdk) { ".cache/dawn-ios-$IosSdk-$IosArchitecture" } else { ".cache/tint" }
+}
+if (-not $OutputDirectory) {
+    $OutputDirectory = if ($IosSdk) { "artifacts/tools/dawn-ios-$IosSdk-$IosArchitecture" } else { "artifacts/tools/dawn" }
+}
 $pin = Get-Content (Join-Path $root "upstream\tint.json") -Raw |
     ConvertFrom-Json
 $workspacePath = Resolve-RepositoryPath $Workspace
@@ -28,7 +41,9 @@ New-Item -ItemType Directory -Path $workspacePath, $output -Force |
 Sync-PinnedCheckout $source $pin.repository $pin.commit "Dawn"
 $patches = @()
 if ($IsMacOS) {
-    foreach ($name in @("dawn-metal-sdk-compat.patch", "dawn-metal-primitive-index.patch")) {
+    $patchNames = @("dawn-metal-sdk-compat.patch", "dawn-metal-primitive-index.patch")
+    if ($IosSdk) { $patchNames += "dawn-metal-simulator-capabilities.patch" }
+    foreach ($name in $patchNames) {
         $patch = Join-Path $root "tools/patches/$name"
         & git -C $source apply --check $patch
         if ($LASTEXITCODE -ne 0) { throw "Dawn patch $name does not apply." }
@@ -40,7 +55,8 @@ if ($IsMacOS) {
 
 # We consume the C API. The pin's module probe accepts GCC 13 even though
 # CMake cannot scan that compiler's module dependencies.
-$compilerArguments = Get-PosixCompilerArguments
+$compilerArguments = if ($IosSdk) { $iosArguments } else { @(Get-PosixCompilerArguments) }
+$libraryType = if ($IosSdk) { 'STATIC' } else { 'SHARED' }
 & $CMake -S $source -B $build @compilerArguments `
     -DCMAKE_BUILD_TYPE=Release `
     -DDAWN_SUPPORTS_CXX_MODULES=OFF `
@@ -48,7 +64,7 @@ $compilerArguments = Get-PosixCompilerArguments
     -DCMAKE_INSTALL_LIBDIR=lib `
     -DDAWN_FETCH_DEPENDENCIES=ON `
     -DDAWN_ENABLE_INSTALL=ON `
-    -DDAWN_BUILD_MONOLITHIC_LIBRARY=SHARED `
+    "-DDAWN_BUILD_MONOLITHIC_LIBRARY=$libraryType" `
     "-DDAWN_USE_BUILT_DXC=$d3d12" `
     -DDAWN_ENABLE_D3D11=OFF `
     "-DDAWN_ENABLE_D3D12=$d3d12" `
@@ -72,7 +88,7 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 $targets = @("--target", "webgpu_dawn")
-$parallelArguments = Get-BuildParallelArguments
+$parallelArguments = Get-BuildParallelArguments $Jobs
 if ($IsWindows) { $targets += @("--target", "dxcompiler", "--target", "copy_dxil_dll") }
 & $CMake --build $build @targets `
     --config Release `

@@ -293,14 +293,61 @@ export function measuredStampPath(
     return anchor === undefined ? undefined : resolve(`${anchor}.build-stamp`);
 }
 
+/** Shared measured-run policy; platform launchers own transport and output cleanup. */
+export function measuredRunEnvironment(
+    options: MeasuredRunOptions,
+    stampPath?: string,
+): Record<string, string> {
+    const environment = options.environment ?? {};
+    const frameWindow: Record<string, string> =
+        options.frame === undefined
+            ? {
+                  BBLITE_MAX_FRAMES: String(
+                      Math.max(
+                          nativeCaptureFrameBudget(environment),
+                          options.maxFrames ?? 0,
+                      ),
+                  ),
+              }
+            : {
+                  BBLITE_SCREENSHOT_FRAME: String(options.frame),
+                  BBLITE_MAX_FRAMES: String(
+                      Math.max(options.frame + 1, options.maxFrames ?? 0),
+                  ),
+              };
+    return {
+        ...environment,
+        ...(options.backend === "dawn" ? { BBLITE_GPU_BACKEND: "dawn" } : {}),
+        BBLITE_TEST_PASS: options.testPass === false ? "0" : "1",
+        ...frameWindow,
+        ...(options.screenshot !== undefined
+            ? { BBLITE_SCREENSHOT: resolve(options.screenshot) }
+            : {}),
+        ...(options.capture !== undefined
+            ? { BBLITE_RENDER_CAPTURE: resolve(options.capture) }
+            : {}),
+        ...(stampPath !== undefined
+            ? { BBLITE_BUILD_STAMP_OUT: stampPath }
+            : {}),
+        ...(options.seekSeconds !== undefined
+            ? { BBLITE_ANIMATION_SEEK_SECONDS: String(options.seekSeconds) }
+            : {}),
+        ...(options.tape !== undefined
+            ? { BBLITE_INPUT_REPLAY: options.tape.join(",") }
+            : {}),
+        ...(options.idBuffer !== undefined
+            ? { BBLITE_ID_BUFFER: resolve(options.idBuffer) }
+            : {}),
+        ...(options.clusterBuffer !== undefined
+            ? { BBLITE_CLUSTER_BUFFER: resolve(options.clusterBuffer) }
+            : {}),
+        ...options.extra,
+    };
+}
+
 /**
- * Run the executable once, measured.
- *
- * The environment is composed in one order: the base `environment`
- * (registry clock and pose), the backend, the test-pass flag, the frame
- * window, the output paths, the seek, the tape, the attribution buffers,
- * then `extra`. Outputs the run must write are deleted first: a failed or
- * too-short run must not make a previous same-build output look current.
+ * Run the executable once, measured. Delete requested outputs first so a
+ * failed or too-short run cannot reuse previous same-build evidence.
  */
 export function runMeasured(
     executable: string,
@@ -329,54 +376,9 @@ export function runMeasured(
         mkdirSync(resolve(path, ".."), { recursive: true });
         rmSync(resolve(path), { force: true });
     }
-    const environment = options.environment ?? {};
-    const frameWindow: Record<string, string> =
-        options.frame === undefined
-            ? {
-                  BBLITE_MAX_FRAMES: String(
-                      Math.max(
-                          nativeCaptureFrameBudget(environment),
-                          options.maxFrames ?? 0,
-                      ),
-                  ),
-              }
-            : {
-                  BBLITE_SCREENSHOT_FRAME: String(options.frame),
-                  BBLITE_MAX_FRAMES: String(
-                      Math.max(options.frame + 1, options.maxFrames ?? 0),
-                  ),
-              };
-    const overrides: Record<string, string> = {
-        ...environment,
-        ...(options.backend === "dawn" ? { BBLITE_GPU_BACKEND: "dawn" } : {}),
-        BBLITE_TEST_PASS: options.testPass === false ? "0" : "1",
-        ...frameWindow,
-        ...(options.screenshot !== undefined
-            ? { BBLITE_SCREENSHOT: resolve(options.screenshot) }
-            : {}),
-        ...(options.capture !== undefined
-            ? { BBLITE_RENDER_CAPTURE: resolve(options.capture) }
-            : {}),
-        ...(stampPath !== undefined
-            ? { BBLITE_BUILD_STAMP_OUT: stampPath }
-            : {}),
-        ...(options.seekSeconds !== undefined
-            ? { BBLITE_ANIMATION_SEEK_SECONDS: String(options.seekSeconds) }
-            : {}),
-        ...(options.tape !== undefined
-            ? { BBLITE_INPUT_REPLAY: options.tape.join(",") }
-            : {}),
-        ...(options.idBuffer !== undefined
-            ? { BBLITE_ID_BUFFER: resolve(options.idBuffer) }
-            : {}),
-        ...(options.clusterBuffer !== undefined
-            ? { BBLITE_CLUSTER_BUFFER: resolve(options.clusterBuffer) }
-            : {}),
-        ...options.extra,
-    };
     const log = spawnNativeMeasured(
         executable,
-        overrides,
+        measuredRunEnvironment(options, stampPath),
         [
             ...(options.backend !== undefined ? ["BBLITE_GPU_BACKEND"] : []),
             ...(options.dropVariables ?? []),

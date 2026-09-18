@@ -36,6 +36,8 @@ param(
     [ValidateSet('', 'arm64-v8a', 'x86_64')][string]$AndroidAbi = '',
     [string]$AndroidNdk = $env:ANDROID_NDK_HOME,
     [ValidateSet('', 'x86_64', 'arm64')][string]$MacArchitecture = '',
+    [ValidateSet('', 'iphoneos', 'iphonesimulator')][string]$IosSdk = '',
+    [ValidateSet('', 'x86_64', 'arm64')][string]$IosArchitecture = '',
     [string]$FreetypeRoot = "",
     # Only the -StaticRuntime artifact needs vcpkg, to install the
     # static-triplet FreeType headers it compiles against (see below).
@@ -53,6 +55,11 @@ Import-Module (Join-Path $PSScriptRoot "package-output.psm1") -Force
 $root = Get-RepositoryRoot
 if ($AndroidAbi -and ($StaticRuntime -or $MinSize -or $MacArchitecture)) { throw 'Android cannot be combined with desktop target options.' }
 if ($AndroidAbi -and -not $FreetypeRoot) { throw 'Android requires -FreetypeRoot at the matching Android vcpkg triplet.' }
+if ($IosSdk) {
+    if ($AndroidAbi -or $MacArchitecture -or $StaticRuntime) { throw 'iOS cannot be combined with desktop/Android target options.' }
+    if (-not $FreetypeRoot -or -not $IosArchitecture) { throw 'iOS requires -IosArchitecture and -FreetypeRoot at the matching iOS vcpkg triplet.' }
+    $iosArguments = @(Get-IosCompilerArguments $IosSdk $IosArchitecture)
+} elseif ($IosArchitecture) { throw '-IosArchitecture requires -IosSdk.' }
 if ($StaticRuntime -and -not $IsWindows) { throw "-StaticRuntime selects the Windows shipping CRT." }
 if ($MinSize -and -not $IsLinux -and -not $IsMacOS) { throw "-MinSize selects Unix shipping; use -StaticRuntime on Windows." }
 $minimalBuild = $StaticRuntime -or $MinSize
@@ -69,6 +76,7 @@ if (-not $Workspace) {
     }
     if ($MacArchitecture) { $Workspace += "-$MacArchitecture" }
     if ($AndroidAbi) { $Workspace += "-android-$AndroidAbi" }
+    if ($IosSdk) { $Workspace += "-ios-$IosSdk-$IosArchitecture" }
 }
 if (-not $OutputDirectory) {
     $OutputDirectory = if ($minimalBuild) {
@@ -78,6 +86,7 @@ if (-not $OutputDirectory) {
     }
     if ($MacArchitecture) { $OutputDirectory += "-$MacArchitecture" }
     if ($AndroidAbi) { $OutputDirectory += "-android-$AndroidAbi" }
+    if ($IosSdk) { $OutputDirectory += "-ios-$IosSdk-$IosArchitecture" }
 }
 if (-not $FreetypeRoot) {
     $installedRoot = if ($env:BBLITE_VCPKG_INSTALLED_ROOT) {
@@ -224,7 +233,7 @@ if ($StaticRuntime) {
 # -StaticRuntime shipping artifact stays on MSVC, the shipping compiler,
 # whose consumers are MSVC-built too.
 $devToolchain = if ($StaticRuntime -or $AndroidAbi) { $null } else { Get-DevToolchain }
-$intendedGenerator = if ($devToolchain -or $AndroidAbi) { "Ninja" } else { $env:CMAKE_GENERATOR }
+$intendedGenerator = if ($devToolchain -or $AndroidAbi -or $IosSdk) { "Ninja" } else { $env:CMAKE_GENERATOR }
 if ($devToolchain) {
     $env:PATH = "$($devToolchain.Path);$env:PATH"
     $env:INCLUDE = $devToolchain.Include
@@ -258,8 +267,8 @@ if ($MinSize -and -not $IsWindows) {
         '-DCMAKE_C_FLAGS_RELEASE=-Os -DNDEBUG -ffunction-sections -fdata-sections'
     )
 }
-$configureArguments += if ($AndroidAbi) { @(Get-AndroidCompilerArguments $AndroidAbi $AndroidNdk) } else { @(Get-PosixCompilerArguments $MacArchitecture) }
-if ($AndroidAbi) { $configureArguments += "-DCMAKE_FIND_ROOT_PATH=$FreetypeRoot" }
+$configureArguments += if ($AndroidAbi) { @(Get-AndroidCompilerArguments $AndroidAbi $AndroidNdk) } elseif ($IosSdk) { $iosArguments } else { @(Get-PosixCompilerArguments $MacArchitecture) }
+if ($AndroidAbi -or $IosSdk) { $configureArguments += "-DCMAKE_FIND_ROOT_PATH=$FreetypeRoot" }
 & $CMake @configureArguments
 if ($LASTEXITCODE -ne 0) {
     throw "RmlUi CMake configuration failed."
