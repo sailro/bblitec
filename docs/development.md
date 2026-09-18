@@ -80,15 +80,23 @@ Set ANDROID_HOME to a writable SDK; Android Studio is optional. Use the Windows 
 ```powershell
 sdkmanager --sdk_root=$env:ANDROID_HOME "platform-tools" "platforms;android-35" "build-tools;35.0.0" "ndk;28.2.13676358"
 npm run android -- -Scene torus-states -Sdk C:/Dev/android-sdk -Device <serial> -Install
+npm run android -- -Scene torus-states -Backend DAWN -Sdk C:/Dev/android-sdk -Device <serial> -Smoke
 npm run android:sweep -- --sdk C:/Dev/android-sdk --device emulator-5554
-npm run package:demo -- -Platform android -Scene torus-states -Sdk C:/Dev/android-sdk -Device <serial>
-npm run demos:release -- --platform android --scene torus-states --sdk C:/Dev/android-sdk --device <serial>
+npm run package:demo -- -Platform android -Scene torus-states -ExpectBackend DAWN -Sdk C:/Dev/android-sdk -Device <serial>
+npm run demos:release -- --platform android --scene torus-states --backend dawn --sdk C:/Dev/android-sdk --device <serial>
 ```
 
 ARM64 is the default; use -Abi x86_64 (--abi x86_64 for npm workflows) for emulators.
+SDL_GPU remains the default. -Backend DAWN builds Dawn only; -Backend BOTH includes both renderers.
+Sweeps and release workflows select one renderer with --backend sdl_gpu|dawn.
 -Install opens the app; -Smoke requires native exit 0 and a PNG. APKs/logs are in
-artifacts/android/<scene>/<abi>. Development installs share the default application ID.
-Reached UI/audio dependencies build automatically into artifacts/tools/<library>-android-<abi>.
+artifacts/android/<scene>/<abi>, with -dawn/-both suffixes for those build variants.
+-Smoke checks both renderers in a BOTH APK. Debug intents select a compiled renderer with
+BBLITE_GPU_BACKEND=sdl_gpu|dawn; unavailable selections refuse.
+Development installs share the default application ID.
+Reached UI/audio dependencies and selected Dawn build automatically into artifacts/tools/<library>-android-<abi>.
+Dawn is monolithic/static at the Tint pin and consumes WGSL without offline shader compilation.
+-DawnDirectory selects a compatible static install.
 Their input fingerprints permit reuse; sweep workers consume one prepared dependency set.
 
 Packaging builds Release native code in a debug-signed APK, embeds assets/notices, validates the
@@ -96,10 +104,11 @@ staged APK on --device, and publishes a ZIP/receipt under artifacts/releases. Ea
 application ID. Existing packages move to .replaced/.
 Android release workflows serialize shared dependency and device work.
 
-The sweep builds four APKs concurrently after preparing dependencies, then captures serially at the
+The sweep completes source/shader generation and dependency preparation before building four APKs concurrently, then captures serially at the
 registered pose and golden dimensions. It preserves thresholds, restores display size and distinguishes
 unsupported features, failures and mismatches. --scene is repeatable; --parallel and --jobs control builds.
 Evidence is in artifacts/android/sweep/<run-id>. Standalone builds must run outside an active sweep.
+-SkipGenerate -UseInstalledDependencies reuses prepared source, shaders and dependencies, not native binaries.
 For device-local rendering measurements instead of registered-reference comparisons, see
 [same-device diagnosis](debugging.md#same-device-rendering-comparisons).
 

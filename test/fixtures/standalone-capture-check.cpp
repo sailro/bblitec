@@ -20,6 +20,7 @@ struct WGPUTextureViewImpl {};
 struct WGPUCommandEncoderImpl {};
 struct WGPUCommandBufferImpl {};
 struct WGPURenderPassEncoderImpl {};
+struct WGPUSurfaceImpl {};
 
 namespace {
 std::deque<SDL_GPUTexture> textures;
@@ -31,6 +32,7 @@ WGPUTextureViewImpl dawn_view, dawn_msaa_view, dawn_target_view;
 WGPUCommandEncoderImpl dawn_encoder;
 WGPUCommandBufferImpl dawn_command;
 WGPURenderPassEncoderImpl dawn_pass;
+WGPUSurfaceImpl dawn_surface;
 SDL_GPUCopyPass sdl_copy;
 std::deque<SDL_GPUTransferBuffer> transfers;
 std::deque<WGPUTextureImpl> dawn_render_textures;
@@ -103,6 +105,7 @@ extern "C" WGPUTexture wgpuDeviceCreateTexture(WGPUDevice, const WGPUTextureDesc
 }
 extern "C" void wgpuSurfaceGetCurrentTexture(WGPUSurface, WGPUSurfaceTexture* target) {
     target->texture = surface_available ? &dawn_texture : nullptr;
+    target->status = surface_available ? WGPUSurfaceGetCurrentTextureStatus_SuccessOptimal : WGPUSurfaceGetCurrentTextureStatus_Timeout;
 }
 extern "C" WGPUCommandEncoder wgpuDeviceCreateCommandEncoder(WGPUDevice, const WGPUCommandEncoderDescriptor*) { return &dawn_encoder; }
 extern "C" WGPURenderPassEncoder wgpuCommandEncoderBeginRenderPass(WGPUCommandEncoder, const WGPURenderPassDescriptor* descriptor) {
@@ -159,10 +162,11 @@ void save_texture_png(SDL_GPUDevice*, SdlGpuCommand& command, SDL_GPUTexture* te
     ++readbacks; readback_texture = texture; assert(command.submit());
 }
 struct DawnDevice {
-    WGPUDevice device = nullptr; WGPUQueue queue = nullptr; WGPUSurface surface = nullptr;
+    WGPUDevice device = nullptr; WGPUQueue queue = nullptr; WGPUSurface surface = &dawn_surface;
     WGPUTextureFormat surface_format = WGPUTextureFormat_RGBA8Unorm;
     std::string uncaptured_error;
 };
+#include "dawn-acquire.hpp"
 struct DawnSurfaceCapture { DawnBuffer readback; };
 DawnSurfaceCapture begin_dawn_surface_capture(WGPUDevice, WGPUCommandEncoder, WGPUTexture texture, std::uint32_t, std::uint32_t) {
     assert(texture == &dawn_texture); ++readbacks; return {};

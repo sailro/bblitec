@@ -7,6 +7,8 @@
 #include <utility>
 #if defined(__APPLE__)
 #include <SDL3/SDL_metal.h>
+#elif defined(__ANDROID__)
+#include <android/native_window.h>
 #endif
 
 namespace bbl::pal {
@@ -18,15 +20,22 @@ struct DawnDevice {
     DawnDevice& operator=(const DawnDevice&) = delete;
     ~DawnDevice() { release(); }
 
+    void release_surface() noexcept {
+        if (auto value = std::exchange(surface, nullptr)) wgpuSurfaceRelease(value);
+#if defined(__ANDROID__)
+        if (auto* value = std::exchange(android_window, nullptr)) ANativeWindow_release(value);
+#endif
+    }
+
     void destroy_device() noexcept {
         // Release the surface while its device can still retire swapchains,
         // including the recycled swapchain Dawn retains after unconfigure.
-        if (auto value = std::exchange(surface, nullptr)) wgpuSurfaceRelease(value);
+        release_surface();
         if (device) wgpuDeviceDestroy(device);
     }
 
     void release() noexcept {
-        if (auto value = std::exchange(surface, nullptr)) wgpuSurfaceRelease(value);
+        release_surface();
         if (auto value = std::exchange(queue, nullptr)) wgpuQueueRelease(value);
         if (auto value = std::exchange(device, nullptr)) wgpuDeviceRelease(value);
         if (auto value = std::exchange(adapter, nullptr)) wgpuAdapterRelease(value);
@@ -41,6 +50,9 @@ struct DawnDevice {
     SDL_Window* window = nullptr;
 #if defined(__APPLE__)
     SDL_MetalView metal_view = nullptr;
+#elif defined(__ANDROID__)
+    ANativeWindow* android_window = nullptr;
+    bool surface_recovery_pending = false;
 #endif
     WGPUInstance instance = nullptr;
     WGPUAdapter adapter = nullptr;

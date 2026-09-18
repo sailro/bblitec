@@ -5,17 +5,20 @@ import { join, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 import { PNG } from 'pngjs';
 import { writeJsonRecord } from '../dist/src/validation-resume.js';
-import { androidCaptureSettings } from '../dist/src/android-capture.js';
+import { androidCaptureSettings, verifyAndroidNativeRun } from '../dist/src/android-capture.js';
 import { resolveScene } from '../dist/src/scene-registry.js';
+import { NATIVE_BACKENDS } from '../dist/src/tooling/artifacts.js';
 
 const { values } = parseArgs({ options: {
     adb: { type: 'string' }, device: { type: 'string' },
     output: { type: 'string' }, apk: { type: 'string' },
     scene: { type: 'string' },
+    backend: { type: 'string', default: 'sdl_gpu' },
     'canvas-only': { type: 'boolean', default: false },
     app: { type: 'string', default: 'org.bblite.prototype' },
 } });
 if (!values.adb || !values.output || !values.apk) throw new Error('Use --adb, --output, --apk and optionally --device.');
+if (!NATIVE_BACKENDS.includes(values.backend)) throw new Error(`--backend must be ${NATIVE_BACKENDS.join(' or ')}.`);
 const output = resolve(values.output);
 mkdirSync(output, { recursive: true });
 const selector = values.device ? ['-s', values.device] : [];
@@ -26,13 +29,13 @@ const runId = randomUUID();
 const app = values.app;
 if (!/^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+$/.test(app)) throw new Error('Invalid application ID.');
 const { captureEnvironment, captureFrame } = androidCaptureSettings(
-    values.scene ? resolveScene(values.scene) : undefined, values['canvas-only']);
+    values.scene ? resolveScene(values.scene) : undefined, { canvasOnly: values['canvas-only'], backend: values.backend });
 const receipt = {
     runId, apkSha256: createHash('sha256').update(readFileSync(values.apk)).digest('hex'),
     device: adb('get-serialno').toString().trim(),
     model: adb('shell', 'getprop', 'ro.product.model').toString().trim(),
     api: adb('shell', 'getprop', 'ro.build.version.sdk').toString().trim(),
-    passed: false,
+    backend: values.backend, passed: false,
     ...(values.scene ? { scene: values.scene, captureFrame, captureEnvironment } : {}),
 };
 try {
@@ -42,7 +45,7 @@ try {
     const logChunks = [];
     let logLength = 0;
     let markerTail = '';
-    const exitMarker = `run=${runId}`;
+    const exitMarker = new RegExp(`Native exit: -?\\d+ run=${runId}(?:\\s|$)`);
     function appendLog(text) {
         logChunks.push(text);
         logLength += text.length;
@@ -59,8 +62,8 @@ try {
                 const text = chunk.toString();
                 appendLog(text);
                 const recent = markerTail + text;
-                if (recent.includes(exitMarker)) resolve();
-                markerTail = recent.slice(-exitMarker.length);
+                if (exitMarker.test(recent)) resolve();
+                markerTail = recent.slice(-(runId.length + 40));
             });
             logger.stderr.on('data', chunk => appendLog(chunk.toString()));
         });
@@ -76,14 +79,12 @@ try {
         log = logChunks.join('');
         writeFileSync(join(output, 'logcat.txt'), log);
     }
-    if (!log.includes(`Native exit: 0 run=${runId}`)) {
-        throw new Error('Native smoke did not exit successfully within 90 seconds; inspect logcat.txt and ensure the device is unlocked.');
-    }
+    verifyAndroidNativeRun(log, runId, values.backend);
     const bytes = adb('exec-out', 'run-as', app, 'cat', 'files/capture.png');
     const png = PNG.sync.read(bytes);
     writeFileSync(join(output, 'capture.png'), bytes);
     Object.assign(receipt, { passed: true, width: png.width, height: png.height });
-    console.log(`Android smoke passed on ${receipt.model}: ${png.width}x${png.height}. ${output}`);
+    console.log(`Android ${values.backend} smoke passed on ${receipt.model}: ${png.width}x${png.height}. ${output}`);
 } catch (error) {
     receipt.error = error instanceof Error ? error.message : String(error);
     throw error;

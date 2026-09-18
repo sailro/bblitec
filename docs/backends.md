@@ -10,12 +10,14 @@ Both backends consume generated plans, state, layouts and uniform writers.
 | Binding authority | Compiled `.slots` sidecars | WGSL and generated layouts |
 | Uniform transport | Push/uniform/storage API | Queue writes and retained bind groups |
 | Windows / Linux / macOS | D3D12 / Vulkan / Metal | D3D12 / Vulkan / Metal |
-| Android | Vulkan | Unsupported |
+| Android | Vulkan | Vulkan |
 | iOS Simulator | Unsupported by pinned SDL | Metal |
 | iOS device | Metal, unqualified | Metal, unqualified |
 | Lifetime | SDL objects and fences | WebGPU objects and submission retention |
 
 Backend agreement does not establish browser parity. Measurements live in [status](status.md).
+Runtime selection prefers SDL_GPU when compiled, otherwise Dawn. Explicit invalid or uncompiled
+backend requests fail.
 
 ## Shared frame conductor
 
@@ -45,6 +47,11 @@ Canvas metrics update before callbacks; RAF retains its registration phase and t
 Maintained patches cover SDL descriptor-heap rollover, D3D12 multisampled lines/storage reads,
 Metal buffer lengths/fence queries and Dawn Metal primitive-index capability.
 Dawn disables texture swizzling on iOS Simulator and uses its non-swizzle depth/stencil path.
+Dawn uses SDL's Android native window and selects a supported BGRA8/RGBA8 surface format;
+worker images retain that format. Resume replaces the presentation surface when SDL's native
+window changes, retaining device resources. Unavailable immediate presentation uses FIFO with a diagnostic.
+The Android Dawn patch reports Vulkan presentation surface loss at the next acquisition without
+losing the device; repeated acquisition loss and other GPU errors still fail.
 
 SDL Metal generates mips with per-level linear blits, preserving sRGB decode/filter/encode.
 Color-less depth sampled by material slots uses an R32 copy with `(depth, 0, 0, 1)` semantics.

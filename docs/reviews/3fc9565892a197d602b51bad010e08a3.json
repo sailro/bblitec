@@ -1,0 +1,16 @@
+{
+  "angles": ["reuse", "simplification", "efficiency", "altitude"],
+  "findings": [
+    { "summary": "Resolve compiled backend selection in one PAL helper and report Android backend identity from the native entrypoint instead of duplicating it in Gradle and Java.", "applied": true },
+    { "summary": "Reuse the canonical NativeBackend inventory and types while retaining strict Android token validation.", "applied": true },
+    { "summary": "Use named Android capture options and the shared measured-run environment policy.", "applied": true },
+    { "summary": "Reuse the shared scope guard for Dawn capability cleanup and Android window-property unlocking.", "applied": true },
+    { "summary": "Initialize acquired surface textures in the shared acquisition helper; offscreen images retain their separate initialization.", "applied": true },
+    { "summary": "Compile the sweep's Vulkan shaders in one invocation of the existing multi-directory compiler.", "applied": true },
+    { "summary": "Refresh sweep input stamps once before fan-out and prevent prepared workers from regenerating them.", "applied": true },
+    { "summary": "Fingerprint Dawn's own build inputs rather than unrelated Android packaging and smoke orchestration.", "applied": true },
+    { "summary": "Verify Android backend and exit markers in one constant-memory pass over logcat.", "applied": true },
+    { "summary": "Pass canonical backend names directly to the shared parity-threshold resolver.", "applied": true },
+    { "summary": "Reuse the shared acquisition body in existing extracted-native fixtures and cover transient surface skips separately from GPU failures.", "applied": true }
+  ]
+}

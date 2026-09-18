@@ -36,8 +36,9 @@ if ($Platform -eq 'ios') {
 }
 if ($SkipGenerate) { throw '-SkipGenerate is only supported for iOS packaging.' }
 if ($Platform -eq 'android') {
-    if ($BuildDirectory -or $Arm64BuildDirectory -or $ExpectBackend -eq 'DAWN') { throw 'Android packaging builds its own SDL_GPU APK.' }
-    & (Join-Path $PSScriptRoot 'package-android.ps1') -Scene $Scene -Sdk $Sdk -Device $Device -Abi $Abi -Jobs $Jobs -OutputRoot $OutputRoot
+    if ($BuildDirectory -or $Arm64BuildDirectory) { throw 'Android packaging builds its own APK.' }
+    $backend = if ($ExpectBackend) { $ExpectBackend } else { 'SDL_GPU' }
+    & (Join-Path $PSScriptRoot 'package-android.ps1') -Scene $Scene -Sdk $Sdk -Device $Device -Abi $Abi -Backend $backend -Jobs $Jobs -OutputRoot $OutputRoot
     return
 }
 $hostArchitecture = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture

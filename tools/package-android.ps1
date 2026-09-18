@@ -3,6 +3,7 @@ param(
     [string]$Sdk = $env:ANDROID_HOME,
     [string]$Device,
     [ValidateSet('arm64-v8a', 'x86_64')][string]$Abi = 'arm64-v8a',
+    [ValidateSet('SDL_GPU', 'DAWN')][string]$Backend = 'SDL_GPU',
     [int]$Jobs = 8,
     [string]$OutputRoot = 'artifacts/releases'
 )
@@ -10,12 +11,15 @@ $ErrorActionPreference = 'Stop'
 Import-Module (Join-Path $PSScriptRoot 'bblite-tools.psm1') -Force
 Import-Module (Join-Path $PSScriptRoot 'package-output.psm1') -Force
 $root = Get-RepositoryRoot
+$Backend = $Backend.ToUpperInvariant()
 if (-not $Device) { throw 'Android packaging requires -Device for its staged startup check.' }
 $applicationId = 'org.bblite.demo.' + $Scene.Replace('-', '_')
-& (Join-Path $PSScriptRoot 'android.ps1') -Scene $Scene -Sdk $Sdk -Abi $Abi -Jobs $Jobs -ApplicationId $applicationId
-$built = Join-Path $root "artifacts/android/$Scene/$Abi"
+& (Join-Path $PSScriptRoot 'android.ps1') -Scene $Scene -Sdk $Sdk -Abi $Abi -Backend $Backend -Jobs $Jobs -ApplicationId $applicationId
+$variant = "$Abi$(if ($Backend -ne 'SDL_GPU') { '-dawn' })"
+$built = Join-Path $root "artifacts/android/$Scene/$variant"
 $configuration = Get-Content "$built/build.json" -Raw | ConvertFrom-Json
-$name = "bblitec-$Scene-sdl-gpu-android-$($Abi.Replace('_', '-'))"
+if ($configuration.backend -ne $Backend) { throw 'The Android build backend does not match the requested package.' }
+$name = "bblitec-$Scene-$($Backend.ToLowerInvariant().Replace('_', '-'))-android-$($Abi.Replace('_', '-'))"
 $plan = New-PackageOutput (Resolve-RepositoryPath $OutputRoot) $name
 $directory = Join-Path $plan.Staging $name
 New-Item -ItemType Directory -Path $directory -Force | Out-Null
@@ -27,11 +31,11 @@ $adb = Join-Path $Sdk "platform-tools/$(if ($IsWindows) { 'adb.exe' } else { 'ad
 & $adb -s $Device install -r $apk
 if ($LASTEXITCODE -ne 0) { throw 'Staged Android APK installation failed.' }
 $smoke = Join-Path $built 'package-smoke'
-& node (Join-Path $root 'tools/android-smoke.mjs') --adb $adb --device $Device --apk $apk --app $applicationId --output $smoke
+& node (Join-Path $root 'tools/android-smoke.mjs') --adb $adb --device $Device --apk $apk --app $applicationId --output $smoke --backend ($Backend.ToLowerInvariant())
 if ($LASTEXITCODE -ne 0) { throw "Staged Android startup failed; see $smoke." }
 $receipt = Get-Content (Join-Path $smoke 'report.json') -Raw | ConvertFrom-Json
 @"
-$Scene — Android $Abi, SDL_GPU/Vulkan
+$Scene — Android $Abi, $Backend/Vulkan
 
 Install $Scene.apk on Android API $($configuration.minSdk)+ with a compatible Vulkan GPU.
 Application ID: $applicationId
@@ -43,7 +47,7 @@ Compress-Archive -Path $directory -DestinationPath $archive
 @{
     scene = $Scene; platform = 'android'; abi = $Abi; applicationId = $applicationId
     minSdk = $configuration.minSdk
-    buildType = 'debug'; nativeConfiguration = 'Release'; backend = 'SDL_GPU'
+    buildType = 'debug'; nativeConfiguration = 'Release'; backend = $Backend
     apkBytes = (Get-Item $apk).Length; apkSha256 = (Get-FileHash $apk -Algorithm SHA256).Hash
     zipBytes = (Get-Item $archive).Length; zipSha256 = (Get-FileHash $archive -Algorithm SHA256).Hash
     smoke = $receipt

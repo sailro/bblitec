@@ -1,6 +1,8 @@
 param(
     [string]$Workspace = "",
     [string]$OutputDirectory = "",
+    [ValidateSet('', 'arm64-v8a', 'x86_64')][string]$AndroidAbi = '',
+    [string]$AndroidNdk = $env:ANDROID_NDK_HOME,
     [ValidateSet('', 'iphoneos', 'iphonesimulator')][string]$IosSdk = '',
     [ValidateSet('', 'x86_64', 'arm64')][string]$IosArchitecture = '',
     [ValidateRange(0, 1024)][int]$Jobs = 0,
@@ -15,14 +17,18 @@ $ErrorActionPreference = "Stop"
 Import-Module (Join-Path $PSScriptRoot "bblite-tools.psm1") -Force
 $root = Get-RepositoryRoot
 if ($IosSdk) {
+    if ($AndroidAbi) { throw 'iOS and Android targets cannot be combined.' }
     if (-not $IosArchitecture) { throw 'iOS requires -IosArchitecture.' }
     $iosArguments = @(Get-IosCompilerArguments $IosSdk $IosArchitecture)
 } elseif ($IosArchitecture) { throw '-IosArchitecture requires -IosSdk.' }
+if ($AndroidAbi) { $androidArguments = @(Get-AndroidCompilerArguments $AndroidAbi $AndroidNdk) }
 if (-not $Workspace) {
-    $Workspace = if ($IosSdk) { ".cache/dawn-ios-$IosSdk-$IosArchitecture" } else { ".cache/tint" }
+    $Workspace = if ($AndroidAbi) { ".cache/dawn-android-$AndroidAbi" }
+        elseif ($IosSdk) { ".cache/dawn-ios-$IosSdk-$IosArchitecture" } else { ".cache/tint" }
 }
 if (-not $OutputDirectory) {
-    $OutputDirectory = if ($IosSdk) { "artifacts/tools/dawn-ios-$IosSdk-$IosArchitecture" } else { "artifacts/tools/dawn" }
+    $OutputDirectory = if ($AndroidAbi) { "artifacts/tools/dawn-android-$AndroidAbi" }
+        elseif ($IosSdk) { "artifacts/tools/dawn-ios-$IosSdk-$IosArchitecture" } else { "artifacts/tools/dawn" }
 }
 $pin = Get-Content (Join-Path $root "upstream\tint.json") -Raw |
     ConvertFrom-Json
@@ -32,31 +38,37 @@ $build = Join-Path $workspacePath "build-dawn"
 $output = Resolve-RepositoryPath $OutputDirectory
 $CMake = Find-CMake $CMake
 if (-not $IsWindows -and -not $IsLinux -and -not $IsMacOS) { throw "Dawn setup supports Windows, Linux and macOS." }
-$d3d12 = if ($IsWindows) { "ON" } else { "OFF" }
-$vulkan = if ($IsLinux) { "ON" } else { "OFF" }
-$metal = if ($IsMacOS) { "ON" } else { "OFF" }
+$d3d12 = if ($IsWindows -and -not $AndroidAbi) { "ON" } else { "OFF" }
+$vulkan = if ($AndroidAbi -or $IsLinux) { "ON" } else { "OFF" }
+$metal = if ($IsMacOS -and -not $AndroidAbi) { "ON" } else { "OFF" }
 
 New-Item -ItemType Directory -Path $workspacePath, $output -Force |
     Out-Null
 Sync-PinnedCheckout $source $pin.repository $pin.commit "Dawn"
 $patches = @()
-if ($IsMacOS) {
+$patchNames = @()
+if ($AndroidAbi) {
+    $patchNames = @("dawn-android-surface-loss.patch")
+} elseif ($metal -eq 'ON') {
     $patchNames = @("dawn-metal-sdk-compat.patch", "dawn-metal-primitive-index.patch")
     if ($IosSdk) { $patchNames += "dawn-metal-simulator-capabilities.patch" }
-    foreach ($name in $patchNames) {
-        $patch = Join-Path $root "tools/patches/$name"
-        & git -C $source apply --check $patch
-        if ($LASTEXITCODE -ne 0) { throw "Dawn patch $name does not apply." }
-        & git -C $source apply $patch
-        if ($LASTEXITCODE -ne 0) { throw "Dawn patch $name failed." }
-        $patches += @{ file = $name; sha256 = (Get-FileHash $patch -Algorithm SHA256).Hash.ToLowerInvariant() }
-    }
+}
+foreach ($name in $patchNames) {
+    $patch = Join-Path $root "tools/patches/$name"
+    & git -C $source apply --check $patch
+    if ($LASTEXITCODE -ne 0) { throw "Dawn patch $name does not apply." }
+    & git -C $source apply $patch
+    if ($LASTEXITCODE -ne 0) { throw "Dawn patch $name failed." }
+    $patches += @{ file = $name; sha256 = (Get-FileHash $patch -Algorithm SHA256).Hash.ToLowerInvariant() }
 }
 
 # We consume the C API. The pin's module probe accepts GCC 13 even though
 # CMake cannot scan that compiler's module dependencies.
-$compilerArguments = if ($IosSdk) { $iosArguments } else { @(Get-PosixCompilerArguments) }
-$libraryType = if ($IosSdk) { 'STATIC' } else { 'SHARED' }
+$compilerArguments = if ($AndroidAbi) {
+    $androidArguments + @('-DDAWN_USE_X11=OFF', '-DDAWN_USE_WAYLAND=OFF',
+        '-DDAWN_ENABLE_WEBGPU_ON_WEBGPU=OFF', '-DTINT_BUILD_GLSL_VALIDATOR=OFF')
+} elseif ($IosSdk) { $iosArguments } else { @(Get-PosixCompilerArguments) }
+$libraryType = if ($IosSdk -or $AndroidAbi) { 'STATIC' } else { 'SHARED' }
 & $CMake -S $source -B $build @compilerArguments `
     -DCMAKE_BUILD_TYPE=Release `
     -DDAWN_SUPPORTS_CXX_MODULES=OFF `
@@ -89,7 +101,7 @@ if ($LASTEXITCODE -ne 0) {
 
 $targets = @("--target", "webgpu_dawn")
 $parallelArguments = Get-BuildParallelArguments $Jobs
-if ($IsWindows) { $targets += @("--target", "dxcompiler", "--target", "copy_dxil_dll") }
+if ($d3d12 -eq 'ON') { $targets += @("--target", "dxcompiler", "--target", "copy_dxil_dll") }
 & $CMake --build $build @targets `
     --config Release `
     @parallelArguments
@@ -105,7 +117,7 @@ if ($LASTEXITCODE -ne 0) {
 # Deploy Dawn's own-built DXC and the validator DLL selected by Dawn's
 # copy_dxil_dll target. With DAWN_USE_BUILT_DXC the D3D12 backend loads
 # both beside webgpu_dawn.dll when use_dxc is enabled.
-if ($IsWindows) {
+if ($d3d12 -eq 'ON') {
     $builtDxc = Get-ChildItem -Recurse (Join-Path $build "third_party") `
         -Filter "dxcompiler.dll" -ErrorAction SilentlyContinue |
         Where-Object { $_.FullName -match "Release" } |
@@ -140,6 +152,7 @@ Copy-Item (Join-Path $source "LICENSE") (Join-Path $output "LICENSE.txt") -Force
     repository = $pin.repository
     commit = $pin.commit
     license = $pin.license
+    androidAbi = $AndroidAbi
     patches = $patches
     builtAt = (Get-Date).ToUniversalTime().ToString("o")
 } | ConvertTo-Json | Set-Content (Join-Path $output "provenance.json")

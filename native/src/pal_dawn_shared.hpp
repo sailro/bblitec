@@ -20,6 +20,7 @@
 
 #include <bblite/pal.hpp>
 #include <bblite/runtime.hpp>
+#include <bblite/js_data.hpp>
 #include <bblite/upstream/pinned_depth_state.hpp>
 
 #include <algorithm>
@@ -265,6 +266,71 @@ struct DawnDeviceHost {
 #endif
 };
 
+inline void select_dawn_surface_configuration(DawnDevice& state, const DeviceOptions& options) {
+    WGPUSurfaceCapabilities capabilities = WGPU_SURFACE_CAPABILITIES_INIT;
+    if (wgpuSurfaceGetCapabilities(state.surface, state.adapter, &capabilities) != WGPUStatus_Success) {
+        dawn_error("surface capabilities are unavailable.");
+    }
+    auto free_capabilities = js::finally([&capabilities]() noexcept { wgpuSurfaceCapabilitiesFreeMembers(capabilities); });
+    state.surface_format = WGPUTextureFormat_Undefined;
+    for (const auto preferred : {WGPUTextureFormat_BGRA8Unorm, WGPUTextureFormat_RGBA8Unorm}) {
+        for (std::size_t index = 0; index < capabilities.formatCount; ++index) {
+            if (capabilities.formats[index] == preferred) state.surface_format = preferred;
+        }
+        if (state.surface_format != WGPUTextureFormat_Undefined) break;
+    }
+    if (state.surface_format == WGPUTextureFormat_Undefined) {
+        dawn_error("surface supports neither BGRA8Unorm nor RGBA8Unorm.");
+    }
+    constexpr auto usage = WGPUTextureUsage_RenderAttachment | WGPUTextureUsage_CopySrc;
+    if ((capabilities.usages & usage) != usage) {
+        dawn_error("surface does not support rendering with GPU readback.");
+    }
+    state.present_mode = WGPUPresentMode_Fifo;
+    if (options.immediate_present) {
+        for (std::size_t index = 0; index < capabilities.presentModeCount; ++index) {
+            if (capabilities.presentModes[index] == WGPUPresentMode_Immediate) {
+                state.present_mode = WGPUPresentMode_Immediate;
+                return;
+            }
+        }
+        std::cerr << "Dawn: immediate presentation is unavailable; using FIFO.\n";
+    }
+}
+
+inline bool refresh_dawn_android_surface([[maybe_unused]] DawnDevice& state) {
+#if defined(__ANDROID__)
+    if (!state.window) return false;
+    const auto properties = SDL_GetWindowProperties(state.window);
+    ANativeWindow* window = nullptr;
+    {
+        if (!SDL_LockProperties(properties)) dawn_error(SDL_GetError());
+        auto unlock = js::finally([properties]() noexcept { SDL_UnlockProperties(properties); });
+        window = static_cast<ANativeWindow*>(
+            SDL_GetPointerProperty(properties, SDL_PROP_WINDOW_ANDROID_WINDOW_POINTER, nullptr));
+        // SDL replaces this handle on resume, even when the drawable size is unchanged.
+        // Retain it before the Java thread can release SDL's reference.
+        if (window && window != state.android_window) ANativeWindow_acquire(window);
+    }
+    if (!window) {
+        state.release_surface();
+        return false;
+    }
+    if (window == state.android_window) return false;
+    state.release_surface();
+    state.android_window = window;
+    WGPUSurfaceSourceAndroidNativeWindow source = WGPU_SURFACE_SOURCE_ANDROID_NATIVE_WINDOW_INIT;
+    source.window = window;
+    WGPUSurfaceDescriptor descriptor{};
+    descriptor.nextInChain = &source.chain;
+    state.surface = wgpuInstanceCreateSurface(state.instance, &descriptor);
+    if (!state.surface) dawn_error("wgpuInstanceCreateSurface failed.");
+    return true;
+#else
+    return false;
+#endif
+}
+
 inline void configure_dawn_surface(
     DawnDevice& state,
     std::uint32_t width,
@@ -290,22 +356,50 @@ inline void configure_dawn_surface(
     state.surface_height = height;
 }
 
-/** Reconfigure WebGPU when the application-facing canvas size changes. */
 inline bool resize_dawn_surface(
     DawnDevice& state,
-    const EngineOptions& options) {
+    std::uint32_t width,
+    std::uint32_t height) {
+    const bool resized = width != state.surface_width || height != state.surface_height;
+    const bool replaced = refresh_dawn_android_surface(state);
+    if (state.window && !state.surface) return false;
+    if (resized || replaced) configure_dawn_surface(state, width, height);
+    return resized;
+}
+
+/** Reconfigure the surface without rebuilding render targets on a same-size Android resume. */
+inline bool resize_dawn_surface(DawnDevice& state, const EngineOptions& options) {
     if (options.width <= 0 || options.height <= 0) return false;
-    const std::uint32_t width =
-        static_cast<std::uint32_t>(options.width);
-    const std::uint32_t height =
-        static_cast<std::uint32_t>(options.height);
-    if (
-        width == state.surface_width &&
-        height == state.surface_height) {
+    return resize_dawn_surface(state, static_cast<std::uint32_t>(options.width),
+        static_cast<std::uint32_t>(options.height));
+}
+
+inline bool acquire_dawn_surface_texture(DawnDevice& state, WGPUSurfaceTexture& texture) {
+    texture = WGPU_SURFACE_TEXTURE_INIT;
+    if (!state.surface) return false;
+    wgpuSurfaceGetCurrentTexture(state.surface, &texture);
+    if (texture.status == WGPUSurfaceGetCurrentTextureStatus_SuccessOptimal ||
+        texture.status == WGPUSurfaceGetCurrentTextureStatus_SuccessSuboptimal) {
+        if (!texture.texture) dawn_error("surface acquisition returned no texture.");
+#if defined(__ANDROID__)
+        state.surface_recovery_pending = false;
+#endif
+        return true;
+    }
+    if (auto value = std::exchange(texture.texture, nullptr)) wgpuTextureRelease(value);
+    if (texture.status == WGPUSurfaceGetCurrentTextureStatus_Timeout ||
+        texture.status == WGPUSurfaceGetCurrentTextureStatus_Outdated) return false;
+#if defined(__ANDROID__)
+    // Surface destruction can race this frame after SDL event polling. Retry once
+    // after the next poll, which blocks through pause and exposes the resumed window.
+    if (texture.status == WGPUSurfaceGetCurrentTextureStatus_Lost && !state.surface_recovery_pending) {
+        state.release_surface();
+        state.surface_recovery_pending = true;
         return false;
     }
-    configure_dawn_surface(state, width, height);
-    return true;
+#endif
+    dawn_error("wgpuSurfaceGetCurrentTexture failed (status " +
+        std::to_string(static_cast<int>(texture.status)) + "): " + state.uncaptured_error);
 }
 
 inline void create_dawn_device(
@@ -401,6 +495,10 @@ inline void create_dawn_device(
     state.instance = wgpuCreateInstance(&instance_descriptor);
     if (!state.instance) dawn_error("wgpuCreateInstance failed.");
 
+#if defined(__ANDROID__)
+    refresh_dawn_android_surface(state);
+    if (!state.surface) dawn_error("SDL window exposes no Android native window.");
+#else
     WGPUSurfaceDescriptor surface_descriptor{};
 #if defined(_WIN32)
     void* hwnd = SDL_GetPointerProperty(
@@ -448,6 +546,7 @@ inline void create_dawn_device(
     state.surface =
         wgpuInstanceCreateSurface(state.instance, &surface_descriptor);
     if (!state.surface) dawn_error("wgpuInstanceCreateSurface failed.");
+#endif
 
     WGPURequestAdapterOptions adapter_options =
         WGPU_REQUEST_ADAPTER_OPTIONS_INIT;
@@ -470,7 +569,7 @@ inline void create_dawn_device(
     adapter_options.backendType = WGPUBackendType_D3D12;
 #elif defined(__APPLE__)
     adapter_options.backendType = WGPUBackendType_Metal;
-#elif defined(__linux__)
+#elif defined(__ANDROID__) || defined(__linux__)
     adapter_options.backendType = WGPUBackendType_Vulkan;
 #endif
     adapter_options.compatibleSurface = state.surface;
@@ -632,9 +731,7 @@ inline void create_dawn_device(
     // camera inertia integrates identically across backends;
     // benchmarks keep immediate present (the recorded frame-time
     // numbers depend on it).
-    state.present_mode = options.immediate_present
-        ? WGPUPresentMode_Immediate
-        : WGPUPresentMode_Fifo;
+    select_dawn_surface_configuration(state, options);
     configure_dawn_surface(
         state,
         static_cast<std::uint32_t>(engine_options.width),
