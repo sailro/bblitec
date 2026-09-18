@@ -1,0 +1,32 @@
+Android may disconnect a native window between acquisition and presentation.
+Report the lost surface on the next acquisition instead of losing the device.
+
+--- a/src/dawn/native/vulkan/SwapChainVk.cpp
++++ b/src/dawn/native/vulkan/SwapChainVk.cpp
+@@ -466,2 +466,7 @@
+         case VK_ERROR_SURFACE_LOST_KHR:
++#if DAWN_PLATFORM_IS(ANDROID)
++            // Android may replace the native window while a frame is in flight.
++            mSurfaceLost = true;
++            return {};
++#endif
+         default:
+@@ -473,3 +478,10 @@
+ ResultOrError<SwapChainTextureInfo> SwapChain::GetCurrentTextureImpl() {
++#if DAWN_PLATFORM_IS(ANDROID)
++    if (mSurfaceLost) {
++        SwapChainTextureInfo result = {};
++        result.status = wgpu::SurfaceGetCurrentTextureStatus::Lost;
++        return result;
++    }
++#endif
+     return GetCurrentTextureInternal();
+ }
+--- a/src/dawn/native/vulkan/SwapChainVk.h
++++ b/src/dawn/native/vulkan/SwapChainVk.h
+@@ -90,2 +90,5 @@
+     VkSwapchainKHR mSwapChain = VK_NULL_HANDLE;
++#if DAWN_PLATFORM_IS(ANDROID)
++    bool mSurfaceLost = false;
++#endif
+ 

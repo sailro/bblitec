@@ -41,14 +41,10 @@ class DawnWindowPresenter final : public WindowPresenter {
         if (!SDL_GetWindowSizeInPixels(state_.window, &w, &h)) dawn_error(SDL_GetError());
         if (w <= 0 || h <= 0) return false;
         const auto width = static_cast<std::uint32_t>(w), height = static_cast<std::uint32_t>(h);
-        if (width != state_.surface_width || height != state_.surface_height) configure_dawn_surface(state_, width, height);
-        WGPUSurfaceTexture target = WGPU_SURFACE_TEXTURE_INIT;
-        wgpuSurfaceGetCurrentTexture(state_.surface, &target);
+        resize_dawn_surface(state_, width, height);
+        WGPUSurfaceTexture target;
+        if (!acquire_dawn_surface_texture(state_, target)) return false;
         DawnTexture acquired_texture{target.texture};
-        if (target.status != WGPUSurfaceGetCurrentTextureStatus_SuccessOptimal && target.status != WGPUSurfaceGetCurrentTextureStatus_SuccessSuboptimal) {
-            if (target.status == WGPUSurfaceGetCurrentTextureStatus_Timeout || target.status == WGPUSurfaceGetCurrentTextureStatus_Outdated) return false;
-            dawn_error("Window surface acquisition failed.");
-        }
         DawnTextureView view{create_dawn_texture_view(target.texture, nullptr)};
         DawnCommandEncoder encoder{wgpuDeviceCreateCommandEncoder(state_.device, nullptr)};
         WGPURenderPassColorAttachment attachment = WGPU_RENDER_PASS_COLOR_ATTACHMENT_INIT;

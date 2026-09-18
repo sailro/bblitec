@@ -5,6 +5,7 @@ import { holdDistLock } from "./dist-lock.js";
 import type { SceneDefinition } from "./scene-registry.js";
 import { writeJsonRecord } from "./validation-resume.js";
 import { runLoggedProcess } from "./tooling/logged-process.js";
+import { NATIVE_BACKENDS } from "./tooling/artifacts.js";
 
 type MobilePlatform = "android" | "ios";
 
@@ -13,11 +14,13 @@ export function mobilePackageArguments(platform: MobilePlatform, scene: string, 
     if (platform === "android") {
         const abi = values.get("--abi") ?? "arm64-v8a";
         if (abi !== "arm64-v8a" && abi !== "x86_64") throw new Error("Unsupported Android ABI.");
-        target.push("-Abi", abi,
+        const backend = values.get("--backend") ?? "sdl_gpu";
+        if (!NATIVE_BACKENDS.some(candidate => candidate === backend)) throw new Error(`Android packages require --backend ${NATIVE_BACKENDS.join(" or ")}.`);
+        target.push("-Abi", abi, "-ExpectBackend", backend.toUpperCase(),
             ...(values.get("--sdk") ? ["-Sdk", values.get("--sdk")!] : []),
             ...(values.get("--device") ? ["-Device", values.get("--device")!] : []));
-    } else if (["--abi", "--sdk", "--device"].some(flag => values.has(flag))) {
-        throw new Error("iOS packaging targets ARM64 devices. Select Xcode with DEVELOPER_DIR; Android SDK/device options do not apply.");
+    } else if (["--abi", "--sdk", "--device", "--backend"].some(flag => values.has(flag))) {
+        throw new Error("iOS packaging targets ARM64 devices using SDL_GPU. Select Xcode with DEVELOPER_DIR; Android SDK/device/backend options do not apply.");
     }
     const jobs = values.get("--jobs") ?? "8";
     if (!/^[1-9][0-9]*$/.test(jobs)) throw new Error("--jobs must be a positive integer.");

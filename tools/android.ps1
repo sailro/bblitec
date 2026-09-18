@@ -3,6 +3,8 @@ param(
     [string]$Sdk = $env:ANDROID_HOME,
     [string]$Ndk = $env:ANDROID_NDK_HOME,
     [ValidateSet('arm64-v8a', 'x86_64')][string]$Abi = 'arm64-v8a',
+    [ValidateSet('SDL_GPU', 'DAWN', 'BOTH')][string]$Backend = 'SDL_GPU',
+    [string]$DawnDirectory,
     [string]$Device,
     [ValidatePattern('^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+$')][string]$ApplicationId = 'org.bblite.prototype',
     [switch]$Install,
@@ -16,6 +18,10 @@ $ErrorActionPreference = 'Stop'
 Import-Module (Join-Path $PSScriptRoot 'bblite-tools.psm1') -Force
 Import-Module (Join-Path $PSScriptRoot 'package-output.psm1') -Force
 $root = Get-RepositoryRoot
+$Backend = $Backend.ToUpperInvariant()
+if ($env:BBLITE_ANDROID_INPUTS_PREPARED -eq '1' -and -not $SkipGenerate) {
+    throw 'Prepared Android sweep inputs must not be regenerated.'
+}
 if (-not $Sdk -or -not (Test-Path "$Sdk/platforms/android-35/android.jar")) {
     throw 'Set ANDROID_HOME or -Sdk to an SDK containing platforms;android-35, build-tools;35.0.0 and platform-tools.'
 }
@@ -33,19 +39,29 @@ if (-not $vcpkgRoot) { throw 'Set VCPKG_ROOT to your vcpkg checkout.' }
 
 Push-Location $root
 try {
-    Invoke-Checked 'npm' @('run', 'build')
+    if ($env:BBLITE_DIST_LOCK_HELD -ne '1') { Invoke-Checked 'npm' @('run', 'build') }
+    elseif (-not (Test-Path 'dist/src/scene-command.js')) { throw 'Build the compiler before starting the Android sweep.' }
     # Registry resolution supplies the same generated path as desktop commands.
     $sceneJson = & node dist/src/scene-command.js show $Scene
     if ($LASTEXITCODE -ne 0) { throw "Unknown scene: $Scene" }
     $resolved = $sceneJson | ConvertFrom-Json
     $id = $resolved.id
     if (-not $id -or $id -notmatch '^[a-zA-Z0-9_-]+$') { throw 'Android requires a registered scene ID.' }
-    if (-not $SkipGenerate) { Invoke-Checked 'node' @('dist/src/scene-command.js', 'compile', $id) }
-    Invoke-Checked 'node' @('dist/src/compile-shaders.js', '--scene', $id, '--target', 'vulkan')
+    if (-not $SkipGenerate) {
+        Invoke-Checked 'node' @('dist/src/scene-command.js', 'compile', $id)
+        if ($Backend -ne 'DAWN') {
+            Invoke-Checked 'node' @('dist/src/compile-shaders.js', '--scene', $id, '--target', 'vulkan')
+        }
+    }
     $generated = Join-Path $root $resolved.output
+    if (($SkipGenerate -or $Backend -ne 'DAWN') -and $env:BBLITE_ANDROID_INPUTS_PREPARED -ne '1') {
+        Invoke-Checked 'node' @('--input-type=module', '-e',
+            'import { refreshBuildStamp } from "./dist/src/generation-stamp.js"; refreshBuildStamp(process.argv[1], { generatedInputsChanged: true });', $generated)
+    }
     $triplet = if ($Abi -eq 'arm64-v8a') { 'arm64-android-bblite' } else { 'x64-android-bblite' }
-    $build = "$root/native/build-$id-android-$Abi"
-    $staging = "$root/artifacts/android/$id/$Abi"
+    $variant = "$Abi$(if ($Backend -ne 'SDL_GPU') { '-' + $Backend.ToLowerInvariant() })"
+    $build = "$root/native/build-$id-android-$variant"
+    $staging = "$root/artifacts/android/$id/$variant"
     New-Item -ItemType Directory -Force $staging | Out-Null
     $directoriesFile = $SweepGeneratedDirectoriesFile
     if (-not $directoriesFile) {
@@ -61,6 +77,7 @@ try {
     } | Sort-Object -Unique)
     $rmlui = "$root/artifacts/tools/rmlui-android-$Abi"
     $labsound = "$root/artifacts/tools/labsound-android-$Abi"
+    $dawn = if ($DawnDirectory) { Resolve-RepositoryPath $DawnDirectory } else { "$root/artifacts/tools/dawn-android-$Abi" }
     if (-not $UseInstalledDependencies) {
         $dependencyIdentity = @($Abi, [IO.Path]::GetFullPath($Ndk))
         $dependencyInputs = @("$Ndk/source.properties", "$PSScriptRoot/android.ps1")
@@ -82,6 +99,12 @@ try {
                 & "$PSScriptRoot/build-labsound.ps1" -AndroidAbi $Abi -AndroidNdk $Ndk -Jobs $Jobs -CMake $cmake
             }
         }
+        if ($Backend -ne 'SDL_GPU') {
+            $inputs = @("$root/upstream/tint.json", "$PSScriptRoot/build-dawn.ps1", "$PSScriptRoot/patches/dawn-android-surface-loss.patch")
+            Build-DependencyArtifact 'Dawn Android' $dawn $dependencyIdentity (@("$Ndk/source.properties") + $inputs) @('lib/libwebgpu_dawn.a', 'lib/cmake/Dawn/DawnConfig.cmake', 'include/webgpu/webgpu.h', 'provenance.json', 'LICENSE.txt') {
+                & "$PSScriptRoot/build-dawn.ps1" -AndroidAbi $Abi -AndroidNdk $Ndk -OutputDirectory $dawn -Jobs $Jobs -CMake $cmake
+            }
+        }
     }
     $sceneFeatures = (Get-Content "$generated/manifest.json" -Raw | ConvertFrom-Json).features
     $minSdk = if ('ui:rml' -in $sceneFeatures) { 29 } else { 28 }
@@ -92,8 +115,8 @@ try {
         "-DVCPKG_OVERLAY_TRIPLETS=$root/native/triplets", "-DVCPKG_TARGET_TRIPLET=$triplet",
         "-DVCPKG_INSTALLED_DIR=$root/artifacts/android-vcpkg", "-DANDROID_ABI=$Abi",
         "-DANDROID_PLATFORM=android-$minSdk", '-DANDROID_STL=c++_shared',
-        "-DBBLITE_RMLUI_DIR=$rmlui", "-DBBLITE_LABSOUND_DIR=$labsound",
-        '-DCMAKE_BUILD_TYPE=Release', "-DBBLITE_GENERATED_DIR=$generated", '-DBBLITE_BACKEND=SDL_GPU',
+        "-DBBLITE_RMLUI_DIR=$rmlui", "-DBBLITE_LABSOUND_DIR=$labsound", "-DBBLITE_DAWN_DIR=$dawn",
+        '-DCMAKE_BUILD_TYPE=Release', "-DBBLITE_GENERATED_DIR=$generated", "-DBBLITE_BACKEND=$Backend",
         '-DBBLITE_PCH=ON', '-DBBLITE_NATIVE_CACHE=ON')
     $configure += "-DVCPKG_MANIFEST_FEATURES=$dependencyFeatures"
     $configure += '-DVCPKG_MANIFEST_INSTALL=OFF'
@@ -121,7 +144,10 @@ try {
     New-Item -ItemType Directory -Force "$payload/shaders", $libraries | Out-Null
     if (Test-Path "$generated/assets") { Copy-Item "$generated/assets" $payload -Recurse }
     if ('ui:rml' -in $sceneFeatures) { Copy-Item "$root/native/android/fonts" $payload -Recurse }
-    Get-ChildItem "$build/shaders" -File | Where-Object { $_.Extension -in @('.spv', '.slots') } |
+    $shaderExtensions = @()
+    if ($Backend -ne 'DAWN') { $shaderExtensions += @('.spv', '.slots') }
+    if ($Backend -ne 'SDL_GPU') { $shaderExtensions += '.wgsl' }
+    Get-ChildItem "$build/shaders" -File | Where-Object { $_.Extension -in $shaderExtensions } |
         Copy-Item -Destination "$payload/shaders"
     Copy-Item "$build/libmain.so" $libraries
     Copy-Item "$root/artifacts/android-vcpkg/$triplet/lib/libSDL3.so" $libraries
@@ -139,6 +165,10 @@ try {
     }
     Copy-Item "$Ndk/NOTICE.toolchain" "$licenses/NDK-toolchain.txt"
     Copy-Item "$root/node_modules/@babylonjs/lite/LICENSE" "$licenses/Babylon-Lite.txt"
+    if ($Backend -ne 'SDL_GPU') {
+        Copy-Item "$dawn/LICENSE.txt" "$licenses/Dawn.txt"
+        Copy-Item "$dawn/provenance.json" "$licenses/Dawn-provenance.json"
+    }
     if ('ui:rml' -in $sceneFeatures) {
         Copy-Item "$rmlui/RmlUi-LICENSE.txt" $licenses
         Copy-Item "$root/native/android/fonts/OFL.txt" "$licenses/NotoSansSymbols2.txt"
@@ -160,16 +190,21 @@ try {
         "-PbbliteStaging=$staging", "-PbbliteScene=$id", "-PbbliteMinSdk=$minSdk", "-PbbliteApplicationId=$ApplicationId", "-PbbliteSdlJava=$sdl/android-project/app/src/main/java", 'assembleDebug')
     $apk = "$staging/bblite-$id-$Abi.apk"
     Copy-Item $gradleApk $apk -Force
-    @{ scene = $id; abi = $Abi; minSdk = $minSdk } | ConvertTo-Json | Set-Content "$staging/build.json"
+    @{ scene = $id; abi = $Abi; minSdk = $minSdk; backend = $Backend; applicationId = $ApplicationId } |
+        ConvertTo-Json | Set-Content "$staging/build.json"
     Write-Host "APK: $apk"
     if ($Install -or $Smoke) {
         $adb = if ($IsWindows) { "$Sdk/platform-tools/adb.exe" } else { "$Sdk/platform-tools/adb" }
         $selector = if ($Device) { @('-s', $Device) } else { @() }
         Invoke-Checked $adb ($selector + @('install', '-r', $apk))
         if ($Smoke) {
-            $smokeArguments = @('tools/android-smoke.mjs', '--adb', $adb, '--output', "$staging/smoke", '--apk', $apk, '--app', $ApplicationId)
-            if ($Device) { $smokeArguments += @('--device', $Device) }
-            Invoke-Checked 'node' $smokeArguments
+            $runtimeBackends = if ($Backend -eq 'BOTH') { @('sdl_gpu', 'dawn') } else { @($Backend.ToLowerInvariant()) }
+            foreach ($runtimeBackend in $runtimeBackends) {
+                $smokeArguments = @('tools/android-smoke.mjs', '--adb', $adb, '--output', "$staging/smoke-$runtimeBackend",
+                    '--apk', $apk, '--app', $ApplicationId, '--backend', $runtimeBackend)
+                if ($Device) { $smokeArguments += @('--device', $Device) }
+                Invoke-Checked 'node' $smokeArguments
+            }
         } else {
             Invoke-Checked $adb ($selector + @('shell', 'am', 'force-stop', $ApplicationId))
             Invoke-Checked $adb ($selector + @('shell', 'am', 'start', '-W', '-n', "$ApplicationId/org.bblite.prototype.MainActivity"))

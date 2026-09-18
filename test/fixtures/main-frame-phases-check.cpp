@@ -14,6 +14,7 @@ struct SDL_GPUCommandBuffer { bool consumed = false; };
 struct WGPUTextureImpl { unsigned references = 0; };
 struct WGPUTextureViewImpl { unsigned references = 0; };
 struct WGPUBufferImpl {};
+struct WGPUSurfaceImpl {};
 
 namespace {
 std::vector<std::string> events;
@@ -21,6 +22,7 @@ SDL_GPUTexture sdl_texture;
 SDL_GPUCommandBuffer sdl_command;
 WGPUTextureImpl dawn_texture;
 WGPUTextureViewImpl dawn_view;
+WGPUSurfaceImpl dawn_surface;
 std::deque<WGPUBufferImpl> buffers;
 bool acquire_success = true, texture_available = true, command_available = true;
 bool submission_success = true, view_available = true;
@@ -81,7 +83,7 @@ RenderDrawLists build_render_task_draw_lists(
 
 namespace bbl::pal {
 [[noreturn]] void gpu_error(const char* operation) { throw std::runtime_error(operation); }
-[[noreturn]] void dawn_error(const char* operation) { throw std::runtime_error(operation); }
+[[noreturn]] void dawn_error(const std::string& operation) { throw std::runtime_error(operation); }
 double monotonic_milliseconds() { return 123.0; }
 struct TestClock {};
 double advance_frame(Engine&, Scene&, TestClock&, double delta) {
@@ -97,8 +99,10 @@ struct DawnRenderTask {
 };
 struct DawnState {
     std::vector<DawnRenderTask> render_tasks;
-    WGPUSurface surface = nullptr;
+    WGPUSurface surface = &dawn_surface;
+    std::string uncaptured_error;
 };
+#include "dawn-acquire.hpp"
 WGPUBuffer create_buffer(DawnState&, WGPUBufferUsage usage, const void* data, std::size_t bytes) {
     assert(usage == WGPUBufferUsage_Uniform && data == nullptr && bytes == 64);
     buffers.emplace_back(); return &buffers.back();
@@ -232,11 +236,21 @@ void surface_boundaries() {
     }
     for (bool fail_status : {false, true}) {
         reset();
-        if (fail_status) dawn_status = WGPUSurfaceGetCurrentTextureStatus_Timeout;
+        if (fail_status) dawn_status = WGPUSurfaceGetCurrentTextureStatus_Error;
         else view_available = false;
         {
             DawnScene renderer(engine);
             expect_failure([&] { conduct_frame(renderer); });
+            assert((events == std::vector<std::string>{"advance", "upload", "acquire"}));
+        }
+        assert(dawn_texture.references == 0 && dawn_view.references == 0);
+    }
+    for (const auto status : {WGPUSurfaceGetCurrentTextureStatus_Timeout, WGPUSurfaceGetCurrentTextureStatus_Outdated}) {
+        reset();
+        dawn_status = status;
+        {
+            DawnScene renderer(engine);
+            assert(conduct_frame(renderer) == FrameOutcome::skipped);
             assert((events == std::vector<std::string>{"advance", "upload", "acquire"}));
         }
         assert(dawn_texture.references == 0 && dawn_view.references == 0);

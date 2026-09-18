@@ -188,10 +188,10 @@ function readPackageSize(path: string): PackageSize {
 
 async function main(): Promise<void> {
     const flags = parseFlags(process.argv.slice(2), {
-        value: ["--scene", "--output", "--workers", "--jobs", "--platform", "--sdk", "--device", "--abi"], boolean: ["--plan", "--help"],
+        value: ["--scene", "--output", "--workers", "--jobs", "--platform", "--sdk", "--device", "--abi", "--backend"], boolean: ["--plan", "--help"],
     }, "shipping-demos");
     if (flags.flags.has("--help")) {
-        console.log("npm run demos:release -- [--scene all|id,id] [--output directory] [--workers N] [--jobs N] [--plan]\nAndroid: --platform android --sdk directory --device serial [--abi arm64-v8a|x86_64].\niOS: --platform ios on macOS with DEVELOPER_DIR selecting Xcode/iOS SDK 16.4+. Produces unsigned, trimmed ARM64 iPhone/iPad SDL_GPU bundles; no device startup qualification.\nMobile packages run sequentially (--workers 1).\n--plan describes the packages without building or packaging.");
+        console.log("npm run demos:release -- [--scene all|id,id] [--output directory] [--workers N] [--jobs N] [--plan]\nAndroid: --platform android --sdk directory --device serial [--abi arm64-v8a|x86_64] [--backend sdl_gpu|dawn].\niOS: --platform ios on macOS with DEVELOPER_DIR selecting Xcode/iOS SDK 16.4+. Produces unsigned, trimmed ARM64 iPhone/iPad SDL_GPU bundles; no device startup qualification.\nMobile packages run sequentially (--workers 1).\n--plan describes the packages without building or packaging.");
         return;
     }
     const requestedPlatform = flags.values.get("--platform") ?? "host";
@@ -201,6 +201,7 @@ async function main(): Promise<void> {
         await runMobilePackages(requestedPlatform, selectShippingScenes(flags.values.get("--scene")), flags.values, flags.flags.has("--plan"));
         return;
     }
+    if (flags.values.has("--backend")) throw new Error("--backend selects Android packages; host shipping uses SDL_GPU.");
     const platform = shippingPlatform();
     const positive = (name: string, fallback: number): number => {
         const value = flagNumber(flags, name, "shipping-demos") ?? fallback;

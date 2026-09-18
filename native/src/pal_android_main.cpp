@@ -3,11 +3,13 @@
 #include <jni.h>
 #include <SDL3/SDL.h>
 #include <cstdlib>
+#include <exception>
 #include <iostream>
 #include <mutex>
 #include <streambuf>
 #include <string>
 #include "pal_generated_entry.hpp"
+#include "pal_gpu_backend.hpp"
 
 #define main bblite_generated_main
 #include BBLITE_ANDROID_ENTRY
@@ -68,10 +70,18 @@ extern "C" __attribute__((visibility("default"))) int SDL_main(int argc, char** 
     AndroidLog log;
     auto* output = std::cout.rdbuf(&log);
     auto* errors = std::cerr.rdbuf(&log);
-    const int result = bbl::pal::run_generated_entry(bblite_generated_main, argc, argv);
+    const char* run_id = std::getenv("BBLITE_RUN_ID");
+    int result = 1;
+    try {
+        const bool dawn = bbl::pal::use_dawn_backend();
+        __android_log_print(ANDROID_LOG_INFO, "bblite", "GPU backend: %s run=%s",
+            dawn ? "dawn" : "sdl_gpu", run_id ? run_id : "interactive");
+        result = bbl::pal::run_generated_entry(bblite_generated_main, argc, argv);
+    } catch (const std::exception& error) {
+        std::cerr << "Babylon Lite native error: " << error.what() << '\n';
+    }
     std::cout.rdbuf(output);
     std::cerr.rdbuf(errors);
-    const char* run_id = std::getenv("BBLITE_RUN_ID");
     __android_log_print(ANDROID_LOG_INFO, "bblite", "Native exit: %d run=%s", result, run_id ? run_id : "interactive");
     return result;
 }

@@ -12890,11 +12890,12 @@ public:
             height = state.surface_height;
             recreate_dawn_scene_targets(state, scene, width, height);
         }
+        if (state.window && !state.surface) return FramePreparation::skip;
 #if BBLITE_OFFSCREEN_SURFACES
         offscreen_image = nullptr;
         if (offscreen) {
             offscreen_image = offscreen_images.acquire(width, height, *offscreen, [&](auto w, auto h) {
-                return std::make_shared<DawnOffscreenImage>(state.device, w, h);
+                return std::make_shared<DawnOffscreenImage>(state.device, state.surface_format, w, h);
             });
             if (!offscreen_image) { frame_->yield_when_skipped = true; return FramePreparation::skip; }
         }
@@ -14188,24 +14189,16 @@ public:
 #if BBLITE_OFFSCREEN_SURFACES
         [[maybe_unused]] auto& offscreen_image = frame_->offscreen_image;
 #endif
-        surface_texture = WGPU_SURFACE_TEXTURE_INIT;
-
 #if BBLITE_OFFSCREEN_SURFACES
         if (offscreen_image) {
+            surface_texture = WGPU_SURFACE_TEXTURE_INIT;
             surface_texture.texture = offscreen_image->texture;
             wgpuTextureAddRef(surface_texture.texture);
             surface = surface_texture.texture;
         } else {
 #endif
-        wgpuSurfaceGetCurrentTexture(state.surface, &surface_texture);
+        if (!acquire_dawn_surface_texture(state, surface_texture)) return false;
         surface = surface_texture.texture;
-        if (
-            surface_texture.status !=
-                WGPUSurfaceGetCurrentTextureStatus_SuccessOptimal &&
-            surface_texture.status !=
-                WGPUSurfaceGetCurrentTextureStatus_SuccessSuboptimal) {
-            dawn_error("wgpuSurfaceGetCurrentTexture failed.");
-        }
 #if BBLITE_OFFSCREEN_SURFACES
         }
 #endif

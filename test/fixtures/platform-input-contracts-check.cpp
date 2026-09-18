@@ -27,6 +27,7 @@ bool handle_ui_rml_event(int&, SDL_Event&) { calls.push_back("ui"); return !cons
 void dispatch_surface_camera_pointer(Engine&, const SDL_Event&, int&, int&, int&) { calls.push_back("camera"); }
 struct InputState {
     SDL_Window* window;
+    bool surface = true;
     unsigned surface_width = 640, surface_height = 480;
     struct { SDL_Window* window; } gpu{window};
 };

@@ -471,7 +471,7 @@ int run_window_application(WorkerEntry initialize, EngineOptions options) {
             (frame_options.test_pass ? SDL_WINDOW_NOT_FOCUSABLE : 0), options)), &SDL_DestroyWindow);
         if (!window) throw std::runtime_error(SDL_GetError());
         std::shared_ptr<WindowPresenter> presenter;
-        const bool dawn = environment_variable("BBLITE_GPU_BACKEND") == "dawn";
+        const bool dawn = use_dawn_backend();
 #if BBLITE_HAS_DAWN
         if (dawn) presenter = create_window_dawn_presenter(window.get());
 #endif

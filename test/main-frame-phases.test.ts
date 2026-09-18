@@ -18,6 +18,9 @@ test("main renderers acquire surfaces, restart changed scenes and grow task reso
         "inline bool registered_scene_set_changed(",
         "inline bool request_renderer_restart_if_scene_set_changed(",
     ].map(signature => cppFunction(shared, signature)).join("\n"));
+    writeFileSync(join(directory, "dawn-acquire.hpp"), cppFunction(
+        readFileSync("native/src/pal_dawn_shared.hpp", "utf8"), "inline bool acquire_dawn_surface_texture")
+        .replace("DawnDevice& state", "DawnState& state"));
     for (const [backend, file] of [["Sdl", "pal_sdl_gpu.cpp"], ["Dawn", "pal_dawn.cpp"]] as const) {
         const source = readFileSync(`native/src/${file}`, "utf8");
         writeFileSync(join(directory, `${backend}Scene.hpp`), [

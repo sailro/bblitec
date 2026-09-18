@@ -236,6 +236,7 @@ public:
             width = state.surface_width;
             height = state.surface_height;
         }
+        if (!state.surface) return FramePreparation::skip;
         input_replay.dispatch(frame, state.window, engine);
         return FramePreparation::ready;
     }
@@ -266,13 +267,11 @@ public:
         return FramePreparation::ready;
     }
     bool acquire() {
-        surface_texture = {};
-        wgpuSurfaceGetCurrentTexture(state.surface, &surface_texture);
-        surface = surface_texture.texture;
-        if (!surface_texture.texture) {
+        if (!acquire_dawn_surface_texture(state, surface_texture)) {
             discard_frame();
             return false;
         }
+        surface = surface_texture.texture;
         surface_view = create_dawn_texture_view(surface_texture.texture, nullptr);
         return true;
     }
