@@ -1,18 +1,22 @@
 import { valueForKind, withNativeMetadata } from "./types.js";
-import { EmissionSet, EmissionMap, EmissionWeakMap } from "./emission-transaction.js";
+import {
+    EmissionSet,
+    EmissionMap,
+    EmissionWeakMap,
+} from "./emission-transaction.js";
 import type { LoweringServices } from "./lowering-services.js";
 import ts from "typescript";
 import { cppIdentifierPattern } from "../cpp-literals.js";
-import type {
-    DataStructField,
-    DataType,
-} from "./data-types.js";
+import type { DataStructField, DataType } from "./data-types.js";
 import { passesByReference } from "./data-types.js";
 import type { Value } from "./types.js";
 import { sameCompiledValue } from "./types.js";
 import { parameterIsReadOnly } from "./user-functions.js";
 import { firstReturn } from "./loop-control.js";
-import { FunctionSpecializations, functionDependencies } from "./function-specializations.js";
+import {
+    FunctionSpecializations,
+    functionDependencies,
+} from "./function-specializations.js";
 import { classInstanceProperties } from "./class-properties.js";
 
 const successfulConstructorResourceKinds = new EmissionSet([
@@ -29,15 +33,16 @@ interface StoredClassField extends DataStructField {
 }
 
 /** A class body's own instance property declarations, named plainly. */
-type InstanceProperty = (ts.PropertyDeclaration | ts.ParameterDeclaration) & { name: ts.MemberName };
+type InstanceProperty = (ts.PropertyDeclaration | ts.ParameterDeclaration) & {
+    name: ts.MemberName;
+};
 
 /** The instance property declarations a class body writes, in order. */
 function instanceProperties(
     declaration: ts.ClassDeclaration,
 ): InstanceProperty[] {
     return classInstanceProperties(declaration).filter(
-        (member): member is InstanceProperty =>
-            ts.isMemberName(member.name),
+        (member): member is InstanceProperty => ts.isMemberName(member.name),
     );
 }
 
@@ -65,46 +70,46 @@ function accessorsOf(declaration: ts.ClassDeclaration): {
     return { getters, setters };
 }
 
-interface ClassLoweringContext
-    extends Pick<LoweringServices,
-        | "checker"
-        | "options"
-        | "compileAsyncCall"
-        | "dataTypes"
-        | "nativeFunctions"
-        | "functionEmissionScope"
-        | "canShareFunctionBody"
-        | "compileSharedMethod"
-        | "registerNativeBinding"
-        | "lookupIdentifierValue"
-        | "compileValue"
-        | "emitStatement"
-        | "bindParameterValue"
-        | "bindClassParameterValue"
-        | "compileClassParameterValue"
-        | "bindClassField"
-        | "bindNullableClassField"
-        | "bindUninitializedClassDataField"
-        | "bindOptionalResourceValue"
-        | "pushScope"
-        | "popScope"
-        | "allocateUserFunctionPrefix"
-        | "allocateTemporaryCppName"
-        | "reachJsData"
-        | "emit"
-        | "increaseIndent"
-        | "decreaseIndent"
-        | "beginNativeFunctionBody"
-        | "endNativeFunctionBody"
-        | "dataValue"
-        | "compileForDataSink"
-        | "assignOptionalResourceValue"
-        | "defineThis"
-        | "activeThis"
-        | "registerClassInstance"
-        | "unwrap"
-        | "fail"
-    > {}
+interface ClassLoweringContext extends Pick<
+    LoweringServices,
+    | "checker"
+    | "options"
+    | "compileAsyncCall"
+    | "dataTypes"
+    | "nativeFunctions"
+    | "functionEmissionScope"
+    | "canShareFunctionBody"
+    | "compileSharedMethod"
+    | "registerNativeBinding"
+    | "lookupIdentifierValue"
+    | "compileValue"
+    | "emitStatement"
+    | "bindParameterValue"
+    | "bindClassParameterValue"
+    | "compileClassParameterValue"
+    | "bindClassField"
+    | "bindNullableClassField"
+    | "bindUninitializedClassDataField"
+    | "bindOptionalResourceValue"
+    | "pushScope"
+    | "popScope"
+    | "allocateUserFunctionPrefix"
+    | "allocateTemporaryCppName"
+    | "reachJsData"
+    | "emit"
+    | "increaseIndent"
+    | "decreaseIndent"
+    | "beginNativeFunctionBody"
+    | "endNativeFunctionBody"
+    | "dataValue"
+    | "compileForDataSink"
+    | "assignOptionalResourceValue"
+    | "defineThis"
+    | "activeThis"
+    | "registerClassInstance"
+    | "unwrap"
+    | "fail"
+> {}
 
 /**
  * Lowers the reached class subset: a class is a compile-time record of
@@ -128,7 +133,8 @@ interface ClassLoweringContext
  * rather than a silently different program.
  */
 export class ClassLowerer {
-    private readonly emittedRecursiveMethods = new FunctionSpecializations<string>();
+    private readonly emittedRecursiveMethods =
+        new FunctionSpecializations<string>();
     private readonly recursiveMethods = new EmissionMap<
         ts.MethodDeclaration,
         boolean
@@ -154,9 +160,7 @@ export class ClassLowerer {
         }
     >();
 
-    public constructor(
-        private readonly context: ClassLoweringContext,
-    ) {}
+    public constructor(private readonly context: ClassLoweringContext) {}
 
     /**
      * Resolves the class declaration a `new` expression constructs, or
@@ -165,24 +169,18 @@ export class ClassLowerer {
     public resolveClass(
         expression: ts.NewExpression,
     ): ts.ClassDeclaration | undefined {
-        const callee = this.context.unwrap(
-            expression.expression,
-        );
+        const callee = this.context.unwrap(expression.expression);
         if (!ts.isIdentifier(callee)) {
             return undefined;
         }
-        const symbol =
-            this.context.checker.getSymbolAtLocation(callee);
+        const symbol = this.context.checker.getSymbolAtLocation(callee);
         const target =
-            symbol &&
-            (symbol.flags & ts.SymbolFlags.Alias) !== 0
-                ? this.context.checker.getAliasedSymbol(
-                      symbol,
-                  )
+            symbol && (symbol.flags & ts.SymbolFlags.Alias) !== 0
+                ? this.context.checker.getAliasedSymbol(symbol)
                 : symbol;
-        const declaration = (
-            target?.declarations ?? []
-        ).find(ts.isClassDeclaration);
+        const declaration = (target?.declarations ?? []).find(
+            ts.isClassDeclaration,
+        );
         return declaration;
     }
 
@@ -234,10 +232,8 @@ export class ClassLowerer {
                 member.name.text === access.name.text &&
                 member.initializer !== undefined &&
                 (ts.getCombinedModifierFlags(member) &
-                    (ts.ModifierFlags.Static |
-                        ts.ModifierFlags.Readonly)) ===
-                    (ts.ModifierFlags.Static |
-                        ts.ModifierFlags.Readonly),
+                    (ts.ModifierFlags.Static | ts.ModifierFlags.Readonly)) ===
+                    (ts.ModifierFlags.Static | ts.ModifierFlags.Readonly),
         );
     }
 
@@ -258,7 +254,7 @@ export class ClassLowerer {
         if (statements.length !== 1 || !ts.isTryStatement(statements[0]!)) {
             return undefined;
         }
-        const tryStatement = statements[0]!;
+        const tryStatement = statements[0];
         if (!tryStatement.catchClause || tryStatement.finallyBlock) {
             return undefined;
         }
@@ -310,7 +306,9 @@ export class ClassLowerer {
             return undefined;
         }
         const fieldByParameter = new EmissionMap<string, string>();
-        const parameterNames = constructorDeclaration.parameters.map(parameter => parameter.name);
+        const parameterNames = constructorDeclaration.parameters.map(
+            (parameter) => parameter.name,
+        );
         if (!parameterNames.every(ts.isIdentifier)) return undefined;
         const constructorFieldWrites = new EmissionSet<ts.Statement>();
         for (const statement of constructorDeclaration.body?.statements ?? []) {
@@ -331,36 +329,25 @@ export class ClassLowerer {
             );
             constructorFieldWrites.add(statement);
         }
-        if (
-            parameterNames.some(
-                (name) =>
-                    !fieldByParameter.has(
-                        name.text,
-                    ),
-            )
-        ) {
+        if (parameterNames.some((name) => !fieldByParameter.has(name.text))) {
             return undefined;
         }
 
-        this.context.pushScope(
-            this.context.allocateUserFunctionPrefix(),
-        );
+        this.context.pushScope(this.context.allocateUserFunctionPrefix());
         try {
             this.bindParameters(method, call.arguments, undefined, true);
             const instance = this.construct(fallback!, owner);
             const fields = instance.recordProperties!;
-            const targets = parameterNames.map(
-                (parameter) => {
-                    const field = fieldByParameter.get(
-                        parameter.text,
-                    )!;
-                    return fields[field] ??
-                        this.context.fail(
-                            parameter,
-                            `Fallback construction did not bind field '${field}' (bound: ${Object.keys(fields).join(", ")}).`,
-                        );
-                },
-            );
+            const targets = parameterNames.map((parameter) => {
+                const field = fieldByParameter.get(parameter.text)!;
+                return (
+                    fields[field] ??
+                    this.context.fail(
+                        parameter,
+                        `Fallback construction did not bind field '${field}' (bound: ${Object.keys(fields).join(", ")}).`,
+                    )
+                );
+            });
             if (targets.some((target) => !target.optionalStorageCpp)) {
                 this.context.fail(
                     fallback!,
@@ -369,9 +356,7 @@ export class ClassLowerer {
             }
             this.context.emit("try {");
             this.context.increaseIndent();
-            this.context.pushScope(
-                this.context.allocateUserFunctionPrefix(),
-            );
+            this.context.pushScope(this.context.allocateUserFunctionPrefix());
             try {
                 for (const statement of tryStatement.tryBlock.statements.slice(
                     0,
@@ -407,28 +392,23 @@ export class ClassLowerer {
                 const previousThis = this.context.activeThis();
                 this.context.defineThis(instance);
                 try {
-                    parameterNames.forEach(
-                        (parameter, index) => {
-                            const value = values[index]!;
-                            const target = targets[index]!;
-                            const resourceValue =
-                                successfulConstructorResourceKinds.has(
-                                    value.kind,
-                                );
-                            this.context.bindParameterValue(
-                                parameter,
-                                resourceValue
-                                    ? {
-                                          ...value,
-                                          truthinessCpp:
-                                              `${target.optionalStorageCpp}.has_value()`,
-                                      }
-                                    : value,
-                            );
-                        },
-                    );
-                    for (const statement of
-                        constructorDeclaration.body?.statements ?? []) {
+                    parameterNames.forEach((parameter, index) => {
+                        const value = values[index]!;
+                        const target = targets[index]!;
+                        const resourceValue =
+                            successfulConstructorResourceKinds.has(value.kind);
+                        this.context.bindParameterValue(
+                            parameter,
+                            resourceValue
+                                ? {
+                                      ...value,
+                                      truthinessCpp: `${target.optionalStorageCpp}.has_value()`,
+                                  }
+                                : value,
+                        );
+                    });
+                    for (const statement of constructorDeclaration.body
+                        ?.statements ?? []) {
                         if (!constructorFieldWrites.has(statement)) {
                             this.context.emitStatement(statement);
                         }
@@ -442,7 +422,9 @@ export class ClassLowerer {
                 this.context.decreaseIndent();
             }
             this.context.emit("} catch (...) {");
-            this.context.emit("    // The prebuilt all-null instance is the source fallback.");
+            this.context.emit(
+                "    // The prebuilt all-null instance is the source fallback.",
+            );
             this.context.emit("}");
             return instance;
         } finally {
@@ -460,11 +442,13 @@ export class ClassLowerer {
         declaration: ts.ClassDeclaration,
     ): Value {
         this.rejectUnsupportedMembers(declaration);
-        const constructorDeclaration =
-            declaration.members.find(
-                ts.isConstructorDeclaration,
-            );
-        if (!constructorDeclaration && (expression.arguments?.length ?? 0) > 0) {
+        const constructorDeclaration = declaration.members.find(
+            ts.isConstructorDeclaration,
+        );
+        if (
+            !constructorDeclaration &&
+            (expression.arguments?.length ?? 0) > 0
+        ) {
             this.context.fail(
                 expression,
                 `Class '${declaration.name?.text ?? "?"}' has no constructor accepting arguments.`,
@@ -483,13 +467,11 @@ export class ClassLowerer {
             : [];
         const fields: Record<string, Value> = {};
         const { getters, setters } = accessorsOf(declaration);
-        const instanceType =
-            this.context.checker.getTypeAtLocation(expression);
-        const instanceTypeArguments =
-            this.context.dataTypes.typeArgumentsOf(
-                declaration,
-                instanceType,
-            );
+        const instanceType = this.context.checker.getTypeAtLocation(expression);
+        const instanceTypeArguments = this.context.dataTypes.typeArgumentsOf(
+            declaration,
+            instanceType,
+        );
         const instance: Value = {
             kind: "record",
             cpp: "",
@@ -521,10 +503,7 @@ export class ClassLowerer {
             instance.cpp = cpp;
             instance.dataType = structType;
             for (const field of layout) {
-                fields[field.source] = this.storedFieldValue(
-                    cpp,
-                    field,
-                );
+                fields[field.source] = this.storedFieldValue(cpp, field);
             }
             // What the layout left out has to come from somewhere every
             // instance shares. The one shape that can: a constructor
@@ -554,14 +533,9 @@ export class ClassLowerer {
         // Constructor bodies may call another method on `this`. Make the
         // declaration discoverable as soon as the instance record exists,
         // rather than only after construction has already returned.
-        this.context.registerClassInstance(
-            instance,
-            declaration,
-        );
+        this.context.registerClassInstance(instance, declaration);
 
-        this.context.pushScope(
-            this.context.allocateUserFunctionPrefix(),
-        );
+        this.context.pushScope(this.context.allocateUserFunctionPrefix());
         const previousThis = this.context.activeThis();
         this.context.defineThis(instance);
         try {
@@ -586,10 +560,9 @@ export class ClassLowerer {
                     continue;
                 }
                 if (!member.initializer) {
-                    const nullable =
-                        this.context.bindNullableClassField(
-                            member.name,
-                        );
+                    const nullable = this.context.bindNullableClassField(
+                        member.name,
+                    );
                     if (nullable) {
                         fields[member.name.text] = nullable;
                     } else {
@@ -605,10 +578,9 @@ export class ClassLowerer {
                             fields[member.name.text] = data;
                             continue;
                         }
-                        const declared =
-                            this.context.checker.getTypeAtLocation(
-                                member.name,
-                            );
+                        const declared = this.context.checker.getTypeAtLocation(
+                            member.name,
+                        );
                         const members =
                             (declared.flags & ts.TypeFlags.Union) !== 0
                                 ? (declared as ts.UnionType).types
@@ -658,7 +630,8 @@ export class ClassLowerer {
                                   recordScopes:
                                       bound.callbackRecordOwner.recordScopes,
                                   recordTypeArguments:
-                                      bound.callbackRecordOwner.recordTypeArguments,
+                                      bound.callbackRecordOwner
+                                          .recordTypeArguments,
                               }
                             : {}),
                     };
@@ -673,8 +646,8 @@ export class ClassLowerer {
                     false,
                     evaluatedArguments,
                 );
-                for (const statement of constructorDeclaration
-                    .body?.statements ?? []) {
+                for (const statement of constructorDeclaration.body
+                    ?.statements ?? []) {
                     this.context.emitStatement(statement);
                 }
             }
@@ -737,10 +710,7 @@ export class ClassLowerer {
         declaration: ts.ClassDeclaration,
         constructorDeclaration: ts.ConstructorDeclaration,
         layout: readonly StoredClassField[],
-    ): ReadonlyMap<
-        string,
-        { index: number; assignment: ts.BinaryExpression }
-    > {
+    ): ReadonlyMap<string, { index: number; assignment: ts.BinaryExpression }> {
         const hoisted = new EmissionMap<
             string,
             { index: number; assignment: ts.BinaryExpression }
@@ -753,9 +723,7 @@ export class ClassLowerer {
         });
         const stored = new EmissionSet(layout.map((field) => field.source));
         const declared = new EmissionSet(
-            instanceProperties(declaration).map(
-                (member) => member.name.text,
-            ),
+            instanceProperties(declaration).map((member) => member.name.text),
         );
         for (const statement of constructorDeclaration.body?.statements ?? []) {
             if (
@@ -799,7 +767,9 @@ export class ClassLowerer {
         value.nativeLvalue = true;
         value.borrowedData = true;
         value.classStoredField = true;
-        value.nativeCaptures = [this.context.registerNativeBinding(instanceCpp, false, true)];
+        value.nativeCaptures = [
+            this.context.registerNativeBinding(instanceCpp, false, true),
+        ];
         return value;
     }
 
@@ -914,9 +884,13 @@ export class ClassLowerer {
         // A computed receiver's identity and presence spellings follow the
         // binding, or an optional call would spell the call a second time;
         // a storage read is stable and keeps its own.
-        const receiver = instanceCpp === value.cpp || value.nativeLvalue
-            ? value
-            : withNativeMetadata(this.context.dataValue(instanceCpp, value.dataType), value);
+        const receiver =
+            instanceCpp === value.cpp || value.nativeLvalue
+                ? value
+                : withNativeMetadata(
+                      this.context.dataValue(instanceCpp, value.dataType),
+                      value,
+                  );
         return valueForKind("record", {
             ...receiver,
             cpp: instanceCpp,
@@ -982,8 +956,17 @@ export class ClassLowerer {
                 `Reached method '${methodName}' requires a body.`,
             );
         }
-        if (this.context.options.workers && method.modifiers?.some(modifier => modifier.kind === ts.SyntaxKind.AsyncKeyword)) {
-            const arguments_ = this.compileClassArguments(method, call.arguments, "method");
+        if (
+            this.context.options.workers &&
+            method.modifiers?.some(
+                (modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword,
+            )
+        ) {
+            const arguments_ = this.compileClassArguments(
+                method,
+                call.arguments,
+                "method",
+            );
             const previousThis = this.context.activeThis();
             this.context.defineThis(instance);
             try {
@@ -1011,53 +994,59 @@ export class ClassLowerer {
         // into the plain-data model emits once as a namespace function
         // over field reference channels; anything that does not cleanly
         // qualify keeps the per-call-site inline lowering below.
-        const nativeMethod =
-            this.context.nativeFunctions.tryCompileMethodCall(
-                call,
-                method,
-                declaration,
-                instance,
-            );
+        const nativeMethod = this.context.nativeFunctions.tryCompileMethodCall(
+            call,
+            method,
+            declaration,
+            instance,
+        );
         if (nativeMethod) {
             return nativeMethod;
         }
         const signature =
-            this.context.checker.getSignatureFromDeclaration(
-                method,
-            );
+            this.context.checker.getSignatureFromDeclaration(method);
         const checkerReturn = signature
-            ? this.context.checker.getReturnTypeOfSignature(
-                  signature,
-              )
+            ? this.context.checker.getReturnTypeOfSignature(signature)
             : undefined;
         const effectiveReturn =
             checkerReturn &&
             method.modifiers?.some(
-                (modifier) =>
-                    modifier.kind === ts.SyntaxKind.AsyncKeyword,
+                (modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword,
             )
-                ? (this.context.checker.getAwaitedType(
-                      checkerReturn,
-                  ) ?? checkerReturn)
+                ? (this.context.checker.getAwaitedType(checkerReturn) ??
+                  checkerReturn)
                 : checkerReturn;
         const returnsVoid =
             !effectiveReturn ||
             (effectiveReturn.flags & ts.TypeFlags.Void) !== 0;
-        const sharedBody = method.parameters.every(parameter => {
-            const type = this.context.dataTypes.fromTsType(this.context.checker.getTypeAtLocation(parameter), parameter);
-            return ts.isIdentifier(parameter.name) && !parameter.dotDotDotToken &&
-                (!type || !this.context.dataTypes.carriesFunction(type));
-        }) && this.context.canShareFunctionBody(method.body);
+        const sharedBody =
+            method.parameters.every((parameter) => {
+                const type = this.context.dataTypes.fromTsType(
+                    this.context.checker.getTypeAtLocation(parameter),
+                    parameter,
+                );
+                return (
+                    ts.isIdentifier(parameter.name) &&
+                    !parameter.dotDotDotToken &&
+                    (!type || !this.context.dataTypes.carriesFunction(type))
+                );
+            }) && this.context.canShareFunctionBody(method.body);
         const mappedReturnType = returnsVoid
             ? undefined
-            : sharedBody ? this.context.dataTypes.fromSharedReturnType(effectiveReturn, method)
+            : sharedBody
+              ? this.context.dataTypes.fromSharedReturnType(
+                    effectiveReturn,
+                    method,
+                )
               : this.context.dataTypes.fromTsType(effectiveReturn, method);
         const returnType =
             mappedReturnType?.kind === "struct"
                 ? this.context.dataTypes.markStoredObjectReferences(
                       mappedReturnType,
                   )
-                : mappedReturnType ? this.context.dataTypes.ownReturnedArray(mappedReturnType) : undefined;
+                : mappedReturnType
+                  ? this.context.dataTypes.ownReturnedArray(mappedReturnType)
+                  : undefined;
         if (!returnsVoid && !returnType) {
             const finalStatement = method.body.statements.at(-1);
             if (
@@ -1073,14 +1062,13 @@ export class ClassLowerer {
             const leading = method.body.statements.slice(0, -1);
             const earlierValueReturn = firstReturn(leading, { valued: true });
             if (earlierValueReturn) {
-                const nullableRecord =
-                    this.compileGuardedNullableRecordMethod(
-                        instance,
-                        method,
-                        call,
-                        finalStatement,
-                        leading,
-                    );
+                const nullableRecord = this.compileGuardedNullableRecordMethod(
+                    instance,
+                    method,
+                    call,
+                    finalStatement,
+                    leading,
+                );
                 if (nullableRecord) return nullableRecord;
                 this.context.fail(
                     earlierValueReturn,
@@ -1092,9 +1080,7 @@ export class ClassLowerer {
                 call.arguments,
                 "method",
             );
-            this.context.pushScope(
-                this.context.allocateUserFunctionPrefix(),
-            );
+            this.context.pushScope(this.context.allocateUserFunctionPrefix());
             const previousThis = this.context.activeThis();
             this.context.defineThis(instance);
             try {
@@ -1121,9 +1107,18 @@ export class ClassLowerer {
             }
         }
         if (this.methodRecurses(declaration, method)) {
-            return this.compileRecursiveMethod(instance, methodName, call, method, returnType);
+            return this.compileRecursiveMethod(
+                instance,
+                methodName,
+                call,
+                method,
+                returnType,
+            );
         }
-        const shared = sharedBody && (!returnType || !this.context.dataTypes.carriesFunction(returnType));
+        const shared =
+            sharedBody &&
+            (!returnType ||
+                !this.context.dataTypes.carriesFunction(returnType));
         const argumentValues = this.compileClassArguments(
             method,
             call.arguments,
@@ -1133,15 +1128,17 @@ export class ClassLowerer {
             const previousThis = this.context.activeThis();
             this.context.defineThis(instance);
             try {
-                const result = this.context.compileSharedMethod(method, call, argumentValues);
+                const result = this.context.compileSharedMethod(
+                    method,
+                    call,
+                    argumentValues,
+                );
                 if (result) return result;
             } finally {
                 this.context.defineThis(previousThis);
             }
         }
-        this.context.pushScope(
-            this.context.allocateUserFunctionPrefix(),
-        );
+        this.context.pushScope(this.context.allocateUserFunctionPrefix());
         const previousThis = this.context.activeThis();
         this.context.defineThis(instance);
         try {
@@ -1161,9 +1158,7 @@ export class ClassLowerer {
                     : `[[maybe_unused]] const auto ${result} = [&]() -> ${this.context.dataTypes.cppType(returnType!)} {`,
             );
             this.context.increaseIndent();
-            this.context.beginNativeFunctionBody(
-                returnType,
-            );
+            this.context.beginNativeFunctionBody(returnType);
             try {
                 for (const statement of method.body.statements) {
                     this.context.emitStatement(statement);
@@ -1175,10 +1170,7 @@ export class ClassLowerer {
             this.context.emit("}();");
             return result
                 ? {
-                      ...this.context.dataValue(
-                          result,
-                          returnType!,
-                      ),
+                      ...this.context.dataValue(result, returnType!),
                       requiresExplicitDiscard: true,
                   }
                 : { kind: "void", cpp: "" };
@@ -1203,24 +1195,14 @@ export class ClassLowerer {
         }
         const argumentValue =
             evaluatedArgument ??
-            this.compileClassArguments(
-                setter,
-                [value],
-                "setter",
-            )[0]!;
-        this.context.pushScope(
-            this.context.allocateUserFunctionPrefix(),
-        );
+            this.compileClassArguments(setter, [value], "setter")[0]!;
+        this.context.pushScope(this.context.allocateUserFunctionPrefix());
         const previousThis = this.context.activeThis();
         this.context.defineThis(instance);
         try {
-            this.bindParameters(
-                setter,
-                [value],
-                undefined,
-                false,
-                [argumentValue],
-            );
+            this.bindParameters(setter, [value], undefined, false, [
+                argumentValue,
+            ]);
             this.context.emit("[&]() -> void {");
             this.context.increaseIndent();
             this.context.beginNativeFunctionBody(undefined);
@@ -1248,10 +1230,7 @@ export class ClassLowerer {
         returnType: DataType | undefined,
     ): Value {
         const parameters = method.parameters.map((parameter) => {
-            if (
-                !ts.isIdentifier(parameter.name) ||
-                parameter.dotDotDotToken
-            ) {
+            if (!ts.isIdentifier(parameter.name) || parameter.dotDotDotToken) {
                 this.context.fail(
                     parameter,
                     `Recursive method '${methodName}' requires non-rest identifier parameters.`,
@@ -1272,21 +1251,28 @@ export class ClassLowerer {
             }
             return { declaration: parameter, identifier: parameter.name, type };
         });
-        if (
-            returnType &&
-            this.context.dataTypes.carriesHandle(returnType)
-        ) {
+        if (returnType && this.context.dataTypes.carriesHandle(returnType)) {
             this.context.fail(
                 method,
                 `Recursive method '${methodName}' must return plain data or void.`,
             );
         }
 
-        const specialization = this.emittedRecursiveMethods.key(this.context.functionEmissionScope(), [
-            instance, functionDependencies(this.context, [method]),
-        ]);
-        const previous = this.emittedRecursiveMethods.get(method, specialization);
-        if (previous) return this.compileRecursiveInvocation(call, previous, parameters, returnType);
+        const specialization = this.emittedRecursiveMethods.key(
+            this.context.functionEmissionScope(),
+            [instance, functionDependencies(this.context, [method])],
+        );
+        const previous = this.emittedRecursiveMethods.get(
+            method,
+            specialization,
+        );
+        if (previous)
+            return this.compileRecursiveInvocation(
+                call,
+                previous,
+                parameters,
+                returnType,
+            );
         const prefix = this.context.allocateUserFunctionPrefix();
         const cppName = `${prefix}recursive_method`;
         const self = `${prefix}recursive_self`;
@@ -1301,10 +1287,7 @@ export class ClassLowerer {
                     method,
                     identifier,
                 );
-                const typeCpp = passesByReference(
-                    this.context.dataTypes,
-                    type,
-                )
+                const typeCpp = passesByReference(this.context.dataTypes, type)
                     ? `${readOnly ? "const " : ""}${cppType}&`
                     : cppType;
                 return {
@@ -1333,18 +1316,10 @@ export class ClassLowerer {
         this.context.beginNativeFunctionBody(returnType);
         try {
             for (const parameter of cppParameters) {
-                this.context.bindParameterValue(
-                    parameter.identifier,
-                    {
-                        ...this.context.dataValue(
-                            parameter.name,
-                            parameter.type,
-                        ),
-                        ...(parameter.readOnly
-                            ? { readOnly: true as const }
-                            : {}),
-                    },
-                );
+                this.context.bindParameterValue(parameter.identifier, {
+                    ...this.context.dataValue(parameter.name, parameter.type),
+                    ...(parameter.readOnly ? { readOnly: true as const } : {}),
+                });
             }
             for (const statement of method.body!.statements) {
                 this.context.emitStatement(statement);
@@ -1357,7 +1332,11 @@ export class ClassLowerer {
             this.context.decreaseIndent();
         }
         this.context.emit("});");
-        this.emittedRecursiveMethods.set(method, specialization, `${cppName}.template call<0>`);
+        this.emittedRecursiveMethods.set(
+            method,
+            specialization,
+            `${cppName}.template call<0>`,
+        );
         return this.compileRecursiveInvocation(
             call,
             `${cppName}.template call<0>`,
@@ -1381,22 +1360,16 @@ export class ClassLowerer {
                 "Recursive method received too many arguments.",
             );
         }
-        const argumentsCpp = parameters.map(
-            ({ declaration, type }, index) => {
-                const argument =
-                    call.arguments[index] ?? declaration.initializer;
-                if (!argument) {
-                    this.context.fail(
-                        call,
-                        `Recursive method argument ${index + 1} is required.`,
-                    );
-                }
-                return this.context.compileForDataSink(
-                    argument,
-                    type,
+        const argumentsCpp = parameters.map(({ declaration, type }, index) => {
+            const argument = call.arguments[index] ?? declaration.initializer;
+            if (!argument) {
+                this.context.fail(
+                    call,
+                    `Recursive method argument ${index + 1} is required.`,
                 );
-            },
-        );
+            }
+            return this.context.compileForDataSink(argument, type);
+        });
         const invocation = `${cppName}(${argumentsCpp.join(", ")})`;
         if (!returnType) {
             return { kind: "void", cpp: invocation };
@@ -1423,7 +1396,9 @@ export class ClassLowerer {
                 methods.set(member.name.text, member);
             }
         }
-        const callees = (candidate: ts.MethodDeclaration): ts.MethodDeclaration[] => {
+        const callees = (
+            candidate: ts.MethodDeclaration,
+        ): ts.MethodDeclaration[] => {
             const found = new EmissionSet<ts.MethodDeclaration>();
             const visit = (node: ts.Node): void => {
                 if (node !== candidate && ts.isFunctionLike(node)) return;
@@ -1446,8 +1421,7 @@ export class ClassLowerer {
             if (explored.has(candidate)) return false;
             explored.add(candidate);
             return callees(candidate).some(
-                (called) =>
-                    called === method || reachesStart(called),
+                (called) => called === method || reachesStart(called),
             );
         };
         const recursive = reachesStart(method);
@@ -1479,8 +1453,8 @@ export class ClassLowerer {
         if (
             guardedStatements.length !== 1 ||
             !ts.isReturnStatement(guardedStatements[0]!) ||
-            !guardedStatements[0]!.expression ||
-            this.context.unwrap(guardedStatements[0]!.expression).kind !==
+            !guardedStatements[0].expression ||
+            this.context.unwrap(guardedStatements[0].expression).kind !==
                 ts.SyntaxKind.NullKeyword
         ) {
             return undefined;
@@ -1520,9 +1494,7 @@ export class ClassLowerer {
             call.arguments,
             "method",
         );
-        this.context.pushScope(
-            this.context.allocateUserFunctionPrefix(),
-        );
+        this.context.pushScope(this.context.allocateUserFunctionPrefix());
         const previousThis = this.context.activeThis();
         this.context.defineThis(instance);
         try {
@@ -1555,9 +1527,7 @@ export class ClassLowerer {
             }
             this.context.emit(`if (!(${condition.cpp})) {`);
             this.context.increaseIndent();
-            this.context.pushScope(
-                this.context.allocateUserFunctionPrefix(),
-            );
+            this.context.pushScope(this.context.allocateUserFunctionPrefix());
             try {
                 for (const statement of leading.slice(1)) {
                     this.context.emitStatement(statement);
@@ -1570,9 +1540,7 @@ export class ClassLowerer {
                     );
                 }
                 for (const descriptor of descriptors) {
-                    const value = success.recordProperties?.[
-                        descriptor.name
-                    ];
+                    const value = success.recordProperties?.[descriptor.name];
                     const output = properties[descriptor.name]!;
                     if (!value || value.kind !== output.kind) {
                         this.context.fail(
@@ -1662,22 +1630,17 @@ export class ClassLowerer {
                     "Class parameters must be plain identifiers.",
                 );
             }
-            const argument =
-                argumentList[index] ??
-                parameter.initializer;
+            const argument = argumentList[index] ?? parameter.initializer;
             const evaluatedArgument =
                 index < argumentList.length
                     ? evaluatedArguments?.[index]
                     : undefined;
             if (!argument) {
                 if (parameter.questionToken) {
-                    const parameterType =
-                        this.context.dataTypes.fromTsType(
-                            this.context.checker.getTypeAtLocation(
-                                parameter,
-                            ),
-                            parameter,
-                        );
+                    const parameterType = this.context.dataTypes.fromTsType(
+                        this.context.checker.getTypeAtLocation(parameter),
+                        parameter,
+                    );
                     if (parameterType?.kind === "optional") {
                         this.context.bindParameterValue(
                             parameter.name,
@@ -1700,10 +1663,10 @@ export class ClassLowerer {
                             ),
                         );
                     } else {
-                        this.context.bindParameterValue(
-                            parameter.name,
-                            { kind: "json-null", cpp: "" },
-                        );
+                        this.context.bindParameterValue(parameter.name, {
+                            kind: "json-null",
+                            cpp: "",
+                        });
                     }
                     if (
                         parameterProperties &&
@@ -1712,7 +1675,10 @@ export class ClassLowerer {
                             declaration,
                         )
                     ) {
-                        this.initializeParameterProperty(parameter.name, parameterProperties);
+                        this.initializeParameterProperty(
+                            parameter.name,
+                            parameterProperties,
+                        );
                     }
                     return;
                 }
@@ -1730,55 +1696,52 @@ export class ClassLowerer {
             const spreadUse =
                 parameterSymbol !== undefined &&
                 spreadParameters.has(parameterSymbol);
-            const staticRecord = evaluatedArgument?.kind === "record"
-                ? evaluatedArgument
-                : preserveStaticRecords || spreadUse
-                  ? this.context.compileValue(argument)
-                  : undefined;
+            const staticRecord =
+                evaluatedArgument?.kind === "record"
+                    ? evaluatedArgument
+                    : preserveStaticRecords || spreadUse
+                      ? this.context.compileValue(argument)
+                      : undefined;
             if (staticRecord?.kind === "record") {
-                this.context.bindParameterValue(
-                    parameter.name,
-                    staticRecord,
-                );
+                this.context.bindParameterValue(parameter.name, staticRecord);
             } else if (evaluatedArgument) {
                 this.context.bindParameterValue(
                     parameter.name,
                     evaluatedArgument,
                 );
             } else {
-                this.context.bindClassParameterValue(
-                    parameter.name,
-                    argument,
-                );
+                this.context.bindClassParameterValue(parameter.name, argument);
             }
             if (
                 parameterProperties &&
-                ts.isParameterPropertyDeclaration(
-                    parameter,
-                    declaration,
-                )
+                ts.isParameterPropertyDeclaration(parameter, declaration)
             ) {
-                this.initializeParameterProperty(parameter.name, parameterProperties);
+                this.initializeParameterProperty(
+                    parameter.name,
+                    parameterProperties,
+                );
             }
         });
     }
 
-    private initializeParameterProperty(name: ts.Identifier, properties: Record<string, Value>): void {
+    private initializeParameterProperty(
+        name: ts.Identifier,
+        properties: Record<string, Value>,
+    ): void {
         const stored = properties[name.text];
         if (stored?.classStoredField) {
-            this.context.emit(`${stored.cpp} = ${this.context.compileForDataSink(name, stored.dataType!)};`);
+            this.context.emit(
+                `${stored.cpp} = ${this.context.compileForDataSink(name, stored.dataType!)};`,
+            );
         } else {
             properties[name.text] = this.context.compileValue(name);
         }
     }
 
-    private rejectUnsupportedMembers(
-        declaration: ts.ClassDeclaration,
-    ): void {
+    private rejectUnsupportedMembers(declaration: ts.ClassDeclaration): void {
         if (
             declaration.heritageClauses?.some(
-                (clause) =>
-                    clause.token === ts.SyntaxKind.ExtendsKeyword,
+                (clause) => clause.token === ts.SyntaxKind.ExtendsKeyword,
             )
         ) {
             this.context.fail(
@@ -1789,9 +1752,9 @@ export class ClassLowerer {
         for (const member of declaration.members) {
             if (
                 !ts.isMethodDeclaration(member) &&
-                (ts.getCombinedModifierFlags(
-                    member as ts.Declaration,
-                ) & ts.ModifierFlags.Static) !== 0
+                (ts.getCombinedModifierFlags(member) &
+                    ts.ModifierFlags.Static) !==
+                    0
             ) {
                 if (
                     ts.isPropertyDeclaration(member) &&

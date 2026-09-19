@@ -40,7 +40,8 @@
 
 namespace bbl::pal {
 
-#if BBLITE_HAS_DAWN && (BBLITE_HAS_SPRITE_RENDERER || BBLITE_HAS_CANVAS_RENDERER || BBLITE_HAS_TEXT_RENDERER)
+#if BBLITE_HAS_DAWN &&                                                                             \
+    (BBLITE_HAS_SPRITE_RENDERER || BBLITE_HAS_CANVAS_RENDERER || BBLITE_HAS_TEXT_RENDERER)
 
 namespace {
 class DawnSpriteRun : public FrameSession {
@@ -71,44 +72,37 @@ class DawnSpriteRun : public FrameSession {
 #endif
 #if BBLITE_HAS_SPRITE_RENDERER
     void sync_render_textures() {
-        render_textures.resize(
-            engine.sprite_render_textures.size(), nullptr);
-        render_texture_views.resize(
-            engine.sprite_render_textures.size(), nullptr);
+        render_textures.resize(engine.sprite_render_textures.size(), nullptr);
+        render_texture_views.resize(engine.sprite_render_textures.size(), nullptr);
         // The one refusal walk covers every disposed record, so it
         // runs once per sync -- at the first disposed record, before
         // any release -- rather than once per record per frame.
         bool disposed_refused = false;
-        for (std::size_t index = 0;
-             index < engine.sprite_render_textures.size();
-             ++index) {
-            const SpriteRenderTextureRecord& record =
-                engine.sprite_render_textures[index];
+        for (std::size_t index = 0; index < engine.sprite_render_textures.size(); ++index) {
+            const SpriteRenderTextureRecord& record = engine.sprite_render_textures[index];
             WGPUTexture& texture = render_textures[index];
             WGPUTextureView& view = render_texture_views[index];
             if (record.disposed) {
                 if (!disposed_refused) {
-                    refuse_disposed_sprite_render_texture_in_use(
-                        engine);
+                    refuse_disposed_sprite_render_texture_in_use(engine);
                     disposed_refused = true;
                 }
-                if (view) wgpuTextureViewRelease(view);
-                if (texture) wgpuTextureRelease(texture);
+                if (view)
+                    wgpuTextureViewRelease(view);
+                if (texture)
+                    wgpuTextureRelease(texture);
                 view = nullptr;
                 texture = nullptr;
                 continue;
             }
-            if (texture) continue;
-            WGPUTextureDescriptor descriptor =
-                WGPU_TEXTURE_DESCRIPTOR_INIT;
+            if (texture)
+                continue;
+            WGPUTextureDescriptor descriptor = WGPU_TEXTURE_DESCRIPTOR_INIT;
             descriptor.dimension = WGPUTextureDimension_2D;
             descriptor.format = state.surface_format;
-            descriptor.usage =
-                WGPUTextureUsage_RenderAttachment |
-                WGPUTextureUsage_TextureBinding;
+            descriptor.usage = WGPUTextureUsage_RenderAttachment | WGPUTextureUsage_TextureBinding;
             descriptor.size = {record.width, record.height, 1};
-            texture = wgpuDeviceCreateTexture(
-                state.device, &descriptor);
+            texture = wgpuDeviceCreateTexture(state.device, &descriptor);
             if (!texture) {
                 dawn_error("sprite render texture creation failed.");
             }
@@ -120,22 +114,16 @@ class DawnSpriteRun : public FrameSession {
         }
     }
     void sync_renderer_passes() {
-        if (sprite_passes_match_registered(engine, passes)) return;
+        if (sprite_passes_match_registered(engine, passes))
+            return;
         for (DawnSpritePass& pass : passes) {
             release_dawn_sprite_pass(pass);
         }
         passes.clear();
-        for (const SpriteRendererHandle& handle :
-             engine.registered_sprite_renderers) {
-            passes.push_back(create_dawn_sprite_pass(
-                state.device,
-                state.queue,
-                mips,
-                engine,
-                handle,
-                render_textures,
-                render_texture_views,
-                state.surface_format));
+        for (const SpriteRendererHandle& handle : engine.registered_sprite_renderers) {
+            passes.push_back(create_dawn_sprite_pass(state.device, state.queue, mips, engine,
+                                                     handle, render_textures, render_texture_views,
+                                                     state.surface_format));
         }
     }
 #endif
@@ -144,6 +132,7 @@ class DawnSpriteRun : public FrameSession {
         text_operations.reset();
 #endif
     }
+
 public:
     static constexpr FrameAcquirePhase acquire_phase = FrameAcquirePhase::before_uploads;
     explicit DawnSpriteRun(Engine& target) : FrameSession(target) {}
@@ -167,17 +156,20 @@ public:
         }
         release_dawn_mip_generator(mips);
         for (WGPUTextureView view : render_texture_views) {
-            if (view) wgpuTextureViewRelease(view);
+            if (view)
+                wgpuTextureViewRelease(view);
         }
         for (WGPUTexture texture : render_textures) {
-            if (texture) wgpuTextureRelease(texture);
+            if (texture)
+                wgpuTextureRelease(texture);
         }
 #endif
         state.release();
     }
     void setup() {
         reject_unsupported_frame_options(frame_options, "Dawn sprites", true, false);
-        canvas_only = !bbl::has_sprite_renderers(engine) && engine.registered_text_renderers.empty();
+        canvas_only =
+            !bbl::has_sprite_renderers(engine) && engine.registered_text_renderers.empty();
         if (canvas_only
 #if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
             && engine.primary_canvas.value >= engine.ui_elements.size()
@@ -189,16 +181,15 @@ public:
         const DeviceOptions device_options = frame_device_options(frame_options);
         create_dawn_device(engine.options, device_options, state);
 #if BBLITE_HAS_TEXT_RENDERER
-        text_renderer=std::make_unique<DawnTextRenderer>(state.device,state.queue,!frame_options.render_capture_path.empty());
+        text_renderer = std::make_unique<DawnTextRenderer>(
+            state.device, state.queue, !frame_options.render_capture_path.empty());
 #endif
         sync_engine_canvas_size(state.window, engine);
         resize_dawn_surface(state, engine.options);
 #if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
-        ui_runtime = create_ui_rml_runtime(
-            engine,
-            state.window,
-            static_cast<std::uint32_t>(engine.options.width),
-            static_cast<std::uint32_t>(engine.options.height));
+        ui_runtime = create_ui_rml_runtime(engine, state.window,
+                                           static_cast<std::uint32_t>(engine.options.width),
+                                           static_cast<std::uint32_t>(engine.options.height));
 #endif
 
 #if BBLITE_HAS_SPRITE_RENDERER
@@ -207,44 +198,34 @@ public:
         sync_renderer_passes();
 #endif
 
-        width =
-            static_cast<std::uint32_t>(engine.options.width);
-        height =
-            static_cast<std::uint32_t>(engine.options.height);
+        width = static_cast<std::uint32_t>(engine.options.width);
+        height = static_cast<std::uint32_t>(engine.options.height);
         if (width == 0 || height == 0) {
             dawn_error("sprite surface has a zero extent.");
         }
         mem_profile = environment_variable("BBLITE_MEM_PROFILE") == "1";
         capture_ui = frame_options.capture_ui || canvas_only;
-
     }
     FramePreparation prepare() {
 #if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
-        poll_platform_events(
-            engine,
-            running,
-            frame_options.test_pass,
-            [&](SDL_Event& event) {
-                return handle_ui_rml_event(*ui_runtime, event);
-            });
+        poll_platform_events(engine, running, frame_options.test_pass, [&](SDL_Event& event) {
+            return handle_ui_rml_event(*ui_runtime, event);
+        });
 #else
-        poll_platform_events(
-            engine, running, frame_options.test_pass);
+        poll_platform_events(engine, running, frame_options.test_pass);
 #endif
         sync_engine_canvas_size(state.window, engine);
         if (resize_dawn_surface(state, engine.options)) {
             width = state.surface_width;
             height = state.surface_height;
         }
-        if (!state.surface) return FramePreparation::skip;
+        if (!state.surface)
+            return FramePreparation::skip;
         input_replay.dispatch(frame, state.window, engine);
         return FramePreparation::ready;
     }
     FramePreparation update() {
-        delta_ms = advance_frame(
-            engine,
-            frame_clock,
-            frame_options.frame_delta_ms);
+        delta_ms = advance_frame(engine, frame_clock, frame_options.frame_delta_ms);
 #if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
         // Browser layout observes DOM changes made by this turn's RAF
         // callbacks before painting the frame.
@@ -257,7 +238,8 @@ public:
         // target they record into arrive once the frame's texture does.
         text_renderer->owner->capture.begin_frame(static_cast<std::uint64_t>(frame));
         auto& text_ops = text_operations.emplace(*text_renderer, state.surface_format);
-        for(const auto& renderer:engine.registered_text_renderers)update_text_renderer(*renderer,width,height,state.device,text_ops);
+        for (const auto& renderer : engine.registered_text_renderers)
+            update_text_renderer(*renderer, width, height, state.device, text_ops);
 #endif
 
 #if BBLITE_HAS_SPRITE_RENDERER
@@ -284,27 +266,14 @@ public:
             // first, so one that moves a sprite or a layer is seen by
             // this frame's mirror rebuild and upload rather than the
             // next one's.
-            run_sprite_renderer_before_update(
-                engine, pass.renderer, delta_ms);
+            run_sprite_renderer_before_update(engine, pass.renderer, delta_ms);
             // A scene callback may have added, removed or disposed a
             // layer since the last frame; the GPU mirror is addressed
             // by position, so it is rebuilt before anything reads it.
-            sync_dawn_sprite_pass_layers(
-                state.device,
-                state.queue,
-                mips,
-                engine,
-                pass,
-                render_textures,
-                render_texture_views);
-            upload_dawn_sprite_pass(
-                state.device,
-                state.queue,
-                engine,
-                pass,
-                width,
-                height,
-                delta_ms);
+            sync_dawn_sprite_pass_layers(state.device, state.queue, mips, engine, pass,
+                                         render_textures, render_texture_views);
+            upload_dawn_sprite_pass(state.device, state.queue, engine, pass, width, height,
+                                    delta_ms);
         }
 #endif
     }
@@ -314,8 +283,10 @@ public:
 #endif
         encoder = wgpuDeviceCreateCommandEncoder(state.device, nullptr);
 #if BBLITE_HAS_TEXT_RENDERER
-        text_ops.encoder=encoder;text_ops.target=surface_view;
-        for(const auto& renderer:engine.registered_text_renderers)record_text_renderer(*renderer,text_ops);
+        text_ops.encoder = encoder;
+        text_ops.target = surface_view;
+        for (const auto& renderer : engine.registered_text_renderers)
+            record_text_renderer(*renderer, text_ops);
 #endif
         if (canvas_only) {
             WGPURenderPassColorAttachment target = WGPU_RENDER_PASS_COLOR_ATTACHMENT_INIT;
@@ -330,46 +301,29 @@ public:
             pass.reset();
         }
 #if BBLITE_HAS_SPRITE_RENDERER
-        for (std::size_t first_index = 0;
-             first_index < passes.size();) {
+        for (std::size_t first_index = 0; first_index < passes.size();) {
             const SpriteRendererRecord& first_renderer =
-                engine.sprite_renderers[
-                    passes[first_index].renderer.value];
+                engine.sprite_renderers[passes[first_index].renderer.value];
             WGPUTextureView target_view = surface_view;
             if (first_renderer.has_target) {
-                target_view = render_texture_views[
-                    first_renderer.target.value];
+                target_view = render_texture_views[first_renderer.target.value];
             }
-            const std::size_t end_index =
-                sprite_pass_target_run_end(
-                    engine, passes, first_index);
+            const std::size_t end_index = sprite_pass_target_run_end(engine, passes, first_index);
 
-            WGPURenderPassColorAttachment color_attachment =
-                WGPU_RENDER_PASS_COLOR_ATTACHMENT_INIT;
+            WGPURenderPassColorAttachment color_attachment = WGPU_RENDER_PASS_COLOR_ATTACHMENT_INIT;
             color_attachment.view = target_view;
-            color_attachment.loadOp = first_renderer.clear
-                ? WGPULoadOp_Clear
-                : WGPULoadOp_Load;
+            color_attachment.loadOp = first_renderer.clear ? WGPULoadOp_Clear : WGPULoadOp_Load;
             color_attachment.storeOp = WGPUStoreOp_Store;
-            color_attachment.clearValue = WGPUColor{
-                first_renderer.clear_value.r,
-                first_renderer.clear_value.g,
-                first_renderer.clear_value.b,
-                first_renderer.clear_value.a};
-            WGPURenderPassDescriptor pass_descriptor =
-                WGPU_RENDER_PASS_DESCRIPTOR_INIT;
+            color_attachment.clearValue =
+                WGPUColor{first_renderer.clear_value.r, first_renderer.clear_value.g,
+                          first_renderer.clear_value.b, first_renderer.clear_value.a};
+            WGPURenderPassDescriptor pass_descriptor = WGPU_RENDER_PASS_DESCRIPTOR_INIT;
             pass_descriptor.colorAttachmentCount = 1;
             pass_descriptor.colorAttachments = &color_attachment;
-            DawnRenderPass render_pass{wgpuCommandEncoderBeginRenderPass(
-                    encoder,
-                    &pass_descriptor)};
-            for (
-                std::size_t index = first_index;
-                index < end_index;
-                ++index
-            ) {
-                record_dawn_sprite_pass(
-                    render_pass, engine, passes[index]);
+            DawnRenderPass render_pass{
+                wgpuCommandEncoderBeginRenderPass(encoder, &pass_descriptor)};
+            for (std::size_t index = first_index; index < end_index; ++index) {
+                record_dawn_sprite_pass(render_pass, engine, passes[index]);
             }
             wgpuRenderPassEncoderEnd(render_pass);
             render_pass.reset();
@@ -378,45 +332,30 @@ public:
 #endif
     }
     void present() {
-        const bool capture_frame =
-            frame >= frame_options.screenshot_frame &&
-            !captures.screenshot_saved &&
-            !frame_options.screenshot_path.empty();
-        captures.maybe_write_standalone_render_capture(
-            "dawn", engine, width, height, frame
+        const bool capture_frame = frame >= frame_options.screenshot_frame &&
+                                   !captures.screenshot_saved &&
+                                   !frame_options.screenshot_path.empty();
+        captures.maybe_write_standalone_render_capture("dawn", engine, width, height, frame
 #if BBLITE_HAS_TEXT_RENDERER
-            ,&text_renderer->owner->capture
+                                                       ,
+                                                       &text_renderer->owner->capture
 #endif
         );
         DawnSurfaceCapture capture{};
 #if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
-        const UiRenderFrame& ui_frame =
-            record_ui_rml_frame(*ui_runtime, width, height);
+        const UiRenderFrame& ui_frame = record_ui_rml_frame(*ui_runtime, width, height);
 #endif
         if (capture_frame && !capture_ui) {
-            capture = begin_dawn_surface_capture(
-                state.device,
-                encoder,
-                surface_texture.texture,
-                width,
-                height);
+            capture = begin_dawn_surface_capture(state.device, encoder, surface_texture.texture,
+                                                 width, height);
         }
 #if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
-        render_sprite_ui_dawn_frame(
-            state,
-            encoder,
-            surface_texture.texture,
-            surface_view,
-            ui_resources,
-            ui_frame);
+        render_sprite_ui_dawn_frame(state, encoder, surface_texture.texture, surface_view,
+                                    ui_resources, ui_frame);
 #endif
         if (capture_frame && capture_ui) {
-            capture = begin_dawn_surface_capture(
-                state.device,
-                encoder,
-                surface_texture.texture,
-                width,
-                height);
+            capture = begin_dawn_surface_capture(state.device, encoder, surface_texture.texture,
+                                                 width, height);
         }
 
         DawnCommandBuffer command{wgpuCommandEncoderFinish(encoder, nullptr)};
@@ -425,12 +364,8 @@ public:
         encoder.reset();
 
         if (capture_frame) {
-            finish_dawn_surface_capture(
-                state,
-                capture,
-                width,
-                height,
-                frame_options.screenshot_path);
+            finish_dawn_surface_capture(state, capture, width, height,
+                                        frame_options.screenshot_path);
             captures.screenshot_saved = true;
         }
         capture.readback.reset();
@@ -456,7 +391,8 @@ public:
 bool run_sprite_dawn_engine(Engine& engine) {
     DawnSpriteRun renderer(engine);
     renderer.setup();
-    while (conduct_frame(renderer) != FrameOutcome::stopped) {}
+    while (conduct_frame(renderer) != FrameOutcome::stopped) {
+    }
     renderer.report();
     return true;
 }

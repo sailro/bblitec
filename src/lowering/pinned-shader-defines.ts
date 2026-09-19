@@ -22,8 +22,7 @@ import {
     type ShaderTextBinding,
 } from "./pinned-shader-text.js";
 
-export const shaderPipelineModule =
-    "src/material/shader/shader-pipeline.ts";
+export const shaderPipelineModule = "src/material/shader/shader-pipeline.ts";
 
 /** A reached `defines` entry, in the pin's own `ShaderDefine` shape. */
 interface PinnedShaderDefine {
@@ -138,10 +137,7 @@ export function pinnedShaderDefineText(
                 template,
                 new Map<string, ShaderTextBinding>([
                     [accumulator, ""],
-                    [
-                        "define",
-                        { name: define.name, value: define.value },
-                    ],
+                    ["define", { name: define.name, value: define.value }],
                 ]),
             ),
         )

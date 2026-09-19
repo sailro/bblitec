@@ -17,8 +17,14 @@ import {
 test("compiled backends have independent build and deployment directories", () => {
     const directory = "native/build-primitives-release";
     assert.equal(compiledBuildDirectory(directory, "BOTH"), directory);
-    assert.equal(compiledBuildDirectory(directory, "SDL_GPU"), `${directory}-sdl_gpu`);
-    assert.equal(compiledBuildDirectory(directory, "DAWN"), `${directory}-dawn`);
+    assert.equal(
+        compiledBuildDirectory(directory, "SDL_GPU"),
+        `${directory}-sdl_gpu`,
+    );
+    assert.equal(
+        compiledBuildDirectory(directory, "DAWN"),
+        `${directory}-dawn`,
+    );
 });
 
 test("Dawn-only iteration needs no offline compiler unless a target is explicitly requested", () => {
@@ -61,34 +67,36 @@ test("canonicalizes the development compiler", () => {
 
 test("the repository manifest automatically feeds the full dev set", () => {
     assert.deepEqual(
-        developmentVcpkgFeatures(
-            readFileSync("native/vcpkg.json", "utf8"),
-        ),
-        ["http", "jpeg", "locale", "navigation", "navigation-crowd", "navigation-tile-cache", "physics", "png", "text-layout", "ui", "ui-svg", "webp"],
+        developmentVcpkgFeatures(readFileSync("native/vcpkg.json", "utf8")),
+        [
+            "http",
+            "jpeg",
+            "locale",
+            "navigation",
+            "navigation-crowd",
+            "navigation-tile-cache",
+            "physics",
+            "png",
+            "text-layout",
+            "ui",
+            "ui-svg",
+            "webp",
+        ],
     );
 });
 
 test("keeps RmlUi recording backend-neutral and realizes it in scene and sprite renderers", () => {
     const cmake = readFileSync("native/CMakeLists.txt", "utf8");
     const projection = readFileSync("native/src/pal_ui_rml.cpp", "utf8");
-    const systemFonts = readFileSync(
-        "native/src/pal_system_fonts.cpp",
-        "utf8",
-    );
+    const systemFonts = readFileSync("native/src/pal_system_fonts.cpp", "utf8");
     const systemFontsHeader = readFileSync(
         "native/include/bblite/pal_system_fonts.hpp",
         "utf8",
     );
     const sdl = readFileSync("native/src/pal_sdl_gpu.cpp", "utf8");
     const dawn = readFileSync("native/src/pal_dawn.cpp", "utf8");
-    const spriteSdl = readFileSync(
-        "native/src/pal_sdl_gpu_sprite.cpp",
-        "utf8",
-    );
-    const spriteDawn = readFileSync(
-        "native/src/pal_dawn_sprite.cpp",
-        "utf8",
-    );
+    const spriteSdl = readFileSync("native/src/pal_sdl_gpu_sprite.cpp", "utf8");
+    const spriteDawn = readFileSync("native/src/pal_dawn_sprite.cpp", "utf8");
     const spriteSdlUi = readFileSync(
         "native/src/pal_sprite_ui_sdl.hpp",
         "utf8",
@@ -106,10 +114,7 @@ test("keeps RmlUi recording backend-neutral and realizes it in scene and sprite 
     assert.match(systemFonts, /FcFontMatch/);
     const fontArchitecture =
         cmake + projection + systemFonts + systemFontsHeader;
-    assert.doesNotMatch(
-        fontArchitecture,
-        /FontChoice|std::filesystem::exists/,
-    );
+    assert.doesNotMatch(fontArchitecture, /FontChoice|std::filesystem::exists/);
     assert.doesNotMatch(
         // The packaged text-symbol face is an app asset, not a guessed host font location.
         fontArchitecture.replace('"fonts/NotoSansSymbols2-Regular.ttf"', '""'),
@@ -121,10 +126,7 @@ test("keeps RmlUi recording backend-neutral and realizes it in scene and sprite 
         projection,
         /take_crosshair_color[\s\S]{0,120}--bbl-crosshair/,
     );
-    assert.match(
-        projection,
-        /append_crosshair[\s\S]{0,900}SetInnerRML/,
-    );
+    assert.match(projection, /append_crosshair[\s\S]{0,900}SetInnerRML/);
     assert.match(sdl, /render_ui_sdl_frame/);
     assert.match(dawn, /render_ui_dawn_frame/);
     assert.match(sdl, /multisample_layer/);
@@ -146,10 +148,7 @@ test("normalizes retained CSS cascade keywords and measures width resets", () =>
         projection.indexOf("bool is_private_ui_declaration"),
     );
     assert.match(declarations, /css_property_name_equals/);
-    assert.match(
-        declarations,
-        /result = std::string\(\s*trim_css_token/,
-    );
+    assert.match(declarations, /result = std::string\(\s*trim_css_token/);
     assert.doesNotMatch(declarations, /result = ascii_lower/);
 
     const gridCascade = projection.slice(
@@ -234,10 +233,7 @@ test("minimal mode has dedicated MSVC and clang-cl size flags", () => {
     assert.match(block, /\/clang:-Oz \/clang:-flto/);
     assert.match(block, /\/O1 \/Ob1 \/GL \/Gw/);
     assert.match(block, /\/STACK:8388608/);
-    assert.match(
-        cmake,
-        /main\.cpp"\s+PROPERTIES COMPILE_OPTIONS "\/wd4702"/,
-    );
+    assert.match(cmake, /main\.cpp"\s+PROPERTIES COMPILE_OPTIONS "\/wd4702"/);
     assert.match(block, /INTERFACE -Os -ffunction-sections/);
 });
 
@@ -249,7 +245,10 @@ test("shipping packages require the trimmed static build", () => {
     );
     // The executable runs directly; packaging tests exercise the host shader
     // payload selection. Windows retains its console for startup errors.
-    assert.doesNotMatch(script.slice(0, script.indexOf("$smokeFrames")), /SDL_GPU_DRIVER|run-\$Scene\.cmd|\.log/);
+    assert.doesNotMatch(
+        script.slice(0, script.indexOf("$smokeFrames")),
+        /SDL_GPU_DRIVER|run-\$Scene\.cmd|\.log/,
+    );
     assert.match(script, /\$smokeStart\.Environment\["SDL_ASSERT"\] = "abort"/);
     assert.match(script, /Double-click \$exeName/);
     assert.match(patterns, /\*\.dxil/);
@@ -291,7 +290,10 @@ test("the trimmed SDL build has a separate audio-capable variant", () => {
     assert.match(script, /"-D\$\(\$option\.Key\)=\$\(\$option\.Value\)"/);
     assert.doesNotMatch(script, /^\s*-D[A-Za-z_]+=\$/m);
     assert.doesNotMatch(script, /^\s*"?-DSDL_/m);
-    assert.match(script, /Read-CMakeCache \(Join-Path \$build "CMakeCache\.txt"\)/);
+    assert.match(
+        script,
+        /Read-CMakeCache \(Join-Path \$build "CMakeCache\.txt"\)/,
+    );
     assert.match(script, /\$actual -ne \$option\.Value/);
     assert.match(script, /Contains\('\$'\)/);
     assert.match(script, /BBLITE_SDL_DIALOG \$dialogSetting/);
@@ -301,7 +303,9 @@ test("the trimmed SDL build has a separate audio-capable variant", () => {
     assert.match(script, /tools\\patches\\sdl-static-no-dynapi\.patch/);
     assert.doesNotMatch(script, /overlay-ports\\sdl3\\static-no-dynapi/);
     assert.ok(existsSync("tools/patches/sdl-static-no-dynapi.patch"));
-    assert.ok(!existsSync("native/vcpkg-overlay-ports/sdl3/static-no-dynapi.patch"));
+    assert.ok(
+        !existsSync("native/vcpkg-overlay-ports/sdl3/static-no-dynapi.patch"),
+    );
 
     const cmake = readFileSync("native/CMakeLists.txt", "utf8");
     assert.match(cmake, /include\("\$\{BBLITE_SDL_FEATURES\}"\)/);
@@ -349,9 +353,21 @@ test("the PowerShell tools share one module for discovery, checkouts and caches"
             /function (Sync-PinnedCheckout|Get-DevToolchain|Find-CMake|Read-CMakeCache)/,
             `${name} carries its own copy of a shared helper`,
         );
-        assert.doesNotMatch(script, /Get-Command cmake/, `${name} rediscovers CMake itself`);
-        assert.doesNotMatch(script, /vswhere/, `${name} rediscovers Visual Studio itself`);
-        assert.doesNotMatch(script, /git -C \$\w+ fetch --depth 1 origin \$/, `${name} syncs a pinned checkout itself`);
+        assert.doesNotMatch(
+            script,
+            /Get-Command cmake/,
+            `${name} rediscovers CMake itself`,
+        );
+        assert.doesNotMatch(
+            script,
+            /vswhere/,
+            `${name} rediscovers Visual Studio itself`,
+        );
+        assert.doesNotMatch(
+            script,
+            /git -C \$\w+ fetch --depth 1 origin \$/,
+            `${name} syncs a pinned checkout itself`,
+        );
     }
 });
 
@@ -370,9 +386,15 @@ test("feature macros come from one CMake function", () => {
         ["BBLITE_HAS_NAV_TILE_CACHE", "navigation:tile-cache"],
         ["BBLITE_PHYSICS_VIEWER", "physics:viewer"],
     ]) {
-        assert.match(cmake, new RegExp(`bblite_feature_define\\(${macro} "${feature}"\\)`));
+        assert.match(
+            cmake,
+            new RegExp(`bblite_feature_define\\(${macro} "${feature}"\\)`),
+        );
     }
-    assert.match(cmake, /bblite_feature_define\(BBLITE_HAS_TEXT "text:renderable" "renderer:text"\)/);
+    assert.match(
+        cmake,
+        /bblite_feature_define\(BBLITE_HAS_TEXT "text:renderable" "renderer:text"\)/,
+    );
     assert.ok((cmake.match(/bblite_feature_define\(/g) ?? []).length >= 36);
     // No hand-written 1/0 pair is left for a single-feature macro, no
     // macro is defined without a reader, and the one stack reservation
@@ -384,7 +406,10 @@ test("feature macros come from one CMake function", () => {
     assert.doesNotMatch(cmake, /BBLITE_HAS_GLTF/);
     assert.equal((cmake.match(/\/STACK:8388608/g) ?? []).length, 1);
     // A generated tree without a codec list is refused, not defaulted.
-    assert.match(readFileSync("native/dependency-features.cmake", "utf8"), /if\(NOT DEFINED BBLITE_IMAGE_CODECS\)\s*message\(\s*FATAL_ERROR/);
+    assert.match(
+        readFileSync("native/dependency-features.cmake", "utf8"),
+        /if\(NOT DEFINED BBLITE_IMAGE_CODECS\)\s*message\(\s*FATAL_ERROR/,
+    );
 });
 
 test("the scene-invariant PAL units compile in their own object library", () => {
@@ -396,41 +421,84 @@ test("the scene-invariant PAL units compile in their own object library", () => 
     // the generated tree, the backend families, the window realm and the
     // build stamp do.
     for (const unit of [
-        "pal", "pal_sdl", "pal_ui_rml", "pal_audio_labsound", "pal_physics_bullet",
-        "pal_physics_debug", "pal_navigation_recast", "pal_file", "pal_storage",
+        "pal",
+        "pal_sdl",
+        "pal_ui_rml",
+        "pal_audio_labsound",
+        "pal_physics_bullet",
+        "pal_physics_debug",
+        "pal_navigation_recast",
+        "pal_file",
+        "pal_storage",
         "pal_text_layout",
     ]) {
         assert.match(`/src/${unit}.cpp`, selector, `${unit} is not PAL-common`);
-        assert.ok(existsSync(`native/src/${unit}.cpp`), `${unit}.cpp is missing`);
+        assert.ok(
+            existsSync(`native/src/${unit}.cpp`),
+            `${unit}.cpp is missing`,
+        );
     }
     for (const unit of [
-        "pal_sdl_gpu", "pal_sdl_gpu_sprite", "pal_dawn", "pal_window_realm",
-        "pal_window_presenter_sdl", "pal_build_stamp",
+        "pal_sdl_gpu",
+        "pal_sdl_gpu_sprite",
+        "pal_dawn",
+        "pal_window_realm",
+        "pal_window_presenter_sdl",
+        "pal_build_stamp",
     ]) {
-        assert.doesNotMatch(`/src/${unit}.cpp`, selector, `${unit} reaches generated headers`);
+        assert.doesNotMatch(
+            `/src/${unit}.cpp`,
+            selector,
+            `${unit} reaches generated headers`,
+        );
     }
     assert.match(cmake, /add_library\(bblite_features INTERFACE\)/);
-    assert.match(cmake, /add_library\(bblite_pal_common OBJECT \$\{BBLITE_PAL_COMMON_SOURCES\}\)/);
-    assert.match(cmake, /target_link_libraries\(bblite_native PRIVATE bblite_features bblite_pal_common\)/);
+    assert.match(
+        cmake,
+        /add_library\(bblite_pal_common OBJECT \$\{BBLITE_PAL_COMMON_SOURCES\}\)/,
+    );
+    assert.match(
+        cmake,
+        /target_link_libraries\(bblite_native PRIVATE bblite_features bblite_pal_common\)/,
+    );
     // Only the executable's own units see the generated include directory;
     // every other usage requirement rides the interface target.
-    assert.match(cmake, /target_include_directories\(bblite_native PRIVATE "\$\{BBLITE_GENERATED_DIR\}\/upstream\/include"\)/);
+    assert.match(
+        cmake,
+        /target_include_directories\(bblite_native PRIVATE "\$\{BBLITE_GENERATED_DIR\}\/upstream\/include"\)/,
+    );
     assert.doesNotMatch(cmake, /target_compile_definitions\(\s*bblite_native/);
-    assert.doesNotMatch(cmake, /target_link_libraries\(\s*bblite_native\s+PRIVATE\s+(?!bblite_features)/);
-    assert.match(cmake, /target_precompile_headers\(bblite_pal_common PRIVATE \$\{BBLITE_PCH_HEADERS\}\)/);
-    assert.match(cmake, /target_precompile_headers\(bblite_native REUSE_FROM bblite_pal_common\)/);
-    assert.match(cmake, /target_sources\(\s*bblite_pal_common\s+PRIVATE\s+"\$\{BBLITE_NATIVE_ROOT\}\/src\/pal_system_fonts\.cpp"/);
+    assert.doesNotMatch(
+        cmake,
+        /target_link_libraries\(\s*bblite_native\s+PRIVATE\s+(?!bblite_features)/,
+    );
+    assert.match(
+        cmake,
+        /target_precompile_headers\(bblite_pal_common PRIVATE \$\{BBLITE_PCH_HEADERS\}\)/,
+    );
+    assert.match(
+        cmake,
+        /target_precompile_headers\(bblite_native REUSE_FROM bblite_pal_common\)/,
+    );
+    assert.match(
+        cmake,
+        /target_sources\(\s*bblite_pal_common\s+PRIVATE\s+"\$\{BBLITE_NATIVE_ROOT\}\/src\/pal_system_fonts\.cpp"/,
+    );
 });
 
 test("the shipping presets spell the documented minimal recipe", () => {
-    const presets = JSON.parse(readFileSync("native/CMakePresets.json", "utf8")) as {
+    const presets = JSON.parse(
+        readFileSync("native/CMakePresets.json", "utf8"),
+    ) as {
         configurePresets: Array<{
             name: string;
             inherits?: string;
             cacheVariables?: Record<string, string>;
         }>;
     };
-    const byName = new Map(presets.configurePresets.map((preset) => [preset.name, preset]));
+    const byName = new Map(
+        presets.configurePresets.map((preset) => [preset.name, preset]),
+    );
     const resolved = (name: string): Record<string, string> => {
         const preset = byName.get(name);
         assert.ok(preset, `preset ${name} is missing`);
@@ -463,7 +531,10 @@ test("minimal audio dependencies use a static runtime and ship their notices", (
 
     const cmake = readFileSync("native/CMakeLists.txt", "utf8");
     assert.match(cmake, /NOT BBLITE_LABSOUND_STATIC_RUNTIME/);
-    assert.match(cmake, /BBLITE_HAS_AUDIO_CAPTURE=\$<BOOL:\$\{BBLITE_AUDIO_CAPTURE\}>/);
+    assert.match(
+        cmake,
+        /BBLITE_HAS_AUDIO_CAPTURE=\$<BOOL:\$\{BBLITE_AUDIO_CAPTURE\}>/,
+    );
     assert.match(
         cmake,
         /NOT BBLITE_AUDIO_CAPTURE\s+AND NOT BBLITE_AUDIO_DECODE_FILE\s+AND NOT BBLITE_LABSOUND_CORE_ONLY/,
@@ -506,8 +577,14 @@ test("RmlUi is the pinned artifact, patched, with a static-runtime variant", () 
     assert.match(builder, /\[switch\]\$StaticRuntime/);
     assert.match(builder, /upstream\\rmlui\.json/);
     assert.match(builder, /apply-rmlui-patch\.cmake/);
-    assert.match(builder, /Get-ChildItem \$patchDirectory -Filter "rmlui-\*\.patch"/);
-    assert.match(builder, /\$pinnedPatches -join ";"\) -ne \(\$directoryPatches -join ";"/);
+    assert.match(
+        builder,
+        /Get-ChildItem \$patchDirectory -Filter "rmlui-\*\.patch"/,
+    );
+    assert.match(
+        builder,
+        /\$pinnedPatches -join ";"\) -ne \(\$directoryPatches -join ";"/,
+    );
     assert.doesNotMatch(builder, /rmlui-premultiplied-rounding\.patch/);
     assert.match(builder, /Get-FileHash \$_\.FullName -Algorithm SHA256/);
     assert.match(builder, /set\(BBLITE_RMLUI_COMMIT/);
@@ -534,12 +611,30 @@ test("RmlUi is the pinned artifact, patched, with a static-runtime variant", () 
     assert.match(cmake, /NOT RMLUI_SVG_PLUGIN/);
     // An artifact is refused when its recorded commit or patch set is not
     // what the pin and native/patches say now, naming the rebuild.
-    assert.match(cmake, /string\(JSON BBLITE_RMLUI_PINNED_COMMIT GET "\$\{BBLITE_RMLUI_PIN\}" commit\)/);
-    assert.match(cmake, /file\(GLOB BBLITE_RMLUI_PATCH_FILES "\$\{BBLITE_NATIVE_ROOT\}\/patches\/rmlui-\*\.patch"\)/);
-    assert.match(cmake, /file\(SHA256 "\$\{bblite_rmlui_patch\}" bblite_rmlui_patch_digest\)/);
-    assert.match(cmake, /NOT BBLITE_RMLUI_COMMIT STREQUAL BBLITE_RMLUI_PINNED_COMMIT/);
-    assert.match(cmake, /NOT "\$\{BBLITE_RMLUI_PATCHES\}" STREQUAL "\$\{BBLITE_RMLUI_EXPECTED_PATCHES\}"/);
-    assert.match(cmake, /Rebuild it with "\s*"\$\{BBLITE_RMLUI_BUILD_COMMAND\}\."/);
+    assert.match(
+        cmake,
+        /string\(JSON BBLITE_RMLUI_PINNED_COMMIT GET "\$\{BBLITE_RMLUI_PIN\}" commit\)/,
+    );
+    assert.match(
+        cmake,
+        /file\(GLOB BBLITE_RMLUI_PATCH_FILES "\$\{BBLITE_NATIVE_ROOT\}\/patches\/rmlui-\*\.patch"\)/,
+    );
+    assert.match(
+        cmake,
+        /file\(SHA256 "\$\{bblite_rmlui_patch\}" bblite_rmlui_patch_digest\)/,
+    );
+    assert.match(
+        cmake,
+        /NOT BBLITE_RMLUI_COMMIT STREQUAL BBLITE_RMLUI_PINNED_COMMIT/,
+    );
+    assert.match(
+        cmake,
+        /NOT "\$\{BBLITE_RMLUI_PATCHES\}" STREQUAL "\$\{BBLITE_RMLUI_EXPECTED_PATCHES\}"/,
+    );
+    assert.match(
+        cmake,
+        /Rebuild it with "\s*"\$\{BBLITE_RMLUI_BUILD_COMMAND\}\."/,
+    );
     assert.match(
         cmake,
         /\$\{BBLITE_RMLUI_DIR\}\/Backends\/RmlUi_Platform_SDL\.cpp/,

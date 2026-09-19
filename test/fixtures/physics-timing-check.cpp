@@ -9,7 +9,7 @@ namespace bbl::upstream {
 std::array<float, 16> mesh_local_matrix(const MeshRecord&) { std::abort(); }
 std::array<float, 16> mesh_world_matrix(const Engine&, const MeshRecord&) { std::abort(); }
 std::array<float, 16> transform_node_world(const Engine&, TransformNodeHandle) { std::abort(); }
-}
+} // namespace bbl::upstream
 
 int main() {
     using namespace bbl;
@@ -27,7 +27,8 @@ int main() {
             const auto body = pal::physics_body_create();
             pal::physics_body_set_shape(body, shape);
             pal::physics_body_set_motion_type(body, pal::PhysicsMotionType::simulated);
-            pal::physics_body_set_mass_properties(body, pal::physics_shape_build_mass_properties(shape, 1));
+            pal::physics_body_set_mass_properties(
+                body, pal::physics_shape_build_mass_properties(shape, 1));
             pal::physics_world_add_body(native_world, body, false);
             pal::physics_body_set_linear_velocity(body, {1, 0, 0});
             double simulated_seconds = 0;
@@ -38,16 +39,16 @@ int main() {
             });
             for (int frame = 0; frame < fps; ++frame) {
                 const double delta = scene.fixed_delta_ms > 0 ? scene.fixed_delta_ms : 1000.0 / fps;
-                for (const auto& callback : scene.before_render) callback(static_cast<float>(delta));
+                for (const auto& callback : scene.before_render)
+                    callback(static_cast<float>(delta));
             }
             const double distance = pal::physics_body_get_transform(body).position[0];
             const double expected = fixed ? fps * 0.0125 : 1;
             assert(calls == fps);
             assert(std::abs(simulated_seconds - expected) < 1e-6);
             assert(std::abs(distance - expected) < 1e-5);
-            std::cout << (fixed ? "fixed" : "variable") << ' ' << fps << ' '
-                      << calls << ' ' << std::setprecision(12)
-                      << simulated_seconds << ' ' << distance << '\n';
+            std::cout << (fixed ? "fixed" : "variable") << ' ' << fps << ' ' << calls << ' '
+                      << std::setprecision(12) << simulated_seconds << ' ' << distance << '\n';
         }
     }
 }

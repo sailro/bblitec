@@ -1,7 +1,11 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { contentFingerprint, hashEntries, toolIdentity } from "./validation-resume.js";
+import {
+    contentFingerprint,
+    hashEntries,
+    toolIdentity,
+} from "./validation-resume.js";
 
 export interface VcpkgManifestInstall {
     installedDirectory: string;
@@ -9,10 +13,19 @@ export interface VcpkgManifestInstall {
     features: readonly string[];
 }
 
-function run(command: string, args: string[], environment: NodeJS.ProcessEnv): void {
-    const result = spawnSync(command, args, { stdio: "inherit", env: environment, windowsHide: true });
+function run(
+    command: string,
+    args: string[],
+    environment: NodeJS.ProcessEnv,
+): void {
+    const result = spawnSync(command, args, {
+        stdio: "inherit",
+        env: environment,
+        windowsHide: true,
+    });
     if (result.error) throw result.error;
-    if (result.status !== 0) throw new Error(command + " exited with status " + result.status);
+    if (result.status !== 0)
+        throw new Error(command + " exited with status " + result.status);
 }
 
 /** Reconcile one manifest install when its manifest, overlays, features, triplet
@@ -23,8 +36,11 @@ export function installVcpkgManifest(
     environment: NodeJS.ProcessEnv,
 ): void {
     const stampPath = join(install.installedDirectory, ".bblite-install-stamp");
-    const manifest = contentFingerprint(["vcpkg.json", "vcpkg-configuration.json", "vcpkg-overlay-ports"]
-        .map(name => resolve("native", name)));
+    const manifest = contentFingerprint(
+        ["vcpkg.json", "vcpkg-configuration.json", "vcpkg-overlay-ports"].map(
+            (name) => resolve("native", name),
+        ),
+    );
     const stamp = hashEntries([
         "vcpkg-install v3",
         `triplet ${install.triplet}`,

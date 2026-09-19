@@ -4,20 +4,42 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import test from "node:test";
 import { discoverDevelopmentTools } from "../src/development-tools.js";
-import { cppFunction, cppRecord, cppSection, nativeFixtureVcpkgRoot, optionalNativeFixtureTools, runNativeFixtureCompiler } from "./native-fixture.js";
+import {
+    cppFunction,
+    cppRecord,
+    cppSection,
+    nativeFixtureVcpkgRoot,
+    optionalNativeFixtureTools,
+    runNativeFixtureCompiler,
+} from "./native-fixture.js";
 
 const native = optionalNativeFixtureTools();
 
-test("compressed texture candidates use device support in source order and both API tables agree", { skip: !native }, () => {
-    const shared = readFileSync("native/src/pal_gpu_shared.hpp", "utf8");
-    const sdl = cppFunction(readFileSync("native/src/pal_sdl_gpu.cpp", "utf8"), "SDL_GPUTextureFormat compressed_texture_format(");
-    const dawnSource = readFileSync("native/src/pal_dawn.cpp", "utf8");
-    const dawn = cppFunction(dawnSource, "WGPUTextureFormat compressed_texture_format(");
-    const upload = cppFunction(dawnSource, "WGPUTexture upload_material_texture(");
-    const directory = resolve("artifacts/compressed-texture-selection");
-    mkdirSync(directory, { recursive: true });
-    const source = join(directory, "check.cpp"), executable = join(directory, "check.exe");
-    writeFileSync(source, `#include <bblite/runtime.hpp>
+test(
+    "compressed texture candidates use device support in source order and both API tables agree",
+    { skip: !native },
+    () => {
+        const shared = readFileSync("native/src/pal_gpu_shared.hpp", "utf8");
+        const sdl = cppFunction(
+            readFileSync("native/src/pal_sdl_gpu.cpp", "utf8"),
+            "SDL_GPUTextureFormat compressed_texture_format(",
+        );
+        const dawnSource = readFileSync("native/src/pal_dawn.cpp", "utf8");
+        const dawn = cppFunction(
+            dawnSource,
+            "WGPUTextureFormat compressed_texture_format(",
+        );
+        const upload = cppFunction(
+            dawnSource,
+            "WGPUTexture upload_material_texture(",
+        );
+        const directory = resolve("artifacts/compressed-texture-selection");
+        mkdirSync(directory, { recursive: true });
+        const source = join(directory, "check.cpp"),
+            executable = join(directory, "check.exe");
+        writeFileSync(
+            source,
+            `#include <bblite/runtime.hpp>
 #include <SDL3/SDL.h>
 #include <dawn/webgpu.h>
 #include "pal_compressed_formats.hpp"
@@ -69,10 +91,33 @@ int main() {
     catch (const std::runtime_error&) { refused = true; }
     assert(refused);
 }
-`);
-    const dawnInclude = join(discoverDevelopmentTools().dawnDirectory, "include");
-    runNativeFixtureCompiler(native!, ["/nologo", "/std:c++20", "/W4", "/WX", "/EHsc", "/MD",
-        "/I", "native/include", "/I", "native/src", `/external:I${join(nativeFixtureVcpkgRoot, "include")}`,
-        `/external:I${dawnInclude}`, "/external:W0", source, `/Fo:${directory}/`, `/Fe:${executable}`]);
-    assert.equal(execFileSync(executable, { encoding: "utf8", windowsHide: true }), "");
-});
+`,
+        );
+        const dawnInclude = join(
+            discoverDevelopmentTools().dawnDirectory,
+            "include",
+        );
+        runNativeFixtureCompiler(native!, [
+            "/nologo",
+            "/std:c++20",
+            "/W4",
+            "/WX",
+            "/EHsc",
+            "/MD",
+            "/I",
+            "native/include",
+            "/I",
+            "native/src",
+            `/external:I${join(nativeFixtureVcpkgRoot, "include")}`,
+            `/external:I${dawnInclude}`,
+            "/external:W0",
+            source,
+            `/Fo:${directory}/`,
+            `/Fe:${executable}`,
+        ]);
+        assert.equal(
+            execFileSync(executable, { encoding: "utf8", windowsHide: true }),
+            "",
+        );
+    },
+);

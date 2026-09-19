@@ -15,35 +15,50 @@ struct ApplicationErrorEvent {
 };
 
 class ApplicationErrors {
-  public:
+public:
     using Callback = js::Callback<void(ApplicationErrorEvent&)>;
     explicit ApplicationErrors(EventLoop& loop) : loop_(loop) {
-        loop_.on_error([this](std::exception_ptr error) { report(false, std::move(error)); });
-        loop_.on_unhandled_rejection([this](std::exception_ptr error) { report(true, std::move(error)); });
+        loop_.on_error([this](std::exception_ptr error) { report(false, error); });
+        loop_.on_unhandled_rejection([this](std::exception_ptr error) { report(true, error); });
     }
-    ~ApplicationErrors() { loop_.on_error({}); loop_.on_unhandled_rejection({}); }
+    ~ApplicationErrors() {
+        loop_.on_error({});
+        loop_.on_unhandled_rejection({});
+    }
     void add(bool rejection, std::uint64_t identity, Callback callback, bool once) {
         listeners(rejection).add(identity, std::move(callback), once);
     }
     void remove(bool rejection, std::uint64_t identity) { listeners(rejection).remove(identity); }
-  private:
+
+private:
     PlatformEventListeners<void(ApplicationErrorEvent&)>& listeners(bool rejection) {
         return rejection ? rejections_ : errors_;
     }
     void report(bool rejection, std::exception_ptr error) {
         ApplicationErrorEvent event{};
-        try { std::rethrow_exception(error); }
-        catch (const WorkerTerminated&) { throw; }
-        catch (const std::exception& problem) { event.message = problem.what(); }
-        catch (...) { event.message = "Unknown native exception"; }
+        try {
+            std::rethrow_exception(error);
+        } catch (const WorkerTerminated&) {
+            throw;
+        } catch (const std::exception& problem) {
+            event.message = problem.what();
+        } catch (...) {
+            event.message = "Unknown native exception";
+        }
         // Error listeners can themselves throw. Report those failures without
         // recursively dispatching the same listener list.
         if (!reporting_) {
             reporting_ = true;
-            struct Reset { bool& flag; ~Reset() { flag = false; } } reset{reporting_};
+            struct Reset {
+                bool& flag;
+                ~Reset() { flag = false; }
+            } reset{reporting_};
             dispatch_platform_event(loop_, listeners(rejection), event);
         }
-        if (!event.default_prevented) std::cerr << (rejection ? "Unhandled promise rejection: " : "Uncaught application error: ") << event.message << '\n';
+        if (!event.default_prevented)
+            std::cerr << (rejection ? "Unhandled promise rejection: "
+                                    : "Uncaught application error: ")
+                      << event.message << '\n';
     }
     EventLoop& loop_;
     bool reporting_ = false;

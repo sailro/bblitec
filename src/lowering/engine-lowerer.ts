@@ -9,25 +9,20 @@ export class EngineLowerer {
 
     public lowerCore(workers = false, frameConductor = true): LoweredSource {
         const modulePath = "src/engine/engine.ts";
-        const create =
-            this.context.functionDeclaration(
-                modulePath,
-                "createEngine",
-            ).declaration;
-        const start =
-            this.context.functionDeclaration(
-                modulePath,
-                "startEngine",
-            ).declaration;
+        const create = this.context.functionDeclaration(
+            modulePath,
+            "createEngine",
+        ).declaration;
+        const start = this.context.functionDeclaration(
+            modulePath,
+            "startEngine",
+        ).declaration;
         if (
             !create.modifiers?.some(
-                (modifier) =>
-                    modifier.kind === ts.SyntaxKind.AsyncKeyword,
+                (modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword,
             )
         ) {
-            throw new Error(
-                "Upstream createEngine is no longer async.",
-            );
+            throw new Error("Upstream createEngine is no longer async.");
         }
         if (!this.context.hasCall(start, "requestAnimationFrame")) {
             throw new Error(
@@ -40,14 +35,11 @@ export class EngineLowerer {
         // here -- the frame conductor IS the loop -- so what is emitted is
         // a flag it checks, and the pin's own two writes are what say the
         // flag means the right thing.
-        const stop =
-            this.context.functionDeclaration(
-                modulePath,
-                "stopEngine",
-            ).declaration;
-        const stopText = stop.getText(
-            this.context.sourceFile(modulePath),
-        );
+        const stop = this.context.functionDeclaration(
+            modulePath,
+            "stopEngine",
+        ).declaration;
+        const stopText = stop.getText(this.context.sourceFile(modulePath));
         for (const fragment of [
             "cancelAnimationFrame(engine._animFrameId)",
             "engine._animFrameId = 0",
@@ -84,9 +76,13 @@ Engine create_engine(EngineOptions options) {
     return pal::create_engine(std::move(options));
 }
 
-${frameConductor ? `void start_engine(Engine& engine) {
+${
+    frameConductor
+        ? `void start_engine(Engine& engine) {
     pal::run_engine(engine);
-}` : ""}
+}`
+        : ""
+}
 
 void stop_engine(Engine& engine) {
     engine.stopped = true;
@@ -121,41 +117,112 @@ ${canvasDatasetSource}
 
     private lowerSurfaceSize(): string {
         const module = "src/engine/surface.ts";
-        const { file, declaration } = this.context.functionDeclaration(module, "setSurfaceSize");
+        const { file, declaration } = this.context.functionDeclaration(
+            module,
+            "setSurfaceSize",
+        );
         const statements = declaration.body!.statements;
         const first = statements[0];
-        if (declaration.parameters.map(parameter => parameter.name.getText(file)).join(",") !== "surface,widthPx,heightPx" ||
-            !first || !ts.isVariableStatement(first) || first.declarationList.declarations.length !== 1 ||
-            first.declarationList.declarations[0]!.name.getText(file) !== "canvas" ||
+        if (
+            declaration.parameters
+                .map((parameter) => parameter.name.getText(file))
+                .join(",") !== "surface,widthPx,heightPx" ||
+            !first ||
+            !ts.isVariableStatement(first) ||
+            first.declarationList.declarations.length !== 1 ||
+            first.declarationList.declarations[0]!.name.getText(file) !==
+                "canvas" ||
             !first.declarationList.declarations[0]!.initializer ||
-            !this.context.expressionMatchesShape(first.declarationList.declarations[0]!.initializer!, "surface.canvas")) {
-            this.context.contractError(declaration, "setSurfaceSize canvas/parameter binding changed.");
+            !this.context.expressionMatchesShape(
+                first.declarationList.declarations[0]!.initializer,
+                "surface.canvas",
+            )
+        ) {
+            this.context.contractError(
+                declaration,
+                "setSurfaceSize canvas/parameter binding changed.",
+            );
         }
-        const writes = ["canvas.width = w", "canvas.height = h", "surface.scRT._width = w", "surface.scRT._height = h"];
-        const split = statements.findIndex(statement => ts.isExpressionStatement(statement) &&
-            this.context.expressionMatchesShape(statement.expression, writes[0]!));
+        const writes = [
+            "canvas.width = w",
+            "canvas.height = h",
+            "surface.scRT._width = w",
+            "surface.scRT._height = h",
+        ];
+        const split = statements.findIndex(
+            (statement) =>
+                ts.isExpressionStatement(statement) &&
+                this.context.expressionMatchesShape(
+                    statement.expression,
+                    writes[0]!,
+                ),
+        );
         const tail = statements.slice(split);
-        if (split < 1 || tail.length !== 5 || !writes.every((write, index) => {
-            const statement = tail[index];
-            return statement && ts.isExpressionStatement(statement) && this.context.expressionMatchesShape(statement.expression, write);
-        })) this.context.contractError(declaration, "setSurfaceSize native resize boundary changed.");
+        if (
+            split < 1 ||
+            tail.length !== 5 ||
+            !writes.every((write, index) => {
+                const statement = tail[index];
+                return (
+                    statement &&
+                    ts.isExpressionStatement(statement) &&
+                    this.context.expressionMatchesShape(
+                        statement.expression,
+                        write,
+                    )
+                );
+            })
+        )
+            this.context.contractError(
+                declaration,
+                "setSurfaceSize native resize boundary changed.",
+            );
         const notify = tail[4]!;
-        if (!ts.isForOfStatement(notify) || !ts.isVariableDeclarationList(notify.initializer) ||
-            notify.initializer.declarations.length !== 1 || notify.initializer.declarations[0]!.name.getText(file) !== "c" ||
-            !this.context.expressionMatchesShape(notify.expression, "surface._renderingContexts") ||
-            !ts.isBlock(notify.statement) || notify.statement.statements.length !== 1 ||
+        if (
+            !ts.isForOfStatement(notify) ||
+            !ts.isVariableDeclarationList(notify.initializer) ||
+            notify.initializer.declarations.length !== 1 ||
+            notify.initializer.declarations[0]!.name.getText(file) !== "c" ||
+            !this.context.expressionMatchesShape(
+                notify.expression,
+                "surface._renderingContexts",
+            ) ||
+            !ts.isBlock(notify.statement) ||
+            notify.statement.statements.length !== 1 ||
             !ts.isExpressionStatement(notify.statement.statements[0]!) ||
-            !this.context.expressionMatchesShape(notify.statement.statements[0]!.expression, "c._resize?.()")) {
-            this.context.contractError(notify, "setSurfaceSize renderer resize notifications changed.");
+            !this.context.expressionMatchesShape(
+                notify.statement.statements[0].expression,
+                "c._resize?.()",
+            )
+        ) {
+            this.context.contractError(
+                notify,
+                "setSurfaceSize renderer resize notifications changed.",
+            );
         }
 
         const body = lowerPinnedBody(file, statements.slice(1, split), {
             bindings: new Map([
                 ["widthPx", { cpp: "width_px", type: "scalar" }],
                 ["heightPx", { cpp: "height_px", type: "scalar" }],
-                ["canvas.width", { cpp: "engine.offscreen_run->extent().width", type: "scalar" }],
-                ["canvas.height", { cpp: "engine.offscreen_run->extent().height", type: "scalar" }],
-            ]), calls: new Map(), booleanAnd: true, checkedBitwiseCoercions: true,
+                [
+                    "canvas.width",
+                    {
+                        cpp: "engine.offscreen_run->extent().width",
+                        type: "scalar",
+                    },
+                ],
+                [
+                    "canvas.height",
+                    {
+                        cpp: "engine.offscreen_run->extent().height",
+                        type: "scalar",
+                    },
+                ],
+            ]),
+            calls: new Map(),
+            booleanAnd: true,
+            checkedBitwiseCoercions: true,
         });
         return `
 // ${this.context.provenance(module, "setSurfaceSize")}

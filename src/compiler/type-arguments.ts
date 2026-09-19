@@ -78,7 +78,9 @@ export function mentionsTypeParameter(
         return true;
     }
     if (type.isUnionOrIntersection()) {
-        return type.types.some((member) => mentionsTypeParameter(checker, member, seen));
+        return type.types.some((member) =>
+            mentionsTypeParameter(checker, member, seen),
+        );
     }
     if ((type.flags & ts.TypeFlags.Object) === 0) {
         return false;
@@ -86,16 +88,27 @@ export function mentionsTypeParameter(
     const reference = type as ts.TypeReference;
     if (
         (reference.objectFlags & ts.ObjectFlags.Reference) !== 0 &&
-        checker.getTypeArguments(reference).some((argument) => mentionsTypeParameter(checker, argument, seen))
+        checker
+            .getTypeArguments(reference)
+            .some((argument) => mentionsTypeParameter(checker, argument, seen))
     ) {
         return true;
     }
-    return type.getCallSignatures().some(
-        (signature) =>
-            signature.getParameters().some((parameter) =>
-                mentionsTypeParameter(checker, checker.getTypeOfSymbol(parameter), seen),
-            ) || mentionsTypeParameter(checker, signature.getReturnType(), seen),
-    );
+    return type
+        .getCallSignatures()
+        .some(
+            (signature) =>
+                signature
+                    .getParameters()
+                    .some((parameter) =>
+                        mentionsTypeParameter(
+                            checker,
+                            checker.getTypeOfSymbol(parameter),
+                            seen,
+                        ),
+                    ) ||
+                mentionsTypeParameter(checker, signature.getReturnType(), seen),
+        );
 }
 
 /** Structural matching of a declared (parameterized) type against an instantiated one. */
@@ -125,7 +138,10 @@ class TypeUnifier {
                 symbol &&
                 this.symbols.has(symbol) &&
                 !this.bindings.has(symbol) &&
-                !((actual.flags & ts.TypeFlags.TypeParameter) !== 0 && actual.symbol === symbol)
+                !(
+                    (actual.flags & ts.TypeFlags.TypeParameter) !== 0 &&
+                    actual.symbol === symbol
+                )
             ) {
                 this.bindings.set(symbol, actual);
             }
@@ -135,7 +151,10 @@ class TypeUnifier {
             this.unifyUnion(pattern, actual);
             return;
         }
-        if ((pattern.flags & ts.TypeFlags.Object) === 0 || (actual.flags & ts.TypeFlags.Object) === 0) {
+        if (
+            (pattern.flags & ts.TypeFlags.Object) === 0 ||
+            (actual.flags & ts.TypeFlags.Object) === 0
+        ) {
             return;
         }
         const patternReference = pattern as ts.TypeReference;
@@ -145,8 +164,10 @@ class TypeUnifier {
             (actualReference.objectFlags & ts.ObjectFlags.Reference) !== 0 &&
             patternReference.target === actualReference.target
         ) {
-            const patternArguments = this.checker.getTypeArguments(patternReference);
-            const actualArguments = this.checker.getTypeArguments(actualReference);
+            const patternArguments =
+                this.checker.getTypeArguments(patternReference);
+            const actualArguments =
+                this.checker.getTypeArguments(actualReference);
             patternArguments.forEach((argument, index) => {
                 const counterpart = actualArguments[index];
                 if (counterpart) this.unify(argument, counterpart);
@@ -165,11 +186,17 @@ class TypeUnifier {
                     );
                 }
             });
-            this.unify(patternSignature.getReturnType(), actualSignature.getReturnType());
+            this.unify(
+                patternSignature.getReturnType(),
+                actualSignature.getReturnType(),
+            );
             return;
         }
         for (const property of this.checker.getPropertiesOfType(pattern)) {
-            const counterpart = this.checker.getPropertyOfType(actual, property.name);
+            const counterpart = this.checker.getPropertyOfType(
+                actual,
+                property.name,
+            );
             if (counterpart) {
                 this.unify(
                     this.checker.getTypeOfSymbol(property),

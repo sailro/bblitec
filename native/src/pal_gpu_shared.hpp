@@ -98,7 +98,9 @@ class TextGpuCapture;
 inline thread_local Engine* draw_count_engine = nullptr;
 struct DrawCountScope {
     Engine* previous;
-    explicit DrawCountScope(Engine& engine) : previous(draw_count_engine) { draw_count_engine = &engine; }
+    explicit DrawCountScope(Engine& engine) : previous(draw_count_engine) {
+        draw_count_engine = &engine;
+    }
     ~DrawCountScope() { draw_count_engine = previous; }
 };
 #endif
@@ -106,7 +108,8 @@ struct DrawCountScope {
 template <typename Function, typename... Args>
 inline void count_gpu_draw(Function function, Args&&... args) {
 #if defined(BBLITE_DEVICE_RECOVERY) && BBLITE_DEVICE_RECOVERY
-    if (draw_count_engine) ++draw_count_engine->draw_call_count;
+    if (draw_count_engine)
+        ++draw_count_engine->draw_call_count;
 #endif
     function(std::forward<Args>(args)...);
 }
@@ -139,9 +142,11 @@ inline EnvironmentState local_cubemap_texture(const LocalCubemapRecord& local) {
             source.specular_rgba16f != result.specular_rgba16f)
             throw std::runtime_error("Local cubemap copy does not match its source environment.");
         const auto destination = static_cast<std::size_t>(copy.mip) * local.layers + copy.layer;
-        if (copied.at(destination)) throw std::runtime_error("Local cubemap repeats a face copy.");
+        if (copied.at(destination))
+            throw std::runtime_error("Local cubemap repeats a face copy.");
         copied[destination] = true;
-        result.specular_faces[destination] = source.specular_faces.at(static_cast<std::size_t>(copy.source_mip) * 6 + copy.source_layer);
+        result.specular_faces[destination] = source.specular_faces.at(
+            static_cast<std::size_t>(copy.source_mip) * 6 + copy.source_layer);
     }
     if (std::find(copied.begin(), copied.end(), false) != copied.end())
         throw std::runtime_error("Local cubemap copy plan leaves a face uninitialized.");
@@ -150,28 +155,31 @@ inline EnvironmentState local_cubemap_texture(const LocalCubemapRecord& local) {
 #endif
 
 /** Whether the scene set a backend planned at startup has changed. */
-inline bool registered_scene_set_changed(
-    const Engine& engine,
-    const std::vector<std::shared_ptr<Scene>>& planned) {
-    if (engine.registered_scenes.size() != planned.size()) return true;
+inline bool registered_scene_set_changed(const Engine& engine,
+                                         const std::vector<std::shared_ptr<Scene>>& planned) {
+    if (engine.registered_scenes.size() != planned.size())
+        return true;
     for (std::size_t i = 0; i < planned.size(); ++i) {
         const std::shared_ptr<Scene>& current = engine.registered_scenes[i];
         if (static_cast<bool>(current) != static_cast<bool>(planned[i])) {
             return true;
         }
-        if (current && !current->shares_identity(*planned[i])) return true;
+        if (current && !current->shares_identity(*planned[i]))
+            return true;
     }
     return false;
 }
 
 /** Stop this render plan whenever its scene set changes, including removal. */
-inline bool request_renderer_restart_if_scene_set_changed(
-    Engine& engine,
-    const std::vector<std::shared_ptr<Scene>>& planned) {
+inline bool
+request_renderer_restart_if_scene_set_changed(Engine& engine,
+                                              const std::vector<std::shared_ptr<Scene>>& planned) {
 #if defined(BBLITE_DEVICE_RECOVERY) && BBLITE_DEVICE_RECOVERY
-    if (engine.device_recovery && engine.device_recovery->requested) return true;
+    if (engine.device_recovery && engine.device_recovery->requested)
+        return true;
 #endif
-    if (!registered_scene_set_changed(engine, planned)) return false;
+    if (!registered_scene_set_changed(engine, planned))
+        return false;
     engine.renderer_restart_requested = !engine.registered_scenes.empty();
     return true;
 }
@@ -189,16 +197,14 @@ inline bool request_renderer_restart_if_scene_set_changed(
  */
 #if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
 inline bool surface_canvas_laid_out(const Engine& engine, UiElementHandle canvas) {
-    if (canvas.value >= engine.ui_elements.size()) throw std::runtime_error("Invalid surface canvas.");
+    if (canvas.value >= engine.ui_elements.size())
+        throw std::runtime_error("Invalid surface canvas.");
     const auto& rect = handle_at(engine.ui_elements, canvas).client_rect;
     return rect.width > 0.0 && rect.height > 0.0;
 }
 
-inline PixelViewport laid_out_canvas_pane(
-    const Engine& engine,
-    UiElementHandle canvas,
-    std::uint32_t target_width,
-    std::uint32_t target_height) {
+inline PixelViewport laid_out_canvas_pane(const Engine& engine, UiElementHandle canvas,
+                                          std::uint32_t target_width, std::uint32_t target_height) {
     const auto& rect = handle_at(engine.ui_elements, canvas).client_rect;
     const double scale_x = static_cast<double>(target_width) / engine.options.width;
     const double scale_y = static_cast<double>(target_height) / engine.options.height;
@@ -213,7 +219,7 @@ inline PixelViewport laid_out_canvas_pane(
 /** An auxiliary registered scene whose surface canvas retained layout never placed. */
 inline bool unplaced_surface_scene(const Engine& engine, const Scene& scene) {
     return scene.surface_canvas.has_value() &&
-        !surface_canvas_laid_out(engine, *scene.surface_canvas);
+           !surface_canvas_laid_out(engine, *scene.surface_canvas);
 }
 #endif
 
@@ -222,24 +228,27 @@ inline bool unplaced_surface_scene(const Engine& engine, const Scene& scene) {
  * auxiliary surface scenes, or nullopt when there is no such split (one
  * pane only) or `scene` is not one of them (a utility-layer overlay).
  */
-inline std::optional<PixelViewport> equal_surface_pane(
-    const Engine& engine,
-    const Scene& scene,
-    std::uint32_t target_width,
-    std::uint32_t target_height) {
+inline std::optional<PixelViewport> equal_surface_pane(const Engine& engine, const Scene& scene,
+                                                       std::uint32_t target_width,
+                                                       std::uint32_t target_height) {
 #if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
-    if (engine.registered_scenes.empty()) return std::nullopt;
+    if (engine.registered_scenes.empty())
+        return std::nullopt;
     std::size_t pane_count = 1;
     std::size_t pane_index = npos;
     const std::shared_ptr<Scene>& primary = engine.registered_scenes.front();
-    if (primary && primary->shares_identity(scene)) pane_index = 0;
+    if (primary && primary->shares_identity(scene))
+        pane_index = 0;
     for (std::size_t i = 1; i < engine.registered_scenes.size(); ++i) {
         const std::shared_ptr<Scene>& registered = engine.registered_scenes[i];
-        if (!registered || !unplaced_surface_scene(engine, *registered)) continue;
-        if (registered->shares_identity(scene)) pane_index = pane_count;
+        if (!registered || !unplaced_surface_scene(engine, *registered))
+            continue;
+        if (registered->shares_identity(scene))
+            pane_index = pane_count;
         ++pane_count;
     }
-    if (pane_count == 1 || pane_index == npos) return std::nullopt;
+    if (pane_count == 1 || pane_index == npos)
+        return std::nullopt;
     const std::uint64_t width = target_width;
     const auto x0 = static_cast<std::int32_t>(width * pane_index / pane_count);
     const auto x1 = static_cast<std::int32_t>(width * (pane_index + 1) / pane_count);
@@ -250,13 +259,16 @@ inline std::optional<PixelViewport> equal_surface_pane(
         std::max<std::int32_t>(1, static_cast<std::int32_t>(target_height)),
     };
 #else
-    (void)engine; (void)scene; (void)target_width; (void)target_height;
+    (void)engine;
+    (void)scene;
+    (void)target_width;
+    (void)target_height;
     return std::nullopt;
 #endif
 }
 
-inline std::optional<PixelViewport> scene_surface_pane(
-    const Engine& engine, const Scene& scene, std::uint32_t width, std::uint32_t height) {
+inline std::optional<PixelViewport> scene_surface_pane(const Engine& engine, const Scene& scene,
+                                                       std::uint32_t width, std::uint32_t height) {
 #if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
     if (scene.surface_canvas && surface_canvas_laid_out(engine, *scene.surface_canvas)) {
         return laid_out_canvas_pane(engine, *scene.surface_canvas, width, height);
@@ -266,54 +278,63 @@ inline std::optional<PixelViewport> scene_surface_pane(
 }
 
 /** The pane of the registered scene presenting through `surface_canvas`. */
-inline std::optional<PixelViewport> surface_canvas_pane(
-    const Engine& engine,
-    std::optional<UiElementHandle> surface_canvas,
-    std::uint32_t target_width,
-    std::uint32_t target_height) {
+inline std::optional<PixelViewport>
+surface_canvas_pane(const Engine& engine, std::optional<UiElementHandle> surface_canvas,
+                    std::uint32_t target_width, std::uint32_t target_height) {
 #if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
-    if (!surface_canvas) return std::nullopt;
+    if (!surface_canvas)
+        return std::nullopt;
     if (surface_canvas_laid_out(engine, *surface_canvas)) {
         return laid_out_canvas_pane(engine, *surface_canvas, target_width, target_height);
     }
     for (std::size_t i = 0; i < engine.registered_scenes.size(); ++i) {
         const std::shared_ptr<Scene>& registered = engine.registered_scenes[i];
-        if (!registered || !registered->surface_canvas) continue;
-        if (registered->surface_canvas->value != surface_canvas->value) continue;
+        if (!registered || !registered->surface_canvas)
+            continue;
+        if (registered->surface_canvas->value != surface_canvas->value)
+            continue;
         return equal_surface_pane(engine, *registered, target_width, target_height);
     }
     return std::nullopt;
 #else
-    (void)engine; (void)surface_canvas; (void)target_width; (void)target_height;
+    (void)engine;
+    (void)surface_canvas;
+    (void)target_width;
+    (void)target_height;
     return std::nullopt;
 #endif
 }
 
-inline std::pair<std::uint32_t, std::uint32_t> surface_target_extent(
-    const Engine& engine, const RenderTargetRecord& target, std::uint32_t width, std::uint32_t height) {
+inline std::pair<std::uint32_t, std::uint32_t>
+surface_target_extent(const Engine& engine, const RenderTargetRecord& target, std::uint32_t width,
+                      std::uint32_t height) {
     const auto pane = surface_canvas_pane(engine, target.surface_canvas, width, height);
-    return {target.width > 0 ? target.width : pane ? static_cast<std::uint32_t>(pane->width) : width,
-        target.height > 0 ? target.height : pane ? static_cast<std::uint32_t>(pane->height) : height};
+    return {target.width > 0 ? target.width
+            : pane           ? static_cast<std::uint32_t>(pane->width)
+                             : width,
+            target.height > 0 ? target.height
+            : pane            ? static_cast<std::uint32_t>(pane->height)
+                              : height};
 }
 
 template <typename Targets>
 inline bool surface_targets_changed(const Engine& engine, const Targets& targets,
-    std::uint32_t width, std::uint32_t height) {
+                                    std::uint32_t width, std::uint32_t height) {
     for (std::size_t i = 0; i < engine.render_targets.size(); ++i) {
         const auto& record = engine.render_targets[i];
-        if (!record.surface_canvas) continue;
-        const auto [expected_width, expected_height] = surface_target_extent(engine, record, width, height);
-        if (targets[i].width != expected_width || targets[i].height != expected_height) return true;
+        if (!record.surface_canvas)
+            continue;
+        const auto [expected_width, expected_height] =
+            surface_target_extent(engine, record, width, height);
+        if (targets[i].width != expected_width || targets[i].height != expected_height)
+            return true;
     }
     return false;
 }
 
 /** Target extent used when building one surface scene's projection. */
-inline PixelViewport scene_surface_extent(
-    const Engine& engine,
-    const Scene& scene,
-    std::uint32_t target_width,
-    std::uint32_t target_height) {
+inline PixelViewport scene_surface_extent(const Engine& engine, const Scene& scene,
+                                          std::uint32_t target_width, std::uint32_t target_height) {
     return scene_surface_pane(engine, scene, target_width, target_height)
         .value_or(PixelViewport{
             0,
@@ -325,36 +346,33 @@ inline PixelViewport scene_surface_extent(
 
 /** Final viewport/scissor after composing a camera viewport into its pane. */
 #if defined(BBLITE_HAS_PBR_RENDERER) && BBLITE_HAS_PBR_RENDERER
-inline std::optional<PixelViewport> scene_camera_viewport(
-    const Engine& engine,
-    const Scene& scene,
-    const CameraRecord& camera,
-    std::uint32_t target_width,
-    std::uint32_t target_height) {
+inline std::optional<PixelViewport> scene_camera_viewport(const Engine& engine, const Scene& scene,
+                                                          const CameraRecord& camera,
+                                                          std::uint32_t target_width,
+                                                          std::uint32_t target_height) {
     const std::optional<PixelViewport> pane =
         scene_surface_pane(engine, scene, target_width, target_height);
     if (!pane.has_value()) {
-        if (!camera.viewport.has_value()) return std::nullopt;
-        return upstream::resolve_camera_viewport(
-            camera,
-            static_cast<double>(target_width),
-            static_cast<double>(target_height));
+        if (!camera.viewport.has_value())
+            return std::nullopt;
+        return upstream::resolve_camera_viewport(camera, static_cast<double>(target_width),
+                                                 static_cast<double>(target_height));
     }
-    if (!camera.viewport.has_value()) return pane;
+    if (!camera.viewport.has_value())
+        return pane;
     PixelViewport viewport = upstream::resolve_camera_viewport(
-        camera,
-        static_cast<double>(pane->width),
-        static_cast<double>(pane->height));
+        camera, static_cast<double>(pane->width), static_cast<double>(pane->height));
     viewport.x += pane->x;
     viewport.y += pane->y;
     return viewport;
 }
 #endif
 
-inline std::string sprite_fragment_shader_name(
-    std::uint32_t program) {
-    if (program == 0u) return "sprite.frag";
-    if (program == 1u) return "sprite_custom.frag";
+inline std::string sprite_fragment_shader_name(std::uint32_t program) {
+    if (program == 0u)
+        return "sprite.frag";
+    if (program == 1u)
+        return "sprite_custom.frag";
     return "sprite_custom_" + std::to_string(program) + ".frag";
 }
 
@@ -368,15 +386,13 @@ inline std::string sprite_fragment_shader_name(
  * fragment for the same environment and, since these names stopped being
  * constants, nothing else stops them drifting apart.
  */
-inline const char* background_ground_fragment(
-    const EnvironmentState& environment) {
-    return environment.enable_noise ? "background-ground-dither.frag"
-                                    : "background-ground.frag";
+inline const char* background_ground_fragment(const EnvironmentState& environment) {
+    return environment.enable_noise ? "background-ground-dither.frag" : "background-ground.frag";
 }
 
-inline const char* background_skybox_fragment(
-    const EnvironmentState& environment) {
-    if (environment.skybox_uses_environment) return "background-skybox.frag";
+inline const char* background_skybox_fragment(const EnvironmentState& environment) {
+    if (environment.skybox_uses_environment)
+        return "background-skybox.frag";
     return environment.enable_noise ? "background-skybox-dither.frag"
                                     : "background-skybox-dds.frag";
 }
@@ -409,13 +425,10 @@ inline const CameraRecord no_camera_record{};
  * relative to. A scene with no camera yields the record default, whose
  * world is the identity, which is the pin's own zero offset.
  */
-inline const CameraRecord& floating_origin_camera(
-    const Scene& scene,
-    const Engine& engine) {
+inline const CameraRecord& floating_origin_camera(const Scene& scene, const Engine& engine) {
     static const CameraRecord none{};
-    return scene.camera.value < engine.cameras.size()
-        ? handle_at(engine.cameras, scene.camera)
-        : none;
+    return scene.camera.value < engine.cameras.size() ? handle_at(engine.cameras, scene.camera)
+                                                      : none;
 }
 
 /**
@@ -425,11 +438,8 @@ inline const CameraRecord& floating_origin_camera(
  * high-precision matrix the camera's storage is F64, so the offset is the
  * unrounded eye and every `large - large = small` runs at full width.
  */
-inline Vec3d floating_origin_offset(
-    const Scene& scene,
-    const Engine& engine) {
-    return upstream::arc_rotate_eye_position(
-        floating_origin_camera(scene, engine));
+inline Vec3d floating_origin_offset(const Scene& scene, const Engine& engine) {
+    return upstream::arc_rotate_eye_position(floating_origin_camera(scene, engine));
 }
 
 /**
@@ -442,16 +452,16 @@ inline Vec3d floating_origin_offset(
  * against an eye-relative `worldPos`. Direction-only entries (directional,
  * hemispheric) are left alone.
  */
-inline void apply_light_floating_origin(
-    std::span<upstream::LightEntry> entries,
-    std::uint32_t count,
-    const Scene& scene,
-    const Engine& engine) {
+inline void apply_light_floating_origin(std::span<upstream::LightEntry> entries,
+                                        std::uint32_t count, const Scene& scene,
+                                        const Engine& engine) {
     const Vec3d offset = floating_origin_offset(scene, engine);
     std::uint32_t written = 0;
     for (const LightHandle handle : scene.lights) {
-        if (written >= count) break;
-        if (handle.value >= engine.lights.size()) continue;
+        if (written >= count)
+            break;
+        if (handle.value >= engine.lights.size())
+            continue;
         const LightRecord& light = handle_at(engine.lights, handle);
         // The pin's own test: the type tag in `vLightData.w`, 0 for a point
         // light and 2 for a spot. A direction-only entry is left alone.
@@ -467,12 +477,9 @@ inline void apply_light_floating_origin(
             // flattened world there and leaves `local_matrix` alone, so
             // reading that instead would put an imported light at the
             // origin.
-            entries[written].vLightData[0] =
-                static_cast<float>(light.position.x - offset.x);
-            entries[written].vLightData[1] =
-                static_cast<float>(light.position.y - offset.y);
-            entries[written].vLightData[2] =
-                static_cast<float>(light.position.z - offset.z);
+            entries[written].vLightData[0] = static_cast<float>(light.position.x - offset.x);
+            entries[written].vLightData[1] = static_cast<float>(light.position.y - offset.y);
+            entries[written].vLightData[2] = static_cast<float>(light.position.z - offset.z);
         }
         ++written;
     }
@@ -480,14 +487,11 @@ inline void apply_light_floating_origin(
 #endif
 
 #if !defined(BBLITE_HAS_SPRITES) || BBLITE_HAS_SPRITES
-inline bool sprite_blend_equal(
-    const SpriteBlendDescriptor& left,
-    const SpriteBlendDescriptor& right) {
-    return left.enabled == right.enabled &&
-        left.color.src == right.color.src &&
-        left.color.dst == right.color.dst &&
-        left.alpha.src == right.alpha.src &&
-        left.alpha.dst == right.alpha.dst;
+inline bool sprite_blend_equal(const SpriteBlendDescriptor& left,
+                               const SpriteBlendDescriptor& right) {
+    return left.enabled == right.enabled && left.color.src == right.color.src &&
+           left.color.dst == right.color.dst && left.alpha.src == right.alpha.src &&
+           left.alpha.dst == right.alpha.dst;
 }
 
 /** Backend-neutral fixed/layout choices for one Sprite2D pipeline. */
@@ -499,39 +503,28 @@ struct SpriteLayerPipelinePlan {
     std::uint32_t instance_stride_bytes = 0;
 };
 
-inline SpriteLayerPipelinePlan sprite_layer_pipeline_plan(
-    const Sprite2DLayerRecord& layer) {
-    const bool has_depth =
-        layer.depth_mode != Sprite2DDepthMode::none;
+inline SpriteLayerPipelinePlan sprite_layer_pipeline_plan(const Sprite2DLayerRecord& layer) {
+    const bool has_depth = layer.depth_mode != Sprite2DDepthMode::none;
     return SpriteLayerPipelinePlan{
-        layer.uv_scroll,
-        has_depth,
-        layer.depth_mode == Sprite2DDepthMode::test_write,
+        layer.uv_scroll, has_depth, layer.depth_mode == Sprite2DDepthMode::test_write,
         layer.alpha_to_coverage,
-        layer.instance_floats_per_sprite *
-            static_cast<std::uint32_t>(sizeof(float))};
+        layer.instance_floats_per_sprite * static_cast<std::uint32_t>(sizeof(float))};
 }
 
 /** Fixed pipeline identity for layers targeting the same scene pass. */
-inline bool sprite_scene_pipeline_compatible(
-    const Sprite2DLayerRecord& left,
-    const Sprite2DLayerRecord& right) {
-    const SpriteLayerPipelinePlan left_plan =
-        sprite_layer_pipeline_plan(left);
-    const SpriteLayerPipelinePlan right_plan =
-        sprite_layer_pipeline_plan(right);
-    return sprite_blend_equal(left.blend, right.blend) &&
-        left_plan.scroll == right_plan.scroll &&
-        left_plan.has_depth == right_plan.has_depth &&
-        left_plan.depth_write == right_plan.depth_write &&
-        left_plan.alpha_to_coverage == right_plan.alpha_to_coverage &&
-        left.custom_shader == right.custom_shader &&
-        left.custom_textures.size() == right.custom_textures.size() &&
-        left_plan.instance_stride_bytes ==
-            right_plan.instance_stride_bytes;
+inline bool sprite_scene_pipeline_compatible(const Sprite2DLayerRecord& left,
+                                             const Sprite2DLayerRecord& right) {
+    const SpriteLayerPipelinePlan left_plan = sprite_layer_pipeline_plan(left);
+    const SpriteLayerPipelinePlan right_plan = sprite_layer_pipeline_plan(right);
+    return sprite_blend_equal(left.blend, right.blend) && left_plan.scroll == right_plan.scroll &&
+           left_plan.has_depth == right_plan.has_depth &&
+           left_plan.depth_write == right_plan.depth_write &&
+           left_plan.alpha_to_coverage == right_plan.alpha_to_coverage &&
+           left.custom_shader == right.custom_shader &&
+           left.custom_textures.size() == right.custom_textures.size() &&
+           left_plan.instance_stride_bytes == right_plan.instance_stride_bytes;
 }
 #endif
-
 
 #if defined(BBLITE_HAS_PBR_RENDERER) && BBLITE_HAS_PBR_RENDERER
 /**
@@ -544,13 +537,12 @@ inline bool sprite_scene_pipeline_compatible(
  * of them left five spare kinds, and nothing would have failed at the
  * sixth.
  */
-inline std::size_t variant_pipeline_key(
-    std::size_t variant,
-    upstream::RenderPipelineKind kind,
-    std::initializer_list<bool> flags) {
-    std::size_t key = variant * upstream::render_pipeline_kind_count +
-        static_cast<std::size_t>(kind);
-    for (const bool flag : flags) key = key * 2 + (flag ? 1 : 0);
+inline std::size_t variant_pipeline_key(std::size_t variant, upstream::RenderPipelineKind kind,
+                                        std::initializer_list<bool> flags) {
+    std::size_t key =
+        variant * upstream::render_pipeline_kind_count + static_cast<std::size_t>(kind);
+    for (const bool flag : flags)
+        key = key * 2 + (flag ? 1 : 0);
     return key;
 }
 
@@ -563,13 +555,10 @@ inline std::size_t variant_pipeline_key(
  * than into the key is what keeps that fold independent of how many flags
  * `variant_pipeline_key` happens to pack.
  */
-inline std::size_t esm_keyed_variant(
-    std::size_t variant,
-    std::size_t variant_count,
-    std::uint32_t esm_shadow_index) {
-    return esm_shadow_index == invalid_handle
-        ? variant
-        : variant + (esm_shadow_index + 1) * variant_count;
+inline std::size_t esm_keyed_variant(std::size_t variant, std::size_t variant_count,
+                                     std::uint32_t esm_shadow_index) {
+    return esm_shadow_index == invalid_handle ? variant
+                                              : variant + (esm_shadow_index + 1) * variant_count;
 }
 #endif
 
@@ -583,7 +572,8 @@ inline std::size_t esm_keyed_variant(
  */
 inline DepthCompare pass_depth_compare(bool shadow_pass) {
 #if BBLITE_SHADOW_RECEIVERS
-    if (shadow_pass) return upstream::shadow_map_depth_compare;
+    if (shadow_pass)
+        return upstream::shadow_map_depth_compare;
 #else
     (void)shadow_pass;
 #endif
@@ -592,13 +582,13 @@ inline DepthCompare pass_depth_compare(bool shadow_pass) {
 
 inline float pass_depth_clear(bool shadow_pass) {
 #if BBLITE_SHADOW_RECEIVERS
-    if (shadow_pass) return upstream::shadow_map_depth_clear;
+    if (shadow_pass)
+        return upstream::shadow_map_depth_clear;
 #else
     (void)shadow_pass;
 #endif
     return upstream::pinned_depth_clear;
 }
-
 
 /**
  * How many samples a pass rasterizes at.
@@ -609,11 +599,10 @@ inline float pass_depth_clear(bool shadow_pass) {
  * descriptor beside the compare and the clear, so all three answer from one
  * reading of the pin rather than two read and one typed.
  */
-inline std::uint32_t pass_depth_samples(
-    bool shadow_pass,
-    std::uint32_t scene_samples) {
+inline std::uint32_t pass_depth_samples(bool shadow_pass, std::uint32_t scene_samples) {
 #if BBLITE_SHADOW_RECEIVERS
-    if (shadow_pass) return upstream::shadow_map_samples;
+    if (shadow_pass)
+        return upstream::shadow_map_samples;
 #else
     (void)shadow_pass;
 #endif
@@ -651,21 +640,15 @@ namespace bbl::pal {
 
 /** Apply a cloned imported root after the mesh's own/deformation world. */
 #if !defined(BBLITE_HAS_PBR_RENDERER) || BBLITE_HAS_PBR_RENDERER
-inline std::array<float, 16> outer_draw_world(
-    const std::array<float, 16>& world,
-    const MeshRecord& record) {
-    if (
-        record.outer_position.x == 0.0f &&
-        record.outer_position.y == 0.0f &&
-        record.outer_position.z == 0.0f &&
-        record.outer_rotation.x == 0.0f &&
-        record.outer_rotation.y == 0.0f &&
-        record.outer_rotation.z == 0.0f) {
+inline std::array<float, 16> outer_draw_world(const std::array<float, 16>& world,
+                                              const MeshRecord& record) {
+    if (record.outer_position.x == 0.0f && record.outer_position.y == 0.0f &&
+        record.outer_position.z == 0.0f && record.outer_rotation.x == 0.0f &&
+        record.outer_rotation.y == 0.0f && record.outer_rotation.z == 0.0f) {
         return world;
     }
     return upstream::matrix_product(
-        upstream::outer_transform_matrix(
-            record.outer_position, record.outer_rotation), world);
+        upstream::outer_transform_matrix(record.outer_position, record.outer_rotation), world);
 }
 
 /**
@@ -675,9 +658,8 @@ inline std::array<float, 16> outer_draw_world(
  * `draw_world` below holds its own: a consumer asks what the offset is and
  * gets one answer, whichever build it is in.
  */
-inline Vec3d frame_floating_origin_offset(
-    [[maybe_unused]] const Scene& scene,
-    [[maybe_unused]] const Engine& engine) {
+inline Vec3d frame_floating_origin_offset([[maybe_unused]] const Scene& scene,
+                                          [[maybe_unused]] const Engine& engine) {
 #if BBLITE_FLOATING_ORIGIN
     return floating_origin_offset(scene, engine);
 #else
@@ -698,24 +680,16 @@ inline Vec3d frame_floating_origin_offset(
  * double. Every family asks here, so which frame a draw is in is one answer
  * rather than one per family.
  */
-inline std::array<float, 16> draw_world(
-    const std::array<float, 16>& base,
-    const MeshRecord& record,
-    [[maybe_unused]] const Scene& scene,
-    [[maybe_unused]] const Engine& engine) {
+inline std::array<float, 16> draw_world(const std::array<float, 16>& base, const MeshRecord& record,
+                                        [[maybe_unused]] const Scene& scene,
+                                        [[maybe_unused]] const Engine& engine) {
 #if BBLITE_FLOATING_ORIGIN
-    return upstream::mesh_world_eye_relative(
-        record,
-        base,
-        floating_origin_offset(scene, engine));
+    return upstream::mesh_world_eye_relative(record, base, floating_origin_offset(scene, engine));
 #else
 #if defined(BBLITE_HAS_PBR_RENDERER) && BBLITE_HAS_PBR_RENDERER
     if (record.gpu_world_transform) {
         return outer_draw_world(
-            upstream::matrix_product(
-                base,
-                upstream::mesh_world_matrix(engine, record)),
-            record);
+            upstream::matrix_product(base, upstream::mesh_world_matrix(engine, record)), record);
     }
 #endif
     return outer_draw_world(base, record);
@@ -724,17 +698,30 @@ inline std::array<float, 16> draw_world(
 
 #if defined(BBLITE_HAS_PBR_RENDERER) && BBLITE_HAS_PBR_RENDERER
 /** World after scene-authored deformation of an unbaked local stream. */
-inline std::array<float, 16> scene_deformation_draw_world(
-    const MeshRecord& record,
-    [[maybe_unused]] const Scene& scene,
-    const Engine& engine) {
+inline std::array<float, 16> scene_deformation_draw_world(const MeshRecord& record,
+                                                          [[maybe_unused]] const Scene& scene,
+                                                          const Engine& engine) {
 #if BBLITE_FLOATING_ORIGIN
-    return draw_world(std::array<float, 16>{
-        1.0f, 0.0f, 0.0f, 0.0f,
-        0.0f, 1.0f, 0.0f, 0.0f,
-        0.0f, 0.0f, 1.0f, 0.0f,
-        0.0f, 0.0f, 0.0f, 1.0f,
-    }, record, scene, engine);
+    return draw_world(
+        std::array<float, 16>{
+            1.0f,
+            0.0f,
+            0.0f,
+            0.0f,
+            0.0f,
+            1.0f,
+            0.0f,
+            0.0f,
+            0.0f,
+            0.0f,
+            1.0f,
+            0.0f,
+            0.0f,
+            0.0f,
+            0.0f,
+            1.0f,
+        },
+        record, scene, engine);
 #else
     // Bypass draw_world's gpu_world_transform branch: this already is the
     // complete hierarchy world, so that branch would compose it twice.
@@ -743,9 +730,8 @@ inline std::array<float, 16> scene_deformation_draw_world(
 }
 
 /** The world that accompanies a live palette/storage pose in either pass. */
-inline std::array<float, 16> deformed_draw_world(
-    bool skeleton_draw, const MeshRecord& record,
-    const Scene& scene, const Engine& engine) {
+inline std::array<float, 16> deformed_draw_world(bool skeleton_draw, const MeshRecord& record,
+                                                 const Scene& scene, const Engine& engine) {
     if ((skeleton_draw && record.scene_skeleton) ||
         (!skeleton_draw && record.bone_matrices.empty() && record.scene_morph_targets)) {
         return scene_deformation_draw_world(record, scene, engine);
@@ -755,12 +741,26 @@ inline std::array<float, 16> deformed_draw_world(
     if (!skeleton_draw && !record.bone_matrices.empty()) {
         return draw_world(record.bone_matrices[0], record, scene, engine);
     }
-    return draw_world(std::array<float, 16>{
-        1.0f, 0.0f, 0.0f, 0.0f,
-        0.0f, 1.0f, 0.0f, 0.0f,
-        0.0f, 0.0f, 1.0f, 0.0f,
-        0.0f, 0.0f, 0.0f, 1.0f,
-    }, record, scene, engine);
+    return draw_world(
+        std::array<float, 16>{
+            1.0f,
+            0.0f,
+            0.0f,
+            0.0f,
+            0.0f,
+            1.0f,
+            0.0f,
+            0.0f,
+            0.0f,
+            0.0f,
+            1.0f,
+            0.0f,
+            0.0f,
+            0.0f,
+            0.0f,
+            1.0f,
+        },
+        record, scene, engine);
 }
 
 #endif
@@ -795,18 +795,15 @@ inline std::array<float, 16> deformed_draw_world(
  * Deliberately not cached: the answer is a pure function of the record and
  * eye, while a backend-local cache would add ordering-dependent state.
  */
-inline std::array<float, 16> instance_parent_draw_world(
-    const MeshRecord& record,
-    [[maybe_unused]] const Scene& scene,
-    [[maybe_unused]] const Engine& engine) {
+inline std::array<float, 16> instance_parent_draw_world(const MeshRecord& record,
+                                                        [[maybe_unused]] const Scene& scene,
+                                                        [[maybe_unused]] const Engine& engine) {
 #if BBLITE_FLOATING_ORIGIN
     if (record.thin_instanced) {
-        return draw_world(
-            record.instance_parent_matrix, record, scene, engine);
+        return draw_world(record.instance_parent_matrix, record, scene, engine);
     }
 #endif
-    return outer_draw_world(
-        upstream::build_instance_parent_world(record), record);
+    return outer_draw_world(upstream::build_instance_parent_world(record), record);
 }
 #endif
 
@@ -820,21 +817,16 @@ inline std::array<float, 16> instance_parent_draw_world(
  */
 #endif
 
-inline bool geometry_depth_is_borrowed(
-    const Engine& engine,
-    std::size_t task) {
+inline bool geometry_depth_is_borrowed(const Engine& engine, std::size_t task) {
     for (const FrameTaskRecord& record : engine.frame_tasks) {
-        if (
-            record.kind == FrameTaskKind::render &&
-            record.render.depth.source ==
-                RenderTextureSource::geometry_depth &&
+        if (record.kind == FrameTaskKind::render &&
+            record.render.depth.source == RenderTextureSource::geometry_depth &&
             record.render.depth.task.value == task) {
             return true;
         }
     }
     return false;
 }
-
 
 /**
  * Whether a render target hands samplers its depth attachment.
@@ -854,10 +846,8 @@ inline bool render_target_samples_depth(const RenderTargetRecord& record) {
 
 /** The refusal both backends owe a depth-only target with no depth. */
 [[noreturn]] inline void fail_render_target_has_no_texture() {
-    throw std::runtime_error(
-        "Depth-only render target has no color texture.");
+    throw std::runtime_error("Depth-only render target has no color texture.");
 }
-
 
 /**
  * The pin's `gpUniforms` block, declared by a geometry-output variant whose
@@ -879,8 +869,7 @@ struct PinnedGeometryParams {
 // numbers `src/shader-ir.ts` specializes the WGSL to, stated once here so
 // the two backends cannot disagree about them.
 inline constexpr std::uint32_t instance_matrix_first_location = 16;
-inline constexpr std::uint32_t instance_color_location =
-    instance_matrix_first_location + 4;
+inline constexpr std::uint32_t instance_color_location = instance_matrix_first_location + 4;
 
 struct GpuVertex {
     float position[3];
@@ -933,8 +922,7 @@ enum class VertexInputStream : std::uint32_t {
 };
 
 /** The buffer slot both backends bind a stream at. */
-inline constexpr std::uint32_t vertex_stream_slot(
-    VertexInputStream stream) {
+inline constexpr std::uint32_t vertex_stream_slot(VertexInputStream stream) {
     return static_cast<std::uint32_t>(stream);
 }
 
@@ -946,15 +934,14 @@ inline constexpr std::uint32_t vertex_stream_slot(
  * which slot each binds at is the backend's answer and everything else --
  * stride, offset, step rate -- comes from the generated declaration.
  */
-inline constexpr std::string_view vertex_stream_group(
-    VertexInputStream stream) {
+inline constexpr std::string_view vertex_stream_group(VertexInputStream stream) {
     switch (stream) {
-        case VertexInputStream::instance_matrix:
-            return "ti-matrix";
-        case VertexInputStream::instance_color:
-            return "ti-color";
-        case VertexInputStream::vertex:
-            break;
+    case VertexInputStream::instance_matrix:
+        return "ti-matrix";
+    case VertexInputStream::instance_color:
+        return "ti-color";
+    case VertexInputStream::vertex:
+        break;
     }
     return "";
 }
@@ -968,20 +955,17 @@ inline constexpr std::string_view vertex_stream_group(
  * declarations. A stride the pin moves therefore moves here, in both
  * backends, without either one restating it.
  */
-inline constexpr std::uint64_t vertex_stream_stride(
-    [[maybe_unused]] VertexInputStream stream) {
+inline constexpr std::uint64_t vertex_stream_stride([[maybe_unused]] VertexInputStream stream) {
 #if BBLITE_GPU_INSTANCING
     if (stream != VertexInputStream::vertex) {
-        return upstream::pinned_instance_group_stride(
-            vertex_stream_group(stream));
+        return upstream::pinned_instance_group_stride(vertex_stream_group(stream));
     }
 #endif
     return sizeof(GpuVertex);
 }
 
 /** Whether a stream steps per instance rather than per vertex. */
-inline constexpr bool vertex_stream_is_instanced(
-    VertexInputStream stream) {
+inline constexpr bool vertex_stream_is_instanced(VertexInputStream stream) {
     return stream != VertexInputStream::vertex;
 }
 
@@ -1012,171 +996,135 @@ inline constexpr std::array<VertexInputStream, 3> vertex_streams{
 
 /** The record field one slot reads, or nullptr when the family has none. */
 #if !defined(BBLITE_HAS_PBR_RENDERER) || BBLITE_HAS_PBR_RENDERER
-inline const TextureData* material_slot_texture(
-    const MaterialRecord& material,
-    upstream::MaterialTextureSource source,
-    bool standard_material) {
+inline const TextureData* material_slot_texture(const MaterialRecord& material,
+                                                upstream::MaterialTextureSource source,
+                                                bool standard_material) {
     using Source = upstream::MaterialTextureSource;
     switch (source) {
-        case Source::base_color:
-            return &material.base_color_texture;
-        case Source::specular_or_metallic_roughness:
-            return standard_material
-                ? &material.specular_texture
-                : &material.metallic_roughness_texture;
-        case Source::opacity_or_normal:
-            return standard_material
-                ? &material.opacity_texture
-                : &material.normal_texture;
-        case Source::ambient_or_emissive:
-            return standard_material
-                ? &material.ambient_texture
-                : &material.emissive_texture;
-        case Source::standard_emissive:
-            return standard_material ? &material.emissive_texture : nullptr;
-        case Source::spec_gloss:
-            return standard_material ? nullptr : &material.spec_gloss_texture;
-        case Source::transmission:
-            return standard_material
-                ? nullptr
-                : &material.transmission_texture;
-        case Source::thickness:
-            return standard_material ? nullptr : &material.thickness_texture;
-        case Source::clearcoat:
-            return standard_material ? nullptr : &material.clearcoat_texture;
-        case Source::clearcoat_roughness:
-            return standard_material
-                ? nullptr
-                : &material.clearcoat_roughness_texture;
-        case Source::clearcoat_normal:
-            return standard_material
-                ? nullptr
-                : &material.clearcoat_normal_texture;
-        case Source::sheen_color:
-            return standard_material
-                ? nullptr
-                : &material.sheen_color_texture;
-        case Source::sheen_roughness:
-            return standard_material
-                ? nullptr
-                : &material.sheen_roughness_texture;
-        case Source::iridescence:
-            return standard_material
-                ? nullptr
-                : &material.iridescence_texture;
-        case Source::iridescence_thickness:
-            return standard_material
-                ? nullptr
-                : &material.iridescence_thickness_texture;
-        case Source::lightmap:
-            return &material.lightmap_texture;
-        case Source::metallic_reflectance:
-            return standard_material
-                ? nullptr
-                : &material.metallic_reflectance_texture;
-        case Source::reflectance:
-            return standard_material
-                ? nullptr
-                : &material.reflectance_texture;
-        case Source::anisotropy:
-            return standard_material ? nullptr : &material.anisotropy_texture;
-        case Source::translucency_color:
-            return standard_material ? nullptr : &material.translucency_color_texture;
-        case Source::translucency_intensity:
-            return standard_material ? nullptr : &material.translucency_intensity_texture;
-        case Source::occlusion_uv2:
-            return !standard_material && material.occlusion_texture_uv2
-                ? &material.occlusion_texture
-                : nullptr;
-        case Source::standard_bump:
-            return standard_material ? &material.bump_texture : nullptr;
-        case Source::standard_reflection:
-            return standard_material
-                ? &material.reflection_texture
-                : nullptr;
-        // Scene-owned resources carry no record field. The two VAT rows
-        // are the mesh's own, like the bone palette beside them.
-        case Source::environment_cube:
-        case Source::local_probe_cube:
-        case Source::brdf_lut:
-        case Source::scene_color:
-        case Source::bone_palette:
-        case Source::vat_palette:
-        case Source::vat_instance_params:
-        case Source::clustered_lights:
-        case Source::clustered_cells:
-        case Source::clustered_indices:
-            return nullptr;
+    case Source::base_color:
+        return &material.base_color_texture;
+    case Source::specular_or_metallic_roughness:
+        return standard_material ? &material.specular_texture
+                                 : &material.metallic_roughness_texture;
+    case Source::opacity_or_normal:
+        return standard_material ? &material.opacity_texture : &material.normal_texture;
+    case Source::ambient_or_emissive:
+        return standard_material ? &material.ambient_texture : &material.emissive_texture;
+    case Source::standard_emissive:
+        return standard_material ? &material.emissive_texture : nullptr;
+    case Source::spec_gloss:
+        return standard_material ? nullptr : &material.spec_gloss_texture;
+    case Source::transmission:
+        return standard_material ? nullptr : &material.transmission_texture;
+    case Source::thickness:
+        return standard_material ? nullptr : &material.thickness_texture;
+    case Source::clearcoat:
+        return standard_material ? nullptr : &material.clearcoat_texture;
+    case Source::clearcoat_roughness:
+        return standard_material ? nullptr : &material.clearcoat_roughness_texture;
+    case Source::clearcoat_normal:
+        return standard_material ? nullptr : &material.clearcoat_normal_texture;
+    case Source::sheen_color:
+        return standard_material ? nullptr : &material.sheen_color_texture;
+    case Source::sheen_roughness:
+        return standard_material ? nullptr : &material.sheen_roughness_texture;
+    case Source::iridescence:
+        return standard_material ? nullptr : &material.iridescence_texture;
+    case Source::iridescence_thickness:
+        return standard_material ? nullptr : &material.iridescence_thickness_texture;
+    case Source::lightmap:
+        return &material.lightmap_texture;
+    case Source::metallic_reflectance:
+        return standard_material ? nullptr : &material.metallic_reflectance_texture;
+    case Source::reflectance:
+        return standard_material ? nullptr : &material.reflectance_texture;
+    case Source::anisotropy:
+        return standard_material ? nullptr : &material.anisotropy_texture;
+    case Source::translucency_color:
+        return standard_material ? nullptr : &material.translucency_color_texture;
+    case Source::translucency_intensity:
+        return standard_material ? nullptr : &material.translucency_intensity_texture;
+    case Source::occlusion_uv2:
+        return !standard_material && material.occlusion_texture_uv2 ? &material.occlusion_texture
+                                                                    : nullptr;
+    case Source::standard_bump:
+        return standard_material ? &material.bump_texture : nullptr;
+    case Source::standard_reflection:
+        return standard_material ? &material.reflection_texture : nullptr;
+    // Scene-owned resources carry no record field. The two VAT rows
+    // are the mesh's own, like the bone palette beside them.
+    case Source::environment_cube:
+    case Source::local_probe_cube:
+    case Source::brdf_lut:
+    case Source::scene_color:
+    case Source::bone_palette:
+    case Source::vat_palette:
+    case Source::vat_instance_params:
+    case Source::clustered_lights:
+    case Source::clustered_cells:
+    case Source::clustered_indices:
+        return nullptr;
     }
     return nullptr;
 }
 
 /** Whether one slot uploads through an sRGB view, per the table's rule. */
-inline bool material_slot_srgb(
-    upstream::MaterialTextureSrgb rule,
-    const MaterialRecord* material,
-    bool standard_material) {
+inline bool material_slot_srgb(upstream::MaterialTextureSrgb rule, const MaterialRecord* material,
+                               bool standard_material) {
     switch (rule) {
-        case upstream::MaterialTextureSrgb::linear:
-            return false;
-        case upstream::MaterialTextureSrgb::srgb:
-            return true;
-        case upstream::MaterialTextureSrgb::srgb_unless_standard:
-            return !standard_material;
-        case upstream::MaterialTextureSrgb::lightmap:
-            return material != nullptr && material->lightmap_texture_srgb;
-        case upstream::MaterialTextureSrgb::base_color:
-            // The slot's encoding is its TEXTURE's, which upstream stores as
-            // the `Texture2D`'s own format: the record carries it for the
-            // image and the fallback texel alike, so an image is not assumed
-            // to be sRGB because it is an image. A transferred texture keeps
-            // the same encoding when a Standard diffuse slot takes it.
-            return standard_material
-                ? material != nullptr && material->diffuse_texture_srgb
-                : material == nullptr || material->base_color_srgb;
+    case upstream::MaterialTextureSrgb::linear:
+        return false;
+    case upstream::MaterialTextureSrgb::srgb:
+        return true;
+    case upstream::MaterialTextureSrgb::srgb_unless_standard:
+        return !standard_material;
+    case upstream::MaterialTextureSrgb::lightmap:
+        return material != nullptr && material->lightmap_texture_srgb;
+    case upstream::MaterialTextureSrgb::base_color:
+        // The slot's encoding is its TEXTURE's, which upstream stores as
+        // the `Texture2D`'s own format: the record carries it for the
+        // image and the fallback texel alike, so an image is not assumed
+        // to be sRGB because it is an image. A transferred texture keeps
+        // the same encoding when a Standard diffuse slot takes it.
+        return standard_material ? material != nullptr && material->diffuse_texture_srgb
+                                 : material == nullptr || material->base_color_srgb;
     }
     return false;
 }
 
 /** The 1x1 texel an image-less slot uploads, per the table's rule. */
-inline std::array<std::uint8_t, 4> material_slot_fallback(
-    upstream::MaterialTextureFallback rule,
-    const MaterialRecord* material,
-    bool standard_material) {
+inline std::array<std::uint8_t, 4> material_slot_fallback(upstream::MaterialTextureFallback rule,
+                                                          const MaterialRecord* material,
+                                                          bool standard_material) {
     constexpr std::array<std::uint8_t, 4> white_texel{255, 255, 255, 255};
     constexpr std::array<std::uint8_t, 4> black_texel{0, 0, 0, 255};
     // A flat tangent-space normal, so a material with no map reads
     // (0, 0, 1) out of the sample and keeps its interpolated normal.
-    constexpr std::array<std::uint8_t, 4> flat_normal_texel{
-        128, 128, 255, 255};
+    constexpr std::array<std::uint8_t, 4> flat_normal_texel{128, 128, 255, 255};
     switch (rule) {
-        case upstream::MaterialTextureFallback::white:
+    case upstream::MaterialTextureFallback::white:
+        return white_texel;
+    case upstream::MaterialTextureFallback::black:
+        return black_texel;
+    case upstream::MaterialTextureFallback::flat_normal:
+        return flat_normal_texel;
+    case upstream::MaterialTextureFallback::white_or_flat_normal:
+        return standard_material ? white_texel : flat_normal_texel;
+    case upstream::MaterialTextureFallback::base_color_record:
+        return !standard_material && material ? material->base_color_fallback : white_texel;
+    case upstream::MaterialTextureFallback::orm_record:
+        // The pinned ORM factor texel, so an animated metallic or
+        // roughness factor multiplies the authored value rather than
+        // white. Standard materials never carry one.
+        return !standard_material && material ? material->orm_fallback : white_texel;
+    case upstream::MaterialTextureFallback::white_or_emissive_factor: {
+        if (standard_material)
             return white_texel;
-        case upstream::MaterialTextureFallback::black:
-            return black_texel;
-        case upstream::MaterialTextureFallback::flat_normal:
-            return flat_normal_texel;
-        case upstream::MaterialTextureFallback::white_or_flat_normal:
-            return standard_material ? white_texel : flat_normal_texel;
-        case upstream::MaterialTextureFallback::base_color_record:
-            return !standard_material && material
-                ? material->base_color_fallback
-                : white_texel;
-        case upstream::MaterialTextureFallback::orm_record:
-            // The pinned ORM factor texel, so an animated metallic or
-            // roughness factor multiplies the authored value rather than
-            // white. Standard materials never carry one.
-            return !standard_material && material
-                ? material->orm_fallback
-                : white_texel;
-        case upstream::MaterialTextureFallback::white_or_emissive_factor: {
-            if (standard_material) return white_texel;
-            const bool has_emissive_factor = material &&
-                (material->emissive_factor.r != 0.0f ||
-                 material->emissive_factor.g != 0.0f ||
-                 material->emissive_factor.b != 0.0f);
-            return has_emissive_factor ? white_texel : black_texel;
-        }
+        const bool has_emissive_factor = material && (material->emissive_factor.r != 0.0f ||
+                                                      material->emissive_factor.g != 0.0f ||
+                                                      material->emissive_factor.b != 0.0f);
+        return has_emissive_factor ? white_texel : black_texel;
+    }
     }
     return white_texel;
 }
@@ -1189,12 +1137,10 @@ inline std::array<std::uint8_t, 4> material_slot_fallback(
  * resource the table does not know fails by name rather than sampling
  * whatever sat at that index.
  */
-inline const upstream::MaterialTextureSlot* material_slot_for_binding(
-    std::string_view name) {
-    for (
-        const upstream::MaterialTextureSlot& slot :
-        upstream::material_texture_slots) {
-        if (slot.texture_name.empty()) continue;
+inline const upstream::MaterialTextureSlot* material_slot_for_binding(std::string_view name) {
+    for (const upstream::MaterialTextureSlot& slot : upstream::material_texture_slots) {
+        if (slot.texture_name.empty())
+            continue;
         if (name == slot.texture_name || name == slot.sampler_name) {
             return &slot;
         }
@@ -1212,11 +1158,9 @@ inline const upstream::MaterialTextureSlot* material_slot_for_binding(
  * comment in pinned-standard-variants.ts says exactly that: a
  * "material_texture_slots row source").
  */
-inline const upstream::MaterialTextureSlot* material_slot_for_source(
-    upstream::MaterialTextureSource source) {
-    for (
-        const upstream::MaterialTextureSlot& slot :
-        upstream::material_texture_slots) {
+inline const upstream::MaterialTextureSlot*
+material_slot_for_source(upstream::MaterialTextureSource source) {
+    for (const upstream::MaterialTextureSlot& slot : upstream::material_texture_slots) {
         if (slot.source == source) {
             return &slot;
         }
@@ -1235,9 +1179,7 @@ struct DeformationUniforms {
     float options[4]{};
 };
 
-inline DeformationUniforms build_deformation_uniforms(
-    const MeshRecord& mesh,
-    bool flat_normals) {
+inline DeformationUniforms build_deformation_uniforms(const MeshRecord& mesh, bool flat_normals) {
     DeformationUniforms result;
     for (std::array<float, 16>& matrix : result.bone_matrices) {
         matrix[0] = 1.0f;
@@ -1245,7 +1187,8 @@ inline DeformationUniforms build_deformation_uniforms(
         matrix[10] = 1.0f;
         matrix[15] = 1.0f;
     }
-    if (!mesh.gpu_deformation) return result;
+    if (!mesh.gpu_deformation)
+        return result;
     // A palette on the pin's own texture is read by the composed skeleton
     // stage, not from this block, so the bone lanes stay the identity:
     // filling them would be dead bytes, and this 64-matrix array could
@@ -1256,15 +1199,10 @@ inline DeformationUniforms build_deformation_uniforms(
         // generation refuses above this array's length and the loader
         // refuses again for a BBLITE_ASSET_DIR override -- so the copy
         // cannot overrun and needs no third check here.
-        std::copy(
-            mesh.bone_matrices.begin(),
-            mesh.bone_matrices.end(),
-            result.bone_matrices.begin());
+        std::copy(mesh.bone_matrices.begin(), mesh.bone_matrices.end(),
+                  result.bone_matrices.begin());
     }
-    std::copy(
-        mesh.morph_weights.begin(),
-        mesh.morph_weights.end(),
-        result.morph_weights);
+    std::copy(mesh.morph_weights.begin(), mesh.morph_weights.end(), result.morph_weights);
     result.options[0] = 1.0f;
     result.options[1] = flat_normals ? 1.0f : 0.0f;
     return result;
@@ -1309,20 +1247,15 @@ struct PickMeshUniforms {
  * uploads all twenty floats as one buffer; `PickSceneUniforms` is that
  * buffer, so the split does not survive into this port.
  */
-inline PickSceneUniforms build_pick_scene_uniforms(
-    const std::array<float, 16>& vp,
-    double sample_x,
-    double sample_y,
-    double width,
-    double height) {
+inline PickSceneUniforms build_pick_scene_uniforms(const std::array<float, 16>& vp, double sample_x,
+                                                   double sample_y, double width, double height) {
     PickSceneUniforms out;
-    upstream::compute_pick_view_projection(
-        out.view_projection, vp, sample_x, sample_y, width, height);
+    upstream::compute_pick_view_projection(out.view_projection, vp, sample_x, sample_y, width,
+                                           height);
     // The pin writes the sampled pixel's CENTRE; a discard predicate reads
     // it, and the default one does not -- but the block uploads whole.
-    out.fragment_coord = {
-        static_cast<float>(std::floor(sample_x) + 0.5),
-        static_cast<float>(std::floor(sample_y) + 0.5)};
+    out.fragment_coord = {static_cast<float>(std::floor(sample_x) + 0.5),
+                          static_cast<float>(std::floor(sample_y) + 0.5)};
     return out;
 }
 
@@ -1355,10 +1288,10 @@ struct PickRange {
  * agree, and saying so is cheaper than debugging a silent miss if they
  * ever stop agreeing.
  */
-inline PickingInfo resolve_pick_result(
-    const std::vector<PickRange>& ranges,
-    std::uint32_t pick_id) {
-    if (pick_id == 0) return PickingInfo{};
+inline PickingInfo resolve_pick_result(const std::vector<PickRange>& ranges,
+                                       std::uint32_t pick_id) {
+    if (pick_id == 0)
+        return PickingInfo{};
     for (const PickRange& range : ranges) {
         if (pick_id < range.id || pick_id - range.id >= range.count) {
             continue;
@@ -1370,8 +1303,7 @@ inline PickingInfo resolve_pick_result(
         info.picked_range_offset = pick_id - range.id;
         return info;
     }
-    throw std::runtime_error(
-        "GPU pick read an id no candidate was drawn under.");
+    throw std::runtime_error("GPU pick read an id no candidate was drawn under.");
 }
 
 /**
@@ -1394,16 +1326,12 @@ struct BillboardPickUniforms {
     std::array<float, 3> axis{};
     float pad = 0.0f;
 };
-static_assert(
-    sizeof(BillboardPickUniforms) == 48,
-    "the pin's billboard pick UBO is 48 bytes");
+static_assert(sizeof(BillboardPickUniforms) == 48, "the pin's billboard pick UBO is 48 bytes");
 
 /** `packBillboardPickUbo`, lowered from its own body. */
-inline BillboardPickUniforms build_billboard_pick_uniforms(
-    const std::array<float, 16>& view,
-    std::uint32_t base_id,
-    float cutoff,
-    Vec3 axis) {
+inline BillboardPickUniforms build_billboard_pick_uniforms(const std::array<float, 16>& view,
+                                                           std::uint32_t base_id, float cutoff,
+                                                           Vec3 axis) {
     BillboardPickUniforms out;
     out.cam_right = {view[0], view[4], view[8]};
     out.base_id = base_id;
@@ -1429,16 +1357,12 @@ inline bool billboard_pick_draws(const BillboardSystemRecord& system) {
  * asserted at compile time rather than re-checked per pipeline build.
  */
 inline constexpr std::size_t billboard_pick_attributes = 6;
-static_assert(
-    upstream::billboard_instance_attributes.size() >=
-        billboard_pick_attributes,
-    "the pinned billboard layout dropped an attribute the pick stage reads");
+static_assert(upstream::billboard_instance_attributes.size() >= billboard_pick_attributes,
+              "the pinned billboard layout dropped an attribute the pick stage reads");
 static_assert(
     [] {
-        for (std::size_t index = 0; index < billboard_pick_attributes;
-             ++index) {
-            if (upstream::billboard_instance_attributes[index]
-                    .shader_location != index) {
+        for (std::size_t index = 0; index < billboard_pick_attributes; ++index) {
+            if (upstream::billboard_instance_attributes[index].shader_location != index) {
                 return false;
             }
         }
@@ -1455,15 +1379,11 @@ static_assert(
  * vertex stem and shares the first's fragment, exactly as the visible
  * billboard pair does.
  */
-inline const char* billboard_pick_vertex_stem(
-    BillboardOrientation orientation) {
-    return orientation == BillboardOrientation::axis_locked
-        ? "picking-billboard-axis-locked.vert"
-        : "picking-billboard.vert";
+inline const char* billboard_pick_vertex_stem(BillboardOrientation orientation) {
+    return orientation == BillboardOrientation::axis_locked ? "picking-billboard-axis-locked.vert"
+                                                            : "picking-billboard.vert";
 }
-inline const char* billboard_pick_fragment_stem() {
-    return "picking-billboard.frag";
-}
+inline const char* billboard_pick_fragment_stem() { return "picking-billboard.frag"; }
 
 /** One billboard system the pick pass draws, and the range it owns. */
 struct PickBillboardCandidate {
@@ -1488,49 +1408,36 @@ struct PickBillboardCandidate {
  * pipeline and bind mechanics.
  */
 inline void collect_pick_billboard_candidates(
-    const Engine& engine,
-    const Scene& scene,
-    std::vector<PickRange>& ranges,
+    const Engine& engine, const Scene& scene, std::vector<PickRange>& ranges,
     std::uint32_t& next_id,
     // The caller's scratch, cleared here and refilled: a pick runs per
     // pointer event, so the list keeps its capacity across picks.
     std::vector<PickBillboardCandidate>& candidates) {
     candidates.clear();
-    for (std::size_t index = 0; index < scene.billboard_systems.size();
-         ++index) {
-        const BillboardSystemHandle handle =
-            scene.billboard_systems[index];
-        const BillboardSystemRecord& system =
-            handle_at(engine.billboard_systems, handle);
+    for (std::size_t index = 0; index < scene.billboard_systems.size(); ++index) {
+        const BillboardSystemHandle handle = scene.billboard_systems[index];
+        const BillboardSystemRecord& system = handle_at(engine.billboard_systems, handle);
         const std::uint32_t base_id = next_id;
         next_id += system.count;
-        if (system.count == 0) continue;
+        if (system.count == 0)
+            continue;
         // Recorded even for a hidden system: its ids are consumed either
         // way, and nothing else can answer for them.
-        ranges.push_back(
-            {base_id,
-             PickedNodeKind::billboard_sprite,
-             handle.value,
-             system.count});
-        if (!billboard_pick_draws(system)) continue;
-        candidates.push_back(
-            {index,
-             base_id,
-             system.count,
-             system.orientation,
-             system.axis});
+        ranges.push_back({base_id, PickedNodeKind::billboard_sprite, handle.value, system.count});
+        if (!billboard_pick_draws(system))
+            continue;
+        candidates.push_back({index, base_id, system.count, system.orientation, system.axis});
     }
 }
 
 #endif
 
 /** Refuse unsupported contributors only when this scene's pick pass draws them. */
-inline void validate_pick_contributors(
-    [[maybe_unused]] const Engine& engine,
-    [[maybe_unused]] const Scene& scene,
-    [[maybe_unused]] bool detailed,
-    bool pick_sources) {
-    if (!pick_sources) return;
+inline void validate_pick_contributors([[maybe_unused]] const Engine& engine,
+                                       [[maybe_unused]] const Scene& scene,
+                                       [[maybe_unused]] bool detailed, bool pick_sources) {
+    if (!pick_sources)
+        return;
     bool has_splats = false;
 #if BBLITE_HAS_SPLATS
     for (const auto handle : scene.splat_meshes) {
@@ -1538,23 +1445,29 @@ inline void validate_pick_contributors(
     }
 #endif
     if (detailed && has_splats) {
-        throw std::runtime_error("Detailed picking requires the splat contributor's third attachment.");
+        throw std::runtime_error(
+            "Detailed picking requires the splat contributor's third attachment.");
     }
 #if BBLITE_HAS_BILLBOARDS
     for (const auto handle : scene.billboard_systems) {
         const auto& system = handle_at(engine.billboard_systems, handle);
-        if (!billboard_pick_draws(system)) continue;
+        if (!billboard_pick_draws(system))
+            continue;
         if (system.depth_mode == BillboardDepthMode::cutout) {
-            throw std::runtime_error("Cutout billboard picking requires the atlas alpha-cutoff binding.");
+            throw std::runtime_error(
+                "Cutout billboard picking requires the atlas alpha-cutoff binding.");
         }
 #if BBLITE_FLOATING_ORIGIN
-        throw std::runtime_error("Billboard picking requires instance positions in the scene's eye-relative frame.");
+        throw std::runtime_error(
+            "Billboard picking requires instance positions in the scene's eye-relative frame.");
 #else
         if (has_splats) {
-            throw std::runtime_error("Billboard and splat picking requires contributor registration order within the scene.");
+            throw std::runtime_error(
+                "Billboard and splat picking requires contributor registration order within the scene.");
         }
         if (detailed) {
-            throw std::runtime_error("Detailed picking requires the billboard contributor's third attachment.");
+            throw std::runtime_error(
+                "Detailed picking requires the billboard contributor's third attachment.");
         }
 #endif
     }
@@ -1579,8 +1492,7 @@ inline std::array<float, 3> encode_pick_id_to_color(std::uint32_t id) {
  * silently rather than failing, which is why neither backend spells it.
  */
 inline constexpr std::uint32_t pick_readback_row = 256;
-inline constexpr std::uint32_t pick_color_targets =
-    BBLITE_HAS_DETAILED_PICKING ? 3u : 2u;
+inline constexpr std::uint32_t pick_color_targets = BBLITE_HAS_DETAILED_PICKING ? 3u : 2u;
 inline constexpr std::uint32_t pick_depth_offset = 1u * pick_readback_row;
 inline constexpr std::uint32_t pick_detail_offset = 2u * pick_readback_row;
 inline constexpr std::uint64_t pick_staging_bytes =
@@ -1610,16 +1522,14 @@ inline constexpr std::uint64_t pick_staging_bytes =
  * happens rather than hidden in a literal.
  */
 inline constexpr std::uint32_t pick_detail_no_primitive = 0xFFFFFFFFu;
-inline constexpr double pick_detail_clear_red =
-    static_cast<double>(pick_detail_no_primitive);
+inline constexpr double pick_detail_clear_red = static_cast<double>(pick_detail_no_primitive);
 
 inline PickDetailReadback decode_pick_detail(const std::uint8_t* texel) {
     std::array<std::uint32_t, 4> lanes{};
     std::memcpy(lanes.data(), texel, sizeof(lanes));
     PickDetailReadback out;
-    out.primitive_index = lanes[0] == pick_detail_no_primitive
-        ? -1.0
-        : static_cast<double>(lanes[0]);
+    out.primitive_index =
+        lanes[0] == pick_detail_no_primitive ? -1.0 : static_cast<double>(lanes[0]);
     for (std::size_t lane = 0; lane < 3; ++lane) {
         float value = 0.0f;
         std::memcpy(&value, &lanes[lane + 1], sizeof(value));
@@ -1634,19 +1544,16 @@ inline PickDetailReadback decode_pick_detail(const std::uint8_t* texel) {
  * Read per pick rather than per picker resource, because it selects the
  * pin's second pipeline module and a third attachment for THAT call.
  */
-inline bool detailed_pick_armed(
-    const Engine& engine,
-    GpuPickerHandle picker) {
+inline bool detailed_pick_armed(const Engine& engine, GpuPickerHandle picker) {
     return picker.value < engine.gpu_pickers.size() &&
-        handle_at(engine.gpu_pickers, picker).detailed;
+           handle_at(engine.gpu_pickers, picker).detailed;
 }
 #endif
 
 /** The colour attachment's three bytes back into the id they encode. */
 inline std::uint32_t decode_pick_id(const std::uint8_t* texel) {
     return (static_cast<std::uint32_t>(texel[0]) << 16) |
-           (static_cast<std::uint32_t>(texel[1]) << 8) |
-           static_cast<std::uint32_t>(texel[2]);
+           (static_cast<std::uint32_t>(texel[1]) << 8) | static_cast<std::uint32_t>(texel[2]);
 }
 
 /**
@@ -1675,10 +1582,8 @@ private:
 // sprite-only, effect-only or scene-less program includes no render plan
 // (see the guarded include at the top of this file) and calls neither.
 #if defined(BBLITE_HAS_PBR_RENDERER) && BBLITE_HAS_PBR_RENDERER
-inline std::vector<GpuVertex> transformed_vertices(
-    const Engine& engine,
-    const ModelGeometry& geometry,
-    const MeshRecord& mesh) {
+inline std::vector<GpuVertex>
+transformed_vertices(const Engine& engine, const ModelGeometry& geometry, const MeshRecord& mesh) {
     // Thin-instanced meshes keep local-space vertices: the pinned vertex
     // stage composes mesh.world * instanceWorld, so the record transform
     // reaches the shader through the instance parent-world uniform
@@ -1702,8 +1607,8 @@ inline std::vector<GpuVertex> transformed_vertices(
 #if BBLITE_FLOATING_ORIGIN
         identity_transform;
 #else
-        mesh.thin_instanced || mesh.gpu_world_transform ||
-                mesh.scene_skeleton || mesh.scene_morph_targets
+        mesh.thin_instanced || mesh.gpu_world_transform || mesh.scene_skeleton ||
+                mesh.scene_morph_targets
             ? identity_transform
             : mesh;
 #endif
@@ -1713,56 +1618,45 @@ inline std::vector<GpuVertex> transformed_vertices(
     // instanceWorld and therefore needs the loader-retained local copy; using
     // the baked vertices would apply the descendant node world twice.
     const bool restores_runtime_instance_vertices =
-        mesh.thin_instanced &&
-        geometry.vertex_space == VertexSpace::world;
+        mesh.thin_instanced && geometry.vertex_space == VertexSpace::world;
     const std::vector<ModelVertex>& source_vertices =
         (mesh.gpu_deformation || mesh.live_imported_transform ||
          restores_runtime_instance_vertices) &&
-                geometry.bind_vertices.size() ==
-                    geometry.vertices.size()
+                geometry.bind_vertices.size() == geometry.vertices.size()
             ? geometry.bind_vertices
             : geometry.vertices;
     // One composition per mesh: the record and its parent chain decide it,
     // so it sits above the loop rather than being rebuilt per vertex.
-    const std::array<float, 16> world =
-        upstream::mesh_world_matrix(engine, trs);
+    const std::array<float, 16> world = upstream::mesh_world_matrix(engine, trs);
     std::vector<GpuVertex> result;
     result.reserve(source_vertices.size());
-    for (
-        std::size_t vertex_index = 0;
-        vertex_index < source_vertices.size();
-        ++vertex_index) {
-        const ModelVertex detached_vertex = mesh.detached_imported_mesh
-            ? detached_imported_vertex(mesh, geometry, vertex_index)
-            : ModelVertex{};
-        const ModelVertex& vertex = mesh.detached_imported_mesh
-            ? detached_vertex : source_vertices[vertex_index];
-        const ModelVertex& normal_vertex =
-            mesh.gpu_deformation && geometry.flat_normals
-                ? geometry.vertices[vertex_index]
-                : vertex;
-        const Vec3& local_normal =
-            geometry.local_normals.size() == source_vertices.size()
-                ? geometry.local_normals[vertex_index]
-                : vertex.normal;
+    for (std::size_t vertex_index = 0; vertex_index < source_vertices.size(); ++vertex_index) {
+        const ModelVertex detached_vertex =
+            mesh.detached_imported_mesh ? detached_imported_vertex(mesh, geometry, vertex_index)
+                                        : ModelVertex{};
+        const ModelVertex& vertex =
+            mesh.detached_imported_mesh ? detached_vertex : source_vertices[vertex_index];
+        const ModelVertex& normal_vertex = mesh.gpu_deformation && geometry.flat_normals
+                                               ? geometry.vertices[vertex_index]
+                                               : vertex;
+        const Vec3& local_normal = geometry.local_normals.size() == source_vertices.size()
+                                       ? geometry.local_normals[vertex_index]
+                                       : vertex.normal;
         // The pin's own vertex stage, performed here because this port bakes
         // a scene-code mesh's world into the buffer it draws: the matrix is
         // float32 exactly as `allocateMat4()` leaves it, so this multiply is
         // the arithmetic the GPU would have run on the same bytes.
-        const Vec3 position =
-            upstream::transform_position(world, vertex.position);
+        const Vec3 position = upstream::transform_position(world, vertex.position);
         const Vec3 normal = upstream::normalize_baked_direction(
             upstream::transform_direction(world, normal_vertex.normal));
         // `T_local` is the tangent's xyz; its `w` is the handedness the
         // bitangent reads and travels unchanged.
         const Vec3 tangent = upstream::normalize_baked_direction(
-            upstream::transform_direction(
-                world,
-                Vec3{
-                    vertex.tangent.x,
-                    vertex.tangent.y,
-                    vertex.tangent.z,
-                }));
+            upstream::transform_direction(world, Vec3{
+                                                     vertex.tangent.x,
+                                                     vertex.tangent.y,
+                                                     vertex.tangent.z,
+                                                 }));
         result.push_back(GpuVertex{
             {position.x, position.y, position.z},
             {normal.x, normal.y, normal.z},
@@ -1799,10 +1693,7 @@ inline std::vector<GpuVertex> transformed_vertices(
             },
             {
                 mesh.gpu_deformation &&
-                        vertex.weights.x +
-                                vertex.weights.y +
-                                vertex.weights.z +
-                                vertex.weights.w <=
+                        vertex.weights.x + vertex.weights.y + vertex.weights.z + vertex.weights.w <=
                             0.0f
                     ? 1.0f
                     : vertex.weights.x,
@@ -1811,70 +1702,52 @@ inline std::vector<GpuVertex> transformed_vertices(
                 vertex.weights.w,
             },
             {
-                geometry.morph_positions.size() > 0
-                    ? -geometry.morph_positions[0][vertex_index].x
-                    : 0.0f,
-                geometry.morph_positions.size() > 0
-                    ? geometry.morph_positions[0][vertex_index].y
-                    : 0.0f,
-                geometry.morph_positions.size() > 0
-                    ? geometry.morph_positions[0][vertex_index].z
-                    : 0.0f,
+                geometry.morph_positions.size() > 0 ? -geometry.morph_positions[0][vertex_index].x
+                                                    : 0.0f,
+                geometry.morph_positions.size() > 0 ? geometry.morph_positions[0][vertex_index].y
+                                                    : 0.0f,
+                geometry.morph_positions.size() > 0 ? geometry.morph_positions[0][vertex_index].z
+                                                    : 0.0f,
             },
             {
-                geometry.morph_positions.size() > 1
-                    ? -geometry.morph_positions[1][vertex_index].x
-                    : 0.0f,
-                geometry.morph_positions.size() > 1
-                    ? geometry.morph_positions[1][vertex_index].y
-                    : 0.0f,
-                geometry.morph_positions.size() > 1
-                    ? geometry.morph_positions[1][vertex_index].z
-                    : 0.0f,
+                geometry.morph_positions.size() > 1 ? -geometry.morph_positions[1][vertex_index].x
+                                                    : 0.0f,
+                geometry.morph_positions.size() > 1 ? geometry.morph_positions[1][vertex_index].y
+                                                    : 0.0f,
+                geometry.morph_positions.size() > 1 ? geometry.morph_positions[1][vertex_index].z
+                                                    : 0.0f,
             },
             {
-                geometry.morph_normals.size() > 0
-                    ? -geometry.morph_normals[0][vertex_index].x
-                    : 0.0f,
-                geometry.morph_normals.size() > 0
-                    ? geometry.morph_normals[0][vertex_index].y
-                    : 0.0f,
-                geometry.morph_normals.size() > 0
-                    ? geometry.morph_normals[0][vertex_index].z
-                    : 0.0f,
+                geometry.morph_normals.size() > 0 ? -geometry.morph_normals[0][vertex_index].x
+                                                  : 0.0f,
+                geometry.morph_normals.size() > 0 ? geometry.morph_normals[0][vertex_index].y
+                                                  : 0.0f,
+                geometry.morph_normals.size() > 0 ? geometry.morph_normals[0][vertex_index].z
+                                                  : 0.0f,
             },
             {
-                geometry.morph_normals.size() > 1
-                    ? -geometry.morph_normals[1][vertex_index].x
-                    : 0.0f,
-                geometry.morph_normals.size() > 1
-                    ? geometry.morph_normals[1][vertex_index].y
-                    : 0.0f,
-                geometry.morph_normals.size() > 1
-                    ? geometry.morph_normals[1][vertex_index].z
-                    : 0.0f,
+                geometry.morph_normals.size() > 1 ? -geometry.morph_normals[1][vertex_index].x
+                                                  : 0.0f,
+                geometry.morph_normals.size() > 1 ? geometry.morph_normals[1][vertex_index].y
+                                                  : 0.0f,
+                geometry.morph_normals.size() > 1 ? geometry.morph_normals[1][vertex_index].z
+                                                  : 0.0f,
             },
             {
-                geometry.morph_tangents.size() > 0
-                    ? -geometry.morph_tangents[0][vertex_index].x
-                    : 0.0f,
-                geometry.morph_tangents.size() > 0
-                    ? geometry.morph_tangents[0][vertex_index].y
-                    : 0.0f,
-                geometry.morph_tangents.size() > 0
-                    ? geometry.morph_tangents[0][vertex_index].z
-                    : 0.0f,
+                geometry.morph_tangents.size() > 0 ? -geometry.morph_tangents[0][vertex_index].x
+                                                   : 0.0f,
+                geometry.morph_tangents.size() > 0 ? geometry.morph_tangents[0][vertex_index].y
+                                                   : 0.0f,
+                geometry.morph_tangents.size() > 0 ? geometry.morph_tangents[0][vertex_index].z
+                                                   : 0.0f,
             },
             {
-                geometry.morph_tangents.size() > 1
-                    ? -geometry.morph_tangents[1][vertex_index].x
-                    : 0.0f,
-                geometry.morph_tangents.size() > 1
-                    ? geometry.morph_tangents[1][vertex_index].y
-                    : 0.0f,
-                geometry.morph_tangents.size() > 1
-                    ? geometry.morph_tangents[1][vertex_index].z
-                    : 0.0f,
+                geometry.morph_tangents.size() > 1 ? -geometry.morph_tangents[1][vertex_index].x
+                                                   : 0.0f,
+                geometry.morph_tangents.size() > 1 ? geometry.morph_tangents[1][vertex_index].y
+                                                   : 0.0f,
+                geometry.morph_tangents.size() > 1 ? geometry.morph_tangents[1][vertex_index].z
+                                                   : 0.0f,
             },
 #if BBLITE_PBR_VARIANTS > 0 || defined(BBLITE_STANDARD_SKELETON)
             {
@@ -1893,10 +1766,8 @@ inline std::vector<GpuVertex> transformed_vertices(
 /** Local-space vertex lanes for material families whose own world matrix is
  *  bound per draw. Keeping these immutable avoids rebaking and re-uploading
  *  a whole vertex buffer for every transform-only animation step. */
-inline std::vector<GpuVertex> local_vertices(
-    const Engine& engine,
-    const ModelGeometry& geometry,
-    const MeshRecord* source = nullptr) {
+inline std::vector<GpuVertex> local_vertices(const Engine& engine, const ModelGeometry& geometry,
+                                             const MeshRecord* source = nullptr) {
     static const MeshRecord identity_transform{};
     if (source != nullptr && source->detached_imported_mesh) {
         MeshRecord detached_transform;
@@ -1929,10 +1800,7 @@ struct SharedGeometryIdentity {
 /** Below this many vertices a cached geometry also keeps its bytes. */
 inline constexpr std::size_t shared_geometry_bytes_kept_below = 4096;
 
-inline std::uint64_t fnv1a_append(
-    std::uint64_t hash,
-    const void* data,
-    std::size_t size) {
+inline std::uint64_t fnv1a_append(std::uint64_t hash, const void* data, std::size_t size) {
     const auto* bytes = static_cast<const std::uint8_t*>(data);
     for (std::size_t index = 0; index < size; ++index) {
         hash ^= bytes[index];
@@ -1941,14 +1809,11 @@ inline std::uint64_t fnv1a_append(
     return hash;
 }
 
-inline SharedGeometryIdentity shared_geometry_identity(
-    const std::vector<GpuVertex>& vertices,
-    const std::vector<std::uint32_t>& indices) {
+inline SharedGeometryIdentity shared_geometry_identity(const std::vector<GpuVertex>& vertices,
+                                                       const std::vector<std::uint32_t>& indices) {
     std::uint64_t hash = 14695981039346656037ull;
-    hash = fnv1a_append(
-        hash, vertices.data(), vertices.size() * sizeof(GpuVertex));
-    hash = fnv1a_append(
-        hash, indices.data(), indices.size() * sizeof(std::uint32_t));
+    hash = fnv1a_append(hash, vertices.data(), vertices.size() * sizeof(GpuVertex));
+    hash = fnv1a_append(hash, indices.data(), indices.size() * sizeof(std::uint32_t));
     return {vertices.size(), indices.size(), hash};
 }
 
@@ -1958,15 +1823,13 @@ inline bool shared_geometry_keeps_bytes(const std::vector<GpuVertex>& vertices) 
 
 /** Find an exact immutable shader-geometry upload in a backend cache. */
 template <typename SharedGeometry>
-inline SharedGeometry* find_shared_shader_geometry(
-    const std::vector<std::unique_ptr<SharedGeometry>>& cache,
-    const SharedGeometryIdentity& identity,
-    const std::vector<GpuVertex>& vertices,
-    const std::vector<std::uint32_t>& indices) {
+inline SharedGeometry*
+find_shared_shader_geometry(const std::vector<std::unique_ptr<SharedGeometry>>& cache,
+                            const SharedGeometryIdentity& identity,
+                            const std::vector<GpuVertex>& vertices,
+                            const std::vector<std::uint32_t>& indices) {
     const auto found = std::find_if(
-        cache.begin(),
-        cache.end(),
-        [&](const std::unique_ptr<SharedGeometry>& candidate) {
+        cache.begin(), cache.end(), [&](const std::unique_ptr<SharedGeometry>& candidate) {
             if (candidate->identity.vertex_count != identity.vertex_count ||
                 candidate->identity.index_count != identity.index_count ||
                 candidate->identity.hash != identity.hash) {
@@ -1974,37 +1837,32 @@ inline SharedGeometry* find_shared_shader_geometry(
             }
             // A kept copy confirms the hash byte for byte; a geometry too
             // large to keep is matched on the hash alone.
-            if (candidate->vertices.empty() && !vertices.empty()) return true;
+            if (candidate->vertices.empty() && !vertices.empty())
+                return true;
             return candidate->indices == indices &&
-                (vertices.empty() ||
-                 std::memcmp(
-                     candidate->vertices.data(),
-                     vertices.data(),
-                     vertices.size() * sizeof(GpuVertex)) == 0);
+                   (vertices.empty() || std::memcmp(candidate->vertices.data(), vertices.data(),
+                                                    vertices.size() * sizeof(GpuVertex)) == 0);
         });
     return found == cache.end() ? nullptr : found->get();
 }
 
 /** Find the backend texture upload owned by one shader material. */
 template <typename SharedTextures>
-inline SharedTextures* find_shared_shader_material_textures(
-    const std::vector<std::unique_ptr<SharedTextures>>& cache,
-    MaterialHandle material) {
-    const auto found = std::find_if(
-        cache.begin(),
-        cache.end(),
-        [&](const std::unique_ptr<SharedTextures>& candidate) {
-            return candidate->material.value == material.value;
-        });
+inline SharedTextures*
+find_shared_shader_material_textures(const std::vector<std::unique_ptr<SharedTextures>>& cache,
+                                     MaterialHandle material) {
+    const auto found = std::find_if(cache.begin(), cache.end(),
+                                    [&](const std::unique_ptr<SharedTextures>& candidate) {
+                                        return candidate->material.value == material.value;
+                                    });
     return found == cache.end() ? nullptr : found->get();
 }
 
 /** Drops one mesh's reference to a backend-owned shared cache entry. */
 template <typename Shared>
-inline void release_shared_user(
-    Shared*& shared,
-    const char* underflow_message) {
-    if (!shared) return;
+inline void release_shared_user(Shared*& shared, const char* underflow_message) {
+    if (!shared)
+        return;
     if (shared->users == 0) {
         throw std::runtime_error(underflow_message);
     }
@@ -2014,25 +1872,19 @@ inline void release_shared_user(
 
 /** Releases and erases cache entries after their last mesh retires. */
 template <typename Cache, typename Release>
-inline void prune_unused_shared(
-    Cache& cache,
-    Release release) {
-    const auto unused = std::remove_if(
-        cache.begin(),
-        cache.end(),
-        [&](const auto& entry) {
-            if (entry->users != 0) return false;
-            release(*entry);
-            return true;
-        });
+inline void prune_unused_shared(Cache& cache, Release release) {
+    const auto unused = std::remove_if(cache.begin(), cache.end(), [&](const auto& entry) {
+        if (entry->users != 0)
+            return false;
+        release(*entry);
+        return true;
+    });
     cache.erase(unused, cache.end());
 }
 
 /** Releases all backend objects in a cache during renderer teardown. */
 template <typename Cache, typename Release>
-inline void release_all_shared(
-    Cache& cache,
-    Release release) {
+inline void release_all_shared(Cache& cache, Release release) {
     for (const auto& entry : cache) {
         release(*entry);
     }
@@ -2051,12 +1903,11 @@ inline void release_all_shared(
  * key struct.
  */
 template <typename Program, typename Matches, typename Build>
-inline std::size_t find_or_create_program(
-    std::vector<Program>& programs,
-    Matches matches,
-    Build build) {
+inline std::size_t find_or_create_program(std::vector<Program>& programs, Matches matches,
+                                          Build build) {
     for (std::size_t index = 0; index < programs.size(); ++index) {
-        if (matches(programs[index])) return index;
+        if (matches(programs[index]))
+            return index;
     }
     programs.push_back(build());
     return programs.size() - 1;
@@ -2071,12 +1922,8 @@ inline std::size_t find_or_create_program(
  * renderer to emit that composition.
  */
 #if defined(BBLITE_HAS_PBR_RENDERER) && BBLITE_HAS_PBR_RENDERER
-inline std::array<float, 16> shader_draw_world(
-    const Engine& engine,
-    const MeshRecord& mesh) {
-    return outer_draw_world(
-        upstream::mesh_world_matrix(engine, mesh),
-        mesh);
+inline std::array<float, 16> shader_draw_world(const Engine& engine, const MeshRecord& mesh) {
+    return outer_draw_world(upstream::mesh_world_matrix(engine, mesh), mesh);
 }
 
 #if BBLITE_HAS_PICKING
@@ -2085,25 +1932,28 @@ inline std::array<float, 16> shader_draw_world(
 inline int pick_mesh_projection(const Engine& engine, const MeshRecord& mesh) {
 #if BBLITE_VAT
     // The pin deliberately declines VAT before inspecting skeleton or morph.
-    if (mesh.has_vat) return -1;
+    if (mesh.has_vat)
+        return -1;
 #endif
     const bool skeleton = mesh.skinned;
     // Attachment is geometry identity, independent of missing defaults or
     // all-zero animated weights. The visible storage path uses this same
     // transported target set when it allocates the projection's buffers.
-    const bool morph = mesh.scene_morph_targets || (mesh.gpu_deformation &&
-        !engine.geometries.at(mesh.geometry).morph_positions.empty());
-    if (!skeleton && !morph) return -1;
+    const bool morph =
+        mesh.scene_morph_targets ||
+        (mesh.gpu_deformation && !engine.geometries.at(mesh.geometry).morph_positions.empty());
+    if (!skeleton && !morph)
+        return -1;
     if (skeleton && !mesh.pinned_bone_palette) {
         throw std::runtime_error("deformation picking requires the pinned bone palette transport");
     }
     for (std::size_t index = 0; index < upstream::pick_deform_variants.size(); ++index) {
         const auto& variant = upstream::pick_deform_variants[index];
-        if (variant.skeleton == skeleton && variant.morph == morph) return static_cast<int>(index);
+        if (variant.skeleton == skeleton && variant.morph == morph)
+            return static_cast<int>(index);
     }
     throw std::runtime_error("pick candidate reached an uncomposed deformation projection");
 }
-
 
 #endif
 
@@ -2140,36 +1990,34 @@ inline std::size_t thin_instance_active_count(const MeshRecord& record);
  * selection and the id/range assignment are decided here, once, so the two
  * backends cannot drift on which mesh answers a pick.
  */
-inline std::optional<std::size_t> picker_scene_index(
-    const Engine& engine, GpuPickerHandle picker,
-    const std::vector<std::shared_ptr<Scene>>& scenes) {
-    if (picker.value >= engine.gpu_pickers.size()) return std::nullopt;
+inline std::optional<std::size_t>
+picker_scene_index(const Engine& engine, GpuPickerHandle picker,
+                   const std::vector<std::shared_ptr<Scene>>& scenes) {
+    if (picker.value >= engine.gpu_pickers.size())
+        return std::nullopt;
     const auto picked_state = handle_at(engine.gpu_pickers, picker).scene.lock();
-    if (!picked_state || picked_state->disposed) return std::nullopt;
+    if (!picked_state || picked_state->disposed)
+        return std::nullopt;
     for (std::size_t index = 0; index < scenes.size(); ++index) {
-        if (scenes[index] && scenes[index]->state == picked_state) return index;
+        if (scenes[index] && scenes[index]->state == picked_state)
+            return index;
     }
     return std::nullopt;
 }
 
 template <typename HasGeometry>
-inline std::vector<PickMeshCandidate> collect_pick_mesh_candidates(
-    const Engine& engine,
-    [[maybe_unused]] const Scene& scene,
-    const upstream::RenderPlan& render_plan,
-    std::size_t gpu_mesh_count,
-    const HasGeometry& has_geometry,
-    std::vector<PickRange>& ranges,
-    std::uint32_t& next_id,
-    const Engine::PickFilter* filter = nullptr,
-    [[maybe_unused]] bool detailed = false) {
+inline std::vector<PickMeshCandidate>
+collect_pick_mesh_candidates(const Engine& engine, [[maybe_unused]] const Scene& scene,
+                             const upstream::RenderPlan& render_plan, std::size_t gpu_mesh_count,
+                             const HasGeometry& has_geometry, std::vector<PickRange>& ranges,
+                             std::uint32_t& next_id, const Engine::PickFilter* filter = nullptr,
+                             [[maybe_unused]] bool detailed = false) {
     std::vector<PickMeshCandidate> candidates;
     for (std::size_t item_index = 0;
-         item_index < render_plan.items.size() &&
-         item_index < gpu_mesh_count;
-         ++item_index) {
+         item_index < render_plan.items.size() && item_index < gpu_mesh_count; ++item_index) {
         const MeshHandle handle = render_plan.items[item_index].mesh;
-        if (!has_geometry(item_index)) continue;
+        if (!has_geometry(item_index))
+            continue;
         // A mesh the pin's picker would not take never enters the pass, so
         // it can neither answer a pick nor occlude one behind it. The
         // predicate is generated, and it reads the live record rather than
@@ -2188,17 +2036,18 @@ inline std::vector<PickMeshCandidate> collect_pick_mesh_candidates(
 #if BBLITE_GPU_INSTANCING
         candidate.thin = pick_mesh.thin_instanced;
         if (candidate.thin) {
-            candidate.instance_count = static_cast<std::uint32_t>(
-                thin_instance_active_count(pick_mesh));
-            if (candidate.instance_count == 0) continue;
-            if (detailed) throw std::runtime_error("Detailed picking requires the selected thin-instance world matrix.");
+            candidate.instance_count =
+                static_cast<std::uint32_t>(thin_instance_active_count(pick_mesh));
+            if (candidate.instance_count == 0)
+                continue;
+            if (detailed)
+                throw std::runtime_error(
+                    "Detailed picking requires the selected thin-instance world matrix.");
         }
 #endif
-        constexpr std::array<float, 16> identity_world{
-            1.0f, 0.0f, 0.0f, 0.0f,
-            0.0f, 1.0f, 0.0f, 0.0f,
-            0.0f, 0.0f, 1.0f, 0.0f,
-            0.0f, 0.0f, 0.0f, 1.0f};
+        constexpr std::array<float, 16> identity_world{1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f,
+                                                       0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f,
+                                                       0.0f, 0.0f, 0.0f, 1.0f};
 #if BBLITE_DEFORM_PICKING
         candidate.deform = pick_mesh_projection(engine, pick_mesh);
 #if BBLITE_GPU_INSTANCING
@@ -2209,27 +2058,22 @@ inline std::vector<PickMeshCandidate> collect_pick_mesh_candidates(
 #endif
         candidate.uniforms.world =
 #if BBLITE_GPU_INSTANCING
-            candidate.thin
-            ? instance_parent_draw_world(pick_mesh, scene, engine)
-            :
+            candidate.thin ? instance_parent_draw_world(pick_mesh, scene, engine) :
 #endif
 #if BBLITE_DEFORM_PICKING
-            candidate.deform >= 0
-            ? deformed_draw_world(pick_mesh.skinned, pick_mesh, scene, engine)
+            candidate.deform >= 0 ? deformed_draw_world(pick_mesh.skinned, pick_mesh, scene, engine)
             :
 #endif
-            pick_mesh.gpu_world_transform
-            ? shader_draw_world(engine, pick_mesh)
-            : identity_world;
+            pick_mesh.gpu_world_transform ? shader_draw_world(engine, pick_mesh)
+                                          : identity_world;
         candidate.uniforms.pick_id = next_id;
         candidates.push_back(candidate);
         const std::uint32_t id_count =
 #if BBLITE_GPU_INSTANCING
             candidate.thin ? candidate.instance_count :
 #endif
-            1u;
-        ranges.push_back(
-            {next_id, PickedNodeKind::mesh, handle.value, id_count});
+                           1u;
+        ranges.push_back({next_id, PickedNodeKind::mesh, handle.value, id_count});
         next_id += id_count;
     }
     return candidates;
@@ -2251,18 +2095,13 @@ inline std::vector<PickMeshCandidate> collect_pick_mesh_candidates(
  * `copyDetailedWorldMatrix`'s reason -- an animation tick between them --
  * cannot arise.
  */
-inline void finish_detailed_pick(
-    const Engine& engine,
-    PickingInfo& info,
-    const PickDetailReadback& readback,
-    const std::array<float, 16>& view_projection,
-    double sample_x,
-    double sample_y,
-    double width,
-    double height) {
-    populate_pick_ray(
-        info, view_projection, sample_x, sample_y, width, height);
-    if (info.picked_kind != PickedNodeKind::mesh) return;
+inline void finish_detailed_pick(const Engine& engine, PickingInfo& info,
+                                 const PickDetailReadback& readback,
+                                 const std::array<float, 16>& view_projection, double sample_x,
+                                 double sample_y, double width, double height) {
+    populate_pick_ray(info, view_projection, sample_x, sample_y, width, height);
+    if (info.picked_kind != PickedNodeKind::mesh)
+        return;
     const MeshRecord& hit_mesh = engine.meshes[info.picked_index];
     PickDetailReadback detail = readback;
     detail.world =
@@ -2272,19 +2111,20 @@ inline void finish_detailed_pick(
         // identity for one -- and the pin transforms the REST normal by
         // `mesh.worldMatrix`, which is that node world and not the skin.
         // The pose pass keeps it for exactly this read.
-        pick_mesh_projection(engine, hit_mesh) >= 0 &&
-                !hit_mesh.scene_skeleton && !hit_mesh.scene_morph_targets
-            ? hit_mesh.deform_node_world :
+        pick_mesh_projection(engine, hit_mesh) >= 0 && !hit_mesh.scene_skeleton &&
+                !hit_mesh.scene_morph_targets
+            ? hit_mesh.deform_node_world
+            :
 #endif
-        upstream::mesh_world_matrix(engine, hit_mesh);
+            upstream::mesh_world_matrix(engine, hit_mesh);
     detail.world_baked = !hit_mesh.gpu_world_transform
 #if BBLITE_DEFORM_PICKING
-        // A deforming mesh's buffer carries no world at all: its vertices
-        // are the BIND pose and its transform travels in the palette, so
-        // the varying is already the rest position the solve wants and
-        // un-baking it through a matrix it never carried is what turned
-        // the barycentric weights into 36 and -16.
-        && pick_mesh_projection(engine, hit_mesh) < 0
+                         // A deforming mesh's buffer carries no world at all: its vertices
+                         // are the BIND pose and its transform travels in the palette, so
+                         // the varying is already the rest position the solve wants and
+                         // un-baking it through a matrix it never carried is what turned
+                         // the barycentric weights into 36 and -16.
+                         && pick_mesh_projection(engine, hit_mesh) < 0
 #endif
         ;
     info.detail = detail;
@@ -2294,13 +2134,10 @@ inline void finish_detailed_pick(
 #endif
 
 #if !defined(BBLITE_HAS_PBR_RENDERER) || BBLITE_HAS_PBR_RENDERER
-inline std::optional<std::array<float, 16>> shader_world_view(
-    const std::array<float, 16>* view,
-    const std::array<float, 16>& world) {
-    return view
-        ? std::optional<std::array<float, 16>>{
-              upstream::matrix_product(*view, world)}
-        : std::nullopt;
+inline std::optional<std::array<float, 16>> shader_world_view(const std::array<float, 16>* view,
+                                                              const std::array<float, 16>& world) {
+    return view ? std::optional<std::array<float, 16>>{upstream::matrix_product(*view, world)}
+                : std::nullopt;
 }
 
 /**
@@ -2331,16 +2168,16 @@ inline GpuVertex gpu_vertex_from(const ModelVertex& vertex) {
         {vertex.color.x, vertex.color.y, vertex.color.z, vertex.color.w},
         {vertex.normal.x, vertex.normal.y, vertex.normal.z},
 #if BBLITE_GPU_DEFORMATION
-        {},  // joints
-        {},  // weights
-        {},  // morph position 0
-        {},  // morph position 1
-        {},  // morph normal 0
-        {},  // morph normal 1
-        {},  // morph tangent 0
-        {},  // morph tangent 1
+        {}, // joints
+        {}, // weights
+        {}, // morph position 0
+        {}, // morph position 1
+        {}, // morph normal 0
+        {}, // morph normal 1
+        {}, // morph tangent 0
+        {}, // morph tangent 1
 #if BBLITE_PBR_VARIANTS > 0 || defined(BBLITE_STANDARD_SKELETON)
-        {},  // integer joint indices
+        {}, // integer joint indices
 #endif
 #endif
     };
@@ -2357,19 +2194,14 @@ inline GpuVertex gpu_vertex_from(const ModelVertex& vertex) {
  * this is one question rather than three, and it is asked before the
  * version-gated upload that would otherwise write past the end.
  */
-inline bool thin_instance_pool_grew(
-    const MeshRecord& record,
-    std::uint32_t allocated_rows) {
+inline bool thin_instance_pool_grew(const MeshRecord& record, std::uint32_t allocated_rows) {
     return record.thin_instanced &&
-        record.instance_matrices.size() >
-            static_cast<std::size_t>(allocated_rows);
+           record.instance_matrices.size() > static_cast<std::size_t>(allocated_rows);
 }
 
-inline std::size_t thin_instance_active_count(
-    const MeshRecord& record) {
-    return std::min(
-        static_cast<std::size_t>(record.instance_count),
-        record.instance_matrices.size());
+inline std::size_t thin_instance_active_count(const MeshRecord& record) {
+    return std::min(static_cast<std::size_t>(record.instance_count),
+                    record.instance_matrices.size());
 }
 
 #if BBLITE_PBR_VARIANTS > 0
@@ -2387,9 +2219,8 @@ inline std::size_t thin_instance_active_count(
  *
  * The morph deltas carry the same mirror and are undone with it.
  */
-inline std::vector<GpuVertex> pinned_convention_vertices(
-    const std::vector<GpuVertex>& source,
-    bool mirrored_x) {
+inline std::vector<GpuVertex> pinned_convention_vertices(const std::vector<GpuVertex>& source,
+                                                         bool mirrored_x) {
     std::vector<GpuVertex> result = source;
     for (GpuVertex& vertex : result) {
         vertex.position[0] = -vertex.position[0];
@@ -2426,34 +2257,25 @@ inline std::vector<GpuVertex> pinned_convention_vertices(
  * pinned stream's extra vertex mirror. The ordinary/Standard instance stream
  * continues to consume the record bytes directly.
  */
-inline void pinned_instance_matrices(
-    const MeshRecord& record,
-    std::size_t count,
-    std::vector<std::array<float, 16>>& result) {
-    const std::size_t bounded_count =
-        std::min(count, record.instance_matrices.size());
-    result.assign(
-        record.instance_matrices.begin(),
-        record.instance_matrices.begin() + bounded_count);
+inline void pinned_instance_matrices(const MeshRecord& record, std::size_t count,
+                                     std::vector<std::array<float, 16>>& result) {
+    const std::size_t bounded_count = std::min(count, record.instance_matrices.size());
+    result.assign(record.instance_matrices.begin(),
+                  record.instance_matrices.begin() + bounded_count);
     for (std::array<float, 16>& matrix : result) {
         for (std::size_t column = 0; column < 4; ++column) {
             for (std::size_t row = 0; row < 4; ++row) {
                 if ((row == 0) != (column == 0)) {
-                    matrix[column * 4 + row] =
-                        -matrix[column * 4 + row];
+                    matrix[column * 4 + row] = -matrix[column * 4 + row];
                 }
             }
         }
     }
 }
 
-inline std::vector<std::array<float, 16>> pinned_instance_matrices(
-    const MeshRecord& record) {
+inline std::vector<std::array<float, 16>> pinned_instance_matrices(const MeshRecord& record) {
     std::vector<std::array<float, 16>> result;
-    pinned_instance_matrices(
-        record,
-        record.instance_matrices.size(),
-        result);
+    pinned_instance_matrices(record, record.instance_matrices.size(), result);
     return result;
 }
 
@@ -2497,10 +2319,8 @@ struct PinnedVertexInput {
  * binds the vertex's local lanes and its mesh block carries the real node
  * world.
  */
-inline PinnedVertexInput pinned_vertex_input(
-    std::string_view name,
-    bool uses_local_position,
-    bool uses_local_normal = false) {
+inline PinnedVertexInput pinned_vertex_input(std::string_view name, bool uses_local_position,
+                                             bool uses_local_normal = false) {
     const auto at = [](VertexInputLane lane, std::size_t offset) {
         return PinnedVertexInput{
             lane,
@@ -2510,16 +2330,12 @@ inline PinnedVertexInput pinned_vertex_input(
         };
     };
     if (name == "position") {
-        return at(
-            VertexInputLane::float3,
-            uses_local_position ? offsetof(GpuVertex, local_position)
-                                : offsetof(GpuVertex, position));
+        return at(VertexInputLane::float3, uses_local_position ? offsetof(GpuVertex, local_position)
+                                                               : offsetof(GpuVertex, position));
     }
     if (name == "normal") {
-        return at(
-            VertexInputLane::float3,
-            uses_local_normal ? offsetof(GpuVertex, local_normal)
-                              : offsetof(GpuVertex, normal));
+        return at(VertexInputLane::float3, uses_local_normal ? offsetof(GpuVertex, local_normal)
+                                                             : offsetof(GpuVertex, normal));
     }
     if (name == "tangent") {
         return at(VertexInputLane::float4, offsetof(GpuVertex, tangent));
@@ -2538,14 +2354,12 @@ inline PinnedVertexInput pinned_vertex_input(
     // columns and the `ti-color` RGBA lane -- resolved from the declaration
     // that states their group and their offset within it, rather than from
     // names and arithmetic written here. Every one of them is a float4.
-    if (
-        const upstream::PinnedInstanceAttribute* declared =
+    if (const upstream::PinnedInstanceAttribute* declared =
             upstream::pinned_instance_attribute(name)) {
         return PinnedVertexInput{
             VertexInputLane::float4,
             declared->offset,
-            declared->buffer_group == vertex_stream_group(
-                                          VertexInputStream::instance_color)
+            declared->buffer_group == vertex_stream_group(VertexInputStream::instance_color)
                 ? VertexInputStream::instance_color
                 : VertexInputStream::instance_matrix,
             true,
@@ -2593,10 +2407,12 @@ inline bool pinned_record_instance_colored(const MeshRecord& record) {
 #if BBLITE_GPU_INSTANCE_COLORS
 // Snapshot a retained caller view at the versioned GPU upload boundary.
 inline std::vector<float> instance_colors_for_upload(const MeshRecord& mesh) {
-    if (!mesh.instance_color_source) return mesh.instance_colors;
+    if (!mesh.instance_color_source)
+        return mesh.instance_colors;
     const auto& source = *mesh.instance_color_source;
     std::vector<float> colors(source.size());
-    for (std::size_t lane = 0; lane < colors.size(); ++lane) colors[lane] = source.load(lane);
+    for (std::size_t lane = 0; lane < colors.size(); ++lane)
+        colors[lane] = source.load(lane);
     return colors;
 }
 #endif
@@ -2617,20 +2433,14 @@ inline std::vector<float> instance_colors_for_upload(const MeshRecord& mesh) {
  * outside the two material families' guard rather than inside it.
  */
 #if BBLITE_PINNED_MATERIALS
-inline bool pinned_lists_have_pinned_draws(
-    const upstream::RenderDrawLists& lists) {
-    for (const upstream::RenderDrawList* list :
-         {&lists.opaque, &lists.transparent}) {
+inline bool pinned_lists_have_pinned_draws(const upstream::RenderDrawLists& lists) {
+    for (const upstream::RenderDrawList* list : {&lists.opaque, &lists.transparent}) {
         for (const upstream::RenderDrawCommand& draw : list->commands) {
-            if (
-                draw.item.material_kind ==
-                    upstream::RenderMaterialKind::pbr ||
+            if (draw.item.material_kind == upstream::RenderMaterialKind::pbr ||
 #if BBLITE_NODE_GEOMETRY_VARIANTS > 0
-                draw.item.material_kind ==
-                    upstream::RenderMaterialKind::node ||
+                draw.item.material_kind == upstream::RenderMaterialKind::node ||
 #endif
-                draw.item.material_kind ==
-                    upstream::RenderMaterialKind::standard) {
+                draw.item.material_kind == upstream::RenderMaterialKind::standard) {
                 return true;
             }
         }
@@ -2642,16 +2452,13 @@ inline bool pinned_lists_have_pinned_draws(
  *  and for the two families whose vertices are baked with their world. */
 inline std::array<float, 16> pinned_identity_world() {
     return {
-        1.0f, 0.0f, 0.0f, 0.0f,
-        0.0f, 1.0f, 0.0f, 0.0f,
-        0.0f, 0.0f, 1.0f, 0.0f,
-        0.0f, 0.0f, 0.0f, 1.0f,
+        1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f,
+        0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f,
     };
 }
 
 /** Converts a native-convention world to the pin's raw imported lanes. */
-inline std::array<float, 16> pinned_x_mirrored_world(
-    std::array<float, 16> world) {
+inline std::array<float, 16> pinned_x_mirrored_world(std::array<float, 16> world) {
     world[0] = -world[0];
     world[1] = -world[1];
     world[2] = -world[2];
@@ -2665,10 +2472,8 @@ inline std::array<float, 16> pinned_x_mirrored_world(
 /** The pin's own per-mesh world matrix: the mirror its vertices do not carry. */
 inline std::array<float, 16> pinned_mesh_world() {
     return {
-        -1.0f, 0.0f, 0.0f, 0.0f,
-        0.0f, 1.0f, 0.0f, 0.0f,
-        0.0f, 0.0f, 1.0f, 0.0f,
-        0.0f, 0.0f, 0.0f, 1.0f,
+        -1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f,
+        0.0f,  0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f,
     };
 }
 
@@ -2686,12 +2491,9 @@ inline std::array<float, 16> pinned_mesh_world() {
  * first column and leaves its translation intact. An identity node collapses
  * this to `pinned_mesh_world()`.
  */
-inline std::array<float, 16> pinned_instanced_world(
-    const MeshRecord& record,
-    const Scene& scene,
-    const Engine& engine) {
-    return pinned_x_mirrored_world(
-        instance_parent_draw_world(record, scene, engine));
+inline std::array<float, 16> pinned_instanced_world(const MeshRecord& record, const Scene& scene,
+                                                    const Engine& engine) {
+    return pinned_x_mirrored_world(instance_parent_draw_world(record, scene, engine));
 }
 #endif
 
@@ -2705,13 +2507,9 @@ inline std::array<float, 16> pinned_instanced_world(
  * mirror over baked vertices. Shared because the same chain decides the
  * block in the SDL draw and both of Dawn's write sites.
  */
-inline std::array<float, 16> pinned_draw_world(
-    bool skeleton_draw,
-    bool world_from_palette,
-    bool uses_local_position,
-    const MeshRecord& record,
-    const Scene& scene,
-    const Engine& engine) {
+inline std::array<float, 16> pinned_draw_world(bool skeleton_draw, bool world_from_palette,
+                                               bool uses_local_position, const MeshRecord& record,
+                                               const Scene& scene, const Engine& engine) {
     if (skeleton_draw || world_from_palette || record.scene_morph_targets) {
         return deformed_draw_world(skeleton_draw, record, scene, engine);
     }
@@ -2720,9 +2518,8 @@ inline std::array<float, 16> pinned_draw_world(
         // local stream. The live native world therefore precedes the mirror:
         // (world * mirror) * (mirror * local) == world * local.
         return outer_draw_world(
-            upstream::matrix_product(
-                upstream::mesh_world_matrix(engine, record),
-                pinned_mesh_world()),
+            upstream::matrix_product(upstream::mesh_world_matrix(engine, record),
+                                     pinned_mesh_world()),
             record);
     }
 #if BBLITE_GPU_INSTANCING
@@ -2731,11 +2528,8 @@ inline std::array<float, 16> pinned_draw_world(
     }
 #endif
     if (uses_local_position) {
-        return draw_world(
-            pinned_x_mirrored_world(record.instance_parent_matrix),
-            record,
-            scene,
-            engine);
+        return draw_world(pinned_x_mirrored_world(record.instance_parent_matrix), record, scene,
+                          engine);
     }
     return draw_world(pinned_mesh_world(), record, scene, engine);
 }
@@ -2751,13 +2545,10 @@ inline std::array<float, 16> pinned_draw_world(
  * lookup. Both material families wrap that one core, so their rows are one
  * shape and a backend builds either family's group 2 from one walk.
  */
-inline std::span<const upstream::PinnedShadowBinding> standard_shadow_rows(
-    std::size_t variant) {
-    const upstream::StandardVariantEntry& entry =
-        upstream::standard_variants[variant];
+inline std::span<const upstream::PinnedShadowBinding> standard_shadow_rows(std::size_t variant) {
+    const upstream::StandardVariantEntry& entry = upstream::standard_variants[variant];
     return {
-        upstream::standard_shadow_bindings.data() +
-            entry.first_shadow_binding,
+        upstream::standard_shadow_bindings.data() + entry.first_shadow_binding,
         entry.shadow_binding_count,
     };
 }
@@ -2772,10 +2563,8 @@ inline bool standard_variant_receives_shadows(std::size_t) { return false; }
 
 #if BBLITE_PBR_SHADOWS
 /** The same slice over the PBR family's own composed rows. */
-inline std::span<const upstream::PinnedShadowBinding> pbr_shadow_rows(
-    std::size_t variant) {
-    const upstream::PbrVariantEntry& entry =
-        upstream::pbr_variants[variant];
+inline std::span<const upstream::PinnedShadowBinding> pbr_shadow_rows(std::size_t variant) {
+    const upstream::PbrVariantEntry& entry = upstream::pbr_variants[variant];
     return {
         upstream::pbr_shadow_bindings.data() + entry.first_shadow_binding,
         entry.shadow_binding_count,
@@ -2799,8 +2588,8 @@ inline bool pbr_variant_receives_shadows(std::size_t) { return false; }
  * than as their own group -- but each row is the same reflected shape the
  * two composed families' are, and resolves through the same builders.
  */
-inline std::span<const upstream::PinnedShadowBinding> node_shadow_rows(
-    const upstream::NodeVariantEntry& entry) {
+inline std::span<const upstream::PinnedShadowBinding>
+node_shadow_rows(const upstream::NodeVariantEntry& entry) {
     return {
         upstream::node_shadow_bindings.data() + entry.first_shadow_binding,
         entry.shadow_binding_count,
@@ -2809,10 +2598,10 @@ inline std::span<const upstream::PinnedShadowBinding> node_shadow_rows(
 #endif
 
 /** Restore source winding after a loader baked a reflected node transform. */
-inline std::span<const std::uint32_t> node_source_indices(
-    const ModelGeometry& geometry,
-    std::vector<std::uint32_t>& scratch) {
-    if (!geometry.source_indices_reversed) return geometry.indices;
+inline std::span<const std::uint32_t> node_source_indices(const ModelGeometry& geometry,
+                                                          std::vector<std::uint32_t>& scratch) {
+    if (!geometry.source_indices_reversed)
+        return geometry.indices;
     scratch = geometry.indices;
     for (std::size_t index = 0; index < scratch.size(); index += 3) {
         std::swap(scratch.at(index + 1), scratch.at(index + 2));
@@ -2830,40 +2619,26 @@ inline std::span<const std::uint32_t> node_source_indices(
  * graph, and both agree on which slot is which here.
  */
 #if BBLITE_NODE_SHADOWS
-inline constexpr std::size_t node_variant_slot(
-    std::size_t variant,
-    bool caster) {
+inline constexpr std::size_t node_variant_slot(std::size_t variant, bool caster) {
     return variant * 2 + (caster ? 1 : 0);
 }
 
-inline std::size_t node_view_slots() {
-    return upstream::node_variants.size() * 2;
-}
+inline std::size_t node_view_slots() { return upstream::node_variants.size() * 2; }
 
 /** The graph one slot names, and which of its two views. */
-inline constexpr std::size_t node_slot_variant(std::size_t slot) {
-    return slot / 2;
-}
+inline constexpr std::size_t node_slot_variant(std::size_t slot) { return slot / 2; }
 
-inline constexpr bool node_slot_is_caster(std::size_t slot) {
-    return slot % 2 == 1;
-}
+inline constexpr bool node_slot_is_caster(std::size_t slot) { return slot % 2 == 1; }
 #else
 // A build composing no node caster has one view per graph, so the slot IS
 // the variant and every backend's per-slot table keeps its old size.
-inline constexpr std::size_t node_variant_slot(
-    std::size_t variant,
-    [[maybe_unused]] bool caster) {
+inline constexpr std::size_t node_variant_slot(std::size_t variant, [[maybe_unused]] bool caster) {
     return variant;
 }
 
-inline std::size_t node_view_slots() {
-    return upstream::node_variants.size();
-}
+inline std::size_t node_view_slots() { return upstream::node_variants.size(); }
 
-inline constexpr std::size_t node_slot_variant(std::size_t slot) {
-    return slot;
-}
+inline constexpr std::size_t node_slot_variant(std::size_t slot) { return slot; }
 
 inline constexpr bool node_slot_is_caster(std::size_t) { return false; }
 #endif
@@ -2876,7 +2651,8 @@ inline constexpr std::size_t no_node_geometry_variant = npos;
 
 inline bool node_uses_local_attributes(std::size_t geometry_variant) {
 #if BBLITE_NODE_GEOMETRY_VARIANTS > 0
-    if (geometry_variant == no_node_geometry_variant) return false;
+    if (geometry_variant == no_node_geometry_variant)
+        return false;
     if (geometry_variant >= upstream::node_geometry_variants.size()) {
         throw std::out_of_range("Invalid node geometry view.");
     }
@@ -2888,9 +2664,8 @@ inline bool node_uses_local_attributes(std::size_t geometry_variant) {
 }
 
 #if BBLITE_NODE_GEOMETRY_VARIANTS > 0
-static_assert(
-    no_node_geometry_variant == upstream::node_no_geometry_variant,
-    "The PAL sentinel must be the generated table's own.");
+static_assert(no_node_geometry_variant == upstream::node_no_geometry_variant,
+              "The PAL sentinel must be the generated table's own.");
 
 /**
  * A graph's geometry-output views, continuing the same slot run.
@@ -2903,9 +2678,7 @@ static_assert(
  * then serve all three kinds unchanged.
  */
 inline std::size_t node_geometry_slot(std::size_t geometry_variant) {
-    return node_variant_slot(
-        upstream::node_geometry_entry(geometry_variant),
-        false);
+    return node_variant_slot(upstream::node_geometry_entry(geometry_variant), false);
 }
 
 /**
@@ -2917,18 +2690,14 @@ inline std::size_t node_geometry_slot(std::size_t geometry_variant) {
  * the same gap on either backend, so the message is stated once here beside
  * `require_geometry_target_count`.
  */
-inline std::size_t require_node_geometry_variant(
-    std::size_t variant,
-    std::size_t geometry_task) {
+inline std::size_t require_node_geometry_variant(std::size_t variant, std::size_t geometry_task) {
     const std::size_t geometry_variant =
         upstream::node_geometry_variant_for(variant, geometry_task);
     if (geometry_variant != no_node_geometry_variant) {
         return geometry_variant;
     }
-    throw std::runtime_error(
-        "node graph " + std::to_string(variant) +
-        " draws in geometry task " + std::to_string(geometry_task) +
-        " with no composed geometry view.");
+    throw std::runtime_error("node graph " + std::to_string(variant) + " draws in geometry task " +
+                             std::to_string(geometry_task) + " with no composed geometry view.");
 }
 #endif
 
@@ -2955,10 +2724,8 @@ inline std::size_t node_graph_count() {
  * one graph drawn in two tasks composed two modules -- so the callers that
  * know which view a draw is agree here rather than each spelling it out.
  */
-inline std::size_t node_draw_slot(
-    std::size_t variant,
-    bool caster,
-    [[maybe_unused]] std::size_t geometry_variant) {
+inline std::size_t node_draw_slot(std::size_t variant, bool caster,
+                                  [[maybe_unused]] std::size_t geometry_variant) {
 #if BBLITE_NODE_GEOMETRY_VARIANTS > 0
     if (geometry_variant != no_node_geometry_variant) {
         return node_geometry_slot(geometry_variant);
@@ -2969,9 +2736,7 @@ inline std::size_t node_draw_slot(
 
 /** Every per-slot table both backends size: the colour and caster views of
  *  every row `node_variants` carries, graphs and geometry views alike. */
-inline std::size_t node_variant_slots() {
-    return node_view_slots();
-}
+inline std::size_t node_variant_slots() { return node_view_slots(); }
 
 /**
  * The compiled view one slot names.
@@ -3018,21 +2783,19 @@ inline upstream::NodeVariantStems node_variant_stems(std::size_t slot) {
  * light, which is why this is gated on the receiver half rather than on
  * either filter.
  */
-inline void fitted_shadow_casters(
-    const Engine& engine,
-    const ShadowGeneratorRecord& generator,
-    std::vector<upstream::ShadowCaster>& casters) {
+inline void fitted_shadow_casters(const Engine& engine, const ShadowGeneratorRecord& generator,
+                                  std::vector<upstream::ShadowCaster>& casters) {
     casters.clear();
     casters.reserve(generator.caster_meshes.size());
     for (const MeshHandle handle : generator.caster_meshes) {
-        if (handle.value >= engine.meshes.size()) continue;
+        if (handle.value >= engine.meshes.size())
+            continue;
         const MeshRecord& record = handle_at(engine.meshes, handle);
         upstream::ShadowCaster caster;
         caster.bounds_min = upstream::shadow_caster_bounds_fallback_min;
         caster.bounds_max = upstream::shadow_caster_bounds_fallback_max;
         if (record.geometry < engine.geometries.size()) {
-            const ModelGeometry& geometry =
-                engine.geometries[record.geometry];
+            const ModelGeometry& geometry = engine.geometries[record.geometry];
             caster.bounds_min = {
                 geometry.bounds_min.x,
                 geometry.bounds_min.y,
@@ -3046,9 +2809,7 @@ inline void fitted_shadow_casters(
             // enableMorphTargetShadows' provider, read LIVE: the weights
             // are what the scene animates, and the fit has to follow them
             // or it bounds a scrambled mesh by its unmorphed box.
-            if (
-                generator.morph_shadow_bounds &&
-                !geometry.morph_positions.empty()) {
+            if (generator.morph_shadow_bounds && !geometry.morph_positions.empty()) {
                 upstream::ensure_morph_target_ranges(geometry);
                 // The two weight lanes handed over as a pointer and a
                 // count rather than selected with a ternary. There is no
@@ -3059,17 +2820,13 @@ inline void fitted_shadow_casters(
                 // every caster of every refreshed generator, on a path
                 // that runs each frame. Pointers have a common type and
                 // copy nothing.
-                const std::vector<float>& storage_weights =
-                    record.morph_storage_weights;
+                const std::vector<float>& storage_weights = record.morph_storage_weights;
                 const bool uncapped = !storage_weights.empty();
                 upstream::expand_morph_caster_bounds(
                     geometry.morph_bounds,
-                    uncapped ? storage_weights.data()
-                             : record.morph_weights.data(),
-                    uncapped ? storage_weights.size()
-                             : record.morph_weights.size(),
-                    caster.bounds_min,
-                    caster.bounds_max);
+                    uncapped ? storage_weights.data() : record.morph_weights.data(),
+                    uncapped ? storage_weights.size() : record.morph_weights.size(),
+                    caster.bounds_min, caster.bounds_max);
             }
         }
         // `computeDirectionalLightMatrix` reads the mesh's live boundMin and
@@ -3077,14 +2834,8 @@ inline void fitted_shadow_casters(
         // those properties as the aggregate AABB of each thin-instance pool;
         // ignoring them collapses the fit around the unit prototype and puts
         // almost every receiver outside the shadow map.
-        Vec3 minimum{
-            caster.bounds_min[0],
-            caster.bounds_min[1],
-            caster.bounds_min[2]};
-        Vec3 maximum{
-            caster.bounds_max[0],
-            caster.bounds_max[1],
-            caster.bounds_max[2]};
+        Vec3 minimum{caster.bounds_min[0], caster.bounds_min[1], caster.bounds_min[2]};
+        Vec3 maximum{caster.bounds_max[0], caster.bounds_max[1], caster.bounds_max[2]};
         apply_mesh_bound_overrides(record, minimum, maximum);
         caster.bounds_min = {minimum.x, minimum.y, minimum.z};
         caster.bounds_max = {maximum.x, maximum.y, maximum.z};
@@ -3098,18 +2849,16 @@ inline void fitted_shadow_casters(
         // keys on `instance_version`, so this work runs only when the pin's
         // own cache would be invalidated.
 #if BBLITE_GPU_INSTANCING && BBLITE_SHADOWS_CSM
-        const std::size_t active_instances =
-            thin_instance_active_count(record);
-        if (
-            generator.filter == ShadowFilter::csm_directional &&
-            record.thin_instanced && active_instances > 0) {
-            const std::array<float, 16> parent = outer_draw_world(
-                upstream::build_instance_parent_world(record), record);
+        const std::size_t active_instances = thin_instance_active_count(record);
+        if (generator.filter == ShadowFilter::csm_directional && record.thin_instanced &&
+            active_instances > 0) {
+            const std::array<float, 16> parent =
+                outer_draw_world(upstream::build_instance_parent_world(record), record);
             std::copy(parent.begin(), parent.end(), caster.world.begin());
             for (std::size_t index = 0; index < active_instances; ++index) {
-                const std::array<float, 16>& instance =
-                    record.instance_matrices[index];
-                if (!upstream::csm_instance_contributes(instance)) continue;
+                const std::array<float, 16>& instance = record.instance_matrices[index];
+                if (!upstream::csm_instance_contributes(instance))
+                    continue;
                 caster.instance = instance;
                 caster.has_instance = true;
                 casters.push_back(caster);
@@ -3141,16 +2890,14 @@ inline void fitted_shadow_casters(
  * cannot disagree about which generator is light `n`.
  */
 template <typename Visit>
-inline void for_each_shadow_generator(
-    const Scene& scene,
-    const Engine& engine,
-    Visit&& visit) {
+inline void for_each_shadow_generator(const Scene& scene, const Engine& engine, Visit&& visit) {
     for (std::size_t slot = 0; slot < scene.lights.size(); ++slot) {
         const LightHandle light = scene.lights[slot];
-        if (light.value >= engine.lights.size()) continue;
-        const ShadowGeneratorHandle handle =
-            handle_at(engine.lights, light).shadow_generator;
-        if (handle.value >= engine.shadow_generators.size()) continue;
+        if (light.value >= engine.lights.size())
+            continue;
+        const ShadowGeneratorHandle handle = handle_at(engine.lights, light).shadow_generator;
+        if (handle.value >= engine.shadow_generators.size())
+            continue;
         visit(handle, light, slot);
     }
 }
@@ -3169,9 +2916,8 @@ struct ShadowCasterMatrices {
     const std::array<float, 16>& view;
 };
 
-inline ShadowCasterMatrices shadow_caster_matrices(
-    const Engine& engine,
-    const FrameTaskRecord& task) {
+inline ShadowCasterMatrices shadow_caster_matrices(const Engine& engine,
+                                                   const FrameTaskRecord& task) {
     const ShadowGeneratorRecord& generator =
         handle_at(engine.shadow_generators, task.render.shadow_generator);
 #if BBLITE_SHADOWS_CSM
@@ -3181,13 +2927,11 @@ inline ShadowCasterMatrices shadow_caster_matrices(
         // layer the fit does not carry would otherwise render through a
         // pair a cascaded generator never writes.
         if (task.render.depth_layer >= generator.csm_cascades.size()) {
-            throw std::runtime_error(
-                "A cascaded shadow pass names cascade " +
-                std::to_string(task.render.depth_layer) +
-                ", which its generator has not fitted.");
+            throw std::runtime_error("A cascaded shadow pass names cascade " +
+                                     std::to_string(task.render.depth_layer) +
+                                     ", which its generator has not fitted.");
         }
-        const ShadowCascade& cascade =
-            generator.csm_cascades[task.render.depth_layer];
+        const ShadowCascade& cascade = generator.csm_cascades[task.render.depth_layer];
         return {cascade.caster_view_projection, cascade.view};
     }
 #endif
@@ -3254,11 +2998,8 @@ struct ShadowRefreshState {
  * run, so the block's bytes are provably the ones the backend holds.
  */
 template <typename Visit>
-inline void refresh_shadow_generators(
-    const Scene& scene,
-    Engine& engine,
-    ShadowRefreshState& refresh,
-    Visit&& visit) {
+inline void refresh_shadow_generators(const Scene& scene, Engine& engine,
+                                      ShadowRefreshState& refresh, Visit&& visit) {
     if (refresh.blocks.size() < engine.shadow_generators.size()) {
         refresh.blocks.resize(engine.shadow_generators.size());
         refresh.uploaded.resize(engine.shadow_generators.size(), false);
@@ -3281,24 +3022,16 @@ inline void refresh_shadow_generators(
     // whole-target ratio, where the second copy would be the one that
     // drifts. A frame constant like `eye` above, so it is read once here
     // rather than per generator.
-    const PixelViewport surface_extent = scene_surface_extent(
-        engine, scene, engine.options.width, engine.options.height);
+    const PixelViewport surface_extent =
+        scene_surface_extent(engine, scene, engine.options.width, engine.options.height);
     const double csm_camera_aspect = upstream::effective_aspect_ratio(
-        scene.camera.value < engine.cameras.size()
-            ? handle_at(engine.cameras, scene.camera)
-            : no_camera_record,
-        static_cast<double>(surface_extent.width),
-        static_cast<double>(surface_extent.height));
+        scene.camera.value < engine.cameras.size() ? handle_at(engine.cameras, scene.camera)
+                                                   : no_camera_record,
+        static_cast<double>(surface_extent.width), static_cast<double>(surface_extent.height));
 #endif
     for_each_shadow_generator(
-        scene,
-        engine,
-        [&](
-            ShadowGeneratorHandle handle,
-            LightHandle light,
-            std::size_t slot) {
-            ShadowGeneratorRecord& generator =
-                handle_at(engine.shadow_generators, handle);
+        scene, engine, [&](ShadowGeneratorHandle handle, LightHandle light, std::size_t slot) {
+            ShadowGeneratorRecord& generator = handle_at(engine.shadow_generators, handle);
             const LightRecord& light_record = handle_at(engine.lights, light);
             upstream::ShadowRefreshGate& gate = handle_at(refresh.gates, handle);
             const upstream::CsmCameraKey* csm_camera = nullptr;
@@ -3311,16 +3044,14 @@ inline void refresh_shadow_generators(
             // folded in) and the near/far pair the split formula reads. A
             // forced generator's gate returns before reading it, so the
             // key is built only when the gate will.
-            const bool csm_fit =
-                generator.filter == ShadowFilter::csm_directional &&
-                scene.camera.value < engine.cameras.size();
+            const bool csm_fit = generator.filter == ShadowFilter::csm_directional &&
+                                 scene.camera.value < engine.cameras.size();
             upstream::CsmCameraKey camera_key;
-            if (csm_fit) csm_camera = &camera_key;
+            if (csm_fit)
+                csm_camera = &camera_key;
             if (csm_fit && !generator.force_refresh_every_frame) {
-                const CameraRecord& camera =
-                    handle_at(engine.cameras, scene.camera);
-                camera_key.view_projection =
-                    upstream::build_view_projection(camera, aspect);
+                const CameraRecord& camera = handle_at(engine.cameras, scene.camera);
+                camera_key.view_projection = upstream::build_view_projection(camera, aspect);
                 camera_key.near_plane = camera.near_plane;
                 camera_key.far_plane = camera.far_plane;
             }
@@ -3331,20 +3062,12 @@ inline void refresh_shadow_generators(
             // below — keep their last-render values. The verdict lands on
             // the gate, where each backend's task loop reads it to skip
             // the caster pass itself.
-            const bool due = upstream::shadow_refresh_due(
-                engine,
-                generator,
-                light_record,
-                eye,
-                csm_camera,
-                gate);
+            const bool due = upstream::shadow_refresh_due(engine, generator, light_record, eye,
+                                                          csm_camera, gate);
             gate.due = due;
             if (due) {
                 if (generator.filter == ShadowFilter::pcf_spot) {
-                    upstream::update_pcf_spot_shadow(
-                        generator,
-                        light_record,
-                        eye);
+                    upstream::update_pcf_spot_shadow(generator, light_record, eye);
                 } else {
                     // Every directional fit re-reads its casters' world
                     // bounds; the spot rebuild reads only the light. The
@@ -3352,33 +3075,23 @@ inline void refresh_shadow_generators(
                     // shares every resource the spot generator builds, and
                     // what it needs beside them -- the caster fit -- is
                     // the receiver half's, not the ESM's.
-                    fitted_shadow_casters(
-                        engine, generator, refresh.casters);
+                    fitted_shadow_casters(engine, generator, refresh.casters);
 #if BBLITE_SHADOWS_ESM
                     if (generator.filter == ShadowFilter::esm_directional) {
-                        upstream::update_esm_directional_shadow(
-                            generator,
-                            light_record,
-                            refresh.casters,
-                            eye);
+                        upstream::update_esm_directional_shadow(generator, light_record,
+                                                                refresh.casters, eye);
                     } else
 #endif
 #if BBLITE_SHADOWS_CSM
-                    if (csm_fit) {
-                        upstream::update_csm_cascades(
-                            generator,
-                            light_record,
-                            handle_at(engine.cameras, scene.camera),
-                            aspect,
-                            refresh.casters);
+                        if (csm_fit) {
+                        upstream::update_csm_cascades(generator, light_record,
+                                                      handle_at(engine.cameras, scene.camera),
+                                                      aspect, refresh.casters);
                     } else
 #endif
                     {
-                        upstream::update_pcf_directional_shadow(
-                            generator,
-                            light_record,
-                            refresh.casters,
-                            eye);
+                        upstream::update_pcf_directional_shadow(generator, light_record,
+                                                                refresh.casters, eye);
                     }
                 }
             } else if (handle_at(refresh.uploaded, handle)) {
@@ -3387,17 +3100,14 @@ inline void refresh_shadow_generators(
                 // compare and the visitor are skipped with the pass.
                 return;
             }
-            const upstream::ShadowReceiverBlock block =
-                upstream::shadow_receiver_block(generator);
+            const upstream::ShadowReceiverBlock block = upstream::shadow_receiver_block(generator);
 #if BBLITE_SHADOWS_CSM
             const auto receiver_callbacks = generator.csm_receiver_callbacks;
-            if (
-                generator.filter == ShadowFilter::csm_directional &&
-                receiver_callbacks && !receiver_callbacks->empty()) {
+            if (generator.filter == ShadowFilter::csm_directional && receiver_callbacks &&
+                !receiver_callbacks->empty()) {
                 js::F32Array values(block.size / sizeof(float));
                 if (!values.empty()) {
-                    std::memcpy(
-                        values.data(), block.bytes.data(), block.size);
+                    std::memcpy(values.data(), block.bytes.data(), block.size);
                 }
                 // getCsmReceiverData subscribers observe the exact block
                 // produced by the pin's packer on every refresh, before the
@@ -3405,15 +3115,14 @@ inline void refresh_shadow_generators(
                 receiver_callbacks->dispatch(values);
             }
 #endif
-            const bool moved = !handle_at(refresh.uploaded, handle) ||
-                block != handle_at(refresh.blocks, handle);
+            const bool moved =
+                !handle_at(refresh.uploaded, handle) || block != handle_at(refresh.blocks, handle);
             handle_at(refresh.blocks, handle) = block;
             handle_at(refresh.uploaded, handle) = true;
             visit(generator, handle, slot, block, moved);
         });
 }
 #endif
-
 
 #if BBLITE_PINNED_MATERIALS
 /**
@@ -3425,11 +3134,9 @@ inline void refresh_shadow_generators(
  * pin's rather than either backend's: Dawn uploads it to a buffer and SDL_GPU
  * pushes it at a uniform slot, and neither should decide what is in it.
  */
-inline upstream::SceneUniforms pinned_scene_block(
-    const Scene& scene,
-    const Engine& engine,
-    const CameraRecord& camera,
-    const std::array<float, 16>& view_projection) {
+inline upstream::SceneUniforms pinned_scene_block(const Scene& scene, const Engine& engine,
+                                                  const CameraRecord& camera,
+                                                  const std::array<float, 16>& view_projection) {
     upstream::SceneUniforms scene_block{};
     scene_block.viewProjection = view_projection;
     // The pin's fragment reads the view direction from `vEyePosition`, and its
@@ -3439,8 +3146,7 @@ inline upstream::SceneUniforms pinned_scene_block(
         upstream::camera_world_matrix(camera);
 #if BBLITE_FLOATING_ORIGIN
     const Vec3d fo_offset = floating_origin_offset(scene, engine);
-    const Vec3d fo_camera_eye =
-        upstream::arc_rotate_eye_position(camera);
+    const Vec3d fo_camera_eye = upstream::arc_rotate_eye_position(camera);
 #endif
     scene_block.vEyePosition = {
 #if BBLITE_FLOATING_ORIGIN
@@ -3478,9 +3184,9 @@ inline upstream::SceneUniforms pinned_scene_block(
         // (`if(scene.vImageInfos.w>=0.0)`) and the trailing
         // image-processing pass applies it once. The captured browser block
         // carries the same -1 (scene30 buffer#1).
-        scene.transmission_enabled
-            ? -1.0f
-            : scene.environment.tone_mapping_enabled ? 1.0f : 0.0f,
+        scene.transmission_enabled               ? -1.0f
+        : scene.environment.tone_mapping_enabled ? 1.0f
+                                                 : 0.0f,
     };
     scene_block.vFogInfos = {
         scene.fog_mode,
@@ -3509,15 +3215,9 @@ inline upstream::SceneUniforms pinned_scene_block(
         scene.clip_plane.w,
     };
     const std::array<std::array<float, 4>*, 9> harmonics{
-        &scene_block.vSphericalL00,
-        &scene_block.vSphericalL1_1,
-        &scene_block.vSphericalL10,
-        &scene_block.vSphericalL11,
-        &scene_block.vSphericalL2_2,
-        &scene_block.vSphericalL2_1,
-        &scene_block.vSphericalL20,
-        &scene_block.vSphericalL21,
-        &scene_block.vSphericalL22,
+        &scene_block.vSphericalL00, &scene_block.vSphericalL1_1, &scene_block.vSphericalL10,
+        &scene_block.vSphericalL11, &scene_block.vSphericalL2_2, &scene_block.vSphericalL2_1,
+        &scene_block.vSphericalL20, &scene_block.vSphericalL21,  &scene_block.vSphericalL22,
     };
     for (std::size_t index = 0; index < harmonics.size(); ++index) {
         const Color3& band = scene.environment.spherical_harmonics[index];
@@ -3534,15 +3234,15 @@ inline upstream::SceneUniforms pinned_scene_block(
  * buffer, so it lands in the first four bytes. Returned as bytes because that is
  * what both a buffer upload and a uniform push take.
  */
-inline std::vector<std::uint8_t> pinned_lights_block(
-    const Scene& scene,
-    const Engine& engine) {
+inline std::vector<std::uint8_t> pinned_lights_block(const Scene& scene, const Engine& engine) {
     std::array<std::uint32_t, 4> header{};
     std::array<upstream::LightEntry, upstream::pinned_max_lights> entries{};
     std::uint32_t count = 0;
     for (const LightHandle handle : scene.lights) {
-        if (count >= upstream::pinned_max_lights) break;
-        if (handle.value >= engine.lights.size()) continue;
+        if (count >= upstream::pinned_max_lights)
+            break;
+        if (handle.value >= engine.lights.size())
+            continue;
         const LightRecord& light = handle_at(engine.lights, handle);
         // Which writer each kind takes is generated: the scene compiles arms
         // only for the kinds it reaches, so the mapping cannot be restated here.
@@ -3553,13 +3253,10 @@ inline std::vector<std::uint8_t> pinned_lights_block(
 #if BBLITE_FLOATING_ORIGIN
     apply_light_floating_origin(entries, count, scene, engine);
 #endif
-    std::vector<std::uint8_t> bytes(
-        sizeof(header) + entries.size() * sizeof(upstream::LightEntry));
+    std::vector<std::uint8_t> bytes(sizeof(header) + entries.size() * sizeof(upstream::LightEntry));
     std::memcpy(bytes.data(), header.data(), sizeof(header));
-    std::memcpy(
-        bytes.data() + sizeof(header),
-        entries.data(),
-        entries.size() * sizeof(upstream::LightEntry));
+    std::memcpy(bytes.data() + sizeof(header), entries.data(),
+                entries.size() * sizeof(upstream::LightEntry));
     return bytes;
 }
 
@@ -3578,20 +3275,16 @@ inline std::vector<std::uint8_t> pinned_lights_block(
  * this walk, so it is written once over whichever block's lanes.
  */
 template <typename Block>
-inline void pinned_mesh_light_selection(
-    const Scene& scene,
-    const Engine& engine,
-    std::uint32_t mesh_index,
-    Block& block) {
+inline void pinned_mesh_light_selection(const Scene& scene, const Engine& engine,
+                                        std::uint32_t mesh_index, Block& block) {
     std::uint32_t count = 0;
     std::uint32_t light_index = 0;
     for (const LightHandle handle : scene.lights) {
-        if (light_index >= upstream::pinned_max_lights) break;
-        if (handle.value >= engine.lights.size()) continue;
-        if (
-            upstream::light_affects_mesh(
-                handle_at(engine.lights, handle),
-                mesh_index)) {
+        if (light_index >= upstream::pinned_max_lights)
+            break;
+        if (handle.value >= engine.lights.size())
+            continue;
+        if (upstream::light_affects_mesh(handle_at(engine.lights, handle), mesh_index)) {
             block.li[count / 4][count % 4] = light_index;
             ++count;
         }
@@ -3601,11 +3294,9 @@ inline void pinned_mesh_light_selection(
 }
 
 #if BBLITE_PINNED_MATERIAL_VARIANTS
-inline upstream::MeshUniforms pinned_mesh_block(
-    const Scene& scene,
-    const Engine& engine,
-    const std::array<float, 16>& world,
-    std::uint32_t mesh_index) {
+inline upstream::MeshUniforms pinned_mesh_block(const Scene& scene, const Engine& engine,
+                                                const std::array<float, 16>& world,
+                                                std::uint32_t mesh_index) {
     upstream::MeshUniforms block{};
     block.world = world;
     pinned_mesh_light_selection(scene, engine, mesh_index, block);
@@ -3618,11 +3309,10 @@ inline upstream::MeshUniforms pinned_mesh_block(
     // `if constexpr` branches must compile, and most scenes' mirrored
     // MeshUniforms carries no velocity tail.
     [&](auto& dependent) {
-        if constexpr (
-            requires {
-                dependent.previousWorld;
-                dependent.velocityEnabled;
-            }) {
+        if constexpr (requires {
+                          dependent.previousWorld;
+                          dependent.velocityEnabled;
+                      }) {
             dependent.previousWorld = world;
             dependent.velocityEnabled = 1.0f;
         }
@@ -3645,40 +3335,33 @@ inline upstream::MeshUniforms pinned_mesh_block(
  * (`mix(1.0, _sf[i], meshU.receivesShadow.x)`), so one composed module
  * draws a receiving mesh and a non-receiving one alike.
  */
-inline upstream::NodeMeshUniforms node_mesh_block(
-    const Scene& scene,
-    const Engine& engine,
-    std::uint32_t mesh_index,
-    bool uses_local_attributes = false) {
+inline upstream::NodeMeshUniforms node_mesh_block(const Scene& scene, const Engine& engine,
+                                                  std::uint32_t mesh_index,
+                                                  bool uses_local_attributes = false) {
     upstream::NodeMeshUniforms block{};
     const MeshRecord& record = engine.meshes[mesh_index];
     if (!uses_local_attributes) {
         block.world = record.scene_morph_targets
-            ? scene_deformation_draw_world(record, scene, engine)
-            : draw_world(pinned_identity_world(), record, scene, engine);
+                          ? scene_deformation_draw_world(record, scene, engine)
+                          : draw_world(pinned_identity_world(), record, scene, engine);
     } else {
         const ModelGeometry& geometry = engine.geometries.at(record.geometry);
         if (geometry.vertex_space == VertexSpace::local) {
             block.world = scene_deformation_draw_world(record, scene, engine);
-        } else if (
-            geometry.vertex_space == VertexSpace::world &&
-            geometry.local_normals.size() == geometry.vertices.size() &&
-            !record.gpu_world_transform && !record.live_imported_transform &&
-            record.parent.value == invalid_handle &&
-            record.transform_parent.value == invalid_handle &&
-            record.position.x == 0.0 && record.position.y == 0.0 &&
-            record.position.z == 0.0 &&
-            record.scaling.x == 1.0 && record.scaling.y == 1.0 &&
-            record.scaling.z == 1.0 && !record.has_rotation_quaternion &&
-            record.rotation.x == 0.0 && record.rotation.y == 0.0 &&
-            record.rotation.z == 0.0) {
-            block.world = draw_world(
-                pinned_x_mirrored_world(record.instance_parent_matrix),
-                record, scene, engine);
+        } else if (geometry.vertex_space == VertexSpace::world &&
+                   geometry.local_normals.size() == geometry.vertices.size() &&
+                   !record.gpu_world_transform && !record.live_imported_transform &&
+                   record.parent.value == invalid_handle &&
+                   record.transform_parent.value == invalid_handle && record.position.x == 0.0 &&
+                   record.position.y == 0.0 && record.position.z == 0.0 &&
+                   record.scaling.x == 1.0 && record.scaling.y == 1.0 && record.scaling.z == 1.0 &&
+                   !record.has_rotation_quaternion && record.rotation.x == 0.0 &&
+                   record.rotation.y == 0.0 && record.rotation.z == 0.0) {
+            block.world = draw_world(pinned_x_mirrored_world(record.instance_parent_matrix), record,
+                                     scene, engine);
         } else {
-            throw std::runtime_error(
-                "Node geometry local attributes require scene-local geometry "
-                "or a static glTF world with retained source normals.");
+            throw std::runtime_error("Node geometry local attributes require scene-local geometry "
+                                     "or a static glTF world with retained source normals.");
         }
     }
     if (record.receives_shadows) {
@@ -3692,12 +3375,10 @@ inline upstream::NodeMeshUniforms node_mesh_block(
     // block never reads the lanes and every mesh block is packed by this
     // one function.
     if (record.geometry < engine.geometries.size()) {
-        const ModelGeometry& geometry =
-            engine.geometries[record.geometry];
+        const ModelGeometry& geometry = engine.geometries[record.geometry];
         block.receivesShadow[1] = geometry.has_uvs ? 1.0f : 0.0f;
         block.receivesShadow[2] = geometry.has_tangents ? 1.0f : 0.0f;
-        block.receivesShadow[3] =
-            geometry.has_vertex_colors ? 1.0f : 0.0f;
+        block.receivesShadow[3] = geometry.has_vertex_colors ? 1.0f : 0.0f;
     }
     pinned_mesh_light_selection(scene, engine, mesh_index, block);
     return block;
@@ -3750,8 +3431,7 @@ inline upstream::NodeMeshUniforms node_mesh_block(
  */
 /** Whether a variant's vertex stage samples the bone palette. */
 inline bool pinned_variant_skeleton(std::size_t variant) {
-    return upstream::pbr_variants[variant].key.find("skeleton") !=
-        std::string_view::npos;
+    return upstream::pbr_variants[variant].key.find("skeleton") != std::string_view::npos;
 }
 
 /**
@@ -3763,8 +3443,7 @@ inline bool pinned_variant_skeleton(std::size_t variant) {
  * written MSH_HAS_SKELETON, never both.
  */
 inline bool pinned_variant_vat(std::size_t variant) {
-    return upstream::pbr_variants[variant].key.find("vat") !=
-        std::string_view::npos;
+    return upstream::pbr_variants[variant].key.find("vat") != std::string_view::npos;
 }
 
 /**
@@ -3788,10 +3467,8 @@ struct PinnedVariantKey {
     bool resolved = false;
 };
 
-inline PinnedVariantKey pinned_variant_key(
-    const Scene& scene,
-    const Engine& engine,
-    const upstream::RenderDrawCommand& draw) {
+inline PinnedVariantKey pinned_variant_key(const Scene& scene, const Engine& engine,
+                                           const upstream::RenderDrawCommand& draw) {
     PinnedVariantKey key;
     if (draw.item.material_kind != upstream::RenderMaterialKind::pbr) {
         key.refusal = "the draw names no PBR material";
@@ -3809,44 +3486,33 @@ inline PinnedVariantKey pinned_variant_key(
         key.refusal = "the draw material handle is invalid";
         return key;
     }
-    const MaterialRecord& draw_material =
-        handle_at(engine.materials, draw.item.material);
-    key.material_view = draw_material.esm_shadow
-        ? 2u
-        : draw_material.no_color ? 1u : 0u;
-    key.material_index =
-        draw_material.source_material.value == invalid_handle
-            ? draw.item.material.value
-            : draw_material.source_material.value;
+    const MaterialRecord& draw_material = handle_at(engine.materials, draw.item.material);
+    key.material_view = draw_material.esm_shadow ? 2u : draw_material.no_color ? 1u : 0u;
+    key.material_index = draw_material.source_material.value == invalid_handle
+                             ? draw.item.material.value
+                             : draw_material.source_material.value;
     if (key.material_index >= upstream::pbr_variant_material_count) {
-        key.refusal = "material " + std::to_string(key.material_index) +
-            " is past the " +
-            std::to_string(upstream::pbr_variant_material_count) +
-            " the composed table names";
+        key.refusal = "material " + std::to_string(key.material_index) + " is past the " +
+                      std::to_string(upstream::pbr_variant_material_count) +
+                      " the composed table names";
         return key;
     }
     // The mesh half of the key comes per original renderable. Renderer
     // startup assigns its stable generated-table row and gives every clone
     // the same row, even when clone handles precede later imported meshes.
     std::uint32_t feature_mesh = draw.item.mesh.value;
-    if (
-        draw.item.mesh.value < engine.meshes.size() &&
-        handle_at(engine.meshes, draw.item.mesh)
-                .composition_feature_row != invalid_handle) {
-        feature_mesh = handle_at(engine.meshes, draw.item.mesh)
-            .composition_feature_row;
+    if (draw.item.mesh.value < engine.meshes.size() &&
+        handle_at(engine.meshes, draw.item.mesh).composition_feature_row != invalid_handle) {
+        feature_mesh = handle_at(engine.meshes, draw.item.mesh).composition_feature_row;
     }
-    key.mesh_features =
-        feature_mesh <
-            upstream::pbr_renderable_mesh_features.size()
-            ? upstream::pbr_renderable_mesh_features[feature_mesh]
-            // Scene code can keep creating meshes after registration, all
-            // from the fixed-set builders; a scene whose builders disagree
-            // publishes npos here and such a draw refuses.
-            : upstream::pbr_runtime_mesh_features;
+    key.mesh_features = feature_mesh < upstream::pbr_renderable_mesh_features.size()
+                            ? upstream::pbr_renderable_mesh_features[feature_mesh]
+                            // Scene code can keep creating meshes after registration, all
+                            // from the fixed-set builders; a scene whose builders disagree
+                            // publishes npos here and such a draw refuses.
+                            : upstream::pbr_runtime_mesh_features;
     if (key.mesh_features == npos) {
-        key.refusal =
-            "the scene's runtime meshes carry no single attribute set";
+        key.refusal = "the scene's runtime meshes carry no single attribute set";
         return key;
     }
     // Scene-code pools attach after generation recorded the mesh's static
@@ -3860,11 +3526,8 @@ inline PinnedVariantKey pinned_variant_key(
         // skeleton -- so this is a swap on the static row rather than an
         // OR beside it. Generation composed the swapped row.
         if (record.has_vat) {
-            key.mesh_features &=
-                ~static_cast<std::size_t>(
-                    upstream::pinned_msh_has_skeleton);
-            key.mesh_features |=
-                static_cast<std::size_t>(upstream::pinned_msh_vat);
+            key.mesh_features &= ~static_cast<std::size_t>(upstream::pinned_msh_has_skeleton);
+            key.mesh_features |= static_cast<std::size_t>(upstream::pinned_msh_vat);
         }
         if (pinned_record_instanced(record)) {
             key.mesh_features |= upstream::pinned_msh_has_thin_instances;
@@ -3873,13 +3536,11 @@ inline PinnedVariantKey pinned_variant_key(
             // selected PBR stage and the stream each backend binds cannot
             // disagree about `instanceColor`.
             if (pinned_record_instance_colored(record)) {
-                key.mesh_features |=
-                    upstream::pinned_msh_has_instance_color;
+                key.mesh_features |= upstream::pinned_msh_has_instance_color;
             }
         }
         const std::size_t receive_shadows =
-            static_cast<std::size_t>(
-                upstream::pinned_msh_receive_shadows);
+            static_cast<std::size_t>(upstream::pinned_msh_receive_shadows);
         if (record.receives_shadows) {
             key.mesh_features |= receive_shadows;
         } else {
@@ -3898,7 +3559,8 @@ inline PinnedVariantKey pinned_variant_key(
     // composed.
     std::uint32_t light_count = 0;
     for (const LightHandle handle : scene.lights) {
-        if (handle.value >= engine.lights.size()) continue;
+        if (handle.value >= engine.lights.size())
+            continue;
         const LightRecord& light = handle_at(engine.lights, handle);
         if (!upstream::light_affects_mesh(light, draw.item.mesh.value)) {
             continue;
@@ -3912,10 +3574,9 @@ inline PinnedVariantKey pinned_variant_key(
     // two cannot disagree about which variants exist.
     key.light_mode = upstream::pinned_pbr_light_mode(
         light_count,
-        (key.mesh_features &
-            static_cast<std::size_t>(upstream::pinned_msh_receive_shadows)) !=
-            0);
-    if (key.light_mode != 1) key.single_light_type = "";
+        (key.mesh_features & static_cast<std::size_t>(upstream::pinned_msh_receive_shadows)) != 0);
+    if (key.light_mode != 1)
+        key.single_light_type = "";
     key.tone_mapping = scene.environment.tone_mapping_enabled;
     key.resolved = true;
     return key;
@@ -3929,33 +3590,28 @@ inline PinnedVariantKey pinned_variant_key(
  * the runtime derivation and the composed selector table disagree, and a key
  * that differed from the one that missed would name the wrong half.
  */
-inline std::string pinned_variant_request(
-    const PinnedVariantKey& key,
-    std::size_t geometry_task = npos) {
-    if (!key.resolved) return "no key: " + key.refusal;
-    return "material " + std::to_string(key.material_index) +
-        ", view " + std::to_string(key.material_view) +
-        ", mesh features " + std::to_string(key.mesh_features) +
-        ", light mode " + std::to_string(key.light_mode) +
-        ", single light '" + std::string(key.single_light_type) + "'" +
-        ", tone mapping " + (key.tone_mapping ? "on" : "off") +
-        ", geometry task " +
-        (geometry_task == npos
-             ? std::string("none")
-             : std::to_string(geometry_task));
+inline std::string pinned_variant_request(const PinnedVariantKey& key,
+                                          std::size_t geometry_task = npos) {
+    if (!key.resolved)
+        return "no key: " + key.refusal;
+    return "material " + std::to_string(key.material_index) + ", view " +
+           std::to_string(key.material_view) + ", mesh features " +
+           std::to_string(key.mesh_features) + ", light mode " + std::to_string(key.light_mode) +
+           ", single light '" + std::string(key.single_light_type) + "'" + ", tone mapping " +
+           (key.tone_mapping ? "on" : "off") + ", geometry task " +
+           (geometry_task == npos ? std::string("none") : std::to_string(geometry_task));
 }
 
-inline std::size_t pinned_variant_for_draw(
-    const Scene& scene,
-    const Engine& engine,
-    const upstream::RenderDrawCommand& draw,
-    // The geometry-output task the draw belongs to, npos for the colour
-    // passes: the selector table keys on it, so a geometry draw resolves
-    // its own MRT arm and never a colour variant.
-    std::size_t geometry_task = npos,
-    // Filled with the key the lookup used, so a miss reports that key
-    // rather than a second derivation of it.
-    PinnedVariantKey* key_out = nullptr) {
+inline std::size_t
+pinned_variant_for_draw(const Scene& scene, const Engine& engine,
+                        const upstream::RenderDrawCommand& draw,
+                        // The geometry-output task the draw belongs to, npos for the colour
+                        // passes: the selector table keys on it, so a geometry draw resolves
+                        // its own MRT arm and never a colour variant.
+                        std::size_t geometry_task = npos,
+                        // Filled with the key the lookup used, so a miss reports that key
+                        // rather than a second derivation of it.
+                        PinnedVariantKey* key_out = nullptr) {
     if (upstream::pbr_variants.empty()) {
         return npos;
     }
@@ -3993,8 +3649,10 @@ inline std::size_t pinned_variant_for_draw(
         }
     }
     const PinnedVariantKey key = pinned_variant_key(scene, engine, draw);
-    if (!key.resolved) return npos;
-    if (key_out) *key_out = key;
+    if (!key.resolved)
+        return npos;
+    if (key_out)
+        *key_out = key;
     // Every light mode. All three read the same lights block, whose writers index
     // the pin's own light world matrix; the block itself was diffed against the
     // browser's (`artifacts/capture/scene7/buffers.json`, 1040 bytes beside the
@@ -4007,13 +3665,8 @@ inline std::size_t pinned_variant_for_draw(
     // own `refractionTexture` slot. The earlier 17.8-MAD refusal here was
     // the guard missing from the composed fragments, not pass structure.
     const std::size_t variant = upstream::pbr_variant_for(
-        key.material_index,
-        key.material_view,
-        static_cast<std::uint32_t>(key.mesh_features),
-        key.light_mode,
-        key.single_light_type,
-        key.tone_mapping,
-        geometry_task);
+        key.material_index, key.material_view, static_cast<std::uint32_t>(key.mesh_features),
+        key.light_mode, key.single_light_type, key.tone_mapping, geometry_task);
     if (variant == npos) {
         return npos;
     }
@@ -4061,13 +3714,11 @@ struct PinnedDrawConventions {
     bool identity_world;
 };
 
-inline PinnedDrawConventions pinned_draw_conventions(
-    std::size_t variant,
-    const MeshRecord& record) {
+inline PinnedDrawConventions pinned_draw_conventions(std::size_t variant,
+                                                     const MeshRecord& record) {
     const bool skeleton_draw = pinned_variant_skeleton(variant);
     const bool vat_draw = pinned_variant_vat(variant);
-    const bool world_from_palette =
-        !skeleton_draw && !vat_draw && !record.bone_matrices.empty();
+    const bool world_from_palette = !skeleton_draw && !vat_draw && !record.bone_matrices.empty();
     return PinnedDrawConventions{
         skeleton_draw,
         world_from_palette,
@@ -4078,24 +3729,17 @@ inline PinnedDrawConventions pinned_draw_conventions(
 }
 
 /** The effective mesh block shared by backend uploads and CPU captures. */
-inline upstream::MeshUniforms pinned_draw_mesh_block(
-    const Scene& scene,
-    const Engine& engine,
-    const upstream::RenderDrawCommand& draw,
-    std::size_t variant,
-    const PinnedDrawConventions& conventions) {
+inline upstream::MeshUniforms pinned_draw_mesh_block(const Scene& scene, const Engine& engine,
+                                                     const upstream::RenderDrawCommand& draw,
+                                                     std::size_t variant,
+                                                     const PinnedDrawConventions& conventions) {
     const MeshRecord& record = handle_at(engine.meshes, draw.item.mesh);
-    return pinned_mesh_block(
-        scene,
-        engine,
-        pinned_draw_world(
-            conventions.identity_world,
-            conventions.world_from_palette,
-            upstream::pbr_variants[variant].uses_local_position,
-            record,
-            scene,
-            engine),
-        draw.item.mesh.value);
+    return pinned_mesh_block(scene, engine,
+                             pinned_draw_world(conventions.identity_world,
+                                               conventions.world_from_palette,
+                                               upstream::pbr_variants[variant].uses_local_position,
+                                               record, scene, engine),
+                             draw.item.mesh.value);
 }
 
 /**
@@ -4110,20 +3754,20 @@ struct VatTextureLayout {
     std::uint32_t bytes;
 };
 
-inline VatTextureLayout vat_texture_layout(
-    std::uint32_t bones,
-    std::uint32_t frames) {
+inline VatTextureLayout vat_texture_layout(std::uint32_t bones, std::uint32_t frames) {
     const std::uint32_t width = bones * 4u;
     return VatTextureLayout{width, frames, width * 16u, width * 16u * frames};
 }
 
-template<class Mesh, class Bake, class Settings, class Instances, class UploadInstances>
-void sync_pinned_vat(Mesh& mesh, const MeshRecord& record, const Engine& engine,
-    Bake&& upload_bake, Settings&& upload_settings,
-    [[maybe_unused]] Instances&& recreate_instances, [[maybe_unused]] UploadInstances&& upload_instances) {
-    if (!record.has_vat || record.vat.bake >= engine.vat_bakes.size()) return;
+template <class Mesh, class Bake, class Settings, class Instances, class UploadInstances>
+void sync_pinned_vat(Mesh& mesh, const MeshRecord& record, const Engine& engine, Bake&& upload_bake,
+                     Settings&& upload_settings, [[maybe_unused]] Instances&& recreate_instances,
+                     [[maybe_unused]] UploadInstances&& upload_instances) {
+    if (!record.has_vat || record.vat.bake >= engine.vat_bakes.size())
+        return;
     const auto& bake = engine.vat_bakes[record.vat.bake];
-    if (bake.bone_count == 0 || bake.frame_count == 0) return;
+    if (bake.bone_count == 0 || bake.frame_count == 0)
+        return;
     if (mesh.pinned_vat_bones != bake.bone_count || mesh.pinned_vat_frames != bake.frame_count) {
         upload_bake(bake, vat_texture_layout(bake.bone_count, bake.frame_count));
         mesh.pinned_vat_bones = bake.bone_count;
@@ -4132,15 +3776,16 @@ void sync_pinned_vat(Mesh& mesh, const MeshRecord& record, const Engine& engine,
     upload_settings(record.vat);
 #if BBLITE_VAT_INSTANCES
     const auto& vat = record.vat;
-    if (vat.instance_texels == 0) return;
+    if (vat.instance_texels == 0)
+        return;
     if (mesh.pinned_vat_instance_texels != vat.instance_texels) {
         recreate_instances(vat);
         mesh.pinned_vat_instance_texels = vat.instance_texels;
         mesh.pinned_vat_instance_version = 0;
     }
     if (mesh.pinned_vat_instance_version != vat.instance_version) {
-        upload_instances(vat, VatTextureLayout{vat.instance_texels, 1u,
-            vat.instance_texels * 16u, vat.instance_texels * 16u});
+        upload_instances(vat, VatTextureLayout{vat.instance_texels, 1u, vat.instance_texels * 16u,
+                                               vat.instance_texels * 16u});
         mesh.pinned_vat_instance_version = vat.instance_version;
     }
 #endif
@@ -4179,20 +3824,19 @@ inline constexpr std::uint64_t unsynced_bone_palette = ~std::uint64_t{0};
  * (`upload(floats, layout)`).
  */
 template <typename GpuMesh, typename Recreate, typename Upload>
-inline void sync_pinned_bone_palette(
-    GpuMesh& mesh,
-    const MeshRecord& record,
-    Recreate&& recreate,
-    Upload&& upload) {
+inline void sync_pinned_bone_palette(GpuMesh& mesh, const MeshRecord& record, Recreate&& recreate,
+                                     Upload&& upload) {
     const auto bones = static_cast<std::uint32_t>(record.bone_matrices.size());
-    if (bones == 0) return;
+    if (bones == 0)
+        return;
     const BonePaletteLayout palette = bone_palette_layout(bones);
     if (mesh.pinned_bone_count != bones) {
         recreate(palette);
         mesh.pinned_bone_count = bones;
         mesh.pinned_bone_version = unsynced_bone_palette;
     }
-    if (mesh.pinned_bone_version == record.bone_matrices_version) return;
+    if (mesh.pinned_bone_version == record.bone_matrices_version)
+        return;
     upload(record.bone_matrices.data()->data(), palette);
     mesh.pinned_bone_version = record.bone_matrices_version;
 }
@@ -4207,22 +3851,18 @@ inline void sync_pinned_bone_palette(
  * describes a generation bug -- the record is filled by the compiled
  * `setShaderTexture` calls -- rather than a draw to skip.
  */
-inline std::string shader_sampler_shortfall(
-    const upstream::ShaderVariantInfo& info,
-    std::size_t carried) {
+inline std::string shader_sampler_shortfall(const upstream::ShaderVariantInfo& info,
+                                            std::size_t carried) {
     return "shader variant '" + std::string(info.name) + "' declares " +
-        std::to_string(info.samplers.size()) +
-        " sampler(s); the material carries " + std::to_string(carried) +
-        " texture(s).";
+           std::to_string(info.samplers.size()) + " sampler(s); the material carries " +
+           std::to_string(carried) + " texture(s).";
 }
 
 /** A compiled stage keeping a register the material never declared. */
-inline std::string shader_sampler_unmapped(
-    const upstream::ShaderVariantInfo& info,
-    const std::string& texture_name) {
-    return "shader variant '" + std::string(info.name) +
-        "' binds texture '" + texture_name +
-        "', which its samplers option never declared.";
+inline std::string shader_sampler_unmapped(const upstream::ShaderVariantInfo& info,
+                                           const std::string& texture_name) {
+    return "shader variant '" + std::string(info.name) + "' binds texture '" + texture_name +
+           "', which its samplers option never declared.";
 }
 #endif
 
@@ -4242,18 +3882,14 @@ struct StandardVariantKey {
  * would print something subtly different -- the no-color pass bit and the
  * thin-instance and morph mesh bits are ORed on here, after the raw reads.
  */
-inline StandardVariantKey standard_variant_key(
-    const Engine& engine,
-    const upstream::RenderDrawCommand& draw) {
+inline StandardVariantKey standard_variant_key(const Engine& engine,
+                                               const upstream::RenderDrawCommand& draw) {
     StandardVariantKey key;
-    if (
-        draw.item.material_kind !=
-            upstream::RenderMaterialKind::standard ||
+    if (draw.item.material_kind != upstream::RenderMaterialKind::standard ||
         draw.item.material.value >= engine.materials.size()) {
         return key;
     }
-    const MaterialRecord& material =
-        handle_at(engine.materials, draw.item.material);
+    const MaterialRecord& material = handle_at(engine.materials, draw.item.material);
     key.features = upstream::standard_material_features(material);
     if (material.no_color) {
         key.features |= upstream::standard_no_color_output_flag;
@@ -4262,25 +3898,18 @@ inline StandardVariantKey standard_variant_key(
     if (material.esm_shadow) {
         // `createStandardEsmShadowMaterialView` clears the blend bit before
         // setting its own, so the key says both.
-        key.features = (key.features &
-            ~upstream::standard_alpha_blend_flag) |
-            upstream::standard_esm_shadow_output_flag;
+        key.features = (key.features & ~upstream::standard_alpha_blend_flag) |
+                       upstream::standard_esm_shadow_output_flag;
     }
 #endif
     std::uint32_t feature_mesh = draw.item.mesh.value;
-    if (
-        draw.item.mesh.value < engine.meshes.size() &&
-        handle_at(engine.meshes, draw.item.mesh)
-                .composition_feature_row != invalid_handle) {
-        feature_mesh = handle_at(engine.meshes, draw.item.mesh)
-            .composition_feature_row;
+    if (draw.item.mesh.value < engine.meshes.size() &&
+        handle_at(engine.meshes, draw.item.mesh).composition_feature_row != invalid_handle) {
+        feature_mesh = handle_at(engine.meshes, draw.item.mesh).composition_feature_row;
     }
-    key.mesh_features =
-        feature_mesh <
-            upstream::standard_renderable_mesh_features.size()
-            ? upstream::standard_renderable_mesh_features[
-                  feature_mesh]
-            : upstream::standard_runtime_mesh_features;
+    key.mesh_features = feature_mesh < upstream::standard_renderable_mesh_features.size()
+                            ? upstream::standard_renderable_mesh_features[feature_mesh]
+                            : upstream::standard_runtime_mesh_features;
     if (key.mesh_features == npos) {
         return key;
     }
@@ -4293,13 +3922,11 @@ inline StandardVariantKey standard_variant_key(
             // material: a coloured pool composes the Standard family's own
             // final-colour slot, an uncoloured one the plain fragment.
             if (pinned_record_instance_colored(record)) {
-                key.mesh_features |=
-                    upstream::std_msh_has_instance_color;
+                key.mesh_features |= upstream::std_msh_has_instance_color;
             }
         }
         const std::size_t receive_shadows =
-            static_cast<std::size_t>(
-                upstream::pinned_msh_receive_shadows);
+            static_cast<std::size_t>(upstream::pinned_msh_receive_shadows);
         if (record.receives_shadows) {
             key.mesh_features |= receive_shadows;
         } else {
@@ -4309,30 +3936,26 @@ inline StandardVariantKey standard_variant_key(
     // `rebuildSingle` computes `receiveShadows` as `!shadowOutput && ...`,
     // so a depth-only view of a mesh that also receives is composed without
     // the shadow fragment and its key carries no receive bit.
-    if (
-        material.no_color
+    if (material.no_color
 #if BBLITE_SHADOWS_ESM
         || material.esm_shadow
 #endif
     ) {
-        key.mesh_features &= ~static_cast<std::size_t>(
-            upstream::pinned_msh_receive_shadows);
+        key.mesh_features &= ~static_cast<std::size_t>(upstream::pinned_msh_receive_shadows);
     }
-    if (
-        draw.item.geometry < engine.geometries.size() &&
+    if (draw.item.geometry < engine.geometries.size() &&
         !engine.geometries[draw.item.geometry].morph_positions.empty()) {
         key.mesh_features |= upstream::std_msh_has_morph_targets;
     }
 #if defined(BBLITE_STANDARD_SKELETON)
-    key.features |= upstream::standard_skeleton_features(
-        static_cast<std::uint32_t>(key.mesh_features));
+    key.features |=
+        upstream::standard_skeleton_features(static_cast<std::uint32_t>(key.mesh_features));
 #endif
 #if defined(BBLITE_STANDARD_VERTEX_ALPHA)
     if (draw.item.mesh.value < engine.meshes.size()) {
         const MeshRecord& record = handle_at(engine.meshes, draw.item.mesh);
         key.features |= upstream::standard_color_alpha_features(
-            material.no_color || material.esm_shadow,
-            record.has_vertex_alpha,
+            material.no_color || material.esm_shadow, record.has_vertex_alpha,
             upstream::standard_vertex_colors_enabled &&
                 draw.item.geometry < engine.geometries.size() &&
                 engine.geometries[draw.item.geometry].has_vertex_colors,
@@ -4350,29 +3973,22 @@ inline StandardVariantKey standard_variant_key(
  * disagree, which is what an upstream feature-derivation change looks like
  * from here.
  */
-inline std::string standard_variant_request(
-    const Engine& engine,
-    const upstream::RenderDrawCommand& draw) {
+inline std::string standard_variant_request(const Engine& engine,
+                                            const upstream::RenderDrawCommand& draw) {
     const StandardVariantKey key = standard_variant_key(engine, draw);
     if (!key.resolved) {
         if (draw.item.material.value >= engine.materials.size()) {
-            return "no key: material handle " +
-                std::to_string(draw.item.material.value) + " exceeds " +
-                std::to_string(engine.materials.size()) +
-                " runtime materials";
+            return "no key: material handle " + std::to_string(draw.item.material.value) +
+                   " exceeds " + std::to_string(engine.materials.size()) + " runtime materials";
         }
         return "no key: runtime material flags standard=" +
-            std::to_string(
-                handle_at(engine.materials, draw.item.material).standard_material) +
-            ", shader=" +
-            std::to_string(
-                handle_at(engine.materials, draw.item.material).shader_material) +
-            ", draw kind=" +
-            std::to_string(static_cast<std::uint32_t>(
-                draw.item.material_kind));
+               std::to_string(handle_at(engine.materials, draw.item.material).standard_material) +
+               ", shader=" +
+               std::to_string(handle_at(engine.materials, draw.item.material).shader_material) +
+               ", draw kind=" + std::to_string(static_cast<std::uint32_t>(draw.item.material_kind));
     }
     return "features " + std::to_string(key.features) + ", mesh features " +
-        std::to_string(key.mesh_features);
+           std::to_string(key.mesh_features);
 }
 
 /**
@@ -4386,24 +4002,21 @@ inline std::string standard_variant_request(
  * weights arrive after mesh creation. A no-color view's record ORs the
  * pass bit the composition keyed its depth-only rows on.
  */
-inline std::size_t standard_variant_for_draw(
-    const Scene& scene,
-    const Engine& engine,
-    const upstream::RenderDrawCommand& draw,
-    std::size_t geometry_task = npos,
-    // Filled with the derived key when the caller passes one, so the draw
-    // can consume `key.features` instead of re-deriving it.
-    StandardVariantKey* key_out = nullptr) {
+inline std::size_t
+standard_variant_for_draw(const Scene& scene, const Engine& engine,
+                          const upstream::RenderDrawCommand& draw, std::size_t geometry_task = npos,
+                          // Filled with the derived key when the caller passes one, so the draw
+                          // can consume `key.features` instead of re-deriving it.
+                          StandardVariantKey* key_out = nullptr) {
     (void)scene;
     const StandardVariantKey key = standard_variant_key(engine, draw);
-    if (key_out) *key_out = key;
+    if (key_out)
+        *key_out = key;
     if (!key.resolved) {
         return npos;
     }
     return upstream::standard_variant_for(
-        key.features,
-        static_cast<std::uint32_t>(key.mesh_features),
-        geometry_task);
+        key.features, static_cast<std::uint32_t>(key.mesh_features), geometry_task);
 }
 
 /**
@@ -4423,11 +4036,8 @@ inline std::size_t standard_variant_for_draw(
  * time instead and records no such world, so it is refused by name
  * rather than rendered with a silently-wrong varying.
  */
-inline std::array<float, 16> standard_draw_world(
-    const MeshRecord& record,
-    bool uses_local_position,
-    const Scene& scene,
-    const Engine& engine) {
+inline std::array<float, 16> standard_draw_world(const MeshRecord& record, bool uses_local_position,
+                                                 const Scene& scene, const Engine& engine) {
     if (record.scene_morph_targets) {
         return scene_deformation_draw_world(record, scene, engine);
     }
@@ -4438,31 +4048,37 @@ inline std::array<float, 16> standard_draw_world(
 #endif
     if (uses_local_position) {
         const bool identity_transform =
-            record.position.x == 0.0f && record.position.y == 0.0f &&
-            record.position.z == 0.0f &&
-            record.scaling.x == 1.0f && record.scaling.y == 1.0f &&
-            record.scaling.z == 1.0f &&
-            !record.has_rotation_quaternion &&
-            record.rotation.x == 0.0f && record.rotation.y == 0.0f &&
-            record.rotation.z == 0.0f;
+            record.position.x == 0.0f && record.position.y == 0.0f && record.position.z == 0.0f &&
+            record.scaling.x == 1.0f && record.scaling.y == 1.0f && record.scaling.z == 1.0f &&
+            !record.has_rotation_quaternion && record.rotation.x == 0.0f &&
+            record.rotation.y == 0.0f && record.rotation.z == 0.0f;
         if (!identity_transform) {
-            throw std::runtime_error(
-                "A LOCAL_POSITION geometry variant over a transformed "
-                "Standard mesh is not wired: the baked vertices and the "
-                "raw position attribute disagree.");
+            throw std::runtime_error("A LOCAL_POSITION geometry variant over a transformed "
+                                     "Standard mesh is not wired: the baked vertices and the "
+                                     "raw position attribute disagree.");
         }
-        return draw_world(
-            record.instance_parent_matrix,
-            record,
-            scene,
-            engine);
+        return draw_world(record.instance_parent_matrix, record, scene, engine);
     }
-    return draw_world(std::array<float, 16>{
-        1.0f, 0.0f, 0.0f, 0.0f,
-        0.0f, 1.0f, 0.0f, 0.0f,
-        0.0f, 0.0f, 1.0f, 0.0f,
-        0.0f, 0.0f, 0.0f, 1.0f,
-    }, record, scene, engine);
+    return draw_world(
+        std::array<float, 16>{
+            1.0f,
+            0.0f,
+            0.0f,
+            0.0f,
+            0.0f,
+            1.0f,
+            0.0f,
+            0.0f,
+            0.0f,
+            0.0f,
+            1.0f,
+            0.0f,
+            0.0f,
+            0.0f,
+            0.0f,
+            1.0f,
+        },
+        record, scene, engine);
 }
 
 /**
@@ -4470,33 +4086,23 @@ inline std::array<float, 16> standard_draw_world(
  * record-filled props. A material-less item keeps the pin's defaults, the
  * way `createStandardMaterial` seeds them.
  */
-inline upstream::StandardMaterialUniforms standard_material_block(
-    const MaterialRecord* material,
-    std::uint32_t features) {
-    const upstream::StandardMaterialProps props = material
-        ? upstream::standard_material_props(*material)
-        : upstream::StandardMaterialProps{};
+inline upstream::StandardMaterialUniforms standard_material_block(const MaterialRecord* material,
+                                                                  std::uint32_t features) {
+    const upstream::StandardMaterialProps props =
+        material ? upstream::standard_material_props(*material) : upstream::StandardMaterialProps{};
     upstream::StandardMaterialUniforms block{};
-    upstream::write_standard_material(
-        props,
-        upstream::standard_texture_level(features),
-        block);
+    upstream::write_standard_material(props, upstream::standard_texture_level(features), block);
     return block;
 }
 
 /** The vertex-stage UV block for one draw, by the pin's own writer. */
-inline upstream::StandardUvTransformUniforms standard_uv_block(
-    const MaterialRecord* material,
-    std::uint32_t features) {
-    const upstream::StandardMaterialProps props = material
-        ? upstream::standard_material_props(*material)
-        : upstream::StandardMaterialProps{};
+inline upstream::StandardUvTransformUniforms standard_uv_block(const MaterialRecord* material,
+                                                               std::uint32_t features) {
+    const upstream::StandardMaterialProps props =
+        material ? upstream::standard_material_props(*material) : upstream::StandardMaterialProps{};
     upstream::StandardUvTransformUniforms block{};
     upstream::write_standard_uv_transform(
-        props,
-        material != nullptr &&
-            upstream::standard_uv_inverted(features, *material),
-        block);
+        props, material != nullptr && upstream::standard_uv_inverted(features, *material), block);
     return block;
 }
 
@@ -4508,14 +4114,12 @@ inline upstream::StandardUvTransformUniforms standard_uv_block(
  * stage rather than removing it, so both blocks bind on a marked material
  * and this one is what the varyings actually read.
  */
-inline upstream::StandardUvTxUniforms standard_uv_transform_block(
-    const MaterialRecord* material) {
+inline upstream::StandardUvTxUniforms standard_uv_transform_block(const MaterialRecord* material) {
     upstream::StandardUvTxUniforms block{};
-    if (!material) return block;
-    upstream::write_std_uv_transform_data(
-        *material,
-        upstream::standard_material_props(*material),
-        block);
+    if (!material)
+        return block;
+    upstream::write_std_uv_transform_data(*material, upstream::standard_material_props(*material),
+                                          block);
     return block;
 }
 #endif
@@ -4531,38 +4135,22 @@ inline upstream::StandardUvTxUniforms standard_uv_transform_block(
 // element. Both WebGPU and Metal validate that 20-byte minimum.
 inline constexpr std::array<std::uint32_t, 5> empty_morph_weight_data{};
 
-inline std::vector<float> pack_morph_deltas(
-    const ModelGeometry& geometry) {
+inline std::vector<float> pack_morph_deltas(const ModelGeometry& geometry) {
     // Flat 6-float deltas indexed
     // (target * vertexCount + vertex) * 6, packed with the
     // same x negation as the vertex attributes.
     const std::size_t target_count = geometry.morph_positions.size();
     const std::size_t vertex_count = geometry.vertices.size();
-    std::vector<float> deltas(
-        target_count * vertex_count * 6,
-        0.0f);
-    for (
-        std::size_t target = 0;
-        target < target_count;
-        ++target) {
-        const std::vector<Vec3>& positions =
-            geometry.morph_positions[target];
-        for (
-            std::size_t vertex = 0;
-            vertex < vertex_count;
-            ++vertex) {
-            const std::size_t offset =
-                (target * vertex_count + vertex) * 6;
-            const Vec3 position =
-                vertex < positions.size()
-                    ? positions[vertex]
-                    : Vec3{};
-            const Vec3 normal =
-                target < geometry.morph_normals.size() &&
-                vertex <
-                    geometry.morph_normals[target].size()
-                    ? geometry.morph_normals[target][vertex]
-                    : Vec3{};
+    std::vector<float> deltas(target_count * vertex_count * 6, 0.0f);
+    for (std::size_t target = 0; target < target_count; ++target) {
+        const std::vector<Vec3>& positions = geometry.morph_positions[target];
+        for (std::size_t vertex = 0; vertex < vertex_count; ++vertex) {
+            const std::size_t offset = (target * vertex_count + vertex) * 6;
+            const Vec3 position = vertex < positions.size() ? positions[vertex] : Vec3{};
+            const Vec3 normal = target < geometry.morph_normals.size() &&
+                                        vertex < geometry.morph_normals[target].size()
+                                    ? geometry.morph_normals[target][vertex]
+                                    : Vec3{};
             deltas[offset] = -position.x;
             deltas[offset + 1] = position.y;
             deltas[offset + 2] = position.z;
@@ -4580,46 +4168,31 @@ inline std::vector<float> pack_morph_deltas(
  * version-gated re-upload may rewrite just this span (the header is
  * constant after creation), and both backends must fill it identically.
  */
-inline std::vector<float> morph_weight_values(
-    const ModelGeometry& geometry,
-    const MeshRecord& mesh_record) {
+inline std::vector<float> morph_weight_values(const ModelGeometry& geometry,
+                                              const MeshRecord& mesh_record) {
     const std::size_t target_count = geometry.morph_positions.size();
     std::vector<float> weights(target_count, 0.0f);
-    for (
-        std::size_t target = 0;
-        target < target_count;
-        ++target) {
-        weights[target] =
-            target < mesh_record.morph_storage_weights.size()
-                ? mesh_record.morph_storage_weights[target]
-                : 0.0f;
+    for (std::size_t target = 0; target < target_count; ++target) {
+        weights[target] = target < mesh_record.morph_storage_weights.size()
+                              ? mesh_record.morph_storage_weights[target]
+                              : 0.0f;
     }
     return weights;
 }
 
-inline std::vector<std::uint8_t> pack_morph_weights(
-    const ModelGeometry& geometry,
-    const MeshRecord& mesh_record) {
+inline std::vector<std::uint8_t> pack_morph_weights(const ModelGeometry& geometry,
+                                                    const MeshRecord& mesh_record) {
     const std::size_t target_count = geometry.morph_positions.size();
     const std::size_t vertex_count = geometry.vertices.size();
-    std::vector<std::uint8_t> weights_blob(
-        16 + target_count * sizeof(float),
-        0);
+    std::vector<std::uint8_t> weights_blob(16 + target_count * sizeof(float), 0);
     const std::uint32_t header[2] = {
         static_cast<std::uint32_t>(target_count),
         static_cast<std::uint32_t>(vertex_count),
     };
-    std::memcpy(
-        weights_blob.data(),
-        header,
-        sizeof(header));
-    const std::vector<float> weights =
-        morph_weight_values(geometry, mesh_record);
+    std::memcpy(weights_blob.data(), header, sizeof(header));
+    const std::vector<float> weights = morph_weight_values(geometry, mesh_record);
     if (target_count > 0) {
-        std::memcpy(
-            weights_blob.data() + 16,
-            weights.data(),
-            target_count * sizeof(float));
+        std::memcpy(weights_blob.data() + 16, weights.data(), target_count * sizeof(float));
     }
     return weights_blob;
 }
@@ -4635,47 +4208,34 @@ inline constexpr float environment_fallback_face[4] = {0.15f, 0.16f, 0.2f, 1.0f}
 inline std::uint16_t float_to_half(float value) {
     std::uint32_t bits = 0;
     std::memcpy(&bits, &value, sizeof(bits));
-    const std::uint16_t sign =
-        static_cast<std::uint16_t>((bits >> 16) & 0x8000u);
+    const std::uint16_t sign = static_cast<std::uint16_t>((bits >> 16) & 0x8000u);
     const std::uint32_t exponent = (bits >> 23) & 0xffu;
     const std::uint32_t mantissa = bits & 0x7fffffu;
     if (exponent == 0xffu) {
-        return static_cast<std::uint16_t>(
-            sign | (mantissa == 0 ? 0x7c00u : 0x7e00u));
+        return static_cast<std::uint16_t>(sign | (mantissa == 0 ? 0x7c00u : 0x7e00u));
     }
-    const int half_exponent =
-        static_cast<int>(exponent) - 127 + 15;
+    const int half_exponent = static_cast<int>(exponent) - 127 + 15;
     if (half_exponent >= 0x1f) {
         return static_cast<std::uint16_t>(sign | 0x7c00u);
     }
     if (half_exponent <= 0) {
-        if (half_exponent < -10) return sign;
+        if (half_exponent < -10)
+            return sign;
         const std::uint32_t normalized = mantissa | 0x800000u;
         const int shift = 14 - half_exponent;
         const std::uint32_t rounded =
-            (
-                normalized +
-                (1u << (shift - 1)) -
-                1u +
-                ((normalized >> shift) & 1u)) >>
-            shift;
+            (normalized + (1u << (shift - 1)) - 1u + ((normalized >> shift) & 1u)) >> shift;
         return static_cast<std::uint16_t>(sign | rounded);
     }
-    const std::uint32_t rounded =
-        mantissa + 0xfffu + ((mantissa >> 13) & 1u);
+    const std::uint32_t rounded = mantissa + 0xfffu + ((mantissa >> 13) & 1u);
     if ((rounded & 0x800000u) != 0) {
         const int next_exponent = half_exponent + 1;
         return static_cast<std::uint16_t>(
-            next_exponent >= 0x1f
-                ? sign | 0x7c00u
-                : sign |
-                    static_cast<std::uint16_t>(
-                        next_exponent << 10));
+            next_exponent >= 0x1f ? sign | 0x7c00u
+                                  : sign | static_cast<std::uint16_t>(next_exponent << 10));
     }
-    return static_cast<std::uint16_t>(
-        sign |
-        static_cast<std::uint16_t>(half_exponent << 10) |
-        static_cast<std::uint16_t>(rounded >> 13));
+    return static_cast<std::uint16_t>(sign | static_cast<std::uint16_t>(half_exponent << 10) |
+                                      static_cast<std::uint16_t>(rounded >> 13));
 }
 
 /** The fallback face in the decode's own storage type. */
@@ -4690,7 +4250,8 @@ inline std::vector<std::uint16_t> fallback_face_halves() {
 
 // The RGBD decode both render backends upload through.
 #if !defined(BBLITE_HAS_PBR_RENDERER) || BBLITE_HAS_PBR_RENDERER
-inline std::vector<std::uint16_t> decode_rgbd(const TextureData& texture_data, int& width, int& height) {
+inline std::vector<std::uint16_t> decode_rgbd(const TextureData& texture_data, int& width,
+                                              int& height) {
     // src/loader-env/rgbd-decode.ts: the pin decodes into a
     // `texture_storage_2d<rgba16float, write>`, so a half is the decode's
     // result type, not a packing step a caller may skip. Returning halves
@@ -4724,10 +4285,9 @@ inline std::vector<std::uint16_t> decode_rgbd(const TextureData& texture_data, i
 #endif
 
 inline bool environment_cube_present(const EnvironmentState& environment) {
-    return environment.specular_width != 0 &&
-        environment.specular_mip_count != 0 &&
-        environment.specular_faces.size() >=
-            static_cast<std::size_t>(environment.specular_mip_count) * 6;
+    return environment.specular_width != 0 && environment.specular_mip_count != 0 &&
+           environment.specular_faces.size() >=
+               static_cast<std::size_t>(environment.specular_mip_count) * 6;
 }
 
 /**
@@ -4738,22 +4298,15 @@ inline bool environment_cube_present(const EnvironmentState& environment) {
  * own upload; rgba16f texels at 8 bytes each, as the parser promised.
  */
 template <typename Visit>
-inline void for_each_dds_skybox_level(
-    const EnvironmentState& environment,
-    const Visit& visit) {
+inline void for_each_dds_skybox_level(const EnvironmentState& environment, const Visit& visit) {
     const TextureData& data = environment.skybox_texture;
     std::size_t offset = environment.skybox_data_offset;
     for (std::uint32_t face = 0; face < 6; ++face) {
-        for (std::uint32_t mip = 0;
-             mip < environment.skybox_mip_count;
-             ++mip) {
-            const std::uint32_t size =
-                std::max(environment.skybox_width >> mip, 1u);
-            const std::size_t byte_size =
-                static_cast<std::size_t>(size) * size * 8;
+        for (std::uint32_t mip = 0; mip < environment.skybox_mip_count; ++mip) {
+            const std::uint32_t size = std::max(environment.skybox_width >> mip, 1u);
+            const std::size_t byte_size = static_cast<std::size_t>(size) * size * 8;
             if (offset + byte_size > data.bytes.size()) {
-                throw std::runtime_error(
-                    "DDS skybox pixel data is truncated.");
+                throw std::runtime_error("DDS skybox pixel data is truncated.");
             }
             visit(face, mip, size, offset, byte_size);
             offset += byte_size;
@@ -4776,20 +4329,15 @@ struct UiScissorRect {
  * verbatim from the two scene renderers' layer loops so the four RmlUi
  * consumers cannot drift on how a recorded rectangle meets the surface.
  */
-inline std::optional<UiScissorRect> clamped_ui_scissor(
-    const UiRenderDraw& draw,
-    std::uint32_t frame_width,
-    std::uint32_t frame_height) {
+inline std::optional<UiScissorRect> clamped_ui_scissor(const UiRenderDraw& draw,
+                                                       std::uint32_t frame_width,
+                                                       std::uint32_t frame_height) {
     const int left = std::clamp(draw.scissor_x, 0, static_cast<int>(frame_width));
     const int top = std::clamp(draw.scissor_y, 0, static_cast<int>(frame_height));
-    const int right = std::clamp(
-        draw.scissor_x + static_cast<int>(draw.scissor_width),
-        0,
-        static_cast<int>(frame_width));
-    const int bottom = std::clamp(
-        draw.scissor_y + static_cast<int>(draw.scissor_height),
-        0,
-        static_cast<int>(frame_height));
+    const int right = std::clamp(draw.scissor_x + static_cast<int>(draw.scissor_width), 0,
+                                 static_cast<int>(frame_width));
+    const int bottom = std::clamp(draw.scissor_y + static_cast<int>(draw.scissor_height), 0,
+                                  static_cast<int>(frame_height));
     if (right <= left || bottom <= top || draw.index_count == 0) {
         return std::nullopt;
     }
@@ -4804,9 +4352,7 @@ inline std::optional<UiScissorRect> clamped_ui_scissor(
  * numbers of any two renderers cover the same measured span of a run.
  */
 [[nodiscard]] inline long benchmark_warmup_frames(long benchmark_frames) {
-    return benchmark_frames > 0
-        ? std::min(120L, std::max(10L, benchmark_frames / 10))
-        : 0;
+    return benchmark_frames > 0 ? std::min(120L, std::max(10L, benchmark_frames / 10)) : 0;
 }
 
 // How a measured run is driven, parsed once for whichever backend runs it.
@@ -4841,8 +4387,7 @@ struct FrameOptions {
 
     [[nodiscard]] bool skip_copy_task(const CopyTaskOptions& copy) const {
         return !copy_task_filter.empty() && copy.has_viewport &&
-            copy.name.find("-impostor-") != std::string::npos &&
-            copy.name != copy_task_filter;
+               copy.name.find("-impostor-") != std::string::npos && copy.name != copy_task_filter;
     }
     [[nodiscard]] bool full_copy_viewport(const CopyTaskOptions& copy) const {
         return !copy_task_filter.empty() && copy.name == copy_task_filter;
@@ -4850,13 +4395,9 @@ struct FrameOptions {
 
     /** Frames to run: a benchmark adds its warmup to the request. */
     [[nodiscard]] long frame_budget() const {
-        return benchmark_frames > 0
-            ? benchmark_frames + benchmark_warmup()
-            : max_frames;
+        return benchmark_frames > 0 ? benchmark_frames + benchmark_warmup() : max_frames;
     }
-    [[nodiscard]] bool benchmarking() const {
-        return benchmark_frames > 0;
-    }
+    [[nodiscard]] bool benchmarking() const { return benchmark_frames > 0; }
     /**
      * Whether a benchmark was asked for at all. Present mode keys on the
      * request rather than the count, because the recorded frame-time
@@ -4874,25 +4415,17 @@ struct FrameOptions {
      * nothing. Both frame loops read the flags through these three
      * methods, so a run's flags cannot mean different draws per backend.
      */
-    [[nodiscard]] bool background_enabled(
-        const EnvironmentState& environment) const {
-        return background_flag == "1" ||
-            background_flag == "true" ||
-            (background_flag.empty() &&
-             environment.background_enabled_by_default);
+    [[nodiscard]] bool background_enabled(const EnvironmentState& environment) const {
+        return background_flag == "1" || background_flag == "true" ||
+               (background_flag.empty() && environment.background_enabled_by_default);
     }
     /** The skybox draws with the background when the scene carries one. */
-    [[nodiscard]] bool skybox_enabled(
-        const EnvironmentState& environment) const {
-        return background_enabled(environment) &&
-            environment.has_skybox;
+    [[nodiscard]] bool skybox_enabled(const EnvironmentState& environment) const {
+        return background_enabled(environment) && environment.has_skybox;
     }
     /** The scene's ground draws unless the flag refuses it. */
-    [[nodiscard]] bool ground_enabled(
-        const EnvironmentState& environment) const {
-        return environment.has_ground &&
-            ground_flag != "0" &&
-            ground_flag != "false";
+    [[nodiscard]] bool ground_enabled(const EnvironmentState& environment) const {
+        return environment.has_ground && ground_flag != "0" && ground_flag != "false";
     }
 };
 
@@ -4902,29 +4435,24 @@ inline DeviceOptions frame_device_options(const FrameOptions& frame) {
 
 inline long frame_option_number(const char* name) {
     const std::string value = environment_variable(name);
-    return value.empty()
-        ? 0L
-        : std::strtol(value.c_str(), nullptr, 10);
+    return value.empty() ? 0L : std::strtol(value.c_str(), nullptr, 10);
 }
 
 inline FrameOptions read_frame_options() {
     FrameOptions options;
     options.screenshot_path = environment_variable("BBLITE_SCREENSHOT");
     options.id_buffer_path = environment_variable("BBLITE_ID_BUFFER");
-    options.cluster_buffer_path =
-        environment_variable("BBLITE_CLUSTER_BUFFER");
-    options.shader_directory =
-        environment_variable("BBLITE_GPU_SHADER_DIR");
+    options.cluster_buffer_path = environment_variable("BBLITE_CLUSTER_BUFFER");
+    options.shader_directory = environment_variable("BBLITE_GPU_SHADER_DIR");
     options.copy_task_filter = environment_variable("BBLITE_COPY_TASK");
-    options.deformation_dump =
-        environment_variable("BBLITE_DEFORMATION_DUMP");
-    options.render_capture_path =
-        environment_variable("BBLITE_RENDER_CAPTURE");
+    options.deformation_dump = environment_variable("BBLITE_DEFORMATION_DUMP");
+    options.render_capture_path = environment_variable("BBLITE_RENDER_CAPTURE");
 #if !BBLITE_VISUAL_CAPTURE
     if (!options.screenshot_path.empty() || !options.id_buffer_path.empty() ||
         !options.cluster_buffer_path.empty() || !options.render_capture_path.empty() ||
         !options.deformation_dump.empty()) {
-        throw std::runtime_error("Visual capture is disabled in this build (BBLITE_VISUAL_CAPTURE=OFF).");
+        throw std::runtime_error(
+            "Visual capture is disabled in this build (BBLITE_VISUAL_CAPTURE=OFF).");
     }
 #endif
     options.gpu_debug = environment_variable("BBLITE_GPU_DEBUG") == "1";
@@ -4933,22 +4461,14 @@ inline FrameOptions read_frame_options() {
     options.capture_ui = environment_variable("BBLITE_CAPTURE_UI") != "0";
     options.background_flag = environment_variable("BBLITE_BACKGROUND");
     options.ground_flag = environment_variable("BBLITE_GROUND");
-    options.screenshot_frame =
-        frame_option_number("BBLITE_SCREENSHOT_FRAME");
+    options.screenshot_frame = frame_option_number("BBLITE_SCREENSHOT_FRAME");
     options.max_frames = frame_option_number("BBLITE_MAX_FRAMES");
-    options.benchmark_frames =
-        frame_option_number("BBLITE_BENCHMARK_FRAMES");
-    options.benchmark_requested =
-        !environment_variable("BBLITE_BENCHMARK_FRAMES").empty();
-    const std::string seek =
-        environment_variable("BBLITE_ANIMATION_SEEK_SECONDS");
-    options.animation_seek_seconds =
-        seek.empty() ? 0.0 : std::strtod(seek.c_str(), nullptr);
-    const std::string frame_delta =
-        environment_variable("BBLITE_FRAME_DELTA_MS");
-    options.frame_delta_ms = frame_delta.empty()
-        ? 0.0
-        : std::strtod(frame_delta.c_str(), nullptr);
+    options.benchmark_frames = frame_option_number("BBLITE_BENCHMARK_FRAMES");
+    options.benchmark_requested = !environment_variable("BBLITE_BENCHMARK_FRAMES").empty();
+    const std::string seek = environment_variable("BBLITE_ANIMATION_SEEK_SECONDS");
+    options.animation_seek_seconds = seek.empty() ? 0.0 : std::strtod(seek.c_str(), nullptr);
+    const std::string frame_delta = environment_variable("BBLITE_FRAME_DELTA_MS");
+    options.frame_delta_ms = frame_delta.empty() ? 0.0 : std::strtod(frame_delta.c_str(), nullptr);
 #if defined(BBLITE_WORKERS) && BBLITE_WORKERS
     // A worker renders into a leased canvas. The Window owns presentation,
     // screenshots and process lifetime for all of its canvases together.
@@ -4967,32 +4487,27 @@ inline FrameOptions read_frame_options() {
  * requested time before the first frame; both frame loops apply the same
  * request so a seeked capture renders the same pose on either backend.
  */
-inline void apply_animation_seek(
-    const FrameOptions& options,
-    const Scene& scene) {
-    if (options.animation_seek_seconds == 0.0) return;
-    const float time =
-        static_cast<float>(options.animation_seek_seconds);
+inline void apply_animation_seek(const FrameOptions& options, const Scene& scene) {
+    if (options.animation_seek_seconds == 0.0)
+        return;
+    const float time = static_cast<float>(options.animation_seek_seconds);
     for (const auto& seek : scene.animation_seekers) {
         seek(time);
     }
 }
 
 #if !defined(BBLITE_HAS_SPRITES) || BBLITE_HAS_SPRITES
-inline std::vector<std::size_t> sprite_layer_draw_order(
-    const Engine& engine,
-    const SpriteRendererRecord& renderer) {
+inline std::vector<std::size_t> sprite_layer_draw_order(const Engine& engine,
+                                                        const SpriteRendererRecord& renderer) {
     std::vector<std::size_t> draw_order(renderer.layers.size());
     for (std::size_t index = 0; index < draw_order.size(); ++index) {
         draw_order[index] = index;
     }
-    std::stable_sort(
-        draw_order.begin(),
-        draw_order.end(),
-        [&](std::size_t left, std::size_t right) {
-            return engine.sprite_layers[renderer.layers[left].value].order <
-                engine.sprite_layers[renderer.layers[right].value].order;
-        });
+    std::stable_sort(draw_order.begin(), draw_order.end(),
+                     [&](std::size_t left, std::size_t right) {
+                         return engine.sprite_layers[renderer.layers[left].value].order <
+                                engine.sprite_layers[renderer.layers[right].value].order;
+                     });
     return draw_order;
 }
 
@@ -5013,39 +4528,40 @@ inline std::vector<std::size_t> sprite_layer_draw_order(
  * sync, exactly as when the walk ran per record; a frame with nothing
  * disposed never walks at all.
  */
-inline void refuse_disposed_sprite_render_texture_in_use(
-    const Engine& engine) {
-    for (const SpriteRendererHandle& renderer_handle :
-         engine.registered_sprite_renderers) {
-        const SpriteRendererRecord& renderer =
-            handle_at(engine.sprite_renderers, renderer_handle);
+inline void refuse_disposed_sprite_render_texture_in_use(const Engine& engine) {
+    for (const SpriteRendererHandle& renderer_handle : engine.registered_sprite_renderers) {
+        const SpriteRendererRecord& renderer = handle_at(engine.sprite_renderers, renderer_handle);
         for (const Sprite2DLayerHandle& layer_handle : renderer.layers) {
             const SpriteAtlasRecord& atlas =
-                engine.sprite_atlases[
-                    handle_at(engine.sprite_layers, layer_handle).atlas.value];
+                engine.sprite_atlases[handle_at(engine.sprite_layers, layer_handle).atlas.value];
             if (atlas.has_render_texture &&
-                engine.sprite_render_textures[
-                    atlas.render_texture.value].disposed) {
-                throw std::runtime_error(
-                    "A disposed sprite render texture is "
-                    "still sampled by a registered "
-                    "SpriteRenderer layer's atlas.");
+                engine.sprite_render_textures[atlas.render_texture.value].disposed) {
+                throw std::runtime_error("A disposed sprite render texture is "
+                                         "still sampled by a registered "
+                                         "SpriteRenderer layer's atlas.");
             }
         }
     }
 }
 
-template<class Pass, class Create, class ReleaseLayer, class AtlasHandle, class ReleaseAtlas>
+template <class Pass, class Create, class ReleaseLayer, class AtlasHandle, class ReleaseAtlas>
 void reconcile_sprite_membership(const Engine& engine, Pass& pass, Create&& create,
-    ReleaseLayer&& release_layer, AtlasHandle&& atlas_handle, ReleaseAtlas&& release_atlas) {
+                                 ReleaseLayer&& release_layer, AtlasHandle&& atlas_handle,
+                                 ReleaseAtlas&& release_atlas) {
     const auto& renderer = handle_at(engine.sprite_renderers, pass.renderer);
-    reconcile_ordered_records(renderer.layers, pass.layers,
-        [](const auto& layer) { return layer.layer; }, create, release_layer);
-    retire_unreferenced_records(pass.atlases, [&](const auto& atlas) {
-        return std::any_of(renderer.layers.begin(), renderer.layers.end(), [&](const auto handle) {
-            return handle_at(engine.sprite_layers, handle).atlas.value == atlas_handle(atlas).value;
-        });
-    }, release_atlas);
+    reconcile_ordered_records(
+        renderer.layers, pass.layers, [](const auto& layer) { return layer.layer; }, create,
+        release_layer);
+    retire_unreferenced_records(
+        pass.atlases,
+        [&](const auto& atlas) {
+            return std::any_of(renderer.layers.begin(), renderer.layers.end(),
+                               [&](const auto handle) {
+                                   return handle_at(engine.sprite_layers, handle).atlas.value ==
+                                          atlas_handle(atlas).value;
+                               });
+        },
+        release_atlas);
     pass.layers_version = renderer.layers_version;
 }
 
@@ -5066,19 +4582,11 @@ struct SpriteDirtyRange {
     std::uint32_t end = 0;
 };
 
-inline SpriteDirtyRange resolve_sprite_dirty_range(
-    const Sprite2DLayerRecord& layer,
-    bool uploaded,
-    std::uint64_t uploaded_version) {
-    const bool needs_full_upload = !uploaded ||
-        uploaded_version < layer.dirty_sprite_reset_version;
-    return {
-        needs_full_upload
-            ? 0u
-            : std::min(layer.dirty_sprite_begin, layer.count),
-        needs_full_upload
-            ? layer.count
-            : std::min(layer.dirty_sprite_end, layer.count)};
+inline SpriteDirtyRange resolve_sprite_dirty_range(const Sprite2DLayerRecord& layer, bool uploaded,
+                                                   std::uint64_t uploaded_version) {
+    const bool needs_full_upload = !uploaded || uploaded_version < layer.dirty_sprite_reset_version;
+    return {needs_full_upload ? 0u : std::min(layer.dirty_sprite_begin, layer.count),
+            needs_full_upload ? layer.count : std::min(layer.dirty_sprite_end, layer.count)};
 }
 
 /** Stamp the shared range consumed once a copy has uploaded it. */
@@ -5098,17 +4606,15 @@ inline void mark_sprite_dirty_range_consumed(Sprite2DLayerRecord& layer) {
  * the same reason the derivation is: both backends copy the same bytes to the
  * same offsets and differ only in the write call.
  */
-inline SpriteInstanceUpload resolve_sprite_instance_upload(
-    Engine& engine,
-    Sprite2DLayerRecord& layer,
-    std::uint32_t dirty_begin,
-    std::uint32_t dirty_end) {
+inline SpriteInstanceUpload resolve_sprite_instance_upload(Engine& engine,
+                                                           Sprite2DLayerRecord& layer,
+                                                           std::uint32_t dirty_begin,
+                                                           std::uint32_t dirty_end) {
     // Asked unconditionally, exactly as the pin asks it: the hook itself
     // answers for a layer that never enabled the extension, so there is one
     // fallback rather than one here and another inside it.
     if (engine.sprite_y_sort_hook.stage) {
-        return engine.sprite_y_sort_hook.stage(
-            layer, dirty_begin, dirty_end);
+        return engine.sprite_y_sort_hook.stage(layer, dirty_begin, dirty_end);
     }
     return {layer.instance_data.data(), dirty_begin, dirty_end};
 }
@@ -5121,21 +4627,19 @@ inline SpriteInstanceUpload resolve_sprite_instance_upload(
  * list is copied because a hook may push another one, and upstream's
  * `for (const hook of rr._beforeUpdate)` iterates the array it entered with.
  */
-inline void run_sprite_renderer_before_update(
-    Engine& engine,
-    SpriteRendererHandle renderer,
-    double delta_ms) {
-    if (renderer.value >= engine.sprite_renderers.size()) return;
+inline void run_sprite_renderer_before_update(Engine& engine, SpriteRendererHandle renderer,
+                                              double delta_ms) {
+    if (renderer.value >= engine.sprite_renderers.size())
+        return;
     SpriteRendererRecord& record = handle_at(engine.sprite_renderers, renderer);
-    if (record.disposed || record.before_update.empty()) return;
+    if (record.disposed || record.before_update.empty())
+        return;
     // Copied into the record's own scratch rather than a fresh vector: the
     // copy is what makes this iterate the list it entered with, the way
     // upstream's `for (const hook of rr._beforeUpdate)` does, and assigning
     // into a retained buffer keeps that guarantee while paying the
     // allocation once instead of once per renderer per frame.
-    record.before_update_running.assign(
-        record.before_update.begin(),
-        record.before_update.end());
+    record.before_update_running.assign(record.before_update.begin(), record.before_update.end());
     for (const auto& hook : record.before_update_running) {
         hook(delta_ms);
     }
@@ -5149,15 +4653,12 @@ inline void run_sprite_renderer_before_update(
  * a renderer and the passes must be rebuilt.
  */
 template <typename SpritePassList>
-inline bool sprite_passes_match_registered(
-    const Engine& engine,
-    const SpritePassList& passes) {
+inline bool sprite_passes_match_registered(const Engine& engine, const SpritePassList& passes) {
     if (passes.size() != engine.registered_sprite_renderers.size()) {
         return false;
     }
     for (std::size_t index = 0; index < passes.size(); ++index) {
-        if (passes[index].renderer.value !=
-            engine.registered_sprite_renderers[index].value) {
+        if (passes[index].renderer.value != engine.registered_sprite_renderers[index].value) {
             return false;
         }
     }
@@ -5174,21 +4675,16 @@ inline bool sprite_passes_match_registered(
  * over the renderer records and identical for both backends.
  */
 template <typename SpritePassList>
-inline std::size_t sprite_pass_target_run_end(
-    const Engine& engine,
-    const SpritePassList& passes,
-    std::size_t first_index) {
+inline std::size_t sprite_pass_target_run_end(const Engine& engine, const SpritePassList& passes,
+                                              std::size_t first_index) {
     const SpriteRendererRecord& first_renderer =
         engine.sprite_renderers[passes[first_index].renderer.value];
     std::size_t end_index = first_index + 1;
     while (end_index < passes.size()) {
         const SpriteRendererRecord& next =
             engine.sprite_renderers[passes[end_index].renderer.value];
-        if (
-            next.has_target != first_renderer.has_target ||
-            (next.has_target &&
-             next.target.value != first_renderer.target.value)
-        ) {
+        if (next.has_target != first_renderer.has_target ||
+            (next.has_target && next.target.value != first_renderer.target.value)) {
             break;
         }
         ++end_index;
@@ -5217,10 +4713,8 @@ struct BillboardDrawPlan {
     std::uint32_t particle_passes;
 };
 
-inline BillboardDrawPlan billboard_draw_plan(
-    const BillboardSystemRecord& system) {
-    const bool axis_locked =
-        system.orientation == BillboardOrientation::axis_locked;
+inline BillboardDrawPlan billboard_draw_plan(const BillboardSystemRecord& system) {
+    const bool axis_locked = system.orientation == BillboardOrientation::axis_locked;
     // The particle family's Multiply program is a module of the pin's own,
     // outside both sprite composers: it declares no fx block, and its
     // vertex stage travels with its fragment because the pin writes them
@@ -5233,30 +4727,26 @@ inline BillboardDrawPlan billboard_draw_plan(
     // shader, so this says so rather than picking a program that would be
     // wrong.
     if (particle_multiply && (axis_locked || system.custom_shader)) {
-        throw std::runtime_error(
-            "A node-particle Multiply blend draws the pin's own facing "
-            "program; it has no axis-locked or custom-shader arm.");
+        throw std::runtime_error("A node-particle Multiply blend draws the pin's own facing "
+                                 "program; it has no axis-locked or custom-shader arm.");
     }
-    const bool cutout =
-        system.depth_mode == BillboardDepthMode::cutout;
+    const bool cutout = system.depth_mode == BillboardDepthMode::cutout;
     BillboardDrawPlan plan{};
     // Unlike the 2D layer, a custom billboard program brings its own
     // vertex stage: the pin's composer exposes the view distance and the
     // world position to a custom body, which the stock stage does not
     // write.
-    plan.vertex_stem = particle_multiply
-        ? "billboard_particle_multiply.vert"
-        : system.custom_shader ? "billboard_custom.vert"
-        : axis_locked          ? "billboard_axis_locked.vert"
-                               : "billboard.vert";
+    plan.vertex_stem = particle_multiply      ? "billboard_particle_multiply.vert"
+                       : system.custom_shader ? "billboard_custom.vert"
+                       : axis_locked          ? "billboard_axis_locked.vert"
+                                              : "billboard.vert";
     // The cutout arm discards below the cutoff; with alpha-to-coverage
     // the pin drops the discard and lets sample coverage carry the edge,
     // so that permutation shares the transparent stage.
-    plan.fragment_stem = particle_multiply
-        ? "billboard_particle_multiply.frag"
-        : system.custom_shader ? "billboard_custom.frag"
-        : cutout && !system.alpha_to_coverage ? "billboard_cutout.frag"
-                                              : "billboard.frag";
+    plan.fragment_stem = particle_multiply                     ? "billboard_particle_multiply.frag"
+                         : system.custom_shader                ? "billboard_custom.frag"
+                         : cutout && !system.alpha_to_coverage ? "billboard_cutout.frag"
+                                                               : "billboard.frag";
     plan.axis_locked = axis_locked;
     plan.cutout_writes_depth = cutout;
     plan.vertex_reads_system_block = axis_locked;
@@ -5289,15 +4779,13 @@ struct BillboardUploadStamp {
  * resolves overlap and the pin uploads in logical insertion order), so
  * its buffer never depends on the view and uploads once per count.
  */
-inline bool billboard_needs_upload(
-    const BillboardSystemRecord& system,
-    const BillboardUploadStamp& stamp,
-    const std::array<float, 16>& view,
-    [[maybe_unused]] Vec3d fo_offset) {
-    if (system.count == 0) return false;
-    if (
-        !stamp.uploaded ||
-        stamp.count != system.count ||
+inline bool billboard_needs_upload(const BillboardSystemRecord& system,
+                                   const BillboardUploadStamp& stamp,
+                                   const std::array<float, 16>& view,
+                                   [[maybe_unused]] Vec3d fo_offset) {
+    if (system.count == 0)
+        return false;
+    if (!stamp.uploaded || stamp.count != system.count ||
         stamp.instance_version != system.instance_version) {
         return true;
     }
@@ -5307,23 +4795,18 @@ inline bool billboard_needs_upload(
     // and never again, would hold the offset it first saw. The pin folds
     // the camera's own version into the same stamp for the same reason
     // (`lightFoVersion`, `wrapRenderableForFO`).
-    if (
-        stamp.fo_offset.x != fo_offset.x ||
-        stamp.fo_offset.y != fo_offset.y ||
+    if (stamp.fo_offset.x != fo_offset.x || stamp.fo_offset.y != fo_offset.y ||
         stamp.fo_offset.z != fo_offset.z) {
         return true;
     }
 #endif
-    const bool cutout =
-        system.depth_mode == BillboardDepthMode::cutout;
+    const bool cutout = system.depth_mode == BillboardDepthMode::cutout;
     return !(cutout || stamp.view == view);
 }
 
-inline void stamp_billboard_upload(
-    BillboardUploadStamp& stamp,
-    const BillboardSystemRecord& system,
-    const std::array<float, 16>& view,
-    [[maybe_unused]] Vec3d fo_offset) {
+inline void stamp_billboard_upload(BillboardUploadStamp& stamp, const BillboardSystemRecord& system,
+                                   const std::array<float, 16>& view,
+                                   [[maybe_unused]] Vec3d fo_offset) {
     stamp.view = view;
     stamp.count = system.count;
     stamp.instance_version = system.instance_version;
@@ -5343,17 +4826,17 @@ inline void stamp_billboard_upload(
  */
 #endif
 
-inline const SolidTexture& effect_texture_for_binding(
-    const EffectWrapperRecord& wrapper,
-    std::string_view name) {
+inline const SolidTexture& effect_texture_for_binding(const EffectWrapperRecord& wrapper,
+                                                      std::string_view name) {
     for (const EffectTextureSlot& candidate : wrapper.textures) {
-        if (candidate.name != name) continue;
-        if (!candidate.set) break;
+        if (candidate.name != name)
+            continue;
+        if (!candidate.set)
+            break;
         return candidate.texture;
     }
-    throw std::runtime_error(
-        "Effect texture binding '" + std::string(name) +
-        "' was not set before the first render.");
+    throw std::runtime_error("Effect texture binding '" + std::string(name) +
+                             "' was not set before the first render.");
 }
 
 /**
@@ -5361,16 +4844,14 @@ inline const SolidTexture& effect_texture_for_binding(
  * declared exactly: a short write leaves a stale or zero tail behind the
  * declared size, silently and differently per backend.
  */
-inline void require_effect_uniform_size(
-    const EffectWrapperRecord& wrapper,
-    std::uint32_t uniform_bytes) {
-    const std::size_t bytes =
-        wrapper.uniform_values.size() * sizeof(float);
-    if (bytes == uniform_bytes) return;
-    throw std::runtime_error(
-        "Effect uniforms carry " + std::to_string(bytes) +
-        " bytes where the declared block takes " +
-        std::to_string(uniform_bytes) + ".");
+inline void require_effect_uniform_size(const EffectWrapperRecord& wrapper,
+                                        std::uint32_t uniform_bytes) {
+    const std::size_t bytes = wrapper.uniform_values.size() * sizeof(float);
+    if (bytes == uniform_bytes)
+        return;
+    throw std::runtime_error("Effect uniforms carry " + std::to_string(bytes) +
+                             " bytes where the declared block takes " +
+                             std::to_string(uniform_bytes) + ".");
 }
 
 /**
@@ -5401,10 +4882,7 @@ public:
         const bool first_frame = previous_ == 0.0;
         const double measured = previous_ > 0.0 ? now - previous_ : 0.0;
         previous_ = now;
-        const double delta_ms =
-            fixed_delta_ms > 0.0 && !first_frame
-                ? fixed_delta_ms
-                : measured;
+        const double delta_ms = fixed_delta_ms > 0.0 && !first_frame ? fixed_delta_ms : measured;
         if (fixed_delta_ms > 0.0) {
             advance_performance_milliseconds(delta_ms);
         }
@@ -5420,9 +4898,8 @@ private:
  * when the scene carries none, and apply the pinned `invertY` flip. The
  * result is what both backends upload, so it is produced once.
  */
-inline DecodedImage decode_uploadable_image(
-    const TextureData& texture_data,
-    const std::array<std::uint8_t, 4>& fallback) {
+inline DecodedImage decode_uploadable_image(const TextureData& texture_data,
+                                            const std::array<std::uint8_t, 4>& fallback) {
     DecodedImage image;
     if (texture_data.bytes.empty()) {
         image.width = image.height = 1;
@@ -5440,17 +4917,12 @@ inline DecodedImage decode_uploadable_image(
         premultiply_image_alpha(image);
     }
     if (texture_data.invert_y && image.height > 1) {
-        const std::size_t row_bytes =
-            static_cast<std::size_t>(image.width) * 4;
+        const std::size_t row_bytes = static_cast<std::size_t>(image.width) * 4;
         std::vector<std::uint8_t> row(row_bytes);
         for (int y = 0; y < image.height / 2; ++y) {
-            std::uint8_t* top =
-                image.rgba.data() +
-                static_cast<std::size_t>(y) * row_bytes;
+            std::uint8_t* top = image.rgba.data() + static_cast<std::size_t>(y) * row_bytes;
             std::uint8_t* bottom =
-                image.rgba.data() +
-                static_cast<std::size_t>(image.height - 1 - y) *
-                    row_bytes;
+                image.rgba.data() + static_cast<std::size_t>(image.height - 1 - y) * row_bytes;
             std::memcpy(row.data(), top, row_bytes);
             std::memcpy(top, bottom, row_bytes);
             std::memcpy(bottom, row.data(), row_bytes);
@@ -5475,13 +4947,11 @@ struct CompressedMipCopy {
     std::uint32_t height;
 };
 
-inline CompressedMipCopy compressed_mip_copy(
-    const CompressedTexture& texture,
-    const CompressedMipLevel& mip) {
+inline CompressedMipCopy compressed_mip_copy(const CompressedTexture& texture,
+                                             const CompressedMipLevel& mip) {
     const std::uint32_t blocks_per_row =
         (mip.width + texture.block_width - 1) / texture.block_width;
-    const std::uint32_t block_rows =
-        (mip.height + texture.block_height - 1) / texture.block_height;
+    const std::uint32_t block_rows = (mip.height + texture.block_height - 1) / texture.block_height;
     return CompressedMipCopy{
         blocks_per_row * texture.block_bytes,
         block_rows,
@@ -5506,19 +4976,22 @@ enum class CompressedBlockFormat {
 };
 
 inline CompressedBlockFormat compressed_block_format(std::string_view name) {
-#define BBLITE_FORMAT_NAME(id, text, sdl, dawn) if (name == text) return CompressedBlockFormat::id;
+#define BBLITE_FORMAT_NAME(id, text, sdl, dawn)                                                    \
+    if (name == (text))                                                                            \
+        return CompressedBlockFormat::id;
     BBLITE_COMPRESSED_FORMATS(BBLITE_FORMAT_NAME)
 #undef BBLITE_FORMAT_NAME
-    throw std::runtime_error(
-        "No compressed texture format for '" + std::string(name) + "'.");
+    throw std::runtime_error("No compressed texture format for '" + std::string(name) + "'.");
 }
 
 template <typename Supports>
 const CompressedTexture& select_compressed_texture(const TextureData& data, Supports supports) {
-    if (supports(data.compressed.format)) return data.compressed;
+    if (supports(data.compressed.format))
+        return data.compressed;
     if (data.compressed_alternatives) {
         for (const auto& candidate : *data.compressed_alternatives) {
-            if (supports(candidate.format)) return candidate;
+            if (supports(candidate.format))
+                return candidate;
         }
     }
     throw std::runtime_error("This device cannot sample any packaged compressed texture variant.");
@@ -5547,8 +5020,8 @@ using upstream::transmission_grab_size;
 using upstream::transmission_sampler_max_anisotropy;
 
 inline std::uint32_t transmission_grab_mip_count() {
-    return static_cast<std::uint32_t>(upstream::transmission_mip_level_count(
-        transmission_grab_size, transmission_grab_size));
+    return static_cast<std::uint32_t>(
+        upstream::transmission_mip_level_count(transmission_grab_size, transmission_grab_size));
 }
 
 /**
@@ -5559,22 +5032,17 @@ inline std::uint32_t transmission_grab_mip_count() {
  */
 inline bool transmissive_draw_material(const MaterialRecord* material) {
     return material != nullptr &&
-        (material->transmission_factor > 0.0f ||
-         !material->transmission_texture.bytes.empty());
+           (material->transmission_factor > 0.0f || !material->transmission_texture.bytes.empty());
 }
-
 
 /**
  * The pixels a target scaled from another occupies, by the pin's own rule:
  * `max(1, floor(extent * ratio))`, evaluated against whatever the source
  * resolved to this build.
  */
-inline std::uint32_t scaled_target_extent(
-    std::uint32_t source,
-    double ratio) {
-    return static_cast<std::uint32_t>(std::max(
-        1.0,
-        std::floor(static_cast<double>(source) * ratio)));
+inline std::uint32_t scaled_target_extent(std::uint32_t source, double ratio) {
+    return static_cast<std::uint32_t>(
+        std::max(1.0, std::floor(static_cast<double>(source) * ratio)));
 }
 
 /** Both extents of a target sized from another, see `scaled_target_extents`. */
@@ -5591,39 +5059,34 @@ struct ScaledExtents {
  * build that reached no screen-space effect names a generation defect, so
  * it fails rather than rounding the other way.
  */
-inline ScaledExtents scaled_target_extents(
-    const RenderTargetRecord& record,
-    std::uint32_t source_width,
-    std::uint32_t source_height) {
+inline ScaledExtents scaled_target_extents(const RenderTargetRecord& record,
+                                           std::uint32_t source_width,
+                                           std::uint32_t source_height) {
     if (record.scale_rounding == ScaleRounding::round) {
 #if defined(BBLITE_HAS_SCREEN_SPACE) && BBLITE_HAS_SCREEN_SPACE
-        const upstream::ScreenSpaceScaledSize scaled =
-            upstream::screen_space_scaled_size(
-                static_cast<double>(source_width),
-                static_cast<double>(source_height),
-                record.width_ratio);
+        const upstream::ScreenSpaceScaledSize scaled = upstream::screen_space_scaled_size(
+            static_cast<double>(source_width), static_cast<double>(source_height),
+            record.width_ratio);
         return ScaledExtents{scaled.width, scaled.height};
 #else
-        throw std::runtime_error(
-            "A render target asks for screen-space rounding in a build "
-            "that reached no screen-space effect.");
+        throw std::runtime_error("A render target asks for screen-space rounding in a build "
+                                 "that reached no screen-space effect.");
 #endif
     }
-    return ScaledExtents{
-        scaled_target_extent(source_width, record.width_ratio),
-        scaled_target_extent(source_height, record.height_ratio)};
+    return ScaledExtents{scaled_target_extent(source_width, record.width_ratio),
+                         scaled_target_extent(source_height, record.height_ratio)};
 }
 
-template<class Format>
-struct RenderTargetPlan {
+template <class Format> struct RenderTargetPlan {
     std::uint32_t width, height;
     Format color_format;
 };
 
 /** Resolve source-relative sizes and inherited formats before allocating GPU resources. */
-template<class Format, class Convert>
-std::vector<RenderTargetPlan<Format>> plan_render_targets(const Engine& engine,
-    std::uint32_t width, std::uint32_t height, Format surface_format, Convert&& convert) {
+template <class Format, class Convert>
+std::vector<RenderTargetPlan<Format>>
+plan_render_targets(const Engine& engine, std::uint32_t width, std::uint32_t height,
+                    Format surface_format, Convert&& convert) {
     std::vector<RenderTargetPlan<Format>> plans;
     plans.reserve(engine.render_targets.size());
     for (const auto& record : engine.render_targets) {
@@ -5639,24 +5102,30 @@ std::vector<RenderTargetPlan<Format>> plan_render_targets(const Engine& engine,
             target_height = scaled.height;
             format = source.color_format;
         }
-        if (record.swapchain) format = surface_format;
-        else if (record.has_format) format = convert(record.format);
+        if (record.swapchain)
+            format = surface_format;
+        else if (record.has_format)
+            format = convert(record.format);
         plans.push_back({target_width, target_height, format});
     }
     return plans;
 }
 
 #if defined(BBLITE_HAS_SCREEN_SPACE) && BBLITE_HAS_SCREEN_SPACE
-template<class Clear, class Stage, class PostProcess>
+template <class Clear, class Stage, class PostProcess>
 void record_screen_space_decision(const ScreenSpaceFrameDecision& decision, bool composite,
-    Clear&& clear, Stage&& stage, PostProcess&& post_process) {
-    if (decision.clear_identity) { clear(false); clear(true); }
+                                  Clear&& clear, Stage&& stage, PostProcess&& post_process) {
+    if (decision.clear_identity) {
+        clear(false);
+        clear(true);
+    }
     if (decision.run_effect) {
         stage(true, decision.producer_uniforms.data());
         stage(false, decision.temporal_uniforms.data());
         post_process(0u);
     }
-    if (composite) post_process(1u);
+    if (composite)
+        post_process(1u);
 }
 
 /**
@@ -5667,9 +5136,8 @@ void record_screen_space_decision(const ScreenSpaceFrameDecision& decision, bool
  * names, so one reader serves both.
  */
 template <typename RenderTargets>
-ScreenSpaceFrameInputs screen_space_frame_inputs(
-    const RenderTargets& targets,
-    const ScreenSpaceTaskOptions& task) {
+ScreenSpaceFrameInputs screen_space_frame_inputs(const RenderTargets& targets,
+                                                 const ScreenSpaceTaskOptions& task) {
     const auto& depth = targets.at(task.depth.value);
     const auto& source = targets.at(task.source.value);
     const auto& raw = targets.at(task.raw.value);
@@ -5707,54 +5175,47 @@ struct PostProcessExtent {
  * vector; only its rows' `width`/`height` are read.
  */
 template <typename RenderTargets>
-inline PostProcessExtent resolve_post_process_extent(
-    const RenderTargetRecord& output_record,
-    const RenderTargets& render_targets,
-    const PostProcessPassOptions& pass,
-    std::uint32_t frame_width,
-    std::uint32_t frame_height) {
+inline PostProcessExtent
+resolve_post_process_extent(const RenderTargetRecord& output_record,
+                            const RenderTargets& render_targets, const PostProcessPassOptions& pass,
+                            std::uint32_t frame_width, std::uint32_t frame_height) {
     PostProcessExtent extent;
-    extent.output_width = output_record.swapchain
-        ? frame_width
-        : handle_at(render_targets, pass.output_target).width;
+    extent.output_width =
+        output_record.swapchain ? frame_width : handle_at(render_targets, pass.output_target).width;
     extent.output_height = output_record.swapchain
-        ? frame_height
-        : handle_at(render_targets, pass.output_target).height;
+                               ? frame_height
+                               : handle_at(render_targets, pass.output_target).height;
     extent.source_width = extent.output_width;
     extent.source_height = extent.output_height;
-    if (
-        pass.source.source == RenderTextureSource::render_target &&
+    if (pass.source.source == RenderTextureSource::render_target &&
         pass.source.target.value < render_targets.size()) {
-        extent.source_width =
-            handle_at(render_targets, pass.source.target).width;
-        extent.source_height =
-            handle_at(render_targets, pass.source.target).height;
+        extent.source_width = handle_at(render_targets, pass.source.target).width;
+        extent.source_height = handle_at(render_targets, pass.source.target).height;
     }
     return extent;
 }
 #endif
 
-inline TextureFormatClass geometry_format_class(
-    const GeometryTextureDescription& description) {
+inline TextureFormatClass geometry_format_class(const GeometryTextureDescription& description) {
     if (description.format == GeometryTextureFormat::r16_float) {
         return TextureFormatClass::r16_float;
     }
     switch (description.type) {
-        case GeometryTextureType::reflectivity:
-        case GeometryTextureType::albedo:
-            return TextureFormatClass::rgba8_unorm;
-        case GeometryTextureType::view_depth:
-            return TextureFormatClass::r32_float;
-        case GeometryTextureType::normalized_view_depth:
-        case GeometryTextureType::screenspace_depth:
-            return TextureFormatClass::r16_float;
-        case GeometryTextureType::irradiance:
-        case GeometryTextureType::world_position:
-        case GeometryTextureType::local_position:
-        case GeometryTextureType::view_normal:
-        case GeometryTextureType::world_normal:
-        case GeometryTextureType::linear_velocity:
-            return TextureFormatClass::rgba16_float;
+    case GeometryTextureType::reflectivity:
+    case GeometryTextureType::albedo:
+        return TextureFormatClass::rgba8_unorm;
+    case GeometryTextureType::view_depth:
+        return TextureFormatClass::r32_float;
+    case GeometryTextureType::normalized_view_depth:
+    case GeometryTextureType::screenspace_depth:
+        return TextureFormatClass::r16_float;
+    case GeometryTextureType::irradiance:
+    case GeometryTextureType::world_position:
+    case GeometryTextureType::local_position:
+    case GeometryTextureType::view_normal:
+    case GeometryTextureType::world_normal:
+    case GeometryTextureType::linear_velocity:
+        return TextureFormatClass::rgba16_float;
     }
     return TextureFormatClass::rgba16_float;
 }
@@ -5765,9 +5226,7 @@ inline TextureFormatClass geometry_format_class(
  * other lane to zero.
  */
 inline float geometry_clear_component(GeometryTextureType type) {
-    return type == GeometryTextureType::normalized_view_depth
-        ? 1.0f
-        : 0.0f;
+    return type == GeometryTextureType::normalized_view_depth ? 1.0f : 0.0f;
 }
 
 /**
@@ -5809,9 +5268,7 @@ inline constexpr BlendFactors ground_blend{
  * either backend that wants a2c enables it through this, so a
  * single-sample run draws the same pixels on both.
  */
-inline bool alpha_to_coverage_enabled(
-    bool wants_a2c,
-    std::uint32_t samples) {
+inline bool alpha_to_coverage_enabled(bool wants_a2c, std::uint32_t samples) {
     return wants_a2c && samples > 1;
 }
 
@@ -5841,90 +5298,85 @@ inline bool pipeline_kind_wants_a2c(upstream::RenderPipelineKind kind) {
     return kind == upstream::RenderPipelineKind::shader_a2c;
 }
 
-inline RenderPipelineKindTraits pipeline_kind_traits(
-    upstream::RenderPipelineKind kind) {
+inline RenderPipelineKindTraits pipeline_kind_traits(upstream::RenderPipelineKind kind) {
     using Kind = upstream::RenderPipelineKind;
     using Family = upstream::RenderMaterialKind;
     using Cull = upstream::RenderCullMode;
     using Topology = MeshTopology;
     switch (kind) {
-        case Kind::pbr_opaque_back:
-            return {Family::pbr, false, Cull::back, false};
-        case Kind::pbr_opaque_back_clockwise:
-            return {Family::pbr, false, Cull::back, true};
-        case Kind::pbr_opaque_none:
-            return {Family::pbr, false, Cull::none, false};
-        case Kind::pbr_opaque_none_clockwise:
-            return {Family::pbr, false, Cull::none, true};
-        case Kind::pbr_transparent_back:
-            return {Family::pbr, true, Cull::back, false};
-        case Kind::pbr_transparent_back_clockwise:
-            return {Family::pbr, true, Cull::back, true};
-        case Kind::pbr_transparent_none:
-            return {Family::pbr, true, Cull::none, false};
-        case Kind::pbr_transparent_none_clockwise:
-            return {Family::pbr, true, Cull::none, true};
-        // Points and lines cull nothing and have no winding, so each is one
-        // arm per blend state.
-        case Kind::pbr_opaque_points:
-            return {Family::pbr, false, Cull::none, false, Topology::points};
-        case Kind::pbr_opaque_lines:
-            return {Family::pbr, false, Cull::none, false, Topology::lines};
-        case Kind::pbr_opaque_line_strip:
-            return {
-                Family::pbr, false, Cull::none, false, Topology::line_strip};
-        case Kind::pbr_transparent_points:
-            return {Family::pbr, true, Cull::none, false, Topology::points};
-        case Kind::pbr_transparent_lines:
-            return {Family::pbr, true, Cull::none, false, Topology::lines};
-        case Kind::pbr_transparent_line_strip:
-            return {
-                Family::pbr, true, Cull::none, false, Topology::line_strip};
-        case Kind::standard_opaque_back:
-            return {Family::standard, false, Cull::back, false};
-        case Kind::standard_opaque_none:
-            return {Family::standard, false, Cull::none, false};
-        case Kind::standard_transparent_back:
-            return {Family::standard, true, Cull::back, false};
-        case Kind::standard_transparent_none:
-            return {Family::standard, true, Cull::none, false};
-        // The mirrored-mesh opt-in's own arms: same family, same blend and
-        // cull, clockwise front face.
-        case Kind::standard_opaque_back_clockwise:
-            return {Family::standard, false, Cull::back, true};
-        case Kind::standard_opaque_none_clockwise:
-            return {Family::standard, false, Cull::none, true};
-        case Kind::standard_transparent_back_clockwise:
-            return {Family::standard, true, Cull::back, true};
-        case Kind::standard_transparent_none_clockwise:
-            return {Family::standard, true, Cull::none, true};
-        case Kind::grid_opaque_back:
-            return {Family::grid, false, Cull::back, false};
-        case Kind::grid_opaque_none:
-            return {Family::grid, false, Cull::none, false};
-        case Kind::grid_transparent_back:
-            return {Family::grid, true, Cull::back, false};
-        case Kind::grid_transparent_none:
-            return {Family::grid, true, Cull::none, false};
-        // A shader kind's concrete fixed-function state comes from the
-        // emitted variant table (cull, blend, depth write, topology); the
-        // kind itself carries only the family and the a2c request.
-        case Kind::shader:
-        case Kind::shader_a2c:
-            return {Family::shader, false, Cull::back, false};
-        case Kind::node_opaque_back:
-            return {Family::node, false, Cull::back, false};
-        case Kind::node_opaque_none:
-            return {Family::node, false, Cull::none, false};
-        case Kind::node_transparent_back:
-            return {Family::node, true, Cull::back, false};
-        case Kind::node_transparent_none:
-            return {Family::node, true, Cull::none, false};
+    case Kind::pbr_opaque_back:
+        return {Family::pbr, false, Cull::back, false};
+    case Kind::pbr_opaque_back_clockwise:
+        return {Family::pbr, false, Cull::back, true};
+    case Kind::pbr_opaque_none:
+        return {Family::pbr, false, Cull::none, false};
+    case Kind::pbr_opaque_none_clockwise:
+        return {Family::pbr, false, Cull::none, true};
+    case Kind::pbr_transparent_back:
+        return {Family::pbr, true, Cull::back, false};
+    case Kind::pbr_transparent_back_clockwise:
+        return {Family::pbr, true, Cull::back, true};
+    case Kind::pbr_transparent_none:
+        return {Family::pbr, true, Cull::none, false};
+    case Kind::pbr_transparent_none_clockwise:
+        return {Family::pbr, true, Cull::none, true};
+    // Points and lines cull nothing and have no winding, so each is one
+    // arm per blend state.
+    case Kind::pbr_opaque_points:
+        return {Family::pbr, false, Cull::none, false, Topology::points};
+    case Kind::pbr_opaque_lines:
+        return {Family::pbr, false, Cull::none, false, Topology::lines};
+    case Kind::pbr_opaque_line_strip:
+        return {Family::pbr, false, Cull::none, false, Topology::line_strip};
+    case Kind::pbr_transparent_points:
+        return {Family::pbr, true, Cull::none, false, Topology::points};
+    case Kind::pbr_transparent_lines:
+        return {Family::pbr, true, Cull::none, false, Topology::lines};
+    case Kind::pbr_transparent_line_strip:
+        return {Family::pbr, true, Cull::none, false, Topology::line_strip};
+    case Kind::standard_opaque_back:
+        return {Family::standard, false, Cull::back, false};
+    case Kind::standard_opaque_none:
+        return {Family::standard, false, Cull::none, false};
+    case Kind::standard_transparent_back:
+        return {Family::standard, true, Cull::back, false};
+    case Kind::standard_transparent_none:
+        return {Family::standard, true, Cull::none, false};
+    // The mirrored-mesh opt-in's own arms: same family, same blend and
+    // cull, clockwise front face.
+    case Kind::standard_opaque_back_clockwise:
+        return {Family::standard, false, Cull::back, true};
+    case Kind::standard_opaque_none_clockwise:
+        return {Family::standard, false, Cull::none, true};
+    case Kind::standard_transparent_back_clockwise:
+        return {Family::standard, true, Cull::back, true};
+    case Kind::standard_transparent_none_clockwise:
+        return {Family::standard, true, Cull::none, true};
+    case Kind::grid_opaque_back:
+        return {Family::grid, false, Cull::back, false};
+    case Kind::grid_opaque_none:
+        return {Family::grid, false, Cull::none, false};
+    case Kind::grid_transparent_back:
+        return {Family::grid, true, Cull::back, false};
+    case Kind::grid_transparent_none:
+        return {Family::grid, true, Cull::none, false};
+    // A shader kind's concrete fixed-function state comes from the
+    // emitted variant table (cull, blend, depth write, topology); the
+    // kind itself carries only the family and the a2c request.
+    case Kind::shader:
+    case Kind::shader_a2c:
+        return {Family::shader, false, Cull::back, false};
+    case Kind::node_opaque_back:
+        return {Family::node, false, Cull::back, false};
+    case Kind::node_opaque_none:
+        return {Family::node, false, Cull::none, false};
+    case Kind::node_transparent_back:
+        return {Family::node, true, Cull::back, false};
+    case Kind::node_transparent_none:
+        return {Family::node, true, Cull::none, false};
     }
-    throw std::runtime_error(
-        "render pipeline kind " +
-        std::to_string(static_cast<int>(kind)) +
-        " is not implemented yet.");
+    throw std::runtime_error("render pipeline kind " + std::to_string(static_cast<int>(kind)) +
+                             " is not implemented yet.");
 }
 
 /**
@@ -5937,29 +5389,22 @@ inline void validate_render_plan_items(const upstream::RenderPlan& plan) {
     for (const upstream::RenderItem& item : plan.items) {
         if (item.material_kind == upstream::RenderMaterialKind::shader) {
             if (item.shader_variant >= upstream::shader_variant_count()) {
-                throw std::runtime_error(
-                    "this shader material variant is not implemented "
-                    "yet.");
+                throw std::runtime_error("this shader material variant is not implemented "
+                                         "yet.");
             }
-        } else if (
-            item.material_kind == upstream::RenderMaterialKind::node) {
+        } else if (item.material_kind == upstream::RenderMaterialKind::node) {
 #if BBLITE_NODE_VARIANTS > 0
             if (item.shader_variant >= node_graph_count()) {
-                throw std::runtime_error(
-                    "this node material graph was not composed.");
+                throw std::runtime_error("this node material graph was not composed.");
             }
 #else
-            throw std::runtime_error(
-                "a node material in a build with no composed graphs.");
+            throw std::runtime_error("a node material in a build with no composed graphs.");
 #endif
-        } else if (
-            item.material_kind !=
-                upstream::RenderMaterialKind::standard &&
-            item.material_kind != upstream::RenderMaterialKind::pbr &&
-            item.material_kind != upstream::RenderMaterialKind::grid) {
-            throw std::runtime_error(
-                "only Standard, PBR, Grid, node and shader-variant "
-                "materials are implemented yet.");
+        } else if (item.material_kind != upstream::RenderMaterialKind::standard &&
+                   item.material_kind != upstream::RenderMaterialKind::pbr &&
+                   item.material_kind != upstream::RenderMaterialKind::grid) {
+            throw std::runtime_error("only Standard, PBR, Grid, node and shader-variant "
+                                     "materials are implemented yet.");
         }
     }
 }
@@ -5972,37 +5417,29 @@ inline void validate_render_plan_items(const upstream::RenderPlan& plan) {
  * its release/upload operations remain backend-owned.
  */
 template <typename GpuMesh, typename ReleaseMesh, typename UploadItem>
-inline std::vector<GpuMesh> rematch_render_meshes(
-    const std::vector<upstream::RenderItem>& previous_items,
-    const std::vector<upstream::RenderItem>& updated_items,
-    std::vector<GpuMesh>& uploaded_meshes,
-    ReleaseMesh&& release_mesh,
-    UploadItem&& upload_item) {
+inline std::vector<GpuMesh>
+rematch_render_meshes(const std::vector<upstream::RenderItem>& previous_items,
+                      const std::vector<upstream::RenderItem>& updated_items,
+                      std::vector<GpuMesh>& uploaded_meshes, ReleaseMesh&& release_mesh,
+                      UploadItem&& upload_item) {
     if (previous_items.size() != uploaded_meshes.size()) {
-        throw std::runtime_error(
-            "Render plan and uploaded mesh rows are out of sync.");
+        throw std::runtime_error("Render plan and uploaded mesh rows are out of sync.");
     }
-    const auto same_source = [](
-                                 const upstream::RenderItem& left,
-                                 const upstream::RenderItem& right) {
-        return left.mesh.value == right.mesh.value &&
-            left.geometry == right.geometry &&
-            left.material.value == right.material.value;
+    const auto same_source = [](const upstream::RenderItem& left,
+                                const upstream::RenderItem& right) {
+        return left.mesh.value == right.mesh.value && left.geometry == right.geometry &&
+               left.material.value == right.material.value;
     };
     std::vector<GpuMesh> result;
     result.reserve(updated_items.size());
     std::size_t previous_index = 0;
     for (const upstream::RenderItem& item : updated_items) {
         std::size_t scan = previous_index;
-        while (
-            scan < previous_items.size() &&
-            !same_source(previous_items[scan], item)) {
+        while (scan < previous_items.size() && !same_source(previous_items[scan], item)) {
             ++scan;
         }
         if (scan < previous_items.size()) {
-            for (std::size_t dropped = previous_index;
-                 dropped < scan;
-                 ++dropped) {
+            for (std::size_t dropped = previous_index; dropped < scan; ++dropped) {
                 release_mesh(uploaded_meshes[dropped]);
             }
             result.push_back(std::move(uploaded_meshes[scan]));
@@ -6011,9 +5448,7 @@ inline std::vector<GpuMesh> rematch_render_meshes(
         }
         result.push_back(upload_item(item));
     }
-    for (std::size_t dropped = previous_index;
-         dropped < uploaded_meshes.size();
-         ++dropped) {
+    for (std::size_t dropped = previous_index; dropped < uploaded_meshes.size(); ++dropped) {
         release_mesh(uploaded_meshes[dropped]);
     }
     return result;
@@ -6029,35 +5464,29 @@ inline std::vector<GpuMesh> rematch_render_meshes(
  */
 inline void reject_uncomposed_family_growth(std::uint32_t added_families) {
 #if BBLITE_STANDARD_VARIANTS > 0
-    if (
-        (added_families & material_family_standard) != 0 &&
-        upstream::standard_variants.empty()) {
-        throw std::runtime_error(
-            "Post-registration Standard material family has no composed "
-            "variants.");
+    if ((added_families & material_family_standard) != 0 && upstream::standard_variants.empty()) {
+        throw std::runtime_error("Post-registration Standard material family has no composed "
+                                 "variants.");
     }
 #else
     if ((added_families & material_family_standard) != 0) {
-        throw std::runtime_error(
-            "Post-registration Standard material family in a build with "
-            "no composed variants.");
+        throw std::runtime_error("Post-registration Standard material family in a build with "
+                                 "no composed variants.");
     }
 #endif
-    if (
-        (added_families & material_family_shader) != 0 &&
-        upstream::shader_variant_count() == 0) {
-        throw std::runtime_error(
-            "Post-registration shader material family has no composed "
-            "variants.");
+    if ((added_families & material_family_shader) != 0 && upstream::shader_variant_count() == 0) {
+        throw std::runtime_error("Post-registration shader material family has no composed "
+                                 "variants.");
     }
 }
 
 /** Rebuild an existing overlay's rows before uploads/encoding, using backend-owned leases. */
 template <typename GpuMesh, typename ReleaseMesh, typename UploadItem>
-inline bool refresh_overlay_render_plans(
-    Engine& engine, std::vector<upstream::RenderPlan>& plans,
-    std::vector<std::vector<GpuMesh>>& meshes, std::vector<std::uint64_t>& versions,
-    bool draw_lists_changed, ReleaseMesh&& release_mesh, UploadItem&& upload_item) {
+inline bool refresh_overlay_render_plans(Engine& engine, std::vector<upstream::RenderPlan>& plans,
+                                         std::vector<std::vector<GpuMesh>>& meshes,
+                                         std::vector<std::uint64_t>& versions,
+                                         bool draw_lists_changed, ReleaseMesh&& release_mesh,
+                                         UploadItem&& upload_item) {
     if (plans.size() != meshes.size() || plans.size() != versions.size() ||
         plans.size() + 1 != engine.registered_scenes.size()) {
         throw std::runtime_error("Overlay registration changed after renderer initialization.");
@@ -6069,8 +5498,8 @@ inline bool refresh_overlay_render_plans(
             reject_uncomposed_family_growth(scene.material_family_mask);
             upstream::RenderPlan updated = upstream::build_render_plan(scene, engine);
             validate_render_plan_items(updated);
-            meshes[layer] = rematch_render_meshes(plans[layer].items, updated.items,
-                meshes[layer], release_mesh, upload_item);
+            meshes[layer] = rematch_render_meshes(plans[layer].items, updated.items, meshes[layer],
+                                                  release_mesh, upload_item);
             plans[layer] = std::move(updated);
             versions[layer] = scene.render_topology_version;
             changed = true;
@@ -6095,17 +5524,13 @@ struct GeometryTargetClasses {
     bool trailing_output = false;
 };
 
-inline GeometryTargetClasses geometry_target_classes(
-    const FrameTaskRecord& task) {
+inline GeometryTargetClasses geometry_target_classes(const FrameTaskRecord& task) {
     GeometryTargetClasses classes;
     classes.attachments.reserve(task.geometry.attachments.size());
-    for (
-        const GeometryTextureDescription& description :
-        task.geometry.attachments) {
+    for (const GeometryTextureDescription& description : task.geometry.attachments) {
         classes.attachments.push_back(geometry_format_class(description));
     }
-    classes.trailing_output =
-        task.geometry.target.value != invalid_handle;
+    classes.trailing_output = task.geometry.target.value != invalid_handle;
     return classes;
 }
 
@@ -6115,17 +5540,15 @@ inline GeometryTargetClasses geometry_target_classes(
  * so the refusal is stated once. `family` names the variant family the
  * caller resolves ("pinned", "standard" or "node").
  */
-inline void require_geometry_target_count(
-    const GeometryTargetClasses& classes,
-    std::size_t entry_color_target_count,
-    const char* family) {
-    const std::size_t total = classes.attachments.size() +
-        (classes.trailing_output ? 1u : 0u);
-    if (total == entry_color_target_count) return;
-    throw std::runtime_error(
-        std::string(family) + " geometry variant writes " +
-        std::to_string(entry_color_target_count) +
-        " targets where its task carries " + std::to_string(total) + ".");
+inline void require_geometry_target_count(const GeometryTargetClasses& classes,
+                                          std::size_t entry_color_target_count,
+                                          const char* family) {
+    const std::size_t total = classes.attachments.size() + (classes.trailing_output ? 1u : 0u);
+    if (total == entry_color_target_count)
+        return;
+    throw std::runtime_error(std::string(family) + " geometry variant writes " +
+                             std::to_string(entry_color_target_count) +
+                             " targets where its task carries " + std::to_string(total) + ".");
 }
 
 /**
@@ -6137,12 +5560,9 @@ inline void require_geometry_target_count(
  * descriptions from this one list.
  */
 template <typename Format, typename FormatOf>
-inline std::vector<Format> geometry_color_target_formats(
-    const FrameTaskRecord& task,
-    std::size_t entry_color_target_count,
-    const char* family,
-    FormatOf&& format,
-    Format trailing) {
+inline std::vector<Format>
+geometry_color_target_formats(const FrameTaskRecord& task, std::size_t entry_color_target_count,
+                              const char* family, FormatOf&& format, Format trailing) {
     const GeometryTargetClasses classes = geometry_target_classes(task);
     require_geometry_target_count(classes, entry_color_target_count, family);
     std::vector<Format> formats;
@@ -6150,7 +5570,8 @@ inline std::vector<Format> geometry_color_target_formats(
     for (const TextureFormatClass format_class : classes.attachments) {
         formats.push_back(format(format_class));
     }
-    if (classes.trailing_output) formats.push_back(trailing);
+    if (classes.trailing_output)
+        formats.push_back(trailing);
     return formats;
 }
 
@@ -6196,9 +5617,8 @@ struct ClusterRange {
     std::uint32_t id_start;
 };
 
-inline ClusterRange advance_cluster_range(
-    std::uint32_t index_count,
-    std::uint32_t& cluster_id_base) {
+inline ClusterRange advance_cluster_range(std::uint32_t index_count,
+                                          std::uint32_t& cluster_id_base) {
     const std::uint32_t triangle_count = index_count / 3;
     const std::uint32_t id_start = cluster_id_base;
     cluster_id_base += (triangle_count + 127u) / 128u;
@@ -6211,20 +5631,16 @@ inline ClusterRange advance_cluster_range(
  * cutoff, and the material alpha. A material-less item renders opaque at
  * full alpha.
  */
-inline std::array<float, 4> diagnostic_alpha_options(
-    const upstream::RenderItem& item,
-    const MaterialRecord* material) {
+inline std::array<float, 4> diagnostic_alpha_options(const upstream::RenderItem& item,
+                                                     const MaterialRecord* material) {
     std::array<float, 4> options{};
     if (!material) {
         options[2] = 1.0f;
         return options;
     }
-    options[0] =
-        item.bucket == upstream::RenderBucket::alpha_blend
-            ? 2.0f
-            : item.bucket == upstream::RenderBucket::alpha_mask
-                ? 1.0f
-                : 0.0f;
+    options[0] = item.bucket == upstream::RenderBucket::alpha_blend  ? 2.0f
+                 : item.bucket == upstream::RenderBucket::alpha_mask ? 1.0f
+                                                                     : 0.0f;
     options[1] = material->alpha_cutoff;
     options[2] = material->alpha;
     return options;
@@ -6246,24 +5662,19 @@ struct DiagnosticClusterUniforms {
     float alpha_options[4];
 };
 
-inline DiagnosticIdUniforms diagnostic_id_uniforms(
-    std::uint32_t draw_id,
-    const std::array<float, 4>& alpha_options) {
+inline DiagnosticIdUniforms diagnostic_id_uniforms(std::uint32_t draw_id,
+                                                   const std::array<float, 4>& alpha_options) {
     DiagnosticIdUniforms uniforms{};
-    uniforms.id_color[0] =
-        static_cast<float>(draw_id & 0xffu) / 255.0f;
-    uniforms.id_color[1] =
-        static_cast<float>((draw_id >> 8) & 0xffu) / 255.0f;
-    uniforms.id_color[2] =
-        static_cast<float>((draw_id >> 16) & 0xffu) / 255.0f;
+    uniforms.id_color[0] = static_cast<float>(draw_id & 0xffu) / 255.0f;
+    uniforms.id_color[1] = static_cast<float>((draw_id >> 8) & 0xffu) / 255.0f;
+    uniforms.id_color[2] = static_cast<float>((draw_id >> 16) & 0xffu) / 255.0f;
     uniforms.id_color[3] = 1.0f;
     std::copy_n(alpha_options.begin(), 4, uniforms.alpha_options);
     return uniforms;
 }
 
-inline DiagnosticClusterUniforms diagnostic_cluster_uniforms(
-    std::uint32_t cluster_base,
-    const std::array<float, 4>& alpha_options) {
+inline DiagnosticClusterUniforms
+diagnostic_cluster_uniforms(std::uint32_t cluster_base, const std::array<float, 4>& alpha_options) {
     DiagnosticClusterUniforms uniforms{};
     uniforms.cluster_options[0] = cluster_base;
     uniforms.cluster_options[1] = 128;
@@ -6280,21 +5691,20 @@ inline DiagnosticClusterUniforms diagnostic_cluster_uniforms(
  * depend on the draw; the two individual factors are pass values but do not
  * have the same layout as the shared product buffer.
  */
-inline bool block_is_shared_scene_matrix(
-    const upstream::ShaderVariantStageBlock& block) {
+inline bool block_is_shared_scene_matrix(const upstream::ShaderVariantStageBlock& block) {
     if (block.system_matrices.size() != 1 || !block.gather.empty()) {
         return false;
     }
     switch (block.system_matrices.front()) {
-        case upstream::ShaderSystemMatrix::view_projection:
-            return true;
-        case upstream::ShaderSystemMatrix::world:
-        case upstream::ShaderSystemMatrix::world_view:
-        case upstream::ShaderSystemMatrix::world_view_projection:
-        case upstream::ShaderSystemMatrix::view:
-        case upstream::ShaderSystemMatrix::projection:
-        case upstream::ShaderSystemMatrix::camera_position:
-            return false;
+    case upstream::ShaderSystemMatrix::view_projection:
+        return true;
+    case upstream::ShaderSystemMatrix::world:
+    case upstream::ShaderSystemMatrix::world_view:
+    case upstream::ShaderSystemMatrix::world_view_projection:
+    case upstream::ShaderSystemMatrix::view:
+    case upstream::ShaderSystemMatrix::projection:
+    case upstream::ShaderSystemMatrix::camera_position:
+        return false;
     }
     return false;
 }
@@ -6339,18 +5749,13 @@ struct ShaderDrawMatrices {
     std::array<float, 16> world_view_projection;
     std::optional<std::array<float, 16>> world_view;
 
-    ShaderDrawMatrices(
-        const Engine& engine,
-        const MeshRecord& mesh,
-        const ShaderPassMatrices& pass)
+    ShaderDrawMatrices(const Engine& engine, const MeshRecord& mesh, const ShaderPassMatrices& pass)
         : world(shader_draw_world(engine, mesh)),
-          world_view_projection(
-              upstream::matrix_product(pass.view_projection, world)),
+          world_view_projection(upstream::matrix_product(pass.view_projection, world)),
           world_view(shader_world_view(pass.view, world)) {}
 
     /** The pass matrices with this draw's three lanes patched in. */
-    [[nodiscard]] ShaderPassMatrices apply(
-        const ShaderPassMatrices& pass) const {
+    [[nodiscard]] ShaderPassMatrices apply(const ShaderPassMatrices& pass) const {
         ShaderPassMatrices patched = pass;
         patched.world = &world;
         patched.world_view = world_view ? &*world_view : nullptr;
@@ -6360,26 +5765,17 @@ struct ShaderDrawMatrices {
 };
 
 /** Camera position in the same absolute/eye-relative frame as shader world. */
-inline std::array<float, 4> shader_camera_position(
-    const Scene& scene,
-    const Engine& engine,
-    const CameraRecord& camera) {
+inline std::array<float, 4> shader_camera_position(const Scene& scene, const Engine& engine,
+                                                   const CameraRecord& camera) {
     const Vec3d eye = upstream::arc_rotate_eye_position(camera);
 #if BBLITE_FLOATING_ORIGIN
     const Vec3d origin = floating_origin_offset(scene, engine);
-    return {
-        static_cast<float>(eye.x - origin.x),
-        static_cast<float>(eye.y - origin.y),
-        static_cast<float>(eye.z - origin.z),
-        0.0f};
+    return {static_cast<float>(eye.x - origin.x), static_cast<float>(eye.y - origin.y),
+            static_cast<float>(eye.z - origin.z), 0.0f};
 #else
     (void)scene;
     (void)engine;
-    return {
-        static_cast<float>(eye.x),
-        static_cast<float>(eye.y),
-        static_cast<float>(eye.z),
-        0.0f};
+    return {static_cast<float>(eye.x), static_cast<float>(eye.y), static_cast<float>(eye.z), 0.0f};
 #endif
 }
 
@@ -6392,29 +5788,23 @@ inline std::array<float, 4> shader_camera_position(
  * per-draw walks in all three consumers reuse one allocation; `assign`
  * zero-fills every element, so the bytes match a freshly sized vector's.
  */
-inline void shader_stage_block_floats(
-    const upstream::ShaderVariantStageBlock& block,
-    const ShaderPassMatrices& pass,
-    const MaterialRecord& material,
-    std::vector<float>& floats) {
+inline void shader_stage_block_floats(const upstream::ShaderVariantStageBlock& block,
+                                      const ShaderPassMatrices& pass,
+                                      const MaterialRecord& material, std::vector<float>& floats) {
     // Declared here rather than reusing `pinned_identity_world`, which
     // lives under BBLITE_PINNED_MATERIALS -- a shader-only scene compiles
     // this function without it.
     static constexpr std::array<float, 16> identity{
-        1.0f, 0.0f, 0.0f, 0.0f,
-        0.0f, 1.0f, 0.0f, 0.0f,
-        0.0f, 0.0f, 1.0f, 0.0f,
-        0.0f, 0.0f, 0.0f, 1.0f,
+        1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f,
+        0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f,
     };
     floats.assign(block.float_size, 0.0f);
     std::size_t head = 0;
-    const auto copy_from =
-        [&](const float* source, std::size_t count, const char* name) {
+    const auto copy_from = [&](const float* source, std::size_t count, const char* name) {
         if (!source) {
-            throw std::runtime_error(
-                std::string("A shader material declares the '") + name +
-                "' system uniform in a pass that renders with no such "
-                "matrix.");
+            throw std::runtime_error(std::string("A shader material declares the '") + name +
+                                     "' system uniform in a pass that renders with no such "
+                                     "matrix.");
         }
         std::copy_n(source, count, floats.begin() + head);
     };
@@ -6422,62 +5812,43 @@ inline void shader_stage_block_floats(
         // No default arm: a new enumerator has to be given a source here
         // rather than silently inheriting one.
         switch (matrix) {
-            case upstream::ShaderSystemMatrix::world:
-                copy_from(
-                    pass.world ? pass.world->data() : identity.data(),
-                    16,
-                    "world");
-                head += 16;
-                break;
-            case upstream::ShaderSystemMatrix::world_view:
-                copy_from(
-                    pass.world_view
-                        ? pass.world_view->data()
-                        : nullptr,
-                    16,
-                    "worldView");
-                head += 16;
-                break;
-            case upstream::ShaderSystemMatrix::view:
-                copy_from(
-                    pass.view ? pass.view->data() : nullptr, 16, "view");
-                head += 16;
-                break;
-            case upstream::ShaderSystemMatrix::projection:
-                copy_from(
-                    pass.projection ? pass.projection->data() : nullptr, 16,
-                    "projection");
-                head += 16;
-                break;
-            case upstream::ShaderSystemMatrix::view_projection:
-                copy_from(pass.view_projection, 16, "viewProjection");
-                head += 16;
-                break;
-            case upstream::ShaderSystemMatrix::world_view_projection:
-                copy_from(
-                    pass.world_view_projection
-                        ? pass.world_view_projection->data()
-                        : pass.view_projection,
-                    16,
-                    "worldViewProjection");
-                head += 16;
-                break;
-            case upstream::ShaderSystemMatrix::camera_position:
-                copy_from(
-                    pass.camera_position
-                        ? pass.camera_position->data()
-                        : nullptr,
-                    3,
-                    "cameraPosition");
-                // vec3 uniform members consume one 16-byte slot.
-                head += 4;
-                break;
+        case upstream::ShaderSystemMatrix::world:
+            copy_from(pass.world ? pass.world->data() : identity.data(), 16, "world");
+            head += 16;
+            break;
+        case upstream::ShaderSystemMatrix::world_view:
+            copy_from(pass.world_view ? pass.world_view->data() : nullptr, 16, "worldView");
+            head += 16;
+            break;
+        case upstream::ShaderSystemMatrix::view:
+            copy_from(pass.view ? pass.view->data() : nullptr, 16, "view");
+            head += 16;
+            break;
+        case upstream::ShaderSystemMatrix::projection:
+            copy_from(pass.projection ? pass.projection->data() : nullptr, 16, "projection");
+            head += 16;
+            break;
+        case upstream::ShaderSystemMatrix::view_projection:
+            copy_from(pass.view_projection, 16, "viewProjection");
+            head += 16;
+            break;
+        case upstream::ShaderSystemMatrix::world_view_projection:
+            copy_from(pass.world_view_projection ? pass.world_view_projection->data()
+                                                 : pass.view_projection,
+                      16, "worldViewProjection");
+            head += 16;
+            break;
+        case upstream::ShaderSystemMatrix::camera_position:
+            copy_from(pass.camera_position ? pass.camera_position->data() : nullptr, 3,
+                      "cameraPosition");
+            // vec3 uniform members consume one 16-byte slot.
+            head += 4;
+            break;
         }
     }
     for (const std::array<std::uint32_t, 3>& gather : block.gather) {
         for (std::uint32_t index = 0; index < gather[2]; ++index) {
-            floats[gather[0] + index] =
-                material.shader_uniform_values[gather[1] + index];
+            floats[gather[0] + index] = material.shader_uniform_values[gather[1] + index];
         }
     }
 }
@@ -6488,8 +5859,7 @@ inline void run_animation_frame_callbacks(Engine& engine) {
     engine.animation_frame_after_render = false;
     engine.animation_frame_timestamp_ms = performance_milliseconds();
     const auto persistent_callbacks = engine.animation_frame_callbacks;
-    auto once_callbacks =
-        std::move(engine.animation_frame_once_callbacks);
+    auto once_callbacks = std::move(engine.animation_frame_once_callbacks);
     engine.animation_frame_once_callbacks.clear();
     for (const auto& callback : persistent_callbacks) {
         callback(engine.animation_frame_timestamp_ms);
@@ -6517,11 +5887,8 @@ inline void run_animation_frame_callbacks(Engine& engine) {
  * wall-clock gap: the loop keeps presenting the frame it last drew, and a
  * frozen frame advances nothing.
  */
-[[nodiscard]] inline double advance_frame(
-    Engine& engine,
-    Scene& scene,
-    FrameClock& frame_clock,
-    double frame_delta_ms) {
+[[nodiscard]] inline double advance_frame(Engine& engine, Scene& scene, FrameClock& frame_clock,
+                                          double frame_delta_ms) {
     if (engine.stopped) {
         return 0.0;
     }
@@ -6537,7 +5904,8 @@ inline void run_animation_frame_callbacks(Engine& engine) {
     for (const auto& callback : root_callbacks) {
         callback(callback_delta_ms);
     }
-    if (scene.state->process_material_groups) scene.state->process_material_groups(scene);
+    if (scene.state->process_material_groups)
+        scene.state->process_material_groups(scene);
     // Every other registered scene's own callbacks. A swapchain overlay
     // layer is a second SceneContext with its own `_beforeRender` list --
     // the utility layer's camera forwarding and each gizmo's follow live
@@ -6545,13 +5913,16 @@ inline void run_animation_frame_callbacks(Engine& engine) {
     // it, so a layer that is drawn is a layer whose callbacks ran.
     const auto registered_scenes = engine.registered_scenes;
     for (const std::shared_ptr<Scene>& registered : registered_scenes) {
-        if (!registered || registered->shares_identity(scene)) continue;
-        const auto registered_delta_ms = static_cast<float>(scene_callback_delta(*registered, delta_ms));
+        if (!registered || registered->shares_identity(scene))
+            continue;
+        const auto registered_delta_ms =
+            static_cast<float>(scene_callback_delta(*registered, delta_ms));
         const auto callbacks = registered->before_render;
         for (const auto& callback : callbacks) {
             callback(registered_delta_ms);
         }
-        if (registered->state->process_material_groups) registered->state->process_material_groups(*registered);
+        if (registered->state->process_material_groups)
+            registered->state->process_material_groups(*registered);
     }
     return scene_delta_ms;
 }
@@ -6562,10 +5933,8 @@ inline void run_animation_frame_callbacks(Engine& engine) {
  * application can still own a requestAnimationFrame loop and queue a
  * timeout. Both run from the same frame clock as custom-shader time.
  */
-[[nodiscard]] inline double advance_frame(
-    Engine& engine,
-    FrameClock& frame_clock,
-    double frame_delta_ms) {
+[[nodiscard]] inline double advance_frame(Engine& engine, FrameClock& frame_clock,
+                                          double frame_delta_ms) {
     if (engine.stopped) {
         return 0.0;
     }
@@ -6575,12 +5944,10 @@ inline void run_animation_frame_callbacks(Engine& engine) {
 }
 
 /** The measured update boundary for a standalone FrameGraphContext. */
-[[nodiscard]] inline double advance_frame(
-    Engine& engine,
-    FrameGraphContext& context,
-    FrameClock& frame_clock,
-    double frame_delta_ms) {
-    if (engine.stopped) return 0.0;
+[[nodiscard]] inline double advance_frame(Engine& engine, FrameGraphContext& context,
+                                          FrameClock& frame_clock, double frame_delta_ms) {
+    if (engine.stopped)
+        return 0.0;
     const double delta_ms = frame_clock.advance(frame_delta_ms);
     run_animation_frame_callbacks(engine);
     const float callback_delta_ms = static_cast<float>(delta_ms);
@@ -6597,18 +5964,19 @@ inline void run_animation_frame_callbacks(Engine& engine) {
  * timeout queued anywhere in the turn is then drained at the turn boundary.
  */
 inline void finish_frame(Engine& engine) {
-    if (engine.drain_material_jobs) engine.drain_material_jobs(engine);
+    if (engine.drain_material_jobs)
+        engine.drain_material_jobs(engine);
 #if defined(BBLITE_DEVICE_RECOVERY) && BBLITE_DEVICE_RECOVERY
     complete_device_recovery(engine);
 #endif
     js::collect_at_frame_boundary();
-    if (engine.stopped) return;
+    if (engine.stopped)
+        return;
     engine.animation_frame_after_render = true;
     auto once_callbacks = std::move(engine.post_render_animation_frame_once_callbacks);
     engine.post_render_animation_frame_once_callbacks.clear();
     if (engine.post_render_animation_frame_callbacks_armed) {
-        for (const auto& callback :
-             engine.post_render_animation_frame_callbacks) {
+        for (const auto& callback : engine.post_render_animation_frame_callbacks) {
             callback(engine.animation_frame_timestamp_ms);
         }
         for (const auto& callback : once_callbacks) {
@@ -6639,10 +6007,7 @@ inline void finish_frame(Engine& engine) {
  */
 class CaptureGate {
 public:
-    CaptureGate(
-        const FrameOptions& options,
-        long limit,
-        const Engine* engine = nullptr)
+    CaptureGate(const FrameOptions& options, long limit, const Engine* engine = nullptr)
         : options_(&options), limit_(limit), engine_(engine) {}
 
     bool screenshot_saved = false;
@@ -6661,31 +6026,22 @@ public:
      * pal_render_capture.hpp beside the writer it calls, so a TU that
      * includes only this header carries no undefined inline.
      */
-    void maybe_write_standalone_render_capture(
-        const char* backend,
-        const Engine& engine,
-        std::uint32_t width,
-        std::uint32_t height,
-        long frame,
-        TextGpuCapture* text_capture = nullptr);
+    void maybe_write_standalone_render_capture(const char* backend, const Engine& engine,
+                                               std::uint32_t width, std::uint32_t height,
+                                               long frame, TextGpuCapture* text_capture = nullptr);
 
     /** Whether this run was asked for any capture at all. */
     [[nodiscard]] bool requested() const {
-        return BBLITE_VISUAL_CAPTURE && (!options_->screenshot_path.empty() ||
-            !options_->id_buffer_path.empty() ||
-            !options_->cluster_buffer_path.empty() ||
-            !options_->render_capture_path.empty());
+        return BBLITE_VISUAL_CAPTURE &&
+               (!options_->screenshot_path.empty() || !options_->id_buffer_path.empty() ||
+                !options_->cluster_buffer_path.empty() || !options_->render_capture_path.empty());
     }
 
     [[nodiscard]] bool pending() const {
-        return (!options_->screenshot_path.empty() &&
-                !screenshot_saved) ||
-            (!options_->id_buffer_path.empty() &&
-             !id_buffer_saved) ||
-            (!options_->cluster_buffer_path.empty() &&
-             !cluster_buffer_saved) ||
-            (!options_->render_capture_path.empty() &&
-             !render_capture_saved);
+        return (!options_->screenshot_path.empty() && !screenshot_saved) ||
+               (!options_->id_buffer_path.empty() && !id_buffer_saved) ||
+               (!options_->cluster_buffer_path.empty() && !cluster_buffer_saved) ||
+               (!options_->render_capture_path.empty() && !render_capture_saved);
     }
 
     /**
@@ -6703,9 +6059,7 @@ public:
      * six times is a rule that diverges. A loop with no engine to consult
      * (none today) is simply never stopped.
      */
-    [[nodiscard]] bool engine_stopped() const {
-        return engine_ != nullptr && engine_->stopped;
-    }
+    [[nodiscard]] bool engine_stopped() const { return engine_ != nullptr && engine_->stopped; }
 
     /**
      * Whether every bounded multi-frame drain the scene declared has
@@ -6716,15 +6070,17 @@ public:
      * hands this gate an engine gets the same answer.
      */
     [[nodiscard]] bool drains_resolved() const {
-        if (engine_ == nullptr) return true;
+        if (engine_ == nullptr)
+            return true;
         // `startEngine` resolves after its first render. The compiler queues
         // source following that await at the matching native frame boundary;
         // capturing while it is still pending would freeze the initial scene
         // instead of the state whose browser-ready marker follows it.
-        if (engine_->pending_start_continuations != 0) return false;
-        for (const std::function<bool()>& ready :
-             engine_->capture_ready) {
-            if (!ready || !ready()) return false;
+        if (engine_->pending_start_continuations != 0)
+            return false;
+        for (const std::function<bool()>& ready : engine_->capture_ready) {
+            if (!ready || !ready())
+                return false;
         }
         return true;
     }
@@ -6740,8 +6096,10 @@ public:
         if (engine_stopped() && requested() && !pending()) {
             return false;
         }
-        if (!running || limit_ <= 0 || frame < limit_) return running;
-        if (!pending()) return false;
+        if (!running || limit_ <= 0 || frame < limit_)
+            return running;
+        if (!pending())
+            return false;
         // Past the budget, a pending capture keeps the loop alive while the
         // program's own start-up continuations are still draining -- a
         // scene that awaits nine frame boundaries before its state is
@@ -6752,8 +6110,10 @@ public:
         // capture check runs before the frame's drain and a topology
         // change defers a capture by one more frame. The drain cap bounds
         // a program that never resolves.
-        if (!drains_resolved()) return frame < limit_ + drain_cap_frames;
-        if (drains_resolved_at_ < 0) drains_resolved_at_ = frame;
+        if (!drains_resolved())
+            return frame < limit_ + drain_cap_frames;
+        if (drains_resolved_at_ < 0)
+            drains_resolved_at_ = frame;
         return frame < std::max(limit_, drains_resolved_at_) + grace_frames;
     }
 
@@ -6780,32 +6140,24 @@ private:
  * post-warmup frames (`benchmark_warmup_frames` above holds the shared
  * warmup policy); an empty run prints nothing.
  */
-inline void report_benchmark(
-    std::vector<double> samples,
-    const char* backend,
-    const std::string& driver) {
-    if (samples.empty()) return;
+inline void report_benchmark(std::vector<double> samples, const char* backend,
+                             const std::string& driver) {
+    if (samples.empty())
+        return;
     std::sort(samples.begin(), samples.end());
     double sum = 0.0;
-    for (const double sample : samples) sum += sample;
+    for (const double sample : samples)
+        sum += sample;
     const std::size_t p95_index = std::min(
-        samples.size() - 1,
-        static_cast<std::size_t>(
-            std::ceil(samples.size() * 0.95)) - 1);
+        samples.size() - 1, static_cast<std::size_t>(std::ceil(samples.size() * 0.95)) - 1);
     const std::ios_base::fmtflags flags = std::cout.flags();
     const std::streamsize precision = std::cout.precision();
-    std::cout
-        << std::fixed
-        << std::setprecision(3)
-        << "Babylon Lite " << backend << " benchmark | driver="
-        << driver
-        << " | frames=" << samples.size()
-        << " | average=" << (sum / samples.size())
-        << " ms | median=" << samples[samples.size() / 2]
-        << " ms | p95=" << samples[p95_index]
-        << " ms | min=" << samples.front()
-        << " ms | max=" << samples.back()
-        << " ms\n";
+    std::cout << std::fixed << std::setprecision(3) << "Babylon Lite " << backend
+              << " benchmark | driver=" << driver << " | frames=" << samples.size()
+              << " | average=" << (sum / samples.size())
+              << " ms | median=" << samples[samples.size() / 2]
+              << " ms | p95=" << samples[p95_index] << " ms | min=" << samples.front()
+              << " ms | max=" << samples.back() << " ms\n";
     std::cout.flags(flags);
     std::cout.precision(precision);
 }
@@ -6824,21 +6176,14 @@ inline void report_benchmark(
 class CpuStartupMark {
 public:
     CpuStartupMark(bool enabled, const char* label)
-        : enabled_(enabled),
-          label_(label),
-          start_(monotonic_milliseconds()),
-          previous_(start_) {}
+        : enabled_(enabled), label_(label), start_(monotonic_milliseconds()), previous_(start_) {}
 
     void operator()(const char* phase) {
-        if (!enabled_) return;
+        if (!enabled_)
+            return;
         const double now = monotonic_milliseconds();
-        std::fprintf(
-            stderr,
-            "[cpu][%s-startup] phase=%s phase_ms=%.3f elapsed_ms=%.3f\n",
-            label_,
-            phase,
-            now - previous_,
-            now - start_);
+        std::fprintf(stderr, "[cpu][%s-startup] phase=%s phase_ms=%.3f elapsed_ms=%.3f\n", label_,
+                     phase, now - previous_, now - start_);
         previous_ = now;
     }
 
@@ -6857,32 +6202,21 @@ private:
  * field appears only when the caller measured one, so each backend's
  * line keeps exactly the bytes it always printed.
  */
-inline void print_cpu_frame_profile(
-    long frame,
-    double total_ms,
-    double acquire_ms,
-    double update_ms,
-    double upload_ms,
-    const std::optional<double>& write_ms,
-    double encode_submit_ms,
-    std::size_t render_items,
-    std::size_t draw_commands,
-    std::size_t transformed_meshes,
-    std::size_t transformed_vertices) {
+inline void print_cpu_frame_profile(long frame, double total_ms, double acquire_ms,
+                                    double update_ms, double upload_ms,
+                                    const std::optional<double>& write_ms, double encode_submit_ms,
+                                    std::size_t render_items, std::size_t draw_commands,
+                                    std::size_t transformed_meshes,
+                                    std::size_t transformed_vertices) {
     std::ostringstream line;
-    line << std::fixed << std::setprecision(3)
-         << "[cpu][frame] frame=" << frame
-         << " total_ms=" << total_ms
-         << " acquire_ms=" << acquire_ms
-         << " update_ms=" << update_ms
+    line << std::fixed << std::setprecision(3) << "[cpu][frame] frame=" << frame
+         << " total_ms=" << total_ms << " acquire_ms=" << acquire_ms << " update_ms=" << update_ms
          << " upload_ms=" << upload_ms;
-    if (write_ms.has_value()) line << " write_ms=" << *write_ms;
-    line << " encode_submit_ms=" << encode_submit_ms
-         << " render_items=" << render_items
-         << " draw_commands=" << draw_commands
-         << " transformed_meshes=" << transformed_meshes
-         << " transformed_vertices=" << transformed_vertices
-         << '\n';
+    if (write_ms.has_value())
+        line << " write_ms=" << *write_ms;
+    line << " encode_submit_ms=" << encode_submit_ms << " render_items=" << render_items
+         << " draw_commands=" << draw_commands << " transformed_meshes=" << transformed_meshes
+         << " transformed_vertices=" << transformed_vertices << '\n';
     std::fputs(line.str().c_str(), stderr);
 }
 
@@ -6898,21 +6232,19 @@ inline void print_cpu_frame_profile(
  */
 inline constexpr long memory_profile_frames = 30;
 
-inline void print_memory_frame_profile(
-    long frame,
-    const bbl::Engine& engine,
-    std::size_t scene_meshes,
-    std::size_t gpu_meshes,
-    std::size_t shared_geometries,
-    std::size_t shared_geometry_bytes) {
+inline void print_memory_frame_profile(long frame, const bbl::Engine& engine,
+                                       std::size_t scene_meshes, std::size_t gpu_meshes,
+                                       std::size_t shared_geometries,
+                                       std::size_t shared_geometry_bytes) {
     std::size_t live_geometries = 0;
     std::size_t geometry_bytes = 0;
     for (const bbl::ModelGeometry& geometry : engine.geometries) {
-        if (geometry.vertices.empty()) continue;
+        if (geometry.vertices.empty())
+            continue;
         ++live_geometries;
         geometry_bytes += geometry.vertices.size() * sizeof(bbl::ModelVertex) +
-            geometry.bind_vertices.size() * sizeof(bbl::ModelVertex) +
-            geometry.indices.size() * sizeof(std::uint32_t);
+                          geometry.bind_vertices.size() * sizeof(bbl::ModelVertex) +
+                          geometry.indices.size() * sizeof(std::uint32_t);
         for (const auto* targets :
              {&geometry.morph_positions, &geometry.morph_normals, &geometry.morph_tangents}) {
             for (const std::vector<Vec3>& target : *targets) {
@@ -6922,38 +6254,31 @@ inline void print_memory_frame_profile(
     }
     constexpr double mb = 1024.0 * 1024.0;
     std::ostringstream line;
-    line << std::fixed << std::setprecision(1)
-         << "[mem][frame] frame=" << frame
+    line << std::fixed << std::setprecision(1) << "[mem][frame] frame=" << frame
          << " working_set_mb=" << bbl::pal::process_working_set_bytes() / mb
-         << " mesh_records=" << engine.meshes.size()
-         << " scene_meshes=" << scene_meshes
+         << " mesh_records=" << engine.meshes.size() << " scene_meshes=" << scene_meshes
          << " gc_nodes=" << bbl::js::gc::registry.size
          << " gc_allocations=" << bbl::js::gc::registry.total_allocations
          << " geometry_records=" << engine.geometries.size()
-         << " live_geometries=" << live_geometries
-         << " geometry_mb=" << geometry_bytes / mb
-         << " gpu_meshes=" << gpu_meshes
-         << " shared_geometries=" << shared_geometries
-         << " shared_geometry_mb=" << shared_geometry_bytes / mb
-         << '\n';
+         << " live_geometries=" << live_geometries << " geometry_mb=" << geometry_bytes / mb
+         << " gpu_meshes=" << gpu_meshes << " shared_geometries=" << shared_geometries
+         << " shared_geometry_mb=" << shared_geometry_bytes / mb << '\n';
     std::fputs(line.str().c_str(), stderr);
 }
 
 /** The scene-loop form: the backend's mesh list and shared-geometry cache. */
 template <typename GpuMesh, typename SharedGeometry>
-inline void print_memory_frame_profile(
-    long frame,
-    const bbl::Engine& engine,
-    const bbl::Scene& scene,
-    const std::vector<GpuMesh>& gpu_meshes,
-    const std::vector<std::unique_ptr<SharedGeometry>>& cache) {
+inline void print_memory_frame_profile(long frame, const bbl::Engine& engine,
+                                       const bbl::Scene& scene,
+                                       const std::vector<GpuMesh>& gpu_meshes,
+                                       const std::vector<std::unique_ptr<SharedGeometry>>& cache) {
     std::size_t bytes = 0;
     for (const auto& geometry : cache) {
         bytes += geometry->identity.vertex_count * sizeof(GpuVertex) +
-            geometry->identity.index_count * sizeof(std::uint32_t);
+                 geometry->identity.index_count * sizeof(std::uint32_t);
     }
-    print_memory_frame_profile(
-        frame, engine, scene.meshes.size(), gpu_meshes.size(), cache.size(), bytes);
+    print_memory_frame_profile(frame, engine, scene.meshes.size(), gpu_meshes.size(), cache.size(),
+                               bytes);
 }
 
 /**
@@ -6962,24 +6287,18 @@ inline void print_memory_frame_profile(
  * `backend` is the caller's own label; the text names no other backend,
  * because which one implements a diagnostic is that backend's to state.
  */
-inline void reject_unsupported_frame_options(
-    const FrameOptions& options,
-    const char* backend,
-    bool supports_single_sample,
-    bool supports_copy_task) {
+inline void reject_unsupported_frame_options(const FrameOptions& options, const char* backend,
+                                             bool supports_single_sample, bool supports_copy_task) {
     if (options.single_sample && !supports_single_sample) {
-        throw std::runtime_error(
-            std::string("BBLITE_MSAA is not supported by the ") +
-            backend +
-            " backend; run the single-sample diagnostic through a scene "
-            "renderer that supports it.");
+        throw std::runtime_error(std::string("BBLITE_MSAA is not supported by the ") + backend +
+                                 " backend; run the single-sample diagnostic through a scene "
+                                 "renderer that supports it.");
     }
     if (!options.copy_task_filter.empty() && !supports_copy_task) {
-        throw std::runtime_error(
-            std::string("BBLITE_COPY_TASK is not supported by the ") +
-            backend +
-            " backend; the geometry copy-task diagnostic runs through a "
-            "scene renderer that supports it.");
+        throw std::runtime_error(std::string("BBLITE_COPY_TASK is not supported by the ") +
+                                 backend +
+                                 " backend; the geometry copy-task diagnostic runs through a "
+                                 "scene renderer that supports it.");
     }
 }
 
@@ -6994,17 +6313,15 @@ inline std::uint8_t half_to_byte(std::uint16_t value) {
     if (exponent == 0) {
         decoded = std::ldexp(static_cast<float>(mantissa), -24);
     } else if (exponent == 31) {
-        decoded = mantissa == 0
-            ? std::numeric_limits<float>::infinity()
-            : std::numeric_limits<float>::quiet_NaN();
+        decoded = mantissa == 0 ? std::numeric_limits<float>::infinity()
+                                : std::numeric_limits<float>::quiet_NaN();
     } else {
-        decoded = std::ldexp(
-            1.0f + static_cast<float>(mantissa) / 1024.0f,
-            static_cast<int>(exponent) - 15);
+        decoded = std::ldexp(1.0f + static_cast<float>(mantissa) / 1024.0f,
+                             static_cast<int>(exponent) - 15);
     }
-    if (negative) decoded = -decoded;
-    return static_cast<std::uint8_t>(
-        std::lround(std::clamp(decoded, 0.0f, 1.0f) * 255.0f));
+    if (negative)
+        decoded = -decoded;
+    return static_cast<std::uint8_t>(std::lround(std::clamp(decoded, 0.0f, 1.0f) * 255.0f));
 }
 
 // ---------------------------------------------------------------------------
@@ -7022,32 +6339,25 @@ enum class ReadbackFormatClass {
     bgra8,
 };
 
-inline std::vector<std::uint8_t> convert_readback_rows(
-    const std::uint8_t* mapped,
-    std::uint32_t width,
-    std::uint32_t height,
-    std::uint32_t aligned_row_bytes,
-    ReadbackFormatClass format) {
+inline std::vector<std::uint8_t> convert_readback_rows(const std::uint8_t* mapped,
+                                                       std::uint32_t width, std::uint32_t height,
+                                                       std::uint32_t aligned_row_bytes,
+                                                       ReadbackFormatClass format) {
     const std::uint32_t output_row_bytes = width * 4;
-    std::vector<std::uint8_t> rgba(
-        static_cast<std::size_t>(output_row_bytes) * height);
+    std::vector<std::uint8_t> rgba(static_cast<std::size_t>(output_row_bytes) * height);
     for (std::uint32_t y = 0; y < height; ++y) {
-        const std::uint8_t* source_row =
-            mapped + static_cast<std::size_t>(y) * aligned_row_bytes;
+        const std::uint8_t* source_row = mapped + static_cast<std::size_t>(y) * aligned_row_bytes;
         std::uint8_t* destination_row =
             rgba.data() + static_cast<std::size_t>(y) * output_row_bytes;
         if (format == ReadbackFormatClass::rgba16_float) {
-            const auto* source_pixels =
-                reinterpret_cast<const std::uint16_t*>(source_row);
+            const auto* source_pixels = reinterpret_cast<const std::uint16_t*>(source_row);
             for (std::uint32_t x = 0; x < width; ++x) {
                 for (std::uint32_t channel = 0; channel < 4; ++channel) {
-                    destination_row[x * 4 + channel] =
-                        half_to_byte(source_pixels[x * 4 + channel]);
+                    destination_row[x * 4 + channel] = half_to_byte(source_pixels[x * 4 + channel]);
                 }
             }
         } else if (format == ReadbackFormatClass::r16_float) {
-            const auto* source_pixels =
-                reinterpret_cast<const std::uint16_t*>(source_row);
+            const auto* source_pixels = reinterpret_cast<const std::uint16_t*>(source_row);
             for (std::uint32_t x = 0; x < width; ++x) {
                 destination_row[x * 4] = half_to_byte(source_pixels[x]);
                 destination_row[x * 4 + 1] = 0;
@@ -7058,9 +6368,7 @@ inline std::vector<std::uint8_t> convert_readback_rows(
             std::memcpy(destination_row, source_row, output_row_bytes);
             if (format == ReadbackFormatClass::bgra8) {
                 for (std::uint32_t x = 0; x < width; ++x) {
-                    std::swap(
-                        destination_row[x * 4],
-                        destination_row[x * 4 + 2]);
+                    std::swap(destination_row[x * 4], destination_row[x * 4 + 2]);
                 }
             }
         }
@@ -7073,16 +6381,12 @@ inline std::vector<std::uint8_t> convert_readback_rows(
  * stream the caller opened (opening — and cleaning up its own GPU
  * resources when the open fails — stays per backend).
  */
-inline void write_readback_raw_rows(
-    std::ostream& raw,
-    const std::uint8_t* mapped,
-    std::uint32_t height,
-    std::uint32_t aligned_row_bytes,
-    std::uint32_t source_row_bytes) {
+inline void write_readback_raw_rows(std::ostream& raw, const std::uint8_t* mapped,
+                                    std::uint32_t height, std::uint32_t aligned_row_bytes,
+                                    std::uint32_t source_row_bytes) {
     for (std::uint32_t y = 0; y < height; ++y) {
         raw.write(
-            reinterpret_cast<const char*>(
-                mapped + static_cast<std::size_t>(y) * aligned_row_bytes),
+            reinterpret_cast<const char*>(mapped + static_cast<std::size_t>(y) * aligned_row_bytes),
             source_row_bytes);
     }
 }

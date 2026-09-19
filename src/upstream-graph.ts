@@ -91,26 +91,39 @@ function diagnostics(file: ts.SourceFile): ModuleDiagnostics {
     const references = new Set<string>();
     const visit = (node: ts.Node): void => {
         if (
-            (ts.isFunctionDeclaration(node) || ts.isMethodDeclaration(node) || ts.isArrowFunction(node) || ts.isFunctionExpression(node)) &&
-            node.modifiers?.some((modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword)
+            (ts.isFunctionDeclaration(node) ||
+                ts.isMethodDeclaration(node) ||
+                ts.isArrowFunction(node) ||
+                ts.isFunctionExpression(node)) &&
+            node.modifiers?.some(
+                (modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword,
+            )
         ) {
             result.asyncFunctions += 1;
         }
         if (ts.isAwaitExpression(node)) result.awaitExpressions += 1;
-        if (ts.isClassDeclaration(node) || ts.isClassExpression(node)) result.classes += 1;
-        if (ts.isArrowFunction(node) || ts.isFunctionExpression(node)) result.closures += 1;
+        if (ts.isClassDeclaration(node) || ts.isClassExpression(node))
+            result.classes += 1;
+        if (ts.isArrowFunction(node) || ts.isFunctionExpression(node))
+            result.closures += 1;
         if (ts.isNewExpression(node)) result.newExpressions += 1;
-        if (ts.isCallExpression(node) && node.expression.kind === ts.SyntaxKind.ImportKeyword) result.dynamicImports += 1;
+        if (
+            ts.isCallExpression(node) &&
+            node.expression.kind === ts.SyntaxKind.ImportKeyword
+        )
+            result.dynamicImports += 1;
         if (
             ts.isCallExpression(node) &&
             ts.isPropertyAccessExpression(node.expression) &&
             ts.isIdentifier(node.expression.expression) &&
             node.expression.expression.text === "Object" &&
-            (node.expression.name.text === "defineProperty" || node.expression.name.text === "defineProperties")
+            (node.expression.name.text === "defineProperty" ||
+                node.expression.name.text === "defineProperties")
         ) {
             result.objectDefineProperty += 1;
         }
-        if (ts.isIdentifier(node) && platformNames.has(node.text)) references.add(node.text);
+        if (ts.isIdentifier(node) && platformNames.has(node.text))
+            references.add(node.text);
         ts.forEachChild(node, visit);
     };
     visit(file);
@@ -118,7 +131,11 @@ function diagnostics(file: ts.SourceFile): ModuleDiagnostics {
     return result;
 }
 
-function moduleEdges(store: UpstreamSourceStore, modulePath: string, file: ts.SourceFile): GraphEdge[] {
+function moduleEdges(
+    store: UpstreamSourceStore,
+    modulePath: string,
+    file: ts.SourceFile,
+): GraphEdge[] {
     const edges: GraphEdge[] = [];
     const addEdge = (kind: GraphEdge["kind"], specifier: string): void => {
         const target = store.resolveImport(modulePath, specifier);
@@ -126,10 +143,23 @@ function moduleEdges(store: UpstreamSourceStore, modulePath: string, file: ts.So
     };
 
     for (const statement of file.statements) {
-        if (ts.isImportDeclaration(statement) && ts.isStringLiteral(statement.moduleSpecifier)) {
-            addEdge(moduleImportKind(statement), statement.moduleSpecifier.text);
-        } else if (ts.isExportDeclaration(statement) && statement.moduleSpecifier && ts.isStringLiteral(statement.moduleSpecifier)) {
-            addEdge(moduleImportKind(statement), statement.moduleSpecifier.text);
+        if (
+            ts.isImportDeclaration(statement) &&
+            ts.isStringLiteral(statement.moduleSpecifier)
+        ) {
+            addEdge(
+                moduleImportKind(statement),
+                statement.moduleSpecifier.text,
+            );
+        } else if (
+            ts.isExportDeclaration(statement) &&
+            statement.moduleSpecifier &&
+            ts.isStringLiteral(statement.moduleSpecifier)
+        ) {
+            addEdge(
+                moduleImportKind(statement),
+                statement.moduleSpecifier.text,
+            );
         }
     }
 
@@ -148,7 +178,10 @@ function moduleEdges(store: UpstreamSourceStore, modulePath: string, file: ts.So
     return edges;
 }
 
-export function analyzeUpstreamGraph(store: UpstreamSourceStore, publicExports: string[]): UpstreamGraph {
+export function analyzeUpstreamGraph(
+    store: UpstreamSourceStore,
+    publicExports: string[],
+): UpstreamGraph {
     const roots = publicExports.map((exportName) => {
         const resolved = store.resolvePublicExport(exportName);
         return {
@@ -167,7 +200,13 @@ export function analyzeUpstreamGraph(store: UpstreamSourceStore, publicExports: 
         if (visited.has(modulePath)) continue;
         visited.add(modulePath);
         const source = store.getSource(modulePath);
-        const file = ts.createSourceFile(modulePath, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+        const file = ts.createSourceFile(
+            modulePath,
+            source,
+            ts.ScriptTarget.Latest,
+            true,
+            ts.ScriptKind.TS,
+        );
         const edges = moduleEdges(store, modulePath, file);
         modules.push({
             path: modulePath,
@@ -176,8 +215,13 @@ export function analyzeUpstreamGraph(store: UpstreamSourceStore, publicExports: 
             diagnostics: diagnostics(file),
         });
         for (const edge of edges) {
-            if (edge.target && (edge.kind === "runtime" || edge.kind === "dynamic")) queue.push(edge.target);
-            else if (!edge.target && !edge.specifier.startsWith(".")) externals.add(edge.specifier);
+            if (
+                edge.target &&
+                (edge.kind === "runtime" || edge.kind === "dynamic")
+            )
+                queue.push(edge.target);
+            else if (!edge.target && !edge.specifier.startsWith("."))
+                externals.add(edge.specifier);
         }
     }
 
@@ -200,8 +244,11 @@ export function analyzeUpstreamGraph(store: UpstreamSourceStore, publicExports: 
         aggregate.closures += module.diagnostics.closures;
         aggregate.dynamicImports += module.diagnostics.dynamicImports;
         aggregate.newExpressions += module.diagnostics.newExpressions;
-        aggregate.objectDefineProperty += module.diagnostics.objectDefineProperty;
-        module.diagnostics.platformReferences.forEach((reference) => platformReferences.add(reference));
+        aggregate.objectDefineProperty +=
+            module.diagnostics.objectDefineProperty;
+        module.diagnostics.platformReferences.forEach((reference) =>
+            platformReferences.add(reference),
+        );
     }
     aggregate.platformReferences = [...platformReferences].sort();
     const edges = modules.flatMap((module) => module.edges);
@@ -230,8 +277,10 @@ export function analyzeUpstreamGraph(store: UpstreamSourceStore, publicExports: 
         summary: {
             moduleCount: modules.length,
             sourceBytes: modules.reduce((sum, module) => sum + module.bytes, 0),
-            runtimeEdges: edges.filter((edge) => edge.kind === "runtime").length,
-            dynamicEdges: edges.filter((edge) => edge.kind === "dynamic").length,
+            runtimeEdges: edges.filter((edge) => edge.kind === "runtime")
+                .length,
+            dynamicEdges: edges.filter((edge) => edge.kind === "dynamic")
+                .length,
             typeEdges: edges.filter((edge) => edge.kind === "type").length,
             diagnostics: aggregate,
         },

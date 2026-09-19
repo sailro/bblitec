@@ -1,10 +1,14 @@
-import type {LoweredSource, LoweringContext} from "./context.js";
+import type { LoweredSource, LoweringContext } from "./context.js";
 
 /** Restore the pin-executed immutable packet; runtime ownership stays with its scene/material. */
 export function lowerLocalCubemap(context: LoweringContext): LoweredSource {
     const modulePath = "src/material/pbr/enable-pbr-local-cubemap.ts";
     const symbolName = "createPbrLocalEnvironmentProbeSet";
-    return {modulePath, symbolName, header: "", source: `// ${context.provenance(modulePath, symbolName)}
+    return {
+        modulePath,
+        symbolName,
+        header: "",
+        source: `// ${context.provenance(modulePath, symbolName)}
 // Geometry, grid membership, uniform values and texture copies were executed at generation.
 #include <bblite/runtime.hpp>
 #include <bblite/pal.hpp>
@@ -34,5 +38,6 @@ std::shared_ptr<LocalCubemapRecord> load_local_cubemap(
     return result;
 }
 } // namespace bbl
-`};
+`,
+    };
 }

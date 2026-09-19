@@ -158,7 +158,9 @@ function readPinnedTexture2DRules(
     );
     const coalesced = context.findNodes(
         file,
-        (node): node is ts.BinaryExpression & {
+        (
+            node,
+        ): node is ts.BinaryExpression & {
             left: ts.PropertyAccessExpression;
         } =>
             ts.isBinaryExpression(node) &&
@@ -177,7 +179,9 @@ function readPinnedTexture2DRules(
             "Expected a literal Texture2DOptions default.",
         );
     };
-    const defaultOf = (field: keyof LoadTexture2DDefaults): string | boolean => {
+    const defaultOf = (
+        field: keyof LoadTexture2DDefaults,
+    ): string | boolean => {
         const values = coalesced
             .filter((node) => node.left.name.text === field)
             .map((node) => literalOf(node.right));
@@ -211,7 +215,9 @@ function readPinnedTexture2DRules(
     const local = (name: string): ts.Expression => {
         const declarations = context.findNodes(
             impl,
-            (node): node is ts.VariableDeclaration & {
+            (
+                node,
+            ): node is ts.VariableDeclaration & {
                 initializer: ts.Expression;
             } =>
                 ts.isVariableDeclaration(node) &&
@@ -235,8 +241,7 @@ function readPinnedTexture2DRules(
         const node = context.unwrapExpression(expression);
         if (
             !ts.isConditionalExpression(node) ||
-            context.unwrapExpression(node.condition).getText(file) !==
-                condition
+            context.unwrapExpression(node.condition).getText(file) !== condition
         ) {
             return context.contractError(
                 node,

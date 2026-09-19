@@ -142,10 +142,7 @@ function wrapperNumericDefaults(
                 `${variableName} no longer holds plain numeric defaults.`,
             );
         }
-        defaults.set(
-            property.name.text,
-            Number(property.initializer.text),
-        );
+        defaults.set(property.name.text, Number(property.initializer.text));
     }
     return defaults;
 }
@@ -222,8 +219,10 @@ export class NavigationLowerer {
         // three dot-product rows; the emitted pass-through stands on
         // those rows being exactly the mirrored product the native bake
         // already performed, so the rows are the anchor.
-        const { declaration: merge } =
-            this.context.functionDeclaration(modulePath, "_mergeMeshes");
+        const { declaration: merge } = this.context.functionDeclaration(
+            modulePath,
+            "_mergeMeshes",
+        );
         for (const [lane, row] of [
             ["x", "x * wm[0] + y * wm[4] + z * wm[8] + wm[12]"],
             ["y", "x * wm[1] + y * wm[5] + z * wm[9] + wm[13]"],
@@ -263,11 +262,10 @@ export class NavigationLowerer {
         // unmultiplied and the merge's rows read that matrix directly.
         // The identity short-circuit is bit-equal to composing an
         // identity transform, so the emitted composition covers both.
-        const { declaration: composeLocal } =
-            this.context.functionDeclaration(
-                "src/scene/world-matrix-state.ts",
-                "composeTrsLocalMatrix",
-            );
+        const { declaration: composeLocal } = this.context.functionDeclaration(
+            "src/scene/world-matrix-state.ts",
+            "composeTrsLocalMatrix",
+        );
         this.context.expectShapeCount(
             composeLocal,
             "isIdentity ? createIdentityMat4() : composeMat4(position.x, position.y, position.z, rotation.x, rotation.y, rotation.z, rotation.w, scaling.x, scaling.y, scaling.z)",
@@ -275,16 +273,12 @@ export class NavigationLowerer {
         );
 
         // _createNavMeshFromMerged: the dispatch this emission mirrors.
-        const { declaration: fromMerged } =
-            this.context.functionDeclaration(
-                modulePath,
-                "_createNavMeshFromMerged",
-            );
+        const { declaration: fromMerged } = this.context.functionDeclaration(
+            modulePath,
+            "_createNavMeshFromMerged",
+        );
         this.context.assertExpressionShape(
-            this.context.variableInitializer(
-                fromMerged,
-                "needsTileCache",
-            ),
+            this.context.variableInitializer(fromMerged, "needsTileCache"),
             "(params.maxObstacles ?? 0) > 0",
             "Tile-cache dispatch",
         );
@@ -309,8 +303,10 @@ export class NavigationLowerer {
         }
 
         // raycast: nearest poly then 0 < t < 1, the PAL arm's contract.
-        const { declaration: raycast } =
-            this.context.functionDeclaration(modulePath, "raycast");
+        const { declaration: raycast } = this.context.functionDeclaration(
+            modulePath,
+            "raycast",
+        );
         if (
             !this.context.hasNode(
                 raycast,
@@ -330,13 +326,11 @@ export class NavigationLowerer {
             "Raycast parameter read",
         );
         if (
-            !this.context.hasNode(
-                raycast,
-                (node) =>
-                    this.context.expressionMatchesShape(
-                        node as ts.Expression,
-                        "!(t > 0 && t < 1)",
-                    ),
+            !this.context.hasNode(raycast, (node) =>
+                this.context.expressionMatchesShape(
+                    node as ts.Expression,
+                    "!(t > 0 && t < 1)",
+                ),
             )
         ) {
             this.context.contractError(
@@ -346,13 +340,11 @@ export class NavigationLowerer {
         }
         for (const lane of ["x", "y", "z"] as const) {
             if (
-                !this.context.hasNode(
-                    raycast,
-                    (node) =>
-                        this.context.expressionMatchesShape(
-                            node as ts.Expression,
-                            `start.${lane} + (end.${lane} - start.${lane}) * t`,
-                        ),
+                !this.context.hasNode(raycast, (node) =>
+                    this.context.expressionMatchesShape(
+                        node as ts.Expression,
+                        `start.${lane} + (end.${lane} - start.${lane}) * t`,
+                    ),
                 )
             ) {
                 this.context.contractError(
@@ -366,11 +358,10 @@ export class NavigationLowerer {
         // straight off the result. The pin inspects no status here —
         // `findClosestPointWithin` is the arm that does — so the
         // emitted wrapper passes the PAL's point through the same way.
-        const { declaration: closestPoint } =
-            this.context.functionDeclaration(
-                modulePath,
-                "getClosestPoint",
-            );
+        const { declaration: closestPoint } = this.context.functionDeclaration(
+            modulePath,
+            "getClosestPoint",
+        );
         this.context.assertExpressionShape(
             this.context.variableInitializer(closestPoint, "res"),
             "plugin._navMeshQuery.findClosestPoint(position, { halfExtents: _tmpHalfExtents })",
@@ -394,11 +385,10 @@ export class NavigationLowerer {
 
         // createNavCrowd: the wrapper's constructor over the plugin's
         // own navmesh, with the two numbers the scene named.
-        const { declaration: createCrowd } =
-            this.context.functionDeclaration(
-                modulePath,
-                "createNavCrowd",
-            );
+        const { declaration: createCrowd } = this.context.functionDeclaration(
+            modulePath,
+            "createNavCrowd",
+        );
         this.context.assertExpressionShape(
             this.context.variableInitializer(createCrowd, "crowd"),
             "new Crowd(plugin._navMesh, { maxAgents, maxAgentRadius })",
@@ -407,8 +397,10 @@ export class NavigationLowerer {
 
         // addAgent: the three `?? N` defaults the pinned module resolves
         // before the wrapper sees them, and the index it hands back.
-        const { declaration: addAgent } =
-            this.context.functionDeclaration(modulePath, "addAgent");
+        const { declaration: addAgent } = this.context.functionDeclaration(
+            modulePath,
+            "addAgent",
+        );
         const agentParams = this.context.objectInitializer(
             addAgent,
             "agentParams",
@@ -437,7 +429,7 @@ export class NavigationLowerer {
         const suppliedAgentKeys = new Set(
             agentParams.properties.flatMap((property) =>
                 ts.isPropertyAssignment(property) &&
-                    ts.isIdentifier(property.name)
+                ts.isIdentifier(property.name)
                     ? [property.name.text]
                     : [],
             ),
@@ -463,11 +455,10 @@ export class NavigationLowerer {
         );
 
         // getAgentPosition: the optional read and its zero fallback.
-        const { declaration: agentPosition } =
-            this.context.functionDeclaration(
-                modulePath,
-                "getAgentPosition",
-            );
+        const { declaration: agentPosition } = this.context.functionDeclaration(
+            modulePath,
+            "getAgentPosition",
+        );
         this.context.assertExpressionShape(
             this.context.variableInitializer(agentPosition, "p"),
             "crowd._crowd.getAgent(index)?.position()",
@@ -483,11 +474,10 @@ export class NavigationLowerer {
         // rebuild; the pinned reversed storage (a, c, b) is the shape a
         // drift would silently break, so it is pinned here through the
         // store order.
-        const { declaration: debugGeometry } =
-            this.context.functionDeclaration(
-                modulePath,
-                "createDebugNavMeshGeometry",
-            );
+        const { declaration: debugGeometry } = this.context.functionDeclaration(
+            modulePath,
+            "createDebugNavMeshGeometry",
+        );
         if (
             !this.context.hasNode(
                 debugGeometry,
@@ -579,7 +569,14 @@ void update_nav_mesh_obstacles(bbl::pal::NavigationHandle plugin) {
         return {
             modulePath,
             symbolName,
-            header: pinnedHeader(["<bblite/pal_navigation.hpp>","<bblite/runtime.hpp>","","<vector>"], `
+            header: pinnedHeader(
+                [
+                    "<bblite/pal_navigation.hpp>",
+                    "<bblite/runtime.hpp>",
+                    "",
+                    "<vector>",
+                ],
+                `
 bbl::pal::NavigationHandle create_navigation_plugin();
 void create_nav_mesh(
     Engine& engine,
@@ -622,7 +619,8 @@ double add_agent(
 Vec3d get_agent_position(
     bbl::pal::NavCrowdHandle crowd,
     double index);
-`),
+`,
+            ),
             source: `// ${this.context.provenance(modulePath, symbolName, "createNavigationPluginAsync, createDebugNavMeshGeometry, raycast")}
 #include <bblite/upstream/navigation.hpp>
 // The merge composes each caster's own world through the one emitted

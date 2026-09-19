@@ -4,10 +4,36 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import test from "node:test";
 import { compileSource } from "../src/compiler.js";
-import { optionalNativeFixtureTools, runNativeFixtureCompiler } from "./native-fixture.js";
+import {
+    optionalNativeFixtureTools,
+    runNativeFixtureCompiler,
+} from "./native-fixture.js";
 
-const positions = [[-3.6, 1.5, 0], [0, 1.5, 0], [3.6, 1.5, 0], [-1.8, -1.7, 0], [1.8, -1.7, 0]];
-const expected = positions.flatMap(([x, y, z]) => [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, x!, y!, z!, 1]);
+const positions = [
+    [-3.6, 1.5, 0],
+    [0, 1.5, 0],
+    [3.6, 1.5, 0],
+    [-1.8, -1.7, 0],
+    [1.8, -1.7, 0],
+];
+const expected = positions.flatMap(([x, y, z]) => [
+    1,
+    0,
+    0,
+    0,
+    0,
+    1,
+    0,
+    0,
+    0,
+    0,
+    1,
+    0,
+    x!,
+    y!,
+    z!,
+    1,
+]);
 const matrixSource = `
     import { createEngine } from "@babylonjs/lite";
     const positions = ${JSON.stringify(positions)} as const;
@@ -52,27 +78,61 @@ test("native numeric loops destructure table rows without static expansion", () 
 });
 
 test("table row destructuring rejects bindings beyond its fixed width", () => {
-    assert.throws(() => compileSource(matrixSource.replace("const [x, y, z]", "const [x, y, z, extra]")),
-        /Tuple has 3 elements, destructuring expects 4/);
+    assert.throws(
+        () =>
+            compileSource(
+                matrixSource.replace(
+                    "const [x, y, z]",
+                    "const [x, y, z, extra]",
+                ),
+            ),
+        /Tuple has 3 elements, destructuring expects 4/,
+    );
 });
 
 test("unchanged scene279 compiles indexed constant tuple destructuring", () => {
     const fileName = "corpus/babylon-lite/lab/lite/src/lite/scene279.ts";
     const result = compileSource(readFileSync(fileName, "utf8"), { fileName });
     assert.match(result.cpp, /for \(; .* < 5\.0;/);
-    assert.match(result.cpp, /const bbl::js::Tuple<3> .* = .*INSTANCE_POSITIONS/);
+    assert.match(
+        result.cpp,
+        /const bbl::js::Tuple<3> .* = .*INSTANCE_POSITIONS/,
+    );
 });
 
 const nativeTools = optionalNativeFixtureTools(false);
-test("native table destructuring preserves every matrix lane and evaluates indices once", { skip: !nativeTools }, () => {
-    const output = resolve("artifacts/table-destructuring-check");
-    mkdirSync(output, { recursive: true });
-    const source = join(output, "check.cpp");
-    const executable = join(output, "check.exe");
-    writeFileSync(source, `${compileSource(matrixSource).cpp}
+test(
+    "native table destructuring preserves every matrix lane and evaluates indices once",
+    { skip: !nativeTools },
+    () => {
+        const output = resolve("artifacts/table-destructuring-check");
+        mkdirSync(output, { recursive: true });
+        const source = join(output, "check.cpp");
+        const executable = join(output, "check.exe");
+        writeFileSync(
+            source,
+            `${compileSource(matrixSource).cpp}
         namespace bbl { Engine create_engine(EngineOptions options) { Engine engine; engine.options = options; return engine; } }
-    `);
-    runNativeFixtureCompiler(nativeTools!, ["/nologo", "/std:c++20", "/W4", "/WX", "/permissive-", "/EHsc", "/MD", "/O2", "/Gy",
-        "/I", "native/include", `/Fo:${output}\\`, `/Fe:${executable}`, source, "/link", "/OPT:REF"]);
-    execFileSync(executable, { stdio: "pipe" });
-});
+    `,
+        );
+        runNativeFixtureCompiler(nativeTools!, [
+            "/nologo",
+            "/std:c++20",
+            "/W4",
+            "/WX",
+            "/permissive-",
+            "/EHsc",
+            "/MD",
+            "/O2",
+            "/Gy",
+            "/I",
+            "native/include",
+            `/Fo:${output}\\`,
+            `/Fe:${executable}`,
+            source,
+            "/link",
+            "/OPT:REF",
+        ]);
+        execFileSync(executable, { stdio: "pipe" });
+    },
+);

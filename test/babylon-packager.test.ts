@@ -57,13 +57,25 @@ test("packages Babylon scene textures beside rewritten JSON", async () => {
         const cubeName = document.materials[0]!.reflectionTexture.name;
         assert.match(cubeName, /^textures\/[0-9a-f]{8}-cube$/);
         assert.equal(
-            readFileSync(resolve(destination, "..", `${cubeName}_px.jpg`), "utf8"),
+            readFileSync(
+                resolve(destination, "..", `${cubeName}_px.jpg`),
+                "utf8",
+            ),
             "_px",
         );
         document.materials[0]!.diffuseTexture.name = "unavailable.png";
-        writeFileSync(resolve(sourceDirectory, "disabled.babylon"), JSON.stringify(document));
+        writeFileSync(
+            resolve(sourceDirectory, "disabled.babylon"),
+            JSON.stringify(document),
+        );
         const disabled = resolve(root, "disabled/scene.babylon");
-        await packageBabylon("disabled.babylon", sourceDirectory, disabled, [], false);
+        await packageBabylon(
+            "disabled.babylon",
+            sourceDirectory,
+            disabled,
+            [],
+            false,
+        );
         assert.deepEqual(JSON.parse(readFileSync(disabled, "utf8")), document);
         assert.equal(existsSync(resolve(disabled, "../textures")), false);
     } finally {

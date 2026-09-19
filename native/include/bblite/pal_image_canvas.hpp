@@ -10,15 +10,19 @@
 namespace bbl::pal {
 
 inline void image_data_store(std::vector<std::uint8_t>& data, double index, double value) {
-    if (!std::isfinite(index) || index < 0 || std::floor(index) != index || index >= static_cast<double>(data.size())) return;
+    if (!std::isfinite(index) || index < 0 || std::floor(index) != index ||
+        index >= static_cast<double>(data.size()))
+        return;
     // ImageData uses Uint8ClampedArray, including ties-to-even rounding.
     std::uint8_t byte = 0;
-    if (value >= 255) byte = 255;
+    if (value >= 255)
+        byte = 255;
     else if (value > 0) {
         const double lower = std::floor(value);
         const double fraction = value - lower;
         byte = static_cast<std::uint8_t>(lower);
-        if (fraction > 0.5 || (fraction == 0.5 && byte % 2 != 0)) ++byte;
+        if (fraction > 0.5 || (fraction == 0.5 && byte % 2 != 0))
+            ++byte;
     }
     data[static_cast<std::size_t>(index)] = byte;
 }
@@ -28,7 +32,8 @@ class ImageCanvas {
     DecodedImage image_;
 
     static int dimension(double value) {
-        if (!std::isfinite(value) || value < 1 || value > std::numeric_limits<int>::max() || std::floor(value) != value)
+        if (!std::isfinite(value) || value < 1 || value > std::numeric_limits<int>::max() ||
+            std::floor(value) != value)
             throw std::runtime_error("Unsupported image canvas dimension.");
         return static_cast<int>(value);
     }
@@ -39,13 +44,15 @@ class ImageCanvas {
     }
 
     void compatible(const DecodedImage& image) const {
-        if (image.width != image_.width || image.height != image_.height || image.rgba.size() != image_.rgba.size())
+        if (image.width != image_.width || image.height != image_.height ||
+            image.rgba.size() != image_.rgba.size())
             throw std::runtime_error("Image canvas scaling is unsupported.");
     }
 
     static void opaque(const DecodedImage& image) {
         for (std::size_t index = 3; index < image.rgba.size(); index += 4)
-            if (image.rgba[index] != 255) throw std::runtime_error("Image canvas alpha compositing is unsupported.");
+            if (image.rgba[index] != 255)
+                throw std::runtime_error("Image canvas alpha compositing is unsupported.");
     }
 
 public:
@@ -59,7 +66,8 @@ public:
     }
 
     ImageCanvas& context(std::string_view kind) {
-        if (kind != "2d") throw std::runtime_error("Image canvas requires a 2d context.");
+        if (kind != "2d")
+            throw std::runtime_error("Image canvas requires a 2d context.");
         return *this;
     }
 
@@ -81,7 +89,10 @@ public:
         image_ = image;
     }
 
-    DecodedImage bitmap() const { opaque(image_); return image_; }
+    DecodedImage bitmap() const {
+        opaque(image_);
+        return image_;
+    }
 };
 
 } // namespace bbl::pal

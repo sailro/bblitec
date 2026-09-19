@@ -130,7 +130,11 @@ export function pinnedWorldTransformHeader(context: LoweringContext): string {
     );
     const template = pinnedPbrVertexOutputs(context);
     const position = pinnedWorldMultiplyLanes(context, template, "worldPos");
-    const direction = pinnedWorldMultiplyLanes(context, template, "worldNormal");
+    const direction = pinnedWorldMultiplyLanes(
+        context,
+        template,
+        "worldNormal",
+    );
     const determinant = lowerMat4Determinant3(
         context,
         undefined,

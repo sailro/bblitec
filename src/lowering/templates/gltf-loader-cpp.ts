@@ -2,9 +2,20 @@ import { DEFORMATION_BONE_SLOTS } from "../../shader-builtins-standard.js";
 import { compressedTextureFormat } from "../../compressed-texture-format.js";
 // The document key packaging names the converted Gaussian-splat rows under,
 // from the module that owns the document schema both sides read.
-import { GAUSSIAN_SPLAT_DOCUMENT_KEY, GLTF_MESH_WALKS, GLTF_SOURCE_ALBEDO_IDENTITIES, GLTF_VARIANT_PLAN, GLTF_MESH_PLAN } from "../../gltf-document.js";
+import {
+    GAUSSIAN_SPLAT_DOCUMENT_KEY,
+    GLTF_MESH_WALKS,
+    GLTF_SOURCE_ALBEDO_IDENTITIES,
+    GLTF_VARIANT_PLAN,
+    GLTF_MESH_PLAN,
+} from "../../gltf-document.js";
 import type { GltfLoaderOptions } from "../gltf-lowerer.js";
-import {gltfAnimationRuntimeTypesCpp, gltfAnimationMatrixTransportCpp, gltfAnimationPoseTransportCpp, gltfAnimationLoadingCpp} from "../gltf/animation-runtime.js";
+import {
+    gltfAnimationRuntimeTypesCpp,
+    gltfAnimationMatrixTransportCpp,
+    gltfAnimationPoseTransportCpp,
+    gltfAnimationLoadingCpp,
+} from "../gltf/animation-runtime.js";
 import { gltfMaterialProjection } from "../gltf/material-projection.js";
 /**
  * The generated glTF loader.
@@ -32,7 +43,7 @@ export interface GltfLoaderLoweredSegments {
     animationRootFlip: string;
     animationFactory: string;
     animationWeighted: string;
-    animationWeightedTransport: {types: string; dispatcher: string};
+    animationWeightedTransport: { types: string; dispatcher: string };
     animationPointers: string;
     /** Complete pinned DataView component reader, including normalization. */
     accessorNormalization: string;
@@ -197,7 +208,9 @@ std::size_t unsigned_or(const JsonObject& object, const std::string& key, std::s
     const ts::JsonValue* value = optional(object, key);
     return value ? unsigned_value(*value) : fallback;
 }
-${sourceMeshWalks ? `
+${
+    sourceMeshWalks
+        ? `
 void load_source_mesh_walks(AssetRecord& asset, const JsonObject& document) {
     const auto* packed = optional(document, ${JSON.stringify(GLTF_MESH_WALKS)});
     if (!packed) return; // This file has no reached source collector.
@@ -208,7 +221,9 @@ void load_source_mesh_walks(AssetRecord& asset, const JsonObject& document) {
     }
     install_asset_mesh_walks(asset, walks);
 }
-` : ""}
+`
+        : ""
+}
 
 bool bool_or(const JsonObject& object, const std::string& key, bool fallback) {
     const ts::JsonValue* value = optional(object, key);
@@ -217,7 +232,8 @@ bool bool_or(const JsonObject& object, const std::string& key, bool fallback) {
 
 std::string string_or(const JsonObject& object, const std::string& key, std::string fallback = {}) {
     const ts::JsonValue* value = optional(object, key);
-    return value ? value->as_string() : std::move(fallback);
+    if (value) return value->as_string();
+    return fallback;
 }
 
 std::vector<double> double_array(const ts::JsonValue* value) {
@@ -421,7 +437,9 @@ std::vector<float> gltf_skin_float32_view(const GltfAccessorView& view, double l
 
 ${lowered.inverseBindMatrices}
 
-${animationPointer ? `// Animated light refresh keeps zero forward vectors unchanged. Initial light
+${
+    animationPointer
+        ? `// Animated light refresh keeps zero forward vectors unchanged. Initial light
 // matrices come from the source constructors; vertex normals use
 // upstream::normalize_baked_direction.
 Vec3 normalize(Vec3 value) {
@@ -433,7 +451,9 @@ Vec3 normalize(Vec3 value) {
         static_cast<float>(value.z / length),
     };
 }
-` : ""}
+`
+        : ""
+}
 ${lowered.animationEvaluator}
 ${lowered.animationBoneOverrides}
 ${lowered.animationPose}
@@ -476,7 +496,9 @@ Vec3 transform_direction(const Matrix& matrix, Vec3 value) {
     return Vec3{-transformed.x, transformed.y, transformed.z};
 }
 
-${materialVariants ? `
+${
+    materialVariants
+        ? `
 // src/loader-gltf/material-variants.ts#selectVariant composed with
 // gltf-feature-variants.ts's mapping walk: the selection restores every
 // original material and then applies the entries the chosen variant maps, so
@@ -494,7 +516,9 @@ std::size_t variant_material_slot(const JsonObject& document, std::size_t mesh_i
     return unsigned_value(slots.at(mesh_index));
 }
 
-` : ""}
+`
+        : ""
+}
 TextureData image_data(
     const ts::ArrayBuffer& buffer,
     const upstream::ParsedGlbContainer& container,
@@ -514,7 +538,9 @@ TextureData image_data(
             "glTF image exceeds BIN chunk.");
     }
     const std::string mime_type =
-        string_or(image, "mimeType");${compressedImages ? `
+        string_or(image, "mimeType");${
+            compressedImages
+                ? `
     // The pin's transcoded blocks and parsed mip list, packaged together.
     // KTX2 invertY is a texture-object property, not an upload flip.
     if (mime_type == "${compressedTextureFormat.mimeType}") {
@@ -524,7 +550,9 @@ TextureData image_data(
                 buffer.bytes().begin() + end));
         result.uv_invert_y = true;
         return result;
-    }` : ""}
+    }`
+                : ""
+        }
     // The codec set the build links is decided by scanning these same
     // materialized assets, so a media type listed here is always one the
     // executable can decode: an asset carrying WebP is what put the WebP
@@ -578,14 +606,22 @@ std::optional<bool> run_pbr_rebuild_transaction(Scene& scene, const std::vector<
     return run_pbr_rebuild_transaction_impl(scene, meshes, builder);
 }
 
-${gltfCameras ? `AssetHandle load_gltf(Engine& engine, const std::string& path) {
+${
+    gltfCameras
+        ? `AssetHandle load_gltf(Engine& engine, const std::string& path) {
     return load_gltf(engine, path, false);
 }
 
-` : ""}AssetHandle load_gltf(Engine& engine, const std::string& path${gltfCameras ? ", bool load_cameras" : ""}) {
+`
+        : ""
+}AssetHandle load_gltf(Engine& engine, const std::string& path${gltfCameras ? ", bool load_cameras" : ""}) {
     ts::ArrayBuffer buffer = ts::await(pal::fetch_array_buffer(path));
-${animationPointer ? `    const auto source_container=std::make_shared<const upstream::ParsedGlbContainer>(upstream::parse_glb_container(buffer));
-    const auto& container=*source_container;` : "    const upstream::ParsedGlbContainer container = upstream::parse_glb_container(buffer);"}
+${
+    animationPointer
+        ? `    const auto source_container=std::make_shared<const upstream::ParsedGlbContainer>(upstream::parse_glb_container(buffer));
+    const auto& container=*source_container;`
+        : "    const upstream::ParsedGlbContainer container = upstream::parse_glb_container(buffer);"
+}
     const JsonObject& document = container.json.as_object();
     const auto material_features = gltf_pbr_material_features(GltfPbrValue{&container.json});
     const bool material_texture_wrap = gltf_pbr_has_texture_wrap(GltfPbrValue{&container.json});
@@ -668,7 +704,9 @@ ${animationPointerMaterials || interactivity ? `    std::vector<MaterialHandle> 
         return std::make_shared<GltfMaterialImageSource>(GltfMaterialImageSource{index});
     };
     const auto extension_image_fetcher = make_gltf_extension_image_fetcher(document, double(material_features.size()), resolve_material_image);
-${sourceTextureReads ? `
+${
+    sourceTextureReads
+        ? `
     // Association IDs come from the pin's image cache and Texture2D wrappers
     // at packaging. Each load allocates fresh public producer identities.
     const auto& source_albedo = required(document, "${GLTF_SOURCE_ALBEDO_IDENTITIES}").as_object();
@@ -698,7 +736,9 @@ ${sourceTextureReads ? `
             texture.height = texture.data.rgba_height = 1;
         }
         engine.materials.at(handle.value).source_albedo_texture = std::move(texture);
-    };` : ""}
+    };`
+        : ""
+}
     std::vector<bool> base_color_definitions(material_json.size(), false);
     for (const auto& index : required(mesh_plan, "baseColorDefinitions").as_array())
         base_color_definitions.at(unsigned_value(index)) = true;
@@ -726,7 +766,9 @@ ${animationPointer ? "            source_physical_properties.emplace_back();" : 
 ${sourceTextureReads ? `            retain_source_albedo(handle, source_material_index);` : ""}
             materials.push_back(handle);
     }
-${animationPointerMaterials || interactivity ? `    // Pointer and interactivity indices refer to original glTF definitions.
+${
+    animationPointerMaterials || interactivity
+        ? `    // Pointer and interactivity indices refer to original glTF definitions.
     for (const auto& entry : planned_meshes) {
         const auto& planned = entry.as_object();
         const auto& node = node_json.at(unsigned_value(required(planned, "node"))).as_object();
@@ -734,7 +776,9 @@ ${animationPointerMaterials || interactivity ? `    // Pointer and interactivity
         const auto& primitive = required(mesh, "primitives").as_array().at(unsigned_value(required(planned, "primitive"))).as_object();
         if (const auto* source = optional(primitive, "material"))
             source_materials.at(unsigned_value(*source)) = materials.at(unsigned_value(required(planned, "material")));
-    }` : ""}
+    }`
+        : ""
+}
     const auto* variant_plan_value = optional(document, "${GLTF_VARIANT_PLAN}");
     const auto* variant_names = gltf_json_path(document, {"extensions", "KHR_materials_variants", "variants"});
     if (variant_names && !variant_names->as_array().empty() && !variant_plan_value)
@@ -761,12 +805,18 @@ ${animationPointerMaterials || interactivity ? `    // Pointer and interactivity
     validate_gltf_parents(parents);
 
     AssetRecord asset;
-    js::Callback<void(Scene&)> ibl_scene_setup;${gaussianSplats ? "\n    js::Callback<void(Scene&)> gaussian_splat_setup;" : ""}${interactivity ? "\n    js::Callback<void(Scene&)> interactivity_scene_setup;" : ""}${interactivity || animationPointer ? `
+    js::Callback<void(Scene&)> ibl_scene_setup;${gaussianSplats ? "\n    js::Callback<void(Scene&)> gaussian_splat_setup;" : ""}${interactivity ? "\n    js::Callback<void(Scene&)> interactivity_scene_setup;" : ""}${
+        interactivity || animationPointer
+            ? `
     // glTF node-to-mesh identities, filled by the mesh walk
     // below; the rest of the asset's tables join it once the document is
     // loaded (see the scene-setup chain).
-    asset.node_meshes.resize(node_json.size());` : ""}
-${lowered.iblLoading}${gaussianSplats ? `
+    asset.node_meshes.resize(node_json.size());`
+            : ""
+    }
+${lowered.iblLoading}${
+        gaussianSplats
+            ? `
     struct PreparedGltfSplat { std::string name; std::vector<std::uint8_t> rows; };
     const auto prepared_splats = std::make_shared<std::vector<PreparedGltfSplat>>();
     // KHR_gaussian_splatting: packaging ran the pin's own preParse and
@@ -797,16 +847,26 @@ ${lowered.iblLoading}${gaussianSplats ? `
                     return splat;
                 });
         };
-    }` : ""}
+    }`
+            : ""
+    }
     const auto read_matrix = [&](const AccessorInfo& value, std::size_t index) {
         Matrix matrix{};
         for (std::size_t lane = 0; lane < matrix.size(); ++lane)
             matrix[lane] = read_component(buffer, container, views, value, index * 4 + lane / 4, lane % 4);
         return matrix;
     };
-${animationPointer ? `    std::vector<AnimatedLightBinding> light_node_bindings;
-` : ""}${gltfCameras ? `    std::vector<AnimatedCameraBinding> camera_node_bindings;
-` : ""}    std::vector<LightHandle> loaded_lights;
+${
+    animationPointer
+        ? `    std::vector<AnimatedLightBinding> light_node_bindings;
+`
+        : ""
+}${
+        gltfCameras
+            ? `    std::vector<AnimatedCameraBinding> camera_node_bindings;
+`
+            : ""
+    }    std::vector<LightHandle> loaded_lights;
     for (const auto& entry : required(mesh_plan, "lights").as_array()) {
         const auto& prepared = entry.as_object();
         LightRecord light;
@@ -839,24 +899,44 @@ ${animationPointer ? `    std::vector<AnimatedLightBinding> light_node_bindings;
         }
         const LightHandle handle{static_cast<std::uint32_t>(engine.lights.size())};
         engine.lights.push_back(light);
-        loaded_lights.push_back(handle);${animationPointer ? `
+        loaded_lights.push_back(handle);${
+            animationPointer
+                ? `
         const auto& node = required(prepared, "node");
-        if (!node.is_null()) light_node_bindings.push_back(AnimatedLightBinding{handle, unsigned_value(node)});` : ""}
+        if (!node.is_null()) light_node_bindings.push_back(AnimatedLightBinding{handle, unsigned_value(node)});`
+                : ""
+        }
     }
     for (const auto& index : required(mesh_plan, "sceneLights").as_array())
         asset.lights.push_back(loaded_lights.at(unsigned_value(index)));
-${animationPointer ? `    std::vector<LightHandle> punctual_lights;
+${
+    animationPointer
+        ? `    std::vector<LightHandle> punctual_lights;
     for (const auto& index : required(mesh_plan, "lightTargets").as_array())
         punctual_lights.push_back(index.is_null() ? LightHandle{} : loaded_lights.at(unsigned_value(index)));
-` : ""}
-${gltfCameras ? `${lowered.gltfCameraLoading}
-` : ""}    const auto animation_runtime =
+`
+        : ""
+}
+${
+    gltfCameras
+        ? `${lowered.gltfCameraLoading}
+`
+        : ""
+}    const auto animation_runtime =
         std::make_shared<AnimationRuntime>();
-${animationPointer ? `    animation_runtime->light_nodes =
+${
+    animationPointer
+        ? `    animation_runtime->light_nodes =
         std::move(light_node_bindings);
-` : ""}${gltfCameras ? `    animation_runtime->camera_nodes =
+`
+        : ""
+}${
+        gltfCameras
+            ? `    animation_runtime->camera_nodes =
         std::move(camera_node_bindings);
-` : ""}
+`
+            : ""
+    }
     {
     const auto node_rest = gltf_animation_node_rest(document,
         [&](double index) { gltf_checked_index(index); return find_gltf_parent(parents, index); });
@@ -912,16 +992,18 @@ ${animationPointer ? `    animation_runtime->light_nodes =
             const auto& setup = required(planned, "setup").as_object();
             const std::string topology = required(setup, "topology").as_string();
             const bool source_clockwise = required(setup, "clockwise").as_boolean();
-${nonTrianglePrimitives
-            ? `            // Convert the source WebGPU topology to native transport.
+${
+    nonTrianglePrimitives
+        ? `            // Convert the source WebGPU topology to native transport.
             MeshTopology primitive_topology = MeshTopology::triangles;
             if (topology == "point-list") primitive_topology = MeshTopology::points;
             else if (topology == "line-list") primitive_topology = MeshTopology::lines;
             else if (topology == "line-strip") primitive_topology = MeshTopology::line_strip;
             else if (topology != "triangle-list" && topology != "triangle-strip")
                 throw std::runtime_error("Unsupported prepared glTF topology.");`
-            : `            if (topology != "triangle-list")
-                throw std::runtime_error("Only triangle-list glTF primitives are supported.");`}
+        : `            if (topology != "triangle-list")
+                throw std::runtime_error("Only triangle-list glTF primitives are supported.");`
+}
             const auto& planned_geometry = planned_geometries.at(unsigned_value(required(planned, "geometry"))).as_object();
             const JsonObject& attributes = required(planned_geometry, "attributes").as_object();
             const auto* planned_skin = optional(planned, "skin");
@@ -988,10 +1070,12 @@ ${nonTrianglePrimitives
                 for (std::size_t instance = 0; instance < count; ++instance)
                     instance_matrices.push_back(native_matrix(read_matrix(matrices, instance)));
             }
-            ModelGeometry geometry;${nonTrianglePrimitives
-            ? `
+            ModelGeometry geometry;${
+                nonTrianglePrimitives
+                    ? `
             geometry.topology = primitive_topology;`
-            : ""}
+                    : ""
+            }
             geometry.vertices.resize(positions.count);
             const bool instanced =
                 !instance_matrices.empty();
@@ -1005,9 +1089,11 @@ ${nonTrianglePrimitives
             const double determinant =
                 upstream::pinned_mat4_determinant3(matrix);
             const std::size_t material_index =
-                ${materialVariants
-                    ? `variant_material_slot(document, gltf_mesh_counter, unsigned_value(required(planned, "material")))`
-                    : `unsigned_value(required(planned, "material"))`};
+                ${
+                    materialVariants
+                        ? `variant_material_slot(document, gltf_mesh_counter, unsigned_value(required(planned, "material")))`
+                        : `unsigned_value(required(planned, "material"))`
+                };
             if (material_index >= materials.size()) throw std::runtime_error("Invalid glTF mesh material slot.");
             const std::string authored_name = string_or(mesh, "name");
             const bool retains_live_wheel_vertices =
@@ -1023,10 +1109,14 @@ ${nonTrianglePrimitives
                 retains_runtime_instance_vertices;
             if (retains_local_vertices) {
                 geometry.bind_vertices.resize(positions.count);
-            }${retainLocalNormals ? `
+            }${
+                retainLocalNormals
+                    ? `
             if (normals) {
                 geometry.local_normals.resize(positions.count);
-            }` : ""}
+            }`
+                    : ""
+            }
             const bool clockwise_front_face =
                 source_clockwise &&
                 materials[material_index].value <
@@ -1055,8 +1145,12 @@ ${nonTrianglePrimitives
                         read_component(buffer, container, views, *normals, index, 0),
                         read_component(buffer, container, views, *normals, index, 1),
                         read_component(buffer, container, views, *normals, index, 2),
-                    };${retainLocalNormals ? `
-                    geometry.local_normals[index] = local_normal;` : ""}
+                    };${
+                        retainLocalNormals
+                            ? `
+                    geometry.local_normals[index] = local_normal;`
+                            : ""
+                    }
                     // The vertex stage's own normalize (pbr-template.ts
                     // \`normalize(normal)\`), on the lanes the pin uploads.
                     live_local_normal = upstream::normalize_baked_direction(Vec3{
@@ -1174,8 +1268,9 @@ ${nonTrianglePrimitives
                 for (std::size_t index = 0; index < indices.count; ++index) {
                     geometry.indices[index] = read_index(buffer, container, views, indices, index);
                 }
-            }${nonTrianglePrimitives
-            ? `
+            }${
+                nonTrianglePrimitives
+                    ? `
             if (topology == "triangle-strip") {
                 // Walk the strip into the triangle list it stands for:
                 // primitive i is (i, i+1, i+2) with odd i swapped, the
@@ -1205,7 +1300,8 @@ ${nonTrianglePrimitives
                 }
                 geometry.indices = std::move(expanded);
             }`
-            : ""}
+                    : ""
+            }
             if (
                 geometry.topology == MeshTopology::triangles &&
                 geometry.indices.size() % 3 != 0) {
@@ -1246,8 +1342,12 @@ ${nonTrianglePrimitives
                 !clockwise_front_face) {
                 for (std::size_t index = 0; index < geometry.indices.size(); index += 3) {
                     std::swap(geometry.indices[index + 1], geometry.indices[index + 2]);
-                }${retainLocalNormals || meshClones ? `
-                geometry.source_indices_reversed = true;` : ""}
+                }${
+                    retainLocalNormals || meshClones
+                        ? `
+                geometry.source_indices_reversed = true;`
+                        : ""
+                }
             }
             if (!normals) {
                 geometry.flat_normals = true;
@@ -1358,9 +1458,13 @@ ${nonTrianglePrimitives
                 geometry.bounds_min = world_min;
                 geometry.bounds_max = world_max;
             }
-${animatedWorldBounds ? `            geometry.world_bounds_min = world_min;
+${
+    animatedWorldBounds
+        ? `            geometry.world_bounds_min = world_min;
             geometry.world_bounds_max = world_max;
-` : ""}            engine.geometries.push_back(std::move(geometry));
+`
+        : ""
+}            engine.geometries.push_back(std::move(geometry));
             MeshRecord record;
             record.scene_node_name = string_or(node, "name");
             if (record.scene_node_name.empty()) {
@@ -1405,8 +1509,12 @@ ${animatedWorldBounds ? `            geometry.world_bounds_min = world_min;
             // the pin's composed stages has to undo one to supply the other,
             // and the sign is only known here.
             record.mirrored_x = determinant < 0.0;
-            record.visible = required(setup, "visible").as_boolean();${!nodeVisibility ? `
-            if (!record.visible) throw std::runtime_error("Prepared glTF visibility requires visibility support.");` : ""}
+            record.visible = required(setup, "visible").as_boolean();${
+                !nodeVisibility
+                    ? `
+            if (!record.visible) throw std::runtime_error("Prepared glTF visibility requires visibility support.");`
+                    : ""
+            }
             record.instance_parent_matrix =
                 instance_parent_matrix;
             record.instance_matrices =
@@ -1427,12 +1535,13 @@ ${animatedWorldBounds ? `            geometry.world_bounds_min = world_min;
                     planned_skin
                         ? unsigned_value(required(planned_skin->as_object(), "index"))
                         : std::numeric_limits<std::size_t>::max();
-                ${pinnedSkeletonPalette
-                    ? `// A composed skeleton variant reads the pin's own
+                ${
+                    pinnedSkeletonPalette
+                        ? `// A composed skeleton variant reads the pin's own
                 // palette texture, sized per bone by
                 // bone_palette_layout, so it carries any joint count and
                 // has no size to refuse.`
-                    : `// Deformation runs on the GPU or not at all, and the
+                        : `// Deformation runs on the GPU or not at all, and the
                 // uniform-array palette the transcribed vertex stage
                 // reads holds ${DEFORMATION_BONE_SLOTS} matrices. Generation already
                 // refuses a larger skin by name; this is the load-time
@@ -1451,7 +1560,8 @@ ${animatedWorldBounds ? `            geometry.world_bounds_min = world_min;
                         "scene composing no pinned skeleton variant; "
                         "the pin's own per-bone palette texture caps "
                         "nothing.");
-                }`}
+                }`
+                }
                 engine.meshes[mesh_record_index]
                     .gpu_deformation = true;
                 std::vector<Matrix> initial_joint_matrices;
@@ -1473,13 +1583,21 @@ ${animatedWorldBounds ? `            geometry.world_bounds_min = world_min;
                 // mesh.skeleton upstream: the node named a skin, so the
                 // pose pass writes this record a joint palette rather than
                 // its own world matrix.
-${vat || deformPicking ? `                engine.meshes[mesh_record_index].skinned =
+${
+    vat || deformPicking
+        ? `                engine.meshes[mesh_record_index].skinned =
                     skin_index !=
-                    std::numeric_limits<std::size_t>::max();` : ""}${pinnedSkeletonPalette ? `
+                    std::numeric_limits<std::size_t>::max();`
+        : ""
+}${
+        pinnedSkeletonPalette
+            ? `
                 // A mesh with no skin publishes no palette at all, so the
                 // flag is about the transport rather than about this mesh.
                 engine.meshes[mesh_record_index]
-                    .pinned_bone_palette = true;` : ""}
+                    .pinned_bone_palette = true;`
+            : ""
+    }
                 animation_mesh_indices[gltf_mesh_counter] = animation_runtime->meshes.size();
                 animation_runtime->meshes.push_back(
                     AnimatedMeshBinding{
@@ -1494,14 +1612,24 @@ ${vat || deformPicking ? `                engine.meshes[mesh_record_index].skinn
                         mesh_world,
                     });
             }
-            asset.meshes.push_back(MeshHandle{mesh_record_index});${interactivity ? `
+            asset.meshes.push_back(MeshHandle{mesh_record_index});${
+                interactivity
+                    ? `
             // Source applyAsset annotates only meshes reached by its node map.
             const auto& flow_node = required(mesh_plan, "flowGraphNodes").as_array().at(gltf_mesh_counter);
             asset.mesh_nodes.push_back(flow_node.is_null()
-                ? std::numeric_limits<std::size_t>::max() : unsigned_value(flow_node));` : ""}${interactivity || animationPointer ? `
-            asset.node_meshes[node_index].push_back(MeshHandle{mesh_record_index});` : ""}
+                ? std::numeric_limits<std::size_t>::max() : unsigned_value(flow_node));`
+                    : ""
+            }${
+                interactivity || animationPointer
+                    ? `
+            asset.node_meshes[node_index].push_back(MeshHandle{mesh_record_index});`
+                    : ""
+            }
     }
-${interactivity || animationPointer ? `
+${
+    interactivity || animationPointer
+        ? `
         asset.node_children.resize(node_json.size());
         for (std::size_t index = 0; index < node_json.size(); ++index) {
             for (const ts::JsonValue& child : array_or_empty(node_json[index].as_object(), "children")) {
@@ -1512,8 +1640,12 @@ ${interactivity || animationPointer ? `
         if (visibility.size() != node_json.size()) throw std::runtime_error("Invalid glTF node visibility storage.");
         asset.node_visible.reserve(visibility.size());
         for (const auto& value : visibility) asset.node_visible.push_back(value.as_boolean());
-` : ""}
-${animationPointer ? `    if(!source_animation.is_null()) {
+`
+        : ""
+}
+${
+    animationPointer
+        ? `    if(!source_animation.is_null()) {
         auto pointers=std::make_shared<GltfAnimationPointerRuntime>();
         pointers->engine=&engine;
         pointers->handles=materials;
@@ -1538,12 +1670,16 @@ ${animationPointer ? `    if(!source_animation.is_null()) {
         pointers->configure_light_effects();
         pointers->initialize(required(source_animation.as_object(),"materialState"));
         animation_runtime->pointers=std::move(pointers);
-    }` : ""}
+    }`
+        : ""
+}
     if (animated) {
 ${gltfAnimationLoadingCpp(options, lowered.animationRootFlip)}
 ${gltfAnimationPoseTransportCpp(options, lowered.gltfCameraPoseRefresh)}
 ${lowered.boneControlLoading}
-    }${boneControl ? `
+    }${
+        boneControl
+            ? `
     // The pin builds a Skeleton per skin whatever the file animates. Here
     // the joint list, the inverse bind matrices and the rest hierarchy all
     // live on the animation runtime, which a file with no animations does
@@ -1554,10 +1690,14 @@ ${lowered.boneControlLoading}
             "enableBoneControl needs the skin runtime this loader builds "
             "for an animated glTF; this file declares skins and carries "
             "no animations.");
-    }` : ""}
+    }`
+            : ""
+    }
     if (asset.meshes.empty()${gaussianSplats ? " && prepared_splats->empty()" : ""}) throw std::runtime_error("glTF contains no renderable meshes.");
     install_asset_scene_meshes(asset, double_array(&required(mesh_plan, "sceneMeshes")));
-${sourceMeshWalks ? "    load_source_mesh_walks(asset, document);" : ""}${interactivity ? `
+${sourceMeshWalks ? "    load_source_mesh_walks(asset, document);" : ""}${
+        interactivity
+            ? `
     // The source feature's actual applyAsset result owns graph activation,
     // construction order and accessor resolution.
     const auto& flow_graphs = required(mesh_plan, "flowGraphs").as_array();
@@ -1571,12 +1711,16 @@ ${sourceMeshWalks ? "    load_source_mesh_walks(asset, document);" : ""}${intera
         interactivity_scene_setup = [self, asset_name](Scene& scene) {
             attach_flow_graphs(scene, self, asset_name);
         };
-    }` : ""}
+    }`
+            : ""
+    }
     compose_gltf_scene_setup(asset, {${lowered.assetSceneSetupOrder.join(", ")}});
     engine.assets.push_back(std::move(asset));
     return AssetHandle{static_cast<std::uint32_t>(engine.assets.size() - 1)};
 }
-${lowered.boneControlEntryPoints}${interactivity || animationPointer ? `
+${lowered.boneControlEntryPoints}${
+        interactivity || animationPointer
+            ? `
 // KHR_interactivity's accessors over this asset's tables, the pin's
 // path-converter.ts resolved against the loaded document: resolveVisibility
 // reads \`node.visible !== false\` off the per-node flag, and writes through
@@ -1626,6 +1770,8 @@ TextureTransform& gltf_base_color_transform(Engine& engine, AssetHandle asset_ha
     }
     return engine.materials.at(asset.materials[material].value).base_color_transform;
 }
-` : ""}} // namespace bbl
+`
+            : ""
+    }} // namespace bbl
 `;
 }

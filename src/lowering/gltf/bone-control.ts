@@ -1,6 +1,6 @@
 import ts from "typescript";
-import type {LoweringContext} from "../context.js";
-import {lowerGltfBoneVisibility} from "./bone-visibility.js";
+import type { LoweringContext } from "../context.js";
+import { lowerGltfBoneVisibility } from "./bone-visibility.js";
 import { stringLiteral } from "../../cpp-literals.js";
 import {
     coalescedPropertyDefault,
@@ -38,13 +38,14 @@ function nameLookupPrefix(boneControl: ts.SourceFile): string {
         ["_byName", "get"],
     );
     const builder = topLevelFunction(boneControl, "buildSkeletons");
-    const firstWins = findNodes(
-        builder,
-        (node): node is ts.PrefixUnaryExpression =>
-            ts.isPrefixUnaryExpression(node) &&
-            node.operator === ts.SyntaxKind.ExclamationToken &&
-            callsNamed(node.operand, "has").length > 0,
-    ).length > 0;
+    const firstWins =
+        findNodes(
+            builder,
+            (node): node is ts.PrefixUnaryExpression =>
+                ts.isPrefixUnaryExpression(node) &&
+                node.operator === ts.SyntaxKind.ExclamationToken &&
+                callsNamed(node.operand, "has").length > 0,
+        ).length > 0;
     if (!firstWins) {
         refuseModule(
             SYMBOL,
@@ -55,9 +56,8 @@ function nameLookupPrefix(boneControl: ts.SourceFile): string {
     // `json.nodes?.[ni]?.name ?? `bone_${ni}`` — the same read the camera
     // and mesh name prefixes come from, so an authored empty name is kept
     // and only a missing one takes the fallback.
-    const fallback = findNodes(
-        builder,
-        (node): node is ts.BinaryExpression => ts.isBinaryExpression(node),
+    const fallback = findNodes(builder, (node): node is ts.BinaryExpression =>
+        ts.isBinaryExpression(node),
     )
         .map((node) => coalescedPropertyDefault(node))
         .find(
@@ -72,9 +72,8 @@ function nameLookupPrefix(boneControl: ts.SourceFile): string {
                 "from its node index",
         );
     }
-    return (
-        unwrapExpression(fallback.fallback) as ts.TemplateExpression
-    ).head.text;
+    return (unwrapExpression(fallback.fallback) as ts.TemplateExpression).head
+        .text;
 }
 
 /**
@@ -85,34 +84,29 @@ function nameLookupPrefix(boneControl: ts.SourceFile): string {
  * arm the port's own skin runtime already fills.
  */
 function assertSkinGrouping(boneControl: ts.SourceFile): void {
-    const extract = topLevelFunction(
-        boneControl,
-        "extractSkinGroups",
-    );
+    const extract = topLevelFunction(boneControl, "extractSkinGroups");
     requirePropertyReads(SYMBOL, extract, ["skin", "skins", "joints"]);
-    const overNodes = findNodes(
-        extract,
-        (node): node is ts.ForStatement =>
-            ts.isForStatement(node) &&
-            node.condition !== undefined &&
-            findNodes(
-                node.condition,
-                (inner): inner is ts.Identifier =>
-                    ts.isIdentifier(inner) &&
-                    inner.text === "nodeCount",
-            ).length > 0,
-    ).length > 0;
+    const overNodes =
+        findNodes(
+            extract,
+            (node): node is ts.ForStatement =>
+                ts.isForStatement(node) &&
+                node.condition !== undefined &&
+                findNodes(
+                    node.condition,
+                    (inner): inner is ts.Identifier =>
+                        ts.isIdentifier(inner) && inner.text === "nodeCount",
+                ).length > 0,
+        ).length > 0;
     if (!overNodes) {
         refuseModule(
             SYMBOL,
             "extractSkinGroups no longer groups over the document's nodes",
         );
     }
-    requirePropertyReads(
-        SYMBOL,
-        topLevelFunction(boneControl, "resolveIBMs"),
-        ["inverseBindMatrices"],
-    );
+    requirePropertyReads(SYMBOL, topLevelFunction(boneControl, "resolveIBMs"), [
+        "inverseBindMatrices",
+    ]);
 }
 
 interface LoweredBoneControl {
@@ -215,7 +209,6 @@ function loadingCpp(unnamedBonePrefix: string): string {
                 animation_runtime->publish_pose();
             };
         }`;
-
 }
 
 /** `getBoneByName` and `setBoneVisible`, as the loader's own free functions. */

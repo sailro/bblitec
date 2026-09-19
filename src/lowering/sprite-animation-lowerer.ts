@@ -149,10 +149,8 @@ export class SpriteAnimationLowerer {
     public lowerSpriteAnimation(billboards: boolean): LoweredSource {
         // A family the scene never built has no entry points to call, so
         // its arm is not emitted; the kind can never carry it either.
-        const billboardArm = (
-            reached: string,
-            absent = "return;",
-        ): string => (billboards ? `    ${reached}` : `    ${absent}`);
+        const billboardArm = (reached: string, absent = "return;"): string =>
+            billboards ? `    ${reached}` : `    ${absent}`;
 
         return {
             modulePath: animationModule,

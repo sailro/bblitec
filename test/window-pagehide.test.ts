@@ -4,23 +4,44 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import test from "node:test";
 import { compileSource } from "../src/compiler.js";
-import { optionalNativeFixtureTools, runNativeFixtureCompiler } from "./native-fixture.js";
+import {
+    optionalNativeFixtureTools,
+    runNativeFixtureCompiler,
+} from "./native-fixture.js";
 
-test("Window pagehide preserves targets, flags, callback ordering and storage before cleanup", t => {
+test("Window pagehide preserves targets, flags, callback ordering and storage before cleanup", (t) => {
     const entry = resolve("test/fixtures/window-pagehide.ts");
     const source = readFileSync(entry, "utf8");
     const generated = compileSource(source, { fileName: entry });
     assert.ok(generated.manifest.features.includes("platform:window"));
-    assert.throws(() => compileSource('window.addEventListener("pagehide", () => {});'), /asynchronous Window/);
-    assert.throws(() => compileSource(source.replaceAll('window.addEventListener("pagehide"', 'document.addEventListener("pagehide"'),
-        { fileName: entry }), /asynchronous Window/);
+    assert.throws(
+        () => compileSource('window.addEventListener("pagehide", () => {});'),
+        /asynchronous Window/,
+    );
+    assert.throws(
+        () =>
+            compileSource(
+                source.replaceAll(
+                    'window.addEventListener("pagehide"',
+                    'document.addEventListener("pagehide"',
+                ),
+                { fileName: entry },
+            ),
+        /asynchronous Window/,
+    );
     const tools = optionalNativeFixtureTools(false);
-    if (!tools) { t.skip("Native fixture compiler unavailable."); return; }
+    if (!tools) {
+        t.skip("Native fixture compiler unavailable.");
+        return;
+    }
     const directory = resolve("artifacts/window-pagehide-check");
     mkdirSync(directory, { recursive: true });
     writeFileSync(join(directory, "program.hpp"), generated.cpp);
-    const cpp = join(directory, "check.cpp"), executable = join(directory, "check.exe");
-    writeFileSync(cpp, `
+    const cpp = join(directory, "check.cpp"),
+        executable = join(directory, "check.exe");
+    writeFileSync(
+        cpp,
+        `
         #define main generated_main
         #include "program.hpp"
         #undef main
@@ -66,9 +87,24 @@ test("Window pagehide preserves targets, flags, callback ordering and storage be
             assert(bbl::pal::stored == "capture;target;microtask;");
             bbl::pal::document.dom_input.reset();
         }
-    `);
-    runNativeFixtureCompiler(tools, ["/nologo", "/std:c++20", "/W4", "/WX", "/EHsc", "/MD",
-        "/DBBLITE_WORKERS=1", "/DBBLITE_OFFSCREEN_SURFACES=1", "/DBBLITE_HAS_UI=1", "/DBBLITE_HAS_DOM_INPUT=1",
-        "/I", "native/include", `/Fo:${directory}/`, `/Fe:${executable}`, cpp]);
+    `,
+    );
+    runNativeFixtureCompiler(tools, [
+        "/nologo",
+        "/std:c++20",
+        "/W4",
+        "/WX",
+        "/EHsc",
+        "/MD",
+        "/DBBLITE_WORKERS=1",
+        "/DBBLITE_OFFSCREEN_SURFACES=1",
+        "/DBBLITE_HAS_UI=1",
+        "/DBBLITE_HAS_DOM_INPUT=1",
+        "/I",
+        "native/include",
+        `/Fo:${directory}/`,
+        `/Fe:${executable}`,
+        cpp,
+    ]);
     execFileSync(executable, { stdio: "pipe", timeout: 10000 });
 });

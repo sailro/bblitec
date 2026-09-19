@@ -7,16 +7,8 @@
  * subtly different special cases across those paths.
  */
 export interface SceneNodeTransformDescriptor {
-    sourceProperty:
-        | "position"
-        | "rotation"
-        | "rotationQuaternion"
-        | "scaling";
-    nativeField:
-        | "position"
-        | "rotation"
-        | "rotation_quaternion"
-        | "scaling";
+    sourceProperty: "position" | "rotation" | "rotationQuaternion" | "scaling";
+    nativeField: "position" | "rotation" | "rotation_quaternion" | "scaling";
     components: readonly ("x" | "y" | "z" | "w")[];
     cppType: "bbl::Vec3d" | "bbl::Vec3" | "bbl::Vec4";
     precision: "double" | "float";
@@ -36,9 +28,7 @@ export interface SceneNodeTransformDescriptor {
         | "set_scene_node_rotation_quaternion_component"
         | "set_scene_node_scaling_component";
     meshSetter?: "set_mesh_rotation_quaternion";
-    assetSetter?:
-        | "set_asset_root_position"
-        | "set_asset_root_rotation";
+    assetSetter?: "set_asset_root_position" | "set_asset_root_rotation";
     assetComponentSetter?:
         | "set_asset_root_position_component"
         | "set_asset_root_rotation_component";

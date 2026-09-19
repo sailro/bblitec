@@ -18,9 +18,7 @@ import type { LoweringServices } from "./lowering-services.js";
 // reach order, which is the generated variant table's index order, and
 // the uniform setters resolve their offsets from the reflected layout
 // of the reached program.
-import {
-    typeComponents,
-} from "../shader-ir.js";
+import { typeComponents } from "../shader-ir.js";
 import ts from "typescript";
 import { cppIdentifierPattern } from "../cpp-literals.js";
 import {
@@ -77,20 +75,22 @@ const MAX_SHADER_SAMPLERS = 8;
 const MAX_SHADER_STORAGE_BUFFERS = 8;
 
 export interface ShaderMaterialContext
-    extends ObjectValidationContext,
-    StaticBooleanContext,
-    Pick<LoweringServices,
-        | "reachedShaderPrograms"
-        | "expectObjectLiteral"
-        | "expectStaticArrayLiteral"
-        | "objectProperty"
-        | "compileValue"
-        | "compileNumber"
-        | "compileStaticString"
-        | "castNumber"
-        | "compileShaderSource"
-        | "compileStringLiteral"
-    > {}
+    extends
+        ObjectValidationContext,
+        StaticBooleanContext,
+        Pick<
+            LoweringServices,
+            | "reachedShaderPrograms"
+            | "expectObjectLiteral"
+            | "expectStaticArrayLiteral"
+            | "objectProperty"
+            | "compileValue"
+            | "compileNumber"
+            | "compileStaticString"
+            | "castNumber"
+            | "compileShaderSource"
+            | "compileStringLiteral"
+        > {}
 
 export function compileShaderMaterialOptions(
     context: ShaderMaterialContext,
@@ -159,10 +159,7 @@ export function compileShaderMaterialOptions(
         ...declaredUniforms,
         ...dynamicSourceUniforms.map(({ name, type }) => `${name}:${type}`),
     ];
-    const dynamicInitializers = [
-        ...dynamicSourceUniforms,
-        ...dynamicDefaults,
-    ];
+    const dynamicInitializers = [...dynamicSourceUniforms, ...dynamicDefaults];
     // `createShaderMaterial` asserts one namespace across the uniform,
     // sampler and define names it generates, so the set is built once here
     // and each normalizer adds its own to it.
@@ -256,20 +253,14 @@ export function compileShaderMaterialOptions(
                 });
             } catch (error: unknown) {
                 const message =
-                    error instanceof Error
-                        ? error.message
-                        : String(error);
+                    error instanceof Error ? error.message : String(error);
                 context.fail(
                     object,
                     `Invalid reached shader material WGSL: ${message}`,
                 );
             }
-            const expected =
-                lowerWgslShaderProgram(program);
-            if (
-                JSON.stringify(candidate) ===
-                JSON.stringify(expected)
-            ) {
+            const expected = lowerWgslShaderProgram(program);
+            if (JSON.stringify(candidate) === JSON.stringify(expected)) {
                 const predeclared = predeclaredShaderProgram(program);
                 return reachShaderProgram(context, {
                     ...predeclared,
@@ -296,24 +287,21 @@ export function compileShaderMaterialOptions(
     const staticName = nameExpression
         ? context.compileValue(nameExpression).staticString
         : undefined;
-    const slug = staticName !== undefined
-        ? staticName
-              .replace(/([a-z0-9])([A-Z])/g, "$1-$2")
-              .replace(/[^A-Za-z0-9]+/g, "-")
-              .replace(/^-+|-+$/g, "")
-              .toLowerCase()
-        : `scene-shader-${context.reachedShaderPrograms.length}`;
+    const slug =
+        staticName !== undefined
+            ? staticName
+                  .replace(/([a-z0-9])([A-Z])/g, "$1-$2")
+                  .replace(/[^A-Za-z0-9]+/g, "-")
+                  .replace(/^-+|-+$/g, "")
+                  .toLowerCase()
+            : `scene-shader-${context.reachedShaderPrograms.length}`;
     if (slug.length === 0) {
         context.fail(
             nameNode,
             "Scene-local shader material names must contain letters or digits.",
         );
     }
-    if (
-        shaderMaterialPrograms.some(
-            ({ name }) => name === slug,
-        )
-    ) {
+    if (shaderMaterialPrograms.some(({ name }) => name === slug)) {
         context.fail(
             nameNode,
             `Shader material name '${slug}' collides with a predeclared variant.`,
@@ -324,10 +312,7 @@ export function compileShaderMaterialOptions(
     // rather than a derivation. `cameraPosition`, `screenSize` and
     // `alphaCutoff` refuse by name.
     for (const signature of uniforms) {
-        if (
-            !signature.includes(":") &&
-            !isShaderSystemMatrix(signature)
-        ) {
+        if (!signature.includes(":") && !isShaderSystemMatrix(signature)) {
             context.fail(
                 uniformsExpression,
                 `Reached scene-local shader materials support the ${shaderSystemMatrices.join("/")} system uniforms, received '${signature}'.`,
@@ -354,10 +339,7 @@ export function compileShaderMaterialOptions(
     try {
         lowerWgslShaderProgram(sceneProgram);
     } catch (error: unknown) {
-        const message =
-            error instanceof Error
-                ? error.message
-                : String(error);
+        const message = error instanceof Error ? error.message : String(error);
         context.fail(
             object,
             `Invalid reached shader material WGSL: ${message}`,
@@ -445,7 +427,10 @@ function compileShaderSamplers(
             );
             const nameExpression = context.objectProperty(resolved, "name");
             if (!nameExpression) {
-                context.fail(resolved, "Shader sampler declaration requires a name.");
+                context.fail(
+                    resolved,
+                    "Shader sampler declaration requires a name.",
+                );
             }
             name = context.compileStaticString(nameExpression);
             const sampleTypeExpression = context.objectProperty(
@@ -453,9 +438,8 @@ function compileShaderSamplers(
                 "sampleType",
             );
             if (sampleTypeExpression) {
-                const candidate = context.compileStaticString(
-                    sampleTypeExpression,
-                );
+                const candidate =
+                    context.compileStaticString(sampleTypeExpression);
                 if (
                     candidate !== "float" &&
                     candidate !== "unfilterable-float" &&
@@ -525,8 +509,9 @@ function compileShaderStorageBuffers(
     used: Set<string>,
 ): CompiledShaderStorageBuffer[] {
     if (!expression) return [];
-    const buffers = context.expectStaticArrayLiteral(expression).elements.map(
-        (element): CompiledShaderStorageBuffer => {
+    const buffers = context
+        .expectStaticArrayLiteral(expression)
+        .elements.map((element): CompiledShaderStorageBuffer => {
             const resolved = context.resolveStaticExpression(element);
             if (!ts.isObjectLiteralExpression(resolved)) {
                 context.fail(
@@ -573,8 +558,7 @@ function compileShaderStorageBuffers(
             }
             used.add(name);
             return { name, type };
-        },
-    );
+        });
     if (buffers.length > MAX_SHADER_STORAGE_BUFFERS) {
         context.fail(
             expression,
@@ -625,15 +609,13 @@ function compileShaderDefines(
             );
         }
         used.add(name);
-        const resolved = context.resolveStaticExpression(
-            property.initializer,
-        );
+        const resolved = context.resolveStaticExpression(property.initializer);
         const value =
             resolved.kind === ts.SyntaxKind.TrueKeyword
                 ? true
                 : resolved.kind === ts.SyntaxKind.FalseKeyword
-                    ? false
-                    : expectStaticNumber(context, resolved);
+                  ? false
+                  : expectStaticNumber(context, resolved);
         defines.push({ name, value });
     }
     // src/material/shader/shader-material.ts sorts the normalized set the
@@ -856,11 +838,8 @@ export function resolveShaderUniform(
         material.shaderVariant,
         nameExpression,
     );
-    const name =
-        context.compileStringLiteral(nameExpression);
-    const entry = shaderUniformValueLayout(
-        program.uniforms,
-    ).get(name);
+    const name = context.compileStringLiteral(nameExpression);
+    const entry = shaderUniformValueLayout(program.uniforms).get(name);
     if (!entry) {
         context.fail(
             nameExpression,
@@ -946,8 +925,7 @@ export function compileShaderUniformComponents(
     if (count === 1) {
         return [context.compileNumber(expression)];
     }
-    const resolved =
-        context.resolveStaticExpression(expression);
+    const resolved = context.resolveStaticExpression(expression);
     if (
         ts.isArrayLiteralExpression(resolved) &&
         resolved.elements.length === count
@@ -962,10 +940,7 @@ export function compileShaderUniformComponents(
     // rule for a number at a float sink: a static lane becomes a float
     // literal, a runtime lane a `static_cast<float>`.
     const value = context.compileValue(expression);
-    if (
-        value.kind === "tuple" &&
-        value.tupleElements?.length === count
-    ) {
+    if (value.kind === "tuple" && value.tupleElements?.length === count) {
         return value.tupleElements.map((element) =>
             context.castNumber(element, "float"),
         );
@@ -977,19 +952,16 @@ export function compileShaderUniformComponents(
     ) {
         return tupleComponents(value.cpp, count);
     }
-    context.fail(
-        expression,
-        `Expected a ${count}-component array value.`,
-    );
+    context.fail(expression, `Expected a ${count}-component array value.`);
 }
 
 function compileStaticStringArray(
     context: ShaderMaterialContext,
     expression: ts.Expression,
 ): string[] {
-    return context.expectStaticArrayLiteral(expression).elements.map(
-        (element) => context.compileStaticString(element),
-    );
+    return context
+        .expectStaticArrayLiteral(expression)
+        .elements.map((element) => context.compileStaticString(element));
 }
 
 function expectStaticNumber(
@@ -1065,7 +1037,8 @@ export function shaderThinInstanceLanes(
     const lanes = new EmissionMap<string, boolean>();
     const seen = new EmissionMap<string, SceneMeshManifest>();
     for (const mesh of meshes) {
-        if (mesh.shaderVariant === undefined && !mesh.shaderVariants?.length) continue;
+        if (mesh.shaderVariant === undefined && !mesh.shaderVariants?.length)
+            continue;
         const variants = new EmissionSet([
             ...(mesh.shaderVariant === undefined ? [] : [mesh.shaderVariant]),
             ...(mesh.shaderVariants ?? []),

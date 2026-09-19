@@ -80,8 +80,9 @@ test("the grown-array builders flow their pinned defaults and rounding", () => {
     }
     // `computeNormals` is shared, not copied per builder.
     assert.equal(
-        lowered.source.match(/static std::vector<double> pinned_compute_normals/g)
-            ?.length,
+        lowered.source.match(
+            /static std::vector<double> pinned_compute_normals/g,
+        )?.length,
         1,
     );
     // The disc's own `??` defaults, flowed rather than restated.
@@ -124,14 +125,8 @@ test("the capsule builder flows the pin's truthiness defaults and its reverse", 
     );
     // Nothing is folded at generation: the ternary and both of the pin's
     // own constant defaults reach the emitted body.
-    assert.match(
-        lowered.source,
-        /options\.height \? options\.height : 1\.0/,
-    );
-    assert.match(
-        lowered.source,
-        /options\.radius \? options\.radius : 0\.25/,
-    );
+    assert.match(lowered.source, /options\.height \? options\.height : 1\.0/);
+    assert.match(lowered.source, /options\.radius \? options\.radius : 0\.25/);
     // The two fallbacks that name another RESOLVED local rather than a
     // constant, which is why the defaults cannot be folded into the record.
     assert.match(
@@ -144,7 +139,7 @@ test("the capsule builder flows the pin's truthiness defaults and its reverse", 
     );
     // The hoisted `let x; let y;` are declared by the loops that assign
     // them, not as zeroed locals beside the arrays.
-    assert.doesNotMatch(lowered.source, /\n    double y = 0\.0;/);
+    assert.doesNotMatch(lowered.source, /\n {4}double y = 0\.0;/);
     // `indices = indices.reverse()` is the mutation alone.
     assert.match(
         lowered.source,
@@ -153,34 +148,31 @@ test("the capsule builder flows the pin's truthiness defaults and its reverse", 
     // A grown list rounds once, through the pin's own conversion.
     assert.match(lowered.source, /bbl::js::u32_array_from\(indices\)/);
     // A scene that reaches no capsule emits none of it.
-    const without = new FactoryLowerer(new LoweringContext())
-        .lowerMeshFactories([]);
+    const without = new FactoryLowerer(
+        new LoweringContext(),
+    ).lowerMeshFactories([]);
     assert.doesNotMatch(without.source, /capsule/i);
 });
 
 test("mesh factory tables flow from the pinned builders", () => {
     const context = new LoweringContext();
-    const lowered = new FactoryLowerer(context).lowerMeshFactories(["mesh:torus"]);
+    const lowered = new FactoryLowerer(context).lowerMeshFactories([
+        "mesh:torus",
+    ]);
     // Box: the first face decoded from the pinned BOX_POSITION_SIGNS
     // words, and one face per pinned table group.
     assert.match(
         lowered.source,
-        /add_face\(\n        Vec3\{half_width, -half_height, half_depth\},\n        Vec3\{-half_width, -half_height, half_depth\},\n        Vec3\{-half_width, half_height, half_depth\},\n        Vec3\{half_width, half_height, half_depth\},\n        Vec3\{0\.0f, 0\.0f, 1\.0f\}\);/,
+        /add_face\(\n {8}Vec3\{half_width, -half_height, half_depth\},\n {8}Vec3\{-half_width, -half_height, half_depth\},\n {8}Vec3\{-half_width, half_height, half_depth\},\n {8}Vec3\{half_width, half_height, half_depth\},\n {8}Vec3\{0\.0f, 0\.0f, 1\.0f\}\);/,
     );
-    assert.equal(
-        lowered.source.match(/add_face\(\n/g)?.length,
-        6,
-    );
+    assert.equal(lowered.source.match(/add_face\(\n/g)?.length, 6);
     // The shared local quad pattern and UV quad, decoded from BOX_INDICES
     // and BOX_UVS.
     assert.match(
         lowered.source,
         /\{start, start \+ 1, start \+ 2, start, start \+ 2, start \+ 3\}/,
     );
-    assert.match(
-        lowered.source,
-        /Vec2\{1\.0f, 1\.0f\}\},\n\s*ModelVertex\{b/,
-    );
+    assert.match(lowered.source, /Vec2\{1\.0f, 1\.0f\}\},\n\s*ModelVertex\{b/);
     // Ground: the pinned winding order, name by name, now inside the body
     // PinnedNumericLowerer translated rather than an interpolated list.
     assert.match(
@@ -188,29 +180,17 @@ test("mesh factory tables flow from the pinned builders", () => {
         /static_cast<std::uint32_t>\(bottomRight\)[\s\S]*static_cast<std::uint32_t>\(topRight\)[\s\S]*static_cast<std::uint32_t>\(topLeft\)[\s\S]*static_cast<std::uint32_t>\(bottomLeft\)[\s\S]*static_cast<std::uint32_t>\(bottomRight\)[\s\S]*static_cast<std::uint32_t>\(topLeft\)/,
     );
     // Plane: the table-driven quad.
-    assert.match(
-        lowered.source,
-        /geometry\.indices = \{0, 1, 2, 0, 2, 3\};/,
-    );
-    assert.match(
-        lowered.source,
-        /Vec3\{-half_width, -half_height, 0\.0f\}/,
-    );
+    assert.match(lowered.source, /geometry\.indices = \{0, 1, 2, 0, 2, 3\};/);
+    assert.match(lowered.source, /Vec3\{-half_width, -half_height, 0\.0f\}/);
     // Sphere: the tessellation constants extracted from the pinned
     // arithmetic (2 + segments, 2 * z_steps, the 3-segment clamp) and the
     // pinned triangulation order.
-    assert.match(
-        lowered.source,
-        /totalZRotationSteps = \(2\.0 \+ segments\)/,
-    );
+    assert.match(lowered.source, /totalZRotationSteps = \(2\.0 \+ segments\)/);
     assert.match(
         lowered.source,
         /totalYRotationSteps = \(2\.0 \* totalZRotationSteps\)/,
     );
-    assert.match(
-        lowered.source,
-        /std::max<double>\(3\.0, options\.segments\)/,
-    );
+    assert.match(lowered.source, /std::max<double>\(3\.0, options\.segments\)/);
     assert.match(
         lowered.source,
         /static_cast<std::uint32_t>\(a\)[\s\S]*static_cast<std::uint32_t>\(\(a \+ 1\.0\)\)[\s\S]*static_cast<std::uint32_t>\(b\)/,
@@ -218,10 +198,7 @@ test("mesh factory tables flow from the pinned builders", () => {
     // Torus: TWO_PI's factor, the reciprocal of the pinned Math.PI / 2
     // phase, and the pinned triangulation order. The whole chain is the
     // pin's own precision, so the constants are doubles with it.
-    assert.match(
-        lowered.source,
-        /const double TWO_PI = \(pi_double \* 2\.0\)/,
-    );
+    assert.match(lowered.source, /const double TWO_PI = \(pi_double \* 2\.0\)/);
     assert.match(lowered.source, /\(pi_double \/ 2\.0\)/);
     assert.match(
         lowered.source,
@@ -257,15 +234,11 @@ test("mesh factory tables flow from the pinned builders", () => {
                         initializer.expression.text === "F32"
                     );
                 })
-                .map((declaration) =>
-                    (declaration.name as ts.Identifier).text,
-                ),
+                .map((declaration) => (declaration.name as ts.Identifier).text),
         );
         return context
-            .findNodes(
-                declaration,
-                (node): node is ts.BinaryExpression =>
-                    ts.isBinaryExpression(node),
+            .findNodes(declaration, (node): node is ts.BinaryExpression =>
+                ts.isBinaryExpression(node),
             )
             .filter(
                 (assignment) =>
@@ -302,8 +275,7 @@ test("mesh factory tables flow from the pinned builders", () => {
         assert.notEqual(end, -1);
         const helper = lowered.source.slice(start, end);
         const casts = helper.match(/static_cast<float>\(/g)?.length ?? 0;
-        const stores =
-            helper.match(/\] = static_cast<float>\(/g)?.length ?? 0;
+        const stores = helper.match(/\] = static_cast<float>\(/g)?.length ?? 0;
         assert.equal(casts, stores, `${emittedName} narrows only at stores`);
         assert.equal(
             stores,
@@ -321,30 +293,15 @@ test("environment sizing constants flow slot by slot", () => {
     // computeSceneSize, then interpolated here: defaults, the diagonal
     // override, the two final scales, and the root composition.
     assert.match(adapter.source, /ground_size = 15\.0f;/);
-    assert.match(
-        adapter.source,
-        /options\.skybox_size : 20\.0f;/,
-    );
+    assert.match(adapter.source, /options\.skybox_size : 20\.0f;/);
     assert.match(adapter.source, /double ground_size = 15\.0;/);
-    assert.match(
-        adapter.source,
-        /\*camera\.upper_radius_limit \*\s*2\.0/,
-    );
+    assert.match(adapter.source, /\*camera\.upper_radius_limit \*\s*2\.0/);
     assert.match(adapter.source, /diagonal \* 2\.0;/);
     assert.match(adapter.source, /ground_size \*= 1\.1;/);
     assert.match(adapter.source, /skybox_size \*= 1\.5;/);
-    assert.match(
-        adapter.source,
-        /bounds_min\[0\] \+ dx \* 0\.5/,
-    );
-    assert.match(
-        adapter.source,
-        /bounds_min\[1\] - 0\.00001/,
-    );
-    assert.match(
-        adapter.source,
-        /bounds_min\[2\] \+ dz \* 0\.5/,
-    );
+    assert.match(adapter.source, /bounds_min\[0\] \+ dx \* 0\.5/);
+    assert.match(adapter.source, /bounds_min\[1\] - 0\.00001/);
+    assert.match(adapter.source, /bounds_min\[2\] \+ dz \* 0\.5/);
     // The deferred builder sees the scene as it exists at registration,
     // including procedural meshes and their live parented transforms. The
     // pin expands each local box through mesh.worldMatrix at that point.
@@ -352,38 +309,21 @@ test("environment sizing constants flow slot by slot", () => {
         adapter.source,
         /upstream::mesh_world_matrix\(\*scene\.engine, mesh\)/,
     );
-    assert.match(
-        adapter.source,
-        /world\[12 \+ row\]/,
-    );
-    assert.match(
-        adapter.source,
-        /world\[column \* 4 \+ row\]/,
-    );
+    assert.match(adapter.source, /world\[12 \+ row\]/);
+    assert.match(adapter.source, /world\[column \* 4 \+ row\]/);
 });
 
 test("harmonic pre-scale terms stay paired with the pinned structure", () => {
-    const parser = new EnvironmentLowerer(
-        new LoweringContext(),
-    ).lowerParser();
+    const parser = new EnvironmentLowerer(new LoweringContext()).lowerParser();
     // lowerParser now walks polynomialToPreScaledHarmonics term by term
     // (input groups at poly[3k + i], stores at out[4k + i], one structural
     // assert per term); reaching the emission at all means those pairings
     // held, and the emitted terms carry the constants extracted from the
     // same declaration.
-    assert.match(
-        parser.source,
-        /\(xx \+ yy\) \* c00xy \+ zz \* c00z/,
-    );
-    assert.match(
-        parser.source,
-        /zz \* c20zz - \(xx \+ yy\) \* c20xy/,
-    );
+    assert.match(parser.source, /\(xx \+ yy\) \* c00xy \+ zz \* c00z/);
+    assert.match(parser.source, /zz \* c20zz - \(xx \+ yy\) \* c20xy/);
     assert.match(parser.source, /\(xx - yy\) \* c22/);
-    assert.match(
-        parser.source,
-        /constexpr float c1 = 1\.4999984284682104f/,
-    );
+    assert.match(parser.source, /constexpr float c1 = 1\.4999984284682104f/);
 });
 
 test("the copy-blit Y-flip is anchored to the pinned viewport composition", () => {

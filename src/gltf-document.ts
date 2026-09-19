@@ -67,18 +67,18 @@ export const asObject = (value: unknown): JsonObject | undefined =>
 export const asRecords = (value: unknown): JsonObject[] =>
     Array.isArray(value)
         ? value
-            .map(asObject)
-            .filter((entry): entry is JsonObject => entry !== undefined)
+              .map(asObject)
+              .filter((entry): entry is JsonObject => entry !== undefined)
         : [];
 
 /** Every primitive in the document, flattened out of its meshes. */
 export const primitiveRecords = (document: JsonRecord): JsonRecord[] =>
-    asRecords(document.meshes).flatMap((mesh) =>
-        asRecords(mesh.primitives),
-    );
+    asRecords(document.meshes).flatMap((mesh) => asRecords(mesh.primitives));
 
 /** Mesh instances follow the loader's node order, not the mesh-definition count. */
-export function instantiatedPrimitiveRecords(document: JsonRecord): JsonRecord[] {
+export function instantiatedPrimitiveRecords(
+    document: JsonRecord,
+): JsonRecord[] {
     const meshes = Array.isArray(document.meshes) ? document.meshes : [];
     return asRecords(document.nodes).flatMap((node) => {
         const index = asIndex(node.mesh);
@@ -96,9 +96,7 @@ export function instantiatedPrimitiveRecords(document: JsonRecord): JsonRecord[]
  * only the second form is still one the pinned conversion reads, and a
  * check that looked at `extensions` alone would let it past.
  */
-export const isGaussianSplatPrimitive = (
-    primitive: JsonObject,
-): boolean => {
+export const isGaussianSplatPrimitive = (primitive: JsonObject): boolean => {
     if (
         asObject(primitive.extensions)?.[GAUSSIAN_SPLATTING_EXTENSION] !==
         undefined
@@ -124,7 +122,7 @@ export const asNumber = (value: unknown): number | undefined =>
 
 export const asNumbers = (value: unknown): number[] | undefined =>
     Array.isArray(value) && value.every((entry) => typeof entry === "number")
-        ? (value as number[])
+        ? value
         : undefined;
 
 /**
@@ -138,8 +136,12 @@ export const asIndex = (value: unknown): number | undefined =>
         : undefined;
 
 /** A dense array of indices bounded by a referenced resource table. */
-export const areGltfIndices = (value: unknown, limit: number): value is number[] => Array.isArray(value) &&
-    value.every(index => asIndex(index) !== undefined && index < limit);
+export const areGltfIndices = (
+    value: unknown,
+    limit: number,
+): value is number[] =>
+    Array.isArray(value) &&
+    value.every((index) => asIndex(index) !== undefined && index < limit);
 
 export const asString = (value: unknown): string | undefined =>
     typeof value === "string" ? value : undefined;
@@ -288,13 +290,10 @@ export function variantMaterialIndex(
     const own = asIndex(primitive.material);
     if (selectedVariant === undefined) return own;
     let mapped = own;
-    for (
-        const mapping of asRecords(
-            asObject(asObject(primitive.extensions)?.[
-                "KHR_materials_variants"
-            ])?.mappings,
-        )
-    ) {
+    for (const mapping of asRecords(
+        asObject(asObject(primitive.extensions)?.["KHR_materials_variants"])
+            ?.mappings,
+    )) {
         const variants = Array.isArray(mapping.variants)
             ? mapping.variants
             : [];

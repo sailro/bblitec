@@ -160,22 +160,14 @@ struct PickingInfo {
 
 private:
     explicit PickingInfo(std::shared_ptr<PickingInfoState> shared)
-        : state(std::move(shared)),
-          hit(state->hit),
-          picked_kind(state->picked_kind),
-          picked_index(state->picked_index),
-          picked_range_offset(state->picked_range_offset),
-          picked_point(state->picked_point),
-          face_id(state->face_id),
-          bu(state->bu),
-          bv(state->bv),
-          ray(state->ray),
-          picked_normal(state->picked_normal),
+        : state(std::move(shared)), hit(state->hit), picked_kind(state->picked_kind),
+          picked_index(state->picked_index), picked_range_offset(state->picked_range_offset),
+          picked_point(state->picked_point), face_id(state->face_id), bu(state->bu), bv(state->bv),
+          ray(state->ray), picked_normal(state->picked_normal),
           picked_normal_world(state->picked_normal_world),
           picked_face_normal(state->picked_face_normal),
           picked_face_normal_world(state->picked_face_normal_world),
-          normals_invalid(state->normals_invalid),
-          detail(state->detail) {}
+          normals_invalid(state->normals_invalid), detail(state->detail) {}
 };
 // The destroy-then-place assignment operators above are only sound while a
 // copy cannot throw between the destruction and the placement.
@@ -184,9 +176,8 @@ static_assert(std::is_nothrow_move_constructible_v<PickingInfo>);
 
 [[nodiscard]] inline Engine& picking_engine(const PickingInfo& info) {
     if (!info.state->engine || info.state->engine_lifetime.expired()) {
-        throw std::runtime_error(
-            "PickingInfo mesh queries require the original live engine; "
-            "queries after engine destruction or relocation are unsupported.");
+        throw std::runtime_error("PickingInfo mesh queries require the original live engine; "
+                                 "queries after engine destruction or relocation are unsupported.");
     }
     return *info.state->engine;
 }

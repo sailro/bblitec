@@ -5,31 +5,51 @@ import test from "node:test";
 import { BillboardLowerer } from "../src/lowering/billboard-lowerer.js";
 import { LoweringContext } from "../src/lowering/context.js";
 import { SpriteLowerer } from "../src/lowering/sprite-lowerer.js";
-import { cppFunction, cppRecord, optionalNativeFixtureTools, runNativeFixtureCompiler } from "./native-fixture.js";
+import {
+    cppFunction,
+    cppRecord,
+    optionalNativeFixtureTools,
+    runNativeFixtureCompiler,
+} from "./native-fixture.js";
 
 const tools = optionalNativeFixtureTools(false);
 
-test("billboard mutations invalidate uploads without discarding capacity or handle identity", { skip: !tools }, () => {
-    const output = resolve("artifacts/billboard-upload");
-    mkdirSync(output, { recursive: true });
-    const context = new LoweringContext();
-    const core = new BillboardLowerer(context, "").lowerCore();
-    const sprite = new SpriteLowerer(context).lowerCore();
-    const shared = readFileSync("native/src/pal_gpu_shared.hpp", "utf8").replaceAll("\r\n", "\n");
-    const file = join(output, "check.cpp"), executable = join(output, "check.exe");
-    const definitions = [
-        "BillboardSystemHandle create_billboard_system(", "double add_billboard_sprite_index(",
-        "BillboardSpriteHandle add_billboard_sprite(", "void update_billboard_sprite(",
-        "void set_billboard_sprite_frame(", "bool billboard_sprite_alive(",
-        "void remove_billboard_sprite(", "void clear_billboard_sprites(",
-    ].map(signature => cppFunction(core.source, signature)).join("\n");
-    writeFileSync(file, `
+test(
+    "billboard mutations invalidate uploads without discarding capacity or handle identity",
+    { skip: !tools },
+    () => {
+        const output = resolve("artifacts/billboard-upload");
+        mkdirSync(output, { recursive: true });
+        const context = new LoweringContext();
+        const core = new BillboardLowerer(context, "").lowerCore();
+        const sprite = new SpriteLowerer(context).lowerCore();
+        const shared = readFileSync(
+            "native/src/pal_gpu_shared.hpp",
+            "utf8",
+        ).replaceAll("\r\n", "\n");
+        const file = join(output, "check.cpp"),
+            executable = join(output, "check.exe");
+        const definitions = [
+            "BillboardSystemHandle create_billboard_system(",
+            "double add_billboard_sprite_index(",
+            "BillboardSpriteHandle add_billboard_sprite(",
+            "void update_billboard_sprite(",
+            "void set_billboard_sprite_frame(",
+            "bool billboard_sprite_alive(",
+            "void remove_billboard_sprite(",
+            "void clear_billboard_sprites(",
+        ]
+            .map((signature) => cppFunction(core.source, signature))
+            .join("\n");
+        writeFileSync(
+            file,
+            `
         #include <bblite/runtime.hpp>
         #include <algorithm>
         #include <cmath>
         #include <cassert>
         namespace bbl::upstream {
-            ${cppFunction(sprite.header!, "inline std::uint32_t resolve_sprite_frame(")}
+            ${cppFunction(sprite.header, "inline std::uint32_t resolve_sprite_frame(")}
         }
         namespace bbl {
             ${definitions}
@@ -93,10 +113,25 @@ test("billboard mutations invalidate uploads without discarding capacity or hand
             assert(system.count == 1 && dirty() && system.instance_data[0] == 9);
             assert(system.instance_data.capacity() == capacity); uploaded();
         }
-    `);
-    for (const floatingOrigin of [0, 1]) {
-        runNativeFixtureCompiler(tools!, ["/nologo", "/std:c++20", "/W4", "/WX", "/permissive-", "/EHsc", "/MD",
-            `/DBBLITE_FLOATING_ORIGIN=${floatingOrigin}`, `/Fo:${output}\\`, `/Fe:${executable}`, "/I", "native/include", file]);
-        execFileSync(executable, { stdio: "pipe" });
-    }
-});
+    `,
+        );
+        for (const floatingOrigin of [0, 1]) {
+            runNativeFixtureCompiler(tools!, [
+                "/nologo",
+                "/std:c++20",
+                "/W4",
+                "/WX",
+                "/permissive-",
+                "/EHsc",
+                "/MD",
+                `/DBBLITE_FLOATING_ORIGIN=${floatingOrigin}`,
+                `/Fo:${output}\\`,
+                `/Fe:${executable}`,
+                "/I",
+                "native/include",
+                file,
+            ]);
+            execFileSync(executable, { stdio: "pipe" });
+        }
+    },
+);

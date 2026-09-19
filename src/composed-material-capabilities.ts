@@ -69,7 +69,7 @@ function bindingNames(variants: readonly ComposedStages[]): Set<string> {
         variants.flatMap((variant) =>
             variantBindings(variant.vertexWgsl, variant.fragmentWgsl).map(
                 (binding) => binding.name,
-            )
+            ),
         ),
     );
 }
@@ -79,8 +79,8 @@ function composesFragment(
     variants: readonly ComposedStages[],
     fragment: string,
 ): boolean {
-    return variants.some((variant) =>
-        variant.fragmentKey?.includes(fragment) === true
+    return variants.some(
+        (variant) => variant.fragmentKey?.includes(fragment) === true,
     );
 }
 

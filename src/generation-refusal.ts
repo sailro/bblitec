@@ -109,23 +109,27 @@ const floatingOriginUnwired: readonly {
 }[] = [
     {
         feature: "loader:splat",
-        why: "a splat cloud composes its own absolute world and multiplies " +
+        why:
+            "a splat cloud composes its own absolute world and multiplies " +
             "it by the frame's view",
     },
     {
         feature: "material:shader",
-        why: "a ShaderMaterial serializes its own system-uniform block and " +
+        why:
+            "a ShaderMaterial serializes its own system-uniform block and " +
             "still reads the identity world the bake used to justify",
     },
     {
         feature: "loader:gltf",
-        why: "the glTF loader bakes each primitive's node world into its " +
+        why:
+            "the glTF loader bakes each primitive's node world into its " +
             "vertices in float32, which quantizes them before the " +
             "eye-relative subtraction could recover the remainder",
     },
     {
         feature: "loader:gltf-cameras",
-        why: "a parented camera's world is its fixup node's product, and " +
+        why:
+            "a parented camera's world is its fixup node's product, and " +
             "the offset is read off the camera's own local eye",
     },
 ];
@@ -188,7 +192,11 @@ export function refuseUnsupportedCombinations(
 ): void {
     for (const combination of unsupportedCombinations) {
         if (combination.reached(inputs)) {
-            refuseGeneration(combination.unit, combination.reason, featureSites);
+            refuseGeneration(
+                combination.unit,
+                combination.reason,
+                featureSites,
+            );
         }
     }
 }

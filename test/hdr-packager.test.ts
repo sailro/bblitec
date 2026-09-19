@@ -18,10 +18,7 @@ function smallHdr(): Uint8Array {
         "#?RADIANCE\nFORMAT=32-bit_rle_rgbe\n\n-Y 2 +X 2\n",
     );
     const pixels = new Uint8Array([
-        64, 32, 16, 136,
-        32, 64, 16, 136,
-        16, 32, 64, 136,
-        64, 64, 64, 136,
+        64, 32, 16, 136, 32, 64, 16, 136, 16, 32, 64, 136, 64, 64, 64, 136,
     ]);
     const result = new Uint8Array(header.length + pixels.length);
     result.set(header);
@@ -37,26 +34,14 @@ function hdrBytes(
     const header = new TextEncoder().encode(
         `#?RADIANCE\nFORMAT=32-bit_rle_rgbe\n\n-Y ${height} +X ${width}\n`,
     );
-    const result = new Uint8Array(
-        header.length + pixels.length,
-    );
+    const result = new Uint8Array(header.length + pixels.length);
     result.set(header);
     result.set(pixels, header.length);
     return result;
 }
 
 function rleHdr(): Uint8Array {
-    return hdrBytes(
-        8,
-        1,
-        [
-            2, 2, 0, 8,
-            136, 64,
-            136, 32,
-            136, 16,
-            136, 136,
-        ],
-    );
+    return hdrBytes(8, 1, [2, 2, 0, 8, 136, 64, 136, 32, 136, 16, 136, 136]);
 }
 
 test("packages a deterministic HDR cubemap representation", async () => {
@@ -131,10 +116,7 @@ test("preScalePolynomial is the pinned pre-scale repacked to Color3 slots", asyn
 });
 
 test("rejects unsupported HDR cubemap dimensions", async () => {
-    await assert.rejects(
-        packageHdrEnvironment(smallHdr(), 3),
-        /power of two/,
-    );
+    await assert.rejects(packageHdrEnvironment(smallHdr(), 3), /power of two/);
 });
 
 test("preserves mip zero and deterministically applies pinned GGX semantics", async () => {

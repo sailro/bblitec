@@ -79,17 +79,13 @@ export interface SceneDefinition {
  * is genuinely its own: the id, its name and source, its thresholds, and
  * any real override.
  */
-interface SceneInput
-    extends Omit<
-        SceneDefinition,
-        "output" | "buildDirectory" | "parity"
-    > {
+interface SceneInput extends Omit<
+    SceneDefinition,
+    "output" | "buildDirectory" | "parity"
+> {
     output?: string;
     buildDirectory?: string;
-    parity?: Omit<
-        SceneParityDefinition,
-        "reference" | "outputDirectory"
-    > & {
+    parity?: Omit<SceneParityDefinition, "reference" | "outputDirectory"> & {
         reference?: { kind: "source"; path: string };
         outputDirectory?: string;
     };
@@ -152,7 +148,7 @@ const sceneInputs: readonly SceneInput[] = [
         title: "Babylon Lite Native - Flight Helmet",
         parity: {
             maxFullMad: 0.015,
-            maxForegroundMad: 0.010,
+            maxForegroundMad: 0.01,
             dawnThresholds: { maxFullMad: 0.015, maxForegroundMad: 0.007 },
             backgroundColor: [61, 61, 94],
             backgroundThreshold: 30,
@@ -363,7 +359,7 @@ const sceneInputs: readonly SceneInput[] = [
         parity: {
             maxFullMad: 0.01,
             maxForegroundMad: 0.02,
-        backgroundColor: [51, 51, 76],
+            backgroundColor: [51, 51, 76],
             backgroundThreshold: 30,
         },
     },
@@ -524,7 +520,8 @@ const sceneInputs: readonly SceneInput[] = [
             backgroundColor: [51, 51, 77],
             backgroundThreshold: 30,
             attribution: {
-                specialization: "generated/scene13/upstream/gltf-specialization.json",
+                specialization:
+                    "generated/scene13/upstream/gltf-specialization.json",
                 drawIds: true,
                 triangleClusters: true,
             },
@@ -541,7 +538,8 @@ const sceneInputs: readonly SceneInput[] = [
             backgroundColor: [51, 51, 77],
             backgroundThreshold: 30,
             attribution: {
-                specialization: "generated/scene32/upstream/gltf-specialization.json",
+                specialization:
+                    "generated/scene32/upstream/gltf-specialization.json",
                 drawIds: true,
                 triangleClusters: true,
             },
@@ -618,7 +616,8 @@ const sceneInputs: readonly SceneInput[] = [
             backgroundColor: [51, 51, 76],
             backgroundThreshold: 30,
             attribution: {
-                specialization: "generated/scene163/upstream/gltf-specialization.json",
+                specialization:
+                    "generated/scene163/upstream/gltf-specialization.json",
                 drawIds: false,
                 triangleClusters: false,
             },
@@ -646,16 +645,13 @@ const sceneInputs: readonly SceneInput[] = [
         source: "examples/audit-shader-frame-graph.ts",
         sourceOrigin: "bblitec-regression",
         title: "Babylon Lite Native - Shader Frame Graph",
-        buildDirectory:
-            "native/build-audit-shader-frame-graph-release",
+        buildDirectory: "native/build-audit-shader-frame-graph-release",
         parity: {
             reference: {
                 kind: "source",
-                path:
-                    "reference/audit-shader-frame-graph/babylon-lite-golden.png",
+                path: "reference/audit-shader-frame-graph/babylon-lite-golden.png",
             },
-            outputDirectory:
-                "artifacts/parity/audit-shader-frame-graph",
+            outputDirectory: "artifacts/parity/audit-shader-frame-graph",
             maxFullMad: 0.001,
             maxForegroundMad: 0.001,
             backgroundColor: [9, 11, 18],
@@ -668,16 +664,13 @@ const sceneInputs: readonly SceneInput[] = [
         source: "examples/regression-runtime-sweep.ts",
         sourceOrigin: "bblitec-regression",
         title: "Babylon Lite Native - Runtime Sweep",
-        buildDirectory:
-            "native/build-regression-runtime-sweep-release",
+        buildDirectory: "native/build-regression-runtime-sweep-release",
         parity: {
             reference: {
                 kind: "source",
-                path:
-                    "reference/regression-runtime-sweep/babylon-lite-golden.png",
+                path: "reference/regression-runtime-sweep/babylon-lite-golden.png",
             },
-            outputDirectory:
-                "artifacts/parity/regression-runtime-sweep",
+            outputDirectory: "artifacts/parity/regression-runtime-sweep",
             maxFullMad: 0.001,
             maxForegroundMad: 0.004,
             backgroundColor: [5, 6, 13],
@@ -696,16 +689,13 @@ const sceneInputs: readonly SceneInput[] = [
         source: "examples/regression-sprite-layer-arms.ts",
         sourceOrigin: "bblitec-regression",
         title: "Babylon Lite Native - Sprite Layer Arms",
-        buildDirectory:
-            "native/build-regression-sprite-layer-arms-release",
+        buildDirectory: "native/build-regression-sprite-layer-arms-release",
         parity: {
             reference: {
                 kind: "source",
-                path:
-                    "reference/regression-sprite-layer-arms/babylon-lite-golden.png",
+                path: "reference/regression-sprite-layer-arms/babylon-lite-golden.png",
             },
-            outputDirectory:
-                "artifacts/parity/regression-sprite-layer-arms",
+            outputDirectory: "artifacts/parity/regression-sprite-layer-arms",
             maxFullMad: 0.001,
             maxForegroundMad: 0.001,
             backgroundColor: [13, 15, 26],
@@ -724,16 +714,13 @@ const sceneInputs: readonly SceneInput[] = [
         source: "examples/regression-instanced-ground.ts",
         sourceOrigin: "bblitec-regression",
         title: "Babylon Lite Native - Instanced Ground",
-        buildDirectory:
-            "native/build-regression-instanced-ground-release",
+        buildDirectory: "native/build-regression-instanced-ground-release",
         parity: {
             reference: {
                 kind: "source",
-                path:
-                    "reference/regression-instanced-ground/babylon-lite-golden.png",
+                path: "reference/regression-instanced-ground/babylon-lite-golden.png",
             },
-            outputDirectory:
-                "artifacts/parity/regression-instanced-ground",
+            outputDirectory: "artifacts/parity/regression-instanced-ground",
             maxFullMad: 0.001,
             maxForegroundMad: 0.001,
             backgroundColor: [51, 51, 76],
@@ -746,17 +733,14 @@ const sceneInputs: readonly SceneInput[] = [
         source: "examples/regression-morph-ground.ts",
         sourceOrigin: "bblitec-regression",
         title: "Babylon Lite Native - Morph Storage Ground",
-        buildDirectory:
-            "native/build-regression-morph-ground-release",
+        buildDirectory: "native/build-regression-morph-ground-release",
         parity: {
             reference: {
                 kind: "source",
-                path:
-                    "reference/regression-morph-ground/babylon-lite-golden.png",
+                path: "reference/regression-morph-ground/babylon-lite-golden.png",
             },
             referenceTimeSeconds: 0.5,
-            outputDirectory:
-                "artifacts/parity/regression-morph-ground",
+            outputDirectory: "artifacts/parity/regression-morph-ground",
             maxFullMad: 0.001,
             maxForegroundMad: 0.002,
             backgroundColor: [51, 51, 76],
@@ -776,8 +760,7 @@ const sceneInputs: readonly SceneInput[] = [
         parity: {
             reference: {
                 kind: "source",
-                path:
-                    "reference/regression-light-setters/babylon-lite-golden.png",
+                path: "reference/regression-light-setters/babylon-lite-golden.png",
             },
             outputDirectory: "artifacts/parity/regression-light-setters",
             maxFullMad: 0.001,
@@ -799,15 +782,10 @@ const sceneInputs: readonly SceneInput[] = [
             "native/build-regression-property-animation-paths-release",
         parity: {
             referenceTimeSeconds: 1.3,
-            referenceAnimationGroups: [
-                "drifting",
-                "stretching",
-                "turning",
-            ],
+            referenceAnimationGroups: ["drifting", "stretching", "turning"],
             reference: {
                 kind: "source",
-                path:
-                    "reference/regression-property-animation-paths/babylon-lite-golden.png",
+                path: "reference/regression-property-animation-paths/babylon-lite-golden.png",
             },
             outputDirectory:
                 "artifacts/parity/regression-property-animation-paths",
@@ -825,8 +803,7 @@ const sceneInputs: readonly SceneInput[] = [
         source: "examples/regression-mesh-flags.ts",
         sourceOrigin: "bblitec-regression",
         title: "Babylon Lite Native - Mesh Visible and Pickable",
-        buildDirectory:
-            "native/build-regression-mesh-flags-release",
+        buildDirectory: "native/build-regression-mesh-flags-release",
         parity: {
             // The pick runs on the setTimeout-0 continuation, which
             // `finish_frame` drains at the END of a frame -- after that
@@ -840,11 +817,9 @@ const sceneInputs: readonly SceneInput[] = [
             },
             reference: {
                 kind: "source",
-                path:
-                    "reference/regression-mesh-flags/babylon-lite-golden.png",
+                path: "reference/regression-mesh-flags/babylon-lite-golden.png",
             },
-            outputDirectory:
-                "artifacts/parity/regression-mesh-flags",
+            outputDirectory: "artifacts/parity/regression-mesh-flags",
             maxFullMad: 0.001,
             maxForegroundMad: 0.001,
             backgroundColor: [51, 51, 76],
@@ -879,8 +854,7 @@ const sceneInputs: readonly SceneInput[] = [
         parity: {
             reference: {
                 kind: "source",
-                path:
-                    "reference/regression-physics-aggregate-options/babylon-lite-golden.png",
+                path: "reference/regression-physics-aggregate-options/babylon-lite-golden.png",
             },
             outputDirectory:
                 "artifacts/parity/regression-physics-aggregate-options",
@@ -926,8 +900,7 @@ const sceneInputs: readonly SceneInput[] = [
         parity: {
             reference: {
                 kind: "source",
-                path:
-                    "reference/regression-physics-floating-origin/babylon-lite-golden.png",
+                path: "reference/regression-physics-floating-origin/babylon-lite-golden.png",
             },
             outputDirectory:
                 "artifacts/parity/regression-physics-floating-origin",
@@ -947,16 +920,13 @@ const sceneInputs: readonly SceneInput[] = [
         source: "examples/regression-material-falloff.ts",
         sourceOrigin: "bblitec-regression",
         title: "Babylon Lite Native - Material Falloff Write",
-        buildDirectory:
-            "native/build-regression-material-falloff-release",
+        buildDirectory: "native/build-regression-material-falloff-release",
         parity: {
             reference: {
                 kind: "source",
-                path:
-                    "reference/regression-material-falloff/babylon-lite-golden.png",
+                path: "reference/regression-material-falloff/babylon-lite-golden.png",
             },
-            outputDirectory:
-                "artifacts/parity/regression-material-falloff",
+            outputDirectory: "artifacts/parity/regression-material-falloff",
             maxFullMad: 0.001,
             maxForegroundMad: 0.001,
             backgroundColor: [51, 51, 76],
@@ -969,16 +939,13 @@ const sceneInputs: readonly SceneInput[] = [
         source: "examples/regression-compiler-state.ts",
         sourceOrigin: "bblitec-regression",
         title: "Babylon Lite Native - Compiler State",
-        buildDirectory:
-            "native/build-regression-compiler-state-release",
+        buildDirectory: "native/build-regression-compiler-state-release",
         parity: {
             reference: {
                 kind: "source",
-                path:
-                    "reference/regression-compiler-state/babylon-lite-golden.png",
+                path: "reference/regression-compiler-state/babylon-lite-golden.png",
             },
-            outputDirectory:
-                "artifacts/parity/regression-compiler-state",
+            outputDirectory: "artifacts/parity/regression-compiler-state",
             maxFullMad: 0.001,
             maxForegroundMad: 0.001,
             backgroundColor: [9, 11, 18],
@@ -996,7 +963,8 @@ const sceneInputs: readonly SceneInput[] = [
             backgroundColor: [13, 15, 23],
             backgroundThreshold: 30,
             attribution: {
-                specialization: "generated/scene168/upstream/gltf-specialization.json",
+                specialization:
+                    "generated/scene168/upstream/gltf-specialization.json",
                 drawIds: true,
                 triangleClusters: true,
             },
@@ -1014,7 +982,8 @@ const sceneInputs: readonly SceneInput[] = [
             backgroundColor: [51, 51, 77],
             backgroundThreshold: 30,
             attribution: {
-                specialization: "generated/scene176/upstream/gltf-specialization.json",
+                specialization:
+                    "generated/scene176/upstream/gltf-specialization.json",
                 drawIds: true,
                 triangleClusters: true,
             },
@@ -1053,10 +1022,7 @@ const sceneInputs: readonly SceneInput[] = [
         title: "Babylon Lite Native - STEP Time Animation",
         parity: {
             referenceTimeSeconds: 0.75,
-            referenceAnimationGroups: [
-                "linearGroup",
-                "stepGroup",
-            ],
+            referenceAnimationGroups: ["linearGroup", "stepGroup"],
             maxFullMad: 0.05,
             maxForegroundMad: 0.2,
             backgroundColor: [51, 51, 77],
@@ -1144,10 +1110,7 @@ const sceneInputs: readonly SceneInput[] = [
         title: "Babylon Lite Native - Weighted Property Blending",
         parity: {
             referenceTimeSeconds: 0.5,
-            referenceAnimationGroups: [
-                "positiveGroup",
-                "negativeGroup",
-            ],
+            referenceAnimationGroups: ["positiveGroup", "negativeGroup"],
             maxFullMad: 0.001,
             maxForegroundMad: 0.001,
             backgroundColor: [51, 51, 77],
@@ -1249,16 +1212,13 @@ const sceneInputs: readonly SceneInput[] = [
         source: "examples/regression-nav-crowd.ts",
         sourceOrigin: "bblitec-regression",
         title: "Babylon Lite Native - Navigation Crowd Step",
-        buildDirectory:
-            "native/build-regression-nav-crowd-release",
+        buildDirectory: "native/build-regression-nav-crowd-release",
         parity: {
             reference: {
                 kind: "source",
-                path:
-                    "reference/regression-nav-crowd/babylon-lite-golden.png",
+                path: "reference/regression-nav-crowd/babylon-lite-golden.png",
             },
-            outputDirectory:
-                "artifacts/parity/regression-nav-crowd",
+            outputDirectory: "artifacts/parity/regression-nav-crowd",
             maxFullMad: 0.001,
             maxForegroundMad: 0.001,
             backgroundColor: [51, 51, 76],
@@ -1328,8 +1288,7 @@ const sceneInputs: readonly SceneInput[] = [
         source: "examples/regression-nav-obstacles.ts",
         sourceOrigin: "bblitec-regression",
         title: "Babylon Lite Native - Navigation Obstacle Removal",
-        buildDirectory:
-            "native/build-regression-nav-obstacles-release",
+        buildDirectory: "native/build-regression-nav-obstacles-release",
         parity: {
             reference: {
                 kind: "source",
@@ -1337,8 +1296,7 @@ const sceneInputs: readonly SceneInput[] = [
                     "reference/regression-nav-obstacles/" +
                     "babylon-lite-golden.png",
             },
-            outputDirectory:
-                "artifacts/parity/regression-nav-obstacles",
+            outputDirectory: "artifacts/parity/regression-nav-obstacles",
             maxFullMad: 0.001,
             maxForegroundMad: 0.001,
             backgroundColor: [51, 51, 76],
@@ -1382,17 +1340,14 @@ const sceneInputs: readonly SceneInput[] = [
         source: "examples/regression-track-clamp.ts",
         sourceOrigin: "bblitec-regression",
         title: "Babylon Lite Native - glTF Track Clamp",
-        buildDirectory:
-            "native/build-regression-track-clamp-release",
+        buildDirectory: "native/build-regression-track-clamp-release",
         parity: {
             reference: {
                 kind: "source",
-                path:
-                    "reference/regression-track-clamp/babylon-lite-golden.png",
+                path: "reference/regression-track-clamp/babylon-lite-golden.png",
             },
             referenceTimeSeconds: 3,
-            outputDirectory:
-                "artifacts/parity/regression-track-clamp",
+            outputDirectory: "artifacts/parity/regression-track-clamp",
             maxFullMad: 0.001,
             maxForegroundMad: 0.001,
             backgroundColor: [9, 11, 18],
@@ -1750,7 +1705,8 @@ const sceneInputs: readonly SceneInput[] = [
             backgroundColor: [51, 51, 77],
             backgroundThreshold: 30,
             attribution: {
-                specialization: "generated/scene248/upstream/gltf-specialization.json",
+                specialization:
+                    "generated/scene248/upstream/gltf-specialization.json",
                 drawIds: true,
                 triangleClusters: true,
             },
@@ -1780,7 +1736,8 @@ const sceneInputs: readonly SceneInput[] = [
             backgroundColor: [51, 51, 77],
             backgroundThreshold: 30,
             attribution: {
-                specialization: "generated/scene249/upstream/gltf-specialization.json",
+                specialization:
+                    "generated/scene249/upstream/gltf-specialization.json",
                 drawIds: true,
                 triangleClusters: true,
             },
@@ -1797,7 +1754,8 @@ const sceneInputs: readonly SceneInput[] = [
             backgroundColor: [51, 51, 77],
             backgroundThreshold: 30,
             attribution: {
-                specialization: "generated/scene257/upstream/gltf-specialization.json",
+                specialization:
+                    "generated/scene257/upstream/gltf-specialization.json",
                 drawIds: true,
                 triangleClusters: true,
             },
@@ -1814,7 +1772,8 @@ const sceneInputs: readonly SceneInput[] = [
             backgroundColor: [51, 51, 77],
             backgroundThreshold: 30,
             attribution: {
-                specialization: "generated/scene266/upstream/gltf-specialization.json",
+                specialization:
+                    "generated/scene266/upstream/gltf-specialization.json",
                 drawIds: true,
                 triangleClusters: true,
             },
@@ -2229,7 +2188,10 @@ const sceneInputs: readonly SceneInput[] = [
         parity: {
             // The pinned spec captures frame 1; the scene stops its own physics.
             referenceSearch: "?captureFrame=1",
-            nativeEnvironment: { BBLITE_SCREENSHOT_FRAME: "20", BBLITE_FRAME_DELTA_MS: "16.666666666666668" },
+            nativeEnvironment: {
+                BBLITE_SCREENSHOT_FRAME: "20",
+                BBLITE_FRAME_DELTA_MS: "16.666666666666668",
+            },
             maxFullMad: 0.001,
             maxForegroundMad: 0.001,
             backgroundColor: [51, 51, 76],
@@ -2272,7 +2234,10 @@ const sceneInputs: readonly SceneInput[] = [
         title: "Babylon Lite Native - Physics Shape Queries",
         parity: {
             referenceSearch: "?capture",
-            nativeEnvironment: { BBLITE_SCREENSHOT_FRAME: "30", BBLITE_FRAME_DELTA_MS: "16.666666666666668" },
+            nativeEnvironment: {
+                BBLITE_SCREENSHOT_FRAME: "30",
+                BBLITE_FRAME_DELTA_MS: "16.666666666666668",
+            },
             maxFullMad: 0.001,
             maxForegroundMad: 0.001,
             backgroundColor: [51, 51, 76],
@@ -2337,7 +2302,8 @@ const sceneInputs: readonly SceneInput[] = [
             backgroundColor: [9, 11, 18],
             backgroundThreshold: 30,
             attribution: {
-                specialization: "generated/scene274/upstream/gltf-specialization.json",
+                specialization:
+                    "generated/scene274/upstream/gltf-specialization.json",
                 drawIds: false,
                 triangleClusters: false,
             },
@@ -3213,7 +3179,7 @@ const sceneInputs: readonly SceneInput[] = [
         title: "Babylon Lite Native - NME PBR Sheen",
         parity: {
             maxFullMad: 0.002,
-            maxForegroundMad: 0.010,
+            maxForegroundMad: 0.01,
             backgroundColor: [0, 0, 0],
             backgroundThreshold: 30,
         },
@@ -3237,7 +3203,7 @@ const sceneInputs: readonly SceneInput[] = [
         title: "Babylon Lite Native - NME PBR Subsurface",
         parity: {
             maxFullMad: 0.002,
-            maxForegroundMad: 0.010,
+            maxForegroundMad: 0.01,
             backgroundColor: [0, 0, 0],
             backgroundThreshold: 30,
         },
@@ -3248,8 +3214,8 @@ const sceneInputs: readonly SceneInput[] = [
         source: "corpus/babylon-lite/lab/lite/src/lite/scene84.ts",
         title: "Babylon Lite Native - NME Fragment Depth",
         parity: {
-            maxFullMad: 0.010,
-            maxForegroundMad: 0.010,
+            maxFullMad: 0.01,
+            maxForegroundMad: 0.01,
             backgroundColor: [0, 0, 0],
             backgroundThreshold: 30,
         },
@@ -3521,7 +3487,10 @@ const sceneInputs: readonly SceneInput[] = [
             // The authored query advances the seeded moving emitter, then
             // keeps its live provider and billboard registered at zero speed.
             referenceSearch: "?seekTime=2",
-            nativeEnvironment: { BBLITE_SCREENSHOT_FRAME: "181", ...fixedCaptureEnvironment() },
+            nativeEnvironment: {
+                BBLITE_SCREENSHOT_FRAME: "181",
+                ...fixedCaptureEnvironment(),
+            },
             maxFullMad: 0.001,
             maxForegroundMad: 0.001,
             backgroundColor: [2, 3, 6],
@@ -4340,7 +4309,7 @@ const sceneInputs: readonly SceneInput[] = [
             // Full-page label rasterization; the canvases match exactly.
             maxFullMad: 0.18,
             maxForegroundMad: 0.24,
-            canvasThresholds: {maxFullMad: 0.001, maxForegroundMad: 0.001},
+            canvasThresholds: { maxFullMad: 0.001, maxForegroundMad: 0.001 },
             backgroundColor: [51, 51, 76],
             backgroundThreshold: 30,
         },
@@ -4356,7 +4325,7 @@ const sceneInputs: readonly SceneInput[] = [
             // Full-page labels; canvas MAD is below 0.000002 on both backends.
             maxFullMad: 0.2,
             maxForegroundMad: 0.18,
-            canvasThresholds: {maxFullMad: 0.001, maxForegroundMad: 0.001},
+            canvasThresholds: { maxFullMad: 0.001, maxForegroundMad: 0.001 },
             backgroundColor: [0, 0, 0],
             backgroundThreshold: 30,
         },
@@ -4522,7 +4491,8 @@ const sceneInputs: readonly SceneInput[] = [
         parity: {
             referenceFrame: 180,
             independentEngines: 2,
-            referenceHostPage: "corpus/babylon-lite/lab/lite/demo-offscreen.html",
+            referenceHostPage:
+                "corpus/babylon-lite/lab/lite/demo-offscreen.html",
             // Full-page residual is the retained UI. Both canvas images differ
             // by at most one channel count from the unchanged upstream page.
             maxFullMad: 0.6,
@@ -4910,8 +4880,7 @@ function withDerivedPaths(scene: SceneInput): SceneDefinition {
     const resolved: SceneDefinition = {
         ...rest,
         output: output ?? `generated/${scene.id}`,
-        buildDirectory:
-            buildDirectory ?? `native/build-${scene.id}-release`,
+        buildDirectory: buildDirectory ?? `native/build-${scene.id}-release`,
     };
     if (!parity) {
         return resolved;
@@ -4922,10 +4891,7 @@ function withDerivedPaths(scene: SceneInput): SceneDefinition {
     };
     const parityWithFrame = {
         ...parityWithSeek,
-        ...derivedReferenceFrameEnvironment(
-            scene.id,
-            parityWithSeek,
-        ),
+        ...derivedReferenceFrameEnvironment(scene.id, parityWithSeek),
     };
     return {
         ...resolved,
@@ -4936,8 +4902,7 @@ function withDerivedPaths(scene: SceneInput): SceneDefinition {
                 path: `reference/${scene.id}/babylon-lite-golden.png`,
             },
             outputDirectory:
-                parity.outputDirectory ??
-                `artifacts/parity/${scene.id}`,
+                parity.outputDirectory ?? `artifacts/parity/${scene.id}`,
         },
     };
 }
@@ -4948,8 +4913,7 @@ function derivedReferenceFrameEnvironment(
     parity: NonNullable<SceneInput["parity"]>,
 ): { nativeEnvironment?: Record<string, string> } {
     const frame = parity.referenceFrame;
-    const explicit =
-        parity.nativeEnvironment?.BBLITE_SCREENSHOT_FRAME;
+    const explicit = parity.nativeEnvironment?.BBLITE_SCREENSHOT_FRAME;
     if (frame === undefined) return {};
     if (!Number.isInteger(frame) || frame < 1) {
         throw new Error(
@@ -4974,7 +4938,9 @@ function derivedReferenceFrameEnvironment(
         nativeEnvironment: {
             ...parity.nativeEnvironment,
             BBLITE_SCREENSHOT_FRAME: String(nativeFrame),
-            ...(parity.independentEngines === undefined ? {} : { BBLITE_CAPTURE_ENGINE_FRAME: String(nativeFrame) }),
+            ...(parity.independentEngines === undefined
+                ? {}
+                : { BBLITE_CAPTURE_ENGINE_FRAME: String(nativeFrame) }),
         },
     };
 }
@@ -4995,8 +4961,7 @@ function derivedSeekEnvironment(
     parity: NonNullable<SceneInput["parity"]>,
 ): { nativeEnvironment?: Record<string, string> } {
     const pose = parity.referenceTimeSeconds;
-    const explicit =
-        parity.nativeEnvironment?.BBLITE_ANIMATION_SEEK_SECONDS;
+    const explicit = parity.nativeEnvironment?.BBLITE_ANIMATION_SEEK_SECONDS;
     if (pose === undefined) {
         if (explicit !== undefined) {
             throw new Error(
@@ -5035,9 +5000,7 @@ export function getScene(id: string): SceneDefinition {
     return scene;
 }
 
-export function isRegisteredScene(
-    scene: SceneDefinition,
-): boolean {
+export function isRegisteredScene(scene: SceneDefinition): boolean {
     return scenes.some(
         (candidate) =>
             candidate.id === scene.id &&
@@ -5085,7 +5048,8 @@ export function resolveScene(idOrSource: string): SceneDefinition {
         .toLowerCase()
         .replace(/[^a-z0-9]+/g, "-")
         .replace(/^-|-$/g, "");
-    if (!id) throw new Error(`Unable to derive a scene id from '${idOrSource}'.`);
+    if (!id)
+        throw new Error(`Unable to derive a scene id from '${idOrSource}'.`);
     if (scenes.some((candidate) => candidate.id === id)) {
         throw new Error(
             `Ad-hoc source '${source}' derives registered scene id '${id}'. Rename the source file.`,

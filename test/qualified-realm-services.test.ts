@@ -4,13 +4,19 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import test from "node:test";
 import { compileSource } from "../src/compiler.js";
-import { optionalNativeFixtureTools, runNativeFixtureCompiler } from "./native-fixture.js";
+import {
+    optionalNativeFixtureTools,
+    runNativeFixtureCompiler,
+} from "./native-fixture.js";
 
-test("qualified realm timers and microtasks run without a scene engine", t => {
+test("qualified realm timers and microtasks run without a scene engine", (t) => {
     const directory = resolve("artifacts/qualified-realm-services");
-    mkdirSync(directory, {recursive:true});
+    mkdirSync(directory, { recursive: true });
     const worker = join(directory, "worker.ts");
-    writeFileSync(worker, 'globalThis.setTimeout(() => { self.postMessage(1); self.close(); }, 0);');
+    writeFileSync(
+        worker,
+        "globalThis.setTimeout(() => { self.postMessage(1); self.close(); }, 0);",
+    );
     const source = `
         const worker = new Worker(new URL("./worker.ts", import.meta.url), {type:"module"});
         let received = 0;
@@ -44,15 +50,41 @@ test("qualified realm timers and microtasks run without a scene engine", t => {
         }, 0);
     `;
     const fileName = join(directory, "entry.ts");
-    const result = compileSource(source, {fileName});
+    const result = compileSource(source, { fileName });
     assert.doesNotMatch(result.cpp, /create_engine\(/);
-    writeFileSync(worker, 'window.setTimeout(() => {}, 0);');
-    assert.throws(() => compileSource(source, {fileName}), /Window global is not available in a worker realm/);
+    writeFileSync(worker, "window.setTimeout(() => {}, 0);");
+    assert.throws(
+        () => compileSource(source, { fileName }),
+        /Window global is not available in a worker realm/,
+    );
     const tools = optionalNativeFixtureTools(false);
-    if (!tools) { t.skip("Native fixture compiler unavailable."); return; }
-    const cpp = join(directory, "check.cpp"), executable = join(directory, "check.exe");
+    if (!tools) {
+        t.skip("Native fixture compiler unavailable.");
+        return;
+    }
+    const cpp = join(directory, "check.cpp"),
+        executable = join(directory, "check.exe");
     writeFileSync(cpp, result.cpp);
-    runNativeFixtureCompiler(tools, ["/nologo", "/std:c++20", "/W4", "/WX", "/EHsc", "/MD", "/DBBLITE_WORKERS=1",
-        "/I", "native/include", `/Fo:${directory}/`, `/Fe:${executable}`, cpp]);
-    assert.equal(execFileSync(executable, {encoding:"utf8", timeout:10000, stdio:"pipe"}), "");
+    runNativeFixtureCompiler(tools, [
+        "/nologo",
+        "/std:c++20",
+        "/W4",
+        "/WX",
+        "/EHsc",
+        "/MD",
+        "/DBBLITE_WORKERS=1",
+        "/I",
+        "native/include",
+        `/Fo:${directory}/`,
+        `/Fe:${executable}`,
+        cpp,
+    ]);
+    assert.equal(
+        execFileSync(executable, {
+            encoding: "utf8",
+            timeout: 10000,
+            stdio: "pipe",
+        }),
+        "",
+    );
 });

@@ -26,7 +26,10 @@ export type NativeBackend = (typeof NATIVE_BACKENDS)[number];
  * `gpu` is accepted as an input alias for `sdl_gpu` because that is the
  * token the parity artifacts carry.
  */
-export function canonicalBackend(value: string, command: string): NativeBackend {
+export function canonicalBackend(
+    value: string,
+    command: string,
+): NativeBackend {
     const canonical = value === "gpu" ? "sdl_gpu" : value;
     if (!(NATIVE_BACKENDS as readonly string[]).includes(canonical)) {
         throw new Error(
@@ -229,9 +232,7 @@ export function readSeekMeta(path: string): number | null | undefined {
  *  uploads (bone palettes ride rgba32float rows), 4x4 samples for image
  *  copies. The writer is the instrumented capture's page script; the
  *  palette matching in `scene -- diff` is the reader. */
-export function captureTextureUploadsPath(
-    captureDirectory: string,
-): string {
+export function captureTextureUploadsPath(captureDirectory: string): string {
     return join(captureDirectory, "tex-uploads.json");
 }
 

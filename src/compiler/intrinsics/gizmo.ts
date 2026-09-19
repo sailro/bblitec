@@ -14,37 +14,42 @@ import { validateObjectProperties } from "../option-helpers.js";
 import type { Feature, Value, ValueKind } from "../types.js";
 import { handleCppType } from "../data-types.js";
 import type { IntrinsicCallContext } from "./context.js";
-import { compilePointerDragRegistration, pointerDispatcherCpp } from "../pointer-drag.js";
+import {
+    compilePointerDragRegistration,
+    pointerDispatcherCpp,
+} from "../pointer-drag.js";
 
 /** Camera-owned callbacks querying the gizmo dispatcher. */
-export interface CameraDeferralContext
-    extends Pick<LoweringServices,
-        | "compileStoredDataFunction"
-        | "compileValue"
-        | "expectObjectLiteral"
-        | "objectProperty"
-        | "propertyName"
-        | "fail"
-    > {}
+export interface CameraDeferralContext extends Pick<
+    LoweringServices,
+    | "compileStoredDataFunction"
+    | "compileValue"
+    | "expectObjectLiteral"
+    | "objectProperty"
+    | "propertyName"
+    | "fail"
+> {}
 
 export interface GizmoIntrinsicContext
-    extends IntrinsicCallContext,
-    CameraDeferralContext,
-    Pick<LoweringServices,
-        | "emit"
-        | "allocateTemporaryCppName"
-        | "withRecordScopes"
-        | "compileCallbackWithValues"
-        | "emitDiscardedValue"
-        | "captureManagedClosureLines"
-        | "registerNativeBinding"
-        | "useNativeValue"
-        | "requireEngine"
-        | "requireDefaultEngine"
-        | "expectSameEngine"
-        | "compileVec3"
-        | "compileNumber"
-    > {}
+    extends
+        IntrinsicCallContext,
+        CameraDeferralContext,
+        Pick<
+            LoweringServices,
+            | "emit"
+            | "allocateTemporaryCppName"
+            | "withRecordScopes"
+            | "compileCallbackWithValues"
+            | "emitDiscardedValue"
+            | "captureManagedClosureLines"
+            | "registerNativeBinding"
+            | "useNativeValue"
+            | "requireEngine"
+            | "requireDefaultEngine"
+            | "expectSameEngine"
+            | "compileVec3"
+            | "compileNumber"
+        > {}
 
 /**
  * The options bag each factory takes, refused rather than half-supported.
@@ -267,7 +272,6 @@ function compileEditGizmo(
         context.reachFeature(feature, call);
     }
     return valueForKind(shape.kind, {
-
         cpp:
             `${shape.cppFactory}(${engine.cpp}, ${layer.cpp}, ` +
             `${context.compileVec3(axisExpression, "double")}` +
@@ -286,16 +290,31 @@ export function compileCameraDeferralOptions(
         ["isExternalDragActive", "external_drag_active"],
         ["isExternalPickPending", "external_pick_pending"],
     ] as const;
-    validateObjectProperties(context, options, fields.map(([name]) => name), "Unsupported camera-deferral option.");
+    validateObjectProperties(
+        context,
+        options,
+        fields.map(([name]) => name),
+        "Unsupported camera-deferral option.",
+    );
     return fields.flatMap(([source, member]) => {
         const callback = context.objectProperty(options, source);
         if (!callback) return [];
         if (!ts.isArrowFunction(callback) || callback.parameters.length !== 0) {
-            context.fail(callback, "Camera deferral requires a zero-argument predicate callback.");
+            context.fail(
+                callback,
+                "Camera deferral requires a zero-argument predicate callback.",
+            );
         }
-        return [{ member, cpp: context.compileStoredDataFunction(callback, {
-            kind: "function", parameters: [], result: { kind: "boolean" },
-        }) }];
+        return [
+            {
+                member,
+                cpp: context.compileStoredDataFunction(callback, {
+                    kind: "function",
+                    parameters: [],
+                    result: { kind: "boolean" },
+                }),
+            },
+        ];
     });
 }
 
@@ -415,9 +434,7 @@ function compileCompositeGizmo(
             context,
             shape.factory,
             option,
-            options
-                ? context.objectProperty(options, option.name)
-                : undefined,
+            options ? context.objectProperty(options, option.name) : undefined,
         ),
     );
     context.reachFeature(shape.feature, call);
@@ -433,7 +450,6 @@ function compileCompositeGizmo(
     context.reachFeature("mesh:transform-node", call);
     context.reachFeature("mesh:parenting", call);
     return valueForKind(shape.kind, {
-
         cpp:
             `${shape.cppFactory}(${engine.cpp}, ${layer.cpp}` +
             `${supplied.map((argument) => `, ${argument}`).join("")})`,
@@ -601,9 +617,7 @@ function compileBoundingBoxGizmo(
             context,
             "createBoundingBoxGizmo",
             option,
-            options
-                ? context.objectProperty(options, option.name)
-                : undefined,
+            options ? context.objectProperty(options, option.name) : undefined,
         ),
     );
     context.reachFeature("gizmo:bounding-box", call);
@@ -688,11 +702,7 @@ export function compileGizmoIntrinsic(
             return compileCompositeAttach(context, shape, call);
         }
         if (importedName === shape.setLocal) {
-            return compileCompositeLocalCoordinates(
-                context,
-                shape,
-                call,
-            );
+            return compileCompositeLocalCoordinates(context, shape, call);
         }
         if (importedName === shape.dispose) {
             return compileCompositeDispose(context, shape, call);
@@ -744,11 +754,7 @@ export function compileGizmoIntrinsic(
         case "registerUtilityLayer": {
             context.expectArgumentCount(call, 1, 1);
             const layer = context.compileValue(argumentAt(call, 0));
-            context.expectKind(
-                layer,
-                "utility-layer",
-                argumentAt(call, 0),
-            );
+            context.expectKind(layer, "utility-layer", argumentAt(call, 0));
             // Registration order is what makes the layer an overlay: the
             // pin's `configureSwapchainOverlayScene` reads the surface's
             // LAST rendering context as the base. A scene registering the
@@ -767,11 +773,7 @@ export function compileGizmoIntrinsic(
         case "disposeUtilityLayer": {
             context.expectArgumentCount(call, 1, 1);
             const layer = context.compileValue(argumentAt(call, 0));
-            context.expectKind(
-                layer,
-                "utility-layer",
-                argumentAt(call, 0),
-            );
+            context.expectKind(layer, "utility-layer", argumentAt(call, 0));
             return {
                 kind: "void",
                 cpp:
@@ -786,11 +788,7 @@ export function compileGizmoIntrinsic(
             const engine = context.compileValue(argumentAt(call, 0));
             const layer = context.compileValue(argumentAt(call, 1));
             context.expectKind(engine, "engine", argumentAt(call, 0));
-            context.expectKind(
-                layer,
-                "utility-layer",
-                argumentAt(call, 1),
-            );
+            context.expectKind(layer, "utility-layer", argumentAt(call, 1));
             context.expectSameEngine(engine, layer, call);
             context.reachFeature("gizmo:camera", call);
             // What the pinned camera-gizmo body builds: BJS
@@ -812,11 +810,7 @@ export function compileGizmoIntrinsic(
             context.expectArgumentCount(call, 2, 2);
             const gizmo = context.compileValue(argumentAt(call, 0));
             const camera = context.compileValue(argumentAt(call, 1));
-            context.expectKind(
-                gizmo,
-                "camera-gizmo",
-                argumentAt(call, 0),
-            );
+            context.expectKind(gizmo, "camera-gizmo", argumentAt(call, 0));
             context.expectKind(camera, "camera", argumentAt(call, 1));
             context.expectSameEngine(gizmo, camera, call);
             return {
@@ -834,11 +828,7 @@ export function compileGizmoIntrinsic(
             const engine = context.compileValue(argumentAt(call, 0));
             const layer = context.compileValue(argumentAt(call, 1));
             context.expectKind(engine, "engine", argumentAt(call, 0));
-            context.expectKind(
-                layer,
-                "utility-layer",
-                argumentAt(call, 1),
-            );
+            context.expectKind(layer, "utility-layer", argumentAt(call, 1));
             context.expectSameEngine(engine, layer, call);
             context.reachFeature("gizmo:light", call);
             // What the pinned light-gizmo body builds: a sphere per type,
@@ -850,8 +840,7 @@ export function compileGizmoIntrinsic(
             return {
                 kind: "light-gizmo",
                 cpp:
-                    `bbl::create_light_gizmo(` +
-                    `${engine.cpp}, ${layer.cpp})`,
+                    `bbl::create_light_gizmo(` + `${engine.cpp}, ${layer.cpp})`,
                 engineCpp: engine.cpp,
             };
         }
@@ -860,11 +849,7 @@ export function compileGizmoIntrinsic(
             context.expectArgumentCount(call, 2, 2);
             const gizmo = context.compileValue(argumentAt(call, 0));
             const light = context.compileValue(argumentAt(call, 1));
-            context.expectKind(
-                gizmo,
-                "light-gizmo",
-                argumentAt(call, 0),
-            );
+            context.expectKind(gizmo, "light-gizmo", argumentAt(call, 0));
             context.expectKind(light, "light", argumentAt(call, 1));
             context.expectSameEngine(gizmo, light, call);
             // Which geometry the attach builds follows the light's TYPE,

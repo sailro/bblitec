@@ -6,16 +6,26 @@ import type { LoweringContext } from "./context.js";
  * `physics:floating-origin`; every other tree takes the pin's absent arm,
  * where `worldPosition` selects nothing.
  */
-export function lowerPhysicsGravity(context: LoweringContext, floatingOrigin: boolean): { header: string; source: string } {
+export function lowerPhysicsGravity(
+    context: LoweringContext,
+    floatingOrigin: boolean,
+): { header: string; source: string } {
     const contracts = [
-        ["src/physics/havok.ts", "setPhysicsGravity", `
+        [
+            "src/physics/havok.ts",
+            "setPhysicsGravity",
+            `
             if (world._fo) {
                 world._fo.setGravity(world, [gravity.x, gravity.y, gravity.z], worldPosition);
                 return;
             }
             world._hknp.HP_World_SetGravity(world._hkWorld, [gravity.x, gravity.y, gravity.z]);
-        `],
-        ["src/physics/havok-floating-origin.ts", "_setGravity", `
+        `,
+        ],
+        [
+            "src/physics/havok-floating-origin.ts",
+            "_setGravity",
+            `
             const fo = world._fo!;
             const hknp = world._hknp;
             if (worldPosition) {
@@ -29,19 +39,32 @@ export function lowerPhysicsGravity(context: LoweringContext, floatingOrigin: bo
                 region.gravity = gravity;
                 hknp.HP_World_SetGravity(region._world, gravity);
             }
-        `],
-        ["src/physics/havok-floating-origin.ts", "createHavokFloatingOriginContext", `
+        `,
+        ],
+        [
+            "src/physics/havok-floating-origin.ts",
+            "createHavokFloatingOriginContext",
+            `
             return {
                 regions: [{ _world: hkWorld, origin: { x: 0, y: 0, z: 0 }, gravity: [...gravity] }],
                 radius, gravity: [...gravity], placeBody: _placeBody, step: _step,
                 setGravity: _setGravity, getRegionGravity: _getRegionGravity,
                 setVelocityLimits: _setVelocityLimits, dispose: _dispose,
             };
-        `],
+        `,
+        ],
     ] as const;
     for (const [module, symbol, body] of contracts) {
-        const declaration = context.functionDeclaration(module, symbol).declaration;
-        context.assertStatementShapes(declaration, declaration.body!.statements, body, "physics gravity dispatch");
+        const declaration = context.functionDeclaration(
+            module,
+            symbol,
+        ).declaration;
+        context.assertStatementShapes(
+            declaration,
+            declaration.body!.statements,
+            body,
+            "physics gravity dispatch",
+        );
     }
     const dispatch = floatingOrigin
         ? `    if (world.fo) {

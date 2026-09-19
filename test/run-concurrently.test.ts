@@ -24,11 +24,14 @@ test("retries only failed parallel items after the batch drains", async () => {
         { retryFailuresSequentially: true },
     );
 
-    assert.deepEqual([...attempts], [
-        [1, 2],
-        [2, 1],
-        [3, 2],
-    ]);
+    assert.deepEqual(
+        [...attempts],
+        [
+            [1, 2],
+            [2, 1],
+            [3, 2],
+        ],
+    );
     assert.equal(retryOverlap, false);
 });
 
@@ -45,10 +48,13 @@ test("reports a failure that repeats on its sequential retry", async () => {
             },
             { retryFailuresSequentially: true },
         ),
-        /1 of 2 failed:\n  item-1: deterministic/,
+        /1 of 2 failed:\n {2}item-1: deterministic/,
     );
-    assert.deepEqual([...attempts], [
-        [1, 2],
-        [2, 1],
-    ]);
+    assert.deepEqual(
+        [...attempts],
+        [
+            [1, 2],
+            [2, 1],
+        ],
+    );
 });

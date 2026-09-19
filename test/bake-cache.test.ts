@@ -93,15 +93,9 @@ test("replays a stored bake byte-for-byte and misses on any key change", () => {
             // Any component change misses: version, inputs, parameters.
             cachedBakeSync({ ...key, version: "2" }, bake);
             assert.equal(bakes, 2);
-            cachedBakeSync(
-                { ...key, inputs: [Uint8Array.from([9, 8])] },
-                bake,
-            );
+            cachedBakeSync({ ...key, inputs: [Uint8Array.from([9, 8])] }, bake);
             assert.equal(bakes, 3);
-            cachedBakeSync(
-                { ...key, parameters: { a: 2, b: "two" } },
-                bake,
-            );
+            cachedBakeSync({ ...key, parameters: { a: 2, b: "two" } }, bake);
             assert.equal(bakes, 4);
             // Deleting the entries is a cold start.
             removeEntries(kind);
@@ -169,10 +163,7 @@ test("hashes a module's transitive relative imports, and refuses an unresolvable
     const entry = join(directory, "closure-entry.ts");
     const sibling = join(directory, "closure-sibling.ts");
     try {
-        writeFileSync(
-            sibling,
-            "export const value = 1;\n",
-        );
+        writeFileSync(sibling, "export const value = 1;\n");
         writeFileSync(
             entry,
             'import { value } from "./closure-sibling.js";\n' +
@@ -196,16 +187,11 @@ test("hashes a module's transitive relative imports, and refuses an unresolvable
         assert.ok(edited !== undefined);
         assert.notDeepEqual(
             edited.map((payload) => Buffer.from(payload).toString("utf8")),
-            closure.map((payload) =>
-                Buffer.from(payload).toString("utf8"),
-            ),
+            closure.map((payload) => Buffer.from(payload).toString("utf8")),
         );
         // An unresolvable relative import means "bake uncached", never
         // "guess the inputs".
-        writeFileSync(
-            entry,
-            'import { gone } from "./no-such-module.js";\n',
-        );
+        writeFileSync(entry, 'import { gone } from "./no-such-module.js";\n');
         assert.equal(moduleClosureBytes([entry]), undefined);
     } finally {
         rmSync(directory, { recursive: true, force: true });
@@ -234,9 +220,7 @@ function browserResolves(): boolean {
     }
 }
 
-async function withCacheEnabledAsync<T>(
-    body: () => Promise<T>,
-): Promise<T> {
+async function withCacheEnabledAsync<T>(body: () => Promise<T>): Promise<T> {
     const restore = liftCacheMarker();
     try {
         return await body();
@@ -247,7 +231,9 @@ async function withCacheEnabledAsync<T>(
 
 test("replays the BRDF-LUT bake instead of relaunching Chromium", async (t) => {
     if (!browserResolves()) {
-        t.skip("no capture browser resolves; the browser-keyed cache stands aside");
+        t.skip(
+            "no capture browser resolves; the browser-keyed cache stands aside",
+        );
         return;
     }
     const kind = "ibl-brdf-lut";
@@ -274,7 +260,9 @@ test("replays the BRDF-LUT bake instead of relaunching Chromium", async (t) => {
 
 test("replays the Canvas2D helper string instead of relaunching Chromium", (t) => {
     if (!browserResolves()) {
-        t.skip("no capture browser resolves; the browser-keyed cache stands aside");
+        t.skip(
+            "no capture browser resolves; the browser-keyed cache stands aside",
+        );
         return;
     }
     const kind = "browser-generated-string";
@@ -282,10 +270,7 @@ test("replays the Canvas2D helper string instead of relaunching Chromium", (t) =
     try {
         withCacheEnabled(() => {
             let runs = 0;
-            const fake = (
-                javascript: string,
-                functionName: string,
-            ): string => {
+            const fake = (javascript: string, functionName: string): string => {
                 runs += 1;
                 return `data:text/plain,${functionName}:${javascript.length}:${runs}`;
             };

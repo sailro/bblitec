@@ -4,7 +4,10 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import test from "node:test";
 import { compileSource } from "../src/compiler.js";
-import { optionalNativeFixtureTools, runNativeFixtureCompiler } from "./native-fixture.js";
+import {
+    optionalNativeFixtureTools,
+    runNativeFixtureCompiler,
+} from "./native-fixture.js";
 
 const handles = `
     import { createEngine, createBox } from "@babylonjs/lite";
@@ -43,7 +46,12 @@ test("four-element handle literals and numeric walks emit compact loops", () => 
 test("short handle walks stay flat and conditional bodies use native identity", () => {
     const short = compileSource(handles.replace("[a, b, a, d]", "[a, b, d]"));
     assert.doesNotMatch(short.cpp, /handle_table/);
-    const divergent = compileSource(handles.replace("mesh.position.x += 1", "mesh.position.x += mesh === a ? 2 : 1"));
+    const divergent = compileSource(
+        handles.replace(
+            "mesh.position.x += 1",
+            "mesh.position.x += mesh === a ? 2 : 1",
+        ),
+    );
     assert.match(divergent.cpp, /handle_table/);
     assert.equal(divergent.cpp.match(/\.position\.x \+=/g)?.length, 1);
     assert.match(divergent.cpp, /\.value == v_a.value/);
@@ -78,16 +86,30 @@ test("loops over record property names retain static assignments", () => {
     assert.match(result.cpp, /\.position\.x = 7/);
 });
 
-test("compact small loops preserve native handle aliases and numeric results", { skip: !tools }, () => {
-    const directory = resolve("artifacts/small-loop-compaction");
-    mkdirSync(directory, { recursive: true });
-    for (const [name, source] of [
-        ["regular", handles],
-        ["conditional", handles.replace("mesh.position.x += 1", "mesh.position.x += mesh === a ? 2 : 1")
-            .replace("a.position.x !== 2", "a.position.x !== 4")],
-    ] as const) {
-    const path = join(directory, `${name}.cpp`), executable = join(directory, `${name}.exe`);
-    writeFileSync(path, compileSource(source).cpp + `
+test(
+    "compact small loops preserve native handle aliases and numeric results",
+    { skip: !tools },
+    () => {
+        const directory = resolve("artifacts/small-loop-compaction");
+        mkdirSync(directory, { recursive: true });
+        for (const [name, source] of [
+            ["regular", handles],
+            [
+                "conditional",
+                handles
+                    .replace(
+                        "mesh.position.x += 1",
+                        "mesh.position.x += mesh === a ? 2 : 1",
+                    )
+                    .replace("a.position.x !== 2", "a.position.x !== 4"),
+            ],
+        ] as const) {
+            const path = join(directory, `${name}.cpp`),
+                executable = join(directory, `${name}.exe`);
+            writeFileSync(
+                path,
+                compileSource(source).cpp +
+                    `
         namespace bbl {
             Engine create_engine(EngineOptions) { return {}; }
             MeshHandle create_box(Engine& engine, BoxOptions) {
@@ -97,9 +119,22 @@ test("compact small loops preserve native handle aliases and numeric results", {
             }
             void mark_mesh_dirty(Engine&, MeshHandle) {}
         }
-    `);
-    runNativeFixtureCompiler(tools!, ["/nologo", "/std:c++20", "/W4", "/WX", "/permissive-", "/EHsc",
-        `/Fo:${directory}\\`, `/Fe:${executable}`, "/I", "native/include", path]);
-    execFileSync(executable, { stdio: "pipe" });
-    }
-});
+    `,
+            );
+            runNativeFixtureCompiler(tools!, [
+                "/nologo",
+                "/std:c++20",
+                "/W4",
+                "/WX",
+                "/permissive-",
+                "/EHsc",
+                `/Fo:${directory}\\`,
+                `/Fe:${executable}`,
+                "/I",
+                "native/include",
+                path,
+            ]);
+            execFileSync(executable, { stdio: "pipe" });
+        }
+    },
+);

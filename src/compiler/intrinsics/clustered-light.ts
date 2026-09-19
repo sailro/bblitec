@@ -48,17 +48,19 @@ import type { IntrinsicCallContext } from "./context.js";
 import { validateObjectProperties } from "../option-helpers.js";
 
 export interface ClusteredLightIntrinsicContext
-    extends IntrinsicCallContext,
-    Pick<LoweringServices,
-        | "fail"
-        | "propertyName"
-        | "expectObjectLiteral"
-        | "objectProperty"
-        | "compileVec3"
-        | "compileNumber"
-        | "requireDefaultEngine"
-        | "reachClusteredContainer"
-    > {}
+    extends
+        IntrinsicCallContext,
+        Pick<
+            LoweringServices,
+            | "fail"
+            | "propertyName"
+            | "expectObjectLiteral"
+            | "objectProperty"
+            | "compileVec3"
+            | "compileNumber"
+            | "requireDefaultEngine"
+            | "reachClusteredContainer"
+        > {}
 
 /**
  * The two factories a large counted loop may call without being unrolled.
@@ -160,9 +162,7 @@ function appendLight(
         const angle = context.objectProperty(literal, "angle");
         arguments_.push(
             context.compileVec3(required("direction"), "double"),
-            angle
-                ? context.compileNumber(angle, "double")
-                : `${Math.PI / 2}`,
+            angle ? context.compileNumber(angle, "double") : `${Math.PI / 2}`,
         );
         container.state.hasSpots = true;
     }
@@ -189,9 +189,7 @@ export function compileClusteredLightIntrinsic(
             // `buildClusteredLightGpuState`, so the values travel unclamped.
             const tiles = ["64.0", "64.0", "16.0"];
             if (call.arguments[0]) {
-                const literal = context.expectObjectLiteral(
-                    call.arguments[0],
-                );
+                const literal = context.expectObjectLiteral(call.arguments[0]);
                 validateOptions(
                     context,
                     literal,

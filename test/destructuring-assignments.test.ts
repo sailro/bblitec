@@ -1,15 +1,20 @@
 import assert from "node:assert/strict";
-import {spawnSync} from "node:child_process";
-import {mkdirSync,writeFileSync} from "node:fs";
-import {join,resolve} from "node:path";
+import { spawnSync } from "node:child_process";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { join, resolve } from "node:path";
 import test from "node:test";
-import {compileSource} from "../src/compiler.js";
-import {optionalNativeFixtureTools,runNativeFixtureCompiler} from "./native-fixture.js";
+import { compileSource } from "../src/compiler.js";
+import {
+    optionalNativeFixtureTools,
+    runNativeFixtureCompiler,
+} from "./native-fixture.js";
 
-test("destructuring preserves generic identities, nested storage and lazy assignment order", t => {
-    const directory=resolve("artifacts/destructuring-assignments");mkdirSync(directory,{recursive:true});
-    writeFileSync(join(directory,"worker.ts"),"self.close();");
-    const result=compileSource(`
+test("destructuring preserves generic identities, nested storage and lazy assignment order", (t) => {
+    const directory = resolve("artifacts/destructuring-assignments");
+    mkdirSync(directory, { recursive: true });
+    writeFileSync(join(directory, "worker.ts"), "self.close();");
+    const result = compileSource(
+        `
         const worker=new Worker(new URL("./worker.ts",import.meta.url),{type:"module"});worker.terminate();
         function exchange<T>(items:T[]):void{[items[0],items[1]]=[items[1]!,items[0]!];}
         const numbers:number[]=[3,7];exchange(numbers);
@@ -50,17 +55,44 @@ test("destructuring preserves generic identities, nested storage and lazy assign
         let nestedDefault:number[]=[];[nestedDefault=[19]]=[];
         if(nestedDefault[0]!==19)throw new Error("missing array default");
         globalThis.close();
-    `,{fileName:join(directory,"entry.ts")});
-    const tools=optionalNativeFixtureTools(false);if(!tools){t.skip("Native fixture compiler unavailable.");return;}
-    const cpp=join(directory,"check.cpp"),exe=join(directory,"check.exe");writeFileSync(cpp,result.cpp);
-    runNativeFixtureCompiler(tools,["/nologo","/std:c++20","/W4","/WX","/EHsc","/MD","/DBBLITE_WORKERS=1",
-        "/I","native/include",`/Fo:${directory}/`,`/Fe:${exe}`,cpp]);
-    const execution=spawnSync(exe,{encoding:"utf8",timeout:10000});
-    assert.ifError(execution.error);assert.equal(execution.status,0,execution.stderr);
-    assert.equal(execution.stdout,"");assert.equal(execution.stderr,"");
+    `,
+        { fileName: join(directory, "entry.ts") },
+    );
+    const tools = optionalNativeFixtureTools(false);
+    if (!tools) {
+        t.skip("Native fixture compiler unavailable.");
+        return;
+    }
+    const cpp = join(directory, "check.cpp"),
+        exe = join(directory, "check.exe");
+    writeFileSync(cpp, result.cpp);
+    runNativeFixtureCompiler(tools, [
+        "/nologo",
+        "/std:c++20",
+        "/W4",
+        "/WX",
+        "/EHsc",
+        "/MD",
+        "/DBBLITE_WORKERS=1",
+        "/I",
+        "native/include",
+        `/Fo:${directory}/`,
+        `/Fe:${exe}`,
+        cpp,
+    ]);
+    const execution = spawnSync(exe, { encoding: "utf8", timeout: 10000 });
+    assert.ifError(execution.error);
+    assert.equal(execution.status, 0, execution.stderr);
+    assert.equal(execution.stdout, "");
+    assert.equal(execution.stderr, "");
 });
 
 test("destructuring refuses defaults when nullable storage cannot distinguish null from undefined", () => {
-    assert.throws(()=>compileSource(`let value:number|null=0;const source:(number|null|undefined)[]=[null];[value=3]=source;`),
-        /distinguishable null and undefined/);
+    assert.throws(
+        () =>
+            compileSource(
+                `let value:number|null=0;const source:(number|null|undefined)[]=[null];[value=3]=source;`,
+            ),
+        /distinguishable null and undefined/,
+    );
 });

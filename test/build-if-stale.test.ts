@@ -1,6 +1,13 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+    copyFileSync,
+    existsSync,
+    mkdirSync,
+    mkdtempSync,
+    rmSync,
+    writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
@@ -18,21 +25,29 @@ test("the build wrapper repairs missing JavaScript even when its input stamp mat
     write("tsconfig.json", "{}");
     write("src/entry.ts", "export const answer = 42;");
     write("test/types.d.ts", "declare const fixture: number;");
-    write("node_modules/@typescript/native/package.json", '{"version":"fixture","type":"module"}');
+    write(
+        "node_modules/@typescript/native/package.json",
+        '{"version":"fixture","type":"module"}',
+    );
     write("node_modules/typescript/package.json", '{"version":"fixture"}');
-    write("node_modules/@typescript/native/bin/tsc", `
+    write(
+        "node_modules/@typescript/native/bin/tsc",
+        `
 import { mkdirSync, writeFileSync } from "node:fs";
 mkdirSync("dist/src", { recursive: true });
 writeFileSync("dist/src/entry.js", "export const answer = 42;");
 writeFileSync("dist/compiler-output.json", "{}");
-`);
+`,
+    );
     mkdirSync(join(root, "tools"));
     for (const name of ["build-if-stale.mjs", "clean-dist.mjs"]) {
         copyFileSync(join("tools", name), join(root, "tools", name));
     }
-    const build = (): string => execFileSync(process.execPath, ["tools/build-if-stale.mjs"], {
-        cwd: root, encoding: "utf8",
-    });
+    const build = (): string =>
+        execFileSync(process.execPath, ["tools/build-if-stale.mjs"], {
+            cwd: root,
+            encoding: "utf8",
+        });
     build();
     assert.match(build(), /up to date/);
     rmSync(join(root, "dist/src/entry.js"));

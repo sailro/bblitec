@@ -88,20 +88,15 @@ test("re-homes the extra-texture bindings after the atlas", () => {
         "return textureSample(paletteTex,paletteSamp,in.uv);",
         ["palette"],
     );
-    assert.equal(
-        billboard.extraTextureBindings,
-        shader.extraTextureBindings,
-    );
+    assert.equal(billboard.extraTextureBindings, shader.extraTextureBindings);
     assert.match(
         billboardFragmentWgsl("test", billboard),
         /@binding\(1\) var atlasSamp: sampler;\n@group\(2\)@binding\(2\)var paletteTex/,
     );
     // A body that names none declares none.
     assert.equal(
-        new SpriteLowerer(new LoweringContext()).shaderSource(
-            false,
-            TINT_BODY,
-        ).extraTextureBindings,
+        new SpriteLowerer(new LoweringContext()).shaderSource(false, TINT_BODY)
+            .extraTextureBindings,
         "",
     );
 });
@@ -138,10 +133,7 @@ test("composes the pinned depth-hosted sprite vertex permutation", () => {
 test("declares both fragment uniform blocks for a custom sprite layer", () => {
     const wgsl = spriteFragmentWgsl(
         "test",
-        new SpriteLowerer(new LoweringContext()).shaderSource(
-            false,
-            TINT_BODY,
-        ),
+        new SpriteLowerer(new LoweringContext()).shaderSource(false, TINT_BODY),
     );
     // The fx block sits beside the layer block, and both are declared
     // whether or not this body reads them — the one it leaves alone does not
@@ -182,7 +174,7 @@ test("refuses pixels that generation cannot produce", () => {
     assert.throws(
         () =>
             compileSource(
-                "import {\n    createEngine,\n    createSprite2DCustomShader,\n    createSprite2DLayer,\n    createSpriteRenderer,\n    createTexture2DFromPixels,\n    loadSpriteAtlas,\n    registerSpriteRenderer,\n    startEngine,\n} from \"babylon-lite\";\nimport { getCutoutSpriteAtlasDataUrl } from \"../corpus/babylon-lite/lab/lite/src/_shared/sprite-atlas-cutout\";\nimport { PALETTE_WIDTH } from \"../corpus/babylon-lite/lab/lite/src/_shared/palette-remap\";\n\nasync function main(): Promise<void> {\n    const canvas = document.getElementById(\"renderCanvas\") as HTMLCanvasElement;\n    const engine = await createEngine(canvas);\n    const atlas = await loadSpriteAtlas(engine, getCutoutSpriteAtlasDataUrl(), {\n        gridSize: [32, 32],\n        sampling: \"nearest\",\n    });\n    const paletteTexture = createTexture2DFromPixels(engine, PALETTE_WIDTH as unknown as Uint8Array, 256, 1);\n    const customShader = createSprite2DCustomShader({\n        fragment: \"return textureSample(paletteTex, paletteSamp, in.uv);\",\n        extraTextures: [{ name: \"palette\", texture: paletteTexture }],\n    });\n    const layer = createSprite2DLayer(atlas, { capacity: 4, depth: \"none\", customShader });\n    const sr = createSpriteRenderer(engine, { layers: [layer] });\n    registerSpriteRenderer(sr);\n    await startEngine(engine);\n}\nmain();",
+                'import {\n    createEngine,\n    createSprite2DCustomShader,\n    createSprite2DLayer,\n    createSpriteRenderer,\n    createTexture2DFromPixels,\n    loadSpriteAtlas,\n    registerSpriteRenderer,\n    startEngine,\n} from "babylon-lite";\nimport { getCutoutSpriteAtlasDataUrl } from "../corpus/babylon-lite/lab/lite/src/_shared/sprite-atlas-cutout";\nimport { PALETTE_WIDTH } from "../corpus/babylon-lite/lab/lite/src/_shared/palette-remap";\n\nasync function main(): Promise<void> {\n    const canvas = document.getElementById("renderCanvas") as HTMLCanvasElement;\n    const engine = await createEngine(canvas);\n    const atlas = await loadSpriteAtlas(engine, getCutoutSpriteAtlasDataUrl(), {\n        gridSize: [32, 32],\n        sampling: "nearest",\n    });\n    const paletteTexture = createTexture2DFromPixels(engine, PALETTE_WIDTH as unknown as Uint8Array, 256, 1);\n    const customShader = createSprite2DCustomShader({\n        fragment: "return textureSample(paletteTex, paletteSamp, in.uv);",\n        extraTextures: [{ name: "palette", texture: paletteTexture }],\n    });\n    const layer = createSprite2DLayer(atlas, { capacity: 4, depth: "none", customShader });\n    const sr = createSpriteRenderer(engine, { layers: [layer] });\n    registerSpriteRenderer(sr);\n    await startEngine(engine);\n}\nmain();',
                 { fileName: "examples/pixels.ts" },
             ),
         (error: unknown) => {
@@ -195,10 +187,15 @@ test("refuses pixels that generation cannot produce", () => {
 
 test("preserves the sRGB format for raw-pixel shader textures", () => {
     const result = compileSource(
-                "import {\n    createEngine,\n    createSprite2DCustomShader,\n    createSprite2DLayer,\n    createSpriteRenderer,\n    createTexture2DFromPixels,\n    loadSpriteAtlas,\n    registerSpriteRenderer,\n    startEngine,\n} from \"babylon-lite\";\nimport { getCutoutSpriteAtlasDataUrl } from \"../corpus/babylon-lite/lab/lite/src/_shared/sprite-atlas-cutout\";\nimport { buildColormapPalette } from \"../corpus/babylon-lite/lab/lite/src/_shared/palette-remap\";\n\nasync function main(): Promise<void> {\n    const canvas = document.getElementById(\"renderCanvas\") as HTMLCanvasElement;\n    const engine = await createEngine(canvas);\n    const atlas = await loadSpriteAtlas(engine, getCutoutSpriteAtlasDataUrl(), {\n        gridSize: [32, 32],\n        sampling: \"nearest\",\n    });\n    const paletteTexture = createTexture2DFromPixels(\n        engine, buildColormapPalette(), 256, 1, { srgb: true });\n    const customShader = createSprite2DCustomShader({\n        fragment: \"return textureSample(paletteTex, paletteSamp, in.uv);\",\n        extraTextures: [{ name: \"palette\", texture: paletteTexture }],\n    });\n    const layer = createSprite2DLayer(atlas, { capacity: 4, depth: \"none\", customShader });\n    const sr = createSpriteRenderer(engine, { layers: [layer] });\n    registerSpriteRenderer(sr);\n    await startEngine(engine);\n}\nmain();",
+        'import {\n    createEngine,\n    createSprite2DCustomShader,\n    createSprite2DLayer,\n    createSpriteRenderer,\n    createTexture2DFromPixels,\n    loadSpriteAtlas,\n    registerSpriteRenderer,\n    startEngine,\n} from "babylon-lite";\nimport { getCutoutSpriteAtlasDataUrl } from "../corpus/babylon-lite/lab/lite/src/_shared/sprite-atlas-cutout";\nimport { buildColormapPalette } from "../corpus/babylon-lite/lab/lite/src/_shared/palette-remap";\n\nasync function main(): Promise<void> {\n    const canvas = document.getElementById("renderCanvas") as HTMLCanvasElement;\n    const engine = await createEngine(canvas);\n    const atlas = await loadSpriteAtlas(engine, getCutoutSpriteAtlasDataUrl(), {\n        gridSize: [32, 32],\n        sampling: "nearest",\n    });\n    const paletteTexture = createTexture2DFromPixels(\n        engine, buildColormapPalette(), 256, 1, { srgb: true });\n    const customShader = createSprite2DCustomShader({\n        fragment: "return textureSample(paletteTex, paletteSamp, in.uv);",\n        extraTextures: [{ name: "palette", texture: paletteTexture }],\n    });\n    const layer = createSprite2DLayer(atlas, { capacity: 4, depth: "none", customShader });\n    const sr = createSpriteRenderer(engine, { layers: [layer] });\n    registerSpriteRenderer(sr);\n    await startEngine(engine);\n}\nmain();',
         { fileName: "examples/options.ts" },
     );
     assert.match(result.cpp, /PixelsTextureOptions\{[^\n]*true\}/);
-    assert.deepEqual(result.manifest.spriteCustomShaders.map(shader => ({ family: shader.family, textures: shader.extraTextures })),
-        [{ family: "sprite", textures: ["palette"] }]);
+    assert.deepEqual(
+        result.manifest.spriteCustomShaders.map((shader) => ({
+            family: shader.family,
+            textures: shader.extraTextures,
+        })),
+        [{ family: "sprite", textures: ["palette"] }],
+    );
 });

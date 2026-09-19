@@ -19,13 +19,19 @@ import { parseGlbJson } from "../../dist/src/gltf-document.js";
 import { loadPng, readManifest } from "./support.mjs";
 
 const inside = (rect, x, y) =>
-    x >= rect.x && x < rect.x + rect.width && y >= rect.y && y < rect.y + rect.height;
+    x >= rect.x &&
+    x < rect.x + rect.width &&
+    y >= rect.y &&
+    y < rect.y + rect.height;
 
 /** Mean absolute channel difference inside each digit cell and over the rest. */
 function digitMad(firstPath, secondPath, layout) {
     const first = loadPng(firstPath);
     const second = loadPng(secondPath);
-    assert.deepEqual([first.width, first.height], [second.width, second.height]);
+    assert.deepEqual(
+        [first.width, first.height],
+        [second.width, second.height],
+    );
     const sums = { tens: 0, ones: 0, rest: 0 };
     const counts = { tens: 0, ones: 0, rest: 0 };
     for (let y = 0; y < first.height; y++) {
@@ -33,14 +39,25 @@ function digitMad(firstPath, secondPath, layout) {
             const offset = (y * first.width + x) * 4;
             let difference = 0;
             for (let channel = 0; channel < 3; channel++) {
-                difference += Math.abs(first.data[offset + channel] - second.data[offset + channel]);
+                difference += Math.abs(
+                    first.data[offset + channel] -
+                        second.data[offset + channel],
+                );
             }
-            const cell = inside(layout.tens, x, y) ? "tens" : inside(layout.ones, x, y) ? "ones" : "rest";
+            const cell = inside(layout.tens, x, y)
+                ? "tens"
+                : inside(layout.ones, x, y)
+                  ? "ones"
+                  : "rest";
             sums[cell] += difference;
             counts[cell] += 3;
         }
     }
-    return { tens: sums.tens / counts.tens, ones: sums.ones / counts.ones, rest: sums.rest / counts.rest };
+    return {
+        tens: sums.tens / counts.tens,
+        ones: sums.ones / counts.ones,
+        rest: sums.rest / counts.rest,
+    };
 }
 
 export function check(context) {
@@ -49,8 +66,14 @@ export function check(context) {
     // packaged glTF the executable loads.
     const manifest = readManifest(context);
     const packaged = manifest.assets.filter((asset) => asset.kind === "gltf");
-    assert.equal(packaged.length, 1, `${context.scene.id} packages ${packaged.length} glTF assets`);
-    const document = parseGlbJson(resolve(context.target.output, "assets", packaged[0].output));
+    assert.equal(
+        packaged.length,
+        1,
+        `${context.scene.id} packages ${packaged.length} glTF assets`,
+    );
+    const document = parseGlbJson(
+        resolve(context.target.output, "assets", packaged[0].output),
+    );
     const nodeNamed = (name) => {
         const index = document.nodes.findIndex((node) => node.name === name);
         assert(index >= 0, `The asset has no node named ${name}`);
@@ -62,21 +85,57 @@ export function check(context) {
         for (const [phaseId, names] of Object.entries(dispatches)) {
             const phase = results[phaseId];
             assert(phase, `${backend}: phase ${phaseId} did not run`);
-            const dispatched = [...phase.log.matchAll(/flow-graph pointer node=(\d+)/g)].map((match) => Number(match[1]));
-            assert.deepEqual(dispatched, names.map(nodeNamed), `${backend} ${phaseId}: the bridge dispatched nodes ${JSON.stringify(dispatched)}`);
+            const dispatched = [
+                ...phase.log.matchAll(/flow-graph pointer node=(\d+)/g),
+            ].map((match) => Number(match[1]));
+            assert.deepEqual(
+                dispatched,
+                names.map(nodeNamed),
+                `${backend} ${phaseId}: the bridge dispatched nodes ${JSON.stringify(dispatched)}`,
+            );
         }
-        const firstTap = digitMad(results.press.image, results.seven.image, layout);
-        const secondTap = digitMad(results.seven.image, results["seven-times"].image, layout);
+        const firstTap = digitMad(
+            results.press.image,
+            results.seven.image,
+            layout,
+        );
+        const secondTap = digitMad(
+            results.seven.image,
+            results["seven-times"].image,
+            layout,
+        );
         // 00 -> 07: the ones digit scrolls, the tens digit and the scene hold.
-        assert(firstTap.ones > 2, `${backend}: tapping 7 did not move the ones digit: ${JSON.stringify(firstTap)}`);
-        assert(firstTap.tens < 0.05, `${backend}: tapping 7 moved the tens digit: ${JSON.stringify(firstTap)}`);
-        assert.equal(firstTap.rest, 0, `${backend}: tapping 7 changed pixels outside the display: ${JSON.stringify(firstTap)}`);
+        assert(
+            firstTap.ones > 2,
+            `${backend}: tapping 7 did not move the ones digit: ${JSON.stringify(firstTap)}`,
+        );
+        assert(
+            firstTap.tens < 0.05,
+            `${backend}: tapping 7 moved the tens digit: ${JSON.stringify(firstTap)}`,
+        );
+        assert.equal(
+            firstTap.rest,
+            0,
+            `${backend}: tapping 7 changed pixels outside the display: ${JSON.stringify(firstTap)}`,
+        );
         // 07 -> 14: both digits scroll, the scene holds.
-        assert(secondTap.tens > 2, `${backend}: tapping x did not move the tens digit: ${JSON.stringify(secondTap)}`);
-        assert(secondTap.ones > 2, `${backend}: tapping x did not move the ones digit: ${JSON.stringify(secondTap)}`);
-        assert.equal(secondTap.rest, 0, `${backend}: tapping x changed pixels outside the display: ${JSON.stringify(secondTap)}`);
+        assert(
+            secondTap.tens > 2,
+            `${backend}: tapping x did not move the tens digit: ${JSON.stringify(secondTap)}`,
+        );
+        assert(
+            secondTap.ones > 2,
+            `${backend}: tapping x did not move the ones digit: ${JSON.stringify(secondTap)}`,
+        );
+        assert.equal(
+            secondTap.rest,
+            0,
+            `${backend}: tapping x changed pixels outside the display: ${JSON.stringify(secondTap)}`,
+        );
         details[backend] = { firstTap, secondTap };
-        context.log(`${backend}: 7 moves ones by ${firstTap.ones.toFixed(2)}, x moves tens by ${secondTap.tens.toFixed(2)} and ones by ${secondTap.ones.toFixed(2)}`);
+        context.log(
+            `${backend}: 7 moves ones by ${firstTap.ones.toFixed(2)}, x moves tens by ${secondTap.tens.toFixed(2)} and ones by ${secondTap.ones.toFixed(2)}`,
+        );
     }
     return { details };
 }

@@ -40,7 +40,9 @@ interface SceneFeatureMesh {
 }
 
 async function computeMeshFeatures(mesh: SceneFeatureMesh): Promise<number> {
-    const pin = await importPinnedModule<{_computeMeshFeatures(mesh: SceneFeatureMesh): number}>("material/mesh-features.js");
+    const pin = await importPinnedModule<{
+        _computeMeshFeatures(this: void, mesh: SceneFeatureMesh): number;
+    }>("material/mesh-features.js");
     return pin._computeMeshFeatures(mesh);
 }
 
@@ -49,9 +51,13 @@ async function computeMeshFeatures(mesh: SceneFeatureMesh): Promise<number> {
  * their recorded streams and definite attachments, including procedural
  * meshes whose stream profile is fixed but whose deformation is authored.
  */
-export async function pinnedSceneMeshFeatures(mesh: SceneMeshManifest): Promise<number> {
+export async function pinnedSceneMeshFeatures(
+    mesh: SceneMeshManifest,
+): Promise<number> {
     if (mesh.morphTargets && mesh.thinInstances) {
-        throw new Error("Direct morph targets combined with thin instances require a native-coordinate instance stream; that combination is not lowered.");
+        throw new Error(
+            "Direct morph targets combined with thin instances require a native-coordinate instance stream; that combination is not lowered.",
+        );
     }
     return computeMeshFeatures({
         _gpu: {
@@ -78,19 +84,31 @@ async function meshFeatureBits(): Promise<MeshFeatureBits> {
  */
 export async function pinnedMeshFeaturesFromPrimitive(
     primitive: JsonObject,
-    options: { skinned?: boolean; morphed?: boolean; instanced?: boolean; geometry?: {attributes: JsonObject; flatNormal: boolean} } = {},
+    options: {
+        skinned?: boolean;
+        morphed?: boolean;
+        instanced?: boolean;
+        geometry?: { attributes: JsonObject; flatNormal: boolean };
+    } = {},
 ): Promise<number> {
     const attributes =
-        options.geometry?.attributes ?? (primitive["attributes"] as JsonObject | undefined) ?? {};
+        options.geometry?.attributes ??
+        (primitive["attributes"] as JsonObject | undefined) ??
+        {};
     return computeMeshFeatures({
         _gpu: {
             tangentBuffer: attributes.TANGENT !== undefined,
             colorBuffer: attributes.COLOR_0 !== undefined,
             uv2Buffer: attributes.TEXCOORD_1 !== undefined,
         },
-        _flatNormal: options.geometry?.flatNormal ?? attributes.NORMAL === undefined,
+        _flatNormal:
+            options.geometry?.flatNormal ?? attributes.NORMAL === undefined,
         skeleton: options.skinned ? {} : null,
-        morphTargets: (options.morphed ?? (Array.isArray(primitive.targets) && primitive.targets.length > 0)) ? {} : null,
+        morphTargets:
+            (options.morphed ??
+            (Array.isArray(primitive.targets) && primitive.targets.length > 0))
+                ? {}
+                : null,
         thinInstances: options.instanced ? {} : null,
     });
 }
@@ -161,9 +179,7 @@ export async function pinnedFeaturesCarrySkeleton(
     features: readonly number[],
 ): Promise<boolean> {
     const bit = await meshFeatureBits();
-    return features.some(
-        (word) => (word & bit.MSH_HAS_SKELETON) !== 0,
-    );
+    return features.some((word) => (word & bit.MSH_HAS_SKELETON) !== 0);
 }
 
 /**
@@ -183,7 +199,7 @@ export async function pinnedVatMeshFeatures(
     return features.map((word) =>
         (word & bit.MSH_HAS_SKELETON) !== 0
             ? (word & ~bit.MSH_HAS_SKELETON) | bit.MSH_VAT
-            : word
+            : word,
     );
 }
 

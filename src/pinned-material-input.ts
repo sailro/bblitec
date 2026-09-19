@@ -38,11 +38,7 @@
  * in for the pin's GPU texture records.
  */
 import { javascriptModuleUrl } from "./data-url.js";
-import {
-    asNumbers,
-    asObject,
-    type JsonObject,
-} from "./gltf-document.js";
+import { asNumbers, asObject, type JsonObject } from "./gltf-document.js";
 import {
     assertPinnedSync,
     importPinnedModule,
@@ -56,7 +52,10 @@ import {
 import { createRecordingDevice } from "./recording-device.js";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import {recordingTransmissionSetter, transmissionRegistrationMarker} from "./pinned-pbr-transmission.js";
+import {
+    recordingTransmissionSetter,
+    transmissionRegistrationMarker,
+} from "./pinned-pbr-transmission.js";
 
 /**
  * Builds the pinned material input for one glTF material.
@@ -395,8 +394,7 @@ const reflectanceProperties = [
 
 /** A non-enumerable observation stamped by the dielectric import shim when
  *  the pin actually calls its setter, including with an empty options object. */
-const reflectanceRegistrationMarker =
-    "__bbliteMetallicReflectanceRegistered";
+const reflectanceRegistrationMarker = "__bbliteMetallicReflectanceRegistered";
 
 /**
  * `gltf-ext-spec-gloss.ts` writes the base workflow rather than a layer, so
@@ -459,13 +457,11 @@ async function loadPinnedLoaderExecution(): Promise<PinnedLoaderExecution> {
     // uploads, which run against the recording engine below: a factor
     // texel's only reads here are its missing `_hasTx`/`_texCoord` markers
     // and its truthiness, both of which the pin's texture record carries.
-    const builderExt = await importPinnedModuleUnasynced(
+    const builderExt = (await importPinnedModuleUnasynced(
         "loader-gltf/gltf-pbr-builder-ext.js",
         ["needsGltfUvTransform"],
-    ) as {
-        buildDefaultPbrTexturesExt: PinnedLoaderExecution[
-            "buildDefaultPbrTexturesExt"
-        ];
+    )) as {
+        buildDefaultPbrTexturesExt: PinnedLoaderExecution["buildDefaultPbrTexturesExt"];
         assemblePbrPropsExt: PinnedLoaderExecution["assemblePbrPropsExt"];
         needsGltfUvTransform: PinnedLoaderExecution["needsGltfUvTransform"];
     };
@@ -476,14 +472,10 @@ async function loadPinnedLoaderExecution(): Promise<PinnedLoaderExecution> {
         setPbrAlphaCutoff: PinnedLoaderExecution["setPbrAlphaCutoff"];
     }>("material/pbr/set-alpha-cutoff.js");
     const reflectance = await importPinnedModule<{
-        setPbrMetallicReflectance: PinnedLoaderExecution[
-            "setPbrMetallicReflectance"
-        ];
+        setPbrMetallicReflectance: PinnedLoaderExecution["setPbrMetallicReflectance"];
     }>("material/pbr/set-metallic-reflectance.js");
     const uvEnable = await importPinnedModule<{
-        enableMaterialUvTransform: PinnedLoaderExecution[
-            "enableMaterialUvTransform"
-        ];
+        enableMaterialUvTransform: PinnedLoaderExecution["enableMaterialUvTransform"];
     }>("material/pbr/enable-material-uv-transform.js");
     const pointerExt = await importPinnedModuleUnasynced(
         "loader-gltf/animation-pointer-ext.js",
@@ -500,15 +492,15 @@ async function loadPinnedLoaderExecution(): Promise<PinnedLoaderExecution> {
         ),
     ).href;
     const reflectanceRegistrationShim = javascriptModuleUrl(
-        `import { setPbrMetallicReflectance as pinnedSetter } from ${
-            JSON.stringify(reflectanceModuleUrl)
-        };\n` +
-        `export function setPbrMetallicReflectance(material, options) {\n` +
-        `  pinnedSetter(material, options);\n` +
-        `  Object.defineProperty(material, ${
-            JSON.stringify(reflectanceRegistrationMarker)
-        }, { value: true, enumerable: false });\n` +
-        `}\n`,
+        `import { setPbrMetallicReflectance as pinnedSetter } from ${JSON.stringify(
+            reflectanceModuleUrl,
+        )};\n` +
+            `export function setPbrMetallicReflectance(material, options) {\n` +
+            `  pinnedSetter(material, options);\n` +
+            `  Object.defineProperty(material, ${JSON.stringify(
+                reflectanceRegistrationMarker,
+            )}, { value: true, enumerable: false });\n` +
+            `}\n`,
     );
     const transmissionSetter = recordingTransmissionSetter("transmission");
     const dispersionSetter = recordingTransmissionSetter("dispersion");
@@ -518,13 +510,16 @@ async function loadPinnedLoaderExecution(): Promise<PinnedLoaderExecution> {
             [],
             path === "loader-gltf/gltf-ext-dielectric.js"
                 ? new Map([
-                    ["../material/pbr/set-transmission.js", transmissionSetter],
-                    ["../material/pbr/set-dispersion.js", dispersionSetter],
-                    [
-                        "../material/pbr/set-metallic-reflectance.js",
-                        reflectanceRegistrationShim,
-                    ],
-                ])
+                      [
+                          "../material/pbr/set-transmission.js",
+                          transmissionSetter,
+                      ],
+                      ["../material/pbr/set-dispersion.js", dispersionSetter],
+                      [
+                          "../material/pbr/set-metallic-reflectance.js",
+                          reflectanceRegistrationShim,
+                      ],
+                  ])
                 : new Map(),
         );
         materialExtensions.push(
@@ -649,7 +644,7 @@ function loaderMaterialState(
         const index = info ? imageOf(info["index"]) : undefined;
         if (index === undefined) return null;
         let handle = handles.get(index);
-        if (!handle) handles.set(index, handle = {});
+        if (!handle) handles.set(index, (handle = {}));
         return handle;
     };
     const pbr = asObject(material["pbrMetallicRoughness"]) ?? {};
@@ -663,12 +658,12 @@ function loaderMaterialState(
         _baseColorImage: image(pbr["baseColorTexture"]),
         _metallicRoughnessImage: image(pbr["metallicRoughnessTexture"]),
         _normalImage: image(normal),
-        _normalScale: typeof normal?.["scale"] === "number"
-            ? normal["scale"]
-            : 1,
-        _occlusionTexCoord: typeof occlusion?.["texCoord"] === "number"
-            ? occlusion["texCoord"]
-            : 0,
+        _normalScale:
+            typeof normal?.["scale"] === "number" ? normal["scale"] : 1,
+        _occlusionTexCoord:
+            typeof occlusion?.["texCoord"] === "number"
+                ? occlusion["texCoord"]
+                : 0,
         _occlusionImage: image(occlusion),
         _emissiveImage: image(material["emissiveTexture"]),
         _doubleSided: !!material["doubleSided"],
@@ -706,7 +701,8 @@ function pinnedExtensionLayers(
             `${extension.id}.applyMaterial`,
         );
         if (fragment) {
-            if (fragment[transmissionRegistrationMarker] === true) transmissionRegistered = true;
+            if (fragment[transmissionRegistrationMarker] === true)
+                transmissionRegistered = true;
             if (fragment[reflectanceRegistrationMarker] === true) {
                 metallicReflectanceRegistered = true;
             }
@@ -751,11 +747,8 @@ export function pinnedMaterialInputFromGltf(
     // The pin's own loader steps, over this one material: the parsed state,
     // the extension fragments, the texture assembly, the props assembly.
     const mat = loaderMaterialState(material, imageOf);
-    const {
-        layers,
-        metallicReflectanceRegistered,
-        transmissionRegistered,
-    } = pinnedExtensionLayers(mat, imageOf);
+    const { layers, metallicReflectanceRegistered, transmissionRegistered } =
+        pinnedExtensionLayers(mat, imageOf);
     if (metallicReflectanceRegistered) {
         scene.recordMetallicReflectanceRegistration?.();
     }
@@ -810,8 +803,9 @@ export function pinnedMaterialInputFromGltf(
     if ("_emissiveColor" in layers) {
         input["_emissiveColor"] = layers["_emissiveColor"];
     } else if (scene.animatedEmissive) {
-        input["_emissiveColor"] = asNumbers(material["emissiveFactor"]) ??
-            [1, 1, 1];
+        input["_emissiveColor"] = asNumbers(material["emissiveFactor"]) ?? [
+            1, 1, 1,
+        ];
     } else if (
         pin.needsGltfEmissive(mat, asObject(material["emissiveTexture"]))
     ) {
@@ -878,14 +872,12 @@ export function pinnedMaterialInputFromGltf(
     // the glTF coat carries `useF0Remap: false`, the sheen model
     // `albedoScaling: true`, and a sheen roughness map that is the tint map
     // is dropped because that packing reads roughness from the tint's alpha.
-    for (
-        const property of [
-            "_clearCoat",
-            "_sheen",
-            "_iridescence",
-            "_anisotropy",
-        ] as const
-    ) {
+    for (const property of [
+        "_clearCoat",
+        "_sheen",
+        "_iridescence",
+        "_anisotropy",
+    ] as const) {
         if (property in layers) {
             input[property] = withoutUndefinedOptions(
                 layers[property] as JsonObject,

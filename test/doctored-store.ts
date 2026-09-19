@@ -10,9 +10,7 @@ import { UpstreamSourceStore } from "../src/upstream-source.js";
  * edited module bypasses that cache with a doctored parse of its own.
  */
 export class DoctoredStore extends UpstreamSourceStore {
-    private edits:
-        | ReadonlyMap<string, readonly [string, string]>
-        | undefined;
+    private edits: ReadonlyMap<string, readonly [string, string]> | undefined;
     private readonly doctoredFiles = new Map<string, ts.SourceFile>();
 
     public withEdits(

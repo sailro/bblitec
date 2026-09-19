@@ -8,15 +8,21 @@ import { LoweringContext } from "../src/lowering/context.js";
 import { pinnedMatrixHeader } from "../src/lowering/pinned-matrix.js";
 import { pinnedWorldTransformHeader } from "../src/lowering/pinned-world-transform.js";
 import { PickingLowerer } from "../src/lowering/picking-lowerer.js";
-import { importPinnedModule, importPinnedModuleWithExports } from "../src/pinned-shader-composer.js";
-import { optionalNativeFixtureTools, runNativeFixtureCompiler } from "./native-fixture.js";
+import {
+    importPinnedModule,
+    importPinnedModuleWithExports,
+} from "../src/pinned-shader-composer.js";
+import {
+    optionalNativeFixtureTools,
+    runNativeFixtureCompiler,
+} from "./native-fixture.js";
 
 const tools = optionalNativeFixtureTools();
 
 function floatArray(value: Float32Array): string {
-    return `std::array<float, 16>{${[...new Uint32Array(value.buffer)].map(
-        (bits) => `std::bit_cast<float>(${bits}u)`,
-    ).join(", ")}}`;
+    return `std::array<float, 16>{${[...new Uint32Array(value.buffer)]
+        .map((bits) => `std::bit_cast<float>(${bits}u)`)
+        .join(", ")}}`;
 }
 
 function floatVector(value: readonly number[]): string {
@@ -24,107 +30,208 @@ function floatVector(value: readonly number[]): string {
 }
 
 function doubleArray(value: Float64Array): string {
-    return `std::array<double, 16>{${[...new BigUint64Array(value.buffer)].map(
-        (bits) => `std::bit_cast<double>(${bits}ull)`,
-    ).join(", ")}}`;
+    return `std::array<double, 16>{${[...new BigUint64Array(value.buffer)]
+        .map((bits) => `std::bit_cast<double>(${bits}ull)`)
+        .join(", ")}}`;
 }
 
-test("generated matrix and pick projections match the executed pin bit for bit", {
-    skip: !tools,
-}, async () => {
-    // One pinned writer over either storage width: f32 output for the draw
-    // path, F64 output for the outer transform's double product.
-    const { multiplyMat4IntoBuffer } = await importPinnedModule<{
-        multiplyMat4IntoBuffer: (out: Float32Array | Float64Array, d: number,
-            left: Float32Array | Float64Array, i: number, right: Float64Array,
-            j: number) => void;
-    }>("math/multiply-mat4-into-buffer.js");
-    const { composeMat4IntoBuffer } = await importPinnedModule<{
-        composeMat4IntoBuffer: (out: Float64Array, off: number, tx: number, ty: number,
-            tz: number, qx: number, qy: number, qz: number, qw: number,
-            sx: number, sy: number, sz: number) => void;
-    }>("math/compose-mat4-into-buffer.js");
-    const { computePickVP } = await importPinnedModuleWithExports<{
-        computePickVP: (out: Float32Array, vp: Float32Array, x: number,
-            y: number, width: number, height: number) => void;
-    }>("picking/gpu-picker.js", ["computePickVP"]);
-    const { computeGsPickMatrix } = await importPinnedModule<{
-        computeGsPickMatrix: (out: Float32Array, x: number, y: number,
-            width: number, height: number) => void;
-    }>("picking/gs-picking-pipeline.js");
-    const { eulerXYZToQuatTuple } = await importPinnedModule<{
-        eulerXYZToQuatTuple: (x: number, y: number, z: number) => [number, number, number, number];
-    }>("math/quat-euler.js");
-    const { composeTrsLocalMatrix } = await importPinnedModule<{
-        composeTrsLocalMatrix: (position: { x: number; y: number; z: number },
-            rotation: { x: number; y: number; z: number; w: number },
-            scaling: { x: number; y: number; z: number }) => Float32Array;
-    }>("scene/world-matrix-state.js");
-    const context = new LoweringContext();
-    const output = resolve("artifacts/pinned-native-math-check");
-    mkdirSync(output, { recursive: true });
-    writeFileSync(join(output, "pinned_matrix.hpp"), pinnedMatrixHeader(context));
-    writeFileSync(join(output, "pinned_world_transform.hpp"), pinnedWorldTransformHeader(context));
-    const picker = new PickingLowerer(context);
-    writeFileSync(join(output, "picking_math.hpp"), picker.mathHeader(true));
-    assert.doesNotMatch(picker.mathHeader(false), /compute_cloud_pick_matrix/);
-    const cases: string[] = [];
-    for (let sample = 0; sample < 12; ++sample) {
-        const left = Float32Array.from({ length: 16 }, (_, lane) =>
-            Math.sin(sample * 7 + lane) * (lane % 3 === 0 ? 1e5 : 0.2));
-        if (sample === 1) {
-            // Racer's back-left wheel under its imported root.
-            left.set([-1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0,
-                -0.5499999523162842, 0.30000001192092896, -0.6570000052452087, 1]);
-        }
-        const right = Float64Array.from({ length: 16 }, (_, lane) =>
-            Math.cos(sample * 11 + lane) * (lane % 2 ? 1e-4 : 100));
-        const product = new Float32Array(16);
-        multiplyMat4IntoBuffer(product, 0, left, 0, right, 0);
-        const rotation = (sample === 1
-            ? [-0.000018417835235595703, 1.5707963705062866, -0.00016731875075493008]
-            : [sample * 0.15, -sample * 0.2, sample * 0.33]
-        ).map(Math.fround) as [number, number, number];
-        const translation = (sample === 1
-            ? [-10, 0.15000005066394806, -15]
-            : [sample * 1e-6, sample * -100000.125, sample * 13.3]
-        ).map(Math.fround);
-        const [qx, qy, qz, qw] = eulerXYZToQuatTuple(...rotation);
-        // SceneNode applies the pin's identity fast path, which also makes
-        // an all-zero Euler tuple containing -0 produce canonical +0 lanes.
-        const outer = composeTrsLocalMatrix(
-            { x: translation[0]!, y: translation[1]!, z: translation[2]! },
-            { x: qx, y: qy, z: qz, w: qw },
-            { x: 1, y: 1, z: 1 },
+test(
+    "generated matrix and pick projections match the executed pin bit for bit",
+    {
+        skip: !tools,
+    },
+    async () => {
+        // One pinned writer over either storage width: f32 output for the draw
+        // path, F64 output for the outer transform's double product.
+        const { multiplyMat4IntoBuffer } = await importPinnedModule<{
+            multiplyMat4IntoBuffer: (
+                out: Float32Array | Float64Array,
+                d: number,
+                left: Float32Array | Float64Array,
+                i: number,
+                right: Float64Array,
+                j: number,
+            ) => void;
+        }>("math/multiply-mat4-into-buffer.js");
+        const { composeMat4IntoBuffer } = await importPinnedModule<{
+            composeMat4IntoBuffer: (
+                out: Float64Array,
+                off: number,
+                tx: number,
+                ty: number,
+                tz: number,
+                qx: number,
+                qy: number,
+                qz: number,
+                qw: number,
+                sx: number,
+                sy: number,
+                sz: number,
+            ) => void;
+        }>("math/compose-mat4-into-buffer.js");
+        const { computePickVP } = await importPinnedModuleWithExports<{
+            computePickVP: (
+                out: Float32Array,
+                vp: Float32Array,
+                x: number,
+                y: number,
+                width: number,
+                height: number,
+            ) => void;
+        }>("picking/gpu-picker.js", ["computePickVP"]);
+        const { computeGsPickMatrix } = await importPinnedModule<{
+            computeGsPickMatrix: (
+                out: Float32Array,
+                x: number,
+                y: number,
+                width: number,
+                height: number,
+            ) => void;
+        }>("picking/gs-picking-pipeline.js");
+        const { eulerXYZToQuatTuple } = await importPinnedModule<{
+            eulerXYZToQuatTuple: (
+                x: number,
+                y: number,
+                z: number,
+            ) => [number, number, number, number];
+        }>("math/quat-euler.js");
+        const { composeTrsLocalMatrix } = await importPinnedModule<{
+            composeTrsLocalMatrix: (
+                position: { x: number; y: number; z: number },
+                rotation: { x: number; y: number; z: number; w: number },
+                scaling: { x: number; y: number; z: number },
+            ) => Float32Array;
+        }>("scene/world-matrix-state.js");
+        const context = new LoweringContext();
+        const output = resolve("artifacts/pinned-native-math-check");
+        mkdirSync(output, { recursive: true });
+        writeFileSync(
+            join(output, "pinned_matrix.hpp"),
+            pinnedMatrixHeader(context),
         );
-        const appliedOuter = new Float32Array(16);
-        multiplyMat4IntoBuffer(appliedOuter, 0, outer, 0, Float64Array.from(left), 0);
-        // The double arm: the unrounded composition on the left of a double
-        // world, compared after one f32 narrowing (the pin's own quaternion
-        // trigonometry may differ from the CRT's by an ulp in double), and
-        // bit for bit as doubles where no trigonometry is involved -- a
-        // translation-only root, whose product is exactly the world with
-        // the translation added.
-        const outerDouble = new Float64Array(16);
-        composeMat4IntoBuffer(outerDouble, 0, translation[0]!, translation[1]!, translation[2]!,
-            qx, qy, qz, qw, 1, 1, 1);
-        const productDouble = new Float64Array(16);
-        multiplyMat4IntoBuffer(productDouble, 0, outerDouble, 0, right, 0);
-        const translatedOnly = new Float64Array(16);
-        composeMat4IntoBuffer(translatedOnly, 0, translation[0]!, translation[1]!, translation[2]!,
-            0, 0, 0, 1, 1, 1, 1);
-        const translatedProduct = new Float64Array(16);
-        multiplyMat4IntoBuffer(translatedProduct, 0, translatedOnly, 0, right, 0);
-        const x = sample * 123.125 - 17.5;
-        const y = sample * 31.0625 + 0.5;
-        const width = 1280 + sample;
-        const height = 720 + sample;
-        const projection = new Float32Array(16);
-        const cloud = new Float32Array(16);
-        computePickVP(projection, left, x, y, width, height);
-        computeGsPickMatrix(cloud, x, y, width, height);
-        const coordinates = [x, y, width, height].map(doubleLiteral).join(", ");
-        cases.push(`{
+        writeFileSync(
+            join(output, "pinned_world_transform.hpp"),
+            pinnedWorldTransformHeader(context),
+        );
+        const picker = new PickingLowerer(context);
+        writeFileSync(
+            join(output, "picking_math.hpp"),
+            picker.mathHeader(true),
+        );
+        assert.doesNotMatch(
+            picker.mathHeader(false),
+            /compute_cloud_pick_matrix/,
+        );
+        const cases: string[] = [];
+        for (let sample = 0; sample < 12; ++sample) {
+            const left = Float32Array.from(
+                { length: 16 },
+                (_, lane) =>
+                    Math.sin(sample * 7 + lane) * (lane % 3 === 0 ? 1e5 : 0.2),
+            );
+            if (sample === 1) {
+                // Racer's back-left wheel under its imported root.
+                left.set([
+                    -1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, -0.5499999523162842,
+                    0.30000001192092896, -0.6570000052452087, 1,
+                ]);
+            }
+            const right = Float64Array.from(
+                { length: 16 },
+                (_, lane) =>
+                    Math.cos(sample * 11 + lane) * (lane % 2 ? 1e-4 : 100),
+            );
+            const product = new Float32Array(16);
+            multiplyMat4IntoBuffer(product, 0, left, 0, right, 0);
+            const rotation = (
+                sample === 1
+                    ? [
+                          -0.000018417835235595703, 1.5707963705062866,
+                          -0.00016731875075493008,
+                      ]
+                    : [sample * 0.15, -sample * 0.2, sample * 0.33]
+            ).map(Math.fround) as [number, number, number];
+            const translation = (
+                sample === 1
+                    ? [-10, 0.15000005066394806, -15]
+                    : [sample * 1e-6, sample * -100000.125, sample * 13.3]
+            ).map(Math.fround);
+            const [qx, qy, qz, qw] = eulerXYZToQuatTuple(...rotation);
+            // SceneNode applies the pin's identity fast path, which also makes
+            // an all-zero Euler tuple containing -0 produce canonical +0 lanes.
+            const outer = composeTrsLocalMatrix(
+                { x: translation[0]!, y: translation[1]!, z: translation[2]! },
+                { x: qx, y: qy, z: qz, w: qw },
+                { x: 1, y: 1, z: 1 },
+            );
+            const appliedOuter = new Float32Array(16);
+            multiplyMat4IntoBuffer(
+                appliedOuter,
+                0,
+                outer,
+                0,
+                Float64Array.from(left),
+                0,
+            );
+            // The double arm: the unrounded composition on the left of a double
+            // world, compared after one f32 narrowing (the pin's own quaternion
+            // trigonometry may differ from the CRT's by an ulp in double), and
+            // bit for bit as doubles where no trigonometry is involved -- a
+            // translation-only root, whose product is exactly the world with
+            // the translation added.
+            const outerDouble = new Float64Array(16);
+            composeMat4IntoBuffer(
+                outerDouble,
+                0,
+                translation[0]!,
+                translation[1]!,
+                translation[2]!,
+                qx,
+                qy,
+                qz,
+                qw,
+                1,
+                1,
+                1,
+            );
+            const productDouble = new Float64Array(16);
+            multiplyMat4IntoBuffer(productDouble, 0, outerDouble, 0, right, 0);
+            const translatedOnly = new Float64Array(16);
+            composeMat4IntoBuffer(
+                translatedOnly,
+                0,
+                translation[0]!,
+                translation[1]!,
+                translation[2]!,
+                0,
+                0,
+                0,
+                1,
+                1,
+                1,
+                1,
+            );
+            const translatedProduct = new Float64Array(16);
+            multiplyMat4IntoBuffer(
+                translatedProduct,
+                0,
+                translatedOnly,
+                0,
+                right,
+                0,
+            );
+            const x = sample * 123.125 - 17.5;
+            const y = sample * 31.0625 + 0.5;
+            const width = 1280 + sample;
+            const height = 720 + sample;
+            const projection = new Float32Array(16);
+            const cloud = new Float32Array(16);
+            computePickVP(projection, left, x, y, width, height);
+            computeGsPickMatrix(cloud, x, y, width, height);
+            const coordinates = [x, y, width, height]
+                .map(doubleLiteral)
+                .join(", ");
+            cases.push(`{
     const auto left = ${floatArray(left)};
     const std::array<double, 16> right{${[...right].map(doubleLiteral).join(", ")}};
     const auto outer = bbl::upstream::outer_transform_matrix(${floatVector(translation)}, ${floatVector(rotation)});
@@ -140,9 +247,11 @@ test("generated matrix and pick projections match the executed pin bit for bit",
     bbl::upstream::compute_cloud_pick_matrix(actual, ${coordinates});
     same(actual, ${floatArray(cloud)});
 }`);
-    }
-    const fixture = join(output, "check.cpp");
-    writeFileSync(fixture, `#include "pinned_matrix.hpp"
+        }
+        const fixture = join(output, "check.cpp");
+        writeFileSync(
+            fixture,
+            `#include "pinned_matrix.hpp"
 #include "picking_math.hpp"
 #include "pinned_world_transform.hpp"
 #include <bit>
@@ -164,11 +273,25 @@ int main() {
 ${cases.join("\n")}
     std::cout << "pinned-native-math-check: ok\\n";
 }
-`);
-    const executable = join(output, "check.exe");
-    runNativeFixtureCompiler(tools!, [
-        "/nologo", "/std:c++20", "/W4", "/WX", "/EHsc", "/MD",
-        `/Fo:${output}\\`, `/Fe:${executable}`, "/I", "native/include", fixture,
-    ]);
-    assert.match(execFileSync(executable, { encoding: "utf8" }), /pinned-native-math-check: ok/);
-});
+`,
+        );
+        const executable = join(output, "check.exe");
+        runNativeFixtureCompiler(tools!, [
+            "/nologo",
+            "/std:c++20",
+            "/W4",
+            "/WX",
+            "/EHsc",
+            "/MD",
+            `/Fo:${output}\\`,
+            `/Fe:${executable}`,
+            "/I",
+            "native/include",
+            fixture,
+        ]);
+        assert.match(
+            execFileSync(executable, { encoding: "utf8" }),
+            /pinned-native-math-check: ok/,
+        );
+    },
+);

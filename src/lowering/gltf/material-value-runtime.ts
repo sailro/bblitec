@@ -21,6 +21,9 @@ class GltfPbrValue {
         const ts::JsonValue*, std::shared_ptr<GltfPbrArray>, std::shared_ptr<GltfPbrObject>, GltfMaterialImage, GltfPbrFloat32View,
         std::shared_ptr<std::vector<double>>>;
     Storage value_;
+    template<class T, class... Args>
+    explicit GltfPbrValue(std::in_place_type_t<T> type, Args&&... args)
+        : value_(type, std::forward<Args>(args)...) {}
 public:
     GltfPbrValue() = default;
     GltfPbrValue(std::nullptr_t) : value_(nullptr) {}
@@ -90,19 +93,13 @@ GltfPbrValue::GltfPbrValue(GltfMaterialTexture value) {
     value_ = std::move(object);
 }
 GltfPbrValue GltfPbrValue::object() {
-    GltfPbrValue result;
-    result.value_ = std::make_shared<GltfPbrObject>();
-    return result;
+    return GltfPbrValue{std::in_place_type<std::shared_ptr<GltfPbrObject>>, std::make_shared<GltfPbrObject>()};
 }
 GltfPbrValue GltfPbrValue::array(std::initializer_list<GltfPbrValue> values) {
-    GltfPbrValue result;
-    result.value_ = std::make_shared<GltfPbrArray>(values);
-    return result;
+    return GltfPbrValue{std::in_place_type<std::shared_ptr<GltfPbrArray>>, std::make_shared<GltfPbrArray>(values)};
 }
 GltfPbrValue GltfPbrValue::float32(const std::vector<float>& values) {
-    GltfPbrValue result;
-    result.value_ = GltfPbrFloat32View{values.data(), values.size()};
-    return result;
+    return GltfPbrValue{std::in_place_type<GltfPbrFloat32View>, values.data(), values.size()};
 }
 bool GltfPbrValue::is_array() const {
     if (const auto* source = std::get_if<const ts::JsonValue*>(&value_)) return (*source)->is_array();

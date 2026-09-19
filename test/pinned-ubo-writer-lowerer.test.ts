@@ -43,7 +43,7 @@ test("lowers the pinned clearcoat UBO writer from its own AST", () => {
             bumpTextureScale: "material.clearcoat_bump_scale",
         },
         nestedWriters: {
-            "writeCcUvTransform": () => ({
+            writeCcUvTransform: () => ({
                 uScale: "transform.u_scale",
                 vScale: "transform.v_scale",
                 uAng: "transform.u_ang",
@@ -55,14 +55,32 @@ test("lowers the pinned clearcoat UBO writer from its own AST", () => {
     const body = lines.join("\n");
     // The pin computes `a = 1 - ior`, `b = 1 + ior`, then
     // `pow(-a / b, 2)` and `1 / ior`. None of that is written here.
-    assert.match(body, /const float ior = material\.clearcoat_index_of_refraction;/);
+    assert.match(
+        body,
+        /const float ior = material\.clearcoat_index_of_refraction;/,
+    );
     assert.match(body, /const float a = 1\.0f - ior;/);
     assert.match(body, /const float b = 1\.0f \+ ior;/);
-    assert.match(body, /out\.ccParams\[0\] = static_cast<float>\(material\.clearcoat_intensity\)/);
-    assert.match(body, /out\.ccRefractionParams\[0\] = static_cast<float>\(std::pow\(-a \/ b, 2\.0f\)\)/);
-    assert.match(body, /out\.ccRefractionParams\[1\] = static_cast<float>\(1\.0f \/ ior\)/);
-    assert.match(body, /out\.ccRefractionParams\[2\] = static_cast<float>\(a\)/);
-    assert.match(body, /out\.ccRefractionParams\[3\] = static_cast<float>\(b\)/);
+    assert.match(
+        body,
+        /out\.ccParams\[0\] = static_cast<float>\(material\.clearcoat_intensity\)/,
+    );
+    assert.match(
+        body,
+        /out\.ccRefractionParams\[0\] = static_cast<float>\(std::pow\(-a \/ b, 2\.0f\)\)/,
+    );
+    assert.match(
+        body,
+        /out\.ccRefractionParams\[1\] = static_cast<float>\(1\.0f \/ ior\)/,
+    );
+    assert.match(
+        body,
+        /out\.ccRefractionParams\[2\] = static_cast<float>\(a\)/,
+    );
+    assert.match(
+        body,
+        /out\.ccRefractionParams\[3\] = static_cast<float>\(b\)/,
+    );
 });
 
 test("lowers the pinned iridescence UBO writer", () => {
@@ -79,7 +97,7 @@ test("lowers the pinned iridescence UBO writer", () => {
             maximumThickness: "material.iridescence_maximum_thickness",
         },
         nestedWriters: {
-            "writeUvTransform": () => ({
+            writeUvTransform: () => ({
                 uScale: "transform.u_scale",
                 vScale: "transform.v_scale",
                 uAng: "transform.u_ang",
@@ -89,8 +107,14 @@ test("lowers the pinned iridescence UBO writer", () => {
         },
     });
     const body = lines.join("\n");
-    assert.match(body, /out\.iridescenceParams\[0\] = static_cast<float>\(material\.iridescence_intensity\)/);
-    assert.match(body, /out\.iridescenceParams\[3\] = static_cast<float>\(material\.iridescence_maximum_thickness\)/);
+    assert.match(
+        body,
+        /out\.iridescenceParams\[0\] = static_cast<float>\(material\.iridescence_intensity\)/,
+    );
+    assert.match(
+        body,
+        /out\.iridescenceParams\[3\] = static_cast<float>\(material\.iridescence_maximum_thickness\)/,
+    );
 });
 
 test("refuses a pinned writer construct it cannot carry", () => {

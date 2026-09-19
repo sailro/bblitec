@@ -33,7 +33,7 @@ import {
     webgpuComputeBrowserArgs,
 } from "./browser-harness.js";
 import { cachedJsonBake, moduleIdentity } from "./bake-cache.js";
-import type {Ktx2DecoderAssets} from "./asset-decoders.js";
+import type { Ktx2DecoderAssets } from "./asset-decoders.js";
 
 /** One transcoded level, as the pin's own `writeTexture` call carried it. */
 export interface TranscodedMipLevel {
@@ -95,8 +95,7 @@ const basisLoader: PinnedTranscodeLoader = {
  */
 const ktx2Loader: PinnedTranscodeLoader = {
     entryExport: "loadKtx2Texture2D",
-    call: (path) =>
-        `loadKtx2Texture2D(engine, ${JSON.stringify(path)}, false)`,
+    call: (path) => `loadKtx2Texture2D(engine, ${JSON.stringify(path)}, false)`,
     kind: "ktx2-transcode",
     servedPath: "/ktx2-source.ktx2",
 };
@@ -110,7 +109,11 @@ const ktx2Loader: PinnedTranscodeLoader = {
  * first. Bytes cross as base64 for the reason the executed-module runner
  * gives: a number per byte turns a megabyte into ten seconds of JSON.
  */
-function transcodeModule(loader: PinnedTranscodeLoader, url: string, decoder?: Ktx2DecoderAssets): string {
+function transcodeModule(
+    loader: PinnedTranscodeLoader,
+    url: string,
+    decoder?: Ktx2DecoderAssets,
+): string {
     return `import { createEngine, ${loader.entryExport}${decoder ? ", setKtx2DecoderUrl" : ""} } from ${JSON.stringify(pinnedBrowserEntryUrl)};
 ${decoder ? `setKtx2DecoderUrl(${JSON.stringify(decoder.url)}, ${JSON.stringify(decoder.wasmUrls)});` : ""}
 
@@ -194,7 +197,9 @@ async function transcodeTexture(
             version: "1",
             module: moduleIdentity(import.meta.url),
             browser: true,
-            parameters: decoder ? {decoder: {url:decoder.url, wasmUrls:decoder.wasmUrls}} : {},
+            parameters: decoder
+                ? { decoder: { url: decoder.url, wasmUrls: decoder.wasmUrls } }
+                : {},
             inputs: [bytes, ...Object.values(decoder?.resources ?? {})],
         },
         async () => {
@@ -205,7 +210,10 @@ async function transcodeTexture(
             const server = createSuiteSceneServer(
                 transcodeModule(loader, loader.servedPath, decoder),
                 {
-                    virtualAssets: { [loader.servedPath]: bytes, ...decoder?.resources },
+                    virtualAssets: {
+                        [loader.servedPath]: bytes,
+                        ...decoder?.resources,
+                    },
                 },
             );
             return (await runPageGlobal(server, "__transcodeBasis", {
@@ -300,8 +308,7 @@ export function writeKtx1(
     }
     const padded = texture.mips.map((mip) => (mip.bytes.length + 3) & ~3);
     const out = new Uint8Array(
-        header.headerSize +
-            padded.reduce((sum, size) => sum + 4 + size, 0),
+        header.headerSize + padded.reduce((sum, size) => sum + 4 + size, 0),
     );
     const view = new DataView(out.buffer);
     const field = (offset: number, value: number): void =>

@@ -29,22 +29,24 @@ import {
 } from "../option-helpers.js";
 
 export interface LineIntrinsicContext
-    extends IntrinsicCallContext,
-    ObjectValidationContext,
-    PositiveIntegerContext,
-    Pick<LoweringServices,
-        | "expectObjectLiteral"
-        | "expectStaticArrayLiteral"
-        | "objectProperty"
-        | "compileVec3"
-        | "compileColor4"
-        | "compileBoolean"
-        | "compileStringLiteral"
-        | "cppString"
-        | "requireDefaultEngine"
-        | "reachLineMaterial"
-        | "lineMaterialPermutation"
-    > {}
+    extends
+        IntrinsicCallContext,
+        ObjectValidationContext,
+        PositiveIntegerContext,
+        Pick<
+            LoweringServices,
+            | "expectObjectLiteral"
+            | "expectStaticArrayLiteral"
+            | "objectProperty"
+            | "compileVec3"
+            | "compileColor4"
+            | "compileBoolean"
+            | "compileStringLiteral"
+            | "cppString"
+            | "requireDefaultEngine"
+            | "reachLineMaterial"
+            | "lineMaterialPermutation"
+        > {}
 
 /** The options a reached `createLineMaterial` may name. */
 const LINE_MATERIAL_OPTIONS = [
@@ -354,8 +356,7 @@ function lineMaterialFlags(
         ...(depthWriteExpression
             ? {
                   depthWrite:
-                      context.compileBoolean(depthWriteExpression) ===
-                      "true",
+                      context.compileBoolean(depthWriteExpression) === "true",
               }
             : {}),
     };
@@ -401,10 +402,7 @@ function compileColors(
     const rows = colors.elements.map((row, index) => {
         const values = context.expectStaticArrayLiteral(row);
         if (values.elements.length !== lineCounts[index]) {
-            context.fail(
-                row,
-                "Line system data requires one color per point.",
-            );
+            context.fail(row, "Line system data requires one color per point.");
         }
         return `{${values.elements
             .map((color) => color4AsVec4(context.compileColor4(color)))

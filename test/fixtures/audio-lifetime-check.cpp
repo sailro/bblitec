@@ -13,7 +13,7 @@ std::string environment_variable(const char* name) {
     std::free(value);
     return result;
 }
-}
+} // namespace bbl::pal
 
 using namespace bbl::pal;
 
@@ -32,7 +32,8 @@ static void check_loop_and_playback_rate() {
             const auto buffer = audio_create_buffer(context, 1, 512, 48000.0);
             auto channel = audio_buffer_channel(buffer, 0);
             for (std::size_t index = 0; index < channel.size(); ++index)
-                channel[index] = 0.25f * std::sin(static_cast<float>(index) * 6.283185307179586f / 64.0f);
+                channel[index] =
+                    0.25f * std::sin(static_cast<float>(index) * 6.283185307179586f / 64.0f);
             audio_set_buffer(source, buffer);
             audio_set_loop(source, loop);
             const auto playback_rate = audio_node_param(source, AudioParamName::PlaybackRate);
@@ -47,7 +48,8 @@ static void check_loop_and_playback_rate() {
             int crossings = 0;
             for (int index = pcm->length() - 2048; index < pcm->length(); ++index) {
                 peak = std::max(peak, std::abs(samples[index]));
-                if (samples[index - 1] <= 0.0f && samples[index] > 0.0f) ++crossings;
+                if (samples[index - 1] <= 0.0f && samples[index] > 0.0f)
+                    ++crossings;
             }
             if (loop) {
                 const int expected = static_cast<int>(32.0f * rate);
@@ -124,12 +126,15 @@ int main() {
         if (!last.expired()) {
             auto& record = require_context(context.value);
             lab::ContextRenderLock lock(record.context.get(), "fixture retirement diagnosis");
-            std::cerr << "time=" << record.context->currentTime() << " graph=" << record.graph.size() << '\n';
+            std::cerr << "time=" << record.context->currentTime()
+                      << " graph=" << record.graph.size() << '\n';
             for (const auto& [identity, entry] : record.graph) {
-                if (!entry.source) continue;
+                if (!entry.source)
+                    continue;
                 auto source = std::dynamic_pointer_cast<lab::AudioScheduledSourceNode>(entry.node);
                 std::cerr << identity << " completed=" << entry.source->completed
-                          << " started=" << entry.source->started << " state=" << static_cast<int>(source->playbackState()) << '\n';
+                          << " started=" << entry.source->started
+                          << " state=" << static_cast<int>(source->playbackState()) << '\n';
             }
         }
         assert(last.expired());
@@ -148,8 +153,11 @@ int main() {
     audio_node_start(retained, 0.0);
     audio_node_stop(retained, 0.001);
     bool repeated_start_rejected = false;
-    try { audio_node_start(retained, 0.0); }
-    catch (const std::runtime_error&) { repeated_start_rejected = true; }
+    try {
+        audio_node_start(retained, 0.0);
+    } catch (const std::runtime_error&) {
+        repeated_start_rejected = true;
+    }
     assert(repeated_start_rejected);
 
     std::weak_ptr<lab::AudioNode> discarded_source;
@@ -269,8 +277,11 @@ int main() {
 
     audio_close_context(context);
     bool closed_rejected = false;
-    try { static_cast<void>(require_node(retained)); }
-    catch (const std::runtime_error&) { closed_rejected = true; }
+    try {
+        static_cast<void>(require_node(retained));
+    } catch (const std::runtime_error&) {
+        closed_rejected = true;
+    }
     assert(closed_rejected);
     assert(audio_destination(other).ownership);
     audio_close_context(other);

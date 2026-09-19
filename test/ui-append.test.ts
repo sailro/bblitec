@@ -5,9 +5,9 @@ import test from "node:test";
 import { compileSource } from "../src/compiler.js";
 import { runRmlUiFixture } from "./native-fixture.js";
 
-test("DOM append preserves text, element order and argument evaluation", t => {
+test("DOM append preserves text, element order and argument evaluation", (t) => {
     const directory = resolve("artifacts/ui-append");
-    mkdirSync(directory, {recursive:true});
+    mkdirSync(directory, { recursive: true });
     writeFileSync(join(directory, "worker.ts"), "self.close();");
     const source = `
         const worker = new Worker(new URL("./worker.ts", import.meta.url), {type:"module"});
@@ -46,7 +46,9 @@ test("DOM append preserves text, element order and argument evaluation", t => {
         }
         globalThis.close();
     `;
-    const result = compileSource(source, {fileName:join(directory, "entry.ts")});
+    const result = compileSource(source, {
+        fileName: join(directory, "entry.ts"),
+    });
     writeFileSync(join(directory, "program.hpp"), result.cpp);
     assert.equal((result.cpp.match(/ui_append_text\(/g) ?? []).length, 3);
     runRmlUiFixture(t, "ui-append");

@@ -1,81 +1,202 @@
 import assert from "node:assert/strict";
-import {execFileSync} from "node:child_process";
-import {mkdirSync, writeFileSync} from "node:fs";
-import {resolve} from "node:path";
+import { execFileSync } from "node:child_process";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { resolve } from "node:path";
 import test from "node:test";
-import {LoweringContext} from "../src/lowering/context.js";
-import {SceneLowerer} from "../src/lowering/scene-lowerer.js";
-import {lowerAssetSceneAttachment} from "../src/lowering/asset-scene-attachment.js";
-import {transpileCommonJs} from "../src/typescript-transpile.js";
-import {doctoredContext} from "./doctored-store.js";
-import {cppFunction, nativeFixtureVcpkgRoot, optionalNativeFixtureTools, runNativeFixtureCompiler} from "./native-fixture.js";
+import { LoweringContext } from "../src/lowering/context.js";
+import { SceneLowerer } from "../src/lowering/scene-lowerer.js";
+import { lowerAssetSceneAttachment } from "../src/lowering/asset-scene-attachment.js";
+import {
+    transpileCommonJs,
+    createJavaScriptFunction,
+} from "../src/typescript-transpile.js";
+import { doctoredContext } from "./doctored-store.js";
+import {
+    cppFunction,
+    nativeFixtureVcpkgRoot,
+    optionalNativeFixtureTools,
+    runNativeFixtureCompiler,
+} from "./native-fixture.js";
 
 const module = "src/scene/scene-core.ts";
-interface Scenario {camera: boolean; color: boolean; existingCamera: boolean; groups: number[]; repeat: number; failSetup?: boolean; failMesh?: boolean}
+interface Scenario {
+    camera: boolean;
+    color: boolean;
+    existingCamera: boolean;
+    groups: number[];
+    repeat: number;
+    failSetup?: boolean;
+    failMesh?: boolean;
+}
 const scenarios: Scenario[] = [
-    {camera: true, color: true, existingCamera: true, groups: [2, 0], repeat: 2},
-    {camera: true, color: true, existingCamera: false, groups: [1], repeat: 1},
-    {camera: false, color: false, existingCamera: true, groups: [], repeat: 1},
-    {camera: true, color: true, existingCamera: false, groups: [], repeat: 1, failSetup: true},
-    {camera: true, color: true, existingCamera: false, groups: [0], repeat: 1, failMesh: true},
+    {
+        camera: true,
+        color: true,
+        existingCamera: true,
+        groups: [2, 0],
+        repeat: 2,
+    },
+    {
+        camera: true,
+        color: true,
+        existingCamera: false,
+        groups: [1],
+        repeat: 1,
+    },
+    {
+        camera: false,
+        color: false,
+        existingCamera: true,
+        groups: [],
+        repeat: 1,
+    },
+    {
+        camera: true,
+        color: true,
+        existingCamera: false,
+        groups: [],
+        repeat: 1,
+        failSetup: true,
+    },
+    {
+        camera: true,
+        color: true,
+        existingCamera: false,
+        groups: [0],
+        repeat: 1,
+        failMesh: true,
+    },
 ];
 
 function sourceResult(context: LoweringContext, input: Scenario): object {
-    const declaration = context.functionDeclaration(module, "addToScene").declaration;
-    const code = transpileCommonJs(declaration.getText().replace("export ", "") + "\nreturn addToScene;", module);
-    const attach = new Function("registerMeshScene", "tickAnimation", code)(() => {
-        if (input.failMesh) throw new Error("mesh");
-    }, () => {}) as (scene: object, container: object) => void;
-    const scene = {surface: {engine: {}}, meshes: [] as object[], lights: [] as object[],
-        camera: input.existingCamera ? {id: 8} : undefined, clearColor: {r: 7},
-        animationGroups: [] as number[], _beforeRender: [() => {}]};
+    const declaration = context.functionDeclaration(
+        module,
+        "addToScene",
+    ).declaration;
+    const code = transpileCommonJs(
+        declaration.getText().replace("export ", "") + "\nreturn addToScene;",
+        module,
+    );
+    const attach = createJavaScriptFunction(
+        "registerMeshScene",
+        "tickAnimation",
+        code,
+    )(
+        () => {
+            if (input.failMesh) throw new Error("mesh");
+        },
+        () => {},
+    ) as (scene: object, container: object) => void;
+    const scene = {
+        surface: { engine: {} },
+        meshes: [] as object[],
+        lights: [] as object[],
+        camera: input.existingCamera ? { id: 8 } : undefined,
+        clearColor: { r: 7 },
+        animationGroups: [] as number[],
+        _beforeRender: [() => {}],
+    };
     const events: object[] = [];
-    const snapshot = () => ({camera: scene.camera?.id ?? -1, color: scene.clearColor.r,
-        meshes: scene.meshes.length, lights: scene.lights.length, groups: [...scene.animationGroups], callbacks: scene._beforeRender.length});
-    const container: {entities: object[]; camera?: object; clearColor?: object; animationGroups?: number[];
-        _beforeRenderHook?: () => void; _sceneSetup: (scene: object, container: object) => void} = {
-        entities: [{_gpu: {}, material: undefined}, {lightType: "point"}],
-        ...(input.camera ? {camera: {id: 3}} : {}), ...(input.color ? {clearColor: {r: 4}} : {}),
+    const snapshot = () => ({
+        camera: scene.camera?.id ?? -1,
+        color: scene.clearColor.r,
+        meshes: scene.meshes.length,
+        lights: scene.lights.length,
+        groups: [...scene.animationGroups],
+        callbacks: scene._beforeRender.length,
+    });
+    const container: {
+        entities: object[];
+        camera?: object;
+        clearColor?: object;
+        animationGroups?: number[];
+        _beforeRenderHook?: () => void;
+        _sceneSetup: (scene: object, container: object) => void;
+    } = {
+        entities: [{ _gpu: {}, material: undefined }, { lightType: "point" }],
+        ...(input.camera ? { camera: { id: 3 } } : {}),
+        ...(input.color ? { clearColor: { r: 4 } } : {}),
         animationGroups: input.groups,
         _sceneSetup(target, supplied) {
-            assert.equal(target, scene); assert.equal(supplied, container);
+            assert.equal(target, scene);
+            assert.equal(supplied, container);
             events.push(snapshot());
-            scene.clearColor = {r: 9};
+            scene.clearColor = { r: 9 };
             if (input.failSetup) throw new Error("setup");
         },
     };
-    let failed = false, previous: (() => void) | undefined;
+    let failed = false,
+        previous: (() => void) | undefined;
     for (let i = 0; i < input.repeat; i++) {
         const callbacks = scene._beforeRender.length;
-        try { attach(scene, container); } catch (error) {
-            if (!(error instanceof Error) || !["mesh", "setup"].includes(error.message)) throw error;
+        try {
+            attach(scene, container);
+        } catch (error) {
+            if (
+                !(error instanceof Error) ||
+                !["mesh", "setup"].includes(error.message)
+            )
+                throw error;
             failed = true;
         }
         if (scene._beforeRender.length > callbacks) {
-            assert.equal(container._beforeRenderHook, scene._beforeRender.at(-1));
+            assert.equal(
+                container._beforeRenderHook,
+                scene._beforeRender.at(-1),
+            );
             assert.notEqual(container._beforeRenderHook, previous);
             previous = container._beforeRenderHook;
         }
     }
-    return {events, final: snapshot(), failed};
+    return { events, final: snapshot(), failed };
 }
 
-test("native container attachment follows source guards, order, repeated hooks and partial failure state", t => {
+test("native container attachment follows source guards, order, repeated hooks and partial failure state", (t) => {
     const native = optionalNativeFixtureTools();
-    if (!native) { t.skip("Native fixture compiler unavailable."); return; }
+    if (!native) {
+        t.skip("Native fixture compiler unavailable.");
+        return;
+    }
     const base = new LoweringContext();
-    const source = base.functionDeclaration(module, "addToScene").declaration.getText();
-    const moved = source.replace("        result._sceneSetup?.(ctx, result);", "")
-        .replace("        if (result.clearColor)", "        result._sceneSetup?.(ctx, result);\n        if (result.clearColor)");
-    const contexts = [base, doctoredContext(module, source, moved),
-        doctoredContext(module, "result.camera && !ctx.camera", "result.camera"),
-        doctoredContext(module, "if (result.animationGroups?.length)", "if (false && result.animationGroups?.length)")];
-    const directory = resolve("artifacts/test-asset-scene-attachment"); mkdirSync(directory, {recursive: true});
-    const cases = contexts.flatMap((context, variant) => scenarios.map(input => ({variant, input, expected: sourceResult(context, input)})));
+    const source = base
+        .functionDeclaration(module, "addToScene")
+        .declaration.getText();
+    const moved = source
+        .replace("        result._sceneSetup?.(ctx, result);", "")
+        .replace(
+            "        if (result.clearColor)",
+            "        result._sceneSetup?.(ctx, result);\n        if (result.clearColor)",
+        );
+    const contexts = [
+        base,
+        doctoredContext(module, source, moved),
+        doctoredContext(
+            module,
+            "result.camera && !ctx.camera",
+            "result.camera",
+        ),
+        doctoredContext(
+            module,
+            "if (result.animationGroups?.length)",
+            "if (false && result.animationGroups?.length)",
+        ),
+    ];
+    const directory = resolve("artifacts/test-asset-scene-attachment");
+    mkdirSync(directory, { recursive: true });
+    const cases = contexts.flatMap((context, variant) =>
+        scenarios.map((input) => ({
+            variant,
+            input,
+            expected: sourceResult(context, input),
+        })),
+    );
     writeFileSync(resolve(directory, "cases.json"), JSON.stringify(cases));
     const sceneSource = new SceneLowerer(base).lowerCore().source;
-    const file = resolve(directory, "check.cpp"), executable = resolve(directory, "check.exe");
-    writeFileSync(file, `#include <bblite/runtime.hpp>
+    const file = resolve(directory, "check.cpp"),
+        executable = resolve(directory, "check.exe");
+    writeFileSync(
+        file,
+        `#include <bblite/runtime.hpp>
 #include <nlohmann/json.hpp>
 #include <cassert>
 #include <fstream>
@@ -83,11 +204,16 @@ namespace bbl {
 bool fail_mesh = false;
 void add_to_scene(Scene& scene, MeshHandle mesh) { if (fail_mesh) throw std::runtime_error("mesh"); scene.meshes.push_back(mesh); }
 void add_to_scene(Scene& scene, LightHandle light) { scene.lights.push_back(light); }
-${["void require_scene_engine(", "AssetRecord& asset_record(", "void add_asset_meshes("].map(signature => cppFunction(sceneSource, signature)).join("\n")}
-${contexts.map((context, variant) => {
-        const emitted = cppFunction(new SceneLowerer(context).lowerCore().source, "void add_to_scene(Scene& scene, AssetHandle asset)");
+${["void require_scene_engine(", "AssetRecord& asset_record(", "void add_asset_meshes("].map((signature) => cppFunction(sceneSource, signature)).join("\n")}
+${contexts
+    .map((context, variant) => {
+        const emitted = cppFunction(
+            new SceneLowerer(context).lowerCore().source,
+            "void add_to_scene(Scene& scene, AssetHandle asset)",
+        );
         return emitted.replace("void add_to_scene(", `void attach_${variant}(`);
-    }).join("\n")}
+    })
+    .join("\n")}
 nlohmann::json snapshot(const Scene& scene) {
     std::vector<std::uint32_t> groups;
     for (const auto group : scene.animation_groups) groups.push_back(group.value);
@@ -132,16 +258,51 @@ void check(const nlohmann::json& test_case) {
 }
 }
 int main() { nlohmann::json cases; std::ifstream("cases.json") >> cases; for (const auto& value : cases) bbl::check(value); }
-`);
-    runNativeFixtureCompiler(native, ["/nologo", "/std:c++20", "/W4", "/WX", "/permissive-", "/EHsc", "/MD", "/O2",
-        `/Fo:${directory}/`, `/Fe:${executable}`, "/I", "native/include", "/I", resolve(nativeFixtureVcpkgRoot, "include"), file]);
-    assert.equal(execFileSync(executable, {cwd: directory, encoding: "utf8"}), "");
+`,
+    );
+    runNativeFixtureCompiler(native, [
+        "/nologo",
+        "/std:c++20",
+        "/W4",
+        "/WX",
+        "/permissive-",
+        "/EHsc",
+        "/MD",
+        "/O2",
+        `/Fo:${directory}/`,
+        `/Fe:${executable}`,
+        "/I",
+        "native/include",
+        "/I",
+        resolve(nativeFixtureVcpkgRoot, "include"),
+        file,
+    ]);
+    assert.equal(
+        execFileSync(executable, { cwd: directory, encoding: "utf8" }),
+        "",
+    );
 });
 
 test("container attachment refuses unrepresented fields and changes inside the remaining playback adapter", () => {
     for (const [before, after] of [
-        ["tickAnimation(g, deltaMs, engine);", "tickAnimation(g, deltaMs * 2, engine);"],
-        ["ctx.clearColor = result.clearColor;", "ctx.unknown = result.clearColor;"],
-        ["result._sceneSetup?.(ctx, result);", "result._sceneSetup?.(ctx, {});"],
-    ]) assert.throws(() => lowerAssetSceneAttachment(doctoredContext(module, before!, after!)), /Unrepresented|Unsupported|Expected|Cannot|supported|changed/);
+        [
+            "tickAnimation(g, deltaMs, engine);",
+            "tickAnimation(g, deltaMs * 2, engine);",
+        ],
+        [
+            "ctx.clearColor = result.clearColor;",
+            "ctx.unknown = result.clearColor;",
+        ],
+        [
+            "result._sceneSetup?.(ctx, result);",
+            "result._sceneSetup?.(ctx, {});",
+        ],
+    ])
+        assert.throws(
+            () =>
+                lowerAssetSceneAttachment(
+                    doctoredContext(module, before!, after!),
+                ),
+            /Unrepresented|Unsupported|Expected|Cannot|supported|changed/,
+        );
 });

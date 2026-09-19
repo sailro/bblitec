@@ -40,7 +40,8 @@ import { transpileCommonJs } from "./typescript-transpile.js";
 import { findRepositoryRoot } from "./upstream-source.js";
 
 /** Where the pinned script lives in this repository's corpus. */
-export const PINNED_WGSL_BUILD_SCRIPT = "corpus/babylon-lite/scripts/wgsl-minify-plugin.ts";
+export const PINNED_WGSL_BUILD_SCRIPT =
+    "corpus/babylon-lite/scripts/wgsl-minify-plugin.ts";
 
 /** The pin's `transformTaggedWgsl`: built module text, or null when the module tags nothing. */
 export type TaggedWgslTransform = (
@@ -106,9 +107,14 @@ export function pinnedTaggedWgslTransform(
         );
     };
     const module = { exports: {} as { transformTaggedWgsl?: unknown } };
-    vm.compileFunction(transpiled, ["require", "module", "exports"], {
-        filename: scriptPath,
-    })(requireShim, module, module.exports);
+    const execute = vm.compileFunction(
+        transpiled,
+        ["require", "module", "exports"],
+        {
+            filename: scriptPath,
+        },
+    );
+    Reflect.apply(execute, undefined, [requireShim, module, module.exports]);
     if (typeof module.exports.transformTaggedWgsl !== "function") {
         throw new Error(
             `${PINNED_WGSL_BUILD_SCRIPT} no longer exports transformTaggedWgsl.`,
@@ -142,13 +148,18 @@ export function packagedWgsl(
     ...values: readonly unknown[]
 ): string {
     const source = strings
-        .map((part, index) => (index === 0 ? part : `${String(values[index - 1])}${part}`))
+        .map((part, index) =>
+            index === 0 ? part : `${String(values[index - 1])}${part}`,
+        )
         .join("");
     const cached = packagedWgslCache.get(source);
     if (cached !== undefined) return cached;
     const transformed = pinnedTaggedWgslTransform(
         findRepositoryRoot(dirname(fileURLToPath(import.meta.url))),
-    )(`import { wgsl } from "./wgsl.js";\nconst marker = wgsl\`${source}\`;\n`, "marker.ts");
+    )(
+        `import { wgsl } from "./wgsl.js";\nconst marker = wgsl\`${source}\`;\n`,
+        "marker.ts",
+    );
     const match =
         transformed && /const marker = `([\s\S]*)`;\n$/.exec(transformed.code);
     if (!match) {
@@ -176,7 +187,8 @@ export function assertPinnedWgslTagIsIdentity(file: ts.SourceFile): void {
             ts.isFunctionDeclaration(statement) &&
             statement.name?.text === "wgsl",
     );
-    const normalize = (text: string): string => text.replace(/\s+/g, " ").trim();
+    const normalize = (text: string): string =>
+        text.replace(/\s+/g, " ").trim();
     const statements = declaration?.body?.statements.map((statement) =>
         normalize(statement.getText(file)),
     );

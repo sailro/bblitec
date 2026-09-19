@@ -40,10 +40,7 @@ test("runtime.hpp's iridescence ground state is the pinned defaults table's", ()
         return Number(match[1]);
     };
     for (const [member, pinned] of [
-        [
-            "iridescence_index_of_refraction",
-            "iridescenceIndexOfRefraction",
-        ],
+        ["iridescence_index_of_refraction", "iridescenceIndexOfRefraction"],
         ["iridescence_minimum_thickness", "iridescenceMinimumThickness"],
         ["iridescence_maximum_thickness", "iridescenceMaximumThickness"],
     ] as const) {

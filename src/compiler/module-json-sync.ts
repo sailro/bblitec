@@ -13,7 +13,10 @@ import { runGenerationChild } from "./generation-child.js";
 
 /** A pass the child ran but could not fold; `reason` names the class. */
 export class ModuleJsonDeclined extends Error {
-    constructor(exportName: string, readonly reason: string) {
+    constructor(
+        exportName: string,
+        readonly reason: string,
+    ) {
         super(`Running '${exportName}' at generation declined: ${reason}`);
     }
 }
@@ -104,9 +107,10 @@ function runChild(
         );
     }
     const envelope = JSON.parse(raw.slice(at + ENVELOPE.length)) as
-        | { ok: true; value: unknown }
-        | { ok: false; reason: string };
-    return envelope.ok ? { value: envelope.value } : { declined: envelope.reason };
+        { ok: true; value: unknown } | { ok: false; reason: string };
+    return envelope.ok
+        ? { value: envelope.value }
+        : { declined: envelope.reason };
 }
 
 /**
@@ -120,7 +124,9 @@ export function tryModuleJsonDocument(
     argumentsJson: readonly unknown[],
 ): { value: unknown } | undefined {
     try {
-        return { value: runModuleJsonSync(modulePath, exportName, argumentsJson) };
+        return {
+            value: runModuleJsonSync(modulePath, exportName, argumentsJson),
+        };
     } catch (error) {
         if (error instanceof ModuleJsonDeclined) return undefined;
         throw error;

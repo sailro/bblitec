@@ -43,9 +43,7 @@ export function refuseNode(
     node: ts.Node,
     reason: string,
 ): never {
-    throw new Error(
-        `Pinned ${symbol} ${reason}: ${node.getText(file)}.`,
-    );
+    throw new Error(`Pinned ${symbol} ${reason}: ${node.getText(file)}.`);
 }
 
 interface PinnedBinding {
@@ -71,9 +69,7 @@ export function singleBinding(
         );
     }
     const declarations = statement.declarationList.declarations;
-    const declaration = declarations.length === 1
-        ? declarations[0]
-        : undefined;
+    const declaration = declarations.length === 1 ? declarations[0] : undefined;
     if (
         !declaration ||
         !ts.isIdentifier(declaration.name) ||
@@ -89,8 +85,7 @@ export function singleBinding(
     return {
         name: declaration.name.text,
         initializer: declaration.initializer,
-        isConst:
-            (statement.declarationList.flags & ts.NodeFlags.Const) !== 0,
+        isConst: (statement.declarationList.flags & ts.NodeFlags.Const) !== 0,
         statement,
     };
 }
@@ -147,13 +142,14 @@ export function collectLaneStores(
     let index = start;
     for (let lane = 0; lane < count; lane += 1) {
         const statement = statements[index];
-        const assignment = statement &&
-                ts.isExpressionStatement(statement) &&
-                ts.isBinaryExpression(statement.expression) &&
-                statement.expression.operatorToken.kind ===
-                    ts.SyntaxKind.EqualsToken
-            ? statement.expression
-            : undefined;
+        const assignment =
+            statement &&
+            ts.isExpressionStatement(statement) &&
+            ts.isBinaryExpression(statement.expression) &&
+            statement.expression.operatorToken.kind ===
+                ts.SyntaxKind.EqualsToken
+                ? statement.expression
+                : undefined;
         if (
             !assignment ||
             !ts.isElementAccessExpression(assignment.left) ||
@@ -256,12 +252,10 @@ export function featureMethod(
     symbol: string,
     memberName: string,
 ): ts.FunctionLikeDeclarationBase & { body: ts.Block } {
-    const found: (ts.FunctionLikeDeclarationBase & { body: ts.Block })[] =
-        [];
+    const found: (ts.FunctionLikeDeclarationBase & { body: ts.Block })[] = [];
     const visit = (node: ts.Node): void => {
         if (
-            (ts.isMethodDeclaration(node) ||
-                ts.isPropertyAssignment(node)) &&
+            (ts.isMethodDeclaration(node) || ts.isPropertyAssignment(node)) &&
             node.name !== undefined &&
             ts.isIdentifier(node.name) &&
             node.name.text === memberName
@@ -269,9 +263,9 @@ export function featureMethod(
             const candidate = ts.isMethodDeclaration(node)
                 ? node
                 : ts.isFunctionExpression(node.initializer) ||
-                        ts.isArrowFunction(node.initializer)
-                    ? node.initializer
-                    : undefined;
+                    ts.isArrowFunction(node.initializer)
+                  ? node.initializer
+                  : undefined;
             if (candidate?.body && ts.isBlock(candidate.body)) {
                 found.push(
                     candidate as ts.FunctionLikeDeclarationBase & {
@@ -295,9 +289,7 @@ export function featureMethod(
 export const pinnedFloatLiteral = (literal: ts.NumericLiteral): string =>
     floatLiteral(Number(literal.text));
 
-export function identifierText(
-    expression: ts.Expression,
-): string | undefined {
+export function identifierText(expression: ts.Expression): string | undefined {
     const node = unwrapExpression(expression);
     return ts.isIdentifier(node) ? node.text : undefined;
 }
@@ -318,9 +310,7 @@ export function additiveChainParts(expression: ts.Expression): {
             parts: [...left.parts, node.right],
             operators: [
                 ...left.operators,
-                node.operatorToken.kind === ts.SyntaxKind.PlusToken
-                    ? "+"
-                    : "-",
+                node.operatorToken.kind === ts.SyntaxKind.PlusToken ? "+" : "-",
             ],
         };
     }
@@ -334,18 +324,20 @@ export function mathCall(
 ): ts.CallExpression | undefined {
     const node = unwrapExpression(expression);
     return ts.isCallExpression(node) &&
-            ts.isPropertyAccessExpression(node.expression) &&
-            identifierText(node.expression.expression) === "Math" &&
-            node.expression.name.text === name
+        ts.isPropertyAccessExpression(node.expression) &&
+        identifierText(node.expression.expression) === "Math" &&
+        node.expression.name.text === name
         ? node
         : undefined;
 }
 
 export function isMathPi(expression: ts.Expression): boolean {
     const node = unwrapExpression(expression);
-    return ts.isPropertyAccessExpression(node) &&
+    return (
+        ts.isPropertyAccessExpression(node) &&
         identifierText(node.expression) === "Math" &&
-        node.name.text === "PI";
+        node.name.text === "PI"
+    );
 }
 
 /**
@@ -357,15 +349,15 @@ export function isMathPi(expression: ts.Expression): boolean {
  * multiplying it at the root — see the round-3 notes in
  * `matrix-leaves.ts`.
  */
-export function pinnedRootFlip(
-    file: ts.SourceFile,
-): { lane: number; sign: number } {
+export function pinnedRootFlip(file: ts.SourceFile): {
+    lane: number;
+    sign: number;
+} {
     const symbol = "RH_TO_LH_ROOT";
     const candidates: { name: string; values: number[] }[] = [];
     for (const statement of file.statements) {
         if (!ts.isVariableStatement(statement)) continue;
-        for (const declaration of
-            statement.declarationList.declarations) {
+        for (const declaration of statement.declarationList.declarations) {
             if (
                 !ts.isIdentifier(declaration.name) ||
                 !declaration.initializer
@@ -390,7 +382,7 @@ export function pinnedRootFlip(
             candidates.push({
                 name: declaration.name.text,
                 values: argument.elements.map((element) =>
-                    pinnedNumericValue(symbol, file, element)
+                    pinnedNumericValue(symbol, file, element),
                 ),
             });
         }
@@ -410,19 +402,18 @@ export function pinnedRootFlip(
     if (root.values[15] !== 1) {
         refuseModule(symbol, "no longer keeps a unit homogeneous lane");
     }
-    const flips = [0, 1, 2].filter(
-        (lane) => root.values[lane * 5] !== 1,
-    );
+    const flips = [0, 1, 2].filter((lane) => root.values[lane * 5] !== 1);
     if (flips.length !== 1 || root.values[flips[0]! * 5] !== -1) {
         refuseModule(symbol, "no longer flips exactly one axis by -1");
     }
     const compute = topLevelFunction(file, "computeNodeWorldMatrix");
-    const usedAsRoot = findNodes(
-        compute,
-        (node): node is ts.ConditionalExpression =>
-            ts.isConditionalExpression(node) &&
-            identifierText(node.whenFalse) === root.name,
-    ).length > 0;
+    const usedAsRoot =
+        findNodes(
+            compute,
+            (node): node is ts.ConditionalExpression =>
+                ts.isConditionalExpression(node) &&
+                identifierText(node.whenFalse) === root.name,
+        ).length > 0;
     if (!usedAsRoot) {
         refuseNode(
             symbol,
@@ -464,20 +455,18 @@ export function requirePropertyReads(
     names: readonly string[],
 ): void {
     for (const name of names) {
-        const carried = findNodes(
-            root,
-            (node): node is ts.Node =>
-                ((ts.isPropertyAccessExpression(node) ||
-                    ts.isPropertyAccessChain(node)) &&
-                    node.name.text === name) ||
-                (ts.isStringLiteral(node) && node.text === name) ||
-                (ts.isIdentifier(node) && node.text === name),
-        ).length > 0;
+        const carried =
+            findNodes(
+                root,
+                (node): node is ts.Node =>
+                    ((ts.isPropertyAccessExpression(node) ||
+                        ts.isPropertyAccessChain(node)) &&
+                        node.name.text === name) ||
+                    (ts.isStringLiteral(node) && node.text === name) ||
+                    (ts.isIdentifier(node) && node.text === name),
+            ).length > 0;
         if (!carried) {
-            refuseModule(
-                symbol,
-                `no longer reads the '${name}' property`,
-            );
+            refuseModule(symbol, `no longer reads the '${name}' property`);
         }
     }
 }

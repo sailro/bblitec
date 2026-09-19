@@ -15,12 +15,7 @@
  */
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import {
-    existsSync,
-    mkdtempSync,
-    readdirSync,
-    readFileSync,
-} from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve, sep } from "node:path";
 import test from "node:test";
@@ -29,7 +24,8 @@ import { captureIsCurrent } from "../src/capture-instrumented.js";
 // Compiled to `dist/test/`, so the repository root is two levels up.
 const root = resolve(import.meta.dirname, "..", "..");
 const generated = resolve(root, "generated");
-const tint = process.env["TINT_PATH"] ??
+const tint =
+    process.env["TINT_PATH"] ??
     resolve(root, "artifacts", "tools", "tint", "tint.exe");
 
 function composedStages(): string[] {
@@ -59,7 +55,13 @@ test("the pin's composed shaders compile through Tint unchanged", () => {
             try {
                 execFileSync(
                     tint,
-                    ["--format", format, stage, "-o", resolve(out, `o.${format}`)],
+                    [
+                        "--format",
+                        format,
+                        stage,
+                        "-o",
+                        resolve(out, `o.${format}`),
+                    ],
                     { stdio: "pipe" },
                 );
             } catch (error) {

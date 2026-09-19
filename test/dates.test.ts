@@ -4,37 +4,80 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import test from "node:test";
 import { compileSource } from "../src/compiler.js";
-import { cppFunction, optionalNativeFixtureTools, runNativeFixtureCompiler } from "./native-fixture.js";
+import {
+    cppFunction,
+    optionalNativeFixtureTools,
+    runNativeFixtureCompiler,
+} from "./native-fixture.js";
 
 const native = optionalNativeFixtureTools(false);
 
-test("macOS default time zone matches the browser without libc++ timezone support", { skip: process.platform !== "darwin" }, () => {
-    const directory = resolve("artifacts/macos-time-zone");
-    mkdirSync(directory, { recursive: true });
-    const source = join(directory, "check.cpp"), executable = join(directory, "check");
-    const implementation = cppFunction(readFileSync("native/src/pal.cpp", "utf8"), "std::string js::macos_time_zone()");
-    writeFileSync(source, `#include <bblite/js_data.hpp>
+test(
+    "macOS default time zone matches the browser without libc++ timezone support",
+    { skip: process.platform !== "darwin" },
+    () => {
+        const directory = resolve("artifacts/macos-time-zone");
+        mkdirSync(directory, { recursive: true });
+        const source = join(directory, "check.cpp"),
+            executable = join(directory, "check");
+        const implementation = cppFunction(
+            readFileSync("native/src/pal.cpp", "utf8"),
+            "std::string js::macos_time_zone()",
+        );
+        writeFileSync(
+            source,
+            `#include <bblite/js_data.hpp>
 #include <CoreFoundation/CoreFoundation.h>
 #include <iostream>
 namespace bbl { ${implementation} }
 int main() { std::cout << *bbl::js::make_date_time_format(); }
-`);
-    const triplet = process.arch === "arm64" ? "arm64-osx" : "x64-osx";
-    execFileSync(process.env.CXX ?? "clang++", ["-std=c++20", "-Wall", "-Wextra", "-Werror",
-        "-I", "native/include", "-I", `artifacts/vcpkg-installed/development-full/${triplet}/include`,
-        source, "-framework", "CoreFoundation", "-o", executable], { stdio: "pipe" });
-    assert.equal(execFileSync(executable, { encoding: "utf8" }), Intl.DateTimeFormat().resolvedOptions().timeZone);
-});
+`,
+        );
+        const triplet = process.arch === "arm64" ? "arm64-osx" : "x64-osx";
+        execFileSync(
+            process.env.CXX ?? "clang++",
+            [
+                "-std=c++20",
+                "-Wall",
+                "-Wextra",
+                "-Werror",
+                "-I",
+                "native/include",
+                "-I",
+                `artifacts/vcpkg-installed/development-full/${triplet}/include`,
+                source,
+                "-framework",
+                "CoreFoundation",
+                "-o",
+                executable,
+            ],
+            { stdio: "pipe" },
+        );
+        assert.equal(
+            execFileSync(executable, { encoding: "utf8" }),
+            Intl.DateTimeFormat().resolvedOptions().timeZone,
+        );
+    },
+);
 
-test("Date values retain identity, mutable timestamps and UTC formatting", {skip: !native}, () => {
-    const timestamps = [0, -1, 1, -0.9, 0.9, 951782400123, -62167219200000, -62198755200000,
-        253402300800000, -8640000000000000, 8640000000000000];
-    const result = compileSource(`
+test(
+    "Date values retain identity, mutable timestamps and UTC formatting",
+    { skip: !native },
+    () => {
+        const timestamps = [
+            0, -1, 1, -0.9, 0.9, 951782400123, -62167219200000, -62198755200000,
+            253402300800000, -8640000000000000, 8640000000000000,
+        ];
+        const result = compileSource(`
         function format(value: Date): string { return value.toISOString(); }
-        ${timestamps.map((stamp, index) => `
+        ${timestamps
+            .map(
+                (stamp, index) => `
             const date${index} = new Date(${stamp});
             if (format(date${index}) !== ${JSON.stringify(new Date(stamp).toISOString())}) throw new Error("UTC date ${index}");
-        `).join("\n")}
+        `,
+            )
+            .join("\n")}
         const original = new Date(0);
         let reseated = new Date(0);
         const retained = reseated;
@@ -75,11 +118,25 @@ test("Date values retain identity, mutable timestamps and UTC formatting", {skip
         if (!formatter || alias !== formatter || fresh === formatter) throw new Error("formatter identity");
         if (fresh.resolvedOptions().timeZone !== formatter.resolvedOptions().timeZone) throw new Error("formatter construction");
     `);
-    const directory = resolve("artifacts/date-values");
-    mkdirSync(directory, {recursive:true});
-    const source = join(directory, "check.cpp"), executable = join(directory, "check.exe");
-    writeFileSync(source, result.cpp);
-    runNativeFixtureCompiler(native!, ["/nologo", "/std:c++20", "/W4", "/WX", "/permissive-", "/EHsc", "/MD",
-        `/Fo:${directory}/`, `/Fe:${executable}`, "/I", "native/include", source]);
-    assert.equal(execFileSync(executable, {encoding:"utf8"}), "");
-});
+        const directory = resolve("artifacts/date-values");
+        mkdirSync(directory, { recursive: true });
+        const source = join(directory, "check.cpp"),
+            executable = join(directory, "check.exe");
+        writeFileSync(source, result.cpp);
+        runNativeFixtureCompiler(native!, [
+            "/nologo",
+            "/std:c++20",
+            "/W4",
+            "/WX",
+            "/permissive-",
+            "/EHsc",
+            "/MD",
+            `/Fo:${directory}/`,
+            `/Fe:${executable}`,
+            "/I",
+            "native/include",
+            source,
+        ]);
+        assert.equal(execFileSync(executable, { encoding: "utf8" }), "");
+    },
+);

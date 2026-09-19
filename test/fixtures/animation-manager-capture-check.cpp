@@ -15,7 +15,7 @@ void start_engine(Engine& engine) {
     engine.animation_frame_once_callbacks.clear();
     callbacks.front()(100.0);
 }
-}
+} // namespace bbl
 
 int main() {
     const auto initial = bbl::js::managed_node_count();

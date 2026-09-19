@@ -60,38 +60,90 @@ export function lowerComputeAabb(
     context: LoweringContext,
     options: ComputeAabbLowering,
 ): string {
-    const at = context.functionDeclaration(COMPUTE_AABB_MODULE, "computeAabb").declaration;
-    return lowerPinnedFunction(context, COMPUTE_AABB_MODULE, "computeAabb", [
-        { pinned: "positions", kind: "f32Buffer", cpp: "positions",
-            cppType: options.positionsType ?? "Positions", binding: { cpp: "positions", type: "scalar" } },
-        { pinned: "world", kind: "mat4Const", cpp: "world", optional: true,
-            ...(options.arm === "local" ? { absent: true } : {}),
-            binding: { cpp: "world", type: "scalar" } },
-    ], {
-        cppName: options.cppName,
-        ...(options.inline ? { inline: true } : {}),
-        ...(!options.positionsType ? { templateParameters: ["typename Positions"] } : {}),
-        armOf: { condition: "world", arm: options.arm === "world" ? "then" : "else" },
-        memberBindings: new Map([["positions.length",
-            { cpp: "static_cast<std::int64_t>(positions.size())", type: "scalar" }]]),
-        returns: {
-            type: COMPUTE_AABB_RESULT,
-            value: (lowerer, expression) => {
-                const returned = expression ? context.unwrapExpression(expression) : undefined;
-                if (!returned || !ts.isArrayLiteralExpression(returned) || returned.elements.length !== 2) {
-                    return context.contractError(at, "Expected pinned computeAabb to return a min/max pair.");
-                }
-                const rows = returned.elements.map(row => {
-                    const literal = context.unwrapExpression(row);
-                    if (!ts.isArrayLiteralExpression(literal) || literal.elements.length !== 3) {
-                        return context.contractError(at, "Expected each pinned AABB corner to have three components.");
+    const at = context.functionDeclaration(
+        COMPUTE_AABB_MODULE,
+        "computeAabb",
+    ).declaration;
+    return lowerPinnedFunction(
+        context,
+        COMPUTE_AABB_MODULE,
+        "computeAabb",
+        [
+            {
+                pinned: "positions",
+                kind: "f32Buffer",
+                cpp: "positions",
+                cppType: options.positionsType ?? "Positions",
+                binding: { cpp: "positions", type: "scalar" },
+            },
+            {
+                pinned: "world",
+                kind: "mat4Const",
+                cpp: "world",
+                optional: true,
+                ...(options.arm === "local" ? { absent: true } : {}),
+                binding: { cpp: "world", type: "scalar" },
+            },
+        ],
+        {
+            cppName: options.cppName,
+            ...(options.inline ? { inline: true } : {}),
+            ...(!options.positionsType
+                ? { templateParameters: ["typename Positions"] }
+                : {}),
+            armOf: {
+                condition: "world",
+                arm: options.arm === "world" ? "then" : "else",
+            },
+            memberBindings: new Map([
+                [
+                    "positions.length",
+                    {
+                        cpp: "static_cast<std::int64_t>(positions.size())",
+                        type: "scalar",
+                    },
+                ],
+            ]),
+            returns: {
+                type: COMPUTE_AABB_RESULT,
+                value: (lowerer, expression) => {
+                    const returned = expression
+                        ? context.unwrapExpression(expression)
+                        : undefined;
+                    if (
+                        !returned ||
+                        !ts.isArrayLiteralExpression(returned) ||
+                        returned.elements.length !== 2
+                    ) {
+                        return context.contractError(
+                            at,
+                            "Expected pinned computeAabb to return a min/max pair.",
+                        );
                     }
-                    return "{" + literal.elements.map(element => lowerer.expression(element)).join(", ") + "}";
-                });
-                return COMPUTE_AABB_RESULT + "{{" + rows.join(", ") + "}}";
+                    const rows = returned.elements.map((row) => {
+                        const literal = context.unwrapExpression(row);
+                        if (
+                            !ts.isArrayLiteralExpression(literal) ||
+                            literal.elements.length !== 3
+                        ) {
+                            return context.contractError(
+                                at,
+                                "Expected each pinned AABB corner to have three components.",
+                            );
+                        }
+                        return (
+                            "{" +
+                            literal.elements
+                                .map((element) => lowerer.expression(element))
+                                .join(", ") +
+                            "}"
+                        );
+                    });
+                    return COMPUTE_AABB_RESULT + "{{" + rows.join(", ") + "}}";
+                },
             },
         },
-    });
+    );
 }
 
 /**
@@ -142,9 +194,12 @@ export function pinnedComputeAabbHeader(context: LoweringContext): string {
         cppName: "compute_aabb",
         inline: true,
     });
-    return pinnedHeader(["<array>","<cstddef>","<cstdint>","<limits>"], `
+    return pinnedHeader(
+        ["<array>", "<cstddef>", "<cstdint>", "<limits>"],
+        `
 ${local}
 
 ${world}
-`);
+`,
+    );
 }

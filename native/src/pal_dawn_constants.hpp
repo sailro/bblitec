@@ -10,8 +10,7 @@ namespace bbl::pal {
 /** Own the numeric override keys while Dawn borrows a stage descriptor. */
 class DawnStageConstants {
 public:
-    template<class Constants>
-    explicit DawnStageConstants(const Constants& constants) {
+    template <class Constants> explicit DawnStageConstants(const Constants& constants) {
         keys_.reserve(constants.size());
         entries_.reserve(constants.size());
         for (const auto& constant : constants) {
@@ -30,8 +29,7 @@ public:
     DawnStageConstants(DawnStageConstants&&) = delete;
     DawnStageConstants& operator=(DawnStageConstants&&) = delete;
 
-    template<class Stage>
-    void apply(Stage& stage) const noexcept {
+    template <class Stage> void apply(Stage& stage) const noexcept {
         stage.constantCount = entries_.size();
         stage.constants = entries_.empty() ? nullptr : entries_.data();
     }

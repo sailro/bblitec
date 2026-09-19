@@ -1,77 +1,302 @@
 import assert from "node:assert/strict";
-import {execFileSync} from "node:child_process";
-import {mkdirSync, writeFileSync} from "node:fs";
-import {resolve} from "node:path";
+import { execFileSync } from "node:child_process";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { resolve } from "node:path";
 import test from "node:test";
 import ts from "typescript";
-import {LoweringContext} from "../src/lowering/context.js";
-import {lowerPbrMaterialGroups} from "../src/lowering/pbr-material-groups.js";
-import {lowerPbrTransmissionTransaction} from "../src/lowering/pbr-transmission-transaction.js";
-import {materialGroupIdentity} from "../src/lowering/material-group-identity.js";
-import {transpileCommonJs} from "../src/typescript-transpile.js";
-import {doctoredContext} from "./doctored-store.js";
-import {nativeFixtureVcpkgRoot, optionalNativeFixtureTools, runNativeFixtureCompiler} from "./native-fixture.js";
+import { LoweringContext } from "../src/lowering/context.js";
+import { lowerPbrMaterialGroups } from "../src/lowering/pbr-material-groups.js";
+import { lowerPbrTransmissionTransaction } from "../src/lowering/pbr-transmission-transaction.js";
+import { materialGroupIdentity } from "../src/lowering/material-group-identity.js";
+import {
+    transpileCommonJs,
+    createJavaScriptFunction,
+} from "../src/typescript-transpile.js";
+import { doctoredContext } from "./doctored-store.js";
+import {
+    nativeFixtureVcpkgRoot,
+    optionalNativeFixtureTools,
+    runNativeFixtureCompiler,
+} from "./native-fixture.js";
 
 const sceneModule = "src/scene/scene-core.ts";
 const pbrModule = "src/material/pbr/pbr-renderable.ts";
-type Operation = ["add" | "remove" | "thin", number] | ["swap", number, number] | ["build" | "drain" | "rebuild"];
-interface Scenario {materials: number[]; operations: Operation[]}
+type Operation =
+    | ["add" | "remove" | "thin", number]
+    | ["swap", number, number]
+    | ["build" | "drain" | "rebuild"];
+interface Scenario {
+    materials: number[];
+    operations: Operation[];
+}
 const scenarios: Scenario[] = [
-    {materials: [0, 0], operations: [["add", 0], ["add", 1], ["build"]]},
-    {materials: [0, 0], operations: [["build"], ["add", 0], ["add", 1], ["drain"]]},
-    {materials: [0, 0], operations: [["add", 0], ["build"], ["add", 1], ["drain"]]},
-    {materials: [0, 1], operations: [["add", 0], ["build"], ["add", 1], ["drain"]]},
-    {materials: [1, 0], operations: [["add", 0], ["build"], ["add", 1], ["drain"]]},
-    {materials: [0], operations: [["add", 0], ["swap", 0, 1], ["build"]]},
-    {materials: [0], operations: [["add", 0], ["swap", 0, 1], ["drain"], ["build"]]},
-    {materials: [0, 0], operations: [["add", 0], ["build"], ["thin", 1], ["add", 1], ["drain"]]},
-    {materials: [0], operations: [["thin", 0], ["add", 0], ["build"], ["swap", 0, 1], ["drain"]]},
-    {materials: [-1, -1], operations: [["add", 0], ["add", 1], ["build"], ["thin", 1], ["swap", 0, 0], ["swap", 1, 0], ["drain"]]},
-    {materials: [0], operations: [["add", 0], ["build"], ["swap", 0, 1], ["drain"]]},
-    {materials: [0], operations: [["add", 0], ["build"], ["swap", 0, 1], ["swap", 0, 0], ["drain"]]},
-    {materials: [0], operations: [["add", 0], ["add", 0], ["build"], ["add", 0], ["add", 0], ["drain"]]},
-    {materials: [-1, -1], operations: [["add", 0], ["add", 1], ["build"], ["swap", 0, 0], ["swap", 1, 0], ["drain"]]},
-    {materials: [0, 0], operations: [["add", 0], ["add", 1], ["build"], ["remove", 0], ["rebuild"]]},
-    {materials: [0], operations: [["add", 0], ["build"], ["remove", 0], ["rebuild"]]},
-    {materials: [0, 0], operations: [["add", 0], ["build"], ["remove", 0], ["rebuild"], ["add", 1], ["build"]]},
-    {materials: [0], operations: [["add", 0], ["build"], ["remove", 0], ["rebuild"], ["build"]]},
-    {materials: [0], operations: [["add", 0], ["rebuild"], ["build"]]},
-    {materials: [0], operations: [["add", 0], ["swap", 0, -1], ["build"]]},
-    {materials: [0], operations: [["add", 0], ["build"], ["swap", 0, -1], ["drain"], ["rebuild"]]},
-    {materials: [0], operations: [["add", 0], ["build"], ["swap", 0, 2], ["drain"], ["swap", 0, 1], ["drain"], ["rebuild"]]},
-    {materials: [0, 2], operations: [["add", 0], ["add", 1], ["build"], ["swap", 0, 2], ["drain"], ["swap", 0, 1], ["drain"]]},
-    {materials: [2, 3], operations: [["add", 0], ["add", 1], ["build"], ["swap", 0, 0], ["swap", 1, 0], ["drain"], ["rebuild"]]},
-    {materials: [4, 5, 6], operations: [["add", 0], ["add", 1], ["add", 2], ["build"], ["swap", 0, 0], ["drain"], ["rebuild"]]},
-    {materials: [0, 0], operations: [["add", 0], ["add", 0], ["add", 1], ["build"], ["swap", 0, 4], ["drain"], ["rebuild"]]},
+    { materials: [0, 0], operations: [["add", 0], ["add", 1], ["build"]] },
+    {
+        materials: [0, 0],
+        operations: [["build"], ["add", 0], ["add", 1], ["drain"]],
+    },
+    {
+        materials: [0, 0],
+        operations: [["add", 0], ["build"], ["add", 1], ["drain"]],
+    },
+    {
+        materials: [0, 1],
+        operations: [["add", 0], ["build"], ["add", 1], ["drain"]],
+    },
+    {
+        materials: [1, 0],
+        operations: [["add", 0], ["build"], ["add", 1], ["drain"]],
+    },
+    { materials: [0], operations: [["add", 0], ["swap", 0, 1], ["build"]] },
+    {
+        materials: [0],
+        operations: [["add", 0], ["swap", 0, 1], ["drain"], ["build"]],
+    },
+    {
+        materials: [0, 0],
+        operations: [["add", 0], ["build"], ["thin", 1], ["add", 1], ["drain"]],
+    },
+    {
+        materials: [0],
+        operations: [
+            ["thin", 0],
+            ["add", 0],
+            ["build"],
+            ["swap", 0, 1],
+            ["drain"],
+        ],
+    },
+    {
+        materials: [-1, -1],
+        operations: [
+            ["add", 0],
+            ["add", 1],
+            ["build"],
+            ["thin", 1],
+            ["swap", 0, 0],
+            ["swap", 1, 0],
+            ["drain"],
+        ],
+    },
+    {
+        materials: [0],
+        operations: [["add", 0], ["build"], ["swap", 0, 1], ["drain"]],
+    },
+    {
+        materials: [0],
+        operations: [
+            ["add", 0],
+            ["build"],
+            ["swap", 0, 1],
+            ["swap", 0, 0],
+            ["drain"],
+        ],
+    },
+    {
+        materials: [0],
+        operations: [
+            ["add", 0],
+            ["add", 0],
+            ["build"],
+            ["add", 0],
+            ["add", 0],
+            ["drain"],
+        ],
+    },
+    {
+        materials: [-1, -1],
+        operations: [
+            ["add", 0],
+            ["add", 1],
+            ["build"],
+            ["swap", 0, 0],
+            ["swap", 1, 0],
+            ["drain"],
+        ],
+    },
+    {
+        materials: [0, 0],
+        operations: [
+            ["add", 0],
+            ["add", 1],
+            ["build"],
+            ["remove", 0],
+            ["rebuild"],
+        ],
+    },
+    {
+        materials: [0],
+        operations: [["add", 0], ["build"], ["remove", 0], ["rebuild"]],
+    },
+    {
+        materials: [0, 0],
+        operations: [
+            ["add", 0],
+            ["build"],
+            ["remove", 0],
+            ["rebuild"],
+            ["add", 1],
+            ["build"],
+        ],
+    },
+    {
+        materials: [0],
+        operations: [
+            ["add", 0],
+            ["build"],
+            ["remove", 0],
+            ["rebuild"],
+            ["build"],
+        ],
+    },
+    { materials: [0], operations: [["add", 0], ["rebuild"], ["build"]] },
+    { materials: [0], operations: [["add", 0], ["swap", 0, -1], ["build"]] },
+    {
+        materials: [0],
+        operations: [
+            ["add", 0],
+            ["build"],
+            ["swap", 0, -1],
+            ["drain"],
+            ["rebuild"],
+        ],
+    },
+    {
+        materials: [0],
+        operations: [
+            ["add", 0],
+            ["build"],
+            ["swap", 0, 2],
+            ["drain"],
+            ["swap", 0, 1],
+            ["drain"],
+            ["rebuild"],
+        ],
+    },
+    {
+        materials: [0, 2],
+        operations: [
+            ["add", 0],
+            ["add", 1],
+            ["build"],
+            ["swap", 0, 2],
+            ["drain"],
+            ["swap", 0, 1],
+            ["drain"],
+        ],
+    },
+    {
+        materials: [2, 3],
+        operations: [
+            ["add", 0],
+            ["add", 1],
+            ["build"],
+            ["swap", 0, 0],
+            ["swap", 1, 0],
+            ["drain"],
+            ["rebuild"],
+        ],
+    },
+    {
+        materials: [4, 5, 6],
+        operations: [
+            ["add", 0],
+            ["add", 1],
+            ["add", 2],
+            ["build"],
+            ["swap", 0, 0],
+            ["drain"],
+            ["rebuild"],
+        ],
+    },
+    {
+        materials: [0, 0],
+        operations: [
+            ["add", 0],
+            ["add", 0],
+            ["add", 1],
+            ["build"],
+            ["swap", 0, 4],
+            ["drain"],
+            ["rebuild"],
+        ],
+    },
 ];
 
 /** Execute the pin's queue, runtime dispatch and complete rebuild core with inert GPU objects. */
-function sourceOracle(context: LoweringContext): (input: Scenario) => Promise<unknown> {
-    const declaration = (module: string, name: string) => context.functionDeclaration(module, name).declaration.getText().replace(/^export /, "");
-    const add = context.functionDeclaration(sceneModule, "addToScene").declaration;
-    const build = context.variableInitializer(add, "build").parent.parent.parent;
+function sourceOracle(
+    context: LoweringContext,
+): (input: Scenario) => Promise<unknown> {
+    const declaration = (module: string, name: string) =>
+        context
+            .functionDeclaration(module, name)
+            .declaration.getText()
+            .replace(/^export /, "");
+    const add = context.functionDeclaration(
+        sceneModule,
+        "addToScene",
+    ).declaration;
+    const build = context.variableInitializer(add, "build").parent.parent
+        .parent;
     assert.ok(ts.isVariableStatement(build) && ts.isBlock(build.parent));
-    const attachment = build.parent.statements.slice(build.parent.statements.indexOf(build)).map(node => node.getText()).join("\n");
-    const pbr = context.functionDeclaration(pbrModule, "buildPbrRenderables").declaration;
-    const gamma = context.variableInitializer(pbr, "hasGammaAlbedo").parent.parent.parent.getText();
-    const scan = pbr.body!.statements.find(node => ts.isForStatement(node) && node.getText().includes("hasGammaAlbedo"));
+    const attachment = build.parent.statements
+        .slice(build.parent.statements.indexOf(build))
+        .map((node) => node.getText())
+        .join("\n");
+    const pbr = context.functionDeclaration(
+        pbrModule,
+        "buildPbrRenderables",
+    ).declaration;
+    const gamma = context
+        .variableInitializer(pbr, "hasGammaAlbedo")
+        .parent.parent.parent.getText();
+    const scan = pbr.body!.statements.find(
+        (node) =>
+            ts.isForStatement(node) &&
+            node.getText().includes("hasGammaAlbedo"),
+    );
     assert.ok(scan && ts.isForStatement(scan) && ts.isBlock(scan.statement));
-    const gammaStatements = scan.statement.statements.filter(node => ts.isVariableStatement(node) || node.getText().startsWith("hasGammaAlbedo"));
-    const gammaScan = ts.createPrinter().printNode(ts.EmitHint.Unspecified,
-        ts.factory.updateForStatement(scan, scan.initializer, scan.condition, scan.incrementor,
-            ts.factory.updateBlock(scan.statement, gammaStatements)), pbr.getSourceFile());
-    const group = context.variableInitializer(pbr, "group").parent.parent.parent.getText();
-    const invalidator = pbr.body!.statements.find(node => ts.isIfStatement(node) && node.getText().includes("group._w"))!.getText();
+    const gammaStatements = scan.statement.statements.filter(
+        (node) =>
+            ts.isVariableStatement(node) ||
+            node.getText().startsWith("hasGammaAlbedo"),
+    );
+    const gammaScan = ts
+        .createPrinter()
+        .printNode(
+            ts.EmitHint.Unspecified,
+            ts.factory.updateForStatement(
+                scan,
+                scan.initializer,
+                scan.condition,
+                scan.incrementor,
+                ts.factory.updateBlock(scan.statement, gammaStatements),
+            ),
+            pbr.getSourceFile(),
+        );
+    const group = context
+        .variableInitializer(pbr, "group")
+        .parent.parent.parent.getText();
+    const invalidator = pbr
+        .body!.statements.find(
+            (node) =>
+                ts.isIfStatement(node) && node.getText().includes("group._w"),
+        )!
+        .getText();
     const rebuildFile = context.sourceFile("src/scene/scene-rebuild.ts");
-    const rebuildSource = rebuildFile.statements.filter(node => !ts.isImportDeclaration(node)).map(node => node.getText().replace(/^export /, "")).join("\n");
+    const rebuildSource = rebuildFile.statements
+        .filter((node) => !ts.isImportDeclaration(node))
+        .map((node) => node.getText().replace(/^export /, ""))
+        .join("\n");
     const runtimeModule = "src/scene/scene-runtime-mesh-build.ts";
-    const code = transpileCommonJs(`
+    const code = transpileCommonJs(
+        `
         const require = () => ({A, C, X, rebuildScenePbrPipelines});
         const _lateCleanup = undefined;
         const retireGpuResources = (_engine, callback) => callback();
         ${declaration("src/scene/mesh-scene-registry.ts", "enqueueMaterialSwap")}
         ${declaration("src/scene/scene-material-swap.ts", "processMaterialSwaps")}
-        ${["A", "B", "C", "X", "moveRuntimeMeshToGroup"].map(name => declaration(runtimeModule, name)).join("\n")}
+        ${["A", "B", "C", "X", "moveRuntimeMeshToGroup"].map((name) => declaration(runtimeModule, name)).join("\n")}
         ${declaration("src/mesh/thin-instance.ts", "buildRuntimeThinMesh")}
         ${declaration(sceneModule, "buildScene")}
         ${rebuildSource}
@@ -135,25 +360,47 @@ function sourceOracle(context: LoweringContext): (input: Scenario) => Promise<un
             return {events, failures, members: (group ?? []).map(mesh => mesh.id), ready: !!group?.r,
                 invalidates: !!group?._w, queue: scene._materialSwapQueue.map(mesh => mesh.id), built: scene._built,
                 groups: [...scene._groups].map(([key, meshes]) => [key.key, meshes.map(mesh => mesh.id), !!meshes.r])};
-        };`, sceneModule);
-    return new Function(code)() as (input: Scenario) => Promise<unknown>;
+        };`,
+        sceneModule,
+    );
+    return createJavaScriptFunction(code)() as (
+        input: Scenario,
+    ) => Promise<unknown>;
 }
 
-test("PBR material group timing, later additions and rebuild inputs agree with source execution", async t => {
+test("PBR material group timing, later additions and rebuild inputs agree with source execution", async (t) => {
     const native = optionalNativeFixtureTools();
-    if (!native) {t.skip("Native fixture compiler unavailable."); return;}
-    const contexts = [new LoweringContext(),
-        doctoredContext(sceneModule, "ctx._built || group.r", "ctx._built && group.r"),
-        doctoredContext(pbrModule, "hasGammaAlbedo ||= !!mat._gammaAlbedo", "hasGammaAlbedo &&= !!mat._gammaAlbedo")];
+    if (!native) {
+        t.skip("Native fixture compiler unavailable.");
+        return;
+    }
+    const contexts = [
+        new LoweringContext(),
+        doctoredContext(
+            sceneModule,
+            "ctx._built || group.r",
+            "ctx._built && group.r",
+        ),
+        doctoredContext(
+            pbrModule,
+            "hasGammaAlbedo ||= !!mat._gammaAlbedo",
+            "hasGammaAlbedo &&= !!mat._gammaAlbedo",
+        ),
+    ];
     const rows = [];
     for (const [variant, context] of contexts.entries()) {
         const oracle = sourceOracle(context);
-        for (const input of scenarios) rows.push({variant, input, expected: await oracle(input)});
+        for (const input of scenarios)
+            rows.push({ variant, input, expected: await oracle(input) });
     }
-    const directory = resolve("artifacts/test-pbr-material-groups"); mkdirSync(directory, {recursive: true});
+    const directory = resolve("artifacts/test-pbr-material-groups");
+    mkdirSync(directory, { recursive: true });
     writeFileSync(resolve(directory, "cases.json"), JSON.stringify(rows));
-    const file = resolve(directory, "check.cpp"), executable = resolve(directory, "check.exe");
-    writeFileSync(file, `#include <bblite/runtime.hpp>
+    const file = resolve(directory, "check.cpp"),
+        executable = resolve(directory, "check.exe");
+    writeFileSync(
+        file,
+        `#include <bblite/runtime.hpp>
 #include <bblite/js_data.hpp>
 #include <nlohmann/json.hpp>
 #include <fstream>
@@ -249,22 +496,71 @@ void check(const nlohmann::json& row) {
 }
 int main() {try {nlohmann::json rows; std::ifstream("cases.json") >> rows; for (const auto& row : rows) bbl::check(row);}
     catch (const std::exception& error) {std::cerr << error.what(); return 1;}}
-`);
-    runNativeFixtureCompiler(native, ["/nologo", "/std:c++20", "/W4", "/WX", "/permissive-", "/EHsc", "/MD", "/O2",
-        `/Fo:${directory}/`, `/Fe:${executable}`, "/I", "native/include", "/I", resolve(nativeFixtureVcpkgRoot, "include"), file]);
-    assert.equal(execFileSync(executable, {cwd: directory, encoding: "utf8"}), "");
+`,
+    );
+    runNativeFixtureCompiler(native, [
+        "/nologo",
+        "/std:c++20",
+        "/W4",
+        "/WX",
+        "/permissive-",
+        "/EHsc",
+        "/MD",
+        "/O2",
+        `/Fo:${directory}/`,
+        `/Fe:${executable}`,
+        "/I",
+        "native/include",
+        "/I",
+        resolve(nativeFixtureVcpkgRoot, "include"),
+        file,
+    ]);
+    assert.equal(
+        execFileSync(executable, { cwd: directory, encoding: "utf8" }),
+        "",
+    );
 });
 
 test("PBR group lowering refuses unrepresented membership and dispatch changes", () => {
     const context = new LoweringContext();
     assert.equal(materialGroupIdentity(context, "standard"), "2");
     assert.equal(materialGroupIdentity(context, "shader"), "3");
-    assert.match(materialGroupIdentity(context, "node"), /engine.materials.size/);
-    assert.throws(() => materialGroupIdentity(doctoredContext("src/material/standard/standard-group-builder.ts",
-        "return (_standardGroupBuilder = builder)", "return builder"), "standard"), /singleton lifetime|changed/);
-    assert.throws(() => lowerPbrMaterialGroups(doctoredContext(sceneModule,
-        "group.push(mesh)", "group.unshift(mesh)")), /Unsupported|Expected/);
-    assert.throws(() => lowerPbrMaterialGroups(doctoredContext("src/scene/scene-runtime-mesh-build.ts",
-        "chain = A(scene, pair ? entry[1] : mesh.material, mesh, chain)",
-        "chain = A(scene, pair ? entry[1] : mesh.material, otherMesh, chain)")), /dispatch order|changed/);
+    assert.match(
+        materialGroupIdentity(context, "node"),
+        /engine.materials.size/,
+    );
+    assert.throws(
+        () =>
+            materialGroupIdentity(
+                doctoredContext(
+                    "src/material/standard/standard-group-builder.ts",
+                    "return (_standardGroupBuilder = builder)",
+                    "return builder",
+                ),
+                "standard",
+            ),
+        /singleton lifetime|changed/,
+    );
+    assert.throws(
+        () =>
+            lowerPbrMaterialGroups(
+                doctoredContext(
+                    sceneModule,
+                    "group.push(mesh)",
+                    "group.unshift(mesh)",
+                ),
+            ),
+        /Unsupported|Expected/,
+    );
+    assert.throws(
+        () =>
+            lowerPbrMaterialGroups(
+                doctoredContext(
+                    "src/scene/scene-runtime-mesh-build.ts",
+                    "chain = A(scene, pair ? entry[1] : mesh.material, mesh, chain)",
+                    "chain = A(scene, pair ? entry[1] : mesh.material, otherMesh, chain)",
+                ),
+            ),
+        /dispatch order|changed/,
+    );
 });

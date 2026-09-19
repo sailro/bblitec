@@ -359,7 +359,8 @@ void pack_mat4_into_f32(
         let producerBytes: number | undefined;
         for (const task of this.tasks) {
             const facts = task.composed.kind === "scalar" ? CONTACT : GI;
-            const expected = 4 * floats(facts.module, facts.producerUniformFloats);
+            const expected =
+                4 * floats(facts.module, facts.producerUniformFloats);
             if (task.composed.producer.uniformBytes !== expected) {
                 throw new Error(
                     `Pinned ${facts.intrinsic} creates a ${task.composed.producer.uniformBytes}-byte ` +
@@ -442,10 +443,22 @@ double screen_space_clamp(double ${names.join(", double ")}) {
                 TEMPORAL_MODULE,
                 "computeTemporalWeight",
                 [
-                    { pinned: "configuredWeight", kind: "number", cpp: "configured_weight" },
-                    { pinned: "accumulatedSamples", kind: "number", cpp: "accumulated_samples" },
+                    {
+                        pinned: "configuredWeight",
+                        kind: "number",
+                        cpp: "configured_weight",
+                    },
+                    {
+                        pinned: "accumulatedSamples",
+                        kind: "number",
+                        cpp: "accumulated_samples",
+                    },
                 ],
-                { cppName: "compute_temporal_weight", returns: "double", calls },
+                {
+                    cppName: "compute_temporal_weight",
+                    returns: "double",
+                    calls,
+                },
             ),
             lowerPinnedFunction(
                 this.context,
@@ -454,7 +467,11 @@ double screen_space_clamp(double ${names.join(", double ")}) {
                 [
                     { pinned: "current", kind: "number", cpp: "current" },
                     { pinned: "reset", kind: "boolean", cpp: "reset" },
-                    { pinned: "temporalSamples", kind: "number", cpp: "temporal_samples" },
+                    {
+                        pinned: "temporalSamples",
+                        kind: "number",
+                        cpp: "temporal_samples",
+                    },
                 ],
                 { cppName: "advance_accumulation", returns: "double", calls },
             ),
@@ -474,7 +491,11 @@ double screen_space_clamp(double ${names.join(", double ")}) {
                 "phaseValue",
                 [
                     { pinned: "index", kind: "number", cpp: "index" },
-                    { pinned: "temporalSamples", kind: "number", cpp: "temporal_samples" },
+                    {
+                        pinned: "temporalSamples",
+                        kind: "number",
+                        cpp: "temporal_samples",
+                    },
                 ],
                 { cppName: "phase_value", returns: "double", calls },
             ),
@@ -617,7 +638,9 @@ ${body}`;
      */
     private refreshComposite(): string {
         const arms = (["scalar", "color"] as const)
-            .filter((kind) => this.tasks.some((task) => task.composed.kind === kind))
+            .filter((kind) =>
+                this.tasks.some((task) => task.composed.kind === kind),
+            )
             .map((kind) => {
                 const slots = this.compositeSlots(kind);
                 const facts = kind === "scalar" ? CONTACT : GI;
@@ -627,10 +650,7 @@ ${body}`;
                     "A screen-space composite's parameters were resized.");
             }
 ${slots
-    .map(
-        (slot, index) =>
-            `            write(${index}u, ${slot.native});`,
-    )
+    .map((slot, index) => `            write(${index}u, ${slot.native});`)
     .join("\n")}
             break;`;
             })
@@ -720,7 +740,10 @@ ${arms}
         };
         visit(body);
         if (slots.length === 0) {
-            this.context.contractError(body, "Expected the writer to read the task.");
+            this.context.contractError(
+                body,
+                "Expected the writer to read the task.",
+            );
         }
         this.compositeSlotCache.set(kind, slots);
         return slots;
@@ -792,7 +815,10 @@ ${arms}
      * shared `write_post_process_uniforms` switch, whose pass parameter is
      * named `task` like the pin's closure variable.
      */
-    private compositeWriterBody(kind: "scalar" | "color", indent: string): string {
+    private compositeWriterBody(
+        kind: "scalar" | "color",
+        indent: string,
+    ): string {
         const { file, body } = this.compositeWriter(kind);
         const bindings = new Map<string, PinnedBinding>([
             ["data", { cpp: "data", type: "f32", mutable: true }],
@@ -806,10 +832,15 @@ ${arms}
             );
         }
 
-        return lowerPinnedBody(file, body.statements, {
-            bindings,
-            calls: pinnedNumericMathCallsWithHypot(),
-        }, indent);
+        return lowerPinnedBody(
+            file,
+            body.statements,
+            {
+                bindings,
+                calls: pinnedNumericMathCallsWithHypot(),
+            },
+            indent,
+        );
     }
 
     /** `computeScreenSpaceScaledSize`, whole, as the backend's sizing rule. */
@@ -857,8 +888,12 @@ ${arms}
      */
     private recordContract(): void {
         for (const kind of ["scalar", "color"] as const) {
-            if (!this.tasks.some((task) => task.composed.kind === kind)) continue;
-            const { file, declaration: record } = this.taskMethod(kind, "record");
+            if (!this.tasks.some((task) => task.composed.kind === kind))
+                continue;
+            const { file, declaration: record } = this.taskMethod(
+                kind,
+                "record",
+            );
             const flagged = this.context.countNodes(
                 record,
                 (node) =>
@@ -949,7 +984,8 @@ ${
      */
     private sharedFactory(): string {
         for (const kind of ["scalar", "color"] as const) {
-            if (!this.tasks.some((task) => task.composed.kind === kind)) continue;
+            if (!this.tasks.some((task) => task.composed.kind === kind))
+                continue;
             const { file, declaration } = this.factoryOf(kind);
             for (const shape of [
                 "(source._descriptor.samples ?? 1) !== 1",
@@ -1084,25 +1120,25 @@ TaskHandle create_screen_space_task(
         // Every key the scene wrote reaches the pin's config, so the set is
         // checked against the config the pin declares: a renamed setting
         // would otherwise take its default silently.
-        this.context.assertSuppliedOptions(
-            module,
-            facts.configType,
-            [
-                "sourceTexture",
-                "camera",
-                ...(manifest.hasDepthTexture ? ["depthTexture"] : []),
-                ...(manifest.hasTarget ? ["targetTexture"] : []),
-                ...(manifest.name !== undefined ? ["name"] : []),
-                ...(kind === "scalar" ? ["lightDirection"] : []),
-                ...Object.keys(manifest.options),
-            ],
-        );
-        const name = manifest.name ?? this.pinnedDefault(declaration, file, "name");
+        this.context.assertSuppliedOptions(module, facts.configType, [
+            "sourceTexture",
+            "camera",
+            ...(manifest.hasDepthTexture ? ["depthTexture"] : []),
+            ...(manifest.hasTarget ? ["targetTexture"] : []),
+            ...(manifest.name !== undefined ? ["name"] : []),
+            ...(kind === "scalar" ? ["lightDirection"] : []),
+            ...Object.keys(manifest.options),
+        ]);
+        const name =
+            manifest.name ?? this.pinnedDefault(declaration, file, "name");
         const composition =
             manifest.options.composition ??
             this.pinnedDefault(declaration, file, "composition");
         if (typeof composition !== "string") {
-            this.context.contractError(declaration, "composition must be a string.");
+            this.context.contractError(
+                declaration,
+                "composition must be a string.",
+            );
         }
         if ((composition === "none") !== (composed.composite === null)) {
             throw new Error(
@@ -1118,13 +1154,24 @@ TaskHandle create_screen_space_task(
                 const native = nativeSettingName(field);
                 if (Array.isArray(value)) {
                     return value
-                        .map(
-                            (lane, index) =>
-                                `    options.${native}[${index}] = ${doubleLiteral(lane)};`,
-                        )
+                        .map((lane: unknown, index) => {
+                            if (typeof lane !== "number") {
+                                this.context.contractError(
+                                    declaration,
+                                    `Pinned setting '${field}' requires numeric lanes.`,
+                                );
+                            }
+                            return `    options.${native}[${index}] = ${doubleLiteral(lane)};`;
+                        })
                         .join("\n");
                 }
-                return `    options.${native} = ${doubleLiteral(value as number)};`;
+                if (typeof value !== "number") {
+                    this.context.contractError(
+                        declaration,
+                        `Pinned setting '${field}' requires a number.`,
+                    );
+                }
+                return `    options.${native} = ${doubleLiteral(value)};`;
             })
             .join("\n");
         if (
@@ -1251,7 +1298,11 @@ ${
         const literal = fallbacks[0]
             ? this.context.unwrapExpression(fallbacks[0].right)
             : undefined;
-        if (fallbacks.length !== 1 || !literal || !ts.isStringLiteral(literal)) {
+        if (
+            fallbacks.length !== 1 ||
+            !literal ||
+            !ts.isStringLiteral(literal)
+        ) {
             this.context.contractError(
                 declaration,
                 `Expected the factory to default config.${option} to a string.`,
@@ -1287,7 +1338,10 @@ class FrameWalker {
         this.bindings = this.executeBindings();
         const scope = this.scope(this.bindings);
         this.numeric = new PinnedNumericLowerer(file, scope);
-        this.boolean = new PinnedNumericLowerer(file, { ...scope, booleanOr: true });
+        this.boolean = new PinnedNumericLowerer(file, {
+            ...scope,
+            booleanOr: true,
+        });
     }
 
     private scope(bindings: Map<string, PinnedBinding>) {
@@ -1332,9 +1386,13 @@ class FrameWalker {
         calls.set("phaseValue", (args) => `phase_value(${args.join(", ")})`);
         calls.set(
             "packMat4IntoF32",
-            (args) => `pack_mat4_into_f32(${args[0]}.data(), ${args[1]}, ${args[2]})`,
+            (args) =>
+                `pack_mat4_into_f32(${args[0]}.data(), ${args[1]}, ${args[2]})`,
         );
-        calls.set("owner.clearIdentity", () => "decision.clear_identity = true");
+        calls.set(
+            "owner.clearIdentity",
+            () => "decision.clear_identity = true",
+        );
         calls.set(
             "composite.updateUniforms",
             () => "screen_space_refresh_composite(record, task)",
@@ -1369,15 +1427,24 @@ class FrameWalker {
 
     /** The execute scope: the task's fields, the closure's state, the inputs. */
     private executeBindings(): Map<string, PinnedBinding> {
-        const scalar = (cpp: string): PinnedBinding => ({ cpp, type: "scalar" });
+        const scalar = (cpp: string): PinnedBinding => ({
+            cpp,
+            type: "scalar",
+        });
         const flag = (cpp: string): PinnedBinding => ({ cpp, type: "bool" });
         const bindings = new Map<string, PinnedBinding>([
             ["enabled", flag("task.enabled")],
             ["task.enabled", flag("task.enabled")],
             ["camera", scalar("camera")],
             ["params.temporalSamples", scalar("task.temporal_samples")],
-            ["depthSource._width", scalar("static_cast<double>(inputs.depth_width)")],
-            ["depthSource._height", scalar("static_cast<double>(inputs.depth_height)")],
+            [
+                "depthSource._width",
+                scalar("static_cast<double>(inputs.depth_width)"),
+            ],
+            [
+                "depthSource._height",
+                scalar("static_cast<double>(inputs.depth_height)"),
+            ],
             ["depthSource._depthTexture", scalar("inputs.depth_allocation")],
             ["source._colorTexture", scalar("inputs.color_allocation")],
             ["lastDepthTexture", scalar("state.last_depth_allocation")],
@@ -1393,7 +1460,11 @@ class FrameWalker {
             ["height", scalar("static_cast<double>(inputs.effect_height)")],
             [
                 "producerUniformData",
-                { cpp: "decision.producer_uniforms", type: "f32", mutable: true },
+                {
+                    cpp: "decision.producer_uniforms",
+                    type: "f32",
+                    mutable: true,
+                },
             ],
             [
                 "invViewProj",
@@ -1405,19 +1476,29 @@ class FrameWalker {
             ],
             [
                 "depthIdentityChanged",
-                flag("(state.last_depth_allocation != inputs.depth_allocation)"),
+                flag(
+                    "(state.last_depth_allocation != inputs.depth_allocation)",
+                ),
             ],
             [
                 "colorIdentityChanged",
-                flag("(state.last_color_allocation != inputs.color_allocation)"),
+                flag(
+                    "(state.last_color_allocation != inputs.color_allocation)",
+                ),
             ],
             ["draws", scalar("0.0")],
         ]);
         for (const setting of SCREEN_SPACE_SCALAR_SETTINGS) {
-            bindings.set(`task.${setting}`, scalar(`task.${nativeSettingName(setting)}`));
+            bindings.set(
+                `task.${setting}`,
+                scalar(`task.${nativeSettingName(setting)}`),
+            );
         }
         if (this.kind === "scalar") {
-            bindings.set("task.lightDirection", { cpp: "light_direction", type: "vec3" });
+            bindings.set("task.lightDirection", {
+                cpp: "light_direction",
+                type: "vec3",
+            });
             bindings.set("lightDir", { cpp: "light_direction", type: "vec3" });
         }
         return bindings;
@@ -1448,7 +1529,10 @@ class FrameWalker {
      * The statements the backend owns, asserted and left untranslated, and
      * the few whose native shape the translator cannot spell on its own.
      */
-    private recognise(statement: ts.Statement, indent: string): string[] | undefined {
+    private recognise(
+        statement: ts.Statement,
+        indent: string,
+    ): string[] | undefined {
         const file = this.file;
         if (ts.isVariableStatement(statement)) {
             const declaration = statement.declarationList.declarations[0];
@@ -1461,7 +1545,9 @@ class FrameWalker {
                 return undefined;
             }
             const name = declaration.name.text;
-            const initializer = this.context.unwrapExpression(declaration.initializer);
+            const initializer = this.context.unwrapExpression(
+                declaration.initializer,
+            );
             if (name === "invViewProj") {
                 this.context.assertExpressionShape(
                     initializer,
@@ -1503,7 +1589,10 @@ class FrameWalker {
             if (name === "draws") {
                 return this.lowerResolveCall(initializer, indent);
             }
-            if (name === "depthIdentityChanged" || name === "colorIdentityChanged") {
+            if (
+                name === "depthIdentityChanged" ||
+                name === "colorIdentityChanged"
+            ) {
                 this.context.assertExpressionShape(
                     initializer,
                     name === "depthIdentityChanged"
@@ -1532,11 +1621,16 @@ class FrameWalker {
             return undefined;
         }
         if (ts.isExpressionStatement(statement)) {
-            const expression = this.context.unwrapExpression(statement.expression);
+            const expression = this.context.unwrapExpression(
+                statement.expression,
+            );
             const device = this.recogniseDeviceCall(
                 expression,
                 file,
-                { buffer: "producerUniformBuffer!", data: "producerUniformData" },
+                {
+                    buffer: "producerUniformBuffer!",
+                    data: "producerUniformData",
+                },
                 "the fullscreen triangle draw",
             );
             if (device === "upload") this.producerUploadSeen = true;
@@ -1553,7 +1647,12 @@ class FrameWalker {
         if (ts.isIfStatement(statement)) {
             const condition = statement.expression.getText(file);
             if (condition.includes("producerBindGroup")) {
-                if (!this.context.hasCall(statement.thenStatement, "rebuildProducerBindGroup")) {
+                if (
+                    !this.context.hasCall(
+                        statement.thenStatement,
+                        "rebuildProducerBindGroup",
+                    )
+                ) {
                     this.context.contractError(
                         statement,
                         "Expected the producer bind-group guard to rebuild it.",
@@ -1567,23 +1666,39 @@ class FrameWalker {
     }
 
     /** `const decision = decideScreenSpaceReset({...})`, field by field. */
-    private lowerDecision(initializer: ts.Expression, indent: string): string[] {
+    private lowerDecision(
+        initializer: ts.Expression,
+        indent: string,
+    ): string[] {
         if (
             !ts.isCallExpression(initializer) ||
-            initializer.expression.getText(this.file) !== "decideScreenSpaceReset" ||
+            initializer.expression.getText(this.file) !==
+                "decideScreenSpaceReset" ||
             initializer.arguments.length !== 1
         ) {
-            this.context.contractError(initializer, "Expected decideScreenSpaceReset(event).");
+            this.context.contractError(
+                initializer,
+                "Expected decideScreenSpaceReset(event).",
+            );
         }
         const event = this.context.unwrapExpression(initializer.arguments[0]!);
         if (!ts.isObjectLiteralExpression(event)) {
-            this.context.contractError(event, "Expected an event object literal.");
+            this.context.contractError(
+                event,
+                "Expected an event object literal.",
+            );
         }
         const fields = new Map(RESET_EVENT_MEMBERS);
         const lines = [`${indent}ScreenSpaceResetEvent reset_event{};`];
         for (const property of event.properties) {
-            if (!ts.isPropertyAssignment(property) || !ts.isIdentifier(property.name)) {
-                this.context.contractError(property, "Expected a named event field.");
+            if (
+                !ts.isPropertyAssignment(property) ||
+                !ts.isIdentifier(property.name)
+            ) {
+                this.context.contractError(
+                    property,
+                    "Expected a named event field.",
+                );
             }
             const native = fields.get(property.name.text);
             if (!native) {
@@ -1634,21 +1749,40 @@ class FrameWalker {
                 "engine._currentEncoder.beginRenderPass" ||
             initializer.arguments.length !== 1
         ) {
-            this.context.contractError(initializer, "Expected beginRenderPass(descriptor).");
+            this.context.contractError(
+                initializer,
+                "Expected beginRenderPass(descriptor).",
+            );
         }
-        const descriptor = this.context.unwrapExpression(initializer.arguments[0]!);
+        const descriptor = this.context.unwrapExpression(
+            initializer.arguments[0]!,
+        );
         if (!ts.isObjectLiteralExpression(descriptor)) {
-            this.context.contractError(descriptor, "Expected a pass descriptor literal.");
+            this.context.contractError(
+                descriptor,
+                "Expected a pass descriptor literal.",
+            );
         }
         const attachments = this.context.unwrapExpression(
             this.context.propertyInitializer(descriptor, "colorAttachments"),
         );
-        if (!ts.isArrayLiteralExpression(attachments) || attachments.elements.length !== 1) {
-            this.context.contractError(attachments, "Expected one colour attachment.");
+        if (
+            !ts.isArrayLiteralExpression(attachments) ||
+            attachments.elements.length !== 1
+        ) {
+            this.context.contractError(
+                attachments,
+                "Expected one colour attachment.",
+            );
         }
-        const attachment = this.context.unwrapExpression(attachments.elements[0]!);
+        const attachment = this.context.unwrapExpression(
+            attachments.elements[0]!,
+        );
         if (!ts.isObjectLiteralExpression(attachment)) {
-            this.context.contractError(attachment, "Expected an attachment literal.");
+            this.context.contractError(
+                attachment,
+                "Expected an attachment literal.",
+            );
         }
         this.context.assertExpressionShape(
             this.context.propertyInitializer(attachment, "view"),
@@ -1682,7 +1816,11 @@ class FrameWalker {
         }
         if (!callee.startsWith("pass.")) return undefined;
         if (callee === "pass.draw") {
-            this.context.assertExpressionShape(expression, "pass.draw(3)", drawLabel);
+            this.context.assertExpressionShape(
+                expression,
+                "pass.draw(3)",
+                drawLabel,
+            );
         }
         return "pass";
     }
@@ -1697,7 +1835,10 @@ class FrameWalker {
             call.arguments.length !== 3 ||
             call.arguments[0]!.getText(file) !== buffer ||
             call.arguments[1]!.getText(file) !== "0" ||
-            !this.context.unwrapExpression(call.arguments[2]!).getText(file).startsWith(data)
+            !this.context
+                .unwrapExpression(call.arguments[2]!)
+                .getText(file)
+                .startsWith(data)
         ) {
             this.context.contractError(
                 call,
@@ -1710,13 +1851,19 @@ class FrameWalker {
      * `const draws = 1 + owner.resolve({...})`: the temporal owner's own
      * `resolve`, inlined with the call's inputs bound in the caller's scope.
      */
-    private lowerResolveCall(initializer: ts.Expression, indent: string): string[] {
+    private lowerResolveCall(
+        initializer: ts.Expression,
+        indent: string,
+    ): string[] {
         if (
             !ts.isBinaryExpression(initializer) ||
             initializer.operatorToken.kind !== ts.SyntaxKind.PlusToken ||
             initializer.left.getText(this.file) !== "1"
         ) {
-            this.context.contractError(initializer, "Expected 1 + owner.resolve({...}).");
+            this.context.contractError(
+                initializer,
+                "Expected 1 + owner.resolve({...}).",
+            );
         }
         const call = this.context.unwrapExpression(initializer.right);
         if (
@@ -1728,15 +1875,35 @@ class FrameWalker {
         }
         const inputs = this.context.unwrapExpression(call.arguments[0]!);
         if (!ts.isObjectLiteralExpression(inputs)) {
-            this.context.contractError(inputs, "Expected a resolve inputs literal.");
+            this.context.contractError(
+                inputs,
+                "Expected a resolve inputs literal.",
+            );
         }
         const lines: string[] = [];
         const resolveBindings = new Map<string, PinnedBinding>([
-            ["uniformData", { cpp: "decision.temporal_uniforms", type: "f32", mutable: true }],
-            ["prevViewProj", { cpp: "state.prev_view_proj", type: "f32", mutable: true }],
-            ["prevView", { cpp: "state.prev_view", type: "f32", mutable: true }],
+            [
+                "uniformData",
+                {
+                    cpp: "decision.temporal_uniforms",
+                    type: "f32",
+                    mutable: true,
+                },
+            ],
+            [
+                "prevViewProj",
+                { cpp: "state.prev_view_proj", type: "f32", mutable: true },
+            ],
+            [
+                "prevView",
+                { cpp: "state.prev_view", type: "f32", mutable: true },
+            ],
         ]);
-        const matrices = new Set(["invViewProj", "viewMatrix", "viewProjMatrix"]);
+        const matrices = new Set([
+            "invViewProj",
+            "viewMatrix",
+            "viewProjMatrix",
+        ]);
         const textures = new Set(["rawTexture", "depthTexture"]);
         for (const property of inputs.properties) {
             let name: string;
@@ -1744,32 +1911,48 @@ class FrameWalker {
             if (ts.isShorthandPropertyAssignment(property)) {
                 name = property.name.text;
                 value = property.name;
-            } else if (ts.isPropertyAssignment(property) && ts.isIdentifier(property.name)) {
+            } else if (
+                ts.isPropertyAssignment(property) &&
+                ts.isIdentifier(property.name)
+            ) {
                 name = property.name.text;
                 value = property.initializer;
             } else {
-                return this.context.contractError(property, "Expected a named resolve input.");
+                return this.context.contractError(
+                    property,
+                    "Expected a named resolve input.",
+                );
             }
             if (textures.has(name)) continue;
             const lowered = this.numeric.expression(value);
             if (matrices.has(name)) {
-                resolveBindings.set(`inputs.${name}`, { cpp: lowered, type: "f32" });
+                resolveBindings.set(`inputs.${name}`, {
+                    cpp: lowered,
+                    type: "f32",
+                });
                 continue;
             }
             const temporary = `resolve_${name}`;
             lines.push(`${indent}const double ${temporary} = ${lowered};`);
-            resolveBindings.set(`inputs.${name}`, { cpp: temporary, type: "scalar" });
+            resolveBindings.set(`inputs.${name}`, {
+                cpp: temporary,
+                type: "scalar",
+            });
         }
         const { file, declaration: method } = this.owner.resolveMethod();
         // An input the call site omits takes the pin's own `?? <literal>`
         // default, read off the resolve body: the GI task passes no spatial
         // radius or phase, and what the resolve then writes is the pin's
         // literal rather than a value restated here.
-        for (const candidate of this.context.findNodes(method, ts.isBinaryExpression)) {
+        for (const candidate of this.context.findNodes(
+            method,
+            ts.isBinaryExpression,
+        )) {
             const split = this.context.nullishDefault(candidate);
             if (!split) continue;
             const key = split.left.getText(file);
-            if (!key.startsWith("inputs.") || resolveBindings.has(key)) continue;
+            if (!key.startsWith("inputs.") || resolveBindings.has(key))
+                continue;
             const literal = this.context.unwrapExpression(split.right);
             if (!ts.isNumericLiteral(literal)) {
                 this.context.contractError(
@@ -1785,7 +1968,8 @@ class FrameWalker {
         const resolveScope = this.scope(resolveBindings);
         const resolver = new PinnedNumericLowerer(file, {
             ...resolveScope,
-            returnValue: () => this.context.contractError(method, "resolve returns"),
+            returnValue: () =>
+                this.context.contractError(method, "resolve returns"),
         });
         for (const statement of method.body.statements) {
             const recognised = this.recogniseResolve(statement, file);
@@ -1796,17 +1980,29 @@ class FrameWalker {
     }
 
     /** The resolve statements the backend owns, asserted and skipped. */
-    private recogniseResolve(statement: ts.Statement, file: ts.SourceFile): boolean {
+    private recogniseResolve(
+        statement: ts.Statement,
+        file: ts.SourceFile,
+    ): boolean {
         if (ts.isVariableStatement(statement)) {
             const declaration = statement.declarationList.declarations[0];
-            if (!declaration || !ts.isIdentifier(declaration.name) || !declaration.initializer) {
+            if (
+                !declaration ||
+                !ts.isIdentifier(declaration.name) ||
+                !declaration.initializer
+            ) {
                 return false;
             }
             const name = declaration.name.text;
-            const initializer = this.context.unwrapExpression(declaration.initializer);
+            const initializer = this.context.unwrapExpression(
+                declaration.initializer,
+            );
             if (name.endsWith("IdentityChanged")) {
                 if (!this.context.hasCall(initializer, "identityChanged")) {
-                    this.context.contractError(initializer, "Expected an identityChanged test.");
+                    this.context.contractError(
+                        initializer,
+                        "Expected an identityChanged test.",
+                    );
                 }
                 return true;
             }
@@ -1829,7 +2025,9 @@ class FrameWalker {
             return false;
         }
         if (ts.isExpressionStatement(statement)) {
-            const expression = this.context.unwrapExpression(statement.expression);
+            const expression = this.context.unwrapExpression(
+                statement.expression,
+            );
             if (
                 this.recogniseDeviceCall(
                     expression,
@@ -1843,10 +2041,14 @@ class FrameWalker {
             if (
                 ts.isBinaryExpression(expression) &&
                 expression.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
-                expression.left.getText(file) === "renderPassDescriptor.colorAttachments"
+                expression.left.getText(file) ===
+                    "renderPassDescriptor.colorAttachments"
             ) {
                 const text = expression.right.getText(file);
-                if (!text.includes("stable._colorView!") || !text.includes('loadOp: "clear"')) {
+                if (
+                    !text.includes("stable._colorView!") ||
+                    !text.includes('loadOp: "clear"')
+                ) {
                     this.context.contractError(
                         expression,
                         "Expected the resolve pass to clear into the stable target.",
@@ -1858,7 +2060,12 @@ class FrameWalker {
         }
         if (ts.isIfStatement(statement)) {
             if (statement.expression.getText(file).includes("bindGroup")) {
-                if (!this.context.hasCall(statement.thenStatement, "rebuildBindGroup")) {
+                if (
+                    !this.context.hasCall(
+                        statement.thenStatement,
+                        "rebuildBindGroup",
+                    )
+                ) {
                     this.context.contractError(
                         statement,
                         "Expected the resolve bind-group guard to rebuild it.",
@@ -1870,13 +2077,15 @@ class FrameWalker {
         }
         if (ts.isReturnStatement(statement)) {
             if (statement.expression?.getText(file) !== "draws") {
-                this.context.contractError(statement, "Expected resolve to return draws.");
+                this.context.contractError(
+                    statement,
+                    "Expected resolve to return draws.",
+                );
             }
             return true;
         }
         return false;
     }
-
 }
 
 /** One deployed producer or resolve stage: a composed stage under its stem. */

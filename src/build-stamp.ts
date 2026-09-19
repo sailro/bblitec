@@ -21,12 +21,7 @@
 // drops a backend's translation units, and the same sources must digest
 // identically whichever backends are compiled in.
 import { createHash } from "node:crypto";
-import {
-    existsSync,
-    readFileSync,
-    readdirSync,
-    statSync,
-} from "node:fs";
+import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
 import { contentDigest } from "./validation-resume.js";
 
@@ -65,9 +60,7 @@ function walkFiles(
         if (entry.isDirectory()) {
             walkFiles(root, full, out);
         } else if (entry.isFile()) {
-            out.push(
-                relative(root, full).replace(/\\/g, "/"),
-            );
+            out.push(relative(root, full).replace(/\\/g, "/"));
         }
     }
     return out;
@@ -79,28 +72,31 @@ function walkFiles(
  * verified against the deployment instead of the binary; the stamp's own
  * outputs are excluded because they are derived from this list.
  */
-function compiledGeneratedFiles(
-    generatedDirectory: string,
-): string[] {
-    return walkFiles(generatedDirectory)
-        .filter(
-            (path) =>
-                path === "main.cpp" ||
-                path === "features.cmake" ||
-                (path.startsWith("upstream/") &&
-                    /\.(cpp|hpp)$/.test(path)),
-        )
-        // The listing is not a compiled file, so the filter above already
-        // leaves it out; `isGenerationOutput` in generation-stamp.ts names
-        // the same pair when it decides what generation itself wrote.
-        .filter((path) => path !== buildStampHeaderPath)
-        .sort();
+function compiledGeneratedFiles(generatedDirectory: string): string[] {
+    return (
+        walkFiles(generatedDirectory)
+            .filter(
+                (path) =>
+                    path === "main.cpp" ||
+                    path === "features.cmake" ||
+                    (path.startsWith("upstream/") && /\.(cpp|hpp)$/.test(path)),
+            )
+            // The listing is not a compiled file, so the filter above already
+            // leaves it out; `isGenerationOutput` in generation-stamp.ts names
+            // the same pair when it decides what generation itself wrote.
+            .filter((path) => path !== buildStampHeaderPath)
+            .sort()
+    );
 }
 
 function nativeBuildFiles(repositoryRoot: string): string[] {
     const nativeRoot = resolve(repositoryRoot, "native");
-    return ["CMakeLists.txt", ...(existsSync(nativeRoot)
-        ? readdirSync(nativeRoot).filter(name => name.endsWith(".cmake")) : [])];
+    return [
+        "CMakeLists.txt",
+        ...(existsSync(nativeRoot)
+            ? readdirSync(nativeRoot).filter((name) => name.endsWith(".cmake"))
+            : []),
+    ];
 }
 
 /** The handwritten native sources every configuration is built from. */
@@ -108,9 +104,7 @@ function nativeSourceFiles(repositoryRoot: string): string[] {
     const nativeRoot = resolve(repositoryRoot, "native");
     const tracked = nativeBuildFiles(repositoryRoot);
     for (const directory of ["src", "include"]) {
-        for (const path of walkFiles(
-            resolve(nativeRoot, directory),
-        )) {
+        for (const path of walkFiles(resolve(nativeRoot, directory))) {
             tracked.push(`${directory}/${path}`);
         }
     }
@@ -134,9 +128,7 @@ export function computeBuildStamp(
     if (generatedInputs) {
         inputs.push(...generatedInputs);
     } else {
-        for (const path of compiledGeneratedFiles(
-            generatedDirectory,
-        )) {
+        for (const path of compiledGeneratedFiles(generatedDirectory)) {
             inputs.push({
                 path: `generated/${path}`,
                 // This path also handles explicit post-generation changes,
@@ -156,12 +148,7 @@ export function computeBuildStamp(
     }
     const stamp = digest(
         Buffer.from(
-            inputs
-                .map(
-                    (input) =>
-                        `${input.path} ${input.sha256}`,
-                )
-                .join("\n"),
+            inputs.map((input) => `${input.path} ${input.sha256}`).join("\n"),
             "utf8",
         ),
     );
@@ -226,17 +213,14 @@ export function comparePayload(
     const expected = new Set(walkFiles(sourceDirectory));
     for (const path of expected) {
         const deployed = resolve(deployedDirectory, path);
-        if (
-            !existsSync(deployed) ||
-            !statSync(deployed).isFile()
-        ) {
+        if (!existsSync(deployed) || !statSync(deployed).isFile()) {
             mismatches.push({ path, reason: "missing" });
             continue;
         }
         if (
-            !readFileSync(
-                resolve(sourceDirectory, path),
-            ).equals(readFileSync(deployed))
+            !readFileSync(resolve(sourceDirectory, path)).equals(
+                readFileSync(deployed),
+            )
         ) {
             mismatches.push({ path, reason: "changed" });
         }
@@ -292,20 +276,13 @@ export function payloadOrphans(
 export function readCacheConfiguration(
     buildDirectory: string,
 ): Record<string, string> | undefined {
-    const cachePath = resolve(
-        buildDirectory,
-        "CMakeCache.txt",
-    );
+    const cachePath = resolve(buildDirectory, "CMakeCache.txt");
     if (!existsSync(cachePath)) {
         return undefined;
     }
     const values: Record<string, string> = {};
-    for (const line of readFileSync(cachePath, "utf8").split(
-        /\r?\n/,
-    )) {
-        const match = /^([A-Za-z0-9_]+):[A-Z]+=(.*)$/.exec(
-            line,
-        );
+    for (const line of readFileSync(cachePath, "utf8").split(/\r?\n/)) {
+        const match = /^([A-Za-z0-9_]+):[A-Z]+=(.*)$/.exec(line);
         if (match) {
             values[match[1]!] = match[2]!;
         }
@@ -339,13 +316,13 @@ function requestedCacheConfiguration(
     return requested;
 }
 
+export function cachePathKey(path: string): string {
+    const absolute = resolve(path);
+    return process.platform === "win32" ? absolute.toLowerCase() : absolute;
+}
+
 export function sameCachePath(left: string, right: string): boolean {
-    if (left === right) return true;
-    const leftPath = resolve(left);
-    const rightPath = resolve(right);
-    return process.platform === "win32"
-        ? leftPath.toLowerCase() === rightPath.toLowerCase()
-        : leftPath === rightPath;
+    return left === right || cachePathKey(left) === cachePathKey(right);
 }
 
 /**
@@ -422,7 +399,9 @@ export function generatorWouldReconfigure(
     if (!existsSync(generationMarker)) return true;
     const generationTime = statSync(generationMarker).mtimeMs;
     const configureInputs = [
-        ...nativeBuildFiles(repositoryRoot).map(path => resolve(repositoryRoot, "native", path)),
+        ...nativeBuildFiles(repositoryRoot).map((path) =>
+            resolve(repositoryRoot, "native", path),
+        ),
         resolve(repositoryRoot, "native", "vcpkg.json"),
         resolve(generatedDirectory, "features.cmake"),
     ];

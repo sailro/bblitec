@@ -20,10 +20,7 @@ import {
     readPinnedBackgroundGroundSource,
     readPinnedBackgroundSkyboxSource,
 } from "../src/shader-builtins-background.js";
-import {
-    findRepositoryRoot,
-    readUpstreamPin,
-} from "../src/upstream-source.js";
+import { findRepositoryRoot, readUpstreamPin } from "../src/upstream-source.js";
 import { resolve } from "node:path";
 import { materialVertexWgsl } from "../src/shader-builtins-standard.js";
 
@@ -91,9 +88,11 @@ test("lowers matrix, varying, branch, and discard WGSL nodes", () => {
         getShaderMaterialProgram("circular-cutout"),
     );
     assert.deepEqual(
-        program.reflection.varyings.map(
-            ({ name, type, attribute }) => ({ name, type, attribute }),
-        ),
+        program.reflection.varyings.map(({ name, type, attribute }) => ({
+            name,
+            type,
+            attribute,
+        })),
         [
             {
                 name: "position",
@@ -130,7 +129,10 @@ test("lowers matrix, varying, branch, and discard WGSL nodes", () => {
     const fragment = emitNativeWgslProgram(program, "fragment");
     assert.match(vertex, /@location\(3\) uv: vec2<f32>/);
     assert.match(vertex, /shaderSystem\.worldViewProjection \* vec4<f32>/);
-    assert.match(fragment, /distance\(input\.uv, vec2<f32>\(0\.5, 0\.5\)\) < 0\.18/);
+    assert.match(
+        fragment,
+        /distance\(input\.uv, vec2<f32>\(0\.5, 0\.5\)\) < 0\.18/,
+    );
     assert.match(fragment, /\sdiscard;/);
 });
 
@@ -151,28 +153,33 @@ test("composes Babylon custom shader snippets into standalone WGSL", () => {
 
 test("generates Tint utility WGSL entry points and bindings", () => {
     assert.match(blitVertexWgsl(), /@builtin\(vertex_index\)/);
-    assert.match(blitFragmentWgsl(), /@group\(2\) @binding\(1\) var sourceSampler/);
+    assert.match(
+        blitFragmentWgsl(),
+        /@group\(2\) @binding\(1\) var sourceSampler/,
+    );
     assert.match(blitFragmentWgsl(), /textureSampleLevel/);
     // The lifted pinned `ip()`: the pin's own parameter block and exposure
     // multiply, under the native fragment uniform space.
     assert.match(imageProcessingFragmentWgsl(), /var c=r\.rgb\*p\.e;/);
-    assert.match(imageProcessingFragmentWgsl(), /@group\(3\)@binding\(0\)var<uniform> p:P;/);
+    assert.match(
+        imageProcessingFragmentWgsl(),
+        /@group\(3\)@binding\(0\)var<uniform> p:P;/,
+    );
     assert.match(imageProcessingFragmentWgsl(), /1\.590579/);
     assert.match(depthOnlyFragmentWgsl(), /@fragment\s+fn mainFragment\(\)/);
     assert.match(diagnosticIdFragmentWgsl(), /@group\(3\) @binding\(0\)/);
     assert.match(diagnosticIdFragmentWgsl(), /textureSample/);
-    assert.match(diagnosticClusterFragmentWgsl(), /@builtin\(primitive_index\)/);
+    assert.match(
+        diagnosticClusterFragmentWgsl(),
+        /@builtin\(primitive_index\)/,
+    );
     assert.match(diagnosticClusterFragmentWgsl(), /clusterId >> 16u/);
 });
 
 function pinnedPackageRoot(): string {
     const repositoryRoot = findRepositoryRoot();
     const pin = readUpstreamPin(repositoryRoot);
-    return resolve(
-        repositoryRoot,
-        "node_modules",
-        ...pin.package.split("/"),
-    );
+    return resolve(repositoryRoot, "node_modules", ...pin.package.split("/"));
 }
 
 test("generates Tint background WGSL for 2D and cube textures", () => {
@@ -218,10 +225,7 @@ test("generates the shared Tint material vertex interface", () => {
         instancedVertex,
         /instanceUniforms\.parentWorld \* instanceWorld/,
     );
-    assert.match(
-        deformedInstancedVertex,
-        /@binding\(2\).*instanceUniforms/,
-    );
+    assert.match(deformedInstancedVertex, /@binding\(2\).*instanceUniforms/);
 });
 
 test("places stage storage buffers in SDL resource groups after samplers", () => {
@@ -246,12 +250,14 @@ struct VertexOutput {
 }`,
         attributes: ["position"],
         uniforms: [],
-        samplerDeclarations: [{
-            name: "albedo",
-            sampleType: "float",
-            viewDimension: "2d",
-            comparison: false,
-        }],
+        samplerDeclarations: [
+            {
+                name: "albedo",
+                sampleType: "float",
+                viewDimension: "2d",
+                comparison: false,
+            },
+        ],
         storageBuffers: [
             { name: "vertexData", type: "array<vec4<f32>>" },
             { name: "fragmentData", type: "array<vec4<f32>>" },
@@ -341,7 +347,10 @@ fn mainFragment(input: VertexOutput) -> @location(0) vec4<f32> {
     // The struct field names are the caller's, because the caller's own
     // WGSL is what reads them.
     const vertex = emitNativeWgslProgram(program, "vertex");
-    assert.match(vertex, /struct ShaderSystemUniforms \{\s*\n\s*world: mat4x4<f32>,\s*\n\s*viewProjection: mat4x4<f32>,/);
+    assert.match(
+        vertex,
+        /struct ShaderSystemUniforms \{\s*\n\s*world: mat4x4<f32>,\s*\n\s*viewProjection: mat4x4<f32>,/,
+    );
     assert.match(
         emitNativeWgslProgram(program, "fragment"),
         /lineColor: vec4<f32>/,
@@ -371,11 +380,7 @@ fn mainFragment(input: VertexOutput) -> @location(0) vec4<f32> {
     return vec4<f32>(eye, shaderUniforms.sky.w);
 }`,
         attributes: ["position"],
-        uniforms: [
-            "worldViewProjection",
-            "cameraPosition",
-            "sky:vec4<f32>",
-        ],
+        uniforms: ["worldViewProjection", "cameraPosition", "sky:vec4<f32>"],
         needAlphaBlending: false,
         needAlphaTesting: false,
         backFaceCulling: false,

@@ -4,67 +4,135 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { createRequire } from "node:module";
 import test from "node:test";
-import HavokPhysics, { type HP_BodyId, type HP_CollectorId, type HP_WorldId } from "@babylonjs/havok";
+import HavokPhysics, {
+    type HP_BodyId,
+    type HP_CollectorId,
+    type HP_WorldId,
+} from "@babylonjs/havok";
 import { compileSource } from "../src/compiler.js";
 import { emitUpstreamGenerated } from "../src/upstream-lower.js";
 import { importPinnedModule } from "../src/pinned-shader-composer.js";
-import { nativeFixtureVcpkgRoot, optionalNativeFixtureTools, runNativeFixtureCompiler } from "./native-fixture.js";
+import {
+    nativeFixtureVcpkgRoot,
+    optionalNativeFixtureTools,
+    runNativeFixtureCompiler,
+} from "./native-fixture.js";
 
 const tools = optionalNativeFixtureTools();
 
 test("pinned Havok ray queries select the closest body after trigger and mask filtering", async () => {
     const require = createRequire(import.meta.url);
-    const wasmBinary = new Uint8Array(readFileSync(require.resolve("@babylonjs/havok/lib/esm/HavokPhysics.wasm"))).buffer;
+    const wasmBinary = new Uint8Array(
+        readFileSync(
+            require.resolve("@babylonjs/havok/lib/esm/HavokPhysics.wasm"),
+        ),
+    ).buffer;
     const hknp = await HavokPhysics({ wasmBinary });
-    interface Body { _hkBody: HP_BodyId }
+    interface Body {
+        _hkBody: HP_BodyId;
+    }
     interface World {
         _hknp: typeof hknp;
         _hkWorld: HP_WorldId;
         _bodies: Body[];
         _queryCollector?: HP_CollectorId;
     }
-    interface Query { membership?: number; collideWith?: number; shouldHitTriggers?: boolean }
-    interface Point { x: number; y: number; z: number }
+    interface Query {
+        membership?: number;
+        collideWith?: number;
+        shouldHitTriggers?: boolean;
+    }
+    interface Point {
+        x: number;
+        y: number;
+        z: number;
+    }
     const { physicsRaycast } = await importPinnedModule<{
-        physicsRaycast(world: World, from: Point, to: Point, query?: Query): {
-            hasHit: boolean; body: Body | null; hitPoint: Point;
+        physicsRaycast(
+            this: void,
+            world: World,
+            from: Point,
+            to: Point,
+            query?: Query,
+        ): {
+            hasHit: boolean;
+            body: Body | null;
+            hitPoint: Point;
         };
     }>("physics/havok-queries.js");
     const solid = { _hkBody: hknp.HP_Body_Create()[1] };
     const trigger = { _hkBody: hknp.HP_Body_Create()[1] };
-    const shapes = [hknp.HP_Shape_CreateBox([0, 0, 0], [0, 0, 0, 1], [2, 2, 2])[1],
-        hknp.HP_Shape_CreateBox([0, 0, 0], [0, 0, 0, 1], [1, 1, 1])[1]];
-    const world: World = { _hknp: hknp, _hkWorld: hknp.HP_World_Create()[1], _bodies: [solid, trigger] };
+    const shapes = [
+        hknp.HP_Shape_CreateBox([0, 0, 0], [0, 0, 0, 1], [2, 2, 2])[1],
+        hknp.HP_Shape_CreateBox([0, 0, 0], [0, 0, 0, 1], [1, 1, 1])[1],
+    ];
+    const world: World = {
+        _hknp: hknp,
+        _hkWorld: hknp.HP_World_Create()[1],
+        _bodies: [solid, trigger],
+    };
     try {
         for (const [index, body] of world._bodies.entries()) {
             hknp.HP_Body_SetMotionType(body._hkBody, hknp.MotionType.STATIC);
             hknp.HP_Body_SetShape(body._hkBody, shapes[index]!);
-            hknp.HP_Body_SetQTransform(body._hkBody, [[0, 0, index === 0 ? 0 : 3], [0, 0, 0, 1]]);
+            hknp.HP_Body_SetQTransform(body._hkBody, [
+                [0, 0, index === 0 ? 0 : 3],
+                [0, 0, 0, 1],
+            ]);
             hknp.HP_World_AddBody(world._hkWorld, body._hkBody, false);
         }
         hknp.HP_Shape_SetFilterInfo(shapes[0]!, [1, -1]);
         hknp.HP_Shape_SetFilterInfo(shapes[1]!, [2, 4]);
         hknp.HP_Shape_SetTrigger(shapes[1]!, true);
         hknp.HP_World_Step(world._hkWorld, 1 / 60);
-        const ray = (query?: Query, z = 0) => physicsRaycast(world, { x: 0, y: 0, z: 5 }, { x: 0, y: 0, z }, query);
+        const ray = (query?: Query, z = 0) =>
+            physicsRaycast(
+                world,
+                { x: 0, y: 0, z: 5 },
+                { x: 0, y: 0, z },
+                query,
+            );
         assert.equal(ray().body, solid);
         assert.equal(ray({ shouldHitTriggers: false }).body, solid);
         assert.equal(ray({ shouldHitTriggers: true }).body, trigger);
         assert.equal(ray({ shouldHitTriggers: true }).hitPoint.z, 3.5);
         for (const include of [true, false, true]) {
-            assert.equal(ray({ shouldHitTriggers: include }).body, include ? trigger : solid);
-            assert.equal(ray({ shouldHitTriggers: include }, 2).body, include ? trigger : null);
+            assert.equal(
+                ray({ shouldHitTriggers: include }).body,
+                include ? trigger : solid,
+            );
+            assert.equal(
+                ray({ shouldHitTriggers: include }, 2).body,
+                include ? trigger : null,
+            );
         }
-        assert.equal(ray({ membership: 4, collideWith: 1, shouldHitTriggers: true }).body, solid);
-        assert.equal(ray({ membership: 4, collideWith: 2, shouldHitTriggers: true }).body, trigger);
-        assert.equal(ray({ membership: 8, collideWith: 2, shouldHitTriggers: true }).body, null);
-        assert.equal(ray({ membership: 4, collideWith: 2, shouldHitTriggers: false }).body, null);
+        assert.equal(
+            ray({ membership: 4, collideWith: 1, shouldHitTriggers: true })
+                .body,
+            solid,
+        );
+        assert.equal(
+            ray({ membership: 4, collideWith: 2, shouldHitTriggers: true })
+                .body,
+            trigger,
+        );
+        assert.equal(
+            ray({ membership: 8, collideWith: 2, shouldHitTriggers: true })
+                .body,
+            null,
+        );
+        assert.equal(
+            ray({ membership: 4, collideWith: 2, shouldHitTriggers: false })
+                .body,
+            null,
+        );
         hknp.HP_Shape_SetTrigger(shapes[1]!, false);
         assert.equal(ray().body, trigger);
         hknp.HP_Shape_SetTrigger(shapes[1]!, true);
         assert.equal(ray().body, solid);
     } finally {
-        if (world._queryCollector) hknp.HP_QueryCollector_Release(world._queryCollector);
+        if (world._queryCollector)
+            hknp.HP_QueryCollector_Release(world._queryCollector);
         for (const body of world._bodies) {
             hknp.HP_World_RemoveBody(world._hkWorld, body._hkBody);
             hknp.HP_Body_Release(body._hkBody);
@@ -74,10 +142,13 @@ test("pinned Havok ray queries select the closest body after trigger and mask fi
     }
 });
 
-test("physics rays preserve body Map identity, trigger filtering and guarded misses", { skip: !tools }, () => {
-    const output = resolve("artifacts/physics-raycast-body");
-    mkdirSync(output, { recursive: true });
-    const source = `
+test(
+    "physics rays preserve body Map identity, trigger filtering and guarded misses",
+    { skip: !tools },
+    () => {
+        const output = resolve("artifacts/physics-raycast-body");
+        mkdirSync(output, { recursive: true });
+        const source = `
         import HavokPhysics from "@babylonjs/havok";
         import { createEngine, createSceneContext, createHavokWorld, createBox,
             createPhysicsBody, createPhysicsShape, setPhysicsBodyShape, setPhysicsShapeIsTrigger, PhysicsMotionType,
@@ -180,10 +251,16 @@ test("physics rays preserve body Map identity, trigger filtering and guarded mis
         registerScene(scene);
         startEngine(engine);
     `;
-    const compiled = compileSource(source);
-    emitUpstreamGenerated(output, [...compiled.manifest.features, "camera:free", "renderer:scene"]);
-    writeFileSync(join(output, "program.hpp"), compiled.cpp);
-    writeFileSync(join(output, "check.cpp"), `
+        const compiled = compileSource(source);
+        emitUpstreamGenerated(output, [
+            ...compiled.manifest.features,
+            "camera:free",
+            "renderer:scene",
+        ]);
+        writeFileSync(join(output, "program.hpp"), compiled.cpp);
+        writeFileSync(
+            join(output, "check.cpp"),
+            `
         #include "pal_physics_bullet.cpp"
         #include "physics.cpp"
         #define main generated_scene_main
@@ -221,28 +298,57 @@ std::array<float, 16> transform_node_world(const Engine&, TransformNodeHandle) {
             const auto hit = bbl::upstream::physics_raycast(world, {0,0,5}, {0,0,0}, ~0u, ~0u, false);
             assert(hit.has_hit && !hit.body);
         }
-    `);
-    const executable = join(output, "check.exe");
-    runNativeFixtureCompiler(tools!, [
-        "/nologo", "/std:c++20", "/W4", "/WX", "/EHsc", "/MD", "/O2", "/Gy",
-        "/DBBLITE_HAS_PHYSICS_TRIGGER=1",
-        `/Fo:${output}\\`, `/Fe:${executable}`, "/I", "native/src", "/I", "native/include",
-        "/I", join(output, "upstream/include"), "/I", join(output, "upstream/src"),
-        `/external:I${join(nativeFixtureVcpkgRoot, "include/bullet")}`, "/external:W0",
-        join(output, "check.cpp"), "test/fixtures/js-callback/data-engine-stubs.cpp",
-        "/link", "/OPT:REF", `/LIBPATH:${join(nativeFixtureVcpkgRoot, "lib")}`,
-        "BulletDynamics.lib", "BulletCollision.lib", "LinearMath.lib",
-    ]);
-    execFileSync(executable, {
-        encoding: "utf8",
-        env: { ...tools!.environment, PATH: `${join(nativeFixtureVcpkgRoot, "bin")};${tools!.environment.PATH ?? ""}` },
-    });
-});
+    `,
+        );
+        const executable = join(output, "check.exe");
+        runNativeFixtureCompiler(tools!, [
+            "/nologo",
+            "/std:c++20",
+            "/W4",
+            "/WX",
+            "/EHsc",
+            "/MD",
+            "/O2",
+            "/Gy",
+            "/DBBLITE_HAS_PHYSICS_TRIGGER=1",
+            `/Fo:${output}\\`,
+            `/Fe:${executable}`,
+            "/I",
+            "native/src",
+            "/I",
+            "native/include",
+            "/I",
+            join(output, "upstream/include"),
+            "/I",
+            join(output, "upstream/src"),
+            `/external:I${join(nativeFixtureVcpkgRoot, "include/bullet")}`,
+            "/external:W0",
+            join(output, "check.cpp"),
+            "test/fixtures/js-callback/data-engine-stubs.cpp",
+            "/link",
+            "/OPT:REF",
+            `/LIBPATH:${join(nativeFixtureVcpkgRoot, "lib")}`,
+            "BulletDynamics.lib",
+            "BulletCollision.lib",
+            "LinearMath.lib",
+        ]);
+        execFileSync(executable, {
+            encoding: "utf8",
+            env: {
+                ...tools!.environment,
+                PATH: `${join(nativeFixtureVcpkgRoot, "bin")};${tools!.environment.PATH ?? ""}`,
+            },
+        });
+    },
+);
 
 test("exact scene103 retains thin-body ray indices and default-query matrix picking", () => {
     const fileName = "corpus/babylon-lite/lab/lite/src/lite/scene103.ts";
     const source = readFileSync(fileName, "utf8");
-    const automatic = compileSource(source, { fileName, search: "?captureFrame=5" });
+    const automatic = compileSource(source, {
+        fileName,
+        search: "?captureFrame=5",
+    });
     assert.match(automatic.cpp, /\.body_index/);
     assert(automatic.manifest.features.includes("physics:thin-instances"));
     const interactive = compileSource(source, { fileName });

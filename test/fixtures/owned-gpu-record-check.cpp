@@ -11,7 +11,8 @@ struct Resources {
     int buffer = 0;
     std::map<int, int> bindings;
     Resources() {
-        if (fail_construction) throw std::runtime_error("allocation failure");
+        if (fail_construction)
+            throw std::runtime_error("allocation failure");
     }
 };
 
@@ -26,16 +27,15 @@ struct Owner {
 
 using Record = bbl::pal::OwnedGpuRecord<Resources, Owner>;
 
-void release_with_context(int* live, Resources& resources) noexcept {
-    *live -= resources.buffer;
-}
+void release_with_context(int* live, Resources& resources) noexcept { *live -= resources.buffer; }
 using ContextRecord = bbl::pal::OwnedGpuRecord<Resources, int, release_with_context>;
 
 Record upload(Owner& owner, bool fail = false) {
     Record record(owner);
     record.buffer = 1;
     ++owner.live;
-    if (fail) throw std::runtime_error("upload failure");
+    if (fail)
+        throw std::runtime_error("upload failure");
     record.bindings.emplace(1, 1);
     ++owner.live;
     return record;
@@ -53,11 +53,15 @@ int main() {
     }
     assert(contextual_live == 0);
     Owner owner;
-    try { upload(owner, true); } catch (const std::runtime_error&) {}
+    try {
+        upload(owner, true);
+    } catch (const std::runtime_error&) {
+    }
     assert(owner.live == 0);
     {
         std::vector<Record> records;
-        for (int i = 0; i < 20; ++i) records.push_back(upload(owner));
+        for (int i = 0; i < 20; ++i)
+            records.push_back(upload(owner));
         assert(owner.live == 40);
         records[0] = std::move(records[1]);
         assert(owner.live == 38);
@@ -70,7 +74,8 @@ int main() {
         try {
             Record failed(std::move(pending));
             assert(false);
-        } catch (const std::runtime_error&) {}
+        } catch (const std::runtime_error&) {
+        }
         Resources::fail_construction = false;
         assert(owner.live == 38);
     }
@@ -79,7 +84,8 @@ int main() {
         std::vector<Record> unpublished;
         unpublished.push_back(upload(owner));
         unpublished.push_back(upload(owner, true));
-    } catch (const std::runtime_error&) {}
+    } catch (const std::runtime_error&) {
+    }
     assert(owner.live == 0);
     try {
         std::map<int, Record> draws;
@@ -88,7 +94,8 @@ int main() {
         ++owner.live;
         // A later allocation can fail after a draw has acquired one resource.
         throw std::runtime_error("draw binding creation failure");
-    } catch (const std::runtime_error&) {}
+    } catch (const std::runtime_error&) {
+    }
     assert(owner.live == 0);
     {
         std::map<int, Record> draws;

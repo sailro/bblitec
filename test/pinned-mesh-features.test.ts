@@ -11,10 +11,7 @@ test("runtime mesh-feature expansion preserves the full generic lattice", async 
     const anotherRuntimeBit = thin << 1;
 
     assert.deepEqual(
-        expandRuntimeMeshFeatureSets(
-            [0, 64, 64],
-            [thin, anotherRuntimeBit],
-        ),
+        expandRuntimeMeshFeatureSets([0, 64, 64], [thin, anotherRuntimeBit]),
         [
             0,
             64,
@@ -32,8 +29,9 @@ test("expands instance colour only as a thin-instance composite", async () => {
     const thin = await pinnedThinInstancesBit();
     const color = await pinnedInstanceColorBit();
 
-    assert.deepEqual(
-        expandRuntimeMeshFeatureSets([0], [thin, thin | color]),
-        [0, thin, thin | color],
-    );
+    assert.deepEqual(expandRuntimeMeshFeatureSets([0], [thin, thin | color]), [
+        0,
+        thin,
+        thin | color,
+    ]);
 });

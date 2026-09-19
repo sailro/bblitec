@@ -1,19 +1,19 @@
-import { createServer } from "node:http";
+import {
+    createServer,
+    type IncomingMessage,
+    type ServerResponse,
+} from "node:http";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
 import { createRequire } from "node:module";
-import {
-    extname,
-    relative,
-    resolve,
-    sep,
-} from "node:path";
+import { extname, relative, resolve, sep } from "node:path";
 import type { NativeHostUi } from "./compiler/types.js";
-import { engineCaptureEntryUrl, engineFrameCaptureModule, waitForCapturedEngines } from "./capture-engine-frames.js";
 import {
-    nativeHostUiStyleRules,
-    uiStyleSelector,
-} from "./ui-style-rule.js";
+    engineCaptureEntryUrl,
+    engineFrameCaptureModule,
+    waitForCapturedEngines,
+} from "./capture-engine-frames.js";
+import { nativeHostUiStyleRules, uiStyleSelector } from "./ui-style-rule.js";
 
 // ---------------------------------------------------------------------------
 // Lazy module loads
@@ -38,19 +38,15 @@ function lazyModule<T>(specifier: string): () => T {
     return () => (loaded ??= requireModule(specifier) as T);
 }
 
-const browserHarness =
-    lazyModule<typeof import("./browser-harness.js")>(
-        "./browser-harness.js",
-    );
-const upstreamSource =
-    lazyModule<typeof import("./upstream-source.js")>(
-        "./upstream-source.js",
-    );
-const compilerSymbols =
-    lazyModule<typeof import("./compiler/symbols.js")>(
-        "./compiler/symbols.js",
-    );
-
+const browserHarness = lazyModule<typeof import("./browser-harness.js")>(
+    "./browser-harness.js",
+);
+const upstreamSource = lazyModule<typeof import("./upstream-source.js")>(
+    "./upstream-source.js",
+);
+const compilerSymbols = lazyModule<typeof import("./compiler/symbols.js")>(
+    "./compiler/symbols.js",
+);
 
 /** The types this table is confident about, or undefined. */
 function knownMimeType(path: string): string | undefined {
@@ -122,16 +118,11 @@ export function flattenedBundledDemoAssetPath(
     requestPath: string,
     root = resolve("."),
 ): string | undefined {
-    const relativePath = requestPath
-        .replace(/^\/+/, "")
-        .replaceAll("\\", "/");
+    const relativePath = requestPath.replace(/^\/+/, "").replaceAll("\\", "/");
     const marker = "lab/lite/src/demos/";
     const markerIndex = relativePath.indexOf(marker);
     if (markerIndex < 0) return undefined;
-    const prefix = relativePath.slice(
-        0,
-        markerIndex + marker.length,
-    );
+    const prefix = relativePath.slice(0, markerIndex + marker.length);
     const parts = relativePath.slice(prefix.length).split("/");
     for (let omitted = 1; omitted < parts.length - 1; omitted += 1) {
         const candidate = `${prefix}${parts.slice(omitted).join("/")}`;
@@ -212,16 +203,17 @@ export function suiteBrowserModule(
 ): string {
     const input = readFileSync(resolve(sourcePath), "utf8");
     const transformed = transform ? transform(input) : input;
-    const framed = captureTimeSeconds !== undefined
-        ? (
-              `import { ` +
-              `onBeforeRender as __captureOnBeforeRender, ` +
-              `pauseAnimation as __capturePauseAnimation ` +
-              `} from "babylon-lite";\n` +
-              transformed
-          ).replace(
-              "await registerScene(scene);",
-              `let __animationSeekFrame = 0;
+    const framed =
+        captureTimeSeconds !== undefined
+            ? (
+                  `import { ` +
+                  `onBeforeRender as __captureOnBeforeRender, ` +
+                  `pauseAnimation as __capturePauseAnimation ` +
+                  `} from "babylon-lite";\n` +
+                  transformed
+              ).replace(
+                  "await registerScene(scene);",
+                  `let __animationSeekFrame = 0;
     __captureOnBeforeRender(scene, () => {
         __animationSeekFrame += 1;
         if (__animationSeekFrame === 10) {
@@ -237,22 +229,27 @@ export function suiteBrowserModule(
         }
     });
     await registerScene(scene);`,
-          )
-        : transformed;
-    const source = pinnedPackageSpecifiers(framed, independentEngines === undefined ? pinnedBrowserEntryUrl : engineCaptureEntryUrl)
-        .replaceAll(
-            '"/brdf-lut.png"',
-            `"https://raw.githubusercontent.com/BabylonJS/Babylon-Lite/${upstreamSource().readUpstreamPin().sourceVersion}/packages/babylon-lite/assets/brdf-lut.png"`,
-        );
+              )
+            : transformed;
+    const source = pinnedPackageSpecifiers(
+        framed,
+        independentEngines === undefined
+            ? pinnedBrowserEntryUrl
+            : engineCaptureEntryUrl,
+    ).replaceAll(
+        '"/brdf-lut.png"',
+        `"https://raw.githubusercontent.com/BabylonJS/Babylon-Lite/${upstreamSource().readUpstreamPin().sourceVersion}/packages/babylon-lite/assets/brdf-lut.png"`,
+    );
     const readySource = source.includes("dataset.ready")
         ? source
         : source.replace(
               "await startEngine(engine);",
               'await startEngine(engine); canvas.dataset.ready = "true";',
           );
-    const fixedFrameSource = fixedAnimationFrame === undefined || independentEngines !== undefined
-        ? readySource
-        : markFixedEngineStart(readySource);
+    const fixedFrameSource =
+        fixedAnimationFrame === undefined || independentEngines !== undefined
+            ? readySource
+            : markFixedEngineStart(readySource);
     return browserHarness().transpileForBrowser(fixedFrameSource, sourcePath);
 }
 
@@ -300,38 +297,45 @@ export function suiteBrowserModuleDigest(
  * literal because the alternation has to be escaped for a regex. A test
  * asserts every name in that list is rewritten, so the two cannot drift.
  */
-export function pinnedPackageSpecifiers(source: string, entryUrl = pinnedBrowserEntryUrl): string {
+export function pinnedPackageSpecifiers(
+    source: string,
+    entryUrl = pinnedBrowserEntryUrl,
+): string {
     const { physicsEngineModulePackage } = compilerSymbols();
-    return source
-        .replace(
-            /"(?:@babylonjs\/lite|babylon-lite)(\/[^"]*)?"/g,
-            (_match, subpath?: string) =>
-                subpath
-                    ? `"/node_modules/@babylonjs/lite/lib${
-                          subpath.endsWith(".js") ? subpath : `${subpath}.js`
-                      }"`
-                    : `"${entryUrl}"`,
-        )
-        .replaceAll(
-            `"${physicsEngineModulePackage}"`,
-            `"/node_modules/${physicsEngineModulePackage}/lib/esm/HavokPhysics_es.js"`,
-        )
-        // The navigation wrapper the pin dynamic-imports, resolved the
-        // way Havok is: each bare specifier to its package's own ESM
-        // entry. The wasm binary itself comes off the pinned lab/public
-        // proxy through the scene's `locateFile`.
-        .replaceAll(
-            '"@recast-navigation/core"',
-            '"/node_modules/@recast-navigation/core/dist/index.mjs"',
-        )
-        .replaceAll(
-            '"@recast-navigation/generators"',
-            '"/node_modules/@recast-navigation/generators/dist/index.mjs"',
-        )
-        .replaceAll(
-            '"@recast-navigation/wasm/wasm"',
-            '"/node_modules/@recast-navigation/wasm/dist/recast-navigation.wasm.js"',
-        );
+    return (
+        source
+            .replace(
+                /"(?:@babylonjs\/lite|babylon-lite)(\/[^"]*)?"/g,
+                (_match, subpath?: string) =>
+                    subpath
+                        ? `"/node_modules/@babylonjs/lite/lib${
+                              subpath.endsWith(".js")
+                                  ? subpath
+                                  : `${subpath}.js`
+                          }"`
+                        : `"${entryUrl}"`,
+            )
+            .replaceAll(
+                `"${physicsEngineModulePackage}"`,
+                `"/node_modules/${physicsEngineModulePackage}/lib/esm/HavokPhysics_es.js"`,
+            )
+            // The navigation wrapper the pin dynamic-imports, resolved the
+            // way Havok is: each bare specifier to its package's own ESM
+            // entry. The wasm binary itself comes off the pinned lab/public
+            // proxy through the scene's `locateFile`.
+            .replaceAll(
+                '"@recast-navigation/core"',
+                '"/node_modules/@recast-navigation/core/dist/index.mjs"',
+            )
+            .replaceAll(
+                '"@recast-navigation/generators"',
+                '"/node_modules/@recast-navigation/generators/dist/index.mjs"',
+            )
+            .replaceAll(
+                '"@recast-navigation/wasm/wasm"',
+                '"/node_modules/@recast-navigation/wasm/dist/recast-navigation.wasm.js"',
+            )
+    );
 }
 
 /**
@@ -400,8 +404,10 @@ function hostUiBootstrapScript(
     const styleSheet = nativeHostUiStyleRules(hostUi)
         .map((rule) => {
             let body = `${uiStyleSelector(rule)}{${rule.style}}`;
-            if (rule.containerMaxWidth !== undefined) body = `@container(max-width:${rule.containerMaxWidth}px){${body}}`;
-            if (rule.reducedMotion !== undefined) body = `@media(prefers-reduced-motion:${rule.reducedMotion ? "reduce" : "no-preference"}){${body}}`;
+            if (rule.containerMaxWidth !== undefined)
+                body = `@container(max-width:${rule.containerMaxWidth}px){${body}}`;
+            if (rule.reducedMotion !== undefined)
+                body = `@media(prefers-reduced-motion:${rule.reducedMotion ? "reduce" : "no-preference"}){${body}}`;
             return rule.maxWidth === undefined
                 ? body
                 : `@media(max-width:${rule.maxWidth}px){${body}}`;
@@ -438,8 +444,15 @@ export function createSuiteSceneServer(
 ): ReturnType<typeof createServer> {
     const root = resolve(".");
     const { width, height } = options.viewport ?? { width: 1280, height: 720 };
-    if (!Number.isSafeInteger(width) || !Number.isSafeInteger(height) || width < 1 || height < 1) {
-        throw new Error("Capture viewport must have positive integer dimensions.");
+    if (
+        !Number.isSafeInteger(width) ||
+        !Number.isSafeInteger(height) ||
+        width < 1 ||
+        height < 1
+    ) {
+        throw new Error(
+            "Capture viewport must have positive integer dimensions.",
+        );
     }
     const entryPath = options.sourcePath
         ? `/${relative(root, resolve(options.sourcePath))
@@ -450,15 +463,16 @@ export function createSuiteSceneServer(
     const seedScript = options.seededRandom
         ? `<script>${seededRandomScript}</script>\n`
         : "";
-    const fixedFrameScript = options.fixedAnimationFrame === undefined || options.independentEngines !== undefined
-        ? ""
-        : `<script>${fixedAnimationFrameScript(options.fixedAnimationFrame)}</script>\n`;
+    const fixedFrameScript =
+        options.fixedAnimationFrame === undefined ||
+        options.independentEngines !== undefined
+            ? ""
+            : `<script>${fixedAnimationFrameScript(options.fixedAnimationFrame)}</script>\n`;
     const hostUiScript = options.hostUi
         ? hostUiBootstrapScript(options.hostUi)
         : "";
     const hideNonCanvasAtFixedFrame =
-        options.fixedAnimationFrame !== undefined &&
-        !captureUiEnabled();
+        options.fixedAnimationFrame !== undefined && !captureUiEnabled();
     let html = `<!doctype html><html><head><style>
 html,body,canvas{margin:0;width:${width}px;height:${height}px;overflow:hidden;display:block}
 ${hideNonCanvasAtFixedFrame ? "body>:not(#renderCanvas){visibility:hidden!important}" : ""}
@@ -466,32 +480,67 @@ ${hideNonCanvasAtFixedFrame ? "body>:not(#renderCanvas){visibility:hidden!import
 ${seedScript}${fixedFrameScript}${hostUiScript}<script type="module" src="${entryPath}"></script></body></html>`;
     if (options.hostPage) {
         const original = readFileSync(resolve(options.hostPage), "utf8");
-        const moduleScript = /<script\s+type="module"\s+src="[^"]+"\s*><\/script>/g;
-        if ([...original.matchAll(moduleScript)].length !== 1) throw new Error("Capture host page must have exactly one module entry.");
-        html = original.replace(moduleScript, `<script type="module" src="${entryPath}"></script>`)
+        const moduleScript =
+            /<script\s+type="module"\s+src="[^"]+"\s*><\/script>/g;
+        if ([...original.matchAll(moduleScript)].length !== 1)
+            throw new Error(
+                "Capture host page must have exactly one module entry.",
+            );
+        html = original
+            .replace(
+                moduleScript,
+                `<script type="module" src="${entryPath}"></script>`,
+            )
             .replace("<head>", `<head>${seedScript}${fixedFrameScript}`);
     }
     const capturedEngines = new Set<string>();
-    if (options.independentEngines !== undefined &&
-        (!Number.isSafeInteger(options.independentEngines) || options.independentEngines < 1 || options.fixedAnimationFrame === undefined)) {
-        throw new Error("Independent-engine capture requires a positive engine count and a fixed frame.");
+    if (
+        options.independentEngines !== undefined &&
+        (!Number.isSafeInteger(options.independentEngines) ||
+            options.independentEngines < 1 ||
+            options.fixedAnimationFrame === undefined)
+    ) {
+        throw new Error(
+            "Independent-engine capture requires a positive engine count and a fixed frame.",
+        );
     }
     const pinnedAssets = new Map<
         string,
         { bytes: Uint8Array; contentType: string }
     >();
-    return createServer(async (request, response) => {
+    const handleRequest = async (
+        request: IncomingMessage,
+        response: ServerResponse,
+    ): Promise<void> => {
         const url = new URL(request.url ?? "/", "http://127.0.0.1");
-        if (options.independentEngines !== undefined && url.pathname === engineCaptureEntryUrl) {
-            response.writeHead(200, { "Content-Type": "text/javascript; charset=utf-8" });
-            response.end(engineFrameCaptureModule(options.fixedAnimationFrame!, pinnedBrowserEntryUrl));
+        if (
+            options.independentEngines !== undefined &&
+            url.pathname === engineCaptureEntryUrl
+        ) {
+            response.writeHead(200, {
+                "Content-Type": "text/javascript; charset=utf-8",
+            });
+            response.end(
+                engineFrameCaptureModule(
+                    options.fixedAnimationFrame!,
+                    pinnedBrowserEntryUrl,
+                ),
+            );
             return;
         }
-        if (options.independentEngines !== undefined && url.pathname === "/__capture/engines") {
+        if (
+            options.independentEngines !== undefined &&
+            url.pathname === "/__capture/engines"
+        ) {
             const id = url.searchParams.get("id");
             if (request.method === "POST" && id) capturedEngines.add(id);
             response.writeHead(200, { "Content-Type": "application/json" });
-            response.end(JSON.stringify({ completed: capturedEngines.size, expected: options.independentEngines }));
+            response.end(
+                JSON.stringify({
+                    completed: capturedEngines.size,
+                    expected: options.independentEngines,
+                }),
+            );
             return;
         }
         // Chromium asks for this on every page it opens. Without an arm it
@@ -505,18 +554,24 @@ ${seedScript}${fixedFrameScript}${hostUiScript}<script type="module" src="${entr
             return;
         }
         if (url.pathname === "/scene.html") {
-            response.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+            response.writeHead(200, {
+                "Content-Type": "text/html; charset=utf-8",
+            });
             response.end(html);
             return;
         }
         if (url.pathname === entryPath) {
-            response.writeHead(200, { "Content-Type": "text/javascript; charset=utf-8" });
+            response.writeHead(200, {
+                "Content-Type": "text/javascript; charset=utf-8",
+            });
             response.end(moduleSource);
             return;
         }
         const virtualModule = options.virtualModules?.[url.pathname];
         if (virtualModule !== undefined) {
-            response.writeHead(200, { "Content-Type": "text/javascript; charset=utf-8" });
+            response.writeHead(200, {
+                "Content-Type": "text/javascript; charset=utf-8",
+            });
             response.end(virtualModule);
             return;
         }
@@ -552,12 +607,19 @@ ${seedScript}${fixedFrameScript}${hostUiScript}<script type="module" src="${entr
             ) {
                 const sourceText = readFileSync(typescriptPath, "utf8");
                 const fixedFrameSource =
-                    options.fixedAnimationFrame === undefined || options.independentEngines !== undefined
+                    options.fixedAnimationFrame === undefined ||
+                    options.independentEngines !== undefined
                         ? sourceText
                         : markFixedEngineStart(sourceText);
-                const moduleText = pinnedPackageSpecifiers(fixedFrameSource,
-                    options.independentEngines === undefined ? pinnedBrowserEntryUrl : engineCaptureEntryUrl);
-                response.writeHead(200, { "Content-Type": "text/javascript; charset=utf-8" });
+                const moduleText = pinnedPackageSpecifiers(
+                    fixedFrameSource,
+                    options.independentEngines === undefined
+                        ? pinnedBrowserEntryUrl
+                        : engineCaptureEntryUrl,
+                );
+                response.writeHead(200, {
+                    "Content-Type": "text/javascript; charset=utf-8",
+                });
                 response.end(
                     browserHarness().transpileForBrowser(
                         moduleText,
@@ -568,9 +630,10 @@ ${seedScript}${fixedFrameScript}${hostUiScript}<script type="module" src="${entr
             }
         }
         const bundledRelative = bundledDemoAssetPath(relative);
-        const bundledPath = bundledRelative === undefined
-            ? undefined
-            : resolve(root, bundledRelative);
+        const bundledPath =
+            bundledRelative === undefined
+                ? undefined
+                : resolve(root, bundledRelative);
         if (
             bundledPath !== undefined &&
             bundledPath.startsWith(`${root}${sep}`) &&
@@ -583,13 +646,11 @@ ${seedScript}${fixedFrameScript}${hostUiScript}<script type="module" src="${entr
             response.end(readFileSync(bundledPath));
             return;
         }
-        const flattenedRelative = flattenedBundledDemoAssetPath(
-            relative,
-            root,
-        );
-        const flattenedPath = flattenedRelative === undefined
-            ? undefined
-            : resolve(root, flattenedRelative);
+        const flattenedRelative = flattenedBundledDemoAssetPath(relative, root);
+        const flattenedPath =
+            flattenedRelative === undefined
+                ? undefined
+                : resolve(root, flattenedRelative);
         if (flattenedPath !== undefined) {
             response.writeHead(200, {
                 "Content-Type": mimeType(flattenedPath),
@@ -597,24 +658,24 @@ ${seedScript}${fixedFrameScript}${hostUiScript}<script type="module" src="${entr
             response.end(readFileSync(flattenedPath));
             return;
         }
-        if (!path.startsWith(`${root}${sep}`) || !existsSync(path) || !statSync(path).isFile()) {
+        if (
+            !path.startsWith(`${root}${sep}`) ||
+            !existsSync(path) ||
+            !statSync(path).isFile()
+        ) {
             // Pinned lab/public assets back every scene source: corpus
             // scenes and project-owned gates share the demo asset roots.
             {
-                const cached = pinnedAssets.get(
-                    url.pathname,
-                );
+                const cached = pinnedAssets.get(url.pathname);
                 if (cached) {
                     response.writeHead(200, {
-                        "Content-Type":
-                            cached.contentType,
+                        "Content-Type": cached.contentType,
                     });
                     response.end(cached.bytes);
                     return;
                 }
                 const pin = upstreamSource().readUpstreamPin();
-                const publicAsset =
-                    pinnedLabPublicAssetPath(relative);
+                const publicAsset = pinnedLabPublicAssetPath(relative);
                 const assetUrl =
                     "https://raw.githubusercontent.com/" +
                     `BabylonJS/Babylon-Lite/${pin.sourceVersion}` +
@@ -627,35 +688,25 @@ ${seedScript}${fixedFrameScript}${hostUiScript}<script type="module" src="${entr
                 } catch (error: unknown) {
                     response.writeHead(502);
                     response.end(
-                        error instanceof Error
-                            ? error.message
-                            : String(error),
+                        error instanceof Error ? error.message : String(error),
                     );
                     return;
                 }
                 if (fetched.ok) {
                     const asset = {
-                        bytes: new Uint8Array(
-                            await fetched.arrayBuffer(),
-                        ),
+                        bytes: new Uint8Array(await fetched.arrayBuffer()),
                         // raw.githubusercontent.com serves every blob as
                         // octet-stream, which `WebAssembly.instantiateStreaming`
                         // refuses; the extension is the better authority
                         // wherever this table knows the type.
                         contentType:
                             knownMimeType(url.pathname) ??
-                            fetched.headers.get(
-                                "content-type",
-                            ) ??
+                            fetched.headers.get("content-type") ??
                             mimeType(url.pathname),
                     };
-                    pinnedAssets.set(
-                        url.pathname,
-                        asset,
-                    );
+                    pinnedAssets.set(url.pathname, asset);
                     response.writeHead(200, {
-                        "Content-Type":
-                            asset.contentType,
+                        "Content-Type": asset.contentType,
                     });
                     response.end(asset.bytes);
                     return;
@@ -667,6 +718,21 @@ ${seedScript}${fixedFrameScript}${hostUiScript}<script type="module" src="${entr
         }
         response.writeHead(200, { "Content-Type": mimeType(path) });
         response.end(readFileSync(path));
+    };
+    return createServer((request, response) => {
+        void handleRequest(request, response).catch((error: unknown) => {
+            const failure =
+                error instanceof Error ? error : new Error(String(error));
+            console.error("Capture server request failed:", failure);
+            if (response.headersSent) {
+                response.destroy(failure);
+                return;
+            }
+            response.writeHead(500, {
+                "Content-Type": "text/plain; charset=utf-8",
+            });
+            response.end(failure.message);
+        });
     });
 }
 
@@ -844,8 +910,7 @@ export async function captureSuiteReference(
         screenshotCaptureBrowserArgs,
         waitForSceneReady,
         withBrowserPage,
-    } =
-        browserHarness();
+    } = browserHarness();
     const moduleSource = suiteBrowserModule(
         sourcePath,
         transform,
@@ -873,7 +938,9 @@ export async function captureSuiteReference(
                 origin,
                 captureTimeSeconds !== undefined,
                 options.search,
-                options.independentEngines === undefined ? options.fixedAnimationFrame : undefined,
+                options.independentEngines === undefined
+                    ? options.fixedAnimationFrame
+                    : undefined,
             );
             if (options.independentEngines !== undefined) {
                 await page.evaluate(waitForCapturedEngines, 60_000);
@@ -886,19 +953,28 @@ export async function captureSuiteReference(
                     // use the document timeline directly. Freeze them at the
                     // same requested frame so animated DOM UI has a stable,
                     // backend-comparable reference phase.
-                    await page.evaluate((elapsedMilliseconds) => {
-                        for (const animation of document.getAnimations()) {
-                            animation.pause();
-                            animation.currentTime = elapsedMilliseconds;
-                        }
-                    }, options.fixedAnimationFrame * (1000 / 60));
+                    await page.evaluate(
+                        (elapsedMilliseconds) => {
+                            for (const animation of document.getAnimations()) {
+                                animation.pause();
+                                animation.currentTime = elapsedMilliseconds;
+                            }
+                        },
+                        options.fixedAnimationFrame * (1000 / 60),
+                    );
                 }
                 await page.screenshot({ path: referencePath });
             } else {
-                if (options.independentEngines !== undefined || options.hostPage !== undefined) {
+                if (
+                    options.independentEngines !== undefined ||
+                    options.hostPage !== undefined
+                ) {
                     // Keep every canvas at its authored page position. Hidden
                     // ancestors retain layout; visibility is restored on canvases.
-                    await page.addStyleTag({ content: "body *{visibility:hidden!important}body canvas{visibility:visible!important}html,body{background:#000!important}" });
+                    await page.addStyleTag({
+                        content:
+                            "body *{visibility:hidden!important}body canvas{visibility:visible!important}html,body{background:#000!important}",
+                    });
                     await page.screenshot({ path: referencePath });
                     return;
                 }

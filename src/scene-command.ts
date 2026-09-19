@@ -86,7 +86,10 @@ import {
     refreshBuildStamp,
 } from "./generation-stamp.js";
 import { runGeometryOutputDiagnostics } from "./geometry-output-diagnostics.js";
-import { attributionScene, copyAttributionReferences } from "./attribution-scene.js";
+import {
+    attributionScene,
+    copyAttributionReferences,
+} from "./attribution-scene.js";
 // The instrumented capture, the diff/uniforms readers and the compose
 // report are imported per subcommand rather than here: their chains pull
 // playwright-core, typescript and the pinned-module cluster, which every
@@ -137,10 +140,20 @@ import {
     hashEntries,
     toolIdentity,
 } from "./validation-resume.js";
-import { installVcpkgManifest, type VcpkgManifestInstall } from "./vcpkg-install.js";
+import {
+    installVcpkgManifest,
+    type VcpkgManifestInstall,
+} from "./vcpkg-install.js";
 import { runConcurrently } from "./run-concurrently.js";
-import { historicalBuildCostMs, orderByHistoricalCost } from "./build-scheduling.js";
-import { materializePhysicsDebugCatalog, physicsDebugCatalogPath, renderPhysicsDebugCatalog } from "./physics-debug-catalog.js";
+import {
+    historicalBuildCostMs,
+    orderByHistoricalCost,
+} from "./build-scheduling.js";
+import {
+    materializePhysicsDebugCatalog,
+    physicsDebugCatalogPath,
+    renderPhysicsDebugCatalog,
+} from "./physics-debug-catalog.js";
 
 function run(
     command: string,
@@ -176,28 +189,34 @@ function runAsync(
             stdio: capture ? ["ignore", "pipe", "pipe"] : "inherit",
             env: environment,
         });
-        const timeout = timeoutMs === undefined ? undefined : setTimeout(() => {
-            child.kill();
-            reject(new Error(`${command} exceeded the ${timeoutMs} ms execution bound.`));
-        }, timeoutMs);
+        const timeout =
+            timeoutMs === undefined
+                ? undefined
+                : setTimeout(() => {
+                      child.kill();
+                      reject(
+                          new Error(
+                              `${command} exceeded the ${timeoutMs} ms execution bound.`,
+                          ),
+                      );
+                  }, timeoutMs);
         child.stdout?.on("data", (chunk: Buffer) =>
             capture?.push(chunk.toString()),
         );
         child.stderr?.on("data", (chunk: Buffer) =>
             capture?.push(chunk.toString()),
         );
-        child.on("error", error => { clearTimeout(timeout); reject(error); });
+        child.on("error", (error) => {
+            clearTimeout(timeout);
+            reject(error);
+        });
         child.on("close", (status) => {
             clearTimeout(timeout);
             if (status === 0) {
                 resolve_();
                 return;
             }
-            reject(
-                new Error(
-                    `${command} exited with status ${status}.`,
-                ),
-            );
+            reject(new Error(`${command} exited with status ${status}.`));
         });
     });
 }
@@ -238,14 +257,10 @@ async function runBuffered(
         );
     } finally {
         if (output.length > 0) {
-            process.stdout.write(
-                `${options.label ?? ""}${output.join("")}`,
-            );
+            process.stdout.write(`${options.label ?? ""}${output.join("")}`);
         }
         if (options.settleMs !== undefined) {
-            await new Promise((done) =>
-                setTimeout(done, options.settleMs),
-            );
+            await new Promise((done) => setTimeout(done, options.settleMs));
         }
     }
 }
@@ -283,10 +298,14 @@ function coldBuild(): boolean {
 }
 
 async function compile(idOrSource: string): Promise<void> {
-    await compileScenes(idOrSource === "all" ? scenes : [resolveScene(idOrSource)]);
+    await compileScenes(
+        idOrSource === "all" ? scenes : [resolveScene(idOrSource)],
+    );
 }
 
-async function compileScenes(selected: readonly SceneDefinition[]): Promise<void> {
+async function compileScenes(
+    selected: readonly SceneDefinition[],
+): Promise<void> {
     // A scene whose recorded inputs are unchanged is not generated again:
     // its tree already holds what the compiler would write. What a hit
     // still owes is the build stamp, which follows the native sources the
@@ -333,16 +352,23 @@ async function compileScenes(selected: readonly SceneDefinition[]): Promise<void
                 const startedAt = Date.now();
                 generationStartedAt.set(scene.id, startedAt);
                 await run(process.execPath, arguments_);
-                if (!sceneUsesNativeFeature(scene, "physics:viewer")) recordGeneration(scene, arguments_, startedAt);
+                if (!sceneUsesNativeFeature(scene, "physics:viewer"))
+                    recordGeneration(scene, arguments_, startedAt);
             }),
         { completed: "compiled" },
     );
     // The emitted extraction entry executes only admitted startup construction.
     // Keep native bootstrap builds serialized; the ordinary compile pool remains
     // independent and no renderer or physics frame runs during this stage.
-    for (const scene of stale.filter(scene => sceneUsesNativeFeature(scene, "physics:viewer"))) {
+    for (const scene of stale.filter((scene) =>
+        sceneUsesNativeFeature(scene, "physics:viewer"),
+    )) {
         await specializePhysicsDebugGeometry(scene);
-        recordGeneration(scene, compilerArguments(scene), generationStartedAt.get(scene.id)!);
+        recordGeneration(
+            scene,
+            compilerArguments(scene),
+            generationStartedAt.get(scene.id)!,
+        );
     }
 }
 
@@ -358,7 +384,12 @@ async function compileScenes(selected: readonly SceneDefinition[]): Promise<void
  */
 function twinScene(scene: SceneDefinition): SceneDefinition {
     if (scene.parity === undefined) {
-        return { ...scene, id: `${scene.id}-live`, output: `generated/${scene.id}-live`, buildDirectory: `native/build-${scene.id}-live-release` };
+        return {
+            ...scene,
+            id: `${scene.id}-live`,
+            output: `generated/${scene.id}-live`,
+            buildDirectory: `native/build-${scene.id}-live-release`,
+        };
     }
     const { referenceSearch, ...parity } = scene.parity;
     void referenceSearch;
@@ -373,7 +404,10 @@ function twinScene(scene: SceneDefinition): SceneDefinition {
 
 /** `process` for a twin: generate, compile shaders, build — each stage
  *  skipped when its record says the tree is current. */
-async function processTwin(twin: SceneDefinition, requireDrawAttribution = false): Promise<void> {
+async function processTwin(
+    twin: SceneDefinition,
+    requireDrawAttribution = false,
+): Promise<void> {
     requireDevelopmentPreflight({
         browser: false,
         labSound: sceneUsesNativeFeature(twin, "audio:engine"),
@@ -381,22 +415,33 @@ async function processTwin(twin: SceneDefinition, requireDrawAttribution = false
         shaders: true,
     });
     await compileScenes([twin]);
-    if (requireDrawAttribution && !sceneUsesNativeFeature(twin, "renderer:scene")) {
+    if (
+        requireDrawAttribution &&
+        !sceneUsesNativeFeature(twin, "renderer:scene")
+    ) {
         throw new Error("Draw attribution requires the scene renderer.");
     }
     await shaderStage([twin]).body();
     await buildScenes([twin]);
 }
 
-async function specializePhysicsDebugGeometry(scene: SceneDefinition): Promise<void> {
-    requireDevelopmentPreflight({ browser: false, labSound: sceneUsesNativeFeature(scene, "audio:engine"),
-        rmlUi: sceneUsesNativeFeature(scene, "ui:rml"), shaders: false });
+async function specializePhysicsDebugGeometry(
+    scene: SceneDefinition,
+): Promise<void> {
+    requireDevelopmentPreflight({
+        browser: false,
+        labSound: sceneUsesNativeFeature(scene, "audio:engine"),
+        rmlUi: sceneUsesNativeFeature(scene, "ui:rml"),
+        shaders: false,
+    });
     await buildScenes([scene]);
     const construction = computeBuildStamp(scene.output);
     const directory = resolve("artifacts", "physics-constructor-inputs");
     mkdirSync(directory, { recursive: true });
     const inputPath = join(directory, `${scene.id}.json`);
-    console.log(`physics debug geometry: extracting construction inputs for ${scene.id}.`);
+    console.log(
+        `physics debug geometry: extracting construction inputs for ${scene.id}.`,
+    );
     // The tree just built is the one whose construction inputs generation
     // folds in: an ambient `BBLITE_NATIVE_EXE` (a diagnostic override for
     // measuring commands) must not redirect generation to a foreign binary,
@@ -408,28 +453,69 @@ async function specializePhysicsDebugGeometry(scene: SceneDefinition): Promise<v
         arguments: ["--physics-constructor-inputs", inputPath],
         timeoutMs: 60_000,
     });
-    const entries = await materializePhysicsDebugCatalog(JSON.parse(readFileSync(inputPath, "utf8")));
+    const entries = await materializePhysicsDebugCatalog(
+        JSON.parse(readFileSync(inputPath, "utf8")),
+    );
     const manifestPath = join(scene.output, "manifest.json");
-    const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as { inputs: string[] };
+    const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as {
+        inputs: string[];
+    };
     const setup = buildSetup();
     const compiler = setup.windows?.compiler ?? setup.tools.cxx;
     // Unlike ordinary scene generation this producer executes native shaping
     // inputs; those sources therefore participate in generation invalidation.
-    manifest.inputs = [...new Set([...manifest.inputs, setup.cmake, ...(compiler ? [compiler] : []),
-        ...construction.inputs.filter(input => input.path.startsWith("native/")).map(input => input.path)])].sort();
+    manifest.inputs = [
+        ...new Set([
+            ...manifest.inputs,
+            setup.cmake,
+            ...(compiler ? [compiler] : []),
+            ...construction.inputs
+                .filter((input) => input.path.startsWith("native/"))
+                .map((input) => input.path),
+        ]),
+    ].sort();
     writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
-    const sourceAndAssets = contentFingerprint([...manifest.inputs, join(scene.output, "assets"), "dist/.build-stamp", "package-lock.json", "upstream"]);
-    const nativeTools = { cmake: toolIdentity(setup.cmake),
+    const sourceAndAssets = contentFingerprint([
+        ...manifest.inputs,
+        join(scene.output, "assets"),
+        "dist/.build-stamp",
+        "package-lock.json",
+        "upstream",
+    ]);
+    const nativeTools = {
+        cmake: toolIdentity(setup.cmake),
         compiler: compiler ? toolIdentity(compiler) : setup.generator,
-        generator: setup.generator, backend: setup.backend };
-    writeFileSync(join(scene.output, physicsDebugCatalogPath), renderPhysicsDebugCatalog(entries));
-    writeFileSync(join(scene.output, "physics-debug-geometry.json"), `${JSON.stringify({
-        version: 1, sourceAndAssets, nativeTools, construction, entries: entries.map(entry => ({ descriptor: entry.descriptor,
-            shapeIdentity: entry.shapeIdentity, geometry: hashEntries([JSON.stringify(entry.geometry)]),
-            positions: entry.geometry.positions.length / 3, triangles: entry.geometry.indices.length / 3 })),
-    }, null, 2)}\n`);
+        generator: setup.generator,
+        backend: setup.backend,
+    };
+    writeFileSync(
+        join(scene.output, physicsDebugCatalogPath),
+        renderPhysicsDebugCatalog(entries),
+    );
+    writeFileSync(
+        join(scene.output, "physics-debug-geometry.json"),
+        `${JSON.stringify(
+            {
+                version: 1,
+                sourceAndAssets,
+                nativeTools,
+                construction,
+                entries: entries.map((entry) => ({
+                    descriptor: entry.descriptor,
+                    shapeIdentity: entry.shapeIdentity,
+                    geometry: hashEntries([JSON.stringify(entry.geometry)]),
+                    positions: entry.geometry.positions.length / 3,
+                    triangles: entry.geometry.indices.length / 3,
+                })),
+            },
+            null,
+            2,
+        )}\n`,
+    );
     refreshBuildStamp(scene.output, { generatedInputsChanged: true });
-    console.log(`physics debug geometry: materialized ${entries.length} complete shape descriptor(s).`);
+    console.log(
+        `physics debug geometry: materialized ${entries.length} complete shape descriptor(s).`,
+    );
 }
 
 async function parity(
@@ -443,9 +529,7 @@ async function parity(
     if (parsed.sceneId !== undefined) {
         // The scene id was already consumed from the command line; a
         // second bare argument is a mistake, not a selection.
-        throw new Error(
-            `Unexpected parity argument '${parsed.sceneId}'.`,
-        );
+        throw new Error(`Unexpected parity argument '${parsed.sceneId}'.`);
     }
     const differential = parsed.differential;
     // `--differential` and `--gpu-debug` are consumed here, not forwarded:
@@ -458,7 +542,10 @@ async function parity(
     );
     if (parsed.gpuDebug) enableGpuDebug();
     if (idOrSource === "all") {
-        if (parsed.attribute) throw new Error("parity: --attribute requires one scene id or source path.");
+        if (parsed.attribute)
+            throw new Error(
+                "parity: --attribute requires one scene id or source path.",
+            );
         const measured = scenes.filter((scene) => scene.parity);
         const audioScenes: SceneDefinition[] = [];
         const parallelScenes: SceneDefinition[] = [];
@@ -490,8 +577,7 @@ async function parity(
         // 26.0s at sixteen -- doubling past eight buys 23%. Eight takes
         // the knee of that curve without assuming a workstation GPU;
         // every level produced byte-identical differential reports.
-        const inFlight =
-            concurrencyOverride("BBLITE_PARALLEL_PARITY") ?? 8;
+        const inFlight = concurrencyOverride("BBLITE_PARALLEL_PARITY") ?? 8;
         if (inFlight > 1) {
             console.log(
                 `Measuring ${measured.length} scenes, ${inFlight} at a time ` +
@@ -522,20 +608,15 @@ async function parity(
                                 : {}),
                         },
                         (run) =>
-                            run(
-                                process.execPath,
-                                [
-                                    resolve("dist/src/scene-command.js"),
-                                    "parity",
-                                    scene.id,
-                                    ...(differential
-                                        ? ["--differential"]
-                                        : passthrough),
-                                    ...(parsed.gpuDebug
-                                        ? ["--gpu-debug"]
-                                        : []),
-                                ],
-                            ),
+                            run(process.execPath, [
+                                resolve("dist/src/scene-command.js"),
+                                "parity",
+                                scene.id,
+                                ...(differential
+                                    ? ["--differential"]
+                                    : passthrough),
+                                ...(parsed.gpuDebug ? ["--gpu-debug"] : []),
+                            ]),
                     ),
                 {
                     // A saturated adapter can occasionally reject one child
@@ -570,16 +651,23 @@ async function parity(
         return;
     }
     const scene = resolveScene(idOrSource);
-    if (!scene.parity) throw new Error(`Scene '${scene.id}' has no parity definition.`);
+    if (!scene.parity)
+        throw new Error(`Scene '${scene.id}' has no parity definition.`);
     if (parsed.attribute) {
-        if (!existsSync(scene.parity.reference.path) && !parsed.recaptureReference) {
-            throw new Error(`Attribution requires the source scene's reference: ${scene.parity.reference.path}.`);
+        if (
+            !existsSync(scene.parity.reference.path) &&
+            !parsed.recaptureReference
+        ) {
+            throw new Error(
+                `Attribution requires the source scene's reference: ${scene.parity.reference.path}.`,
+            );
         }
         const twin = attributionScene(scene);
         copyAttributionReferences(scene, twin);
         await processTwin(twin, true);
         await withEnvironment("BBLITE_NATIVE_EXE", undefined, async () => {
-            if (differential) await runSceneParityDifferential(idOrSource, twin);
+            if (differential)
+                await runSceneParityDifferential(idOrSource, twin);
             else await runSceneParity([idOrSource, ...passthrough], twin);
         });
         return;
@@ -595,9 +683,7 @@ async function build(idOrSource: string): Promise<void> {
     const selected = idOrSource === "all" ? scenes : [resolveScene(idOrSource)];
     const reachesAudio =
         idOrSource === "all" ||
-        selected.some((scene) =>
-            sceneUsesNativeFeature(scene, "audio:engine"),
-        );
+        selected.some((scene) => sceneUsesNativeFeature(scene, "audio:engine"));
     const reachesUi =
         idOrSource === "all" ||
         selected.some((scene) => sceneUsesNativeFeature(scene, "ui:rml"));
@@ -616,8 +702,7 @@ function sceneUsesNativeFeature(
 ): boolean {
     const features = resolve(scene.output, "features.cmake");
     return (
-        existsSync(features) &&
-        readFileSync(features, "utf8").includes(feature)
+        existsSync(features) && readFileSync(features, "utf8").includes(feature)
     );
 }
 
@@ -645,9 +730,7 @@ function concurrencyOverride(name: string): number | undefined {
     if (!value) return undefined;
     const parsed = Number.parseInt(value, 10);
     if (!Number.isInteger(parsed) || parsed < 1) {
-        throw new Error(
-            `${name} must be a positive integer (got '${value}').`,
-        );
+        throw new Error(`${name} must be a positive integer (got '${value}').`);
     }
     return parsed;
 }
@@ -715,7 +798,11 @@ async function buildScenes(
     const { vcpkg, tools, environment, generator } = buildSetup();
     if (vcpkg) installVcpkgManifest(tools.vcpkg!, vcpkg.install, environment);
     if (selected.length === 1) {
-        await runSceneBuild(selected[0]!, concurrencyOverride("BBLITE_SCENE_BUILD_JOBS"), false);
+        await runSceneBuild(
+            selected[0]!,
+            concurrencyOverride("BBLITE_SCENE_BUILD_JOBS"),
+            false,
+        );
         return;
     }
     const { scenes: inFlight, jobsPerScene } = buildConcurrency();
@@ -724,7 +811,12 @@ async function buildScenes(
             `(${jobsPerScene} jobs each).`,
     );
     await runConcurrently(
-        orderByHistoricalCost(selected, (scene) => historicalBuildCostMs(compiledBuildDirectory(scene.buildDirectory), generator)),
+        orderByHistoricalCost(selected, (scene) =>
+            historicalBuildCostMs(
+                compiledBuildDirectory(scene.buildDirectory),
+                generator,
+            ),
+        ),
         inFlight,
         (scene) => scene.id,
         (scene) => runSceneBuild(scene, jobsPerScene, true),
@@ -754,10 +846,7 @@ function cacheMatchesConfiguration(
         generatorIndex >= 0
             ? configureArguments[generatorIndex + 1]
             : undefined;
-    if (
-        generator !== undefined &&
-        cache.CMAKE_GENERATOR !== generator
-    ) {
+    if (generator !== undefined && cache.CMAKE_GENERATOR !== generator) {
         return false;
     }
     const passed = new Set<string>();
@@ -894,9 +983,7 @@ function currentDevelopmentTools(): DevelopmentTools {
 function currentWindowsBuildTools(): WindowsBuildTools {
     const tools = currentDevelopmentTools();
     sharedWindowsBuildTools ??= discoverWindowsBuildTools(
-        canonicalDevelopmentCompiler(
-            process.env.BBLITE_DEV_COMPILER ?? "auto",
-        ),
+        canonicalDevelopmentCompiler(process.env.BBLITE_DEV_COMPILER ?? "auto"),
         tools.visualStudioRoot
             ? {
                   environment: {
@@ -942,14 +1029,13 @@ function buildSetup(): SharedBuildSetup {
             "vcpkg was not found. Install the Visual Studio vcpkg component, set VCPKG_ROOT, or run with BBLITE_SDL_DIR for a shipping SDL tree.",
         );
     }
-    const vcpkg =
-        !needsVcpkg
-            ? undefined
-            : {
-                  root: tools.vcpkgRoot!,
-                  toolchain: tools.vcpkgToolchain!,
-                  install: developmentVcpkgInstall(),
-              };
+    const vcpkg = !needsVcpkg
+        ? undefined
+        : {
+              root: tools.vcpkgRoot!,
+              toolchain: tools.vcpkgToolchain!,
+              install: developmentVcpkgInstall(),
+          };
     const environment: NodeJS.ProcessEnv = {
         ...(windows?.environment ?? setupEnvironment(tools)),
         CMAKE_COMMAND: tools.cmake,
@@ -990,7 +1076,9 @@ function developmentChecks(scope: PreflightScope): DevelopmentCheck[] {
             label: "CMake",
             ...(tools.cmake
                 ? { path: tools.cmake }
-                : { problem: "not found (install CMake or set CMAKE_COMMAND)" }),
+                : {
+                      problem: "not found (install CMake or set CMAKE_COMMAND)",
+                  }),
         },
     ];
     const generator = process.env.BBLITE_CMAKE_GENERATOR ?? "Ninja";
@@ -1008,11 +1096,22 @@ function developmentChecks(scope: PreflightScope): DevelopmentCheck[] {
             });
         }
     } else if (process.platform !== "win32") {
-        checks.push({ label: "C++ compiler", ...(tools.cxx
-            ? { path: tools.cxx } : { problem: "C++ compiler was not found; install Clang or set CXX" }) });
+        checks.push({
+            label: "C++ compiler",
+            ...(tools.cxx
+                ? { path: tools.cxx }
+                : {
+                      problem:
+                          "C++ compiler was not found; install Clang or set CXX",
+                  }),
+        });
         if (generator === "Ninja") {
-            checks.push({ label: "Ninja", ...(tools.ninja
-                ? { path: tools.ninja } : { problem: "ninja was not found" }) });
+            checks.push({
+                label: "Ninja",
+                ...(tools.ninja
+                    ? { path: tools.ninja }
+                    : { problem: "ninja was not found" }),
+            });
         }
     }
     if (!process.env.BBLITE_SDL_DIR) {
@@ -1027,7 +1126,8 @@ function developmentChecks(scope: PreflightScope): DevelopmentCheck[] {
         });
     }
     const backend =
-        process.env.BBLITE_BACKEND ?? defaultDevelopmentBackend(process.platform);
+        process.env.BBLITE_BACKEND ??
+        defaultDevelopmentBackend(process.platform);
     if (!["SDL_GPU", "DAWN", "BOTH"].includes(backend)) {
         checks.push({
             label: "backend",
@@ -1041,7 +1141,10 @@ function developmentChecks(scope: PreflightScope): DevelopmentCheck[] {
                 : { problem: `not built at ${tools.dawnDirectory}` }),
         });
     }
-    if (scope.shaders && needsOfflineShaders(backend, process.env.BBLITE_SHADER_TARGET)) {
+    if (
+        scope.shaders &&
+        needsOfflineShaders(backend, process.env.BBLITE_SHADER_TARGET)
+    ) {
         const target = shaderTarget();
         if (target !== "metal") {
             checks.push({
@@ -1136,7 +1239,11 @@ function setupEnvironment(tools: DevelopmentTools): NodeJS.ProcessEnv {
 }
 
 function runDevelopmentSetup(): void {
-    if (process.platform !== "win32" && process.platform !== "linux" && process.platform !== "darwin") {
+    if (
+        process.platform !== "win32" &&
+        process.platform !== "linux" &&
+        process.platform !== "darwin"
+    ) {
         throw new Error(
             "dev:setup supports Windows, Linux and macOS; install host tools manually on this platform and run 'npm run doctor'.",
         );
@@ -1147,7 +1254,12 @@ function runDevelopmentSetup(): void {
         ["vcpkg", tools.vcpkg],
         ["PowerShell", tools.powershell],
         ["git", tools.git],
-        ...(process.platform !== "win32" ? [["Clang (or CC)", tools.cc], ["Clang++ (or CXX)", tools.cxx]] : []),
+        ...(process.platform !== "win32"
+            ? [
+                  ["Clang (or CC)", tools.cc],
+                  ["Clang++ (or CXX)", tools.cxx],
+              ]
+            : []),
     ].filter((entry) => !entry[1]);
     if (bootstrapMissing.length > 0) {
         throw new Error(
@@ -1165,7 +1277,10 @@ function runDevelopmentSetup(): void {
         "directx-dxc",
         process.platform === "win32" ? "dxc.exe" : "dxc",
     );
-    if (hostOfflineShaderTarget(process.platform) !== "metal" && !existsSync(pinnedDxc)) {
+    if (
+        hostOfflineShaderTarget(process.platform) !== "metal" &&
+        !existsSync(pinnedDxc)
+    ) {
         run(
             tools.vcpkg!,
             [
@@ -1195,7 +1310,11 @@ function runDevelopmentSetup(): void {
     buildPinned(tools.labSoundInstalled, "tools/build-labsound.ps1");
     buildPinned(tools.rmlUiInstalled, "tools/build-rmlui.ps1");
     if (!tools.ccache && process.platform === "win32") {
-        run(tools.powershell!, ["-File", "tools/install-ccache.ps1"], environment);
+        run(
+            tools.powershell!,
+            ["-File", "tools/install-ccache.ps1"],
+            environment,
+        );
     }
     sharedBuildSetup = undefined;
     sharedDevelopmentTools = undefined;
@@ -1268,7 +1387,10 @@ async function runSceneBuild(
 ): Promise<void> {
     const { cmake, environment, generator, windows, backend, tools, vcpkg } =
         buildSetup();
-    scene = { ...scene, buildDirectory: compiledBuildDirectory(scene.buildDirectory) };
+    scene = {
+        ...scene,
+        buildDirectory: compiledBuildDirectory(scene.buildDirectory),
+    };
     refreshBuildStamp(scene.output);
     const configureArguments = [
         "-S",
@@ -1295,9 +1417,7 @@ async function runSceneBuild(
     // reconfigures rather than silently keeping the previous SDL3.
     const sdlDirectory = process.env.BBLITE_SDL_DIR;
     if (sdlDirectory) {
-        configureArguments.push(
-            `-DBBLITE_SDL_DIR=${resolve(sdlDirectory)}`,
-        );
+        configureArguments.push(`-DBBLITE_SDL_DIR=${resolve(sdlDirectory)}`);
     }
     if (windows) {
         configureArguments.push(
@@ -1336,10 +1456,7 @@ async function runSceneBuild(
                     scene.buildDirectory,
                     configureArguments,
                 ) ||
-                generatorWouldReconfigure(
-                    scene.buildDirectory,
-                    scene.output,
-                )
+                generatorWouldReconfigure(scene.buildDirectory, scene.output)
             ) {
                 await run(cmake, configureArguments, environment);
             }
@@ -1385,23 +1502,32 @@ function shaderStage(selected: readonly SceneDefinition[]): Stage {
         return {
             name: "shaders (Dawn WGSL)",
             body: async () => {
-                console.log("shaders: Dawn consumes generated WGSL; no offline compiler required.");
+                console.log(
+                    "shaders: Dawn consumes generated WGSL; no offline compiler required.",
+                );
             },
         };
     }
     return {
         name: "shaders",
         body: async () => {
-            const directories = selected.map(scene => resolve(scene.output, "upstream", "shaders")).filter(existsSync);
+            const directories = selected
+                .map((scene) => resolve(scene.output, "upstream", "shaders"))
+                .filter(existsSync);
             if (directories.length === 0) return;
-            const { compileOfflineShaders, formatShaderCompilation } = await import("./compile-shaders.js");
-            console.log(formatShaderCompilation(compileOfflineShaders({
-                directories,
-                target: shaderTarget(),
-                tools: setup.tools,
-                environment: setup.environment,
-                cold: coldBuild(),
-            })));
+            const { compileOfflineShaders, formatShaderCompilation } =
+                await import("./compile-shaders.js");
+            console.log(
+                formatShaderCompilation(
+                    compileOfflineShaders({
+                        directories,
+                        target: shaderTarget(),
+                        tools: setup.tools,
+                        environment: setup.environment,
+                        cold: coldBuild(),
+                    }),
+                ),
+            );
         },
     };
 }
@@ -1413,8 +1539,7 @@ async function processScene(idOrSource: string): Promise<void> {
         rmlUi: idOrSource === "all",
         shaders: true,
     });
-    const selected =
-        idOrSource === "all" ? scenes : [resolveScene(idOrSource)];
+    const selected = idOrSource === "all" ? scenes : [resolveScene(idOrSource)];
     await compile(idOrSource);
     await shaderStage(selected).body();
     if (idOrSource === "all") {
@@ -1448,14 +1573,10 @@ async function runRenderDiff(
     );
     const scene = resolveScene(idOrSource);
     if (parsed.flags.has("--gpu-debug")) enableGpuDebug();
-    const backend = resolveBackend(
-        parsed.values.get("--backend"),
-        "diff",
-    );
+    const backend = resolveBackend(parsed.values.get("--backend"), "diff");
     const token = backendFileToken(backend);
     const captureDirectory = resolve(
-        parsed.values.get("--capture") ??
-            defaultCaptureDirectory(scene.id),
+        parsed.values.get("--capture") ?? defaultCaptureDirectory(scene.id),
     );
     const recapture = parsed.flags.has("--recapture");
     const seek = flagNumber(parsed, "--seek", "diff");
@@ -1467,18 +1588,13 @@ async function runRenderDiff(
     // stands — diffing across poses, or against evidence from a scene
     // source or pinned package that has since moved, is the stale-evidence
     // class this command exists to prevent.
-    const wantSeek =
-        seek ?? scene.parity?.referenceTimeSeconds ?? null;
-    const browserReason = browserCaptureStaleness(
-        scene,
-        captureDirectory,
-        { requireSeek: wantSeek },
-    );
+    const wantSeek = seek ?? scene.parity?.referenceTimeSeconds ?? null;
+    const browserReason = browserCaptureStaleness(scene, captureDirectory, {
+        requireSeek: wantSeek,
+    });
     if (recapture || browserReason !== undefined) {
         if (!recapture && browserReason !== "missing") {
-            console.log(
-                `Browser capture ${browserReason}; recapturing.`,
-            );
+            console.log(`Browser capture ${browserReason}; recapturing.`);
         }
         await runInstrumentedCapture(idOrSource, {
             ...(seek !== undefined ? { seekSeconds: seek } : {}),
@@ -1505,9 +1621,8 @@ async function runRenderDiff(
         });
         nativeCapturePath = result.capturePath;
     }
-    const { buildRenderDiff, formatRenderDiff } = await import(
-        "./render-diff.js"
-    );
+    const { buildRenderDiff, formatRenderDiff } =
+        await import("./render-diff.js");
     const report = buildRenderDiff(
         scene.id,
         captureDirectory,
@@ -1564,9 +1679,8 @@ async function runSeekBracketCapture(
     const captureDirectory = resolve(
         outputDirectory ?? defaultCaptureDirectory(scene.id),
     );
-    const { runInstrumentedCapture } = await import(
-        "./capture-instrumented.js"
-    );
+    const { runInstrumentedCapture } =
+        await import("./capture-instrumented.js");
     // The exact-seek capture keeps its byte-identity check against the
     // committed golden — of the three, it is the one whose pose the
     // golden was captured at.
@@ -1694,8 +1808,7 @@ async function runProbeVariants(
     const backendFlag = parsed.values.get("--backend");
     if (
         backendFlag !== undefined &&
-        canonicalBackend(backendFlag, "probe-variants") !==
-            "dawn"
+        canonicalBackend(backendFlag, "probe-variants") !== "dawn"
     ) {
         throw new Error(
             "probe-variants: the probe is Dawn-only — Dawn compiles the deployed " +
@@ -1734,10 +1847,7 @@ async function runProbeVariants(
     }
     const seek = flagNumber(parsed, "--seek", "probe-variants");
 
-    const executable = resolveNativeExecutable(
-        undefined,
-        scene.buildDirectory,
-    );
+    const executable = resolveNativeExecutable(undefined, scene.buildDirectory);
     const deployedDirectory = join(dirname(executable), "shaders");
     if (!existsSync(deployedDirectory)) {
         throw new Error(
@@ -1753,8 +1863,8 @@ async function runProbeVariants(
     const fileName = deployedShaders.includes(shader)
         ? shader
         : deployedShaders.includes(`${shader}.native.wgsl`)
-            ? `${shader}.native.wgsl`
-            : undefined;
+          ? `${shader}.native.wgsl`
+          : undefined;
     if (fileName === undefined) {
         throw new Error(
             `probe-variants: no deployed shader '${shader}' in ${deployedDirectory}. ` +
@@ -1776,7 +1886,7 @@ async function runProbeVariants(
                 `probe-variants: '${term}' appears nowhere in ${fileName}.`,
             );
         }
-        edited = original.split(term).join(replacement!);
+        edited = original.split(term).join(replacement);
     } else {
         const source = resolve(replaceFile!);
         if (!existsSync(source)) {
@@ -1850,15 +1960,12 @@ async function runProbeVariants(
     // pair `parity --seek` refuses — so those columns are suppressed and
     // say why. `--seek` at the registry pose keeps them.
     const goldenComparable =
-        seek === undefined ||
-        seek === scene.parity?.referenceTimeSeconds;
+        seek === undefined || seek === scene.parity?.referenceTimeSeconds;
     const goldenPath = scene.parity
         ? resolve(scene.parity.reference.path)
         : undefined;
     const golden =
-        goldenComparable &&
-        goldenPath !== undefined &&
-        existsSync(goldenPath)
+        goldenComparable && goldenPath !== undefined && existsSync(goldenPath)
             ? {
                   path: goldenPath,
                   before: compareImages(before.screenshotPath, goldenPath),
@@ -1950,10 +2057,7 @@ async function runProbeVariants(
  * because hashing a corpus-sweep leftover silently is how two identical
  * compiles digest differently.
  */
-function runGeneratedNeutrality(
-    baselinePath: string,
-    write: boolean,
-): boolean {
+function runGeneratedNeutrality(baselinePath: string, write: boolean): boolean {
     const { lines, strays } = digestGeneratedTree(
         "generated",
         scenes.map((scene) => scene.output),
@@ -2038,8 +2142,7 @@ function runGeneratedNeutrality(
 async function runValidate(idOrSource: string): Promise<void> {
     // Resolve the selection (and the backend story) before any stage
     // spends time on an id that cannot mean anything.
-    const scene =
-        idOrSource === "all" ? undefined : resolveScene(idOrSource);
+    const scene = idOrSource === "all" ? undefined : resolveScene(idOrSource);
     requireDevelopmentPreflight({
         browser: true,
         labSound: idOrSource === "all",
@@ -2165,11 +2268,9 @@ async function runDiagnose(
             : canonicalBackend(backendFlag, "diagnose");
     const seek = flagNumber(parsed, "--seek", "diagnose");
     const poseComparable =
-        seek === undefined ||
-        seek === scene.parity.referenceTimeSeconds;
+        seek === undefined || seek === scene.parity.referenceTimeSeconds;
     const outputDirectory = resolve(scene.parity.outputDirectory);
-    const rungs: Array<{ name: string; verdict: string; ok: boolean }> =
-        [];
+    const rungs: Array<{ name: string; verdict: string; ok: boolean }> = [];
     const heading = (name: string): void => {
         console.log("");
         console.log(`=== diagnose: ${name} ===`);
@@ -2197,9 +2298,7 @@ async function runDiagnose(
             } else {
                 await runSceneParity([
                     idOrSource,
-                    ...(backend !== undefined
-                        ? ["--backend", backend]
-                        : []),
+                    ...(backend !== undefined ? ["--backend", backend] : []),
                 ]);
             }
             rungs.push({
@@ -2251,9 +2350,7 @@ async function runDiagnose(
     // just ensured is fresh (same directory, same pose).
     heading("compose");
     try {
-        const { runComposeReport } = await import(
-            "./scene-compose-report.js"
-        );
+        const { runComposeReport } = await import("./scene-compose-report.js");
         const compose = await runComposeReport(
             idOrSource,
             scenes,
@@ -2320,10 +2417,7 @@ function parityVerdict(
         }
         const token = backendFileToken(backend ?? "sdl_gpu");
         const report = JSON.parse(
-            readFileSync(
-                parityReportPath(outputDirectory, token),
-                "utf8",
-            ),
+            readFileSync(parityReportPath(outputDirectory, token), "utf8"),
         ) as ParityReportSummary;
         return ` — full MAD ${report.full.mad.toFixed(3)}, region ${report.region.mad.toFixed(3)}`;
     } catch {
@@ -2341,20 +2435,25 @@ function parityVerdict(
  * whatever pose they were taken; with `--seek` the capture must describe
  * that pose and is recaptured otherwise, as `diff --seek` does.
  */
-async function runUniforms(idOrSource: string, parsed: ParsedFlags): Promise<void> {
+async function runUniforms(
+    idOrSource: string,
+    parsed: ParsedFlags,
+): Promise<void> {
     const scene = resolveScene(idOrSource);
     const directory =
         parsed.values.get("--capture") ?? defaultCaptureDirectory(scene.id);
     const sizes = parsed.values.get("--size");
     const module = parsed.values.get("--module");
     const seek = flagNumber(parsed, "--seek", "uniforms");
-    const { browserCaptureStaleness, runInstrumentedCapture } = await import(
-        "./capture-instrumented.js"
-    );
+    const { browserCaptureStaleness, runInstrumentedCapture } =
+        await import("./capture-instrumented.js");
     if (seek !== undefined) {
-        const reason = browserCaptureStaleness(scene, directory, { requireSeek: seek });
+        const reason = browserCaptureStaleness(scene, directory, {
+            requireSeek: seek,
+        });
         if (reason !== undefined) {
-            if (reason !== "missing") console.log(`Browser capture ${reason}; recapturing.`);
+            if (reason !== "missing")
+                console.log(`Browser capture ${reason}; recapturing.`);
             await runInstrumentedCapture(idOrSource, {
                 seekSeconds: seek,
                 outputDirectory: directory,
@@ -2379,9 +2478,8 @@ async function runUniforms(idOrSource: string, parsed: ParsedFlags): Promise<voi
             );
         }
     }
-    const { decodeCapturedUniforms, formatDecodedUniforms } = await import(
-        "./capture-uniforms.js"
-    );
+    const { decodeCapturedUniforms, formatDecodedUniforms } =
+        await import("./capture-uniforms.js");
     const decoded = decodeCapturedUniforms(directory, {
         ...(sizes !== undefined
             ? {
@@ -2406,7 +2504,10 @@ async function runUniforms(idOrSource: string, parsed: ParsedFlags): Promise<voi
 
 /** `scene -- capture <id>`: the instrumented browser capture, the native
  *  render capture (`--native`), or the ±1-frame bracket. */
-async function runCapture(idOrSource: string, parsed: ParsedFlags): Promise<void> {
+async function runCapture(
+    idOrSource: string,
+    parsed: ParsedFlags,
+): Promise<void> {
     const native = parsed.flags.has("--native");
     const seekBracket = parsed.flags.has("--seek-bracket");
     const seek = flagNumber(parsed, "--seek", "capture");
@@ -2434,13 +2535,18 @@ async function runCapture(idOrSource: string, parsed: ParsedFlags): Promise<void
             );
         }
         if (parsed.flags.has("--gpu-debug")) enableGpuDebug();
-        const backend = resolveBackend(parsed.values.get("--backend"), "capture");
+        const backend = resolveBackend(
+            parsed.values.get("--backend"),
+            "capture",
+        );
         const result = runNativeCapture(idOrSource, {
             backend,
             ...(seek !== undefined ? { seekSeconds: seek } : {}),
             ...(output !== undefined ? { outputDirectory: output } : {}),
         });
-        console.log(`Native ${result.backend} capture written to ${result.capturePath}`);
+        console.log(
+            `Native ${result.backend} capture written to ${result.capturePath}`,
+        );
         return;
     }
     for (const [flag, present] of [
@@ -2457,14 +2563,14 @@ async function runCapture(idOrSource: string, parsed: ParsedFlags): Promise<void
         await runSeekBracketCapture(idOrSource, seek, output);
         return;
     }
-    const { runInstrumentedCapture } = await import("./capture-instrumented.js");
+    const { runInstrumentedCapture } =
+        await import("./capture-instrumented.js");
     await runInstrumentedCapture(idOrSource, {
         ...(seek !== undefined ? { seekSeconds: seek } : {}),
         ...(skipDraw !== undefined ? { skipDrawIndexCount: skipDraw } : {}),
         ...(output !== undefined ? { outputDirectory: output } : {}),
     });
 }
-
 
 /**
  * `scene -- clean`: disk hygiene over what this checkout owns.
@@ -2585,7 +2691,12 @@ const gigabytes = (bytes: number): string => `${(bytes / 1e9).toFixed(2)} GB`;
 function buildTreesUnder(nativeRoot: string): string[] {
     if (!existsSync(nativeRoot)) return [];
     return readdirSync(nativeRoot, { withFileTypes: true })
-        .filter((entry) => entry.isDirectory() && !entry.isSymbolicLink() && entry.name.startsWith("build-"))
+        .filter(
+            (entry) =>
+                entry.isDirectory() &&
+                !entry.isSymbolicLink() &&
+                entry.name.startsWith("build-"),
+        )
         .map((entry) => resolve(nativeRoot, entry.name));
 }
 
@@ -2594,7 +2705,9 @@ function worktreeNativeRoots(): string[] {
     const here = resolve(".");
     const roots: string[] = [];
     try {
-        const listing = spawnSync("git", ["worktree", "list", "--porcelain"], { encoding: "utf8" });
+        const listing = spawnSync("git", ["worktree", "list", "--porcelain"], {
+            encoding: "utf8",
+        });
         if (listing.status === 0) {
             for (const line of listing.stdout.split(/\r?\n/)) {
                 if (!line.startsWith("worktree ")) continue;
@@ -2607,7 +2720,9 @@ function worktreeNativeRoots(): string[] {
     }
     const claudeWorktrees = resolve(".claude", "worktrees");
     if (existsSync(claudeWorktrees)) {
-        for (const entry of readdirSync(claudeWorktrees, { withFileTypes: true })) {
+        for (const entry of readdirSync(claudeWorktrees, {
+            withFileTypes: true,
+        })) {
             if (!entry.isDirectory()) continue;
             const root = resolve(claudeWorktrees, entry.name, "native");
             if (!roots.includes(root)) roots.push(root);
@@ -2617,10 +2732,18 @@ function worktreeNativeRoots(): string[] {
 }
 
 const isPchFile = (name: string): boolean => /^cmake_pch\..*\.pch$/.test(name);
-const isDllFile = (name: string): boolean => name.toLowerCase().endsWith(".dll");
+const isDllFile = (name: string): boolean =>
+    name.toLowerCase().endsWith(".dll");
 
 function runClean(options: CleanOptions): void {
-    if (!options.orphans && !options.all && !options.report && !options.dlls && !options.pch && !options.artifacts) {
+    if (
+        !options.orphans &&
+        !options.all &&
+        !options.report &&
+        !options.dlls &&
+        !options.pch &&
+        !options.artifacts
+    ) {
         throw new Error(
             "clean: pass --report (list sizes, delete nothing), --orphans (delete build trees and generated/ entries " +
                 "no registry entry owns), --all (also delete every owned build tree; owned generated/ directories always stay), " +
@@ -2640,9 +2763,16 @@ function runClean(options: CleanOptions): void {
         removed += 1;
     };
     const nativeRoot = resolve("native");
-    const ownedBuilds = new Set(scenes.map((scene) => resolve(scene.buildDirectory)));
+    const ownedBuilds = new Set(
+        scenes.map((scene) => resolve(scene.buildDirectory)),
+    );
     for (const scene of scenes) {
-        for (const suffix of ["live-release", "attribution-release", "min-sdl", "min-dawn"]) {
+        for (const suffix of [
+            "live-release",
+            "attribution-release",
+            "min-sdl",
+            "min-dawn",
+        ]) {
             ownedBuilds.add(resolve(nativeRoot, `build-${scene.id}-${suffix}`));
         }
     }
@@ -2652,13 +2782,21 @@ function runClean(options: CleanOptions): void {
         }
     }
     const generatedRoot = resolve("generated");
-    const ownedGenerated = new Set(scenes.map((scene) => resolve(scene.output)));
-    for (const scene of scenes) ownedGenerated.add(resolve(generatedRoot, `${scene.id}-live`));
-    for (const scene of scenes) ownedGenerated.add(resolve(generatedRoot, `${scene.id}-attribution`));
+    const ownedGenerated = new Set(
+        scenes.map((scene) => resolve(scene.output)),
+    );
+    for (const scene of scenes)
+        ownedGenerated.add(resolve(generatedRoot, `${scene.id}-live`));
+    for (const scene of scenes)
+        ownedGenerated.add(resolve(generatedRoot, `${scene.id}-attribution`));
     const artifactsRoot = resolve("artifacts");
     const unownedArtifacts = existsSync(artifactsRoot)
         ? readdirSync(artifactsRoot, { withFileTypes: true })
-              .filter((entry) => !OWNED_ARTIFACTS.has(entry.name) && !entry.isSymbolicLink())
+              .filter(
+                  (entry) =>
+                      !OWNED_ARTIFACTS.has(entry.name) &&
+                      !entry.isSymbolicLink(),
+              )
               .map((entry) => resolve(artifactsRoot, entry.name))
         : [];
 
@@ -2688,26 +2826,46 @@ function runClean(options: CleanOptions): void {
             `  native/build-*: ${trees.length} tree(s), ${gigabytes(owned + orphan)} ` +
                 `(owned ${gigabytes(owned)}, orphan ${gigabytes(orphan)} in ${trees.filter((tree) => !ownedBuilds.has(tree)).length})`,
         );
-        console.log(`    precompiled headers: ${pchFiles} file(s), ${gigabytes(pchBytes)} (--pch)`);
-        console.log(`    DLL copies: ${dllFiles} file(s), ${gigabytes(dllBytes)} (--dlls)`);
+        console.log(
+            `    precompiled headers: ${pchFiles} file(s), ${gigabytes(pchBytes)} (--pch)`,
+        );
+        console.log(
+            `    DLL copies: ${dllFiles} file(s), ${gigabytes(dllBytes)} (--dlls)`,
+        );
         for (const tree of trees.filter((tree) => !ownedBuilds.has(tree))) {
-            console.log(`    orphan: ${tree} (${gigabytes(directorySize(tree))})`);
+            console.log(
+                `    orphan: ${tree} (${gigabytes(directorySize(tree))})`,
+            );
         }
         const strays = existsSync(generatedRoot)
             ? readdirSync(generatedRoot, { withFileTypes: true })
                   .map((entry) => resolve(generatedRoot, entry.name))
                   .filter((path) => !ownedGenerated.has(path))
             : [];
-        console.log(`  generated/: ${strays.length} stray entr${strays.length === 1 ? "y" : "ies"} (--orphans)`);
-        for (const stray of strays) console.log(`    stray: ${stray} (${gigabytes(directorySize(stray))})`);
+        console.log(
+            `  generated/: ${strays.length} stray entr${strays.length === 1 ? "y" : "ies"} (--orphans)`,
+        );
+        for (const stray of strays)
+            console.log(
+                `    stray: ${stray} (${gigabytes(directorySize(stray))})`,
+            );
         for (const root of worktreeNativeRoots()) {
             const worktreeTrees = buildTreesUnder(root);
-            const size = worktreeTrees.reduce((total, tree) => total + directorySize(tree), 0);
-            console.log(`  worktree ${root}: ${worktreeTrees.length} build tree(s), ${gigabytes(size)} (not touched by clean; run clean there)`);
+            const size = worktreeTrees.reduce(
+                (total, tree) => total + directorySize(tree),
+                0,
+            );
+            console.log(
+                `  worktree ${root}: ${worktreeTrees.length} build tree(s), ${gigabytes(size)} (not touched by clean; run clean there)`,
+            );
         }
-        console.log(`  artifacts/: ${unownedArtifacts.length} unowned entr${unownedArtifacts.length === 1 ? "y" : "ies"} (--artifacts)`);
+        console.log(
+            `  artifacts/: ${unownedArtifacts.length} unowned entr${unownedArtifacts.length === 1 ? "y" : "ies"} (--artifacts)`,
+        );
         for (const entry of unownedArtifacts) {
-            console.log(`    unowned: ${entry} (${gigabytes(directorySize(entry))})`);
+            console.log(
+                `    unowned: ${entry} (${gigabytes(directorySize(entry))})`,
+            );
         }
     }
     if (options.orphans || options.all) {
@@ -2719,7 +2877,9 @@ function runClean(options: CleanOptions): void {
             if (options.orphans) removeTree(tree, "orphan build tree");
         }
         if (options.orphans && existsSync(generatedRoot)) {
-            for (const entry of readdirSync(generatedRoot, { withFileTypes: true })) {
+            for (const entry of readdirSync(generatedRoot, {
+                withFileTypes: true,
+            })) {
                 const path = resolve(generatedRoot, entry.name);
                 if (entry.isDirectory() && ownedGenerated.has(path)) continue;
                 removeTree(path, "stray generated entry");
@@ -2739,11 +2899,14 @@ function runClean(options: CleanOptions): void {
             }
         }
         if (removedBytes > 0) {
-            console.log(`clean: removed ${gigabytes(removedBytes)} of precompiled headers and DLL copies; the next 'scene -- build' restores them.`);
+            console.log(
+                `clean: removed ${gigabytes(removedBytes)} of precompiled headers and DLL copies; the next 'scene -- build' restores them.`,
+            );
         }
     }
     if (options.artifacts) {
-        for (const entry of unownedArtifacts) removeTree(entry, "unowned artifacts entry");
+        for (const entry of unownedArtifacts)
+            removeTree(entry, "unowned artifacts entry");
     }
     console.log(
         removed === 0
@@ -2760,18 +2923,28 @@ function runClean(options: CleanOptions): void {
  */
 function runShow(idOrSource: string, parsed: ParsedFlags): void {
     const scene = resolveScene(idOrSource);
-    const views = ["--activation", "--adaptations", "--provenance"].filter((flag) => parsed.flags.has(flag));
+    const views = ["--activation", "--adaptations", "--provenance"].filter(
+        (flag) => parsed.flags.has(flag),
+    );
     if (views.length === 0) {
         console.log(JSON.stringify(scene, null, 2));
         return;
     }
     for (const view of views) {
         if (view === "--activation") {
-            console.log(formatFeatureActivation(readFeatureActivation(scene.output, scene.id)));
+            console.log(
+                formatFeatureActivation(
+                    readFeatureActivation(scene.output, scene.id),
+                ),
+            );
         } else if (view === "--adaptations") {
-            console.log(formatAdaptations(readAdaptations(scene.output, scene.id)));
+            console.log(
+                formatAdaptations(readAdaptations(scene.output, scene.id)),
+            );
         } else {
-            console.log(formatProvenance(readProvenance(scene.output, scene.id)));
+            console.log(
+                formatProvenance(readProvenance(scene.output, scene.id)),
+            );
         }
     }
 }
@@ -2803,7 +2976,9 @@ function runStatus(idOrSource: string, run: boolean): boolean {
             frame: 0,
             screenshot,
         });
-        console.log(`  one-frame run under the identity gate: ok (${screenshot})`);
+        console.log(
+            `  one-frame run under the identity gate: ok (${screenshot})`,
+        );
     }
     return status.current;
 }
@@ -2813,7 +2988,10 @@ function runStatus(idOrSource: string, run: boolean): boolean {
  * the scene's own tree or — for a check declaring `twin: true` — the
  * byte-identical no-query twin this command generates and builds first.
  */
-async function runDeclaredCheck(checkId: string, parsed: ParsedFlags): Promise<boolean> {
+async function runDeclaredCheck(
+    checkId: string,
+    parsed: ParsedFlags,
+): Promise<boolean> {
     const spec = readCheckSpec(checkId);
     const scene = resolveScene(spec.scene);
     const tree = spec.twin ? twinScene(scene) : scene;
@@ -2836,10 +3014,15 @@ async function runDeclaredCheck(checkId: string, parsed: ParsedFlags): Promise<b
     return verdict.ok;
 }
 
-async function runDeclaredObserve(checkId: string, parsed: ParsedFlags): Promise<void> {
+async function runDeclaredObserve(
+    checkId: string,
+    parsed: ParsedFlags,
+): Promise<void> {
     const spec = readCheckSpec(checkId);
     if (spec.observe === undefined) {
-        throw new Error(`check ${checkId} declares no browser observation ('observe').`);
+        throw new Error(
+            `check ${checkId} declares no browser observation ('observe').`,
+        );
     }
     await runObserve({
         checkId,
@@ -2864,31 +3047,229 @@ const SCENE_OR_ALL_ARGUMENT = "<id|source.ts|all>";
 
 const COMMANDS: readonly CommandSpec[] = [
     { name: "help", flags: {}, summary: "print this usage", lock: false },
-    { name: "doctor", flags: {}, summary: "toolchain preflight report", lock: true },
-    { name: "setup", flags: {}, summary: "install the vcpkg manifest and build the pinned Dawn, Tint, LabSound and RmlUi", lock: true },
-    { name: "list", flags: { boolean: ["--json"] }, summary: "id, name, source and build directory of every registered scene", lock: false },
-    { name: "show", argument: SCENE_ARGUMENT, flags: { boolean: ["--activation", "--adaptations", "--provenance"] }, summary: "the registry entry; --activation (active features and why), --adaptations (by risk), --provenance (lowered pinned symbols) read the generated tree", lock: false },
-    { name: "status", argument: SCENE_ARGUMENT, flags: { boolean: ["--run"] }, summary: "generation record current, payload deployed, binary carries the tree's stamp (from its bytes); --run renders one frame under the identity gate", lock: false },
-    { name: "compile", argument: SCENE_OR_ALL_ARGUMENT, flags: { boolean: ["--cold"] }, summary: "generate C++, WGSL, assets and manifests", lock: true },
-    { name: "build", argument: SCENE_OR_ALL_ARGUMENT, flags: { value: ["--backend", "--compiler"], boolean: ["--cold"] }, summary: "configure, build and deploy the generated tree (--backend sdl_gpu|dawn|both, --compiler auto|clangcl|msvc)", lock: true },
-    { name: "process", argument: SCENE_OR_ALL_ARGUMENT, flags: { value: ["--backend", "--compiler", "--shader"], boolean: ["--cold"] }, summary: "compile, compile shaders (--shader d3d12|vulkan|metal|all) and build", lock: true },
-    { name: "parity", argument: SCENE_OR_ALL_ARGUMENT, flags: PARITY_FLAGS, summary: "golden vs native MAD gate; --differential measures both backends and diffs them", lock: true },
-    { name: "geometry", argument: SCENE_ARGUMENT, flags: { value: ["--backend", "--seek", "--exe"], boolean: ["--recapture-reference", "--gpu-debug"] }, summary: "impostor copy-task attachments, browser vs native", lock: true },
-    { name: "uniforms", argument: SCENE_ARGUMENT, flags: { value: ["--capture", "--size", "--module", "--seek"] }, summary: "decode captured browser uniform buffers by WGSL struct size; --seek recaptures at that pose", lock: true },
-    { name: "capture", argument: SCENE_ARGUMENT, flags: { value: ["--seek", "--skip-draw", "--capture", "--backend"], boolean: ["--native", "--gpu-debug", "--seek-bracket"], alias: { "--out": "--capture" } }, summary: "instrumented browser capture (--native: the native render capture; --seek-bracket: +-1 frame)", lock: true },
-    { name: "diff", argument: SCENE_ARGUMENT, flags: { value: ["--backend", "--capture", "--seek"], boolean: ["--recapture", "--gpu-debug"] }, summary: "pair the browser and native captures: values, draws, shaders, palettes", lock: true },
-    { name: "probe-variants", argument: SCENE_ARGUMENT, flags: { value: ["--shader", "--term", "--with", "--replace-file", "--seek", "--backend"], boolean: ["--gpu-debug"] }, summary: "neutralize one WGSL term (or replace a file) in the deployed Dawn payload and re-render", lock: true },
-    { name: "measure", argument: "<image.png>", flags: { value: ["--background"] }, summary: "non-background bounding box, pixel count and channel means of a PNG", lock: false },
-    { name: "compose", argument: SCENE_OR_ALL_ARGUMENT, flags: { value: ["--capture"] }, summary: "compose every glTF material through the pin and byte-compare with the captured fragments", lock: true },
-    { name: "diagnose", argument: SCENE_ARGUMENT, flags: { value: ["--backend", "--seek"], boolean: ["--gpu-debug"] }, summary: "parity, diff and compose in one run", lock: true },
-    { name: "check", argument: "<check-id>", flags: { value: ["--backend", "--phase"], boolean: ["--keep"] }, summary: "the declared interaction check (checks/<check-id>.json) on both backends; --keep reuses current phase outputs", lock: true },
-    { name: "observe", argument: "<check-id>", flags: { boolean: ["--headed"] }, summary: "the check's browser observation into artifacts/check/<check-id>/browser/", lock: true },
-    { name: "clean", flags: { boolean: ["--report", "--orphans", "--all", "--pch", "--dlls", "--artifacts"] }, summary: "disk hygiene: --report sizes; --orphans unowned trees; --all owned build trees; --pch/--dlls duplicated payloads; --artifacts unowned artifacts/ entries", lock: true },
-    { name: "stability", argument: SCENE_ARGUMENT, flags: STABILITY_FLAGS, summary: "N native re-renders vs run 1 and the golden", lock: true },
-    { name: "memory", argument: SCENE_OR_ALL_ARGUMENT, flags: MEMORY_FLAGS, summary: "working-set growth after warm-up (all = the application demos)", lock: true },
-    { name: "validate", argument: SCENE_OR_ALL_ARGUMENT, flags: { boolean: ["--cold"] }, summary: "compile, shaders, build, parity and the published-status check", lock: true },
-    { name: "neutrality", argument: "<baseline-parity-directory>", flags: {}, summary: "cell-by-cell compare of report-differential.json against a saved baseline", lock: true },
-    { name: "neutrality-generated", argument: "<baseline.txt>", flags: { boolean: ["--write"] }, summary: "digest generated/ as it stands (compile first) and write or compare the baseline", lock: true },
+    {
+        name: "doctor",
+        flags: {},
+        summary: "toolchain preflight report",
+        lock: true,
+    },
+    {
+        name: "setup",
+        flags: {},
+        summary:
+            "install the vcpkg manifest and build the pinned Dawn, Tint, LabSound and RmlUi",
+        lock: true,
+    },
+    {
+        name: "list",
+        flags: { boolean: ["--json"] },
+        summary:
+            "id, name, source and build directory of every registered scene",
+        lock: false,
+    },
+    {
+        name: "show",
+        argument: SCENE_ARGUMENT,
+        flags: { boolean: ["--activation", "--adaptations", "--provenance"] },
+        summary:
+            "the registry entry; --activation (active features and why), --adaptations (by risk), --provenance (lowered pinned symbols) read the generated tree",
+        lock: false,
+    },
+    {
+        name: "status",
+        argument: SCENE_ARGUMENT,
+        flags: { boolean: ["--run"] },
+        summary:
+            "generation record current, payload deployed, binary carries the tree's stamp (from its bytes); --run renders one frame under the identity gate",
+        lock: false,
+    },
+    {
+        name: "compile",
+        argument: SCENE_OR_ALL_ARGUMENT,
+        flags: { boolean: ["--cold"] },
+        summary: "generate C++, WGSL, assets and manifests",
+        lock: true,
+    },
+    {
+        name: "build",
+        argument: SCENE_OR_ALL_ARGUMENT,
+        flags: { value: ["--backend", "--compiler"], boolean: ["--cold"] },
+        summary:
+            "configure, build and deploy the generated tree (--backend sdl_gpu|dawn|both, --compiler auto|clangcl|msvc)",
+        lock: true,
+    },
+    {
+        name: "process",
+        argument: SCENE_OR_ALL_ARGUMENT,
+        flags: {
+            value: ["--backend", "--compiler", "--shader"],
+            boolean: ["--cold"],
+        },
+        summary:
+            "compile, compile shaders (--shader d3d12|vulkan|metal|all) and build",
+        lock: true,
+    },
+    {
+        name: "parity",
+        argument: SCENE_OR_ALL_ARGUMENT,
+        flags: PARITY_FLAGS,
+        summary:
+            "golden vs native MAD gate; --differential measures both backends and diffs them",
+        lock: true,
+    },
+    {
+        name: "geometry",
+        argument: SCENE_ARGUMENT,
+        flags: {
+            value: ["--backend", "--seek", "--exe"],
+            boolean: ["--recapture-reference", "--gpu-debug"],
+        },
+        summary: "impostor copy-task attachments, browser vs native",
+        lock: true,
+    },
+    {
+        name: "uniforms",
+        argument: SCENE_ARGUMENT,
+        flags: { value: ["--capture", "--size", "--module", "--seek"] },
+        summary:
+            "decode captured browser uniform buffers by WGSL struct size; --seek recaptures at that pose",
+        lock: true,
+    },
+    {
+        name: "capture",
+        argument: SCENE_ARGUMENT,
+        flags: {
+            value: ["--seek", "--skip-draw", "--capture", "--backend"],
+            boolean: ["--native", "--gpu-debug", "--seek-bracket"],
+            alias: { "--out": "--capture" },
+        },
+        summary:
+            "instrumented browser capture (--native: the native render capture; --seek-bracket: +-1 frame)",
+        lock: true,
+    },
+    {
+        name: "diff",
+        argument: SCENE_ARGUMENT,
+        flags: {
+            value: ["--backend", "--capture", "--seek"],
+            boolean: ["--recapture", "--gpu-debug"],
+        },
+        summary:
+            "pair the browser and native captures: values, draws, shaders, palettes",
+        lock: true,
+    },
+    {
+        name: "probe-variants",
+        argument: SCENE_ARGUMENT,
+        flags: {
+            value: [
+                "--shader",
+                "--term",
+                "--with",
+                "--replace-file",
+                "--seek",
+                "--backend",
+            ],
+            boolean: ["--gpu-debug"],
+        },
+        summary:
+            "neutralize one WGSL term (or replace a file) in the deployed Dawn payload and re-render",
+        lock: true,
+    },
+    {
+        name: "measure",
+        argument: "<image.png>",
+        flags: { value: ["--background"] },
+        summary:
+            "non-background bounding box, pixel count and channel means of a PNG",
+        lock: false,
+    },
+    {
+        name: "compose",
+        argument: SCENE_OR_ALL_ARGUMENT,
+        flags: { value: ["--capture"] },
+        summary:
+            "compose every glTF material through the pin and byte-compare with the captured fragments",
+        lock: true,
+    },
+    {
+        name: "diagnose",
+        argument: SCENE_ARGUMENT,
+        flags: { value: ["--backend", "--seek"], boolean: ["--gpu-debug"] },
+        summary: "parity, diff and compose in one run",
+        lock: true,
+    },
+    {
+        name: "check",
+        argument: "<check-id>",
+        flags: { value: ["--backend", "--phase"], boolean: ["--keep"] },
+        summary:
+            "the declared interaction check (checks/<check-id>.json) on both backends; --keep reuses current phase outputs",
+        lock: true,
+    },
+    {
+        name: "observe",
+        argument: "<check-id>",
+        flags: { boolean: ["--headed"] },
+        summary:
+            "the check's browser observation into artifacts/check/<check-id>/browser/",
+        lock: true,
+    },
+    {
+        name: "clean",
+        flags: {
+            boolean: [
+                "--report",
+                "--orphans",
+                "--all",
+                "--pch",
+                "--dlls",
+                "--artifacts",
+            ],
+        },
+        summary:
+            "disk hygiene: --report sizes; --orphans unowned trees; --all owned build trees; --pch/--dlls duplicated payloads; --artifacts unowned artifacts/ entries",
+        lock: true,
+    },
+    {
+        name: "stability",
+        argument: SCENE_ARGUMENT,
+        flags: STABILITY_FLAGS,
+        summary: "N native re-renders vs run 1 and the golden",
+        lock: true,
+    },
+    {
+        name: "memory",
+        argument: SCENE_OR_ALL_ARGUMENT,
+        flags: MEMORY_FLAGS,
+        summary:
+            "working-set growth after warm-up (all = the application demos)",
+        lock: true,
+    },
+    {
+        name: "validate",
+        argument: SCENE_OR_ALL_ARGUMENT,
+        flags: { boolean: ["--cold"] },
+        summary:
+            "compile, shaders, build, parity and the published-status check",
+        lock: true,
+    },
+    {
+        name: "neutrality",
+        argument: "<baseline-parity-directory>",
+        flags: {},
+        summary:
+            "cell-by-cell compare of report-differential.json against a saved baseline",
+        lock: true,
+    },
+    {
+        name: "neutrality-generated",
+        argument: "<baseline.txt>",
+        flags: { boolean: ["--write"] },
+        summary:
+            "digest generated/ as it stands (compile first) and write or compare the baseline",
+        lock: true,
+    },
 ];
 
 /** The usage text, generated from the command table so it cannot drift
@@ -2896,19 +3277,31 @@ const COMMANDS: readonly CommandSpec[] = [
 function usage(): string {
     const lines = ["Usage: scene-command <command> [argument] [options]", ""];
     for (const command of COMMANDS) {
-        const invocation = [command.name, command.argument, usageFromSpec(command.flags)]
+        const invocation = [
+            command.name,
+            command.argument,
+            usageFromSpec(command.flags),
+        ]
             .filter((part) => part !== undefined && part !== "")
             .join(" ");
         lines.push(`  ${invocation}`);
         lines.push(`      ${command.summary}`);
     }
-    lines.push("", "Backends are spelled sdl_gpu|dawn (gpu accepted for sdl_gpu); artifact filenames use gpu|dawn.");
+    lines.push(
+        "",
+        "Backends are spelled sdl_gpu|dawn (gpu accepted for sdl_gpu); artifact filenames use gpu|dawn.",
+    );
     return lines.join("\n");
 }
 
 async function main(): Promise<void> {
     const [command, ...arguments_] = process.argv.slice(2);
-    if (command === undefined || command === "help" || command === "--help" || command === "-h") {
+    if (
+        command === undefined ||
+        command === "help" ||
+        command === "--help" ||
+        command === "-h"
+    ) {
         console.log(usage());
         return;
     }
@@ -2920,13 +3313,16 @@ async function main(): Promise<void> {
     // while this one is working deletes the `dist/` it is executing from.
     // `tools/clean-dist.mjs` refuses to cross this lock; a read-only command
     // that returns at once does not hold it.
-    if (spec.lock) holdDistLock([command, arguments_[0]].filter(Boolean).join(" "));
+    if (spec.lock)
+        holdDistLock([command, arguments_[0]].filter(Boolean).join(" "));
     let id: string | undefined;
     let rest = arguments_;
     if (spec.argument !== undefined) {
         id = arguments_[0];
         if (id === undefined || id.startsWith("--")) {
-            throw new Error(`${command} needs ${spec.argument}.\n\n  ${command} ${spec.argument} ${usageFromSpec(spec.flags)}`);
+            throw new Error(
+                `${command} needs ${spec.argument}.\n\n  ${command} ${spec.argument} ${usageFromSpec(spec.flags)}`,
+            );
         }
         rest = arguments_.slice(1);
     }
@@ -2947,7 +3343,9 @@ async function main(): Promise<void> {
                 console.log(JSON.stringify(scenes, null, 2));
             } else {
                 for (const scene of scenes) {
-                    console.log(`${scene.id}\t${scene.name}\t${scene.source}\t${scene.buildDirectory}`);
+                    console.log(
+                        `${scene.id}\t${scene.name}\t${scene.source}\t${scene.buildDirectory}`,
+                    );
                 }
             }
             return;
@@ -2955,7 +3353,8 @@ async function main(): Promise<void> {
             runShow(id!, parsed!);
             return;
         case "status":
-            if (!runStatus(id!, parsed!.flags.has("--run"))) process.exitCode = 1;
+            if (!runStatus(id!, parsed!.flags.has("--run")))
+                process.exitCode = 1;
             return;
         case "compile":
             await withColdBuild(rest, () => compile(id!));
@@ -3007,7 +3406,12 @@ async function main(): Promise<void> {
             if (!existsSync(imagePath)) {
                 throw new Error(`measure: no image at ${imagePath}.`);
             }
-            console.log(formatPngMeasurement(imagePath, measurePng(imagePath, background)));
+            console.log(
+                formatPngMeasurement(
+                    imagePath,
+                    measurePng(imagePath, background),
+                ),
+            );
             return;
         }
         case "compose": {
@@ -3017,7 +3421,8 @@ async function main(): Promise<void> {
                     "compose: --capture names one scene's capture directory and does not compose with 'all'.",
                 );
             }
-            const { runComposeReport } = await import("./scene-compose-report.js");
+            const { runComposeReport } =
+                await import("./scene-compose-report.js");
             const outcome = await runComposeReport(id!, scenes, resolveScene, {
                 ...(captureDirectory !== undefined ? { captureDirectory } : {}),
             });
@@ -3056,7 +3461,8 @@ async function main(): Promise<void> {
             if (!runNeutralityReport(id!).neutral) process.exitCode = 1;
             return;
         case "neutrality-generated":
-            if (!runGeneratedNeutrality(id!, parsed!.flags.has("--write"))) process.exitCode = 1;
+            if (!runGeneratedNeutrality(id!, parsed!.flags.has("--write")))
+                process.exitCode = 1;
             return;
         default:
             throw new Error(`Unknown command '${command}'.\n\n${usage()}`);

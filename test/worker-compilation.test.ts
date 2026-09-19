@@ -5,7 +5,10 @@ import { resolve } from "node:path";
 import test from "node:test";
 import { compileSource } from "../src/compiler.js";
 import { discoverWindowsBuildTools } from "../src/development-tools.js";
-import { optionalNativeFixtureTools, runNativeFixtureCompiler } from "./native-fixture.js";
+import {
+    optionalNativeFixtureTools,
+    runNativeFixtureCompiler,
+} from "./native-fixture.js";
 
 test("module Worker compilation retains per-instance module state and cloned messages", (t) => {
     const directory = resolve("artifacts/worker-compilation-check");
@@ -13,10 +16,15 @@ test("module Worker compilation retains per-instance module state and cloned mes
     const entry = resolve(directory, "entry.ts");
     const worker = resolve(directory, "counter.ts");
     const helper = resolve(directory, "state.ts");
-    writeFileSync(helper, `let count = 0;
+    writeFileSync(
+        helper,
+        `let count = 0;
 export function increment(value: number): number { count += value; return count; }
-`);
-    writeFileSync(worker, `import { increment } from "./state";
+`,
+    );
+    writeFileSync(
+        worker,
+        `import { increment } from "./state";
 function main() { throw new Error("Module helper named main must not run automatically"); }
 async function update(amount: number): Promise<number> {
     const value = increment(amount);
@@ -30,7 +38,8 @@ self.addEventListener("message", (event: MessageEvent<{ amount: number }>) => {
         queueMicrotask(() => self.postMessage(value));
     }).catch((error: unknown) => { throw new Error(String(error)); });
 });
-`);
+`,
+    );
     const source = `const first = new globalThis.Worker(new URL("./counter.ts", import.meta.url), { "type": "module" });
 const second = new window.Worker(new window.URL("./counter.ts", import.meta.url), { type: "module" });
 let received = 0;
@@ -58,34 +67,78 @@ message.amount = 100;
     writeFileSync(entry, source);
     const result = compileSource(source, { fileName: entry });
     assert.ok(result.manifest.features.includes("platform:workers"));
-    assert.ok(result.manifest.inputs.some(file => file.endsWith("counter.ts")));
-    assert.ok(result.manifest.inputs.some(file => file.endsWith("state.ts")));
-    assert.equal((result.cpp.match(/void initialize\(\[\[maybe_unused\]\]/g) ?? []).length, 1);
+    assert.ok(
+        result.manifest.inputs.some((file) => file.endsWith("counter.ts")),
+    );
+    assert.ok(result.manifest.inputs.some((file) => file.endsWith("state.ts")));
+    assert.equal(
+        (result.cpp.match(/void initialize\(\[\[maybe_unused\]\]/g) ?? [])
+            .length,
+        1,
+    );
     const cpp = resolve(directory, "main.cpp");
     writeFileSync(cpp, result.cpp);
     const tools = optionalNativeFixtureTools(false);
-    if (!tools) { t.skip("Requires the Windows native fixture compiler."); return; }
+    if (!tools) {
+        t.skip("Requires the Windows native fixture compiler.");
+        return;
+    }
     const executable = resolve(directory, "check.exe");
     runNativeFixtureCompiler(tools, [
-        "/nologo", "/std:c++20", "/EHsc", "/W4", "/WX", "/MD", "/DBBLITE_WORKERS=1",
-        `/I${resolve("native/include")}`, cpp, `/Fo${directory}/`, `/Fe${executable}`,
+        "/nologo",
+        "/std:c++20",
+        "/EHsc",
+        "/W4",
+        "/WX",
+        "/MD",
+        "/DBBLITE_WORKERS=1",
+        `/I${resolve("native/include")}`,
+        cpp,
+        `/Fo${directory}/`,
+        `/Fe${executable}`,
     ]);
-    assert.equal(execFileSync(executable, { encoding: "utf8", timeout: 10000, stdio: "pipe" }), "");
+    assert.equal(
+        execFileSync(executable, {
+            encoding: "utf8",
+            timeout: 10000,
+            stdio: "pipe",
+        }),
+        "",
+    );
     // Nested callbacks in a worker coroutine must emit complete virtual bodies
     // under clang-cl as well as MSVC.
     let clang;
-    try { clang = discoverWindowsBuildTools("clangcl"); }
-    catch { return; }
+    try {
+        clang = discoverWindowsBuildTools("clangcl");
+    } catch {
+        return;
+    }
     runNativeFixtureCompiler(clang, [
-        "/nologo", "/std:c++20", "/EHsc", "/W4", "/WX", "/MD", "/DBBLITE_WORKERS=1",
-        `/I${resolve("native/include")}`, cpp, `/Fo${directory}/`, `/Fe${executable}`,
+        "/nologo",
+        "/std:c++20",
+        "/EHsc",
+        "/W4",
+        "/WX",
+        "/MD",
+        "/DBBLITE_WORKERS=1",
+        `/I${resolve("native/include")}`,
+        cpp,
+        `/Fo${directory}/`,
+        `/Fe${executable}`,
     ]);
-    assert.equal(execFileSync(executable, { encoding: "utf8", timeout: 10000, stdio: "pipe" }), "");
+    assert.equal(
+        execFileSync(executable, {
+            encoding: "utf8",
+            timeout: 10000,
+            stdio: "pipe",
+        }),
+        "",
+    );
 });
 
-test("stored async callbacks own suspended state and return retained promises", t => {
+test("stored async callbacks own suspended state and return retained promises", (t) => {
     const directory = resolve("artifacts/stored-async-callbacks");
-    mkdirSync(directory, {recursive:true});
+    mkdirSync(directory, { recursive: true });
     writeFileSync(resolve(directory, "worker.ts"), "self.close();");
     const source = `
         const worker = new Worker(new URL("./worker.ts", import.meta.url), {type:"module"});
@@ -115,14 +168,36 @@ test("stored async callbacks own suspended state and return retained promises", 
     `;
     const entry = resolve(directory, "entry.ts");
     writeFileSync(entry, source);
-    const result = compileSource(source, {fileName:entry});
+    const result = compileSource(source, { fileName: entry });
     const native = optionalNativeFixtureTools(false);
-    if (!native) { t.skip("Native fixture compiler unavailable."); return; }
-    const cpp = resolve(directory, "main.cpp"), executable = resolve(directory, "check.exe");
+    if (!native) {
+        t.skip("Native fixture compiler unavailable.");
+        return;
+    }
+    const cpp = resolve(directory, "main.cpp"),
+        executable = resolve(directory, "check.exe");
     writeFileSync(cpp, result.cpp);
-    runNativeFixtureCompiler(native, ["/nologo", "/std:c++20", "/EHsc", "/W4", "/WX", "/MD", "/DBBLITE_WORKERS=1",
-        `/I${resolve("native/include")}`, cpp, `/Fo${directory}/`, `/Fe${executable}`]);
-    assert.equal(execFileSync(executable, {encoding:"utf8", timeout:10000, stdio:"pipe"}), "");
+    runNativeFixtureCompiler(native, [
+        "/nologo",
+        "/std:c++20",
+        "/EHsc",
+        "/W4",
+        "/WX",
+        "/MD",
+        "/DBBLITE_WORKERS=1",
+        `/I${resolve("native/include")}`,
+        cpp,
+        `/Fo${directory}/`,
+        `/Fe${executable}`,
+    ]);
+    assert.equal(
+        execFileSync(executable, {
+            encoding: "utf8",
+            timeout: 10000,
+            stdio: "pipe",
+        }),
+        "",
+    );
 });
 
 test("worker-free output does not select realm services", () => {
@@ -134,7 +209,8 @@ test("worker-free output does not select realm services", () => {
 test("Window metrics select the native host without static host markup", () => {
     const directory = resolve("artifacts/worker-window-metrics");
     mkdirSync(directory, { recursive: true });
-    const entry = resolve(directory, "entry.ts"), worker = resolve(directory, "worker.ts");
+    const entry = resolve(directory, "entry.ts"),
+        worker = resolve(directory, "worker.ts");
     writeFileSync(worker, "self.close();");
     const source = `
         const worker = new Worker(new URL("./worker.ts", import.meta.url), {type:"module"});
@@ -149,7 +225,7 @@ test("Window metrics select the native host without static host markup", () => {
         globalThis.close();
     `;
     writeFileSync(entry, source);
-    const result = compileSource(source, {fileName:entry});
+    const result = compileSource(source, { fileName: entry });
     assert.ok(result.manifest.features.includes("platform:window"));
     assert.ok(result.manifest.features.includes("ui:rml"));
     assert.match(result.cpp, /run_window_application/);
@@ -158,13 +234,19 @@ test("Window metrics select the native host without static host markup", () => {
     assert.match(result.cpp, /window_viewport_size\(\).height/);
     assert.match(result.cpp, /window_screen_metrics\(\).available_width/);
     assert.match(result.cpp, /window_screen_identity\(\)/);
-    writeFileSync(worker, "const density = window.devicePixelRatio; if (density > 0) self.close();");
-    assert.throws(() => compileSource(source, {fileName:entry}), /Window API requires an application realm/);
+    writeFileSync(
+        worker,
+        "const density = window.devicePixelRatio; if (density > 0) self.close();",
+    );
+    assert.throws(
+        () => compileSource(source, { fileName: entry }),
+        /Window API requires an application realm/,
+    );
 });
 
 test("Window document queries preserve nullable results and stylesheet helpers", () => {
     const directory = resolve("artifacts/window-queries");
-    mkdirSync(directory, {recursive:true});
+    mkdirSync(directory, { recursive: true });
     writeFileSync(resolve(directory, "worker.ts"), "self.close();");
     const source = `
         const worker = new Worker(new URL("./worker.ts", import.meta.url), {type:"module"});
@@ -187,7 +269,7 @@ test("Window document queries preserve nullable results and stylesheet helpers",
     `;
     const entry = resolve(directory, "entry.ts");
     writeFileSync(entry, source);
-    const result = compileSource(source, {fileName:entry});
+    const result = compileSource(source, { fileName: entry });
     assert.match(result.cpp, /ui_find_element_by_id/);
     assert.match(result.cpp, /ui_add_class_style/);
     assert.ok(result.manifest.features.includes("platform:window"));
@@ -195,8 +277,9 @@ test("Window document queries preserve nullable results and stylesheet helpers",
 
 test("Window clipboard aliases return promises and reload reaches the host", () => {
     const directory = resolve("artifacts/window-services");
-    mkdirSync(directory, {recursive:true});
-    const entry = resolve(directory, "entry.ts"), worker = resolve(directory, "worker.ts");
+    mkdirSync(directory, { recursive: true });
+    const entry = resolve(directory, "entry.ts"),
+        worker = resolve(directory, "worker.ts");
     writeFileSync(worker, "self.close();");
     const source = `
         const worker = new Worker(new URL("./worker.ts", import.meta.url), {type:"module"});
@@ -209,25 +292,34 @@ test("Window clipboard aliases return promises and reload reaches the host", () 
         copy();
     `;
     writeFileSync(entry, source);
-    const result = compileSource(source, {fileName:entry});
+    const result = compileSource(source, { fileName: entry });
     assert.ok(result.manifest.features.includes("platform:window"));
     assert.match(result.cpp, /co_await bbl::pal::window_clipboard_write/);
     assert.match(result.cpp, /bbl::pal::window_location_reload\(\)/);
-    writeFileSync(worker, 'location.reload();');
-    assert.throws(() => compileSource(source, {fileName:entry}), /Window API requires an application realm/);
+    writeFileSync(worker, "location.reload();");
+    assert.throws(
+        () => compileSource(source, { fileName: entry }),
+        /Window API requires an application realm/,
+    );
 });
 
 test("worker messages preserve compound union tags and inactive payloads", (t) => {
     const directory = resolve("artifacts/worker-compound-tags");
     mkdirSync(directory, { recursive: true });
     const entry = resolve(directory, "entry.ts");
-    writeFileSync(resolve(directory, "types.ts"), `
+    writeFileSync(
+        resolve(directory, "types.ts"),
+        `
 export type Result = {ok: true; value: number} | {ok: false; reason: "invalid"} | {ok: false; reason: "blocked"; key: string};
-`);
-    writeFileSync(resolve(directory, "echo.ts"), `
+`,
+    );
+    writeFileSync(
+        resolve(directory, "echo.ts"),
+        `
 import type {Result} from "./types";
 self.addEventListener("message", (event: MessageEvent<Result>) => self.postMessage(event.data));
-`);
+`,
+    );
     const source = `
 import type {Result} from "./types";
 const worker = new Worker(new URL("./echo.ts", import.meta.url), {type: "module"});
@@ -245,22 +337,38 @@ worker.postMessage({ok: false, reason: "blocked", key: "entry"});
 worker.postMessage({ok: true, value: 7});
 `;
     writeFileSync(entry, source);
-    const result = compileSource(source, {fileName: entry});
+    const result = compileSource(source, { fileName: entry });
     const cpp = resolve(directory, "main.cpp");
     writeFileSync(cpp, result.cpp);
     const tools = optionalNativeFixtureTools(false);
-    if (!tools) { t.skip("Requires the Windows native fixture compiler."); return; }
+    if (!tools) {
+        t.skip("Requires the Windows native fixture compiler.");
+        return;
+    }
     const executable = resolve(directory, "check.exe");
-    runNativeFixtureCompiler(tools, ["/nologo", "/std:c++20", "/EHsc", "/W4", "/WX", "/MD", "/DBBLITE_WORKERS=1",
-        `/I${resolve("native/include")}`, cpp, `/Fo${directory}/`, `/Fe${executable}`]);
-    execFileSync(executable, {timeout: 10000, stdio: "pipe"});
+    runNativeFixtureCompiler(tools, [
+        "/nologo",
+        "/std:c++20",
+        "/EHsc",
+        "/W4",
+        "/WX",
+        "/MD",
+        "/DBBLITE_WORKERS=1",
+        `/I${resolve("native/include")}`,
+        cpp,
+        `/Fo${directory}/`,
+        `/Fe${executable}`,
+    ]);
+    execFileSync(executable, { timeout: 10000, stdio: "pipe" });
 });
 
 test("compiled workers transfer canvas ownership through discriminated messages", (t) => {
     const directory = resolve("artifacts/worker-canvas-compilation-check");
     mkdirSync(directory, { recursive: true });
     const entry = resolve(directory, "entry.ts");
-    writeFileSync(resolve(directory, "canvas.ts"), `
+    writeFileSync(
+        resolve(directory, "canvas.ts"),
+        `
 type Incoming = { type: "init"; canvas: OffscreenCanvas; alias: OffscreenCanvas } | { type: "resize"; width: number };
 let output: OffscreenCanvas | null = null;
 self.addEventListener("message", (event: MessageEvent<Incoming>) => {
@@ -274,7 +382,8 @@ self.addEventListener("message", (event: MessageEvent<Incoming>) => {
         if (output.width !== 0) throw new Error("Worker canvas was not detached");
     }
 });
-`);
+`,
+    );
     const source = `
 const worker = new Worker(new URL("./canvas.ts", import.meta.url), { type: "module" });
 const canvas = new OffscreenCanvas(40, 30);
@@ -291,11 +400,23 @@ worker.postMessage({ type: "resize", width: 80 });
     const cpp = resolve(directory, "main.cpp");
     writeFileSync(cpp, result.cpp);
     const tools = optionalNativeFixtureTools(false);
-    if (!tools) { t.skip("Requires the Windows native fixture compiler."); return; }
+    if (!tools) {
+        t.skip("Requires the Windows native fixture compiler.");
+        return;
+    }
     const executable = resolve(directory, "check.exe");
     runNativeFixtureCompiler(tools, [
-        "/nologo", "/std:c++20", "/EHsc", "/W4", "/WX", "/MD", "/DBBLITE_WORKERS=1",
-        `/I${resolve("native/include")}`, cpp, `/Fo${directory}/`, `/Fe${executable}`,
+        "/nologo",
+        "/std:c++20",
+        "/EHsc",
+        "/W4",
+        "/WX",
+        "/MD",
+        "/DBBLITE_WORKERS=1",
+        `/I${resolve("native/include")}`,
+        cpp,
+        `/Fo${directory}/`,
+        `/Fe${executable}`,
     ]);
     execFileSync(executable, { timeout: 10000, stdio: "pipe" });
 });

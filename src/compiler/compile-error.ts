@@ -20,7 +20,8 @@ export class CompileError extends Error {
         line: number,
         column: number,
         message: string,
-        public readonly reason: "unsupported" | "static-value-required" = "unsupported",
+        public readonly reason:
+            "unsupported" | "static-value-required" = "unsupported",
         subject?: ts.Node,
     ) {
         super(`${fileName}:${line}:${column}: ${message}`);

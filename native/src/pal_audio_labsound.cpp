@@ -88,7 +88,9 @@ struct AudioSourceState {
     bool event_pull = false;
     void post_completion() {
         const auto id = std::exchange(completion, 0);
-        if (id) if (auto target = inbox.lock()) target->post(std::make_unique<CompletionEvent>(id));
+        if (id)
+            if (auto target = inbox.lock())
+                target->post(std::make_unique<CompletionEvent>(id));
     }
 #endif
 };
@@ -151,7 +153,8 @@ struct ContextRecord {
 #if defined(BBLITE_WORKERS) && BBLITE_WORKERS
         for (const auto& [identity, entry] : graph) {
             (void)identity;
-            if (entry.source && entry.source->event_pull) context->removeAutomaticPullNode(entry.node);
+            if (entry.source && entry.source->event_pull)
+                context->removeAutomaticPullNode(entry.node);
         }
         if (context) {
             lab::ContextRenderLock render(context.get(), "bblite audio event teardown");
@@ -195,15 +198,18 @@ struct ContextRecord {
 
 void register_graph_node(ContextRecord& context, const AudioNodeHandle& handle) {
     const auto& value = handle.ownership;
-    context.graph.emplace(value->node.get(), AudioGraphNode{
-        value->node, value, value->source, {}, -1.0});
+    context.graph.emplace(value->node.get(),
+                          AudioGraphNode{value->node, value, value->source, {}, -1.0});
 }
 
 /** Longest declared tail on the reachable graph. Feedback and unbounded
  * tails stay alive until disconnect/close. Kahn's walk avoids recursive
  * traversal of user-created chains. */
 double graph_tail(ContextRecord& context, lab::AudioNode* source, lab::ContextRenderLock& lock) {
-    struct Path { std::size_t inputs = 0; double elapsed = 0.0; };
+    struct Path {
+        std::size_t inputs = 0;
+        double elapsed = 0.0;
+    };
     std::unordered_map<lab::AudioNode*, Path> paths;
     std::vector<lab::AudioNode*> pending{source};
     paths.emplace(source, Path{});
@@ -211,22 +217,27 @@ double graph_tail(ContextRecord& context, lab::AudioNode* source, lab::ContextRe
         for (auto* output : context.graph.at(pending[index]).outputs) {
             auto [found, inserted] = paths.try_emplace(output);
             ++found->second.inputs;
-            if (inserted) pending.push_back(output);
+            if (inserted)
+                pending.push_back(output);
         }
     }
     pending.clear();
-    for (const auto& [node, path] : paths) if (!path.inputs) pending.push_back(node);
+    for (const auto& [node, path] : paths)
+        if (!path.inputs)
+            pending.push_back(node);
     double maximum = 0.0;
     for (std::size_t index = 0; index < pending.size(); ++index) {
         auto* node = pending[index];
         const double tail = node->tailTime(lock) + node->latencyTime(lock);
-        if (!std::isfinite(tail) || tail < 0.0) return std::numeric_limits<double>::infinity();
+        if (!std::isfinite(tail) || tail < 0.0)
+            return std::numeric_limits<double>::infinity();
         const double elapsed = paths.at(node).elapsed + tail;
         maximum = std::max(maximum, elapsed);
         for (auto* output : context.graph.at(node).outputs) {
             auto& path = paths.at(output);
             path.elapsed = std::max(path.elapsed, elapsed);
-            if (--path.inputs == 0) pending.push_back(output);
+            if (--path.inputs == 0)
+                pending.push_back(output);
         }
     }
     return pending.size() == paths.size() ? maximum : std::numeric_limits<double>::infinity();
@@ -259,19 +270,23 @@ void collect_audio_graph(ContextRecord& context) {
         }
 #endif
         if (entry.source && entry.source->completed && !entry.outputs.empty()) {
-            if (entry.retire_after < 0.0) entry.retire_after = now + graph_tail(context, identity, render);
-            if (now >= entry.retire_after) pending.push_back(identity);
-            else context.has_draining_tails = true;
+            if (entry.retire_after < 0.0)
+                entry.retire_after = now + graph_tail(context, identity, render);
+            if (now >= entry.retire_after)
+                pending.push_back(identity);
+            else
+                context.has_draining_tails = true;
         }
     }
     {
         lab::ContextGraphLock graph(context.context.get(), "bblite completed audio sources");
-        for (auto* identity : pending) detach_outputs(context.graph.at(identity), graph);
+        for (auto* identity : pending)
+            detach_outputs(context.graph.at(identity), graph);
     }
     pending.clear();
     for (auto& [identity, entry] : context.graph) {
         const bool active = entry.source && entry.source->started && !entry.outputs.empty() &&
-            (entry.retire_after < 0.0 || now < entry.retire_after);
+                            (entry.retire_after < 0.0 || now < entry.retire_after);
         if (!entry.javascript.expired() || active) {
             entry.reached = true;
             pending.push_back(identity);
@@ -289,7 +304,8 @@ void collect_audio_graph(ContextRecord& context) {
     {
         lab::ContextGraphLock graph(context.context.get(), "bblite discarded audio graph");
         for (auto& [identity, entry] : context.graph) {
-            if (!entry.reached) detach_outputs(entry, graph);
+            if (!entry.reached)
+                detach_outputs(entry, graph);
         }
     }
     context.context->handlePostRenderTasks(render);
@@ -298,20 +314,24 @@ void collect_audio_graph(ContextRecord& context) {
 }
 
 void invalidate_source_tails(ContextRecord& context, lab::AudioNode* changed) {
-    if (!context.has_draining_tails) return;
+    if (!context.has_draining_tails)
+        return;
     std::unordered_multimap<lab::AudioNode*, lab::AudioNode*> inputs;
     for (const auto& [identity, entry] : context.graph) {
-        for (auto* output : entry.outputs) inputs.emplace(output, identity);
+        for (auto* output : entry.outputs)
+            inputs.emplace(output, identity);
     }
     std::unordered_set<lab::AudioNode*> reached{changed};
     std::vector<lab::AudioNode*> pending{changed};
     for (std::size_t index = 0; index < pending.size(); ++index) {
         auto* identity = pending[index];
         auto& entry = context.graph.at(identity);
-        if (entry.source && entry.source->completed) entry.retire_after = -1.0;
+        if (entry.source && entry.source->completed)
+            entry.retire_after = -1.0;
         const auto [first, last] = inputs.equal_range(identity);
         for (auto input = first; input != last; ++input) {
-            if (reached.insert(input->second).second) pending.push_back(input->second);
+            if (reached.insert(input->second).second)
+                pending.push_back(input->second);
         }
     }
 }
@@ -322,22 +342,25 @@ void connect_audio_graph(ContextRecord& context, const AudioNodeHandle& source,
     auto& outputs = context.graph.at(source.ownership->node.get()).outputs;
     auto* target = destination.ownership->node.get();
     const bool inserted = std::find(outputs.begin(), outputs.end(), target) == outputs.end();
-    if (inserted) outputs.push_back(target);
-    try { connect(); }
-    catch (...) {
-        if (inserted) outputs.pop_back();
+    if (inserted)
+        outputs.push_back(target);
+    try {
+        connect();
+    } catch (...) {
+        if (inserted)
+            outputs.pop_back();
         throw;
     }
-    if (inserted) invalidate_source_tails(context, source.ownership->node.get());
+    if (inserted)
+        invalidate_source_tails(context, source.ownership->node.get());
 }
 
 /** A node handle is `(context << 16) | index`, so one lookup finds both. */
-using audio_handles::pack;
 using audio_handles::context_of;
 using audio_handles::index_of;
+using audio_handles::pack;
 
-std::unordered_map<std::uint32_t, ContextRecord>& contexts()
-{
+std::unordered_map<std::uint32_t, ContextRecord>& contexts() {
     static std::unordered_map<std::uint32_t, ContextRecord> map;
     return map;
 }
@@ -347,48 +370,59 @@ std::unordered_map<std::uint32_t, ContextRecord>& contexts()
  * also pumps completion for applications with no rendering frame. */
 void poll_audio_events(std::uint32_t id) {
     const auto found = contexts().find(id);
-    if (found == contexts().end()) return;
+    if (found == contexts().end())
+        return;
     auto& context = found->second;
-    if (context.state->polling_events) return;
-    const bool pending = std::any_of(context.graph.begin(), context.graph.end(), [](const auto& entry) {
-        return entry.second.source && entry.second.source->completion != 0;
-    });
-    if (!pending) return;
+    if (context.state->polling_events)
+        return;
+    const bool pending =
+        std::any_of(context.graph.begin(), context.graph.end(), [](const auto& entry) {
+            return entry.second.source && entry.second.source->completion != 0;
+        });
+    if (!pending)
+        return;
     context.state->polling_events = true;
-    EventLoop::current().set_timeout([id] {
-        const auto active = contexts().find(id);
-        if (active == contexts().end()) return;
-        active->second.state->polling_events = false;
-        collect_audio_graph(active->second);
-        poll_audio_events(id);
-    }, 8.0);
+    EventLoop::current().set_timeout(
+        [id] {
+            const auto active = contexts().find(id);
+            if (active == contexts().end())
+                return;
+            active->second.state->polling_events = false;
+            collect_audio_graph(active->second);
+            poll_audio_events(id);
+        },
+        8.0);
 }
 
 void retain_audio_completion(const AudioNodeHandle& node) {
     const auto& record = node.ownership;
     const auto& state = record->source;
     if (!state || !state->started || state->completed || state->completion ||
-        (record->ended[0].empty() && record->ended[1].empty())) return;
+        (record->ended[0].empty() && record->ended[1].empty()))
+        return;
     auto& loop = EventLoop::current();
     if (const auto previous = state->inbox.lock(); previous && previous != loop.inbox())
         throw std::logic_error("An audio listener belongs to another realm.");
     auto& audio = contexts().at(context_of(node.value));
     const auto context = audio.state;
-    auto handler = js::make_closure(std::tuple{node, context}, [](auto& captures, std::unique_ptr<ExternalEvent>) {
-        const auto& source = std::get<0>(captures);
-        if (std::get<1>(captures)->status == AudioContextState::Status::Closed) return;
-        auto& owner = EventLoop::current();
-        // Listener snapshots and removals use the shared DOM registry rules.
-        // Delivery is a queued task, outside all audio graph locks/iteration.
-        for (auto& listeners : source.ownership->ended) {
-            listeners.dispatch_with([&](auto& listener) {
-                const auto callback = listener;
-                owner.dispatch_callback([callback] { callback(); });
-            });
-        }
-    });
+    auto handler = js::make_closure(
+        std::tuple{node, context}, [](auto& captures, std::unique_ptr<ExternalEvent>) {
+            const auto& source = std::get<0>(captures);
+            if (std::get<1>(captures)->status == AudioContextState::Status::Closed)
+                return;
+            auto& owner = EventLoop::current();
+            // Listener snapshots and removals use the shared DOM registry rules.
+            // Delivery is a queued task, outside all audio graph locks/iteration.
+            for (auto& listeners : source.ownership->ended) {
+                listeners.dispatch_with([&](auto& listener) {
+                    const auto callback = listener;
+                    owner.dispatch_callback([callback] { callback(); });
+                });
+            }
+        });
     state->inbox = loop.inbox();
-    state->completion = loop.register_completion(std::move(handler), [state] { state->completion = 0; });
+    state->completion =
+        loop.register_completion(std::move(handler), [state] { state->completion = 0; });
     // Scheduled sources must advance even without an output connection.
     // LabSound's render quantum already avoids processing a node twice.
     audio.context->addAutomaticPullNode(record->node);
@@ -410,16 +444,15 @@ struct CaptureRequest {
     bool wanted() const { return !path.empty(); }
 };
 
-const CaptureRequest& capture_request()
-{
+const CaptureRequest& capture_request() {
     static const CaptureRequest request = [] {
         CaptureRequest value;
         value.path = environment_variable("BBLITE_AUDIO_CAPTURE");
-        const std::string seconds =
-            environment_variable("BBLITE_AUDIO_CAPTURE_SECONDS");
+        const std::string seconds = environment_variable("BBLITE_AUDIO_CAPTURE_SECONDS");
         if (!seconds.empty()) {
             value.seconds = std::strtod(seconds.c_str(), nullptr);
-            if (!(value.seconds > 0.0)) value.seconds = 1.0;
+            if (!(value.seconds > 0.0))
+                value.seconds = 1.0;
         }
         return value;
     }();
@@ -428,27 +461,22 @@ const CaptureRequest& capture_request()
 
 #endif
 
-std::uint32_t next_context_id()
-{
+std::uint32_t next_context_id() {
     static std::uint32_t next = 1;
     audio_handles::require_context_id(next);
     return next++;
 }
 
-ContextRecord& require_context(std::uint32_t id)
-{
+ContextRecord& require_context(std::uint32_t id) {
     auto found = contexts().find(id);
     if (found == contexts().end()) {
-        throw std::runtime_error(
-            "Invalid audio context handle " + std::to_string(id) + ".");
+        throw std::runtime_error("Invalid audio context handle " + std::to_string(id) + ".");
     }
     return found->second;
 }
 
 /** The node an already-resolved context holds at a handle's index. */
-std::shared_ptr<lab::AudioNode> require_node(
-    ContextRecord& record, AudioNodeHandle node)
-{
+std::shared_ptr<lab::AudioNode> require_node(ContextRecord& record, AudioNodeHandle node) {
     const std::uint32_t index = index_of(node.value);
     if (!record.nodes.contains(index, node.ownership) || !node.ownership->node) {
         throw std::runtime_error("Invalid audio node handle.");
@@ -456,14 +484,12 @@ std::shared_ptr<lab::AudioNode> require_node(
     return node.ownership->node;
 }
 
-std::shared_ptr<lab::AudioNode> require_node(AudioNodeHandle node)
-{
+std::shared_ptr<lab::AudioNode> require_node(AudioNodeHandle node) {
     return require_node(require_context(context_of(node.value)), node);
 }
 
 #if BBLITE_HAS_AUDIO_BUFFER_SOURCE
-std::shared_ptr<AudioBufferRecord> require_buffer(AudioBufferHandle buffer)
-{
+std::shared_ptr<AudioBufferRecord> require_buffer(AudioBufferHandle buffer) {
     // Buffer data outlives its creating context. Validate its owned record,
     // which retains the packed identity even after the context registry dies.
     if (!buffer.value || !buffer.ownership || buffer.ownership->handle != buffer.value) {
@@ -472,12 +498,8 @@ std::shared_ptr<AudioBufferRecord> require_buffer(AudioBufferHandle buffer)
     return buffer.ownership;
 }
 
-AudioBufferHandle allocate_audio_buffer(
-    AudioContextHandle context,
-    std::uint32_t channels,
-    std::uint32_t frames,
-    double sample_rate)
-{
+AudioBufferHandle allocate_audio_buffer(AudioContextHandle context, std::uint32_t channels,
+                                        std::uint32_t frames, double sample_rate) {
     if (channels == 0 || frames == 0 || !(sample_rate > 0.0)) {
         throw std::runtime_error("Invalid AudioBuffer dimensions or sample rate.");
     }
@@ -489,10 +511,8 @@ AudioBufferHandle allocate_audio_buffer(
     }
     buffer->bus.setSampleRate(static_cast<float>(sample_rate));
     for (std::uint32_t channel = 0; channel < channels; ++channel) {
-        buffer->bus.setChannelMemory(
-            static_cast<int>(channel),
-            buffer->channels[channel].data(),
-            static_cast<int>(frames));
+        buffer->bus.setChannelMemory(static_cast<int>(channel), buffer->channels[channel].data(),
+                                     static_cast<int>(frames));
     }
     auto entry = context_record.buffers.insert(std::move(buffer));
     entry.ownership->handle = pack(context.value, entry.index);
@@ -510,21 +530,25 @@ AudioBufferHandle allocate_audio_buffer(
  * and would go stale against it: written that way, this file had already
  * lost `BiquadFilterNode`'s own `gain`.
  */
-constexpr const char* spelling(AudioParamName name)
-{
+constexpr const char* spelling(AudioParamName name) {
     switch (name) {
-        case AudioParamName::Gain: return "gain";
-        case AudioParamName::Frequency: return "frequency";
-        case AudioParamName::Detune: return "detune";
-        case AudioParamName::Q: return "Q";
-        case AudioParamName::Pan: return "pan";
-        case AudioParamName::PlaybackRate: return "playbackRate";
+    case AudioParamName::Gain:
+        return "gain";
+    case AudioParamName::Frequency:
+        return "frequency";
+    case AudioParamName::Detune:
+        return "detune";
+    case AudioParamName::Q:
+        return "Q";
+    case AudioParamName::Pan:
+        return "pan";
+    case AudioParamName::PlaybackRate:
+        return "playbackRate";
     }
     return nullptr;
 }
 
-std::shared_ptr<lab::AudioParam> require_param(AudioParamHandle handle)
-{
+std::shared_ptr<lab::AudioParam> require_param(AudioParamHandle handle) {
     auto param = require_node(handle.node)->param(spelling(handle.name));
     if (!param) {
         throw std::runtime_error("Audio node has no such parameter.");
@@ -533,38 +557,46 @@ std::shared_ptr<lab::AudioParam> require_param(AudioParamHandle handle)
 }
 
 #if BBLITE_HAS_AUDIO_OSCILLATOR
-lab::OscillatorType to_lab(OscillatorWave wave)
-{
+lab::OscillatorType to_lab(OscillatorWave wave) {
     switch (wave) {
-        case OscillatorWave::Sine: return lab::OscillatorType::SINE;
-        case OscillatorWave::Square: return lab::OscillatorType::SQUARE;
-        case OscillatorWave::Sawtooth: return lab::OscillatorType::SAWTOOTH;
-        case OscillatorWave::Triangle: return lab::OscillatorType::TRIANGLE;
+    case OscillatorWave::Sine:
+        return lab::OscillatorType::SINE;
+    case OscillatorWave::Square:
+        return lab::OscillatorType::SQUARE;
+    case OscillatorWave::Sawtooth:
+        return lab::OscillatorType::SAWTOOTH;
+    case OscillatorWave::Triangle:
+        return lab::OscillatorType::TRIANGLE;
     }
     throw std::runtime_error("Unhandled oscillator wave.");
 }
 #endif
 
 #if BBLITE_HAS_AUDIO_BIQUAD_FILTER
-lab::FilterType to_lab(BiquadFilterKind kind)
-{
+lab::FilterType to_lab(BiquadFilterKind kind) {
     switch (kind) {
-        case BiquadFilterKind::Lowpass: return lab::FilterType::LOWPASS;
-        case BiquadFilterKind::Highpass: return lab::FilterType::HIGHPASS;
-        case BiquadFilterKind::Bandpass: return lab::FilterType::BANDPASS;
-        case BiquadFilterKind::Lowshelf: return lab::FilterType::LOWSHELF;
-        case BiquadFilterKind::Highshelf: return lab::FilterType::HIGHSHELF;
-        case BiquadFilterKind::Peaking: return lab::FilterType::PEAKING;
-        case BiquadFilterKind::Notch: return lab::FilterType::NOTCH;
-        case BiquadFilterKind::Allpass: return lab::FilterType::ALLPASS;
+    case BiquadFilterKind::Lowpass:
+        return lab::FilterType::LOWPASS;
+    case BiquadFilterKind::Highpass:
+        return lab::FilterType::HIGHPASS;
+    case BiquadFilterKind::Bandpass:
+        return lab::FilterType::BANDPASS;
+    case BiquadFilterKind::Lowshelf:
+        return lab::FilterType::LOWSHELF;
+    case BiquadFilterKind::Highshelf:
+        return lab::FilterType::HIGHSHELF;
+    case BiquadFilterKind::Peaking:
+        return lab::FilterType::PEAKING;
+    case BiquadFilterKind::Notch:
+        return lab::FilterType::NOTCH;
+    case BiquadFilterKind::Allpass:
+        return lab::FilterType::ALLPASS;
     }
     throw std::runtime_error("Unhandled biquad filter kind.");
 }
 #endif
 
-template <typename Node>
-AudioNodeHandle create_node(AudioContextHandle context)
-{
+template <typename Node> AudioNodeHandle create_node(AudioContextHandle context) {
     ContextRecord& record = require_context(context.value);
     auto value = js::make_gc_shared<AudioNodeRecord>();
     value->node = std::make_shared<Node>(*record.context);
@@ -601,38 +633,33 @@ struct CaptureStats {
  * project writes its own because the captured bus is the authority on
  * the samples and nothing else here can write one from a bus.
  */
-bool write_float_wav(const std::string& path, const lab::AudioBus& bus,
-                     double sample_rate)
-{
+bool write_float_wav(const std::string& path, const lab::AudioBus& bus, double sample_rate) {
     const int channels = bus.numberOfChannels();
     const int frames = bus.length();
-    if (channels <= 0 || frames <= 0) return false;
+    if (channels <= 0 || frames <= 0)
+        return false;
 
     std::ofstream file(path, std::ios::binary | std::ios::trunc);
-    if (!file) return false;
+    if (!file)
+        return false;
 
     const std::uint32_t data_bytes =
-        static_cast<std::uint32_t>(frames) *
-        static_cast<std::uint32_t>(channels) * 4u;
+        static_cast<std::uint32_t>(frames) * static_cast<std::uint32_t>(channels) * 4u;
     const std::uint32_t rate = static_cast<std::uint32_t>(sample_rate);
-    const auto u32 = [&file](std::uint32_t v) {
-        file.write(reinterpret_cast<const char*>(&v), 4);
-    };
-    const auto u16 = [&file](std::uint16_t v) {
-        file.write(reinterpret_cast<const char*>(&v), 2);
-    };
+    const auto u32 = [&file](std::uint32_t v) { file.write(reinterpret_cast<const char*>(&v), 4); };
+    const auto u16 = [&file](std::uint16_t v) { file.write(reinterpret_cast<const char*>(&v), 2); };
 
     file.write("RIFF", 4);
     u32(36u + data_bytes);
     file.write("WAVE", 4);
     file.write("fmt ", 4);
     u32(16u);
-    u16(3);  // IEEE float
+    u16(3); // IEEE float
     u16(static_cast<std::uint16_t>(channels));
     u32(rate);
-    u32(rate * static_cast<std::uint32_t>(channels) * 4u);  // byte rate
-    u16(static_cast<std::uint16_t>(channels * 4));           // block align
-    u16(32);                                                 // bits per sample
+    u32(rate * static_cast<std::uint32_t>(channels) * 4u); // byte rate
+    u16(static_cast<std::uint16_t>(channels * 4));         // block align
+    u16(32);                                               // bits per sample
     file.write("data", 4);
     u32(data_bytes);
 
@@ -646,8 +673,7 @@ bool write_float_wav(const std::string& path, const lab::AudioBus& bus,
     return static_cast<bool>(file);
 }
 
-CaptureStats measure(const lab::AudioBus& bus)
-{
+CaptureStats measure(const lab::AudioBus& bus) {
     CaptureStats stats;
     stats.frames = bus.length();
     const int channels = bus.numberOfChannels();
@@ -661,24 +687,23 @@ CaptureStats measure(const lab::AudioBus& bus)
         }
     }
     const double count = static_cast<double>(stats.frames) * channels;
-    if (count > 0.0) stats.rms = std::sqrt(sum / count);
+    if (count > 0.0)
+        stats.rms = std::sqrt(sum / count);
     return stats;
 }
 #endif
 
 } // namespace
 
-AudioContextHandle audio_create_context()
-{
+AudioContextHandle audio_create_context() {
     require_runtime_execution("audio device creation");
 #if BBLITE_HAS_AUDIO_CAPTURE
     const bool capture = capture_request().wanted();
 #else
     constexpr bool capture = false;
     if (!environment_variable("BBLITE_AUDIO_CAPTURE").empty()) {
-        throw std::runtime_error(
-            "Audio capture was not compiled. Configure with "
-            "BBLITE_AUDIO_CAPTURE=ON.");
+        throw std::runtime_error("Audio capture was not compiled. Configure with "
+                                 "BBLITE_AUDIO_CAPTURE=ON.");
     }
 #endif
     const std::uint32_t id = next_context_id();
@@ -687,12 +712,11 @@ AudioContextHandle audio_create_context()
     // graph-update thread. Warnings and errors still surface; the lower
     // levels are opt-in diagnostics.
     const std::string log_level = environment_variable("BBLITE_AUDIO_LOG");
-    log_set_level(
-        log_level == "trace"       ? LOGLEVEL_TRACE
-            : log_level == "debug" ? LOGLEVEL_DEBUG
-            : log_level == "info"  ? LOGLEVEL_INFO
-            : log_level == "error" ? LOGLEVEL_ERROR
-                                   : LOGLEVEL_WARN);
+    log_set_level(log_level == "trace"   ? LOGLEVEL_TRACE
+                  : log_level == "debug" ? LOGLEVEL_DEBUG
+                  : log_level == "info"  ? LOGLEVEL_INFO
+                  : log_level == "error" ? LOGLEVEL_ERROR
+                                         : LOGLEVEL_WARN);
 
     ContextRecord record;
 
@@ -707,11 +731,9 @@ AudioContextHandle audio_create_context()
 #if BBLITE_HAS_AUDIO_CAPTURE
     if (capture) {
         record.destination = std::make_shared<lab::AudioDestinationNode>(
-            *record.context,
-            std::make_shared<lab::AudioDevice_Null>(in_config, out_config));
+            *record.context, std::make_shared<lab::AudioDevice_Null>(in_config, out_config));
         record.context->setDestinationNode(record.destination);
-        record.recorder =
-            std::make_shared<lab::RecorderNode>(*record.context, out_config);
+        record.recorder = std::make_shared<lab::RecorderNode>(*record.context, out_config);
         record.context->connect(record.destination, record.recorder, 0, 0);
         record.recorder->startRecording();
     } else
@@ -719,16 +741,14 @@ AudioContextHandle audio_create_context()
     {
         auto device = std::make_shared<detail::AudioDeviceSdl3>(in_config, out_config);
         if (!device->opened()) {
-            throw std::runtime_error(
-                "Audio: SDL could not open a playback device. bblitec has no "
-                "silent fallback -- an unavailable device is the answer.");
+            throw std::runtime_error("Audio: SDL could not open a playback device. bblitec has no "
+                                     "silent fallback -- an unavailable device is the answer.");
         }
         // The device may have opened at a different rate or width than
         // asked for; the graph runs at what it got.
         record.sample_rate = device->getOutputConfig().desired_samplerate;
         record.channels = static_cast<int>(device->getOutputConfig().desired_channels);
-        record.destination =
-            std::make_shared<lab::AudioDestinationNode>(*record.context, device);
+        record.destination = std::make_shared<lab::AudioDestinationNode>(*record.context, device);
         device->setDestinationNode(record.destination);
         record.context->setDestinationNode(record.destination);
         record.device = device;
@@ -742,16 +762,16 @@ AudioContextHandle audio_create_context()
     // and a recorder with nothing connected is pulled with a null input
     // bus.
 #if BBLITE_HAS_AUDIO_CAPTURE
-    auto destination_node =
-        capture ? std::static_pointer_cast<lab::AudioNode>(record.recorder)
-                : std::static_pointer_cast<lab::AudioNode>(record.destination);
+    auto destination_node = capture ? std::static_pointer_cast<lab::AudioNode>(record.recorder)
+                                    : std::static_pointer_cast<lab::AudioNode>(record.destination);
 #else
     auto destination_node = std::static_pointer_cast<lab::AudioNode>(record.destination);
 #endif
     auto destination_record = std::make_shared<AudioNodeRecord>();
     destination_record->node = std::move(destination_node);
     auto destination_entry = record.nodes.insert(std::move(destination_record));
-    record.destination_handle = {pack(id, destination_entry.index), std::move(destination_entry.ownership)};
+    record.destination_handle = {pack(id, destination_entry.index),
+                                 std::move(destination_entry.ownership)};
     register_graph_node(record, record.destination_handle);
     record.state->sample_rate = record.sample_rate;
     AudioContextHandle handle{id, record.state};
@@ -759,25 +779,28 @@ AudioContextHandle audio_create_context()
     return handle;
 }
 
-void audio_close_context(AudioContextHandle context)
-{
+void audio_close_context(AudioContextHandle context) {
     const auto found = contexts().find(context.value);
-    if (found == contexts().end()) return;
+    if (found == contexts().end())
+        return;
     auto& record = found->second;
-    if (record.device) record.device->stop();
+    if (record.device)
+        record.device->stop();
     record.state->closed_time = record.context->currentTime();
     record.state->status = AudioContextState::Status::Closed;
 #if defined(BBLITE_WORKERS) && BBLITE_WORKERS
     for (auto& [identity, entry] : record.graph) {
         (void)identity;
-        if (entry.source) entry.source->post_completion();
+        if (entry.source)
+            entry.source->post_completion();
     }
 #endif
     contexts().erase(found);
 }
 
 AudioContextHandle audio_create_context(std::shared_ptr<AudioSession>& session) {
-    if (!session) session = std::make_shared<AudioSession>();
+    if (!session)
+        session = std::make_shared<AudioSession>();
     const auto context = audio_create_context();
     try {
         session->contexts_.push_back(context);
@@ -789,7 +812,8 @@ AudioContextHandle audio_create_context(std::shared_ptr<AudioSession>& session) 
 }
 
 AudioSession::~AudioSession() {
-    for (const auto& context : contexts_) audio_close_context(context);
+    for (const auto& context : contexts_)
+        audio_close_context(context);
 }
 
 void audio_collect_finished() {
@@ -801,16 +825,18 @@ void audio_collect_finished() {
 
 #if defined(BBLITE_WORKERS) && BBLITE_WORKERS
 void audio_add_ended_listener(AudioNodeHandle node, std::size_t identity,
-    js::Callback<void()> callback, bool capture, bool once) {
+                              js::Callback<void()> callback, bool capture, bool once) {
     require_node(node);
-    if (!node.ownership->source) throw std::runtime_error("Audio node is not a scheduled source.");
+    if (!node.ownership->source)
+        throw std::runtime_error("Audio node is not a scheduled source.");
     node.ownership->ended[capture ? 0 : 1].add(identity, std::move(callback), once);
     retain_audio_completion(node);
 }
 
 void audio_remove_ended_listener(AudioNodeHandle node, std::size_t identity, bool capture) {
     require_node(node);
-    if (!node.ownership->source) throw std::runtime_error("Audio node is not a scheduled source.");
+    if (!node.ownership->source)
+        throw std::runtime_error("Audio node is not a scheduled source.");
     node.ownership->ended[capture ? 0 : 1].remove(identity);
     auto& record = *node.ownership;
     if (record.ended[0].empty() && record.ended[1].empty() && record.source->completion) {
@@ -821,57 +847,55 @@ void audio_remove_ended_listener(AudioNodeHandle node, std::size_t identity, boo
 }
 #endif
 
-double audio_current_time(AudioContextHandle context)
-{
+double audio_current_time(AudioContextHandle context) {
     require_runtime_execution("an audio clock read");
     if (context.state && context.state->status == AudioContextState::Status::Closed)
         return context.state->closed_time;
     return require_context(context.value).context->currentTime();
 }
 
-double audio_sample_rate(AudioContextHandle context)
-{
-    if (context.state) return context.state->sample_rate;
+double audio_sample_rate(AudioContextHandle context) {
+    if (context.state)
+        return context.state->sample_rate;
     return require_context(context.value).sample_rate;
 }
 
-std::string audio_state(AudioContextHandle context)
-{
+std::string audio_state(AudioContextHandle context) {
     const auto& state = context.state ? *context.state : *require_context(context.value).state;
     switch (state.status) {
-        case AudioContextState::Status::Running: return "running";
-        case AudioContextState::Status::Suspended: return "suspended";
-        case AudioContextState::Status::Closed: return "closed";
+    case AudioContextState::Status::Running:
+        return "running";
+    case AudioContextState::Status::Suspended:
+        return "suspended";
+    case AudioContextState::Status::Closed:
+        return "closed";
     }
     throw std::logic_error("Invalid audio context state.");
 }
 
-void audio_resume(AudioContextHandle context)
-{
+void audio_resume(AudioContextHandle context) {
     ContextRecord& record = require_context(context.value);
-    if (record.device) record.device->start();
+    if (record.device)
+        record.device->start();
     record.state->status = AudioContextState::Status::Running;
 }
 
-void audio_suspend(AudioContextHandle context)
-{
+void audio_suspend(AudioContextHandle context) {
     ContextRecord& record = require_context(context.value);
-    if (record.device) record.device->stop();
+    if (record.device)
+        record.device->stop();
     record.state->status = AudioContextState::Status::Suspended;
 }
 
-AudioNodeHandle audio_destination(AudioContextHandle context)
-{
+AudioNodeHandle audio_destination(AudioContextHandle context) {
     return require_context(context.value).destination_handle;
 }
 
-AudioNodeHandle audio_create_gain(AudioContextHandle context)
-{
+AudioNodeHandle audio_create_gain(AudioContextHandle context) {
     return create_node<lab::GainNode>(context);
 }
 
-AudioNodeHandle audio_create_oscillator(AudioContextHandle context)
-{
+AudioNodeHandle audio_create_oscillator(AudioContextHandle context) {
 #if BBLITE_HAS_AUDIO_OSCILLATOR
     return create_node<lab::OscillatorNode>(context);
 #else
@@ -880,8 +904,7 @@ AudioNodeHandle audio_create_oscillator(AudioContextHandle context)
 #endif
 }
 
-AudioNodeHandle audio_create_biquad_filter(AudioContextHandle context)
-{
+AudioNodeHandle audio_create_biquad_filter(AudioContextHandle context) {
 #if BBLITE_HAS_AUDIO_BIQUAD_FILTER
     return create_node<lab::BiquadFilterNode>(context);
 #else
@@ -890,8 +913,7 @@ AudioNodeHandle audio_create_biquad_filter(AudioContextHandle context)
 #endif
 }
 
-AudioNodeHandle audio_create_stereo_panner(AudioContextHandle context)
-{
+AudioNodeHandle audio_create_stereo_panner(AudioContextHandle context) {
 #if BBLITE_HAS_AUDIO_STEREO_PANNER
     const AudioNodeHandle node = create_node<lab::StereoPannerNode>(context);
     // LabSound declares `pan` with default 0.5 over 0..1 while Web Audio
@@ -908,20 +930,13 @@ AudioNodeHandle audio_create_stereo_panner(AudioContextHandle context)
 #endif
 }
 
-AudioBufferHandle audio_create_buffer(
-    AudioContextHandle context,
-    std::uint32_t channels,
-    std::uint32_t frames,
-    double sample_rate)
-{
+AudioBufferHandle audio_create_buffer(AudioContextHandle context, std::uint32_t channels,
+                                      std::uint32_t frames, double sample_rate) {
 #if BBLITE_HAS_AUDIO_BUFFER_SOURCE
-    const AudioBufferHandle handle = allocate_audio_buffer(
-        context, channels, frames, sample_rate);
+    const AudioBufferHandle handle = allocate_audio_buffer(context, channels, frames, sample_rate);
     if (runtime_trace_enabled()) {
-        std::fprintf(
-            stderr,
-            "[bblite trace] audio buffer=%u channels=%u frames=%u rate=%.0f\n",
-            handle.value, channels, frames, sample_rate);
+        std::fprintf(stderr, "[bblite trace] audio buffer=%u channels=%u frames=%u rate=%.0f\n",
+                     handle.value, channels, frames, sample_rate);
     }
     return handle;
 #else
@@ -933,34 +948,32 @@ AudioBufferHandle audio_create_buffer(
 #endif
 }
 
-AudioBufferHandle audio_decode_buffer(
-    AudioContextHandle context,
-    const bbl::js::ArrayBuffer& encoded)
-{
+AudioBufferHandle audio_decode_buffer(AudioContextHandle context,
+                                      const bbl::js::ArrayBuffer& encoded) {
 #if BBLITE_HAS_AUDIO_BUFFER_SOURCE && BBLITE_HAS_AUDIO_DECODE_FILE
     try {
         ContextRecord& context_record = require_context(context.value);
         const auto extension = audio_container_extension({encoded.data(), encoded.byte_length()});
-        if (extension.empty()) return {};
-        const std::vector<std::uint8_t> bytes(encoded.data(), encoded.data() + encoded.byte_length());
+        if (extension.empty())
+            return {};
+        const std::vector<std::uint8_t> bytes(encoded.data(),
+                                              encoded.data() + encoded.byte_length());
         const auto source = decode_audio_bus(bytes, extension);
-        const auto decoded = source ? lab::AudioBus::createBySampleRateConverting(
-            source.get(), false, static_cast<float>(context_record.sample_rate)) : nullptr;
+        const auto decoded =
+            source ? lab::AudioBus::createBySampleRateConverting(
+                         source.get(), false, static_cast<float>(context_record.sample_rate))
+                   : nullptr;
         if (!decoded || decoded->numberOfChannels() <= 0 || decoded->length() <= 0) {
             return {};
         }
-        const auto channel_count = static_cast<std::uint32_t>(
-            decoded->numberOfChannels());
+        const auto channel_count = static_cast<std::uint32_t>(decoded->numberOfChannels());
         const auto frame_count = static_cast<std::uint32_t>(decoded->length());
-        const AudioBufferHandle handle = allocate_audio_buffer(
-            context, channel_count, frame_count, context_record.sample_rate);
+        const AudioBufferHandle handle =
+            allocate_audio_buffer(context, channel_count, frame_count, context_record.sample_rate);
         auto buffer = require_buffer(handle);
         for (std::uint32_t channel = 0; channel < channel_count; ++channel) {
             const float* samples = decoded->channel(channel)->data();
-            std::copy_n(
-                samples,
-                frame_count,
-                buffer->channels[channel].begin());
+            std::copy_n(samples, frame_count, buffer->channels[channel].begin());
         }
         return handle;
     } catch (...) {
@@ -974,10 +987,7 @@ AudioBufferHandle audio_decode_buffer(
 #endif
 }
 
-bbl::js::F32Array audio_buffer_channel(
-    AudioBufferHandle buffer,
-    std::uint32_t channel)
-{
+bbl::js::F32Array audio_buffer_channel(AudioBufferHandle buffer, std::uint32_t channel) {
 #if BBLITE_HAS_AUDIO_BUFFER_SOURCE
     auto record = require_buffer(buffer);
     if (channel >= record->channels.size()) {
@@ -991,8 +1001,7 @@ bbl::js::F32Array audio_buffer_channel(
 #endif
 }
 
-AudioNodeHandle audio_create_buffer_source(AudioContextHandle context)
-{
+AudioNodeHandle audio_create_buffer_source(AudioContextHandle context) {
 #if BBLITE_HAS_AUDIO_BUFFER_SOURCE
     return create_node<lab::SampledAudioNode>(context);
 #else
@@ -1005,37 +1014,46 @@ double audio_buffer_property(AudioBufferHandle buffer, AudioBufferProperty prope
 #if BBLITE_HAS_AUDIO_BUFFER_SOURCE
     const auto record = require_buffer(buffer);
     switch (property) {
-        case AudioBufferProperty::Duration: return static_cast<double>(record->bus.length()) / record->bus.sampleRate();
-        case AudioBufferProperty::Length: return static_cast<double>(record->bus.length());
-        case AudioBufferProperty::SampleRate: return record->bus.sampleRate();
-        case AudioBufferProperty::NumberOfChannels: return static_cast<double>(record->channels.size());
+    case AudioBufferProperty::Duration:
+        return static_cast<double>(record->bus.length()) / record->bus.sampleRate();
+    case AudioBufferProperty::Length:
+        return static_cast<double>(record->bus.length());
+    case AudioBufferProperty::SampleRate:
+        return record->bus.sampleRate();
+    case AudioBufferProperty::NumberOfChannels:
+        return static_cast<double>(record->channels.size());
     }
     throw std::logic_error("Unknown AudioBuffer property.");
 #else
-    (void)buffer; (void)property;
+    (void)buffer;
+    (void)property;
     throw std::runtime_error("Audio buffer source support was not compiled.");
 #endif
 }
 
-void audio_buffer_copy(AudioBufferHandle buffer, bbl::js::F32Array samples,
-    std::uint32_t channel, std::uint32_t offset, AudioBufferCopy direction) {
+void audio_buffer_copy(AudioBufferHandle buffer, bbl::js::F32Array samples, std::uint32_t channel,
+                       std::uint32_t offset, AudioBufferCopy direction) {
     auto channel_data = audio_buffer_channel(buffer, channel);
-    if (offset >= channel_data.size()) return;
+    if (offset >= channel_data.size())
+        return;
     const auto count = std::min(samples.size(), channel_data.size() - offset);
     // A source view can overlap its destination. Snapshot only the copied
     // samples and use typed-array loads/stores for ArrayBuffer-backed views.
-    auto source = direction == AudioBufferCopy::ToChannel ? samples.copy_range(0, count)
-        : channel_data.copy_range(offset, offset + count);
+    auto source = direction == AudioBufferCopy::ToChannel
+                      ? samples.copy_range(0, count)
+                      : channel_data.copy_range(offset, offset + count);
     auto destination = direction == AudioBufferCopy::ToChannel ? channel_data : samples;
     const auto start = direction == AudioBufferCopy::ToChannel ? offset : 0u;
-    for (std::size_t index = 0; index < count; ++index) destination.store(start + index, source.load(index));
+    for (std::size_t index = 0; index < count; ++index)
+        destination.store(start + index, source.load(index));
 }
 
 bbl::js::Nullable<AudioBufferHandle> audio_source_buffer(AudioNodeHandle source) {
 #if BBLITE_HAS_AUDIO_BUFFER_SOURCE
     if (!std::dynamic_pointer_cast<lab::SampledAudioNode>(require_node(source)))
         throw std::runtime_error("Audio node is not a buffer source.");
-    if (!source.ownership->buffer.value) return std::nullopt;
+    if (!source.ownership->buffer.value)
+        return std::nullopt;
     return source.ownership->buffer;
 #else
     (void)source;
@@ -1043,13 +1061,11 @@ bbl::js::Nullable<AudioBufferHandle> audio_source_buffer(AudioNodeHandle source)
 #endif
 }
 
-void audio_set_buffer(AudioNodeHandle source, AudioBufferHandle buffer)
-{
+void audio_set_buffer(AudioNodeHandle source, AudioBufferHandle buffer) {
 #if BBLITE_HAS_AUDIO_BUFFER_SOURCE
     auto& context = require_context(context_of(source.value));
     lab::ContextRenderLock render(context.context.get(), "bblite audio buffer assignment");
-    auto sampled =
-        std::dynamic_pointer_cast<lab::SampledAudioNode>(require_node(source));
+    auto sampled = std::dynamic_pointer_cast<lab::SampledAudioNode>(require_node(source));
     if (!sampled) {
         throw std::runtime_error("Audio node is not a buffer source.");
     }
@@ -1069,10 +1085,8 @@ void audio_set_buffer(AudioNodeHandle source, AudioBufferHandle buffer)
                 peak = std::max(peak, std::fabs(sample));
             }
         }
-        std::fprintf(
-            stderr,
-            "[bblite trace] audio source=%u set-buffer=%u peak=%.6f\n",
-            source.value, buffer.value, peak);
+        std::fprintf(stderr, "[bblite trace] audio source=%u set-buffer=%u peak=%.6f\n",
+                     source.value, buffer.value, peak);
     }
 #else
     (void)source;
@@ -1081,12 +1095,10 @@ void audio_set_buffer(AudioNodeHandle source, AudioBufferHandle buffer)
 #endif
 }
 
-void audio_set_loop(AudioNodeHandle source, bool enabled)
-{
+void audio_set_loop(AudioNodeHandle source, bool enabled) {
 #if BBLITE_HAS_AUDIO_BUFFER_SOURCE
     ContextRecord& record = require_context(context_of(source.value));
-    if (!std::dynamic_pointer_cast<lab::SampledAudioNode>(
-            require_node(record, source))) {
+    if (!std::dynamic_pointer_cast<lab::SampledAudioNode>(require_node(record, source))) {
         throw std::runtime_error("Audio node is not a buffer source.");
     }
     source.ownership->source_loop = enabled;
@@ -1097,24 +1109,20 @@ void audio_set_loop(AudioNodeHandle source, bool enabled)
 #endif
 }
 
-void audio_connect(AudioNodeHandle source, AudioNodeHandle destination)
-{
+void audio_connect(AudioNodeHandle source, AudioNodeHandle destination) {
     if (context_of(source.value) != context_of(destination.value)) {
-        throw std::runtime_error(
-            "Audio nodes from different contexts cannot be connected.");
+        throw std::runtime_error("Audio nodes from different contexts cannot be connected.");
     }
     // One context lookup, two indexes: the single-argument `require_node`
     // would resolve the context twice for one edge.
     ContextRecord& record = require_context(context_of(source.value));
     const auto source_node = require_node(record, source);
     const auto destination_node = require_node(record, destination);
-    connect_audio_graph(record, source, destination, [&] {
-        record.context->connect(destination_node, source_node, 0, 0);
-    });
+    connect_audio_graph(record, source, destination,
+                        [&] { record.context->connect(destination_node, source_node, 0, 0); });
 }
 
-void audio_connect_param(AudioNodeHandle source, AudioParamHandle destination)
-{
+void audio_connect_param(AudioNodeHandle source, AudioParamHandle destination) {
     if (context_of(source.value) != context_of(destination.node.value)) {
         throw std::runtime_error(
             "Audio nodes and parameters from different contexts cannot be connected.");
@@ -1122,13 +1130,11 @@ void audio_connect_param(AudioNodeHandle source, AudioParamHandle destination)
     ContextRecord& record = require_context(context_of(source.value));
     const auto source_node = require_node(record, source);
     const auto param = require_param(destination);
-    connect_audio_graph(record, source, destination.node, [&] {
-        record.context->connectParam(param, source_node, 0);
-    });
+    connect_audio_graph(record, source, destination.node,
+                        [&] { record.context->connectParam(param, source_node, 0); });
 }
 
-void audio_disconnect(AudioNodeHandle node)
-{
+void audio_disconnect(AudioNodeHandle node) {
     ContextRecord& record = require_context(context_of(node.value));
     const auto source = require_node(record, node);
     {
@@ -1144,19 +1150,16 @@ void audio_disconnect(AudioNodeHandle node)
     collect_audio_graph(record);
 }
 
-static void audio_node_start_impl(
-    AudioNodeHandle node,
-    double when,
-    double offset,
-    double duration,
-    int argument_count)
-{
+static void audio_node_start_impl(AudioNodeHandle node, double when, double offset, double duration,
+                                  int argument_count) {
 #if BBLITE_HAS_AUDIO_OSCILLATOR || BBLITE_HAS_AUDIO_BUFFER_SOURCE
     auto& context = require_context(context_of(node.value));
     lab::ContextRenderLock render(context.context.get(), "bblite audio start");
     const auto source = require_node(context, node);
-    if (!node.ownership->source) throw std::runtime_error("Audio node is not a scheduled source.");
-    if (node.ownership->source->started) throw std::runtime_error("An AudioScheduledSourceNode can only be started once.");
+    if (!node.ownership->source)
+        throw std::runtime_error("Audio node is not a scheduled source.");
+    if (node.ownership->source->started)
+        throw std::runtime_error("An AudioScheduledSourceNode can only be started once.");
 #if !BBLITE_HAS_AUDIO_BUFFER_SOURCE
     (void)offset;
     (void)duration;
@@ -1172,36 +1175,27 @@ static void audio_node_start_impl(
         if (argument_count == 1) {
             sampled->start(static_cast<float>(when), loop ? -1 : 0);
         } else if (argument_count == 2) {
-            sampled->start(
-                static_cast<float>(when),
-                static_cast<float>(offset),
-                loop ? -1 : 0);
+            sampled->start(static_cast<float>(when), static_cast<float>(offset), loop ? -1 : 0);
         } else {
-            sampled->start(
-                static_cast<float>(when),
-                static_cast<float>(offset),
-                static_cast<float>(duration),
-                0);
+            sampled->start(static_cast<float>(when), static_cast<float>(offset),
+                           static_cast<float>(duration), 0);
         }
         node.ownership->source->started = true;
 #if defined(BBLITE_WORKERS) && BBLITE_WORKERS
         retain_audio_completion(node);
 #endif
         if (runtime_trace_enabled()) {
-            std::fprintf(
-                stderr,
-                "[bblite trace] audio source=%u start=%.6f offset=%.6f duration=%.6f\n",
-                node.value, when, offset, duration);
+            std::fprintf(stderr,
+                         "[bblite trace] audio source=%u start=%.6f offset=%.6f duration=%.6f\n",
+                         node.value, when, offset, duration);
         }
         return;
     }
 #endif
     if (argument_count > 1) {
-        throw std::runtime_error(
-            "Audio source offset and duration require a sampled source.");
+        throw std::runtime_error("Audio source offset and duration require a sampled source.");
     }
-    auto scheduled =
-        std::dynamic_pointer_cast<lab::AudioScheduledSourceNode>(source);
+    auto scheduled = std::dynamic_pointer_cast<lab::AudioScheduledSourceNode>(source);
     if (!scheduled) {
         throw std::runtime_error("Audio node is not a scheduled source.");
     }
@@ -1211,10 +1205,7 @@ static void audio_node_start_impl(
     retain_audio_completion(node);
 #endif
     if (runtime_trace_enabled()) {
-        std::fprintf(
-            stderr,
-            "[bblite trace] audio source=%u start=%.6f\n",
-            node.value, when);
+        std::fprintf(stderr, "[bblite trace] audio source=%u start=%.6f\n", node.value, when);
     }
 #else
     (void)node;
@@ -1226,32 +1217,23 @@ static void audio_node_start_impl(
 #endif
 }
 
-void audio_node_start(AudioNodeHandle node, double when)
-{
+void audio_node_start(AudioNodeHandle node, double when) {
     audio_node_start_impl(node, when, 0.0, 0.0, 1);
 }
 
-void audio_node_start(AudioNodeHandle node, double when, double offset)
-{
+void audio_node_start(AudioNodeHandle node, double when, double offset) {
     audio_node_start_impl(node, when, offset, 0.0, 2);
 }
 
-void audio_node_start(
-    AudioNodeHandle node,
-    double when,
-    double offset,
-    double duration)
-{
+void audio_node_start(AudioNodeHandle node, double when, double offset, double duration) {
     audio_node_start_impl(node, when, offset, duration, 3);
 }
 
-void audio_node_stop(AudioNodeHandle node, double when)
-{
+void audio_node_stop(AudioNodeHandle node, double when) {
 #if BBLITE_HAS_AUDIO_OSCILLATOR || BBLITE_HAS_AUDIO_BUFFER_SOURCE
     auto& context = require_context(context_of(node.value));
     lab::ContextRenderLock render(context.context.get(), "bblite audio stop");
-    auto scheduled =
-        std::dynamic_pointer_cast<lab::AudioScheduledSourceNode>(require_node(node));
+    auto scheduled = std::dynamic_pointer_cast<lab::AudioScheduledSourceNode>(require_node(node));
     if (!scheduled) {
         throw std::runtime_error("Audio node is not a scheduled source.");
     }
@@ -1263,19 +1245,18 @@ void audio_node_stop(AudioNodeHandle node, double when)
 #endif
 }
 
-AudioParamHandle audio_node_param(AudioNodeHandle node, AudioParamName name)
-{
+AudioParamHandle audio_node_param(AudioNodeHandle node, AudioParamName name) {
     // Pure by contract: `osc.frequency` is one object in Web Audio, so two
     // reads must produce one handle. Validity is checked where the
     // parameter is used.
     return AudioParamHandle{node, name};
 }
 
-void audio_set_oscillator_wave(AudioNodeHandle node, OscillatorWave wave)
-{
+void audio_set_oscillator_wave(AudioNodeHandle node, OscillatorWave wave) {
 #if BBLITE_HAS_AUDIO_OSCILLATOR
     auto osc = std::dynamic_pointer_cast<lab::OscillatorNode>(require_node(node));
-    if (!osc) throw std::runtime_error("Audio node is not an oscillator.");
+    if (!osc)
+        throw std::runtime_error("Audio node is not an oscillator.");
     osc->setType(to_lab(wave));
 #else
     (void)node;
@@ -1284,11 +1265,11 @@ void audio_set_oscillator_wave(AudioNodeHandle node, OscillatorWave wave)
 #endif
 }
 
-void audio_set_filter_kind(AudioNodeHandle node, BiquadFilterKind kind)
-{
+void audio_set_filter_kind(AudioNodeHandle node, BiquadFilterKind kind) {
 #if BBLITE_HAS_AUDIO_BIQUAD_FILTER
     auto filter = std::dynamic_pointer_cast<lab::BiquadFilterNode>(require_node(node));
-    if (!filter) throw std::runtime_error("Audio node is not a biquad filter.");
+    if (!filter)
+        throw std::runtime_error("Audio node is not a biquad filter.");
     filter->setType(to_lab(kind));
 #else
     (void)node;
@@ -1297,78 +1278,67 @@ void audio_set_filter_kind(AudioNodeHandle node, BiquadFilterKind kind)
 #endif
 }
 
-float audio_param_value(AudioParamHandle param)
-{
-    return require_param(param)->value();
-}
+float audio_param_value(AudioParamHandle param) { return require_param(param)->value(); }
 
-void audio_param_set_value(AudioParamHandle param, float value)
-{
+void audio_param_set_value(AudioParamHandle param, float value) {
     require_param(param)->setValue(value);
 }
 
-void audio_param_set_value_at_time(AudioParamHandle param, float value, double time)
-{
+void audio_param_set_value_at_time(AudioParamHandle param, float value, double time) {
     require_param(param)->setValueAtTime(value, static_cast<float>(time));
 }
 
-void audio_param_linear_ramp(AudioParamHandle param, float value, double time)
-{
+void audio_param_linear_ramp(AudioParamHandle param, float value, double time) {
     require_param(param)->linearRampToValueAtTime(value, static_cast<float>(time));
 }
 
-void audio_param_exponential_ramp(AudioParamHandle param, float value, double time)
-{
+void audio_param_exponential_ramp(AudioParamHandle param, float value, double time) {
     require_param(param)->exponentialRampToValueAtTime(value, static_cast<float>(time));
 }
 
-void audio_param_cancel_scheduled_values(AudioParamHandle param, double time)
-{
+void audio_param_cancel_scheduled_values(AudioParamHandle param, double time) {
     require_param(param)->cancelScheduledValues(static_cast<float>(time));
 }
 
 namespace {
-void render_audio_capture([[maybe_unused]] std::uint32_t id) noexcept
-{
+void render_audio_capture([[maybe_unused]] std::uint32_t id) noexcept {
 #if BBLITE_HAS_AUDIO_CAPTURE
     try {
         const CaptureRequest& request = capture_request();
-        if (!request.wanted()) return;
+        if (!request.wanted())
+            return;
         auto found = contexts().find(id);
-        if (found == contexts().end() || !found->second.recorder) return;
+        if (found == contexts().end() || !found->second.recorder)
+            return;
         ContextRecord& record = found->second;
         const int frames = static_cast<int>(record.sample_rate * request.seconds);
-            record.context->synchronizeConnections();
-            auto scratch = std::make_shared<lab::AudioBus>(
-                record.channels, lab::AudioNode::ProcessingSizeInFrames);
-            record.destination->offlineRender(scratch.get(), frames);
-            record.recorder->stopRecording();
+        record.context->synchronizeConnections();
+        auto scratch = std::make_shared<lab::AudioBus>(record.channels,
+                                                       lab::AudioNode::ProcessingSizeInFrames);
+        record.destination->offlineRender(scratch.get(), frames);
+        record.recorder->stopRecording();
 
-            // One source of truth for the file and the numbers: the
-            // captured bus. LabSound's own `writeRecordingToWav` cannot
-            // serve both -- it swaps `m_data` out as it encodes, so a
-            // measurement after it reads nothing, and it writes the
-            // channel count the recorder OBSERVED (one, for a mono graph)
-            // where `createBusFromRecording` returns the count the
-            // recorder was configured with. Writing the bus keeps the
-            // WAV and the reported peak/RMS the same bytes by
-            // construction, which is the only reason the numbers mean
-            // anything.
-            const std::unique_ptr<lab::AudioBus> captured =
-                record.recorder->createBusFromRecording(false);
-            const CaptureStats stats =
-                captured ? measure(*captured) : CaptureStats{};
-            const bool written =
-                captured && write_float_wav(request.path, *captured,
-                                            record.sample_rate);
+        // One source of truth for the file and the numbers: the
+        // captured bus. LabSound's own `writeRecordingToWav` cannot
+        // serve both -- it swaps `m_data` out as it encodes, so a
+        // measurement after it reads nothing, and it writes the
+        // channel count the recorder OBSERVED (one, for a mono graph)
+        // where `createBusFromRecording` returns the count the
+        // recorder was configured with. Writing the bus keeps the
+        // WAV and the reported peak/RMS the same bytes by
+        // construction, which is the only reason the numbers mean
+        // anything.
+        const std::unique_ptr<lab::AudioBus> captured =
+            record.recorder->createBusFromRecording(false);
+        const CaptureStats stats = captured ? measure(*captured) : CaptureStats{};
+        const bool written =
+            captured && write_float_wav(request.path, *captured, record.sample_rate);
 
-            std::fprintf(
-                stderr,
-                "[bblite audio] captured %d frames at %.0f Hz, peak %.6f, "
-                "rms %.6f -> %s%s\n",
-                stats.frames, record.sample_rate,
-                static_cast<double>(stats.peak), stats.rms,
-                request.path.c_str(), written ? "" : " (WRITE FAILED)");
+        std::fprintf(stderr,
+                     "[bblite audio] captured %d frames at %.0f Hz, peak %.6f, "
+                     "rms %.6f -> %s%s\n",
+                     stats.frames, record.sample_rate, static_cast<double>(stats.peak), stats.rms,
+                     request.path.c_str(), written ? "" : " (WRITE FAILED)");
     } catch (const std::exception& error) {
         std::fprintf(stderr, "[bblite audio] capture failed: %s\n", error.what());
     }

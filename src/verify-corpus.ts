@@ -26,10 +26,7 @@ import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { inflateRawSync } from "node:zlib";
-import {
-    downloadCached,
-    readCachedDownload,
-} from "./asset-download-cache.js";
+import { downloadCached, readCachedDownload } from "./asset-download-cache.js";
 import { runConcurrently } from "./run-concurrently.js";
 import type {
     BabylonLiteCorpusManifest,
@@ -40,10 +37,7 @@ import { findRepositoryRoot } from "./upstream-source.js";
 import { isMainModule, parseFlags } from "./tooling/flags.js";
 
 export type CorpusCheckKind =
-    | "upstream-tree"
-    | "origin-file"
-    | "archive-member"
-    | "generated-file";
+    "upstream-tree" | "origin-file" | "archive-member" | "generated-file";
 
 /** One manifest digest and the pinned bytes it must agree with. */
 export interface CorpusCheck {
@@ -105,10 +99,7 @@ function readExactCorpusManifest(
     };
 }
 
-function rawUpstreamUrl(
-    sourceVersion: string,
-    upstreamPath: string,
-): string {
+function rawUpstreamUrl(sourceVersion: string, upstreamPath: string): string {
     return `https://raw.githubusercontent.com/BabylonJS/Babylon-Lite/${sourceVersion}/${upstreamPath}`;
 }
 
@@ -216,8 +207,7 @@ export function classifyCorpusChecks(
             kind: "upstream-tree",
             url: rawUpstreamUrl(
                 manifest.sourceVersion,
-                scenePaths.get(scene.id) ??
-                    `lab/lite/src/lite/${scene.id}.ts`,
+                scenePaths.get(scene.id) ?? `lab/lite/src/lite/${scene.id}.ts`,
             ),
             sha256: scene.sourceSha256,
         });
@@ -321,9 +311,11 @@ function pakMembers(pak: Buffer, container: string): ArchiveMember[] {
     const directoryOffset = pak.readUInt32LE(4);
     const directoryLength = pak.readUInt32LE(8);
     const members: ArchiveMember[] = [];
-    for (let cursor = directoryOffset;
+    for (
+        let cursor = directoryOffset;
         cursor + 64 <= directoryOffset + directoryLength;
-        cursor += 64) {
+        cursor += 64
+    ) {
         const nameEnd = pak.indexOf(0, cursor);
         const path = pak.toString(
             "latin1",
@@ -355,8 +347,7 @@ function indexArchiveContents(
     for (const member of zipMembers(buffer, url)) {
         const digest = sha256Hex(member.bytes);
         if (!index.has(digest)) index.set(digest, member.path);
-        if (member.path.toLowerCase().endsWith(".pak") &&
-            isPak(member.bytes)) {
+        if (member.path.toLowerCase().endsWith(".pak") && isPak(member.bytes)) {
             const container = Buffer.from(
                 member.bytes.buffer,
                 member.bytes.byteOffset,
@@ -397,8 +388,7 @@ async function classifiedFetch(
         if (bytes === undefined) return { state: "uncached" };
         return { state: "fetched", bytes };
     } catch (error) {
-        const message =
-            error instanceof Error ? error.message : String(error);
+        const message = error instanceof Error ? error.message : String(error);
         if (message.includes("HTTP 404")) {
             return { state: "missing", message };
         }
@@ -443,25 +433,22 @@ async function verifyChecks(
                     const text = Buffer.from(fetched.bytes).toString("utf8");
                     verdicts[index] = text.includes(outputName)
                         ? {
-                            check,
-                            status: "match",
-                            detail:
-                                `the pinned generator names ${outputName} (${check.url})`,
-                        }
+                              check,
+                              status: "match",
+                              detail: `the pinned generator names ${outputName} (${check.url})`,
+                          }
                         : {
-                            check,
-                            status: "mismatch",
-                            detail:
-                                `the pinned generator no longer names ${outputName} (${check.url}); re-render and re-adopt the digest`,
-                        };
+                              check,
+                              status: "mismatch",
+                              detail: `the pinned generator no longer names ${outputName} (${check.url}); re-render and re-adopt the digest`,
+                          };
                     break;
                 }
                 case "missing":
                     verdicts[index] = {
                         check,
                         status: "mismatch",
-                        detail:
-                            `the pinned tree serves no generator at ${check.url} (HTTP 404); the row's provenance claim is false`,
+                        detail: `the pinned tree serves no generator at ${check.url} (HTTP 404); the row's provenance claim is false`,
                     };
                     break;
                 case "uncached":
@@ -515,10 +502,10 @@ async function verifyChecks(
                     fetched.digest === check.sha256.toLowerCase()
                         ? { check, status: "match", detail: check.url }
                         : {
-                            check,
-                            status: "mismatch",
-                            detail: `manifest ${check.sha256}, upstream ${fetched.digest} (${check.url})`,
-                        };
+                              check,
+                              status: "mismatch",
+                              detail: `manifest ${check.sha256}, upstream ${fetched.digest} (${check.url})`,
+                          };
                 break;
             case "missing":
                 verdicts[index] = {
@@ -572,8 +559,7 @@ async function verifyChecks(
             });
         } catch (error) {
             archives.set(url, {
-                failure:
-                    error instanceof Error ? error.message : String(error),
+                failure: error instanceof Error ? error.message : String(error),
             });
         }
     }
@@ -588,15 +574,16 @@ async function verifyChecks(
             continue;
         }
         const member = archive.index.get(check.sha256.toLowerCase());
-        verdicts[index] = member === undefined
-            ? {
-                check,
-                status: "mismatch",
-                detail:
-                    `manifest ${check.sha256} names bytes none of the ` +
-                    `${archive.index.size} hashed members of ${check.url} carry`,
-            }
-            : { check, status: "match", detail: member };
+        verdicts[index] =
+            member === undefined
+                ? {
+                      check,
+                      status: "mismatch",
+                      detail:
+                          `manifest ${check.sha256} names bytes none of the ` +
+                          `${archive.index.size} hashed members of ${check.url} carry`,
+                  }
+                : { check, status: "match", detail: member };
     }
     return verdicts;
 }
@@ -675,7 +662,7 @@ async function main(): Promise<void> {
             `upstream tree at ${manifest.sourceVersion} and the pinned origins` +
             (provenanceOnly > 0
                 ? `; the ${provenanceOnly} generated row(s) verify by ` +
-                    "provenance only (their digests are adoption-time renders)."
+                  "provenance only (their digests are adoption-time renders)."
                 : "."),
     );
 }

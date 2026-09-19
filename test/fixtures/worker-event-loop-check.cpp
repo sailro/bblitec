@@ -12,7 +12,8 @@ using bbl::pal::ExternalEvent;
 using namespace std::chrono_literals;
 
 void require(bool condition, const char* message) {
-    if (!condition) throw std::runtime_error(message);
+    if (!condition)
+        throw std::runtime_error(message);
 }
 
 struct NumberEvent final : ExternalEvent {
@@ -39,22 +40,25 @@ void ordering_and_cancellation() {
         });
         auto cancelled = loop.set_timer([&] { order.push_back("cancelled timer"); }, 0ms);
         loop.post([&loop, cancelled] { loop.clear_timer(cancelled); });
-        loop.set_timer([&] {
-            order.push_back("timer");
-            loop.post([&] { order.push_back("discarded task"); });
-            loop.queue_microtask([&] { order.push_back("closing microtask"); });
-            loop.close();
-            order.push_back("close returned");
-        }, 0ms);
+        loop.set_timer(
+            [&] {
+                order.push_back("timer");
+                loop.post([&] { order.push_back("discarded task"); });
+                loop.queue_microtask([&] { order.push_back("closing microtask"); });
+                loop.close();
+                order.push_back("close returned");
+            },
+            0ms);
         order.push_back("initialization completed");
     });
     const std::vector<std::string> expected{
-        "initialization completed", "microtask", "nested microtask",
-        "message1", "message microtask", "message2", "message microtask",
-        "timer", "close returned", "closing microtask",
+        "initialization completed", "microtask",         "nested microtask",  "message1",
+        "message microtask",        "message2",          "message microtask", "timer",
+        "close returned",           "closing microtask",
     };
     require(order == expected, "Task/microtask/timer order changed");
-    require(!loop.inbox()->post(std::make_unique<NumberEvent>(3)), "Closed realm accepted a message");
+    require(!loop.inbox()->post(std::make_unique<NumberEvent>(3)),
+            "Closed realm accepted a message");
 }
 
 void display_animation_frames() {
@@ -74,27 +78,32 @@ void display_animation_frames() {
             main.queue_microtask([&] { main.cancel_animation_frame(cancelled); });
             main.request_animation_frame([&](double next) { main_frames.push_back(next); });
         });
-        cancelled = main.request_animation_frame([](double) { throw std::runtime_error("Cancelled frame ran"); });
+        cancelled = main.request_animation_frame(
+            [](double) { throw std::runtime_error("Cancelled frame ran"); });
     });
     worker.post([&] {
         worker.request_animation_frame([&](double time) { worker_frames.push_back(time); });
     });
-    main.poll(); worker.poll();
+    main.poll();
+    worker.poll();
     // The main realm stays busy across many repaints. The worker dispatches
     // independently; the main receives one latest tick, never a catch-up burst.
     for (int tick = 1; tick <= 100; ++tick) {
         display.tick(origin + tick * 1ms);
         worker.poll();
     }
-    require(worker_frames == std::vector<double>{1}, "Worker animation depended on main dispatch or repeated a one-shot request");
+    require(worker_frames == std::vector<double>{1},
+            "Worker animation depended on main dispatch or repeated a one-shot request");
     main.poll();
     require(main_frames == std::vector<double>{100}, "Busy realm accumulated animation frames");
     require(!main.poll(), "New animation callback ran without a new repaint");
     display.tick(origin + 101ms);
     main.poll();
-    require(main_frames == std::vector<double>({100, 101}), "Animation frames acquired timer nesting delays");
+    require(main_frames == std::vector<double>({100, 101}),
+            "Animation frames acquired timer nesting delays");
     main.post([&] {
-        main.request_animation_frame([](double) { throw std::runtime_error("Frame survived close"); });
+        main.request_animation_frame(
+            [](double) { throw std::runtime_error("Frame survived close"); });
         main.close();
     });
     main.poll();
@@ -114,7 +123,8 @@ void computation_without_graphics() {
                 require(number != nullptr, "Wrong computation request");
                 parent.inbox()->post(std::make_unique<NumberEvent>(number->value * number->value));
                 completed.fetch_add(1);
-                if (number->value == 63) loop.close();
+                if (number->value == 63)
+                    loop.close();
             });
         });
     });
@@ -122,13 +132,17 @@ void computation_without_graphics() {
     parent.run([&] {
         parent.on_event([&](std::unique_ptr<ExternalEvent> event) {
             const auto* number = dynamic_cast<NumberEvent*>(event.get());
-            require(number && number->value == static_cast<int>(received * received), "Message order or computation failed");
-            if (++received == 64) parent.close();
+            require(number && number->value == static_cast<int>(received * received),
+                    "Message order or computation failed");
+            if (++received == 64)
+                parent.close();
         });
-        for (int n = 0; n < 64; ++n) worker_inbox->post(std::make_unique<NumberEvent>(n));
+        for (int n = 0; n < 64; ++n)
+            worker_inbox->post(std::make_unique<NumberEvent>(n));
         // The parent does not dispatch while the worker completes its work.
         const auto deadline = EventLoop::Clock::now() + 3s;
-        while (completed.load() != 64 && EventLoop::Clock::now() < deadline) std::this_thread::yield();
+        while (completed.load() != 64 && EventLoop::Clock::now() < deadline)
+            std::this_thread::yield();
         require(completed.load() == 64 && received == 0, "Computation depended on parent dispatch");
     });
     worker.join();
@@ -141,19 +155,22 @@ void timers_and_errors() {
     EventLoop::TimerId interval = 0;
     loop.run([&] {
         loop.on_error([&](std::exception_ptr error) {
-            try { std::rethrow_exception(error); }
-            catch (const std::runtime_error& problem) {
+            try {
+                std::rethrow_exception(error);
+            } catch (const std::runtime_error& problem) {
                 require(std::string(problem.what()) == "source failure", "Error lost its message");
                 ++errors;
             }
         });
         loop.post([] { throw std::runtime_error("source failure"); });
-        interval = loop.set_timer([&] {
-            if (++ticks == 3) {
-                loop.clear_timer(interval);
-                loop.set_timer([&] { loop.close(); }, 5ms);
-            }
-        }, 1ms, true);
+        interval = loop.set_timer(
+            [&] {
+                if (++ticks == 3) {
+                    loop.clear_timer(interval);
+                    loop.set_timer([&] { loop.close(); }, 5ms);
+                }
+            },
+            1ms, true);
     });
     require(ticks == 3 && errors == 1, "Interval cancellation or error delivery failed");
 }
@@ -174,13 +191,16 @@ void terminate_busy_and_release_on_owner() {
             auto owned = std::make_shared<Owned>(std::this_thread::get_id(), destroyed_on_owner);
             loop.post([owned, &pending_ran] { pending_ran.store(true); });
             started.set_value();
-            for (;;) loop.checkpoint();
+            for (;;)
+                loop.checkpoint();
         });
     });
-    require(started.get_future().wait_for(3s) == std::future_status::ready, "Worker did not initialize");
+    require(started.get_future().wait_for(3s) == std::future_status::ready,
+            "Worker did not initialize");
     inbox->terminate();
     worker.join();
-    require(!pending_ran.load() && destroyed_on_owner.load(), "Termination ran pending work or released JS storage on requester");
+    require(!pending_ran.load() && destroyed_on_owner.load(),
+            "Termination ran pending work or released JS storage on requester");
     require(!inbox->post(std::make_unique<NumberEvent>(1)), "Terminated realm accepted a message");
 }
 
@@ -189,16 +209,23 @@ void terminate_idle_and_before_initialization() {
         const auto inbox = std::make_shared<EventLoop::Inbox>();
         std::promise<void> initialized;
         std::atomic<bool> executed{false};
-        if (before) inbox->terminate();
+        if (before)
+            inbox->terminate();
         std::jthread worker([&] {
             EventLoop loop(inbox);
-            if (before) initialized.set_value();
-            loop.run([&] { executed.store(true); initialized.set_value(); });
+            if (before)
+                initialized.set_value();
+            loop.run([&] {
+                executed.store(true);
+                initialized.set_value();
+            });
         });
-        require(initialized.get_future().wait_for(3s) == std::future_status::ready, "Idle worker did not initialize");
+        require(initialized.get_future().wait_for(3s) == std::future_status::ready,
+                "Idle worker did not initialize");
         inbox->terminate();
         worker.join();
-        require(executed.load() != before, "Termination before initialization still executed source");
+        require(executed.load() != before,
+                "Termination before initialization still executed source");
     }
 }
 void closing_before_cleanup() {
@@ -206,44 +233,54 @@ void closing_before_cleanup() {
         EventLoop loop;
         std::vector<std::string> order;
         bool owner_alive = true;
-        loop.run([&] {
-            loop.defer_cleanup([&] { owner_alive = false; order.push_back("cleanup"); });
-            loop.post([&] { order.push_back("discarded task"); });
-            if (terminate) {
-                loop.queue_microtask([&] { order.push_back("discarded microtask"); });
-                loop.inbox()->terminate();
-            }
-            else loop.close();
-        }, [&] {
-            require(owner_alive, "Closing callback ran after native cleanup");
-            loop.checkpoint();
-            order.push_back("closing");
-            loop.dispatch_callback([&] {
-                loop.queue_microtask([&] { order.push_back("closing microtask"); });
+        loop.run(
+            [&] {
+                loop.defer_cleanup([&] {
+                    owner_alive = false;
+                    order.push_back("cleanup");
+                });
+                loop.post([&] { order.push_back("discarded task"); });
+                if (terminate) {
+                    loop.queue_microtask([&] { order.push_back("discarded microtask"); });
+                    loop.inbox()->terminate();
+                } else
+                    loop.close();
+            },
+            [&] {
+                require(owner_alive, "Closing callback ran after native cleanup");
+                loop.checkpoint();
+                order.push_back("closing");
+                loop.dispatch_callback(
+                    [&] { loop.queue_microtask([&] { order.push_back("closing microtask"); }); });
             });
-        });
-        require(order == std::vector<std::string>{"closing", "closing microtask", "cleanup"}, "Closing event ordering");
+        require(order == std::vector<std::string>{"closing", "closing microtask", "cleanup"},
+                "Closing event ordering");
         require(!owner_alive, "Closing callback prevented cleanup");
     }
     EventLoop loop;
     bool cleaned = false;
     try {
-        loop.run([&] {
-            loop.defer_cleanup([&] { cleaned = true; });
-            throw std::runtime_error("original failure");
-        }, [] { throw std::runtime_error("closing failure"); });
+        loop.run(
+            [&] {
+                loop.defer_cleanup([&] { cleaned = true; });
+                throw std::runtime_error("original failure");
+            },
+            [] { throw std::runtime_error("closing failure"); });
         require(false, "Initial error was lost during closing");
     } catch (const std::runtime_error& error) {
-        require(std::string(error.what()) == "original failure", "Closing error replaced initial failure");
+        require(std::string(error.what()) == "original failure",
+                "Closing error replaced initial failure");
     }
     require(cleaned, "Closing exception skipped cleanup");
     EventLoop closing_failure;
     bool closing_cleaned = false;
     try {
-        closing_failure.run([&] {
-            closing_failure.defer_cleanup([&] { closing_cleaned = true; });
-            closing_failure.close();
-        }, [] { throw std::runtime_error("closing failure"); });
+        closing_failure.run(
+            [&] {
+                closing_failure.defer_cleanup([&] { closing_cleaned = true; });
+                closing_failure.close();
+            },
+            [] { throw std::runtime_error("closing failure"); });
         require(false, "Closing error was lost");
     } catch (const std::runtime_error& error) {
         require(std::string(error.what()) == "closing failure", "Closing error changed");
@@ -261,7 +298,8 @@ int main() {
         terminate_busy_and_release_on_owner();
         terminate_idle_and_before_initialization();
         closing_before_cleanup();
-        std::cout << "Worker event loop: ordering, computation, timers, errors and termination passed.\n";
+        std::cout
+            << "Worker event loop: ordering, computation, timers, errors and termination passed.\n";
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n';
         return 1;

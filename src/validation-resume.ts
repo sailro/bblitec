@@ -111,9 +111,7 @@ export function metadataFingerprint(
     include: (relativePath: string) => boolean,
 ): string {
     const entries: string[] = [];
-    const uniqueRoots = [
-        ...new Set(roots.map((path) => resolve(path))),
-    ].sort();
+    const uniqueRoots = [...new Set(roots.map((path) => resolve(path)))].sort();
     for (const root of uniqueRoots) {
         if (!existsSync(root)) {
             entries.push(`${root}\tmissing`);
@@ -121,7 +119,10 @@ export function metadataFingerprint(
         }
         for (const file of filesUnder(root).sort()) {
             const path = relative(root, file).replaceAll("\\", "/");
-            if (include(path)) entries.push(`${root}/${path}\t${toolIdentity(file).split("\t").slice(1).join("\t")}`);
+            if (include(path))
+                entries.push(
+                    `${root}/${path}\t${toolIdentity(file).split("\t").slice(1).join("\t")}`,
+                );
         }
     }
     return hashEntries(entries);
@@ -151,10 +152,15 @@ export function writeJsonRecord(path: string, value: unknown): void {
             // Windows readers can briefly deny replacement of an open file.
             // Keep the old record intact while that handle closes.
             if (
-                process.platform !== "win32" || attempt >= 10 ||
-                !(error instanceof Error) || !("code" in error) ||
-                (error.code !== "EPERM" && error.code !== "EACCES" && error.code !== "EBUSY")
-            ) throw error;
+                process.platform !== "win32" ||
+                attempt >= 10 ||
+                !(error instanceof Error) ||
+                !("code" in error) ||
+                (error.code !== "EPERM" &&
+                    error.code !== "EACCES" &&
+                    error.code !== "EBUSY")
+            )
+                throw error;
             Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50);
         }
     }

@@ -75,23 +75,30 @@ const baseWriter = {
     vectorProperties: { baseColorFactor: 4 },
 } as const;
 
-const extensionWriters: ReadonlyArray<{
-    kind?: "ast";
-    modulePath: string;
-    symbolName: string;
-    sourceLocal: string;
-    baseField: string;
-    propertySources: Readonly<Record<string, string | null>>;
-    /** Properties that are colours rather than scalars, and their lane count. */
-    vectorProperties?: Readonly<Record<string, number>>;
-    nestedWriters?: Readonly<
-        Record<
-            string,
-            (baseName: string) => Readonly<Record<string, string | null>>
-        >
-    >;
-} | {kind: "packet"; baseField: string; recordField: string}> = [
-    {kind: "packet", baseField: "localEnvironmentMode", recordField: "local_environment"},
+const extensionWriters: ReadonlyArray<
+    | {
+          kind?: "ast";
+          modulePath: string;
+          symbolName: string;
+          sourceLocal: string;
+          baseField: string;
+          propertySources: Readonly<Record<string, string | null>>;
+          /** Properties that are colours rather than scalars, and their lane count. */
+          vectorProperties?: Readonly<Record<string, number>>;
+          nestedWriters?: Readonly<
+              Record<
+                  string,
+                  (baseName: string) => Readonly<Record<string, string | null>>
+              >
+          >;
+      }
+    | { kind: "packet"; baseField: string; recordField: string }
+> = [
+    {
+        kind: "packet",
+        baseField: "localEnvironmentMode",
+        recordField: "local_environment",
+    },
     {
         modulePath: "src/material/pbr/fragments/shadow-only-fragment.ts",
         symbolName: "writeShadowOnlyUBO",
@@ -116,11 +123,13 @@ const extensionWriters: ReadonlyArray<{
             roughness: "material.clearcoat_roughness",
             bumpTextureScale: "material.clearcoat_normal_scale",
         },
-        nestedWriters: { writeCcUvTransform: uvTransformSources({
-            ccIntUV: "material.clearcoat_transform",
-            ccRoughUV: "material.clearcoat_roughness_transform",
-            ccNormUV: "material.clearcoat_normal_transform",
-        }) },
+        nestedWriters: {
+            writeCcUvTransform: uvTransformSources({
+                ccIntUV: "material.clearcoat_transform",
+                ccRoughUV: "material.clearcoat_roughness_transform",
+                ccNormUV: "material.clearcoat_normal_transform",
+            }),
+        },
     },
     {
         modulePath: "src/material/pbr/fragments/iridescence-fragment.ts",
@@ -133,10 +142,13 @@ const extensionWriters: ReadonlyArray<{
             minimumThickness: "material.iridescence_minimum_thickness",
             maximumThickness: "material.iridescence_maximum_thickness",
         },
-        nestedWriters: { writeUvTransform: uvTransformSources({
-            iridescenceUV: "material.iridescence_transform",
-            iridescenceThicknessUV: "material.iridescence_thickness_transform",
-        }) },
+        nestedWriters: {
+            writeUvTransform: uvTransformSources({
+                iridescenceUV: "material.iridescence_transform",
+                iridescenceThicknessUV:
+                    "material.iridescence_thickness_transform",
+            }),
+        },
     },
     {
         // One lane and no transform: the lightmap's blend, UV set, gamma
@@ -185,7 +197,9 @@ const extensionWriters: ReadonlyArray<{
             intensity: "material.anisotropy_intensity",
             direction: "material.anisotropy_direction",
             texture: "material",
-            ...uvTransformSources({ anisotropy: "material.anisotropy_transform" })("anisotropy"),
+            ...uvTransformSources({
+                anisotropy: "material.anisotropy_transform",
+            })("anisotropy"),
         },
         vectorProperties: { direction: 2 },
     },
@@ -206,10 +220,12 @@ const extensionWriters: ReadonlyArray<{
             _metallicReflectanceColor: "material.metallic_reflectance_color",
         },
         vectorProperties: { _metallicReflectanceColor: 3 },
-        nestedWriters: { writeReflUvTransform: uvTransformSources({
-            reflUV: "material.reflectance_transform",
-            mrReflUV: "material.metallic_reflectance_transform",
-        }) },
+        nestedWriters: {
+            writeReflUvTransform: uvTransformSources({
+                reflUV: "material.reflectance_transform",
+                mrReflUV: "material.metallic_reflectance_transform",
+            }),
+        },
     },
     {
         modulePath: "src/material/pbr/fragments/subsurface-fragment.ts",
@@ -220,8 +236,7 @@ const extensionWriters: ReadonlyArray<{
             translucency: "material",
             intensity: "material.subsurface_intensity",
             color: "material.subsurface_color",
-            diffusionDistance:
-                "material.subsurface_diffusion_distance",
+            diffusionDistance: "material.subsurface_diffusion_distance",
             thickness: "material",
             min: "material.subsurface_minimum_thickness",
             max: "material.subsurface_maximum_thickness",
@@ -229,10 +244,13 @@ const extensionWriters: ReadonlyArray<{
             intensityTexture: "material.translucency_intensity_transform",
         },
         vectorProperties: { color: 3, diffusionDistance: 3 },
-        nestedWriters: { writeSsUvTransform: uvTransformSources({
-            translucencyColorUV: "material.translucency_color_transform",
-            translucencyIntensityUV: "material.translucency_intensity_transform",
-        }) },
+        nestedWriters: {
+            writeSsUvTransform: uvTransformSources({
+                translucencyColorUV: "material.translucency_color_transform",
+                translucencyIntensityUV:
+                    "material.translucency_intensity_transform",
+            }),
+        },
     },
     {
         // Fills refractionParams, volumeParams and thicknessParams from three
@@ -385,13 +403,13 @@ interface VariantField {
 const fieldTypes: Readonly<
     Record<string, { cppType: string; align: number; size: number }>
 > = {
-    "f32": { cppType: "float", align: 4, size: 4 },
+    f32: { cppType: "float", align: 4, size: 4 },
     "vec3<f32>": { cppType: "std::array<float, 3>", align: 16, size: 12 },
     "vec4<f32>": { cppType: "std::array<float, 4>", align: 16, size: 16 },
     // The scene block carries matrices where the material blocks do not.
     "mat4x4<f32>": { cppType: "std::array<float, 16>", align: 16, size: 64 },
     // The mesh block carries its light count and index list.
-    "u32": { cppType: "std::uint32_t", align: 4, size: 4 },
+    u32: { cppType: "std::uint32_t", align: 4, size: 4 },
 };
 
 /**
@@ -458,9 +476,10 @@ function parseVariantFields(structBody: string): VariantField[] {
 }
 
 /** Offsets and total size under WGSL uniform layout rules. */
-function variantLayout(
-    fields: readonly VariantField[],
-): { offsets: number[]; totalBytes: number } {
+function variantLayout(fields: readonly VariantField[]): {
+    offsets: number[];
+    totalBytes: number;
+} {
     const offsets: number[] = [];
     let cursor = 0;
     for (const field of fields) {
@@ -508,8 +527,8 @@ function variantColorOutput(fragmentWgsl: string): VariantColorOutput {
         colorTargetCount: fragmentOutputStruct
             ? (fragmentOutputStruct[0].match(/@location\(\d+\)/g) ?? []).length
             : hasColorReturn
-                ? 1
-                : 0,
+              ? 1
+              : 0,
     };
 }
 
@@ -614,9 +633,10 @@ interface VariantBinding {
  * to answer "which generator is this". A name outside the pin's three shapes
  * fails generation rather than being bound to a guess.
  */
-function shadowBindingSlot(
-    name: string,
-): { role: "map" | "map_sampler" | "info"; light: number } {
+function shadowBindingSlot(name: string): {
+    role: "map" | "map_sampler" | "info";
+    light: number;
+} {
     const slot = shadowBindingSlotOrNull(name);
     if (!slot) {
         throw new Error(
@@ -650,11 +670,7 @@ export function shadowBindingSlotOrNull(
     if (!match) return null;
     const role = match[1] ?? match[2]!;
     return {
-        role: role === "Tex"
-            ? "map"
-            : role === "Info"
-              ? "info"
-              : "map_sampler",
+        role: role === "Tex" ? "map" : role === "Info" ? "info" : "map_sampler",
         light: Number(match[3]),
     };
 }
@@ -788,21 +804,21 @@ function reflectVariantBindings(
             // storage buffers in the vertex stage.
             const kind = addressSpace.startsWith("storage")
                 ? "storageBuffer"
-                // A group-1 uniform block past the hand-managed mesh (0) and
-                // material (1): the geometry arms' gpUniforms is the reached
-                // one, and Dawn builds its layout entry from this row. Every
-                // uniform block of another group is the group's own.
-                : addressSpace.startsWith("uniform")
-                ? (group !== 1 || Number(match[1]) > 1
-                    ? "uniformBuffer"
-                    : undefined)
-                : type.startsWith("texture_")
-                ? textureBindingKind(type, name, sampled)
-                : type === "sampler_comparison"
-                ? "samplerComparison"
-                : type === "sampler"
-                ? "sampler"
-                : undefined;
+                : // A group-1 uniform block past the hand-managed mesh (0) and
+                  // material (1): the geometry arms' gpUniforms is the reached
+                  // one, and Dawn builds its layout entry from this row. Every
+                  // uniform block of another group is the group's own.
+                  addressSpace.startsWith("uniform")
+                  ? group !== 1 || Number(match[1]) > 1
+                      ? "uniformBuffer"
+                      : undefined
+                  : type.startsWith("texture_")
+                    ? textureBindingKind(type, name, sampled)
+                    : type === "sampler_comparison"
+                      ? "samplerComparison"
+                      : type === "sampler"
+                        ? "sampler"
+                        : undefined;
             if (!kind) continue;
             const binding = Number(match[1]);
             const existing = byBinding.get(binding);
@@ -831,9 +847,11 @@ function variantCppName(fragmentKey: string): string {
     const parts = fragmentKey
         .split(/[^A-Za-z0-9]+/)
         .filter((part) => part !== "");
-    return parts
-        .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
-        .join("") || "Base";
+    return (
+        parts
+            .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+            .join("") || "Base"
+    );
 }
 
 /**
@@ -951,7 +969,12 @@ const lightVectors: Readonly<Record<string, number>> = {
  */
 function mirroredMembers(
     structName: string,
-    fields: readonly { name: string; cppType: string; wgslType: string; size: number }[],
+    fields: readonly {
+        name: string;
+        cppType: string;
+        wgslType: string;
+        size: number;
+    }[],
     offsets: readonly number[],
     /** The pin's own total, which rounds up to 16 past the last field. */
     totalBytes?: number,
@@ -1045,12 +1068,14 @@ export function mirroredStructFromWgsl(
     const fields = parseVariantFields(splitWgslFields(structBody));
     const { offsets, totalBytes } = variantLayout(fields);
     const mirrored = mirroredMembers(structName, fields, offsets, totalBytes);
-    return `// ${provenance}\n` +
+    return (
+        `// ${provenance}\n` +
         `struct ${structName} {\n${mirrored.members}\n};\n` +
         `static_assert(\n` +
         `    sizeof(${structName}) == ${totalBytes},\n` +
         `    "${structName} must be the pinned ${totalBytes} bytes.");\n` +
-        mirrored.asserts;
+        mirrored.asserts
+    );
 }
 
 /**
@@ -1078,7 +1103,7 @@ export function meshUniformsBlock(
     const fields = parseVariantFields(splitWgslFields(declaration));
     const { offsets } = variantLayout(fields);
     const arrayIndex = fields.findIndex((field) =>
-        field.wgslType.startsWith("array<")
+        field.wgslType.startsWith("array<"),
     );
     if (arrayIndex < 0) {
         throw new Error(
@@ -1119,41 +1144,41 @@ export function lightUniformsBlock(
     ];
     const writers = lightWriters
         .filter((light) => lightKinds.includes(light.kind.toLowerCase()))
-        .map((light) =>
-        `// ${light.modulePath} ${light.symbolName}\n` +
-        `inline void write_${light.kind.toLowerCase()}_light(\n` +
-        `    const LightRecord& light,\n` +
-        `    LightEntry& out) {\n` +
-        // The pin's own light world matrix, from the module this scene already
-        // lowers. Its column 2 is the normalized direction and its translation
-        // the position, which is what the writers' lane reads resolve against.
-        `    std::array<float, 16> world{};\n` +
-        `    local_matrix_from_direction(\n` +
-        `        light.direction.x,\n` +
-        `        light.direction.y,\n` +
-        `        light.direction.z,\n` +
-        `        light.position.x,\n` +
-        `        light.position.y,\n` +
-        `        light.position.z,\n` +
-        `        world);\n` +
-        `${
-            lowerPinnedUboWriter(context, {
-                modulePath: light.modulePath,
-                symbolName: light.symbolName,
-                sourceLocal: "",
-                offsetParameter: "offset",
-                baseField: "vLightData",
-                propertySources: lightSources,
-                vectorProperties: lightVectors,
-                laneSources: { worldMatrix: lightMatrixLanes },
-                slots,
-            }).join("\n")
-        }\n}`
-    );
+        .map(
+            (light) =>
+                `// ${light.modulePath} ${light.symbolName}\n` +
+                `inline void write_${light.kind.toLowerCase()}_light(\n` +
+                `    const LightRecord& light,\n` +
+                `    LightEntry& out) {\n` +
+                // The pin's own light world matrix, from the module this scene already
+                // lowers. Its column 2 is the normalized direction and its translation
+                // the position, which is what the writers' lane reads resolve against.
+                `    std::array<float, 16> world{};\n` +
+                `    local_matrix_from_direction(\n` +
+                `        light.direction.x,\n` +
+                `        light.direction.y,\n` +
+                `        light.direction.z,\n` +
+                `        light.position.x,\n` +
+                `        light.position.y,\n` +
+                `        light.position.z,\n` +
+                `        world);\n` +
+                `${lowerPinnedUboWriter(context, {
+                    modulePath: light.modulePath,
+                    symbolName: light.symbolName,
+                    sourceLocal: "",
+                    offsetParameter: "offset",
+                    baseField: "vLightData",
+                    propertySources: lightSources,
+                    vectorProperties: lightVectors,
+                    laneSources: { worldMatrix: lightMatrixLanes },
+                    slots,
+                }).join("\n")}\n}`,
+        );
     const members = slots
-        .map((slot) =>
-            `    // offset ${slot.offset}, vec4<f32>\n` +
-            `    std::array<float, 4> ${slot.name}{};`
+        .map(
+            (slot) =>
+                `    // offset ${slot.offset}, vec4<f32>\n` +
+                `    std::array<float, 4> ${slot.name}{};`,
         )
         .join("\n");
     // Which writer a kind takes is Babylon's own mapping, so it is emitted here
@@ -1163,8 +1188,8 @@ export function lightUniformsBlock(
     // Always declared, so a PAL needs no per-kind guard of its own; a scene that
     // compiles no light gets a body that writes nothing, because it has no light
     // to write.
-    const reachedLightWriters = lightWriters.filter(
-        (light) => lightKinds.includes(light.kind.toLowerCase()),
+    const reachedLightWriters = lightWriters.filter((light) =>
+        lightKinds.includes(light.kind.toLowerCase()),
     );
     const dispatch = [
         "",
@@ -1176,32 +1201,30 @@ export function lightUniformsBlock(
         // A lightless scene emits a body that writes nothing, without the
         // caseless switch MSVC warns about.
         ...(reachedLightWriters.length === 0
-            ? [
-                "    (void)light;",
-                "    (void)out;",
-            ]
+            ? ["    (void)light;", "    (void)out;"]
             : [
-                "    switch (light.kind) {",
-                ...reachedLightWriters.flatMap((light) => [
-                    `        case LightKind::${light.kind.toLowerCase()}:`,
-                    `            write_${
-                        light.kind.toLowerCase()
-                    }_light(light, out);`,
-                    "            return;",
-                ]),
-                "        default:",
-                "            return;",
-                "    }",
-            ]),
+                  "    switch (light.kind) {",
+                  ...reachedLightWriters.flatMap((light) => [
+                      `        case LightKind::${light.kind.toLowerCase()}:`,
+                      `            write_${light.kind.toLowerCase()}_light(light, out);`,
+                      "            return;",
+                  ]),
+                  "        default:",
+                  "            return;",
+                  "    }",
+              ]),
         "}",
     ].join("\n");
-    return `// src/light/types.ts MAX_LIGHTS\n` +
+    return (
+        `// src/light/types.ts MAX_LIGHTS\n` +
         `inline constexpr std::size_t pinned_max_lights = ${maxLights};\n\n` +
         `// src/render/lights-ubo.ts fillLightsData\n` +
         `struct LightEntry {\n${members}\n};\n` +
         `static_assert(\n    sizeof(LightEntry) == 64,\n` +
         `    "The pinned LightEntry is 4 x vec4.");\n\n` +
-        writers.join("\n\n") + dispatch;
+        writers.join("\n\n") +
+        dispatch
+    );
 }
 
 export function sceneUniformsStruct(
@@ -1212,16 +1235,17 @@ export function sceneUniformsStruct(
     // declaration is one line. The binding names it, so that is what identifies
     // it rather than a literal `SceneUniforms`.
     const binding =
-        /@group\(0\)\s*@binding\(0\)\s*var<uniform>\s*scene\s*:\s*(\w+)\s*;/
-            .exec(sceneUniformsWgsl);
+        /@group\(0\)\s*@binding\(0\)\s*var<uniform>\s*scene\s*:\s*(\w+)\s*;/.exec(
+            sceneUniformsWgsl,
+        );
     if (!binding) {
         throw new Error(
             "Pinned scene uniforms no longer bind at @group(0) @binding(0).",
         );
     }
-    const body = new RegExp(
-        `struct ${binding[1]}\\s*\\{([\\s\\S]*?)\\}`,
-    ).exec(sceneUniformsWgsl);
+    const body = new RegExp(`struct ${binding[1]}\\s*\\{([\\s\\S]*?)\\}`).exec(
+        sceneUniformsWgsl,
+    );
     if (!body) {
         throw new Error(
             `Pinned scene uniforms no longer declare struct ` +
@@ -1253,12 +1277,14 @@ export function sceneUniformsStruct(
         offsets,
         totalBytes,
     );
-    return `// src/shader/scene-uniforms.ts SCENE_UBO_WGSL\n` +
+    return (
+        `// src/shader/scene-uniforms.ts SCENE_UBO_WGSL\n` +
         `struct SceneUniforms {\n${mirrored.members}\n};\n` +
         `static_assert(\n` +
         `    sizeof(SceneUniforms) == ${totalBytes},\n` +
         `    "SceneUniforms must be the pinned ${totalBytes} bytes.");\n` +
-        mirrored.asserts;
+        mirrored.asserts
+    );
 }
 
 /**
@@ -1454,13 +1480,15 @@ export function pinnedPbrVariantsHeader(
     const meshFeaturesByMaterial = new Map<number, Set<number>>();
     for (const variant of variants) {
         for (const selector of variant.selectors) {
-            const set = meshFeaturesByMaterial.get(selector.materialIndex) ??
+            const set =
+                meshFeaturesByMaterial.get(selector.materialIndex) ??
                 new Set<number>();
             set.add(selector.meshFeatures);
             meshFeaturesByMaterial.set(selector.materialIndex, set);
         }
     }
-    const materialCount = pinnedMaterialCount ??
+    const materialCount =
+        pinnedMaterialCount ??
         (meshFeaturesByMaterial.size === 0
             ? 0
             : Math.max(...meshFeaturesByMaterial.keys()) + 1);
@@ -1488,7 +1516,10 @@ export function pinnedPbrVariantsHeader(
         const fields = parseVariantFields(spec._structBody);
         const computed = variantLayout(fields);
         const totalBytes = spec._totalBytes ?? computed.totalBytes;
-        if (spec._totalBytes !== undefined && spec._totalBytes !== computed.totalBytes) {
+        if (
+            spec._totalBytes !== undefined &&
+            spec._totalBytes !== computed.totalBytes
+        ) {
             throw new Error(
                 `Pinned variant '${variant.fragmentKey}' material UBO is ` +
                     `${spec._totalBytes} bytes; the mirrored layout computes ` +
@@ -1499,8 +1530,8 @@ export function pinnedPbrVariantsHeader(
         // keys every field off this map, so it is the authority. The computed
         // layout stays as the cross-check on the fields it does not name.
         const pinned = spec._offsets ?? {};
-        const offsets = fields.map((field, index) =>
-            pinned[field.name] ?? computed.offsets[index]!
+        const offsets = fields.map(
+            (field, index) => pinned[field.name] ?? computed.offsets[index]!,
         );
         for (const [name, offset] of Object.entries(pinned)) {
             const index = fields.findIndex((field) => field.name === name);
@@ -1531,9 +1562,11 @@ export function pinnedPbrVariantsHeader(
         // Every pinned extension writer whose base field this variant declares,
         // lowered from that declaration's own AST. The arithmetic is the pin's.
         const reached = extensionWriters.filter((extension) =>
-            slots.some((slot) => slot.name === extension.baseField)
+            slots.some((slot) => slot.name === extension.baseField),
         );
-        const writerFields = new Map<string, UboFieldSlot[]>(reached.map(extension => [extension.baseField, []]));
+        const writerFields = new Map<string, UboFieldSlot[]>(
+            reached.map((extension) => [extension.baseField, []]),
+        );
         let currentWriter: UboFieldSlot[] | undefined;
         for (const slot of slots) {
             currentWriter = writerFields.get(slot.name) ?? currentWriter;
@@ -1573,8 +1606,8 @@ export function pinnedPbrVariantsHeader(
             }
             const unwritten = slots
                 .map((slot) => slot.name)
-                .filter((field) =>
-                    !covered.has(field) && !field.startsWith("_")
+                .filter(
+                    (field) => !covered.has(field) && !field.startsWith("_"),
                 );
             if (unwritten.length > 0) {
                 throw new Error(
@@ -1587,21 +1620,29 @@ export function pinnedPbrVariantsHeader(
                 );
             }
         }
-        const lowered = reached
-            .map((extension) => {
-                if (extension.kind === "packet") {
-                    return `// Fields produced by the executed pinned extension writer.\n` +
-                        `inline void write_${name}_${extension.baseField.replace(/\W+/g, "_")}(\n` +
-                        `    const MaterialRecord& material, [[maybe_unused]] const TextureTransform& transform,\n` +
-                        `    ${name}MaterialUniforms& out) {\n` +
-                        `    if (!material.${extension.recordField}) throw std::runtime_error("Material has no compiled extension packet.");\n` +
-                        writerFields.get(extension.baseField)!.map(field => `    {
+        const lowered = reached.map((extension) => {
+            if (extension.kind === "packet") {
+                return (
+                    `// Fields produced by the executed pinned extension writer.\n` +
+                    `inline void write_${name}_${extension.baseField.replace(/\W+/g, "_")}(\n` +
+                    `    const MaterialRecord& material, [[maybe_unused]] const TextureTransform& transform,\n` +
+                    `    ${name}MaterialUniforms& out) {\n` +
+                    `    if (!material.${extension.recordField}) throw std::runtime_error("Material has no compiled extension packet.");\n` +
+                    writerFields
+                        .get(extension.baseField)!
+                        .map(
+                            (field) => `    {
         const auto& field = material.${extension.recordField}->material_fields.at("${field.name}");
         if (field.size() != ${field.lanes}) throw std::runtime_error("Compiled material field layout changed.");
         std::memcpy(reinterpret_cast<std::uint8_t*>(&out) + ${field.offset}, field.data(), ${field.lanes} * sizeof(float));
-    }`).join("\n") + "\n}";
-                }
-                return `// ${extension.modulePath} ${extension.symbolName}\n` +
+    }`,
+                        )
+                        .join("\n") +
+                    "\n}"
+                );
+            }
+            return (
+                `// ${extension.modulePath} ${extension.symbolName}\n` +
                 // Named after the field the writer starts at, not the symbol:
                 // several extensions expose their writer as `pbrExt.writeUbo`
                 // on their own literal, so the symbol is not unique within a
@@ -1611,32 +1652,32 @@ export function pinnedPbrVariantsHeader(
                 // all fold at generation — the unlit writer's colour default
                 // is one — emits a body that never touches it, and the
                 // warning-clean rule covers generated C++ too (MSVC C4100).
-                `inline void write_${name}_${
-                    extension.baseField.replace(/\W+/g, "_")
-                }(\n` +
+                `inline void write_${name}_${extension.baseField.replace(
+                    /\W+/g,
+                    "_",
+                )}(\n` +
                 `    [[maybe_unused]] const MaterialRecord& material,\n` +
                 `    const TextureTransform& transform,\n` +
                 `    ${name}MaterialUniforms& out) {\n` +
                 // A writer whose slots carry no UV transform never reads the
                 // parameter; the cast keeps the shared signature warning-free.
                 `    (void)transform;\n` +
-                `${
-                    lowerPinnedUboWriter(context, {
-                        modulePath: extension.modulePath,
-                        symbolName: extension.symbolName,
-                        sourceLocal: extension.sourceLocal,
-                        baseField: extension.baseField,
-                        propertySources: extension.propertySources,
-                        slots,
-                        ...(extension.vectorProperties
-                            ? { vectorProperties: extension.vectorProperties }
-                            : {}),
-                        ...(extension.nestedWriters
-                            ? { nestedWriters: extension.nestedWriters }
-                            : {}),
-                    }).join("\n")
-                }\n}`;
-            });
+                `${lowerPinnedUboWriter(context, {
+                    modulePath: extension.modulePath,
+                    symbolName: extension.symbolName,
+                    sourceLocal: extension.sourceLocal,
+                    baseField: extension.baseField,
+                    propertySources: extension.propertySources,
+                    slots,
+                    ...(extension.vectorProperties
+                        ? { vectorProperties: extension.vectorProperties }
+                        : {}),
+                    ...(extension.nestedWriters
+                        ? { nestedWriters: extension.nestedWriters }
+                        : {}),
+                }).join("\n")}\n}`
+            );
+        });
         let writer: string;
         try {
             // The pin's own `_writeMaterialData`, lowered like every extension
@@ -1645,20 +1686,19 @@ export function pinnedPbrVariantsHeader(
             // extension writers own. `material` carries [[maybe_unused]] for
             // the same reason the extension writers' does: a variant whose
             // base fields all fold leaves the parameter unread (MSVC C4100).
-            writer = `\n\ninline void write_${name}_material(\n` +
+            writer =
+                `\n\ninline void write_${name}_material(\n` +
                 `    [[maybe_unused]] const MaterialRecord& material,\n` +
                 `    ${name}MaterialUniforms& out) {\n` +
-                `${
-                    lowerPinnedUboWriter(context, {
-                        modulePath: baseWriter.modulePath,
-                        symbolName: baseWriter.symbolName,
-                        sourceLocal: baseWriter.sourceLocal,
-                        baseField: baseWriter.baseField,
-                        propertySources: baseWriter.propertySources,
-                        vectorProperties: baseWriter.vectorProperties,
-                        slots,
-                    }).join("\n")
-                }\n}`;
+                `${lowerPinnedUboWriter(context, {
+                    modulePath: baseWriter.modulePath,
+                    symbolName: baseWriter.symbolName,
+                    sourceLocal: baseWriter.sourceLocal,
+                    baseField: baseWriter.baseField,
+                    propertySources: baseWriter.propertySources,
+                    vectorProperties: baseWriter.vectorProperties,
+                    slots,
+                }).join("\n")}\n}`;
         } catch (error) {
             // Not fatal: the struct and the compiled stages are usable, and
             // naming the unmapped field is more useful than failing every
@@ -1669,23 +1709,21 @@ export function pinnedPbrVariantsHeader(
         }
         blocks.push(
             `// ${variant.fragmentKey}\n` +
-                `// materials: ${
-                    [
-                        ...new Set(
-                            variant.selectors.map(
-                                (selector) => selector.materialName,
-                            ),
+                `// materials: ${[
+                    ...new Set(
+                        variant.selectors.map(
+                            (selector) => selector.materialName,
                         ),
-                    ].join(", ")
-                }\n` +
+                    ),
+                ].join(", ")}\n` +
                 `struct ${name}MaterialUniforms {\n${members}\n};\n` +
                 `static_assert(\n` +
                 `    sizeof(${name}MaterialUniforms) == ${totalBytes},\n` +
                 `    "${variant.fragmentKey} material UBO must be the pin's ` +
-                `${totalBytes} bytes.");\n` + mirroredVariant.asserts + writer +
-                (lowered.length > 0
-                    ? `\n\n${lowered.join("\n\n")}`
-                    : ""),
+                `${totalBytes} bytes.");\n` +
+                mirroredVariant.asserts +
+                writer +
+                (lowered.length > 0 ? `\n\n${lowered.join("\n\n")}` : ""),
         );
         for (const selector of variant.selectors) {
             selectors.push(
@@ -1701,7 +1739,7 @@ export function pinnedPbrVariantsHeader(
                     `${selector.toneMapping ? "true" : "false"}, ` +
                     `${
                         selector.geometryTask ??
-                            "std::numeric_limits<std::size_t>::max()"
+                        "std::numeric_limits<std::size_t>::max()"
                     }, ` +
                     `${table.length}},`,
             );
@@ -1734,13 +1772,15 @@ export function pinnedPbrVariantsHeader(
                 `        case ${table.length}: {`,
                 `            ${name}MaterialUniforms block{};`,
                 `            write_${name}_material(material, block);`,
-                ...reached.map((extension) =>
-                    `            write_${name}_${
-                        extension.baseField.replace(/\W+/g, "_")
-                    }(\n` +
-                    `                material,\n` +
-                    `                bblIdentityTransform,\n` +
-                    `                block);`
+                ...reached.map(
+                    (extension) =>
+                        `            write_${name}_${extension.baseField.replace(
+                            /\W+/g,
+                            "_",
+                        )}(\n` +
+                        `                material,\n` +
+                        `                bblIdentityTransform,\n` +
+                        `                block);`,
                 ),
                 ...thicknessScaled,
                 "            std::memcpy(",
@@ -1777,13 +1817,15 @@ export function pinnedPbrVariantsHeader(
                 `${pbrShadowRows.length}, ${shadowBindings.length}, ` +
                 `${attributeRows.length}, ${attributes.length}, ` +
                 `${
-                    bindings.filter((binding) =>
-                        binding.kind === "sampler" && binding.vertex
+                    bindings.filter(
+                        (binding) =>
+                            binding.kind === "sampler" && binding.vertex,
                     ).length
                 }, ` +
                 `${
-                    bindings.filter((binding) =>
-                        binding.kind === "sampler" && binding.fragment
+                    bindings.filter(
+                        (binding) =>
+                            binding.kind === "sampler" && binding.fragment,
                     ).length
                 }, ` +
                 `${noColorOutput ? "true" : "false"}, ` +
@@ -1794,19 +1836,14 @@ export function pinnedPbrVariantsHeader(
                 // stays the identical product.
                 `${variantUsesLocalPosition(variant.vertexWgsl) ? "true" : "false"}, ` +
                 `${
-                    bindings.some((binding) =>
-                        binding.name === "shadowParams"
-                    )
+                    bindings.some((binding) => binding.name === "shadowParams")
                         ? "true"
                         : "false"
                 }},`,
         );
         for (const entry of shadowBindings) {
             pbrShadowRows.push(
-                pinnedShadowBindingRow(
-                    entry,
-                    shadowBindingSlot(entry.name),
-                ),
+                pinnedShadowBindingRow(entry, shadowBindingSlot(entry.name)),
             );
         }
         for (const attribute of attributes) {
@@ -1841,11 +1878,7 @@ export function pinnedPbrVariantsHeader(
 
 #include <bblite/upstream/pinned_variant_bindings.hpp>
 #include <bblite/runtime.hpp>
-${
-        lightKinds.length > 0
-            ? "#include <bblite/upstream/light_matrix.hpp>\n"
-            : ""
-    }
+${lightKinds.length > 0 ? "#include <bblite/upstream/light_matrix.hpp>\n" : ""}
 namespace bbl::upstream {
 
 using bbl::MaterialRecord;
@@ -2009,8 +2042,11 @@ ${cpp.table("std::size_t", "pbr_renderable_mesh_features", renderableMeshFeature
  * creating meshes after registration, all from the fixed-set builders --
  * or npos when the scene's builders disagree and such a draw must refuse.
  */
-${cpp.constant("std::size_t", "pbr_runtime_mesh_features",
-        runtimeMeshFeatures ?? "std::numeric_limits<std::size_t>::max()")}
+${cpp.constant(
+    "std::size_t",
+    "pbr_runtime_mesh_features",
+    runtimeMeshFeatures ?? "std::numeric_limits<std::size_t>::max()",
+)}
 
 /**
  * Fills a variant's material block, whichever variant it is.
@@ -2019,12 +2055,14 @@ ${cpp.constant("std::size_t", "pbr_runtime_mesh_features",
  * opaque byte range needs one entry point. The bytes written are the struct's,
  * and the destination is checked against the pin's own total for that variant.
  */
-${cpp.function(`void write_pbr_variant_material(
+${cpp.function(
+    `void write_pbr_variant_material(
     std::size_t variant,
     const MaterialRecord& material,
     void* destination,
     std::size_t bytes,
-    float thickness_scale)`, `
+    float thickness_scale)`,
+    `
     // Unused when no composed variant carries a thickness lane.
     (void)thickness_scale;
     switch (variant) {
@@ -2032,12 +2070,14 @@ ${variantMaterialCases.join("\n")}
         default:
             return;
     }
-`, `void write_pbr_variant_material(
+`,
+    `void write_pbr_variant_material(
     std::size_t variant,
     const MaterialRecord& material,
     void* destination,
     std::size_t bytes,
-    float thickness_scale = 1.0f)`)}
+    float thickness_scale = 1.0f)`,
+)}
 
 /**
  * The pin's own name for a light's kind.
@@ -2124,7 +2164,8 @@ export interface MaterialTextureSlotFeatures {
 /** One emitted row; `slot: null` marks a scene-owned resource. */
 interface MaterialSlotRow {
     source: string;
-    srgb: "linear" | "srgb" | "srgb_unless_standard" | "base_color" | "lightmap";
+    srgb:
+        "linear" | "srgb" | "srgb_unless_standard" | "base_color" | "lightmap";
     fallback:
         | "white"
         | "black"
@@ -2148,9 +2189,10 @@ interface MaterialSlotRow {
  * the Standard bump and 2D reflection pairs, each appended after
  * everything before it so no existing slot index moves when one appears.
  */
-function materialTextureSlotRows(
-    features: MaterialTextureSlotFeatures,
-): { mesh: MaterialSlotRow[]; state: MaterialSlotRow[] } {
+function materialTextureSlotRows(features: MaterialTextureSlotFeatures): {
+    mesh: MaterialSlotRow[];
+    state: MaterialSlotRow[];
+} {
     const mesh: MaterialSlotRow[] = [
         {
             source: "base_color",
@@ -2291,11 +2333,36 @@ function materialTextureSlotRows(
     // workflow it replaces, so a scene that compiles it shifts no existing
     // slot index -- the same reasoning the Standard bump pair follows.
     for (const [enabled, source, textureName, samplerName, srgb] of [
-        [features.anisotropyMap, "anisotropy", "anisotropyTexture_", "anisotropySampler_", "linear"],
-        [features.translucencyColorMap, "translucency_color", "translucencyColorTexture_", "translucencyColorSampler_", "srgb"],
-        [features.translucencyIntensityMap, "translucency_intensity", "translucencyIntensityTexture_", "translucencyIntensitySampler_", "linear"],
+        [
+            features.anisotropyMap,
+            "anisotropy",
+            "anisotropyTexture_",
+            "anisotropySampler_",
+            "linear",
+        ],
+        [
+            features.translucencyColorMap,
+            "translucency_color",
+            "translucencyColorTexture_",
+            "translucencyColorSampler_",
+            "srgb",
+        ],
+        [
+            features.translucencyIntensityMap,
+            "translucency_intensity",
+            "translucencyIntensityTexture_",
+            "translucencyIntensitySampler_",
+            "linear",
+        ],
     ] as const) {
-        if (enabled) mesh.push({ source, srgb, fallback: "white", textureName, samplerName });
+        if (enabled)
+            mesh.push({
+                source,
+                srgb,
+                fallback: "white",
+                textureName,
+                samplerName,
+            });
     }
     if (features.specularGlossiness) {
         mesh.push({
@@ -2370,8 +2437,14 @@ function materialTextureSlotRows(
             samplerName: "brdfSampler_",
         },
     ];
-    if (features.localCubemap) state.push({source: "local_probe_cube", srgb: "linear", fallback: "white",
-        textureName: "localProbeTexture", samplerName: "localProbeSampler"});
+    if (features.localCubemap)
+        state.push({
+            source: "local_probe_cube",
+            srgb: "linear",
+            fallback: "white",
+            textureName: "localProbeTexture",
+            samplerName: "localProbeSampler",
+        });
     if (features.transmission) {
         state.push({
             source: "scene_color",
@@ -2470,9 +2543,15 @@ export function materialTextureSlotsHeader(
     provenance: string,
 ): CppModule {
     const cpp = new CppDefinitions();
-    const bindings = variants.flatMap(variant => variantBindings(variant.vertexWgsl, variant.fragmentWgsl));
-    const { mesh, state } = materialTextureSlotRows({...features,
-        localCubemap: bindings.some(binding => binding.name === "localProbeTexture")});
+    const bindings = variants.flatMap((variant) =>
+        variantBindings(variant.vertexWgsl, variant.fragmentWgsl),
+    );
+    const { mesh, state } = materialTextureSlotRows({
+        ...features,
+        localCubemap: bindings.some(
+            (binding) => binding.name === "localProbeTexture",
+        ),
+    });
     const served = new Set<string>();
     for (const row of [...mesh, ...state]) {
         if (row.textureName !== "") served.add(row.textureName);
@@ -2490,9 +2569,12 @@ export function materialTextureSlotsHeader(
     }
     if (unserved.size > 0) {
         throw new Error(
-            `Pinned variants declare ${
-                [...unserved].sort().map((name) => `'${name}'`).join(", ")
-            } which the material texture-slot table does not serve. Add ` +
+            `Pinned variants declare ${[...unserved]
+                .sort()
+                .map((name) => `'${name}'`)
+                .join(
+                    ", ",
+                )} which the material texture-slot table does not serve. Add ` +
                 "the row to materialTextureSlotRows in " +
                 "src/pinned-pbr-variant-cpp.ts; an unserved name fails in " +
                 "both PALs at draw time.",
@@ -2501,11 +2583,12 @@ export function materialTextureSlotsHeader(
     const rows = [
         ...mesh.map((row, slot) => ({ ...row, slot: `${slot}` })),
         ...state.map((row) => ({ ...row, slot: "material_texture_no_slot" })),
-    ].map((row) =>
-        `    {${row.slot}, MaterialTextureSource::${row.source}, ` +
-        `MaterialTextureSrgb::${row.srgb}, ` +
-        `MaterialTextureFallback::${row.fallback}, ` +
-        `"${row.textureName}", "${row.samplerName}"},`
+    ].map(
+        (row) =>
+            `    {${row.slot}, MaterialTextureSource::${row.source}, ` +
+            `MaterialTextureSrgb::${row.srgb}, ` +
+            `MaterialTextureFallback::${row.fallback}, ` +
+            `"${row.textureName}", "${row.samplerName}"},`,
     );
     return cpp.finish(`// ${provenance}
 // The material texture-slot table both render backends execute: which
@@ -2699,11 +2782,12 @@ function standardMaterialDefault(
         "src/material/standard/create-standard-material.ts",
         "createStandardMaterial",
     );
-    const literal = declaration.body!.statements
-        .filter(ts.isReturnStatement)
+    const literal = declaration
+        .body!.statements.filter(ts.isReturnStatement)
         .map((statement) => {
             // The pin returns `{ ... } as StandardMaterialProps`.
-            const unwrapped = statement.expression &&
+            const unwrapped =
+                statement.expression &&
                 context.unwrapExpression(statement.expression);
             return unwrapped && ts.isObjectLiteralExpression(unwrapped)
                 ? unwrapped
@@ -2904,24 +2988,27 @@ export function pinnedStandardVariantsHeader(
     // aside) must be written, or a lane uploads a zero the fragment reads.
     const unwritten = fields
         .map((field) => field.name)
-        .filter((name) =>
-            !name.startsWith("_") &&
-            !materialWriterBody.includes(`out.${name}`)
+        .filter(
+            (name) =>
+                !name.startsWith("_") &&
+                !materialWriterBody.includes(`out.${name}`),
         );
     if (unwritten.length > 0) {
         throw new Error(
-            `Pinned Standard matUniforms declares ${
-                unwritten.map((name) => `'${name}'`).join(", ")
-            } with no write in the lowered writeStdMaterialData.`,
+            `Pinned Standard matUniforms declares ${unwritten
+                .map((name) => `'${name}'`)
+                .join(
+                    ", ",
+                )} with no write in the lowered writeStdMaterialData.`,
         );
     }
     // The vertex-stage UV block the second writer fills. The template builds
     // it as literal text, so the marker is asserted before the writer is
     // lowered against its single vec4.
     if (
-        !context.store.getSource(
-            "src/material/standard/standard-template.ts",
-        ).includes(packagedWgsl`struct upUniforms { u: vec4<f32>, }`)
+        !context.store
+            .getSource("src/material/standard/standard-template.ts")
+            .includes(packagedWgsl`struct upUniforms { u: vec4<f32>, }`)
     ) {
         throw new Error(
             "Pinned Standard template no longer declares the " +
@@ -2930,9 +3017,13 @@ export function pinnedStandardVariantsHeader(
         );
     }
     if (uvOffset) {
-        const enabler = context.functionDeclaration("src/material/standard/enable-standard-mesh-features.ts", "enableStandardUvOffset").declaration;
+        const enabler = context.functionDeclaration(
+            "src/material/standard/enable-standard-mesh-features.ts",
+            "enableStandardUvOffset",
+        ).declaration;
         context.assertExpressionShape(
-            context.callExpression(enabler, "_installStandardUvOffsetResolver").arguments[0]!,
+            context.callExpression(enabler, "_installStandardUvOffsetResolver")
+                .arguments[0]!,
             "(material) => material.uvOffset ?? null",
             "Standard UV offset resolver",
         );
@@ -2952,12 +3043,24 @@ export function pinnedStandardVariantsHeader(
                 0: "material.uv_scale[0]",
                 1: "material.uv_scale[1]",
             },
-            ...(uvOffset ? { uvOffset: { 0: "material.uv_offset[0]", 1: "material.uv_offset[1]" } } : {}),
+            ...(uvOffset
+                ? {
+                      uvOffset: {
+                          0: "material.uv_offset[0]",
+                          1: "material.uv_offset[1]",
+                      },
+                  }
+                : {}),
         },
         // The pin installs its per-material offset resolver only after the
         // scene calls enableStandardUvOffset; otherwise the hook is null.
         ...(uvOffset
-            ? { vectorHooks: { _uvOffsetResolver: { property: "uvOffset", lanes: 2 } }, scalarPrecision: "double" }
+            ? {
+                  vectorHooks: {
+                      _uvOffsetResolver: { property: "uvOffset", lanes: 2 },
+                  },
+                  scalarPrecision: "double",
+              }
             : { absentHooks: ["_uvOffsetResolver"] }),
         slots: [{ name: "u", offset: 0, lanes: 4 }],
     }).join("\n");
@@ -2970,9 +3073,9 @@ export function pinnedStandardVariantsHeader(
                         "3-lane colour.",
                 );
             }
-            return `    Color3 ${field.cppName}{${
-                value.map(floatLiteral).join(", ")
-            }};`;
+            return `    Color3 ${field.cppName}{${value
+                .map(floatLiteral)
+                .join(", ")}};`;
         }
         if (field.kind === "float2") {
             if (!Array.isArray(value) || value.length !== 2) {
@@ -2981,9 +3084,9 @@ export function pinnedStandardVariantsHeader(
                         "2-lane vector.",
                 );
             }
-            return `    std::array<float, 2> ${field.cppName}{${
-                value.map(floatLiteral).join(", ")
-            }};`;
+            return `    std::array<float, 2> ${field.cppName}{${value
+                .map(floatLiteral)
+                .join(", ")}};`;
         }
         if (typeof value !== "number") {
             throw new Error(
@@ -3047,10 +3150,7 @@ export function pinnedStandardVariantsHeader(
         }
         for (const entry of shadowBindings) {
             shadowRows.push(
-                pinnedShadowBindingRow(
-                    entry,
-                    shadowBindingSlot(entry.name),
-                ),
+                pinnedShadowBindingRow(entry, shadowBindingSlot(entry.name)),
             );
         }
     }
@@ -3100,10 +3200,13 @@ ${mirrored.asserts}
 // texture_level is the composition-time value the renderable passes:
 // (features & NEEDS_UV) != 0 ? 1 : 0 for the colour path, and the geometry
 // renderable's HAS_DIFFUSE_TEXTURE form for the MRT path.
-${cpp.function(`void write_standard_material(
+${cpp.function(
+    `void write_standard_material(
     [[maybe_unused]] const StandardMaterialProps& material,
     float texture_level,
-    StandardMaterialUniforms& out)`, materialWriterBody)}
+    StandardMaterialUniforms& out)`,
+    materialWriterBody,
+)}
 
 // src/material/standard/standard-template.ts upUniforms — the vertex-stage
 // UV transform block, bound only when the variant carries NEEDS_UV.
@@ -3120,10 +3223,13 @@ static_assert(
 // invert_y is isStandardUvInverted(features, material): the diffuse
 // texture's invertY when one exists, else the opacity texture's, else the
 // bump texture's.
-${cpp.function(`void write_standard_uv_transform(
+${cpp.function(
+    `void write_standard_uv_transform(
     [[maybe_unused]] const StandardMaterialProps& material,
     bool invert_y,
-    StandardUvTransformUniforms& out)`, uvWriterBody)}
+    StandardUvTransformUniforms& out)`,
+    uvWriterBody,
+)}
 
 // What each composed variant declares in group 1, past the hand-managed
 // mesh (0) and material (1) blocks -- the same reading discipline, and the

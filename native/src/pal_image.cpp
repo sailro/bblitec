@@ -16,23 +16,25 @@ namespace bbl::pal {
 DecodedImage decode_image(const js::ArrayBuffer& buffer) {
 #if BBLITE_HAS_IMAGE_DECODER
     SDL_IOStream* stream = SDL_IOFromConstMem(buffer.data(), buffer.byte_length());
-    if (!stream) throw std::runtime_error(std::string("Unable to open image: ") + SDL_GetError());
+    if (!stream)
+        throw std::runtime_error(std::string("Unable to open image: ") + SDL_GetError());
     SDL_Surface* source = IMG_Load_IO(stream, true);
-    if (!source) throw std::runtime_error(std::string("Unable to decode image: ") + SDL_GetError());
+    if (!source)
+        throw std::runtime_error(std::string("Unable to decode image: ") + SDL_GetError());
     SDL_Surface* converted = SDL_ConvertSurface(source, SDL_PIXELFORMAT_RGBA32);
     SDL_DestroySurface(source);
-    if (!converted) throw std::runtime_error(std::string("Unable to convert image: ") + SDL_GetError());
+    if (!converted)
+        throw std::runtime_error(std::string("Unable to convert image: ") + SDL_GetError());
 
     DecodedImage result;
     result.width = converted->w;
     result.height = converted->h;
     result.rgba.resize(static_cast<std::size_t>(result.width) * result.height * 4);
     for (int y = 0; y < result.height; ++y) {
-        const auto* source_row = static_cast<const std::uint8_t*>(converted->pixels) + y * converted->pitch;
-        std::copy_n(
-            source_row,
-            static_cast<std::size_t>(result.width) * 4,
-            result.rgba.data() + static_cast<std::size_t>(y) * result.width * 4);
+        const auto* source_row =
+            static_cast<const std::uint8_t*>(converted->pixels) + y * converted->pitch;
+        std::copy_n(source_row, static_cast<std::size_t>(result.width) * 4,
+                    result.rgba.data() + static_cast<std::size_t>(y) * result.width * 4);
     }
     SDL_DestroySurface(converted);
     return result;

@@ -25,7 +25,8 @@ export function nativeReturnTsType(
     ) {
         return undefined;
     }
-    if ((type.flags & (ts.TypeFlags.Void | ts.TypeFlags.Undefined)) !== 0) return undefined;
+    if ((type.flags & (ts.TypeFlags.Void | ts.TypeFlags.Undefined)) !== 0)
+        return undefined;
     if (options.unwrapPromise === false) return type;
     const promiseChecker = checker as ts.TypeChecker & {
         getPromisedTypeOfPromise(candidate: ts.Type): ts.Type | undefined;
@@ -40,5 +41,7 @@ export function nativeReturnTsType(
         if (!promised) break;
         resolved = promised;
     }
-    return (resolved.flags & (ts.TypeFlags.Void | ts.TypeFlags.Undefined)) !== 0 ? undefined : resolved;
+    return (resolved.flags & (ts.TypeFlags.Void | ts.TypeFlags.Undefined)) !== 0
+        ? undefined
+        : resolved;
 }

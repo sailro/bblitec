@@ -250,9 +250,7 @@ function dispersiveInputs(): FeatureActivationInputs {
 function everythingOnInputs(): FeatureActivationInputs {
     return {
         features: [...inventoriedRuntimeFeatures],
-        assetJoinedFeatures: new Map([
-            ["light:directional", "a.glb"],
-        ]),
+        assetJoinedFeatures: new Map([["light:directional", "a.glb"]]),
         specialization: specialization({
             gpuDeformation: true,
             animatedWorldBounds: true,
@@ -370,10 +368,10 @@ function familyInputs(): FeatureActivationInputs {
         attributes: [],
         uniforms: [],
         uniformDefaults: [],
-          samplers: [],
-          samplerDeclarations: [],
-          storageBuffers: [],
-          defines: [],
+        samplers: [],
+        samplerDeclarations: [],
+        storageBuffers: [],
+        defines: [],
         needAlphaBlending: false,
         blendMode: "alpha",
         needAlphaTesting: false,
@@ -434,12 +432,14 @@ function familyInputs(): FeatureActivationInputs {
             spriteCustomShaders: [
                 { family: "sprite", fragment: "", extraTextures: [] },
             ],
-            effects: [{
-                family: "effect",
-                name: "glow",
-                fragment: "",
-                bindings: [],
-            }],
+            effects: [
+                {
+                    family: "effect",
+                    name: "glow",
+                    fragment: "",
+                    bindings: [],
+                },
+            ],
             plainSpriteLayer: false,
             plainBillboardSystem: false,
             pinnedSkeletonPalette: true,
@@ -468,13 +468,15 @@ function graphOnlyMorphInputs(): FeatureActivationInputs {
         features: ["core", "material:node", "mesh:box"],
         specialization: specialization(),
         emit: emitOptions({
-            nodeVariants: [{
-                ...node,
-                composed: {
-                    ...node.composed,
-                    morphBindings: { deltas: 1, weights: 2 },
+            nodeVariants: [
+                {
+                    ...node,
+                    composed: {
+                        ...node.composed,
+                        morphBindings: { deltas: 1, weights: 2 },
+                    },
                 },
-            }],
+            ],
         }),
         imageCodecs: [],
     };
@@ -497,8 +499,7 @@ test("records scene-source and asset-joined runtime features", () => {
         assert.ok(
             rows.some(
                 (row) =>
-                    row.name === feature &&
-                    row.mechanism === "runtime-feature",
+                    row.name === feature && row.mechanism === "runtime-feature",
             ),
             `missing runtime-feature row for ${feature}`,
         );
@@ -519,17 +520,11 @@ test("records scene-source and asset-joined runtime features", () => {
         point.activatedBy,
         /asset-joined: 94162f67-LightsPunctualLamp\.glb carries KHR_lights_punctual kind "point"/,
     );
-    assert.match(
-        point.upstreamProvenance,
-        /gltf-feature-lights-punctual\.ts/,
-    );
+    assert.match(point.upstreamProvenance, /gltf-feature-lights-punctual\.ts/);
     assert.ok(point.consumers.includes("variant table"));
 
     // The environment came from scene source, not the asset join.
-    assert.match(
-        named(rows, "environment:ibl").activatedBy,
-        /^scene source/,
-    );
+    assert.match(named(rows, "environment:ibl").activatedBy, /^scene source/);
 
     // An unreached feature stays in the inventory as an inactive row.
     const box = named(rows, "mesh:box");
@@ -547,10 +542,7 @@ test("capability rows carry the composed set's activation", () => {
     assert.equal(iridescence.mechanism, "capability");
     assert.match(iridescence.activatedBy, /composed PBR variant carries/);
     assert.doesNotMatch(iridescence.activatedBy, /scene source/);
-    assert.match(
-        iridescence.upstreamProvenance,
-        /gltf-ext-iridescence\.ts/,
-    );
+    assert.match(iridescence.upstreamProvenance, /gltf-ext-iridescence\.ts/);
     assert.ok(iridescence.consumers.includes("render_capabilities.hpp"));
 
     // The same arm reached from scene source names the reach beside the
@@ -562,7 +554,10 @@ test("capability rows carry the composed set's activation", () => {
         }),
         "BBLITE_MATERIAL_IRIDESCENCE",
     );
-    assert.match(sceneCoat.activatedBy, /scene source reached material:iridescence/);
+    assert.match(
+        sceneCoat.activatedBy,
+        /scene source reached material:iridescence/,
+    );
 
     // The transmission define reports the asset half only: the scene
     // never named the feature.
@@ -688,7 +683,9 @@ function sourceFiles(
         const path = join(directory, entry.name);
         if (entry.isDirectory()) {
             files.push(...sourceFiles(path, extensions));
-        } else if (extensions.some((extension) => entry.name.endsWith(extension))) {
+        } else if (
+            extensions.some((extension) => entry.name.endsWith(extension))
+        ) {
             files.push(path);
         }
     }
@@ -704,11 +701,9 @@ function sourceFiles(
 function emittedDefines(): Map<string, string> {
     const defines = new Map<string, string>();
     for (const file of sourceFiles("src", [".ts"])) {
-        for (
-            const match of readFileSync(file, "utf8").matchAll(
-                /#define (BBLITE_[A-Z0-9_]+)/g,
-            )
-        ) {
+        for (const match of readFileSync(file, "utf8").matchAll(
+            /#define (BBLITE_[A-Z0-9_]+)/g,
+        )) {
             defines.set(match[1]!, file);
         }
     }
@@ -735,9 +730,7 @@ test("every emitted BBLITE_ define has a capability row", () => {
         if (emittedConstants.has(define)) continue;
         assert.ok(
             rows.some(
-                (row) =>
-                    row.name === define &&
-                    row.mechanism === "capability",
+                (row) => row.name === define && row.mechanism === "capability",
             ),
             `${emitter} can emit ${define} with no capability row; add it ` +
                 "to capabilityRows in src/feature-activation.ts",
@@ -760,7 +753,7 @@ test("every emitted BBLITE_ define has a reader", () => {
     );
     assert.ok(native.length > 0, "the reader scan found the PAL sources");
     const emitters = sourceFiles("src", [".ts"]).map((file) =>
-        readFileSync(file, "utf8")
+        readFileSync(file, "utf8"),
     );
     for (const [define, emitter] of emittedDefines()) {
         const word = new RegExp(`\\b${define}\\b`);
@@ -883,10 +876,8 @@ test("the max-lights refusal row records the pinned constant's value", () => {
     // Checked count present: the row names the count, the asset, and
     // the frozen constant's value.
     assert.match(
-        named(
-            featureActivationRows(scene33Inputs()),
-            "refusal:max-lights",
-        ).activatedBy,
+        named(featureActivationRows(scene33Inputs()), "refusal:max-lights")
+            .activatedBy,
         /within the frozen pinned MAX_LIGHTS = 8$/,
     );
 
@@ -907,10 +898,8 @@ test("the max-lights refusal row records the pinned constant's value", () => {
     // pre-value row, so trees regenerate unchanged until the CLI
     // passes it.
     assert.equal(
-        named(
-            featureActivationRows(dispersiveInputs()),
-            "refusal:max-lights",
-        ).activatedBy,
+        named(featureActivationRows(dispersiveInputs()), "refusal:max-lights")
+            .activatedBy,
         "no glTF asset carries KHR_lights_punctual light nodes",
     );
 
@@ -986,10 +975,7 @@ test("composition rows cover the six backfilled shader families", () => {
         /^1 node graph\(s\)/,
     );
     assert.equal(named(rows, "splat:stages").active, true);
-    assert.match(
-        named(rows, "shader-material:programs").activatedBy,
-        /lines$/,
-    );
+    assert.match(named(rows, "shader-material:programs").activatedBy, /lines$/);
     assert.match(
         named(rows, "sprite-billboard:stages").activatedBy,
         /2D sprite, billboard/,
@@ -1021,20 +1007,14 @@ test("the new families' generation refusals are inventoried", () => {
     const physics = named(rows, "refusal:physics-shapes");
     assert.equal(physics.active, false);
     assert.equal(physics.mechanism, "generation-refusal");
-    assert.match(
-        physics.activatedBy,
-        /^checked: every reached physics shape/,
-    );
+    assert.match(physics.activatedBy, /^checked: every reached physics shape/);
     assert.match(physics.upstreamProvenance, /havok\.ts/);
 
     assert.match(
         named(rows, "refusal:ktx-format").activatedBy,
         /block-compression suffix/,
     );
-    assert.match(
-        named(rows, "refusal:splat-format").activatedBy,
-        /plain PLY/,
-    );
+    assert.match(named(rows, "refusal:splat-format").activatedBy, /plain PLY/);
     const liveSet = named(rows, "refusal:node-particle-live-set");
     assert.match(liveSet.activatedBy, /^checked 1 frozen/);
     assert.match(
@@ -1068,10 +1048,7 @@ test("creation-order rows record ordered and interleaved paths", () => {
     const meshRow = named(scene33, "refusal:scene-mesh-interleave");
     assert.equal(meshRow.active, false);
     assert.equal(meshRow.mechanism, "generation-refusal");
-    assert.equal(
-        meshRow.activatedBy,
-        "no scene-code mesh creations to check",
-    );
+    assert.equal(meshRow.activatedBy, "no scene-code mesh creations to check");
     assert.deepEqual(meshRow.consumers, ["generation gate"]);
     assert.match(meshRow.upstreamProvenance, /^native-architecture:/);
     assert.equal(
@@ -1088,10 +1065,7 @@ test("creation-order rows record ordered and interleaved paths", () => {
             "the creation-order key does not interleave",
     );
     assert.match(
-        named(
-            everything,
-            "refusal:scene-material-interleave",
-        ).activatedBy,
+        named(everything, "refusal:scene-material-interleave").activatedBy,
         /^checked 1 scene-code PBR material creation\(s\)/,
     );
 
@@ -1114,10 +1088,7 @@ test("creation-order rows record ordered and interleaved paths", () => {
             gltfAssetCount: 1,
         },
     });
-    const interleavedMesh = named(
-        interleaved,
-        "refusal:scene-mesh-interleave",
-    );
+    const interleavedMesh = named(interleaved, "refusal:scene-mesh-interleave");
     assert.equal(interleavedMesh.active, true);
     assert.equal(interleavedMesh.mechanism, "composition");
     assert.equal(
@@ -1127,10 +1098,7 @@ test("creation-order rows record ordered and interleaved paths", () => {
     );
     assert.deepEqual(interleavedMesh.consumers, ["variant table"]);
     assert.equal(
-        named(
-            interleaved,
-            "refusal:scene-material-interleave",
-        ).activatedBy,
+        named(interleaved, "refusal:scene-material-interleave").activatedBy,
         "composed 1 scene-code PBR material creation(s) through 1 glTF " +
             "load(s) in their recorded handle order",
     );

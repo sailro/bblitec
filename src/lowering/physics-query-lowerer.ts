@@ -3,18 +3,38 @@ import type { LoweringContext } from "./context.js";
 const module = "src/physics/havok-queries.ts";
 
 /** The query result slots belong to the pin; collision queries belong to the PAL. */
-export function lowerPhysicsQueries(context: LoweringContext): { header: string; source: string } {
-  context.assertExpressionShape(context.variableInitializer(context.sourceFile(module), "_ignoreNone"), "null", "ignore-none initial state");
-  for (const [name, operation, resultOperation, scalar, bindings, query] of [
-    ["shapeProximity", "HP_World_ShapeProximityWithCollector", "HP_QueryCollector_GetShapeProximityResult", "distance",
-      "const { position: p, rotation: r } = query;",
-      "const hkQuery = [query.shape._hkShape, [p.x, p.y, p.z], [r.x, r.y, r.z, r.w], query.maxDistance, query.shouldHitTriggers ?? false, ignoreNone()];"],
-    ["shapeCast", "HP_World_ShapeCastWithCollector", "HP_QueryCollector_GetShapeCastResult", "fraction",
-      "const { rotation: r, startPosition: s, endPosition: e } = query; const ignoredBody: [bigint] = query.ignoreBody ? [BigInt(query.ignoreBody._hkBody[0])] : ignoreNone();",
-      "const hkQuery: HavokShapeCastInput = [query.shape._hkShape, [r.x, r.y, r.z, r.w], [s.x, s.y, s.z], [e.x, e.y, e.z], query.shouldHitTriggers ?? false, ignoredBody];"],
-  ] as const) {
-    const { declaration } = context.functionDeclaration(module, name);
-    context.assertStatementShapes(declaration, declaration.body!.statements, `
+export function lowerPhysicsQueries(context: LoweringContext): {
+    header: string;
+    source: string;
+} {
+    context.assertExpressionShape(
+        context.variableInitializer(context.sourceFile(module), "_ignoreNone"),
+        "null",
+        "ignore-none initial state",
+    );
+    for (const [name, operation, resultOperation, scalar, bindings, query] of [
+        [
+            "shapeProximity",
+            "HP_World_ShapeProximityWithCollector",
+            "HP_QueryCollector_GetShapeProximityResult",
+            "distance",
+            "const { position: p, rotation: r } = query;",
+            "const hkQuery = [query.shape._hkShape, [p.x, p.y, p.z], [r.x, r.y, r.z, r.w], query.maxDistance, query.shouldHitTriggers ?? false, ignoreNone()];",
+        ],
+        [
+            "shapeCast",
+            "HP_World_ShapeCastWithCollector",
+            "HP_QueryCollector_GetShapeCastResult",
+            "fraction",
+            "const { rotation: r, startPosition: s, endPosition: e } = query; const ignoredBody: [bigint] = query.ignoreBody ? [BigInt(query.ignoreBody._hkBody[0])] : ignoreNone();",
+            "const hkQuery: HavokShapeCastInput = [query.shape._hkShape, [r.x, r.y, r.z, r.w], [s.x, s.y, s.z], [e.x, e.y, e.z], query.shouldHitTriggers ?? false, ignoredBody];",
+        ],
+    ] as const) {
+        const { declaration } = context.functionDeclaration(module, name);
+        context.assertStatementShapes(
+            declaration,
+            declaration.body!.statements,
+            `
       const hknp = world._hknp;
       const collector = getCollector(world);
       ${bindings}
@@ -26,20 +46,33 @@ export function lowerPhysicsQueries(context: LoweringContext): { header: string;
           hitPoint: hitVec(hitShapeData[3]), inputHitNormal: hitVec(hitInputData[4]), hitNormal: hitVec(hitShapeData[4]) };
       }
       return emptyResult();
-    `, `${name} PAL query assembly, collector extraction and result mapping`);
-  }
-  for (const [name, body] of [
-    ["emptyResult", `const zero = (): Vec3 => ({ x: 0, y: 0, z: 0 });
-      return { hasHit: false, distance: 0, fraction: 0, inputHitPoint: zero(), hitPoint: zero(), inputHitNormal: zero(), hitNormal: zero() };`],
-    ["hitVec", "return { x: slot[0], y: slot[1], z: slot[2] };"],
-    ["ignoreNone", "return (_ignoreNone ??= [BigInt(0)]);"],
-    ["getCollector", `if (!world._queryCollector) { world._queryCollector = world._hknp.HP_QueryCollector_Create(1)[1]; }
-      return world._queryCollector;`],
-  ]) {
-    const { declaration } = context.functionDeclaration(module, name!);
-    context.assertStatementShapes(declaration, declaration.body!.statements, body!, `${name} query helper`);
-  }
-  const header = `
+    `,
+            `${name} PAL query assembly, collector extraction and result mapping`,
+        );
+    }
+    for (const [name, body] of [
+        [
+            "emptyResult",
+            `const zero = (): Vec3 => ({ x: 0, y: 0, z: 0 });
+      return { hasHit: false, distance: 0, fraction: 0, inputHitPoint: zero(), hitPoint: zero(), inputHitNormal: zero(), hitNormal: zero() };`,
+        ],
+        ["hitVec", "return { x: slot[0], y: slot[1], z: slot[2] };"],
+        ["ignoreNone", "return (_ignoreNone ??= [BigInt(0)]);"],
+        [
+            "getCollector",
+            `if (!world._queryCollector) { world._queryCollector = world._hknp.HP_QueryCollector_Create(1)[1]; }
+      return world._queryCollector;`,
+        ],
+    ]) {
+        const { declaration } = context.functionDeclaration(module, name!);
+        context.assertStatementShapes(
+            declaration,
+            declaration.body!.statements,
+            body!,
+            `${name} query helper`,
+        );
+    }
+    const header = `
 struct PhysicsShapeQueryResult {
     bool has_hit = false;
     double distance_or_fraction = 0.0;
@@ -55,7 +88,7 @@ struct PhysicsShapeQueryResult {
     PhysicsWorldHandle world, PhysicsShape shape, std::array<double, 4> rotation,
     Vec3d from, Vec3d to, bool should_hit_triggers, pal::PhysicsBodyHandle ignored_body);
 `;
-  const source = `
+    const source = `
 // ${context.provenance(module, "shapeProximity", "query assembly and result slots; PAL supplies the collector")}
 namespace {
 PhysicsShapeQueryResult shape_query_result(const pal::PhysicsShapeQueryResult& hit) {
@@ -83,5 +116,5 @@ PhysicsShapeQueryResult shape_cast(
         {from.x, from.y, from.z}, {to.x, to.y, to.z}, should_hit_triggers, ignored_body));
 }
 `;
-  return { header, source };
+    return { header, source };
 }

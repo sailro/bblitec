@@ -8,7 +8,10 @@ import { LoweringContext } from "../src/lowering/context.js";
 import { lowerMeshMaterialSetter } from "../src/lowering/mesh-material-setter.js";
 import { RendererLowerer } from "../src/lowering/renderer-lowerer.js";
 import { meshProfileBindingCpp } from "../src/lowering/resource-profiles.js";
-import { optionalNativeFixtureTools, runNativeFixtureCompiler } from "./native-fixture.js";
+import {
+    optionalNativeFixtureTools,
+    runNativeFixtureCompiler,
+} from "./native-fixture.js";
 
 function scene(body: string, helpers = ""): string {
     return `
@@ -30,7 +33,8 @@ function scene(body: string, helpers = ""): string {
 }
 
 function shaderChoiceSource(selection: string, tail = ""): string {
-    return scene(`
+    return scene(
+        `
         const a = createShaderMaterial({ name: "choice-a", vertexSource, fragmentSource,
             attributes: ["position"], uniforms: ["viewProjection", "world"] });
         const b = createShaderMaterial({ name: "choice-b", vertexSource, fragmentSource: otherFragmentSource,
@@ -41,7 +45,8 @@ function shaderChoiceSource(selection: string, tail = ""): string {
         const materials: ShaderMaterial[] = [a, b];
         mesh.material = ${selection};
         ${tail}
-    `, `
+    `,
+        `
         import { setThinInstances } from "@babylonjs/lite";
         const vertexSource = \`struct VertexOutput { @builtin(position) position: vec4<f32>, };
         @vertex fn mainVertex(input: VertexInput) -> VertexOutput {
@@ -56,11 +61,13 @@ function shaderChoiceSource(selection: string, tail = ""): string {
         const otherFragmentSource = \`@fragment fn mainFragment() -> @location(0) vec4<f32> {
             return vec4<f32>(0.5);
         }\`;
-    `);
+    `,
+    );
 }
 
 test("native loops assign independent clone handles to one composition profile", () => {
-    const result = compileSource(scene(`
+    const result = compileSource(
+        scene(`
         const source = createBox(engine);
         const count = new Float32Array([3]);
         const clones: Mesh[] = [];
@@ -69,33 +76,82 @@ test("native loops assign independent clone handles to one composition profile",
             clone.position.x = i;
             clones.push(clone);
         }
-    `));
-    assert.equal(result.manifest.sceneMeshes.filter(mesh => mesh.kind === "mesh-clone" && mesh.runtimeInstances).length, 1);
-    assert.match(result.cpp, /bind_scene_mesh_profile\([^\n]+clone_mesh_node\(/);
+    `),
+    );
+    assert.equal(
+        result.manifest.sceneMeshes.filter(
+            (mesh) => mesh.kind === "mesh-clone" && mesh.runtimeInstances,
+        ).length,
+        1,
+    );
+    assert.match(
+        result.cpp,
+        /bind_scene_mesh_profile\([^\n]+clone_mesh_node\(/,
+    );
     assert.equal(result.cpp.match(/clone_mesh_node\(/g)?.length, 1);
 });
 
 test("live ShaderMaterial choices propagate instance lanes to every candidate", () => {
     for (const selection of ["gate[0]! > 0 ? a : b", "materials[gate[0]!]!"]) {
         const result = compileSource(shaderChoiceSource(selection));
-        assert.deepEqual(result.manifest.sceneMeshes[0]?.shaderVariants, ["choice-a", "choice-b"]);
-        assert.deepEqual(result.manifest.customShaderPrograms.map(program => [program.name, program.useThinInstances]),
-            [["choice-a", true], ["choice-b", true]]);
+        assert.deepEqual(result.manifest.sceneMeshes[0]?.shaderVariants, [
+            "choice-a",
+            "choice-b",
+        ]);
+        assert.deepEqual(
+            result.manifest.customShaderPrograms.map((program) => [
+                program.name,
+                program.useThinInstances,
+            ]),
+            [
+                ["choice-a", true],
+                ["choice-b", true],
+            ],
+        );
     }
 });
 
 test("every candidate in a live shader choice retains the incompatible-lane refusal", () => {
-    assert.throws(() => compileSource(shaderChoiceSource("gate[0]! > 0 ? a : b",
-        "const other = createBox(engine); other.material = b;")), /disagree about thin instances/);
+    assert.throws(
+        () =>
+            compileSource(
+                shaderChoiceSource(
+                    "gate[0]! > 0 ? a : b",
+                    "const other = createBox(engine); other.material = b;",
+                ),
+            ),
+        /disagree about thin instances/,
+    );
 });
 
 test("conditional shader writes retain earlier alternatives without retaining overwritten static ones", () => {
-    const conditional = compileSource(shaderChoiceSource("a", "if (gate[0]! > 0) mesh.material = b;"));
-    assert.deepEqual(conditional.manifest.sceneMeshes[0]?.shaderVariants, ["choice-a", "choice-b"]);
-    assert.ok(conditional.manifest.customShaderPrograms.every(program => program.useThinInstances));
-    const replaced = compileSource(shaderChoiceSource("a", "mesh.material = b;"));
-    assert.equal(replaced.manifest.customShaderPrograms.find(program => program.name === "choice-a")?.useThinInstances, undefined);
-    assert.equal(replaced.manifest.customShaderPrograms.find(program => program.name === "choice-b")?.useThinInstances, true);
+    const conditional = compileSource(
+        shaderChoiceSource("a", "if (gate[0]! > 0) mesh.material = b;"),
+    );
+    assert.deepEqual(conditional.manifest.sceneMeshes[0]?.shaderVariants, [
+        "choice-a",
+        "choice-b",
+    ]);
+    assert.ok(
+        conditional.manifest.customShaderPrograms.every(
+            (program) => program.useThinInstances,
+        ),
+    );
+    const replaced = compileSource(
+        shaderChoiceSource("a", "mesh.material = b;"),
+    );
+    assert.equal(
+        replaced.manifest.customShaderPrograms.find(
+            (program) => program.name === "choice-a",
+        )?.useThinInstances,
+        undefined,
+    );
+    assert.equal(
+        replaced.manifest.customShaderPrograms.find(
+            (program) => program.name === "choice-b",
+        )?.useThinInstances,
+        true,
+    );
 });
 
 const nativeLoop = scene(`
@@ -122,16 +178,22 @@ test("variable native construction records call-site profiles, not singleton all
 });
 
 test("runtime mesh profiles do not invent a renderer for undrawn resources", () => {
-    const result = compileSource(scene(`
+    const result = compileSource(
+        scene(`
         const count = new Float32Array([3]);
         for (let i = 0; i < count[0]!; i++) createBox(engine);
-    `));
+    `),
+    );
     assert.ok(!result.manifest.features.includes("renderer:scene"));
-    assert.doesNotMatch(result.cpp, /#include <bblite\/upstream\/renderer_plan.hpp>/);
+    assert.doesNotMatch(
+        result.cpp,
+        /#include <bblite\/upstream\/renderer_plan.hpp>/,
+    );
 });
 
 test("native material choices preserve fixed geometry counts and all PBR candidates", () => {
-    const result = compileSource(scene(`
+    const result = compileSource(
+        scene(`
         const materials = [
             createPbrMaterial({ metallicFactor: 0, roughnessFactor: 1 }),
             createPbrMaterial({ metallicFactor: 1, roughnessFactor: 0.25 }),
@@ -143,17 +205,28 @@ test("native material choices preserve fixed geometry counts and all PBR candida
             mesh.material = materials[i % 2]!;
             meshes.push(mesh);
         }
-    `));
+    `),
+    );
     assert.equal(result.manifest.sceneMeshes.length, 2500);
     assert.equal(result.manifest.sceneMaterialCount, 2);
     assert.equal(result.cpp.match(/bbl::create_sphere\(/g)?.length, 1);
     assert.ok(Buffer.byteLength(result.cpp) < 10000);
-    assert.deepEqual(result.manifest.scenePbrMaterials.map((material) => material.materialsBefore), [0, 1]);
-    assert.ok(result.manifest.scenePbrMaterials.every((material) => material.unknownSceneMesh));
+    assert.deepEqual(
+        result.manifest.scenePbrMaterials.map(
+            (material) => material.materialsBefore,
+        ),
+        [0, 1],
+    );
+    assert.ok(
+        result.manifest.scenePbrMaterials.every(
+            (material) => material.unknownSceneMesh,
+        ),
+    );
 });
 
 test("a runtime mesh profile keeps an earlier PBR material's physical slot", () => {
-    const result = compileSource(scene(`
+    const result = compileSource(
+        scene(`
         createStandardMaterial();
         const pbr = createPbrMaterial({ metallicFactor: 0, roughnessFactor: 1 });
         const count = new Float32Array([3]);
@@ -162,7 +235,8 @@ test("a runtime mesh profile keeps an earlier PBR material's physical slot", () 
             mesh.material = pbr;
             createStandardMaterial();
         }
-    `));
+    `),
+    );
     assert.equal(result.manifest.scenePbrMaterials[0]?.materialsBefore, 1);
     assert.equal(result.manifest.scenePbrMaterials[0]?.unknownSceneMesh, true);
     assert.deepEqual(result.manifest.runtimeMaterialProfiles, [2]);
@@ -173,12 +247,16 @@ test("runtime branches and retained callbacks cannot allocate untracked PBR slot
         `if (Math.random() < 0.5) createPbrMaterial({ metallicFactor: 0, roughnessFactor: 1 });`,
         `onBeforeRender(scene, () => { createPbrMaterial({ metallicFactor: 0, roughnessFactor: 1 }); });`,
     ]) {
-        assert.throws(() => compileSource(scene(body)), /generation-known iteration count for PBR material slots/);
+        assert.throws(
+            () => compileSource(scene(body)),
+            /generation-known iteration count for PBR material slots/,
+        );
     }
 });
 
 test("mixed-family runtime selections do not borrow the Standard branch's identity", () => {
-    const result = compileSource(scene(`
+    const result = compileSource(
+        scene(`
         const standard = createStandardMaterial();
         const pbr = createPbrMaterial({ metallicFactor: 0, roughnessFactor: 1 });
         const light = createDirectionalLight([-1, -1, -1], 1);
@@ -189,16 +267,20 @@ test("mixed-family runtime selections do not borrow the Standard branch's identi
             const mesh = createBox(engine);
             mesh.material = material;
         }
-    `));
+    `),
+    );
     assert.equal(result.manifest.sceneMeshes.length, 300);
     assert.equal(result.manifest.scenePbrMaterials[0]?.materialsBefore, 1);
     assert.equal(result.manifest.scenePbrMaterials[0]?.unknownSceneMesh, true);
-    assert.ok(result.manifest.sceneMeshes.every((mesh) => mesh.standardMaterial));
+    assert.ok(
+        result.manifest.sceneMeshes.every((mesh) => mesh.standardMaterial),
+    );
     assert.equal(result.manifest.shadowGenerators[0]?.dynamicCasters, true);
 });
 
 test("runtime material collections withdraw a prototype's singleton PBR identity", () => {
-    const result = compileSource(scene(`
+    const result = compileSource(
+        scene(`
         const first = createPbrMaterial({ metallicFactor: 0, roughnessFactor: 1 });
         const second = createPbrMaterial({ metallicFactor: 1, roughnessFactor: 0.25 });
         const materials: Material[] = [first];
@@ -208,30 +290,48 @@ test("runtime material collections withdraw a prototype's singleton PBR identity
             const mesh = createBox(engine);
             mesh.material = material;
         }
-    `));
-    assert.ok(result.manifest.scenePbrMaterials.every((material) => material.unknownSceneMesh));
+    `),
+    );
+    assert.ok(
+        result.manifest.scenePbrMaterials.every(
+            (material) => material.unknownSceneMesh,
+        ),
+    );
 });
 
 test("guarded helper construction uses a profile while specialization remains checked", () => {
-    const result = compileSource(scene(`
+    const result = compileSource(
+        scene(
+            `
         const count = new Float32Array([3]);
         for (let i = 0; i < count[0]!; i++) spawn(engine, i);
-    `, `
+    `,
+            `
         function spawn(engine: EngineContext, value: number): void {
             if (value < 1) return;
             createBox(engine, value);
         }
-    `));
+    `,
+        ),
+    );
     assert.equal(result.manifest.sceneMeshes.length, 1);
     assert.equal(result.manifest.sceneMeshes[0]?.runtimeInstances, true);
-    assert.throws(() => compileSource(scene(`
+    assert.throws(
+        () =>
+            compileSource(
+                scene(`
         const count = new Float32Array([3]);
         for (let i = 0; i < count[0]!; i++) createSphere(engine, { segments: i + 3 });
-    `)), /segments|static|generation/);
+    `),
+            ),
+        /segments|static|generation/,
+    );
 });
 
 test("runtime ShaderMaterial instances update their own handles rather than a shared slot", () => {
-    const result = compileSource(scene(`
+    const result = compileSource(
+        scene(
+            `
         const count = new Float32Array([3]);
         const materials: ShaderMaterial[] = [];
         for (let i = 0; i < count[0]!; i++) {
@@ -246,7 +346,8 @@ test("runtime ShaderMaterial instances update their own handles rather than a sh
             materials.push(material);
         }
         for (const material of materials) setShaderFloat(material, "time", 7);
-    `, `
+    `,
+            `
         const vertexSource = \`struct VertexOutput { @builtin(position) position: vec4<f32>, };
         @vertex fn mainVertex(input: VertexInput) -> VertexOutput {
             var out: VertexOutput;
@@ -256,11 +357,19 @@ test("runtime ShaderMaterial instances update their own handles rather than a sh
         const fragmentSource = \`@fragment fn mainFragment() -> @location(0) vec4<f32> {
             return vec4<f32>(shaderUniforms.time);
         }\`;
-    `));
+    `,
+        ),
+    );
     assert.deepEqual(result.manifest.shaderVariants, ["native-profile"]);
     assert.deepEqual(result.manifest.runtimeMaterialProfiles, [0]);
-    assert.equal(result.cpp.match(/bbl::set_shader_uniform_value\(/g)?.length, 2);
-    assert.doesNotMatch(result.cpp, /remember_scene_material|set_scene_shader_uniform_value/);
+    assert.equal(
+        result.cpp.match(/bbl::set_shader_uniform_value\(/g)?.length,
+        2,
+    );
+    assert.doesNotMatch(
+        result.cpp,
+        /remember_scene_material|set_scene_shader_uniform_value/,
+    );
 });
 
 const listenerLoop = `
@@ -291,27 +400,47 @@ test("listener registration does not execute nested retained construction in its
 });
 
 test("retained construction cannot hide actual ordinal creation in the registering loop", () => {
-    assert.throws(() => compileSource(scene(listenerLoop.replace(
-        'button.addEventListener("click", () => {',
-        `const direct = createDirectionalLight([-1, -1, -1], 1);
+    assert.throws(
+        () =>
+            compileSource(
+                scene(
+                    listenerLoop.replace(
+                        'button.addEventListener("click", () => {',
+                        `const direct = createDirectionalLight([-1, -1, -1], 1);
          addToScene(scene, direct);
          createPcfDirectionalShadowGenerator(engine, direct);
          button.addEventListener("click", () => {`,
-    ))), /generation-known iteration count/);
+                    ),
+                ),
+            ),
+        /generation-known iteration count/,
+    );
 });
 
 const tools = optionalNativeFixtureTools();
 
-test("native profile rows survive variable order, skipped profiles, clones and later allocation", { skip: !tools }, () => {
-    const table = { sceneRows: [1, 3], staticRows: [0, 2], rowCount: 4 };
-    const lowered = new RendererLowerer(new LoweringContext()).lowerRenderPlan({ meshProfiles: table });
-    const from = lowered.source.indexOf("void initialize_composition_feature_rows");
-    const through = lowered.source.indexOf("\nRenderPlan build_render_plan", from);
-    assert.ok(from >= 0 && through > from);
-    const output = resolve("artifacts", "runtime-resource-profile-check");
-    mkdirSync(output, { recursive: true });
-    const source = join(output, "profiles.cpp");
-    writeFileSync(source, `#include <bblite/runtime.hpp>
+test(
+    "native profile rows survive variable order, skipped profiles, clones and later allocation",
+    { skip: !tools },
+    () => {
+        const table = { sceneRows: [1, 3], staticRows: [0, 2], rowCount: 4 };
+        const lowered = new RendererLowerer(
+            new LoweringContext(),
+        ).lowerRenderPlan({ meshProfiles: table });
+        const from = lowered.source.indexOf(
+            "void initialize_composition_feature_rows",
+        );
+        const through = lowered.source.indexOf(
+            "\nRenderPlan build_render_plan",
+            from,
+        );
+        assert.ok(from >= 0 && through > from);
+        const output = resolve("artifacts", "runtime-resource-profile-check");
+        mkdirSync(output, { recursive: true });
+        const source = join(output, "profiles.cpp");
+        writeFileSync(
+            source,
+            `#include <bblite/runtime.hpp>
 #include <cassert>
 #include <stdexcept>
 namespace bbl::upstream {
@@ -337,24 +466,52 @@ int main() {
     try { bbl::upstream::bind_scene_mesh_profile(engine, {5}, 2); }
     catch (const std::runtime_error&) { refused = true; }
     assert(refused);
-}`);
-    const executable = join(output, "check.exe");
-    runNativeFixtureCompiler(tools!, ["/nologo", "/std:c++20", "/W4", "/WX", "/permissive-", "/EHsc", "/MD",
-        `/Fo:${output}\\`, `/Fe:${executable}`, "/I", "native\\include", source]);
-    execFileSync(executable, { encoding: "utf8" });
-});
+}`,
+        );
+        const executable = join(output, "check.exe");
+        runNativeFixtureCompiler(tools!, [
+            "/nologo",
+            "/std:c++20",
+            "/W4",
+            "/WX",
+            "/permissive-",
+            "/EHsc",
+            "/MD",
+            `/Fo:${output}\\`,
+            `/Fe:${executable}`,
+            "/I",
+            "native\\include",
+            source,
+        ]);
+        execFileSync(executable, { encoding: "utf8" });
+    },
+);
 
-test("native profile loops execute control flow and physical material allocation", { skip: !tools }, () => {
-    const output = resolve("artifacts", "runtime-resource-profile-loop-check");
-    const includes = join(output, "bblite", "upstream");
-    mkdirSync(includes, { recursive: true });
-    writeFileSync(join(output, "program.hpp"), compileSource(nativeLoop).cpp);
-    writeFileSync(join(includes, "renderer_plan.hpp"), `#pragma once
+test(
+    "native profile loops execute control flow and physical material allocation",
+    { skip: !tools },
+    () => {
+        const output = resolve(
+            "artifacts",
+            "runtime-resource-profile-loop-check",
+        );
+        const includes = join(output, "bblite", "upstream");
+        mkdirSync(includes, { recursive: true });
+        writeFileSync(
+            join(output, "program.hpp"),
+            compileSource(nativeLoop).cpp,
+        );
+        writeFileSync(
+            join(includes, "renderer_plan.hpp"),
+            `#pragma once
 #include <bblite/runtime.hpp>
 namespace bbl::upstream { MeshHandle bind_scene_mesh_profile(Engine&, MeshHandle, std::uint32_t); }
-`);
-    const source = join(output, "loop.cpp");
-    writeFileSync(source, `#define main generated_profile_main
+`,
+        );
+        const source = join(output, "loop.cpp");
+        writeFileSync(
+            source,
+            `#define main generated_profile_main
 #include "program.hpp"
 #undef main
 #include <cassert>
@@ -393,9 +550,25 @@ ${meshProfileBindingCpp({ sceneRows: [0], staticRows: [], rowCount: 1 })}
 int main() {
     assert(generated_profile_main() == 0);
     assert(constructions == 3 && registrations == 3);
-}`);
-    const executable = join(output, "check.exe");
-    runNativeFixtureCompiler(tools!, ["/nologo", "/std:c++20", "/W4", "/WX", "/permissive-", "/EHsc", "/MD",
-        `/Fo:${output}\\`, `/Fe:${executable}`, "/I", output, "/I", "native\\include", source]);
-    execFileSync(executable, { encoding: "utf8" });
-});
+}`,
+        );
+        const executable = join(output, "check.exe");
+        runNativeFixtureCompiler(tools!, [
+            "/nologo",
+            "/std:c++20",
+            "/W4",
+            "/WX",
+            "/permissive-",
+            "/EHsc",
+            "/MD",
+            `/Fo:${output}\\`,
+            `/Fe:${executable}`,
+            "/I",
+            output,
+            "/I",
+            "native\\include",
+            source,
+        ]);
+        execFileSync(executable, { encoding: "utf8" });
+    },
+);

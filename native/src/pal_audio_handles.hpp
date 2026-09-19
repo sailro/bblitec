@@ -30,8 +30,7 @@ constexpr std::uint32_t index_of(std::uint32_t packed) { return packed & max_com
 
 /** Non-owning registry. A live JS handle pins its slot; reuse is checked
  * against allocation identity as well as the packed index. */
-template <typename T>
-class Registry {
+template <typename T> class Registry {
     static constexpr std::uint32_t end = 0xffffffffu;
     struct Slot {
         std::weak_ptr<T> value;
@@ -76,7 +75,8 @@ public:
             }
             index = static_cast<std::uint32_t>(state_->slots.size());
             state_->slots.emplace_back();
-        } else state_->free = state_->slots[index].next;
+        } else
+            state_->free = state_->slots[index].next;
         try {
             auto owner = js::make_gc_shared<Owner>(value, state_, index);
             std::shared_ptr<T> identity(owner, value.get());
@@ -92,22 +92,25 @@ public:
         std::shared_ptr<T> current;
         {
             const std::lock_guard lock(state_->mutex);
-            if (index < state_->slots.size()) current = state_->slots[index].value.lock();
+            if (index < state_->slots.size())
+                current = state_->slots[index].value.lock();
         }
         return identity && current == identity;
     }
 
-    template <typename F>
-    void for_each_live(F action) {
-        if (!state_) return;
+    template <typename F> void for_each_live(F action) {
+        if (!state_)
+            return;
         for (std::size_t index = 0;; ++index) {
             std::shared_ptr<T> value;
             {
                 const std::lock_guard lock(state_->mutex);
-                if (index == state_->slots.size()) break;
+                if (index == state_->slots.size())
+                    break;
                 value = state_->slots[index].value.lock();
             }
-            if (value) action(*value);
+            if (value)
+                action(*value);
         }
     }
 

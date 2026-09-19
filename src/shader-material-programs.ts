@@ -63,12 +63,12 @@ export function shaderUniformValueLayout(
             type === "f32"
                 ? 1
                 : type === "vec2<f32>"
-                    ? 2
-                    : type === "vec3<f32>"
-                        ? 3
-                        : type === "vec4<f32>"
-                            ? 4
-                            : 0;
+                  ? 2
+                  : type === "vec3<f32>"
+                    ? 3
+                    : type === "vec4<f32>"
+                      ? 4
+                      : 0;
         if (count === 0) continue;
         layout.set(name, { offset, count });
         offset += count;
@@ -166,7 +166,9 @@ fn mainFragment(input: VertexOutput) -> @location(0) vec4<f32> {
 export function getShaderMaterialProgram(
     name: ShaderMaterialVariantName,
 ): ShaderMaterialProgramSource {
-    const program = shaderMaterialPrograms.find((candidate) => candidate.name === name);
+    const program = shaderMaterialPrograms.find(
+        (candidate) => candidate.name === name,
+    );
     if (!program) throw new Error(`Unknown shader material program '${name}'.`);
     return program;
 }
@@ -242,13 +244,18 @@ const attributeTypes: Record<string, string | undefined> = {
     weights1: "vec4<f32>",
 };
 
-function uniformField(signature: string): { name: string; type: string; system: boolean } {
+function uniformField(signature: string): {
+    name: string;
+    type: string;
+    system: boolean;
+} {
     const systemType = systemUniformTypes[signature];
     if (systemType) {
         return { name: signature, type: systemType, system: true };
     }
     const separator = signature.indexOf(":");
-    if (separator < 1) throw new Error(`Invalid custom shader uniform '${signature}'.`);
+    if (separator < 1)
+        throw new Error(`Invalid custom shader uniform '${signature}'.`);
     return {
         name: signature.slice(0, separator),
         type: signature.slice(separator + 1),
@@ -272,17 +279,19 @@ export function composeStandaloneWgsl(
     const uniforms = program.uniforms.map(uniformField);
     const system = uniforms.filter(({ system: isSystem }) => isSystem);
     const custom = uniforms.filter(({ system: isSystem }) => !isSystem);
-    const systemFields = system.length > 0
-        ? system.map(({ name, type }) => `    ${name}: ${type},`).join("\n")
-        : "    _pad: vec4<f32>,";
-    const customBlock = custom.length > 0
-        ? `
+    const systemFields =
+        system.length > 0
+            ? system.map(({ name, type }) => `    ${name}: ${type},`).join("\n")
+            : "    _pad: vec4<f32>,";
+    const customBlock =
+        custom.length > 0
+            ? `
 struct ShaderUniforms {
 ${custom.map(({ name, type }) => `    ${name}: ${type},`).join("\n")}
 }
 @group(1) @binding(1) var<uniform> shaderUniforms: ShaderUniforms;
 `
-        : "";
+            : "";
     // The pin's own prelude places each sampler pair in group 1 after the
     // custom UBO, at consecutive bindings; SDL specialization re-homes them
     // (see `emitNativeWgslProgram`), so only this evidence copy keeps the
@@ -290,24 +299,23 @@ ${custom.map(({ name, type }) => `    ${name}: ${type},`).join("\n")}
     let nextBinding = custom.length > 0 ? 2 : 1;
     const samplerDeclarations = shaderSamplerDeclarations(program);
     const samplerBlock = samplerDeclarations
-        .map(
-            (decl) => {
-                const depth =
-                    decl.comparison || decl.sampleType === "depth";
-                const textureType = depth
-                    ? decl.viewDimension === "2d-array"
-                        ? "texture_depth_2d_array"
-                        : "texture_depth_2d"
-                    : decl.viewDimension === "2d-array"
-                        ? "texture_2d_array<f32>"
-                        : "texture_2d<f32>";
-                const samplerType = decl.comparison
-                    ? "sampler_comparison"
-                    : "sampler";
-                return `@group(1) @binding(${nextBinding++}) var ${decl.name}: ${textureType};\n` +
-                    `@group(1) @binding(${nextBinding++}) var ${shaderSamplerName(decl.name)}: ${samplerType};\n`;
-            },
-        )
+        .map((decl) => {
+            const depth = decl.comparison || decl.sampleType === "depth";
+            const textureType = depth
+                ? decl.viewDimension === "2d-array"
+                    ? "texture_depth_2d_array"
+                    : "texture_depth_2d"
+                : decl.viewDimension === "2d-array"
+                  ? "texture_2d_array<f32>"
+                  : "texture_2d<f32>";
+            const samplerType = decl.comparison
+                ? "sampler_comparison"
+                : "sampler";
+            return (
+                `@group(1) @binding(${nextBinding++}) var ${decl.name}: ${textureType};\n` +
+                `@group(1) @binding(${nextBinding++}) var ${shaderSamplerName(decl.name)}: ${samplerType};\n`
+            );
+        })
         .join("");
     const storageBlock = (program.storageBuffers ?? [])
         .map(
@@ -315,14 +323,18 @@ ${custom.map(({ name, type }) => `    ${name}: ${type},`).join("\n")}
                 `@group(1) @binding(${nextBinding++}) var<storage, read> ${name}: ${type};\n`,
         )
         .join("");
-    const attributes = program.attributes.map((name, location) => {
-        const type = attributeTypes[name];
-        if (!type) throw new Error(`Unsupported custom shader attribute '${name}'.`);
-        return `    @location(${location}) ${name}: ${type},`;
-    }).join("\n");
-    const source = stage === "vertex"
-        ? program.vertexSource
-        : program.fragmentSource;
+    const attributes = program.attributes
+        .map((name, location) => {
+            const type = attributeTypes[name];
+            if (!type)
+                throw new Error(
+                    `Unsupported custom shader attribute '${name}'.`,
+                );
+            return `    @location(${location}) ${name}: ${type},`;
+        })
+        .join("\n");
+    const source =
+        stage === "vertex" ? program.vertexSource : program.fragmentSource;
     return `${sceneUniformsWgsl}
 struct ShaderSystemUniforms {
 ${systemFields}

@@ -4,11 +4,17 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import test from "node:test";
 import { compileSource } from "../src/compiler.js";
-import { optionalNativeFixtureTools, runNativeFixtureCompiler } from "./native-fixture.js";
+import {
+    optionalNativeFixtureTools,
+    runNativeFixtureCompiler,
+} from "./native-fixture.js";
 
-test("deferred Window, Document and canvas listener cleanup captures the scene engine", t => {
+test("deferred Window, Document and canvas listener cleanup captures the scene engine", (t) => {
     const native = optionalNativeFixtureTools(false);
-    if (!native) { t.skip("Native fixture compiler unavailable."); return; }
+    if (!native) {
+        t.skip("Native fixture compiler unavailable.");
+        return;
+    }
     const directory = resolve("artifacts/dom-listener-cleanup");
     mkdirSync(directory, { recursive: true });
     const result = compileSource(`
@@ -35,9 +41,23 @@ test("deferred Window, Document and canvas listener cleanup captures the scene e
     writeFileSync(join(directory, "program.hpp"), result.cpp);
     const executable = join(directory, "check.exe");
     runNativeFixtureCompiler(native, [
-        "/nologo", "/std:c++20", "/W4", "/WX", "/permissive-", "/EHsc", "/MD",
-        `/Fo:${directory}/`, `/Fe:${executable}`, "/I", "native/include", "/I", directory,
+        "/nologo",
+        "/std:c++20",
+        "/W4",
+        "/WX",
+        "/permissive-",
+        "/EHsc",
+        "/MD",
+        `/Fo:${directory}/`,
+        `/Fe:${executable}`,
+        "/I",
+        "native/include",
+        "/I",
+        directory,
         "test/fixtures/dom-listener-cleanup-check.cpp",
     ]);
-    assert.equal(execFileSync(executable, { encoding: "utf8", timeout: 10000 }), "");
+    assert.equal(
+        execFileSync(executable, { encoding: "utf8", timeout: 10000 }),
+        "",
+    );
 });

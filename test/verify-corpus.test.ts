@@ -117,8 +117,8 @@ test("joins exact-manifest rows to corpus scene paths and derives the rest", () 
             { id: "scene7", sourceSha256: "77" },
         ],
     };
-    const checks = classifyCorpusChecks(manifest, exact).filter(
-        (check) => check.label.startsWith("exact "),
+    const checks = classifyCorpusChecks(manifest, exact).filter((check) =>
+        check.label.startsWith("exact "),
     );
     assert.deepEqual(checks, [
         {

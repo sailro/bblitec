@@ -50,34 +50,36 @@ import {
 } from "./engine-options.js";
 
 export interface PhysicsIntrinsicContext
-    extends IntrinsicCallContext,
-    ObjectValidationContext,
-    RequiredObjectNumberContext,
-    Pick<LoweringServices,
-        | "symbols"
-        | "checker"
-        | "dataTypes"
-        | "unwrap"
-        | "compileVec3"
-        | "compileBoolean"
-        | "castNumber"
-        | "vec3FromRecord"
-        | "materializeEscapingValue"
-        | "pinValueToTemporary"
-        | "readResolvedProperty"
-        | "bindDataTuple"
-        | "expectSameEngine"
-        | "expectObjectLiteral"
-        | "compileFrameCallback"
-        | "compilePhysicsCollisionCallback"
-        | "compilePhysicsTriggerCallback"
-        | "allocateTemporaryCppName"
-        | "emit"
-        | "resolveStaticExpression"
-        | "reachPhysicsViewerMaterial"
-        | "recordRuntimeMeshProfile"
-        | "recordSceneMeshMaterial"
-    > {}
+    extends
+        IntrinsicCallContext,
+        ObjectValidationContext,
+        RequiredObjectNumberContext,
+        Pick<
+            LoweringServices,
+            | "symbols"
+            | "checker"
+            | "dataTypes"
+            | "unwrap"
+            | "compileVec3"
+            | "compileBoolean"
+            | "castNumber"
+            | "vec3FromRecord"
+            | "materializeEscapingValue"
+            | "pinValueToTemporary"
+            | "readResolvedProperty"
+            | "bindDataTuple"
+            | "expectSameEngine"
+            | "expectObjectLiteral"
+            | "compileFrameCallback"
+            | "compilePhysicsCollisionCallback"
+            | "compilePhysicsTriggerCallback"
+            | "allocateTemporaryCppName"
+            | "emit"
+            | "resolveStaticExpression"
+            | "reachPhysicsViewerMaterial"
+            | "recordRuntimeMeshProfile"
+            | "recordSceneMeshMaterial"
+        > {}
 
 /**
  * The `js::Nullable<double>` an optional numeric argument or option
@@ -89,18 +91,28 @@ export interface PhysicsIntrinsicContext
  * compiling a stand-in would settle it a second time under a different name.
  */
 function compileNullableNumber(
-  context: PhysicsIntrinsicContext,
-  expression: ts.Expression | undefined,
+    context: PhysicsIntrinsicContext,
+    expression: ts.Expression | undefined,
 ): string {
-  return nullableShapeParameter(context, expression && context.compileValue(expression), "number", expression);
+    return nullableShapeParameter(
+        context,
+        expression && context.compileValue(expression),
+        "number",
+        expression,
+    );
 }
 
 /** The same, for an optional vector option. */
 function compileNullableVec3(
-  context: PhysicsIntrinsicContext,
-  expression: ts.Expression | undefined,
+    context: PhysicsIntrinsicContext,
+    expression: ts.Expression | undefined,
 ): string {
-  return nullableShapeParameter(context, expression && context.compileValue(expression), "vec3", expression);
+    return nullableShapeParameter(
+        context,
+        expression && context.compileValue(expression),
+        "vec3",
+        expression,
+    );
 }
 
 /**
@@ -121,7 +133,11 @@ const PRIMITIVE_SHAPE_TYPES = ["SPHERE", "CAPSULE", "CYLINDER", "BOX"] as const;
  */
 const MESH_SHAPE_TYPES = ["CONVEX_HULL", "MESH"] as const;
 
-const SHAPE_TYPES = [...PRIMITIVE_SHAPE_TYPES, ...MESH_SHAPE_TYPES, "CONTAINER"] as const;
+const SHAPE_TYPES = [
+    ...PRIMITIVE_SHAPE_TYPES,
+    ...MESH_SHAPE_TYPES,
+    "CONTAINER",
+] as const;
 
 /**
  * The `PhysicsShapeParameters` members the reached slice lowers, as (the
@@ -132,11 +148,11 @@ const SHAPE_TYPES = [...PRIMITIVE_SHAPE_TYPES, ...MESH_SHAPE_TYPES, "CONTAINER"]
  * default and a scene that names one refuses here.
  */
 export const SHAPE_PARAMETERS = [
-  ["center", "center", "vec3"],
-  ["radius", "radius", "number"],
-  ["pointA", "point_a", "vec3"],
-  ["pointB", "point_b", "vec3"],
-  ["extents", "extents", "vec3"],
+    ["center", "center", "vec3"],
+    ["radius", "radius", "number"],
+    ["pointA", "point_a", "vec3"],
+    ["pointB", "point_b", "vec3"],
+    ["extents", "extents", "vec3"],
 ] as const;
 
 /**
@@ -149,7 +165,7 @@ export const SHAPE_PARAMETERS = [
  * order with the struct it fills.
  */
 export const shapeParameterStorage = (
-  shape: (typeof SHAPE_PARAMETERS)[number][2],
+    shape: (typeof SHAPE_PARAMETERS)[number][2],
 ): string => (shape === "vec3" ? "Vec3d" : "double");
 
 /**
@@ -160,40 +176,63 @@ export const shapeParameterStorage = (
  * the global scope. `double` is the language's own either way.
  */
 const qualifiedShapeParameterStorage = (
-  shape: (typeof SHAPE_PARAMETERS)[number][2],
+    shape: (typeof SHAPE_PARAMETERS)[number][2],
 ): string => {
-  const storage = shapeParameterStorage(shape);
-  return storage === "double" ? storage : `bbl::${storage}`;
+    const storage = shapeParameterStorage(shape);
+    return storage === "double" ? storage : `bbl::${storage}`;
 };
 
 /** An optional geometry value retains nullish absence at the pinned default. */
 function nullableShapeParameter(
-  context: PhysicsIntrinsicContext,
-  value: Value | undefined,
-  shape: (typeof SHAPE_PARAMETERS)[number][2],
-  node: ts.Node | undefined,
+    context: PhysicsIntrinsicContext,
+    value: Value | undefined,
+    shape: (typeof SHAPE_PARAMETERS)[number][2],
+    node: ts.Node | undefined,
 ): string {
-  const lane = `bbl::js::Nullable<${qualifiedShapeParameterStorage(shape)}>`;
-  if (!value || value.kind === "json-null") return `${lane}{}`;
-  if (value.kind === "data" && value.dataType?.kind === "optional") {
-    if (shape === "number" && value.dataType.inner.kind === "number") return value.cpp;
-    if (shape !== "vec3" || value.dataType.inner.kind !== "struct") {
-      context.fail(node!, "Optional physics geometry values must retain their numeric or vector type.");
+    const lane = `bbl::js::Nullable<${qualifiedShapeParameterStorage(shape)}>`;
+    if (!value || value.kind === "json-null") return `${lane}{}`;
+    if (value.kind === "data" && value.dataType?.kind === "optional") {
+        if (shape === "number" && value.dataType.inner.kind === "number")
+            return value.cpp;
+        if (shape !== "vec3" || value.dataType.inner.kind !== "struct") {
+            context.fail(
+                node!,
+                "Optional physics geometry values must retain their numeric or vector type.",
+            );
+        }
+        const owner = context.pinValueToTemporary(
+            value,
+            "physics_optional_vector",
+        );
+        const vector = context.vec3FromRecord(
+            {
+                ...owner,
+                cpp: `(*${owner.cpp})`,
+                dataType: value.dataType.inner,
+            },
+            node!,
+            "double",
+        );
+        return `(${owner.cpp}.has_value() ? ${lane}{${vector}} : ${lane}{})`;
     }
-    const owner = context.pinValueToTemporary(value, "physics_optional_vector");
-    const vector = context.vec3FromRecord({ ...owner, cpp: `(*${owner.cpp})`, dataType: value.dataType.inner }, node!, "double");
-    return `(${owner.cpp}.has_value() ? ${lane}{${vector}} : ${lane}{})`;
-  }
-  if (shape === "vec3" && value.kind === "data" && value.dataType?.kind === "struct" &&
-      context.dataTypes.isReferenceStruct(value.dataType.name)) {
-    const owner = context.pinValueToTemporary(value, "physics_optional_vector");
-    return `(${owner.cpp} ? ${lane}{${context.vec3FromRecord(owner, node!, "double")}} : ${lane}{})`;
-  }
-  if (shape === "number") context.expectKind(value, "number", node!);
-  const cpp = shape === "vec3"
-    ? context.vec3FromRecord(value, node!, "double")
-    : context.castNumber(value, "double");
-  return `${lane}{${cpp}}`;
+    if (
+        shape === "vec3" &&
+        value.kind === "data" &&
+        value.dataType?.kind === "struct" &&
+        context.dataTypes.isReferenceStruct(value.dataType.name)
+    ) {
+        const owner = context.pinValueToTemporary(
+            value,
+            "physics_optional_vector",
+        );
+        return `(${owner.cpp} ? ${lane}{${context.vec3FromRecord(owner, node!, "double")}} : ${lane}{})`;
+    }
+    if (shape === "number") context.expectKind(value, "number", node!);
+    const cpp =
+        shape === "vec3"
+            ? context.vec3FromRecord(value, node!, "double")
+            : context.castNumber(value, "double");
+    return `${lane}{${cpp}}`;
 }
 
 /**
@@ -209,26 +248,33 @@ function nullableShapeParameter(
  * still refuses rather than shipping the pin's identity quaternion.
  */
 const AGGREGATE_OPTIONS = [
-  "mass",
-  "friction",
-  "restitution",
-  "shape",
-  ...SHAPE_PARAMETERS.map(([pinned]) => pinned),
-  "startAsleep",
+    "mass",
+    "friction",
+    "restitution",
+    "shape",
+    ...SHAPE_PARAMETERS.map(([pinned]) => pinned),
+    "startAsleep",
 ] as const;
 
 export function compilePhysicsIntrinsic(
-  context: PhysicsIntrinsicContext,
-  importedName: string,
-  call: ts.CallExpression,
+    context: PhysicsIntrinsicContext,
+    importedName: string,
+    call: ts.CallExpression,
 ): Value | undefined {
-  return physicsIntrinsicHandlers.get(importedName)?.(context, call);
+    return physicsIntrinsicHandlers.get(importedName)?.(context, call);
 }
 
-function pinRayNumber(context: PhysicsIntrinsicContext, expression: ts.Expression): string {
-  return context.pinValueToTemporary({
-    kind: "number", cpp: context.compileNumber(expression, "double"),
-  }, "ray_number").cpp;
+function pinRayNumber(
+    context: PhysicsIntrinsicContext,
+    expression: ts.Expression,
+): string {
+    return context.pinValueToTemporary(
+        {
+            kind: "number",
+            cpp: context.compileNumber(expression, "double"),
+        },
+        "ray_number",
+    ).cpp;
 }
 
 /**
@@ -236,53 +282,101 @@ function pinRayNumber(context: PhysicsIntrinsicContext, expression: ts.Expressio
  * an existing object's identity. Havok reads that object's coordinates inside
  * physicsRaycast, after the options argument has finished mutating state.
  */
-function compileRayPointArgument(context: PhysicsIntrinsicContext, expression: ts.Expression): string {
-  const point = context.unwrap(expression);
-  if (ts.isObjectLiteralExpression(point) &&
-      !(point.properties.length === 1 && ts.isSpreadAssignment(point.properties[0]!))) {
-    validateObjectProperties(context, point, ["x", "y", "z"],
-      "Physics ray point literals require numeric x, y and z properties.");
-    const lanes = new EmissionMap<string, string>();
-    for (const property of point.properties) {
-      const value = ts.isPropertyAssignment(property)
-        ? property.initializer
-        : (property as ts.ShorthandPropertyAssignment).name;
-      lanes.set(context.propertyName(property.name!)!, pinRayNumber(context, value));
+function compileRayPointArgument(
+    context: PhysicsIntrinsicContext,
+    expression: ts.Expression,
+): string {
+    const point = context.unwrap(expression);
+    if (
+        ts.isObjectLiteralExpression(point) &&
+        !(
+            point.properties.length === 1 &&
+            ts.isSpreadAssignment(point.properties[0]!)
+        )
+    ) {
+        validateObjectProperties(
+            context,
+            point,
+            ["x", "y", "z"],
+            "Physics ray point literals require numeric x, y and z properties.",
+        );
+        const lanes = new EmissionMap<string, string>();
+        for (const property of point.properties) {
+            const value = ts.isPropertyAssignment(property)
+                ? property.initializer
+                : (property as ts.ShorthandPropertyAssignment).name;
+            lanes.set(
+                context.propertyName(property.name!)!,
+                pinRayNumber(context, value),
+            );
+        }
+        if (["x", "y", "z"].some((axis) => !lanes.has(axis))) {
+            context.fail(
+                point,
+                "Physics ray point literals require x, y and z.",
+            );
+        }
+        return `bbl::Vec3d{${["x", "y", "z"].map((axis) => lanes.get(axis)).join(", ")}}`;
     }
-    if (["x", "y", "z"].some((axis) => !lanes.has(axis))) {
-      context.fail(point, "Physics ray point literals require x, y and z.");
+    if (ts.isArrayLiteralExpression(point) && point.elements.length === 3) {
+        const lanes = point.elements.map((element) =>
+            pinRayNumber(context, element),
+        );
+        return `bbl::Vec3d{${lanes.join(", ")}}`;
     }
-    return `bbl::Vec3d{${["x", "y", "z"].map((axis) => lanes.get(axis)).join(", ")}}`;
-  }
-  if (ts.isArrayLiteralExpression(point) && point.elements.length === 3) {
-    const lanes = point.elements.map((element) => pinRayNumber(context, element));
-    return `bbl::Vec3d{${lanes.join(", ")}}`;
-  }
-  if (ts.isObjectLiteralExpression(point) && ts.isSpreadAssignment(point.properties[0]!)) {
-    const temporary = context.allocateTemporaryCppName("ray_point");
-    context.emit({ kind: "declaration", type: "const bbl::Vec3d", name: temporary, initializer: context.compileVec3(point, "double") });
-    return temporary;
-  }
-  let value = context.materializeEscapingValue(context.compileValue(point), "ray_point", point);
-  if (isDataTuple(value, 3)) {
-    // Tuple copies retain their shared element storage, just as reference
-    // structs retain their owner below; later alias writes stay visible.
-    const owner = context.bindDataTuple(value, 3, "ray_point");
-    return `bbl::Vec3d{${tupleComponents(owner, 3, "double").join(", ")}}`;
-  }
-  if (value.kind === "tuple" && value.tupleElements?.length === 3) {
-    value = { kind: "record", cpp: "", recordProperties:
-      Object.fromEntries(["x", "y", "z"].map((axis, index) => [axis, value.tupleElements![index]!])) };
-  }
-  if (value.kind === "data" && value.dataType?.kind === "struct") {
-    if (!context.dataTypes.isReferenceStruct(value.dataType.name)) {
-      context.fail(point, "Retained physics ray point objects require a native reference representation.");
+    if (
+        ts.isObjectLiteralExpression(point) &&
+        ts.isSpreadAssignment(point.properties[0]!)
+    ) {
+        const temporary = context.allocateTemporaryCppName("ray_point");
+        context.emit({
+            kind: "declaration",
+            type: "const bbl::Vec3d",
+            name: temporary,
+            initializer: context.compileVec3(point, "double"),
+        });
+        return temporary;
     }
-    const owner = context.allocateTemporaryCppName("ray_point_owner");
-    context.emit({ kind: "declaration", type: "const auto", name: owner, initializer: value.cpp });
-    value = { ...value, cpp: owner };
-  }
-  return context.vec3FromRecord(value, point, "double");
+    let value = context.materializeEscapingValue(
+        context.compileValue(point),
+        "ray_point",
+        point,
+    );
+    if (isDataTuple(value, 3)) {
+        // Tuple copies retain their shared element storage, just as reference
+        // structs retain their owner below; later alias writes stay visible.
+        const owner = context.bindDataTuple(value, 3, "ray_point");
+        return `bbl::Vec3d{${tupleComponents(owner, 3, "double").join(", ")}}`;
+    }
+    if (value.kind === "tuple" && value.tupleElements?.length === 3) {
+        value = {
+            kind: "record",
+            cpp: "",
+            recordProperties: Object.fromEntries(
+                ["x", "y", "z"].map((axis, index) => [
+                    axis,
+                    value.tupleElements![index]!,
+                ]),
+            ),
+        };
+    }
+    if (value.kind === "data" && value.dataType?.kind === "struct") {
+        if (!context.dataTypes.isReferenceStruct(value.dataType.name)) {
+            context.fail(
+                point,
+                "Retained physics ray point objects require a native reference representation.",
+            );
+        }
+        const owner = context.allocateTemporaryCppName("ray_point_owner");
+        context.emit({
+            kind: "declaration",
+            type: "const auto",
+            name: owner,
+            initializer: value.cpp,
+        });
+        value = { ...value, cpp: owner };
+    }
+    return context.vec3FromRecord(value, point, "double");
 }
 
 /**
@@ -294,51 +388,87 @@ function compileRayPointArgument(context: PhysicsIntrinsicContext, expression: t
  * friction and restitution get.
  */
 function compileShapeParameters(
-  context: PhysicsIntrinsicContext,
-  expression: ts.Expression,
+    context: PhysicsIntrinsicContext,
+    expression: ts.Expression,
 ): string {
-  let record = context.compileValue(expression);
-  const allowed = new EmissionSet<string>(SHAPE_PARAMETERS.map(([pinned]) => pinned));
-  if (record.kind === "data" && record.dataType?.kind === "struct") {
-    const type = record.dataType;
-    const owner = context.pinValueToTemporary(record, "physics_shape_parameters");
-    const access = context.dataTypes.isReferenceStruct(type.name) ? "->" : ".";
-    const fields: Record<string, Value> = {};
-    for (const field of context.dataTypes.structFields(type.name, expression)) {
-      const cpp = `${owner.cpp}${access}${field.name}`;
-      if (!allowed.has(field.sourceName)) {
-        const optionalReference = field.optionalProperty && field.type.kind === "struct" &&
-          context.dataTypes.isReferenceStruct(field.type.name);
-        if (field.sourceName !== "rotation" || !(field.type.kind === "optional" || optionalReference)) {
-          context.fail(expression, `Unsupported physics shape parameter '${field.sourceName}'.`);
+    let record = context.compileValue(expression);
+    const allowed = new EmissionSet<string>(
+        SHAPE_PARAMETERS.map(([pinned]) => pinned),
+    );
+    if (record.kind === "data" && record.dataType?.kind === "struct") {
+        const type = record.dataType;
+        const owner = context.pinValueToTemporary(
+            record,
+            "physics_shape_parameters",
+        );
+        const access = context.dataTypes.isReferenceStruct(type.name)
+            ? "->"
+            : ".";
+        const fields: Record<string, Value> = {};
+        for (const field of context.dataTypes.structFields(
+            type.name,
+            expression,
+        )) {
+            const cpp = `${owner.cpp}${access}${field.name}`;
+            if (!allowed.has(field.sourceName)) {
+                const optionalReference =
+                    field.optionalProperty &&
+                    field.type.kind === "struct" &&
+                    context.dataTypes.isReferenceStruct(field.type.name);
+                if (
+                    field.sourceName !== "rotation" ||
+                    !(field.type.kind === "optional" || optionalReference)
+                ) {
+                    context.fail(
+                        expression,
+                        `Unsupported physics shape parameter '${field.sourceName}'.`,
+                    );
+                }
+                const present = optionalReference
+                    ? `static_cast<bool>(${cpp})`
+                    : `${cpp}.has_value()`;
+                context.emit(
+                    `if (${present}) throw std::runtime_error("Physics shape rotation is not lowered.");`,
+                );
+                continue;
+            }
+            fields[field.sourceName] = {
+                kind: field.type.kind === "number" ? "number" : "data",
+                cpp,
+                dataType: field.type,
+            };
         }
-        const present = optionalReference ? `static_cast<bool>(${cpp})` : `${cpp}.has_value()`;
-        context.emit(`if (${present}) throw std::runtime_error("Physics shape rotation is not lowered.");`);
-        continue;
-      }
-      fields[field.sourceName] = { kind: field.type.kind === "number" ? "number" : "data", cpp, dataType: field.type };
+        record = { kind: "record", cpp: "", recordProperties: fields };
     }
-    record = { kind: "record", cpp: "", recordProperties: fields };
-  }
-  context.expectKind(record, "record", expression);
-  if (Object.keys(record.recordGetters ?? {}).length || Object.keys(record.recordMethods ?? {}).length ||
-      Object.keys(record.recordProperties ?? {}).some((name) => !allowed.has(name))) {
-    context.fail(expression, `Physics shape parameters require a closed record of ${[...allowed].join(", ")}.`);
-  }
-  // Designated initializers retain the generated declaration order.
-  const written = SHAPE_PARAMETERS.map(([pinned, field, shape]) =>
-    `.${field} = ${nullableShapeParameter(context, record.recordProperties?.[pinned], shape, expression)}`);
-  return `bbl::upstream::PhysicsShapeParameters{${written.join(", ")}}`;
+    context.expectKind(record, "record", expression);
+    if (
+        Object.keys(record.recordGetters ?? {}).length ||
+        Object.keys(record.recordMethods ?? {}).length ||
+        Object.keys(record.recordProperties ?? {}).some(
+            (name) => !allowed.has(name),
+        )
+    ) {
+        context.fail(
+            expression,
+            `Physics shape parameters require a closed record of ${[...allowed].join(", ")}.`,
+        );
+    }
+    // Designated initializers retain the generated declaration order.
+    const written = SHAPE_PARAMETERS.map(
+        ([pinned, field, shape]) =>
+            `.${field} = ${nullableShapeParameter(context, record.recordProperties?.[pinned], shape, expression)}`,
+    );
+    return `bbl::upstream::PhysicsShapeParameters{${written.join(", ")}}`;
 }
 
 /** The generated info record one pinned physics event stream hands over. */
 export function physicsEventInfoType(
-  event: "collision" | "trigger" | "character",
+    event: "collision" | "trigger" | "character",
 ): string {
-  if (event === "character") return "bbl::character::CharacterCollisionEvent";
-  return event === "collision"
-    ? "bbl::upstream::PhysicsCollisionInfo"
-    : "bbl::upstream::PhysicsTriggerInfo";
+    if (event === "character") return "bbl::character::CharacterCollisionEvent";
+    return event === "collision"
+        ? "bbl::upstream::PhysicsCollisionInfo"
+        : "bbl::upstream::PhysicsTriggerInfo";
 }
 
 /**
@@ -348,104 +478,118 @@ export function physicsEventInfoType(
  * data. Trigger records carry their type. Enum strings use the pinned names.
  */
 export function physicsEventInfoValue(
-  event: "collision" | "trigger" | "character",
-  cpp: string,
+    event: "collision" | "trigger" | "character",
+    cpp: string,
 ): Value {
-  if (event === "character") return { kind: "record", cpp: "", recordProperties: {
-    collider: { kind: "physics-body", cpp: `${cpp}.collider->value` },
-    colliderIndex: { kind: "number", cpp: `${cpp}.colliderIndex` },
-    impulse: characterVectorValue(`${cpp}.impulse`),
-    impulsePosition: characterVectorValue(`${cpp}.impulsePosition`),
-  } };
-  const type = (name: string): Value => ({
-    kind: "data",
-    cpp: `std::string(bbl::upstream::${name}(${cpp}.type))`,
-    dataType: { kind: "string" },
-  });
-  if (event === "trigger") {
+    if (event === "character")
+        return {
+            kind: "record",
+            cpp: "",
+            recordProperties: {
+                collider: {
+                    kind: "physics-body",
+                    cpp: `${cpp}.collider->value`,
+                },
+                colliderIndex: { kind: "number", cpp: `${cpp}.colliderIndex` },
+                impulse: characterVectorValue(`${cpp}.impulse`),
+                impulsePosition: characterVectorValue(`${cpp}.impulsePosition`),
+            },
+        };
+    const type = (name: string): Value => ({
+        kind: "data",
+        cpp: `std::string(bbl::upstream::${name}(${cpp}.type))`,
+        dataType: { kind: "string" },
+    });
+    if (event === "trigger") {
+        return {
+            kind: "record",
+            cpp: "",
+            recordProperties: { type: type("physics_trigger_type_name") },
+        };
+    }
+    const vec3 = (member: string): Value => vec3Record(`${cpp}.${member}`);
     return {
-      kind: "record",
-      cpp: "",
-      recordProperties: { type: type("physics_trigger_type_name") },
+        kind: "record",
+        cpp: "",
+        recordProperties: {
+            type: type("physics_collision_type_name"),
+            point: vec3("point"),
+            normal: vec3("normal"),
+            impulse: { kind: "number", cpp: `${cpp}.impulse` },
+            collider: { kind: "physics-body", cpp: `${cpp}.collider` },
+            colliderIndex: { kind: "number", cpp: `${cpp}.collider_index` },
+            collidedAgainst: {
+                kind: "physics-body",
+                cpp: `${cpp}.collided_against`,
+            },
+            collidedAgainstIndex: {
+                kind: "number",
+                cpp: `${cpp}.collided_against_index`,
+            },
+            distance: { kind: "number", cpp: `${cpp}.distance` },
+        },
     };
-  }
-  const vec3 = (member: string): Value => vec3Record(`${cpp}.${member}`);
-  return {
-    kind: "record",
-    cpp: "",
-    recordProperties: {
-      type: type("physics_collision_type_name"),
-      point: vec3("point"),
-      normal: vec3("normal"),
-      impulse: { kind: "number", cpp: `${cpp}.impulse` },
-      collider: { kind: "physics-body", cpp: `${cpp}.collider` },
-      colliderIndex: { kind: "number", cpp: `${cpp}.collider_index` },
-      collidedAgainst: { kind: "physics-body", cpp: `${cpp}.collided_against` },
-      collidedAgainstIndex: { kind: "number", cpp: `${cpp}.collided_against_index` },
-      distance: { kind: "number", cpp: `${cpp}.distance` },
-    },
-  };
 }
 
 function vec3Record(cpp: string): Value {
-  return {
-    kind: "record",
-    cpp: "",
-    recordProperties: {
-      x: { kind: "number", cpp: `${cpp}.x` },
-      y: { kind: "number", cpp: `${cpp}.y` },
-      z: { kind: "number", cpp: `${cpp}.z` },
-    },
-  };
+    return {
+        kind: "record",
+        cpp: "",
+        recordProperties: {
+            x: { kind: "number", cpp: `${cpp}.x` },
+            y: { kind: "number", cpp: `${cpp}.y` },
+            z: { kind: "number", cpp: `${cpp}.z` },
+        },
+    };
 }
 
 function compileImpulsePoint(
-  context: PhysicsIntrinsicContext,
-  expression: ts.Expression,
+    context: PhysicsIntrinsicContext,
+    expression: ts.Expression,
 ): string {
-  let unwrapped = expression;
-  while (
-    ts.isParenthesizedExpression(unwrapped) ||
-    ts.isAsExpression(unwrapped) ||
-    ts.isTypeAssertionExpression(unwrapped) ||
-    ts.isNonNullExpression(unwrapped)
-  ) {
-    unwrapped = unwrapped.expression;
-  }
-  if (ts.isConditionalExpression(unwrapped)) {
-    let absent = unwrapped.whenFalse;
-    while (ts.isParenthesizedExpression(absent)) {
-      absent = absent.expression;
+    let unwrapped = expression;
+    while (
+        ts.isParenthesizedExpression(unwrapped) ||
+        ts.isAsExpression(unwrapped) ||
+        ts.isTypeAssertionExpression(unwrapped) ||
+        ts.isNonNullExpression(unwrapped)
+    ) {
+        unwrapped = unwrapped.expression;
     }
-    if (!ts.isIdentifier(absent) || absent.text !== "undefined") {
-      context.fail(
-        absent,
-        "An optional physics impulse point must use undefined for its absent arm.",
-      );
+    if (ts.isConditionalExpression(unwrapped)) {
+        let absent = unwrapped.whenFalse;
+        while (ts.isParenthesizedExpression(absent)) {
+            absent = absent.expression;
+        }
+        if (!ts.isIdentifier(absent) || absent.text !== "undefined") {
+            context.fail(
+                absent,
+                "An optional physics impulse point must use undefined for its absent arm.",
+            );
+        }
+        const condition = context.compileValue(unwrapped.condition);
+        const present =
+            condition.optionalFoundCpp ??
+            (condition.kind === "data" &&
+            condition.dataType?.kind === "optional"
+                ? `${condition.cpp}.has_value()`
+                : undefined);
+        if (!present) {
+            context.fail(
+                unwrapped.condition,
+                "An optional physics impulse point requires a nullable condition.",
+            );
+        }
+        const value = context.compileVec3(unwrapped.whenTrue, "double");
+        return (
+            `(${present} ? std::optional<bbl::Vec3d>{${value}} : ` +
+            "std::optional<bbl::Vec3d>{})"
+        );
     }
-    const condition = context.compileValue(unwrapped.condition);
-    const present =
-      condition.optionalFoundCpp ??
-      (condition.kind === "data" &&
-      condition.dataType?.kind === "optional"
-        ? `${condition.cpp}.has_value()`
-        : undefined);
-    if (!present) {
-      context.fail(
-        unwrapped.condition,
-        "An optional physics impulse point requires a nullable condition.",
-      );
-    }
-    const value = context.compileVec3(unwrapped.whenTrue, "double");
     return (
-      `(${present} ? std::optional<bbl::Vec3d>{${value}} : ` +
-      "std::optional<bbl::Vec3d>{})"
+        `std::optional<bbl::Vec3d>{` +
+        `${context.compileVec3(expression, "double")}}`
     );
-  }
-  return (
-    `std::optional<bbl::Vec3d>{` +
-    `${context.compileVec3(expression, "double")}}`
-  );
 }
 
 /**
@@ -456,56 +600,83 @@ function compileImpulsePoint(
  * only through createPhysicsShape; aggregate sizing has no container arm.
  */
 function expectShapeType(
-  context: PhysicsIntrinsicContext,
-  expression: ts.Expression,
-  allowContainer = false,
+    context: PhysicsIntrinsicContext,
+    expression: ts.Expression,
+    allowContainer = false,
 ): string {
-  let member: string | undefined;
-  if (ts.isPropertyAccessExpression(expression) && ts.isIdentifier(expression.expression) && context.symbols.importedName(expression.expression) === "PhysicsShapeType") {
-    member = expression.name.text;
-  } else {
-    const value = context.compileValue(expression);
-    if (value.staticNumber !== undefined && !value.parameterBinding) member = context.symbols.pinnedEnumMemberForValue(expression, "PhysicsShapeType", value.staticNumber);
-  }
-  if (!member) context.fail(expression, "A physics shape requires a construction-known pinned PhysicsShapeType value.");
-  if (!(SHAPE_TYPES as readonly string[]).includes(member) || (member === "CONTAINER" && !allowContainer)) {
-    context.fail(
-      expression,
-      `PhysicsShapeType.${member} is not reached by this ` +
-        "prototype. The primitive shapes " +
-        "`createPrimitivePhysicsShapeHandle` builds and the two " +
-        `mesh-derived ones are lowered (${SHAPE_TYPES.join(", ")}); ` +
-        "Containers require createPhysicsShape; heightfields need their pinned path.",
-    );
-  }
-  return member;
+    let member: string | undefined;
+    if (
+        ts.isPropertyAccessExpression(expression) &&
+        ts.isIdentifier(expression.expression) &&
+        context.symbols.importedName(expression.expression) ===
+            "PhysicsShapeType"
+    ) {
+        member = expression.name.text;
+    } else {
+        const value = context.compileValue(expression);
+        if (value.staticNumber !== undefined && !value.parameterBinding)
+            member = context.symbols.pinnedEnumMemberForValue(
+                expression,
+                "PhysicsShapeType",
+                value.staticNumber,
+            );
+    }
+    if (!member)
+        context.fail(
+            expression,
+            "A physics shape requires a construction-known pinned PhysicsShapeType value.",
+        );
+    if (
+        !(SHAPE_TYPES as readonly string[]).includes(member) ||
+        (member === "CONTAINER" && !allowContainer)
+    ) {
+        context.fail(
+            expression,
+            `PhysicsShapeType.${member} is not reached by this ` +
+                "prototype. The primitive shapes " +
+                "`createPrimitivePhysicsShapeHandle` builds and the two " +
+                `mesh-derived ones are lowered (${SHAPE_TYPES.join(", ")}); ` +
+                "Containers require createPhysicsShape; heightfields need their pinned path.",
+        );
+    }
+    return member;
 }
 
 function compileBodyEnum(
-  context: PhysicsIntrinsicContext,
-  call: ts.CallExpression,
-  index: number,
-  enumName: "PhysicsMotionType" | "PhysicsPrestepType",
+    context: PhysicsIntrinsicContext,
+    call: ts.CallExpression,
+    index: number,
+    enumName: "PhysicsMotionType" | "PhysicsPrestepType",
 ): string {
-  const expression = argumentAt(call, index);
-  const cppType = `bbl::upstream::${enumName}`;
-  // The public enum is a numeric-literal union. Preserve values in ordinary
-  // native arrays, and narrow only at the generated C++ enum boundary after
-  // checking the pin's actual parameter type (including non-null assertions).
-  const parameter = context.checker.getResolvedSignature(call)?.parameters[index];
-  const actual = context.checker.getTypeAtLocation(expression);
-  const expected = parameter && context.checker.getTypeOfSymbolAtLocation(parameter, call);
-  const members = actual.isUnion() ? actual.types : [actual];
-  if (!expected || !members.every((type) => type.isNumberLiteral()) ||
-      !context.checker.isTypeAssignableTo(actual, expected)) {
-    context.fail(expression, `Expected a value of the pinned ${enumName} enum.`);
-  }
-  if (ts.isPropertyAccessExpression(expression) &&
-      ts.isIdentifier(expression.expression) &&
-      context.symbols.importedName(expression.expression) === enumName) {
-    return `${cppType}::${expression.name.text}`;
-  }
-  return `static_cast<${cppType}>(${context.compileNumber(expression, "double")})`;
+    const expression = argumentAt(call, index);
+    const cppType = `bbl::upstream::${enumName}`;
+    // The public enum is a numeric-literal union. Preserve values in ordinary
+    // native arrays, and narrow only at the generated C++ enum boundary after
+    // checking the pin's actual parameter type (including non-null assertions).
+    const parameter =
+        context.checker.getResolvedSignature(call)?.parameters[index];
+    const actual = context.checker.getTypeAtLocation(expression);
+    const expected =
+        parameter && context.checker.getTypeOfSymbolAtLocation(parameter, call);
+    const members = actual.isUnion() ? actual.types : [actual];
+    if (
+        !expected ||
+        !members.every((type) => type.isNumberLiteral()) ||
+        !context.checker.isTypeAssignableTo(actual, expected)
+    ) {
+        context.fail(
+            expression,
+            `Expected a value of the pinned ${enumName} enum.`,
+        );
+    }
+    if (
+        ts.isPropertyAccessExpression(expression) &&
+        ts.isIdentifier(expression.expression) &&
+        context.symbols.importedName(expression.expression) === enumName
+    ) {
+        return `${cppType}::${expression.name.text}`;
+    }
+    return `static_cast<${cppType}>(${context.compileNumber(expression, "double")})`;
 }
 
 /**
@@ -527,25 +698,26 @@ const MASS_PROPERTIES = ["centerOfMass", "mass", "inertia"] as const;
  * Omitted fields retain the shape-derived values in the generated setter.
  */
 function compileMassProperties(
-  context: PhysicsIntrinsicContext,
-  expression: ts.Expression,
+    context: PhysicsIntrinsicContext,
+    expression: ts.Expression,
 ): string {
-  const object = context.expectObjectLiteral(expression);
-  validateObjectProperties(
-    context,
-    object,
-    MASS_PROPERTIES,
-    "A physics mass property outside this prototype's reached slice " +
-      `(${MASS_PROPERTIES.join(", ")}). Inertia orientation requires its pinned frame projection.`,
-  );
-  const mass = compileNullableNumber(context, context.objectProperty(object, "mass"));
-  const center = compileNullableVec3(
-    context,
-    context.objectProperty(object, "centerOfMass"),
-  );
-  return (
-    `bbl::upstream::PhysicsMassPropertyOverrides{${center}, ${mass}, ${compileNullableVec3(context, context.objectProperty(object, "inertia"))}}`
-  );
+    const object = context.expectObjectLiteral(expression);
+    validateObjectProperties(
+        context,
+        object,
+        MASS_PROPERTIES,
+        "A physics mass property outside this prototype's reached slice " +
+            `(${MASS_PROPERTIES.join(", ")}). Inertia orientation requires its pinned frame projection.`,
+    );
+    const mass = compileNullableNumber(
+        context,
+        context.objectProperty(object, "mass"),
+    );
+    const center = compileNullableVec3(
+        context,
+        context.objectProperty(object, "centerOfMass"),
+    );
+    return `bbl::upstream::PhysicsMassPropertyOverrides{${center}, ${mass}, ${compileNullableVec3(context, context.objectProperty(object, "inertia"))}}`;
 }
 
 /**
@@ -555,78 +727,104 @@ function compileMassProperties(
  * `?? 0.2`, so an omitted option is absent here rather than substituted.
  */
 function compileAggregateOptions(
-  context: PhysicsIntrinsicContext,
-  expression: ts.Expression,
+    context: PhysicsIntrinsicContext,
+    expression: ts.Expression,
 ): string {
-  const object = context.expectObjectLiteral(expression);
-  validateObjectProperties(
-    context,
-    object,
-    AGGREGATE_OPTIONS,
-    "A physics aggregate option outside this prototype's reached " +
-      `slice (${AGGREGATE_OPTIONS.join(", ")}).`,
-  );
-  // `mass` is not optional in the pinned interface and decides the
-  // motion type, so it reads through the required helper the other
-  // option families use.
-  const mass = requiredObjectNumber(context, object, "mass", "double");
-  const optional = (name: string): string =>
-    compileNullableNumber(context, context.objectProperty(object, name));
-  const shapeExpression = context.objectProperty(object, "shape");
-  const shape = shapeExpression
-    ? context.compileValue(shapeExpression)
-    : undefined;
-  if (shape) {
-    context.expectKind(shape, "physics-shape", shapeExpression!);
-  }
-  // The geometry lanes, in the table's order, because the emitted struct
-  // is laid out from that same table and these fill it positionally. Each
-  // one is absent unless the scene wrote it: the generated factory then
-  // takes the pin's own `??` and derives from the mesh's bounds instead.
-  const geometry = SHAPE_PARAMETERS.map(([pinned, , shapeKind]) => {
-    const expression = context.objectProperty(object, pinned);
-    return nullableShapeParameter(context, expression && context.compileValue(expression), shapeKind, expression);
-  });
-  // `createPhysicsAggregate` forwards `options.startAsleep` straight into
-  // `createPhysicsBody`'s `startsAsleep = false` default, which is the
-  // third argument of the pin's own `HP_World_AddBody`. An omitted option
-  // is `undefined` there, and `undefined` takes the parameter default --
-  // so the absent case is `false` rather than a nullable the generated
-  // factory would have to settle a second time.
-  const startAsleepExpression = context.objectProperty(object, "startAsleep");
-  const startAsleep = startAsleepExpression
-    ? context.compileBoolean(startAsleepExpression)
-    : "false";
-  return (
-    `bbl::upstream::PhysicsAggregateOptions{` +
-    `${mass}, ` +
-    `${optional("friction")}, ` +
-    `${optional("restitution")}, ` +
-    `${shape ? `${shape.cpp}.handle` : "bbl::pal::PhysicsShapeHandle{}"}, ` +
-    `${geometry.join(", ")}, ${startAsleep}}`
-  );
+    const object = context.expectObjectLiteral(expression);
+    validateObjectProperties(
+        context,
+        object,
+        AGGREGATE_OPTIONS,
+        "A physics aggregate option outside this prototype's reached " +
+            `slice (${AGGREGATE_OPTIONS.join(", ")}).`,
+    );
+    // `mass` is not optional in the pinned interface and decides the
+    // motion type, so it reads through the required helper the other
+    // option families use.
+    const mass = requiredObjectNumber(context, object, "mass", "double");
+    const optional = (name: string): string =>
+        compileNullableNumber(context, context.objectProperty(object, name));
+    const shapeExpression = context.objectProperty(object, "shape");
+    const shape = shapeExpression
+        ? context.compileValue(shapeExpression)
+        : undefined;
+    if (shape) {
+        context.expectKind(shape, "physics-shape", shapeExpression!);
+    }
+    // The geometry lanes, in the table's order, because the emitted struct
+    // is laid out from that same table and these fill it positionally. Each
+    // one is absent unless the scene wrote it: the generated factory then
+    // takes the pin's own `??` and derives from the mesh's bounds instead.
+    const geometry = SHAPE_PARAMETERS.map(([pinned, , shapeKind]) => {
+        const expression = context.objectProperty(object, pinned);
+        return nullableShapeParameter(
+            context,
+            expression && context.compileValue(expression),
+            shapeKind,
+            expression,
+        );
+    });
+    // `createPhysicsAggregate` forwards `options.startAsleep` straight into
+    // `createPhysicsBody`'s `startsAsleep = false` default, which is the
+    // third argument of the pin's own `HP_World_AddBody`. An omitted option
+    // is `undefined` there, and `undefined` takes the parameter default --
+    // so the absent case is `false` rather than a nullable the generated
+    // factory would have to settle a second time.
+    const startAsleepExpression = context.objectProperty(object, "startAsleep");
+    const startAsleep = startAsleepExpression
+        ? context.compileBoolean(startAsleepExpression)
+        : "false";
+    return (
+        `bbl::upstream::PhysicsAggregateOptions{` +
+        `${mass}, ` +
+        `${optional("friction")}, ` +
+        `${optional("restitution")}, ` +
+        `${shape ? `${shape.cpp}.handle` : "bbl::pal::PhysicsShapeHandle{}"}, ` +
+        `${geometry.join(", ")}, ${startAsleep}}`
+    );
 }
 
-function compileCreateHeightFieldShape(context: PhysicsIntrinsicContext, call: ts.CallExpression): Value | undefined {
+function compileCreateHeightFieldShape(
+    context: PhysicsIntrinsicContext,
+    call: ts.CallExpression,
+): Value | undefined {
     context.expectArgumentCount(call, 2, 2);
     const world = context.compileValue(argumentAt(call, 0));
     context.expectKind(world, "physics-world", argumentAt(call, 0));
     const options = context.expectObjectLiteral(argumentAt(call, 1));
-    validateObjectProperties(context, options, ["groundMesh"], "Heightfields currently require a groundMesh square grid.");
+    validateObjectProperties(
+        context,
+        options,
+        ["groundMesh"],
+        "Heightfields currently require a groundMesh square grid.",
+    );
     const expression = context.objectProperty(options, "groundMesh");
     if (!expression)
-        context.fail(options, "Heightfields currently require a groundMesh square grid.");
+        context.fail(
+            options,
+            "Heightfields currently require a groundMesh square grid.",
+        );
     const mesh = context.compileValue(expression);
     context.expectKind(mesh, "mesh", expression);
     context.expectSameEngine(world, mesh, call);
     context.reachFeature("physics:heightfield", call);
-    return { kind: "physics-shape", cpp: `bbl::upstream::create_physics_heightfield_from_ground(${world.cpp}, ${mesh.cpp})`, ...(world.engineCpp ? { engineCpp: world.engineCpp } : {}) };
+    return {
+        kind: "physics-shape",
+        cpp: `bbl::upstream::create_physics_heightfield_from_ground(${world.cpp}, ${mesh.cpp})`,
+        ...(world.engineCpp ? { engineCpp: world.engineCpp } : {}),
+    };
 }
 
-function compileCreatePhysicsConstraint(context: PhysicsIntrinsicContext, call: ts.CallExpression): Value | undefined {
+function compileCreatePhysicsConstraint(
+    context: PhysicsIntrinsicContext,
+    call: ts.CallExpression,
+): Value | undefined {
     context.expectArgumentCount(call, 4, 6);
     if (!ts.isExpressionStatement(call.parent))
-        context.fail(call, "The reached constraint requires a discarded factory result.");
+        context.fail(
+            call,
+            "The reached constraint requires a discarded factory result.",
+        );
     const world = context.compileValue(argumentAt(call, 0));
     const parent = context.compileValue(argumentAt(call, 1));
     const child = context.compileValue(argumentAt(call, 2));
@@ -643,19 +841,35 @@ function compileCreatePhysicsConstraint(context: PhysicsIntrinsicContext, call: 
         return context.compileNumber(node, "double");
     };
     const type = compileType(argumentAt(call, 3));
-    const vectors = [["pivotA", "pivot_a"], ["pivotB", "pivot_b"], ["axisA", "axis_a"], ["axisB", "axis_b"], ["perpAxisA", "perp_axis_a"], ["perpAxisB", "perp_axis_b"]] as const;
+    const vectors = [
+        ["pivotA", "pivot_a"],
+        ["pivotB", "pivot_b"],
+        ["axisA", "axis_a"],
+        ["axisB", "axis_b"],
+        ["perpAxisA", "perp_axis_a"],
+        ["perpAxisB", "perp_axis_b"],
+    ] as const;
     const fields: string[] = [];
     if (call.arguments[4]) {
         const options = context.expectObjectLiteral(call.arguments[4]);
-        validateObjectProperties(context, options, [...vectors.map(([name]) => name), "maxDistance", "collision"], "Constraint options support anchor vectors, maximum distance and collision.");
+        validateObjectProperties(
+            context,
+            options,
+            [...vectors.map(([name]) => name), "maxDistance", "collision"],
+            "Constraint options support anchor vectors, maximum distance and collision.",
+        );
         for (const [name, field] of vectors) {
             const value = context.objectProperty(options, name);
             if (value)
-                fields.push(`.${field} = ${compileNullableVec3(context, value)}`);
+                fields.push(
+                    `.${field} = ${compileNullableVec3(context, value)}`,
+                );
         }
         const maximum = context.objectProperty(options, "maxDistance");
         if (maximum)
-            fields.push(`.max_distance = ${compileNullableNumber(context, maximum)}`);
+            fields.push(
+                `.max_distance = ${compileNullableNumber(context, maximum)}`,
+            );
         const collision = context.objectProperty(options, "collision");
         if (collision)
             fields.push(`.collision = ${context.compileBoolean(collision)}`);
@@ -667,89 +881,169 @@ function compileCreatePhysicsConstraint(context: PhysicsIntrinsicContext, call: 
             context.fail(array, "Constraint limits require an inline array.");
         for (const element of array.elements) {
             const limit = context.expectObjectLiteral(element);
-            validateObjectProperties(context, limit, ["axis", "minLimit", "maxLimit"], "Constraint limits require both bounds; stiffness and damping are not represented.");
-            const axis = context.objectProperty(limit, "axis"), minimum = context.objectProperty(limit, "minLimit"), maximum = context.objectProperty(limit, "maxLimit");
+            validateObjectProperties(
+                context,
+                limit,
+                ["axis", "minLimit", "maxLimit"],
+                "Constraint limits require both bounds; stiffness and damping are not represented.",
+            );
+            const axis = context.objectProperty(limit, "axis"),
+                minimum = context.objectProperty(limit, "minLimit"),
+                maximum = context.objectProperty(limit, "maxLimit");
             if (!axis || !minimum || !maximum)
-                context.fail(limit, "Constraint limits require an axis, minLimit and maxLimit.");
-            pinnedEnumMemberName(context, context.resolveStaticExpression(axis), "PhysicsConstraintAxis");
-            limits.push(`{${context.compileNumber(axis, "double")}, ${context.compileNumber(minimum, "double")}, ${context.compileNumber(maximum, "double")}}`);
+                context.fail(
+                    limit,
+                    "Constraint limits require an axis, minLimit and maxLimit.",
+                );
+            pinnedEnumMemberName(
+                context,
+                context.resolveStaticExpression(axis),
+                "PhysicsConstraintAxis",
+            );
+            limits.push(
+                `{${context.compileNumber(axis, "double")}, ${context.compileNumber(minimum, "double")}, ${context.compileNumber(maximum, "double")}}`,
+            );
         }
     }
     context.reachFeature("physics:constraints", call);
-    context.emit(`bbl::upstream::create_physics_constraint(${world.cpp}, ${parent.cpp}, ${child.cpp}, ${type}, bbl::upstream::PhysicsConstraintOptions{${fields.join(", ")}}, {${limits.join(", ")}});`);
+    context.emit(
+        `bbl::upstream::create_physics_constraint(${world.cpp}, ${parent.cpp}, ${child.cpp}, ${type}, bbl::upstream::PhysicsConstraintOptions{${fields.join(", ")}}, {${limits.join(", ")}});`,
+    );
     return { kind: "void", cpp: "" };
 }
 
-function compileCreatePhysicsViewer(context: PhysicsIntrinsicContext, call: ts.CallExpression): Value | undefined {
+function compileCreatePhysicsViewer(
+    context: PhysicsIntrinsicContext,
+    call: ts.CallExpression,
+): Value | undefined {
     context.expectArgumentCount(call, 2, 3);
     const scene = context.compileValue(argumentAt(call, 0));
     const world = context.compileValue(argumentAt(call, 1));
     context.expectKind(scene, "scene", argumentAt(call, 0));
     context.expectKind(world, "physics-world", argumentAt(call, 1));
     context.expectSameEngine(scene, world, call);
-    let color: readonly [
-        number,
-        number,
-        number,
-        number
-    ] = [1, 1, 1, 1];
+    let color: readonly [number, number, number, number] = [1, 1, 1, 1];
     if (call.arguments[2]) {
         const options = context.expectObjectLiteral(call.arguments[2]);
-        validateObjectProperties(context, options, ["color"], "Physics viewer options support color only.");
+        validateObjectProperties(
+            context,
+            options,
+            ["color"],
+            "Physics viewer options support color only.",
+        );
         const expression = context.objectProperty(options, "color");
         if (expression) {
             const values = staticJsonValue(context, expression);
-            if (!Array.isArray(values) || values.length !== 4 || !values.every(value => typeof value === "number" && Number.isFinite(value))) {
-                context.fail(expression, "Physics viewer color requires four construction-known finite numbers.");
+            if (
+                !Array.isArray(values) ||
+                values.length !== 4 ||
+                !values.every(
+                    (value) =>
+                        typeof value === "number" && Number.isFinite(value),
+                )
+            ) {
+                context.fail(
+                    expression,
+                    "Physics viewer color requires four construction-known finite numbers.",
+                );
             }
-            color = values as [
-                number,
-                number,
-                number,
-                number
-            ];
+            color = values as [number, number, number, number];
         }
     }
     context.reachFeature("physics:viewer", call);
     const variant = context.reachPhysicsViewerMaterial(call, color);
-    return { kind: "physics-viewer", cpp: `bbl::upstream::create_physics_viewer(${scene.cpp}, ${world.cpp}, ${variant.id}u)`,
-        ...(scene.engineCpp ? { engineCpp: scene.engineCpp } : {}), shaderVariant: variant.name };
+    return {
+        kind: "physics-viewer",
+        cpp: `bbl::upstream::create_physics_viewer(${scene.cpp}, ${world.cpp}, ${variant.id}u)`,
+        ...(scene.engineCpp ? { engineCpp: scene.engineCpp } : {}),
+        shaderVariant: variant.name,
+    };
 }
 
-function compileShowPhysicsBody(context: PhysicsIntrinsicContext, call: ts.CallExpression): Value | undefined {
+function compileShowPhysicsBody(
+    context: PhysicsIntrinsicContext,
+    call: ts.CallExpression,
+): Value | undefined {
     context.expectArgumentCount(call, 2, 2);
     if (!ts.isExpressionStatement(call.parent)) {
-        context.fail(call, "Physics debug geometry materialization requires a discarded showPhysicsBody return; observing its debug mesh or nullable result is not yet supported.");
+        context.fail(
+            call,
+            "Physics debug geometry materialization requires a discarded showPhysicsBody return; observing its debug mesh or nullable result is not yet supported.",
+        );
     }
     const viewer = context.compileValue(argumentAt(call, 0));
     const body = context.compileValue(argumentAt(call, 1));
     context.expectKind(viewer, "physics-viewer", argumentAt(call, 0));
     context.expectKind(body, "physics-body", argumentAt(call, 1));
     if (!viewer.shaderVariant)
-        context.fail(argumentAt(call, 0), "Physics viewer material must retain its construction-known variant.");
-    const profile = context.recordSceneMesh("from-data", { hasUv2: false, hasTangents: false, hasColors: false });
+        context.fail(
+            argumentAt(call, 0),
+            "Physics viewer material must retain its construction-known variant.",
+        );
+    const profile = context.recordSceneMesh("from-data", {
+        hasUv2: false,
+        hasTangents: false,
+        hasColors: false,
+    });
     context.recordRuntimeMeshProfile(profile);
-    context.recordSceneMeshMaterial(profile, { pbrMaterial: null, nodeMaterial: null, standardMaterial: false, sceneShaderVariant: viewer.shaderVariant });
-    for (const feature of ["physics:viewer", "mesh:from-data", "material:shader", "renderer:scene", "scene:remove"] as const)
+    context.recordSceneMeshMaterial(profile, {
+        pbrMaterial: null,
+        nodeMaterial: null,
+        standardMaterial: false,
+        sceneShaderVariant: viewer.shaderVariant,
+    });
+    for (const feature of [
+        "physics:viewer",
+        "mesh:from-data",
+        "material:shader",
+        "renderer:scene",
+        "scene:remove",
+    ] as const)
         context.reachFeature(feature, call);
-    return { kind: "void", cpp: `bbl::upstream::show_physics_body(${viewer.cpp}, ${body.cpp}, ${profile}u)` };
+    return {
+        kind: "void",
+        cpp: `bbl::upstream::show_physics_body(${viewer.cpp}, ${body.cpp}, ${profile}u)`,
+    };
 }
 
-function compileHidePhysicsBody(context: PhysicsIntrinsicContext, call: ts.CallExpression, importedName: "hidePhysicsBody" | "disposePhysicsViewer"): Value | undefined {
-    if (importedName === "hidePhysicsBody" && !ts.isExpressionStatement(call.parent)) {
-        context.fail(call, "Physics debug geometry materialization requires a discarded hidePhysicsBody result; observing debug membership is not yet supported.");
+function compileHidePhysicsBody(
+    context: PhysicsIntrinsicContext,
+    call: ts.CallExpression,
+    importedName: "hidePhysicsBody" | "disposePhysicsViewer",
+): Value | undefined {
+    if (
+        importedName === "hidePhysicsBody" &&
+        !ts.isExpressionStatement(call.parent)
+    ) {
+        context.fail(
+            call,
+            "Physics debug geometry materialization requires a discarded hidePhysicsBody result; observing debug membership is not yet supported.",
+        );
     }
-    context.expectArgumentCount(call, importedName === "hidePhysicsBody" ? 2 : 1, importedName === "hidePhysicsBody" ? 2 : 1);
+    context.expectArgumentCount(
+        call,
+        importedName === "hidePhysicsBody" ? 2 : 1,
+        importedName === "hidePhysicsBody" ? 2 : 1,
+    );
     const viewer = context.compileValue(argumentAt(call, 0));
     context.expectKind(viewer, "physics-viewer", argumentAt(call, 0));
     if (importedName === "disposePhysicsViewer")
-        return { kind: "void", cpp: `bbl::upstream::dispose_physics_viewer(${viewer.cpp})` };
+        return {
+            kind: "void",
+            cpp: `bbl::upstream::dispose_physics_viewer(${viewer.cpp})`,
+        };
     const body = context.compileValue(argumentAt(call, 1));
     context.expectKind(body, "physics-body", argumentAt(call, 1));
-    return { kind: "boolean", cpp: `bbl::upstream::hide_physics_body(${viewer.cpp}, ${body.cpp})` };
+    return {
+        kind: "boolean",
+        cpp: `bbl::upstream::hide_physics_body(${viewer.cpp}, ${body.cpp})`,
+    };
 }
 
-function compileCreateHavokWorld(context: PhysicsIntrinsicContext, call: ts.CallExpression): Value | undefined {
+function compileCreateHavokWorld(
+    context: PhysicsIntrinsicContext,
+    call: ts.CallExpression,
+): Value | undefined {
     // `(scene, hknp, gravity?)`. The module argument is required by
     // the pin's signature and carries nothing here, so it is
     // compiled (to reach its own diagnostics) and dropped.
@@ -758,11 +1052,14 @@ function compileCreateHavokWorld(context: PhysicsIntrinsicContext, call: ts.Call
     context.expectKind(scene, "scene", argumentAt(call, 0));
     const engineModule = context.compileValue(argumentAt(call, 1));
     if (engineModule.kind !== "physics-engine-module") {
-        context.fail(argumentAt(call, 1), "createHavokWorld's second argument must be the " +
-            "physics engine module a scene loads " +
-            "(`await HavokPhysics(...)`). A native build " +
-            "reaches its solver through the PAL, so the " +
-            "value is accepted and carries nothing.");
+        context.fail(
+            argumentAt(call, 1),
+            "createHavokWorld's second argument must be the " +
+                "physics engine module a scene loads " +
+                "(`await HavokPhysics(...)`). A native build " +
+                "reaches its solver through the PAL, so the " +
+                "value is accepted and carries nothing.",
+        );
     }
     // `gravity ?? { x: 0, y: -9.81, z: 0 }` is the pin's own
     // default and is resolved by the generated factory, not here.
@@ -777,7 +1074,10 @@ function compileCreateHavokWorld(context: PhysicsIntrinsicContext, call: ts.Call
     };
 }
 
-function compileEnableHavokFloatingOrigin(context: PhysicsIntrinsicContext, call: ts.CallExpression): Value | undefined {
+function compileEnableHavokFloatingOrigin(
+    context: PhysicsIntrinsicContext,
+    call: ts.CallExpression,
+): Value | undefined {
     // `(world, floatingOriginWorldRadius = 100000)`. Upstream loads the
     // floating-origin runtime with a dynamic `import()` from inside this
     // function, so the CALL is the opt-in and nothing else has to be
@@ -793,42 +1093,69 @@ function compileEnableHavokFloatingOrigin(context: PhysicsIntrinsicContext, call
     context.reachFeature("physics:floating-origin", call);
     return {
         kind: "void",
-        cpp: `bbl::upstream::enable_havok_floating_origin(` +
+        cpp:
+            `bbl::upstream::enable_havok_floating_origin(` +
             `${world.cpp}, ${radius})`,
     };
 }
 
-function compileSetPhysicsGravity(context: PhysicsIntrinsicContext, call: ts.CallExpression): Value | undefined {
+function compileSetPhysicsGravity(
+    context: PhysicsIntrinsicContext,
+    call: ts.CallExpression,
+): Value | undefined {
     context.expectArgumentCount(call, 2, 3);
     const world = context.compileValue(argumentAt(call, 0));
     context.expectKind(world, "physics-world", argumentAt(call, 0));
-    return { kind: "void", cpp: `bbl::upstream::set_physics_gravity(${world.cpp}, ${context.compileVec3(argumentAt(call, 1), "double")}, ${compileNullableVec3(context, call.arguments[2])})` };
+    return {
+        kind: "void",
+        cpp: `bbl::upstream::set_physics_gravity(${world.cpp}, ${context.compileVec3(argumentAt(call, 1), "double")}, ${compileNullableVec3(context, call.arguments[2])})`,
+    };
 }
 
-function compileSetPhysicsTimestepMs(context: PhysicsIntrinsicContext, call: ts.CallExpression): Value | undefined {
+function compileSetPhysicsTimestepMs(
+    context: PhysicsIntrinsicContext,
+    call: ts.CallExpression,
+): Value | undefined {
     context.expectArgumentCount(call, 2, 2);
     const world = context.compileValue(argumentAt(call, 0));
     context.expectKind(world, "physics-world", argumentAt(call, 0));
     return {
         kind: "void",
-        cpp: `bbl::upstream::set_physics_timestep_ms(` +
+        cpp:
+            `bbl::upstream::set_physics_timestep_ms(` +
             `${world.cpp}, ${context.compileNumber(argumentAt(call, 1), "double")})`,
     };
 }
 
-function compileCreatePhysicsShape(context: PhysicsIntrinsicContext, call: ts.CallExpression): Value | undefined {
+function compileCreatePhysicsShape(
+    context: PhysicsIntrinsicContext,
+    call: ts.CallExpression,
+): Value | undefined {
     context.expectArgumentCount(call, 2, 2);
     const world = context.compileValue(argumentAt(call, 0));
     context.expectKind(world, "physics-world", argumentAt(call, 0));
     const options = context.expectObjectLiteral(argumentAt(call, 1));
-    validateObjectProperties(context, options, ["type", "parameters", "mesh", "includeChildMeshes"], "A physics shape option outside the reached slice.");
+    validateObjectProperties(
+        context,
+        options,
+        ["type", "parameters", "mesh", "includeChildMeshes"],
+        "A physics shape option outside the reached slice.",
+    );
     const typeExpression = context.objectProperty(options, "type");
     if (!typeExpression) {
-        context.fail(argumentAt(call, 1), "createPhysicsShape requires `type`.");
+        context.fail(
+            argumentAt(call, 1),
+            "createPhysicsShape requires `type`.",
+        );
     }
     const shapeType = expectShapeType(context, typeExpression, true);
     if (shapeType === "CONTAINER") {
-        validateObjectProperties(context, options, ["type"], "Physics container shapes do not consume mesh or primitive parameters.");
+        validateObjectProperties(
+            context,
+            options,
+            ["type"],
+            "Physics container shapes do not consume mesh or primitive parameters.",
+        );
         context.reachFeature("physics:container", call);
         return {
             kind: "physics-shape",
@@ -842,13 +1169,18 @@ function compileCreatePhysicsShape(context: PhysicsIntrinsicContext, call: ts.Ca
     // members, so `createPhysicsShape(world, { type: SPHERE })` is a unit
     // sphere at the origin upstream and lowers to the same empty bag
     // here; refusing it would be narrower than the pin for nothing.
-    const fromMesh = (MESH_SHAPE_TYPES as readonly string[]).includes(shapeType);
+    const fromMesh = (MESH_SHAPE_TYPES as readonly string[]).includes(
+        shapeType,
+    );
     if (fromMesh && parametersExpression !== undefined) {
-        context.fail(argumentAt(call, 1), "createPhysicsShape builds either a primitive from " +
-            "`parameters` or a collider from a `mesh`. " +
-            `PhysicsShapeType.${shapeType} takes its geometry from ` +
-            "`mesh`, and the parameters beside it would be read by " +
-            "neither side.");
+        context.fail(
+            argumentAt(call, 1),
+            "createPhysicsShape builds either a primitive from " +
+                "`parameters` or a collider from a `mesh`. " +
+                `PhysicsShapeType.${shapeType} takes its geometry from ` +
+                "`mesh`, and the parameters beside it would be read by " +
+                "neither side.",
+        );
     }
     if (parametersExpression) {
         // The mesh half of the options bag reaches nothing on this arm --
@@ -857,10 +1189,13 @@ function compileCreatePhysicsShape(context: PhysicsIntrinsicContext, call: ts.Ca
         for (const unread of ["mesh", "includeChildMeshes"] as const) {
             const supplied = context.objectProperty(options, unread);
             if (supplied) {
-                context.fail(supplied, `A primitive physics shape takes its geometry from ` +
-                    "`parameters`; `" +
-                    unread +
-                    "` is read only by the mesh and convex-hull arms.");
+                context.fail(
+                    supplied,
+                    `A primitive physics shape takes its geometry from ` +
+                        "`parameters`; `" +
+                        unread +
+                        "` is read only by the mesh and convex-hull arms.",
+                );
             }
         }
         // `createPrimitivePhysicsShapeHandle(hknp, options.type,
@@ -870,7 +1205,8 @@ function compileCreatePhysicsShape(context: PhysicsIntrinsicContext, call: ts.Ca
         context.reachFeature("physics:aggregate", call);
         return {
             kind: "physics-shape",
-            cpp: `bbl::upstream::create_physics_primitive_shape(` +
+            cpp:
+                `bbl::upstream::create_physics_primitive_shape(` +
                 `${world.cpp}, ` +
                 `bbl::upstream::PhysicsShapeType::${shapeType}, ` +
                 `${compileShapeParameters(context, parametersExpression)})`,
@@ -879,18 +1215,28 @@ function compileCreatePhysicsShape(context: PhysicsIntrinsicContext, call: ts.Ca
     }
     const meshExpression = context.objectProperty(options, "mesh");
     if (!meshExpression) {
-        context.fail(argumentAt(call, 1), "Physics mesh shapes require a mesh or transform hierarchy.");
+        context.fail(
+            argumentAt(call, 1),
+            "Physics mesh shapes require a mesh or transform hierarchy.",
+        );
     }
     const mesh = context.compileValue(meshExpression);
     if (mesh.kind !== "mesh" && mesh.kind !== "transform-node") {
-        context.fail(meshExpression, "Physics geometry requires a mesh or transform node.");
+        context.fail(
+            meshExpression,
+            "Physics geometry requires a mesh or transform node.",
+        );
     }
     context.expectSameEngine(world, mesh, call);
-    const includeChildren = context.objectProperty(options, "includeChildMeshes");
+    const includeChildren = context.objectProperty(
+        options,
+        "includeChildMeshes",
+    );
     context.reachFeature("physics:aggregate", call);
     return {
         kind: "physics-shape",
-        cpp: `bbl::upstream::create_physics_mesh_shape(` +
+        cpp:
+            `bbl::upstream::create_physics_mesh_shape(` +
             `${world.cpp}, ` +
             `bbl::upstream::PhysicsShapeType::${shapeType}, bbl::upstream::physics_node(${mesh.cpp}), ` +
             `${includeChildren ? context.compileBoolean(includeChildren) : "false"})`,
@@ -898,16 +1244,31 @@ function compileCreatePhysicsShape(context: PhysicsIntrinsicContext, call: ts.Ca
     };
 }
 
-function compileAddPhysicsShapeChildFromParent(context: PhysicsIntrinsicContext, call: ts.CallExpression): Value | undefined {
+function compileAddPhysicsShapeChildFromParent(
+    context: PhysicsIntrinsicContext,
+    call: ts.CallExpression,
+): Value | undefined {
     context.expectArgumentCount(call, 5, 5);
-    const values = call.arguments.map((argument) => context.pinValueToTemporary(context.compileValue(argument), "shape_child_arg", argument));
+    const values = call.arguments.map((argument) =>
+        context.pinValueToTemporary(
+            context.compileValue(argument),
+            "shape_child_arg",
+            argument,
+        ),
+    );
     const [world, container, parent, child, node] = values;
     context.expectKind(world!, "physics-world", argumentAt(call, 0));
     context.expectKind(container!, "physics-shape", argumentAt(call, 1));
     context.expectKind(child!, "physics-shape", argumentAt(call, 3));
     for (const index of [2, 4]) {
-        if (values[index]!.kind !== "mesh" && values[index]!.kind !== "transform-node") {
-            context.fail(argumentAt(call, index), "Physics child placement requires a mesh or transform node.");
+        if (
+            values[index]!.kind !== "mesh" &&
+            values[index]!.kind !== "transform-node"
+        ) {
+            context.fail(
+                argumentAt(call, index),
+                "Physics child placement requires a mesh or transform node.",
+            );
         }
     }
     for (const value of values.slice(1))
@@ -915,12 +1276,16 @@ function compileAddPhysicsShapeChildFromParent(context: PhysicsIntrinsicContext,
     context.reachFeature("physics:container", call);
     return {
         kind: "void",
-        cpp: `bbl::upstream::add_physics_shape_child_from_parent(${world!.cpp}, ${container!.cpp}, ` +
+        cpp:
+            `bbl::upstream::add_physics_shape_child_from_parent(${world!.cpp}, ${container!.cpp}, ` +
             `bbl::upstream::physics_node(${parent!.cpp}), ${child!.cpp}, bbl::upstream::physics_node(${node!.cpp}))`,
     };
 }
 
-function compileSetPhysicsShapeIsTrigger(context: PhysicsIntrinsicContext, call: ts.CallExpression): Value | undefined {
+function compileSetPhysicsShapeIsTrigger(
+    context: PhysicsIntrinsicContext,
+    call: ts.CallExpression,
+): Value | undefined {
     // `havok-trigger.ts`: the flag is what makes bodies pass through the
     // shape while their overlaps are reported, so it is the visible half
     // of the pair even when the event handler erases.
@@ -933,13 +1298,17 @@ function compileSetPhysicsShapeIsTrigger(context: PhysicsIntrinsicContext, call:
     context.reachFeature("physics:trigger", call);
     return {
         kind: "void",
-        cpp: `bbl::upstream::set_physics_shape_is_trigger(` +
+        cpp:
+            `bbl::upstream::set_physics_shape_is_trigger(` +
             `${world.cpp}, ${shape.cpp}, ` +
             `${context.compileBoolean(argumentAt(call, 2))})`,
     };
 }
 
-function compileCreatePhysicsBody(context: PhysicsIntrinsicContext, call: ts.CallExpression): Value | undefined {
+function compileCreatePhysicsBody(
+    context: PhysicsIntrinsicContext,
+    call: ts.CallExpression,
+): Value | undefined {
     // `(world, node, motionType, startsAsleep = false)`. The pin's node
     // is a `SceneNode`, so a mesh and a bare transform node both reach
     // it; the generated record carries which arena the handle addresses.
@@ -948,8 +1317,11 @@ function compileCreatePhysicsBody(context: PhysicsIntrinsicContext, call: ts.Cal
     context.expectKind(world, "physics-world", argumentAt(call, 0));
     const node = context.compileValue(argumentAt(call, 1));
     if (node.kind !== "mesh" && node.kind !== "transform-node") {
-        context.fail(argumentAt(call, 1), "createPhysicsBody binds a body to a scene node: a mesh or a " +
-            `transform node, received ${node.kind}.`);
+        context.fail(
+            argumentAt(call, 1),
+            "createPhysicsBody binds a body to a scene node: a mesh or a " +
+                `transform node, received ${node.kind}.`,
+        );
     }
     context.expectSameEngine(world, node, call);
     const motion = compileBodyEnum(context, call, 2, "PhysicsMotionType");
@@ -959,14 +1331,18 @@ function compileCreatePhysicsBody(context: PhysicsIntrinsicContext, call: ts.Cal
     context.reachFeature("physics:aggregate", call);
     return {
         kind: "physics-body",
-        cpp: `bbl::upstream::create_physics_body(` +
+        cpp:
+            `bbl::upstream::create_physics_body(` +
             `${world.cpp}, bbl::upstream::physics_node(${node.cpp}), ` +
             `${motion}, ${startsAsleep})`,
         ...(node.engineCpp ? { engineCpp: node.engineCpp } : {}),
     };
 }
 
-function compileSetPhysicsBodyShape(context: PhysicsIntrinsicContext, call: ts.CallExpression): Value | undefined {
+function compileSetPhysicsBodyShape(
+    context: PhysicsIntrinsicContext,
+    call: ts.CallExpression,
+): Value | undefined {
     context.expectArgumentCount(call, 3, 3);
     const world = context.compileValue(argumentAt(call, 0));
     const body = context.compileValue(argumentAt(call, 1));
@@ -978,12 +1354,16 @@ function compileSetPhysicsBodyShape(context: PhysicsIntrinsicContext, call: ts.C
     context.expectSameEngine(world, shape, call);
     return {
         kind: "void",
-        cpp: `bbl::upstream::set_physics_body_shape(` +
+        cpp:
+            `bbl::upstream::set_physics_body_shape(` +
             `${world.cpp}, ${body.cpp}, ${shape.cpp})`,
     };
 }
 
-function compileOnPhysicsTrigger(context: PhysicsIntrinsicContext, call: ts.CallExpression): Value | undefined {
+function compileOnPhysicsTrigger(
+    context: PhysicsIntrinsicContext,
+    call: ts.CallExpression,
+): Value | undefined {
     // The pin returns a disposer that splices the drain back out.
     // Nothing reached calls it, so the registration is the value.
     context.expectArgumentCount(call, 2, 2);
@@ -992,25 +1372,33 @@ function compileOnPhysicsTrigger(context: PhysicsIntrinsicContext, call: ts.Call
     context.reachFeature("physics:trigger", call);
     return {
         kind: "void",
-        cpp: `bbl::upstream::on_physics_trigger(` +
+        cpp:
+            `bbl::upstream::on_physics_trigger(` +
             `${world.cpp}, ` +
             `${context.compilePhysicsTriggerCallback(argumentAt(call, 1))})`,
     };
 }
 
-function compileOnPhysicsAfterStep(context: PhysicsIntrinsicContext, call: ts.CallExpression): Value | undefined {
+function compileOnPhysicsAfterStep(
+    context: PhysicsIntrinsicContext,
+    call: ts.CallExpression,
+): Value | undefined {
     context.expectArgumentCount(call, 2, 2);
     const world = context.compileValue(argumentAt(call, 0));
     context.expectKind(world, "physics-world", argumentAt(call, 0));
     return {
         kind: "void",
-        cpp: `bbl::upstream::on_physics_after_step(` +
+        cpp:
+            `bbl::upstream::on_physics_after_step(` +
             `${world.cpp}, ` +
             `${context.compileFrameCallback(argumentAt(call, 1))})`,
     };
 }
 
-function compileCreatePhysicsAggregate(context: PhysicsIntrinsicContext, call: ts.CallExpression): Value | undefined {
+function compileCreatePhysicsAggregate(
+    context: PhysicsIntrinsicContext,
+    call: ts.CallExpression,
+): Value | undefined {
     context.expectArgumentCount(call, 4, 4);
     const world = context.compileValue(argumentAt(call, 0));
     context.expectKind(world, "physics-world", argumentAt(call, 0));
@@ -1022,7 +1410,8 @@ function compileCreatePhysicsAggregate(context: PhysicsIntrinsicContext, call: t
     context.reachFeature("physics:aggregate", call);
     return {
         kind: "physics-aggregate",
-        cpp: `bbl::upstream::create_physics_aggregate(` +
+        cpp:
+            `bbl::upstream::create_physics_aggregate(` +
             `${world.cpp}, ${mesh.cpp}, ` +
             `bbl::upstream::PhysicsShapeType::${shapeType}, ` +
             `${options})`,
@@ -1030,7 +1419,10 @@ function compileCreatePhysicsAggregate(context: PhysicsIntrinsicContext, call: t
     };
 }
 
-function compileSetPhysicsBodyMotionType(context: PhysicsIntrinsicContext, call: ts.CallExpression): Value | undefined {
+function compileSetPhysicsBodyMotionType(
+    context: PhysicsIntrinsicContext,
+    call: ts.CallExpression,
+): Value | undefined {
     context.expectArgumentCount(call, 3, 3);
     const world = context.compileValue(argumentAt(call, 0));
     const body = context.compileValue(argumentAt(call, 1));
@@ -1040,13 +1432,17 @@ function compileSetPhysicsBodyMotionType(context: PhysicsIntrinsicContext, call:
     const motion = compileBodyEnum(context, call, 2, "PhysicsMotionType");
     return {
         kind: "void",
-        cpp: `bbl::upstream::set_physics_body_motion_type(` +
+        cpp:
+            `bbl::upstream::set_physics_body_motion_type(` +
             `${world.cpp}, ${body.cpp}, ` +
             `${motion})`,
     };
 }
 
-function compileSetPhysicsBodyMass(context: PhysicsIntrinsicContext, call: ts.CallExpression): Value | undefined {
+function compileSetPhysicsBodyMass(
+    context: PhysicsIntrinsicContext,
+    call: ts.CallExpression,
+): Value | undefined {
     context.expectArgumentCount(call, 3, 3);
     const world = context.compileValue(argumentAt(call, 0));
     const body = context.compileValue(argumentAt(call, 1));
@@ -1055,13 +1451,17 @@ function compileSetPhysicsBodyMass(context: PhysicsIntrinsicContext, call: ts.Ca
     context.expectSameEngine(world, body, call);
     return {
         kind: "void",
-        cpp: `bbl::upstream::set_physics_body_mass(` +
+        cpp:
+            `bbl::upstream::set_physics_body_mass(` +
             `${world.cpp}, ${body.cpp}, ` +
             `${context.compileNumber(argumentAt(call, 2), "double")})`,
     };
 }
 
-function compileSetPhysicsShapeMaterial(context: PhysicsIntrinsicContext, call: ts.CallExpression): Value | undefined {
+function compileSetPhysicsShapeMaterial(
+    context: PhysicsIntrinsicContext,
+    call: ts.CallExpression,
+): Value | undefined {
     // `(world, shape, friction, restitution, staticFriction = friction)`.
     // The fifth argument's default is the pin's own parameter
     // initializer and is settled inside the generated setter, so an
@@ -1076,7 +1476,8 @@ function compileSetPhysicsShapeMaterial(context: PhysicsIntrinsicContext, call: 
     const staticFriction = compileNullableNumber(context, call.arguments[4]);
     return {
         kind: "void",
-        cpp: `bbl::upstream::set_physics_shape_material(` +
+        cpp:
+            `bbl::upstream::set_physics_shape_material(` +
             `${world.cpp}, ${shape.cpp}, ` +
             `${context.compileNumber(argumentAt(call, 2), "double")}, ` +
             `${context.compileNumber(argumentAt(call, 3), "double")}, ` +
@@ -1084,7 +1485,10 @@ function compileSetPhysicsShapeMaterial(context: PhysicsIntrinsicContext, call: 
     };
 }
 
-function compileSetPhysicsBodyMassProperties(context: PhysicsIntrinsicContext, call: ts.CallExpression): Value | undefined {
+function compileSetPhysicsBodyMassProperties(
+    context: PhysicsIntrinsicContext,
+    call: ts.CallExpression,
+): Value | undefined {
     context.expectArgumentCount(call, 3, 3);
     const world = context.compileValue(argumentAt(call, 0));
     const body = context.compileValue(argumentAt(call, 1));
@@ -1093,13 +1497,17 @@ function compileSetPhysicsBodyMassProperties(context: PhysicsIntrinsicContext, c
     context.expectSameEngine(world, body, call);
     return {
         kind: "void",
-        cpp: `bbl::upstream::set_physics_body_mass_properties(` +
+        cpp:
+            `bbl::upstream::set_physics_body_mass_properties(` +
             `${world.cpp}, ${body.cpp}, ` +
             `${compileMassProperties(context, argumentAt(call, 2))})`,
     };
 }
 
-function compileSetPhysicsShapeFilterMembershipMask(context: PhysicsIntrinsicContext, call: ts.CallExpression): Value | undefined {
+function compileSetPhysicsShapeFilterMembershipMask(
+    context: PhysicsIntrinsicContext,
+    call: ts.CallExpression,
+): Value | undefined {
     context.expectArgumentCount(call, 3, 3);
     const world = context.compileValue(argumentAt(call, 0));
     const shape = context.compileValue(argumentAt(call, 1));
@@ -1108,13 +1516,17 @@ function compileSetPhysicsShapeFilterMembershipMask(context: PhysicsIntrinsicCon
     context.expectSameEngine(world, shape, call);
     return {
         kind: "void",
-        cpp: `bbl::upstream::set_physics_shape_filter_membership_mask(` +
+        cpp:
+            `bbl::upstream::set_physics_shape_filter_membership_mask(` +
             `${world.cpp}, ${shape.cpp}, ` +
             `static_cast<std::uint32_t>(${context.compileNumber(argumentAt(call, 2), "double")}))`,
     };
 }
 
-function compileSetPhysicsBodyPreStep(context: PhysicsIntrinsicContext, call: ts.CallExpression): Value | undefined {
+function compileSetPhysicsBodyPreStep(
+    context: PhysicsIntrinsicContext,
+    call: ts.CallExpression,
+): Value | undefined {
     // `(body, enabled)`: no world travels with the pin's call either,
     // because a pinned body carries its own `_world`.
     context.expectArgumentCount(call, 2, 2);
@@ -1122,12 +1534,16 @@ function compileSetPhysicsBodyPreStep(context: PhysicsIntrinsicContext, call: ts
     context.expectKind(body, "physics-body", argumentAt(call, 0));
     return {
         kind: "void",
-        cpp: `bbl::upstream::set_physics_body_pre_step(` +
+        cpp:
+            `bbl::upstream::set_physics_body_pre_step(` +
             `${body.cpp}, ${context.compileBoolean(argumentAt(call, 1))})`,
     };
 }
 
-function compileSetPhysicsBodyPrestepType(context: PhysicsIntrinsicContext, call: ts.CallExpression): Value | undefined {
+function compileSetPhysicsBodyPrestepType(
+    context: PhysicsIntrinsicContext,
+    call: ts.CallExpression,
+): Value | undefined {
     // `(body, type)`, and no world travels with it for the same reason
     // `setPhysicsBodyPreStep` above takes none. The pin's own body also
     // turns pre-step syncing ON for any type but DISABLED, which is why
@@ -1138,12 +1554,16 @@ function compileSetPhysicsBodyPrestepType(context: PhysicsIntrinsicContext, call
     context.expectKind(body, "physics-body", argumentAt(call, 0));
     return {
         kind: "void",
-        cpp: `bbl::upstream::set_physics_body_prestep_type(` +
+        cpp:
+            `bbl::upstream::set_physics_body_prestep_type(` +
             `${body.cpp}, ${compileBodyEnum(context, call, 1, "PhysicsPrestepType")})`,
     };
 }
 
-function compileSetPhysicsShapeFilterCollideMask(context: PhysicsIntrinsicContext, call: ts.CallExpression): Value | undefined {
+function compileSetPhysicsShapeFilterCollideMask(
+    context: PhysicsIntrinsicContext,
+    call: ts.CallExpression,
+): Value | undefined {
     context.expectArgumentCount(call, 3, 3);
     const world = context.compileValue(argumentAt(call, 0));
     const shape = context.compileValue(argumentAt(call, 1));
@@ -1152,13 +1572,17 @@ function compileSetPhysicsShapeFilterCollideMask(context: PhysicsIntrinsicContex
     context.expectSameEngine(world, shape, call);
     return {
         kind: "void",
-        cpp: `bbl::upstream::set_physics_shape_filter_collide_mask(` +
+        cpp:
+            `bbl::upstream::set_physics_shape_filter_collide_mask(` +
             `${world.cpp}, ${shape.cpp}, ` +
             `static_cast<std::uint32_t>(${context.compileNumber(argumentAt(call, 2), "double")}))`,
     };
 }
 
-function compileGetPhysicsBodyLinearVelocity(context: PhysicsIntrinsicContext, call: ts.CallExpression): Value | undefined {
+function compileGetPhysicsBodyLinearVelocity(
+    context: PhysicsIntrinsicContext,
+    call: ts.CallExpression,
+): Value | undefined {
     context.expectArgumentCount(call, 2, 2);
     const world = context.compileValue(argumentAt(call, 0));
     const body = context.compileValue(argumentAt(call, 1));
@@ -1166,12 +1590,17 @@ function compileGetPhysicsBodyLinearVelocity(context: PhysicsIntrinsicContext, c
     context.expectKind(body, "physics-body", argumentAt(call, 1));
     context.expectSameEngine(world, body, call);
     const velocity = context.allocateTemporaryCppName("physics_velocity");
-    context.emit(`const bbl::Vec3d ${velocity} = ` +
-        `bbl::upstream::get_physics_body_linear_velocity(${world.cpp}, ${body.cpp});`);
+    context.emit(
+        `const bbl::Vec3d ${velocity} = ` +
+            `bbl::upstream::get_physics_body_linear_velocity(${world.cpp}, ${body.cpp});`,
+    );
     return vec3Record(velocity);
 }
 
-function compileApplyPhysicsBodyForce(context: PhysicsIntrinsicContext, call: ts.CallExpression): Value | undefined {
+function compileApplyPhysicsBodyForce(
+    context: PhysicsIntrinsicContext,
+    call: ts.CallExpression,
+): Value | undefined {
     context.expectArgumentCount(call, 4, 4);
     const world = context.compileValue(argumentAt(call, 0));
     const body = context.compileValue(argumentAt(call, 1));
@@ -1180,14 +1609,18 @@ function compileApplyPhysicsBodyForce(context: PhysicsIntrinsicContext, call: ts
     context.expectSameEngine(world, body, call);
     return {
         kind: "void",
-        cpp: `bbl::upstream::apply_physics_body_force(` +
+        cpp:
+            `bbl::upstream::apply_physics_body_force(` +
             `${world.cpp}, ${body.cpp}, ` +
             `${context.compileVec3(argumentAt(call, 2), "double")}, ` +
             `${context.compileVec3(argumentAt(call, 3), "double")})`,
     };
 }
 
-function compileSetPhysicsBodyCollisionEventsEnabled(context: PhysicsIntrinsicContext, call: ts.CallExpression): Value | undefined {
+function compileSetPhysicsBodyCollisionEventsEnabled(
+    context: PhysicsIntrinsicContext,
+    call: ts.CallExpression,
+): Value | undefined {
     context.expectArgumentCount(call, 3, 3);
     const world = context.compileValue(argumentAt(call, 0));
     const body = context.compileValue(argumentAt(call, 1));
@@ -1196,36 +1629,57 @@ function compileSetPhysicsBodyCollisionEventsEnabled(context: PhysicsIntrinsicCo
     context.expectSameEngine(world, body, call);
     return {
         kind: "void",
-        cpp: `bbl::upstream::set_physics_body_collision_events_enabled(` +
+        cpp:
+            `bbl::upstream::set_physics_body_collision_events_enabled(` +
             `${world.cpp}, ${body.cpp}, ${context.compileBoolean(argumentAt(call, 2))})`,
     };
 }
 
-function compileOnPhysicsCollision(context: PhysicsIntrinsicContext, call: ts.CallExpression): Value | undefined {
+function compileOnPhysicsCollision(
+    context: PhysicsIntrinsicContext,
+    call: ts.CallExpression,
+): Value | undefined {
     context.expectArgumentCount(call, 2, 2);
     const world = context.compileValue(argumentAt(call, 0));
     context.expectKind(world, "physics-world", argumentAt(call, 0));
     return {
         kind: "void",
-        cpp: `bbl::upstream::on_physics_collision(` +
+        cpp:
+            `bbl::upstream::on_physics_collision(` +
             `${world.cpp}, ${context.compilePhysicsCollisionCallback(argumentAt(call, 1))})`,
     };
 }
 
-function compileShapeProximity(context: PhysicsIntrinsicContext, call: ts.CallExpression, importedName: "shapeProximity" | "shapeCast"): Value | undefined {
+function compileShapeProximity(
+    context: PhysicsIntrinsicContext,
+    call: ts.CallExpression,
+    importedName: "shapeProximity" | "shapeCast",
+): Value | undefined {
     context.expectArgumentCount(call, 2, 2);
     const world = context.compileValue(argumentAt(call, 0));
     context.expectKind(world, "physics-world", argumentAt(call, 0));
     const worldCpp = context.pinValueToTemporary(world, "query_world").cpp;
     const argument = context.unwrap(argumentAt(call, 1));
     if (!ts.isObjectLiteralExpression(argument)) {
-        context.fail(argument, "Physics shape queries require an inline query record.");
+        context.fail(
+            argument,
+            "Physics shape queries require an inline query record.",
+        );
     }
     const proximity = importedName === "shapeProximity";
     const required = proximity
         ? ["shape", "position", "rotation", "maxDistance"]
         : ["shape", "rotation", "startPosition", "endPosition"];
-    validateObjectProperties(context, argument, [...required, "shouldHitTriggers", ...(proximity ? [] : ["ignoreBody"])], "Unsupported physics shape query option.");
+    validateObjectProperties(
+        context,
+        argument,
+        [
+            ...required,
+            "shouldHitTriggers",
+            ...(proximity ? [] : ["ignoreBody"]),
+        ],
+        "Unsupported physics shape query option.",
+    );
     const fields = new EmissionMap<string, string>();
     for (const property of argument.properties) {
         const expression = ts.isPropertyAssignment(property)
@@ -1234,33 +1688,64 @@ function compileShapeProximity(context: PhysicsIntrinsicContext, call: ts.CallEx
         const name = context.propertyName(property.name!)!;
         if (name === "shape" || name === "ignoreBody") {
             const value = context.compileValue(expression);
-            context.expectKind(value, name === "shape" ? "physics-shape" : "physics-body", expression);
+            context.expectKind(
+                value,
+                name === "shape" ? "physics-shape" : "physics-body",
+                expression,
+            );
             context.expectSameEngine(world, value, expression);
-            fields.set(name, context.pinValueToTemporary(value, `query_${name}`).cpp);
-        }
-        else if (name === "rotation") {
+            fields.set(
+                name,
+                context.pinValueToTemporary(value, `query_${name}`).cpp,
+            );
+        } else if (name === "rotation") {
             const rotation = context.unwrap(expression);
             if (!ts.isObjectLiteralExpression(rotation)) {
-                context.fail(rotation, "Physics query rotations require an inline quaternion record.");
+                context.fail(
+                    rotation,
+                    "Physics query rotations require an inline quaternion record.",
+                );
             }
-            validateObjectProperties(context, rotation, ["x", "y", "z", "w"], "Physics query rotations require x, y, z and w.");
+            validateObjectProperties(
+                context,
+                rotation,
+                ["x", "y", "z", "w"],
+                "Physics query rotations require x, y, z and w.",
+            );
             const lanes = new EmissionMap<string, string>();
             for (const lane of rotation.properties) {
-                const value = ts.isPropertyAssignment(lane) ? lane.initializer : (lane as ts.ShorthandPropertyAssignment).name;
-                lanes.set(context.propertyName(lane.name!)!, pinRayNumber(context, value));
+                const value = ts.isPropertyAssignment(lane)
+                    ? lane.initializer
+                    : (lane as ts.ShorthandPropertyAssignment).name;
+                lanes.set(
+                    context.propertyName(lane.name!)!,
+                    pinRayNumber(context, value),
+                );
             }
             if (["x", "y", "z", "w"].some((axis) => !lanes.has(axis))) {
-                context.fail(rotation, "Physics query rotations require x, y, z and w.");
+                context.fail(
+                    rotation,
+                    "Physics query rotations require x, y, z and w.",
+                );
             }
-            fields.set(name, `std::array<double, 4>{${["x", "y", "z", "w"].map((axis) => lanes.get(axis)).join(", ")}}`);
-        }
-        else if (name === "shouldHitTriggers") {
-            fields.set(name, context.pinValueToTemporary({ kind: "boolean", cpp: context.compileBoolean(expression) }, "query_triggers").cpp);
-        }
-        else if (name === "maxDistance") {
+            fields.set(
+                name,
+                `std::array<double, 4>{${["x", "y", "z", "w"].map((axis) => lanes.get(axis)).join(", ")}}`,
+            );
+        } else if (name === "shouldHitTriggers") {
+            fields.set(
+                name,
+                context.pinValueToTemporary(
+                    {
+                        kind: "boolean",
+                        cpp: context.compileBoolean(expression),
+                    },
+                    "query_triggers",
+                ).cpp,
+            );
+        } else if (name === "maxDistance") {
             fields.set(name, pinRayNumber(context, expression));
-        }
-        else {
+        } else {
             fields.set(name, compileRayPointArgument(context, expression));
         }
     }
@@ -1270,17 +1755,39 @@ function compileShapeProximity(context: PhysicsIntrinsicContext, call: ts.CallEx
     }
     const result = context.allocateTemporaryCppName("physics_shape_query");
     const args = proximity
-        ? [fields.get("position"), fields.get("rotation"), fields.get("maxDistance")]
-        : [fields.get("rotation"), fields.get("startPosition"), fields.get("endPosition")];
+        ? [
+              fields.get("position"),
+              fields.get("rotation"),
+              fields.get("maxDistance"),
+          ]
+        : [
+              fields.get("rotation"),
+              fields.get("startPosition"),
+              fields.get("endPosition"),
+          ];
     args.push(fields.get("shouldHitTriggers") ?? "false");
     if (!proximity)
-        args.push(fields.has("ignoreBody") ? `${fields.get("ignoreBody")}.handle` : "bbl::pal::PhysicsBodyHandle{}");
+        args.push(
+            fields.has("ignoreBody")
+                ? `${fields.get("ignoreBody")}.handle`
+                : "bbl::pal::PhysicsBodyHandle{}",
+        );
     context.reachFeature("physics:queries", call);
-    context.emit({ kind: "declaration", type: "const auto", name: result, initializer: `bbl::upstream::shape_${proximity ? "proximity" : "cast"}(${worldCpp}, ${fields.get("shape")}, ${args.join(", ")})` });
+    context.emit({
+        kind: "declaration",
+        type: "const auto",
+        name: result,
+        initializer: `bbl::upstream::shape_${proximity ? "proximity" : "cast"}(${worldCpp}, ${fields.get("shape")}, ${args.join(", ")})`,
+    });
     return {
-        kind: "record", cpp: "", recordProperties: {
+        kind: "record",
+        cpp: "",
+        recordProperties: {
             hasHit: { kind: "boolean", cpp: `${result}.has_hit` },
-            [proximity ? "distance" : "fraction"]: { kind: "number", cpp: `${result}.distance_or_fraction` },
+            [proximity ? "distance" : "fraction"]: {
+                kind: "number",
+                cpp: `${result}.distance_or_fraction`,
+            },
             inputHitPoint: vec3Record(`${result}.input_point`),
             hitPoint: vec3Record(`${result}.point`),
             inputHitNormal: vec3Record(`${result}.input_normal`),
@@ -1289,12 +1796,20 @@ function compileShapeProximity(context: PhysicsIntrinsicContext, call: ts.CallEx
     };
 }
 
-function compilePhysicsRaycast(context: PhysicsIntrinsicContext, call: ts.CallExpression): Value | undefined {
+function compilePhysicsRaycast(
+    context: PhysicsIntrinsicContext,
+    call: ts.CallExpression,
+): Value | undefined {
     context.expectArgumentCount(call, 3, 4);
     const world = context.compileValue(argumentAt(call, 0));
     context.expectKind(world, "physics-world", argumentAt(call, 0));
     const worldCpp = context.allocateTemporaryCppName("ray_world");
-    context.emit({ kind: "declaration", type: "const auto", name: worldCpp, initializer: world.cpp });
+    context.emit({
+        kind: "declaration",
+        type: "const auto",
+        name: worldCpp,
+        initializer: world.cpp,
+    });
     const from = compileRayPointArgument(context, argumentAt(call, 1));
     const to = compileRayPointArgument(context, argumentAt(call, 2));
     let membership = "0xffffffffu";
@@ -1303,7 +1818,12 @@ function compilePhysicsRaycast(context: PhysicsIntrinsicContext, call: ts.CallEx
     if (call.arguments[3]) {
         const argument = context.unwrap(call.arguments[3]);
         const options = context.expectObjectLiteral(argument);
-        validateObjectProperties(context, options, ["membership", "collideWith", "shouldHitTriggers"], "A physics raycast option outside the reached filter slice.");
+        validateObjectProperties(
+            context,
+            options,
+            ["membership", "collideWith", "shouldHitTriggers"],
+            "A physics raycast option outside the reached filter slice.",
+        );
         // Resolution supplies the accepted shape, but an alias already ran
         // its initializer. Read the captured object instead of running it again.
         let captured = ts.isObjectLiteralExpression(argument)
@@ -1312,7 +1832,8 @@ function compilePhysicsRaycast(context: PhysicsIntrinsicContext, call: ts.CallEx
         if (captured?.kind === "data") {
             // Native storage owns a snapshot even when initializer metadata
             // still refers to another object's mutable property.
-            const { recordProperties: _initializerFields, ...stored } = captured;
+            const { recordProperties: _initializerFields, ...stored } =
+                captured;
             captured = stored;
         }
         // Compile and pin each initializer before the next one can emit a
@@ -1326,36 +1847,52 @@ function compilePhysicsRaycast(context: PhysicsIntrinsicContext, call: ts.CallEx
             const kind = name === "shouldHitTriggers" ? "boolean" : "number";
             let cpp: string;
             if (captured) {
-                const access = ts.factory.createPropertyAccessExpression(argument, name!);
+                const access = ts.factory.createPropertyAccessExpression(
+                    argument,
+                    name!,
+                );
                 const field = context.readResolvedProperty(captured, access);
                 if (!field)
-                    context.fail(argument, `Physics raycast option '${name}' is not a captured value.`);
+                    context.fail(
+                        argument,
+                        `Physics raycast option '${name}' is not a captured value.`,
+                    );
                 context.expectKind(field, kind, argument);
-                if (captured.kind !== "data" &&
-                    (kind === "boolean" ? field.staticBoolean : field.staticNumber) === undefined) {
-                    context.fail(argument, "Physics raycast option aliases require stored scalar fields or generation-known values.");
+                if (
+                    captured.kind !== "data" &&
+                    (kind === "boolean"
+                        ? field.staticBoolean
+                        : field.staticNumber) === undefined
+                ) {
+                    context.fail(
+                        argument,
+                        "Physics raycast option aliases require stored scalar fields or generation-known values.",
+                    );
                 }
                 cpp = field.cpp;
+            } else {
+                cpp =
+                    kind === "boolean"
+                        ? context.compileBoolean(expression)
+                        : context.compileNumber(expression, "double");
             }
-            else {
-                cpp = kind === "boolean"
-                    ? context.compileBoolean(expression)
-                    : context.compileNumber(expression, "double");
-            }
-            const snapshot = context.pinValueToTemporary({ kind, cpp }, `ray_${name}`).cpp;
-            if (name === "shouldHitTriggers")
-                shouldHitTriggers = snapshot;
+            const snapshot = context.pinValueToTemporary(
+                { kind, cpp },
+                `ray_${name}`,
+            ).cpp;
+            if (name === "shouldHitTriggers") shouldHitTriggers = snapshot;
             else if (name === "membership")
                 membership = `static_cast<std::uint32_t>(${snapshot})`;
-            else
-                collideWith = `static_cast<std::uint32_t>(${snapshot})`;
+            else collideWith = `static_cast<std::uint32_t>(${snapshot})`;
         }
     }
     const result = context.allocateTemporaryCppName("physics_raycast");
-    context.emit(`const bbl::upstream::PhysicsRaycastResult ${result} = ` +
-        `bbl::upstream::physics_raycast(${worldCpp}, ` +
-        `${from}, ${to}, ` +
-        `${membership}, ${collideWith}, ${shouldHitTriggers});`);
+    context.emit(
+        `const bbl::upstream::PhysicsRaycastResult ${result} = ` +
+            `bbl::upstream::physics_raycast(${worldCpp}, ` +
+            `${from}, ${to}, ` +
+            `${membership}, ${collideWith}, ${shouldHitTriggers});`,
+    );
     return {
         kind: "record",
         cpp: "",
@@ -1372,13 +1909,18 @@ function compilePhysicsRaycast(context: PhysicsIntrinsicContext, call: ts.CallEx
                     kind: "optional",
                     inner: { kind: "handle", handle: "physics-body" },
                 },
-                ...(world.engineCpp === undefined ? {} : { engineCpp: world.engineCpp }),
+                ...(world.engineCpp === undefined
+                    ? {}
+                    : { engineCpp: world.engineCpp }),
             },
         },
     };
 }
 
-function compileApplyPhysicsImpulse(context: PhysicsIntrinsicContext, call: ts.CallExpression): Value | undefined {
+function compileApplyPhysicsImpulse(
+    context: PhysicsIntrinsicContext,
+    call: ts.CallExpression,
+): Value | undefined {
     context.expectArgumentCount(call, 3, 4);
     const world = context.compileValue(argumentAt(call, 0));
     const body = context.compileValue(argumentAt(call, 1));
@@ -1391,31 +1933,58 @@ function compileApplyPhysicsImpulse(context: PhysicsIntrinsicContext, call: ts.C
         : "std::optional<bbl::Vec3d>{}";
     return {
         kind: "void",
-        cpp: `bbl::upstream::apply_physics_impulse(` +
+        cpp:
+            `bbl::upstream::apply_physics_impulse(` +
             `${world.cpp}, ${body.cpp}, ${impulse}, ${point})`,
     };
 }
 
-const physicsIntrinsicHandlers = new EmissionMap<string, (context: PhysicsIntrinsicContext, call: ts.CallExpression) => Value | undefined>([
-    ["enableHavokThinInstancePhysics", (context, call) => {
-        context.expectArgumentCount(call, 1, 1);
-        const world = context.compileValue(argumentAt(call, 0));
-        context.expectKind(world, "physics-world", argumentAt(call, 0));
-        context.reachFeature("physics:thin-instances", call);
-        return { kind: "void", cpp: `bbl::upstream::enable_havok_thin_instance_physics(${world.cpp})` };
-    }],
-    ["getPhysicsBodyInstanceCount", (context, call) => {
-        context.expectArgumentCount(call, 1, 1);
-        const body = context.compileValue(argumentAt(call, 0));
-        context.expectKind(body, "physics-body", argumentAt(call, 0));
-        return { kind: "number", cpp: `bbl::upstream::get_physics_body_instance_count(${body.cpp})` };
-    }],
+const physicsIntrinsicHandlers = new EmissionMap<
+    string,
+    (
+        context: PhysicsIntrinsicContext,
+        call: ts.CallExpression,
+    ) => Value | undefined
+>([
+    [
+        "enableHavokThinInstancePhysics",
+        (context, call) => {
+            context.expectArgumentCount(call, 1, 1);
+            const world = context.compileValue(argumentAt(call, 0));
+            context.expectKind(world, "physics-world", argumentAt(call, 0));
+            context.reachFeature("physics:thin-instances", call);
+            return {
+                kind: "void",
+                cpp: `bbl::upstream::enable_havok_thin_instance_physics(${world.cpp})`,
+            };
+        },
+    ],
+    [
+        "getPhysicsBodyInstanceCount",
+        (context, call) => {
+            context.expectArgumentCount(call, 1, 1);
+            const body = context.compileValue(argumentAt(call, 0));
+            context.expectKind(body, "physics-body", argumentAt(call, 0));
+            return {
+                kind: "number",
+                cpp: `bbl::upstream::get_physics_body_instance_count(${body.cpp})`,
+            };
+        },
+    ],
     ["createHeightFieldShape", compileCreateHeightFieldShape],
     ["createPhysicsConstraint", compileCreatePhysicsConstraint],
     ["createPhysicsViewer", compileCreatePhysicsViewer],
     ["showPhysicsBody", compileShowPhysicsBody],
-    ["hidePhysicsBody", (context, call) => compileHidePhysicsBody(context, call, "hidePhysicsBody")],
-    ["disposePhysicsViewer", (context, call) => compileHidePhysicsBody(context, call, "disposePhysicsViewer")],
+    [
+        "hidePhysicsBody",
+        (context, call) =>
+            compileHidePhysicsBody(context, call, "hidePhysicsBody"),
+    ],
+    [
+        "disposePhysicsViewer",
+        (context, call) =>
+            compileHidePhysicsBody(context, call, "disposePhysicsViewer"),
+    ],
     ["createHavokWorld", compileCreateHavokWorld],
     ["enableHavokFloatingOrigin", compileEnableHavokFloatingOrigin],
     ["setPhysicsGravity", compileSetPhysicsGravity],
@@ -1424,15 +1993,21 @@ const physicsIntrinsicHandlers = new EmissionMap<string, (context: PhysicsIntrin
     ["addPhysicsShapeChildFromParent", compileAddPhysicsShapeChildFromParent],
     ["setPhysicsShapeIsTrigger", compileSetPhysicsShapeIsTrigger],
     ["createPhysicsBody", compileCreatePhysicsBody],
-    ["removePhysicsBody", (context, call) => {
-        context.expectArgumentCount(call, 2, 2);
-        const world = context.compileValue(argumentAt(call, 0));
-        const body = context.compileValue(argumentAt(call, 1));
-        context.expectKind(world, "physics-world", argumentAt(call, 0));
-        context.expectKind(body, "physics-body", argumentAt(call, 1));
-        context.expectSameEngine(world, body, call);
-        return { kind: "void", cpp: `bbl::upstream::remove_physics_body(${world.cpp}, ${body.cpp})` };
-    }],
+    [
+        "removePhysicsBody",
+        (context, call) => {
+            context.expectArgumentCount(call, 2, 2);
+            const world = context.compileValue(argumentAt(call, 0));
+            const body = context.compileValue(argumentAt(call, 1));
+            context.expectKind(world, "physics-world", argumentAt(call, 0));
+            context.expectKind(body, "physics-body", argumentAt(call, 1));
+            context.expectSameEngine(world, body, call);
+            return {
+                kind: "void",
+                cpp: `bbl::upstream::remove_physics_body(${world.cpp}, ${body.cpp})`,
+            };
+        },
+    ],
     ["setPhysicsBodyShape", compileSetPhysicsBodyShape],
     ["onPhysicsTrigger", compileOnPhysicsTrigger],
     ["onPhysicsAfterStep", compileOnPhysicsAfterStep],
@@ -1441,16 +2016,32 @@ const physicsIntrinsicHandlers = new EmissionMap<string, (context: PhysicsIntrin
     ["setPhysicsBodyMass", compileSetPhysicsBodyMass],
     ["setPhysicsShapeMaterial", compileSetPhysicsShapeMaterial],
     ["setPhysicsBodyMassProperties", compileSetPhysicsBodyMassProperties],
-    ["setPhysicsShapeFilterMembershipMask", compileSetPhysicsShapeFilterMembershipMask],
+    [
+        "setPhysicsShapeFilterMembershipMask",
+        compileSetPhysicsShapeFilterMembershipMask,
+    ],
     ["setPhysicsBodyPreStep", compileSetPhysicsBodyPreStep],
     ["setPhysicsBodyPrestepType", compileSetPhysicsBodyPrestepType],
-    ["setPhysicsShapeFilterCollideMask", compileSetPhysicsShapeFilterCollideMask],
+    [
+        "setPhysicsShapeFilterCollideMask",
+        compileSetPhysicsShapeFilterCollideMask,
+    ],
     ["getPhysicsBodyLinearVelocity", compileGetPhysicsBodyLinearVelocity],
     ["applyPhysicsBodyForce", compileApplyPhysicsBodyForce],
-    ["setPhysicsBodyCollisionEventsEnabled", compileSetPhysicsBodyCollisionEventsEnabled],
+    [
+        "setPhysicsBodyCollisionEventsEnabled",
+        compileSetPhysicsBodyCollisionEventsEnabled,
+    ],
     ["onPhysicsCollision", compileOnPhysicsCollision],
-    ["shapeProximity", (context, call) => compileShapeProximity(context, call, "shapeProximity")],
-    ["shapeCast", (context, call) => compileShapeProximity(context, call, "shapeCast")],
+    [
+        "shapeProximity",
+        (context, call) =>
+            compileShapeProximity(context, call, "shapeProximity"),
+    ],
+    [
+        "shapeCast",
+        (context, call) => compileShapeProximity(context, call, "shapeCast"),
+    ],
     ["physicsRaycast", compilePhysicsRaycast],
     ["applyPhysicsImpulse", compileApplyPhysicsImpulse],
 ]);

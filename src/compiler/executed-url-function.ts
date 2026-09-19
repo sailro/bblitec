@@ -59,13 +59,10 @@ import type { Value } from "./types.js";
 import { tryResolveFunctionDeclaration } from "./user-functions.js";
 import { isDefaultLibraryIdentifier } from "./symbols.js";
 
-interface ExecutedUrlCallContext
-    extends Pick<LoweringServices,
-        | "checker"
-        | "options"
-        | "browserTextureFunctions"
-        | "fail"
-    > {}
+interface ExecutedUrlCallContext extends Pick<
+    LoweringServices,
+    "checker" | "options" | "browserTextureFunctions" | "fail"
+> {}
 
 function createsObjectUrl(node: ts.Node, checker: ts.TypeChecker): boolean {
     return containsValueNode(
@@ -111,7 +108,8 @@ export function compileExecutedUrlFunctionCall(
     callee: ts.Identifier,
 ): Value | undefined {
     const declaration = tryResolveFunctionDeclaration(context.checker, callee);
-    if (!declaration || !ts.isFunctionDeclaration(declaration)) return undefined;
+    if (!declaration || !ts.isFunctionDeclaration(declaration))
+        return undefined;
     let qualifies = urlProducers.get(declaration);
     if (qualifies === undefined) {
         qualifies = isExecutedUrlFunction(context.checker, declaration);
@@ -120,9 +118,15 @@ export function compileExecutedUrlFunctionCall(
     if (!qualifies) return undefined;
     const name = declaration.name!.text;
     if (call.arguments.length !== 0) {
-        context.fail(call, `'${name}' produces its URL in a browser canvas at generation and takes no arguments.`);
+        context.fail(
+            call,
+            `'${name}' produces its URL in a browser canvas at generation and takes no arguments.`,
+        );
     }
-    if ((ts.getCombinedModifierFlags(declaration) & ts.ModifierFlags.Export) === 0) {
+    if (
+        (ts.getCombinedModifierFlags(declaration) & ts.ModifierFlags.Export) ===
+        0
+    ) {
         context.fail(
             call,
             `'${name}' is run by the bake driver in the browser, so it must be exported.`,

@@ -42,8 +42,7 @@ import { pinnedHeader } from "./pinned-header.js";
 const baseModule = "src/shadow/shadow-base.ts";
 const spotModule = "src/shadow/pcf-spotlight-shadow-generator.ts";
 const hooksModule = "src/shadow/pcf-shadow-task-hooks.ts";
-const pcfDirectionalModule =
-    "src/shadow/pcf-directional-shadow-generator.ts";
+const pcfDirectionalModule = "src/shadow/pcf-directional-shadow-generator.ts";
 const esmModule = "src/shadow/esm-directional-shadow-generator.ts";
 const csmModule = "src/shadow/csm-directional-shadow-generator.ts";
 const csmHooksModule = "src/shadow/csm-shadow-task-hooks.ts";
@@ -243,7 +242,10 @@ function matrixLiteral(
 }
 
 function lowerComputeSpotLightMatrix(context: LoweringContext): string {
-    const { declaration } = context.functionDeclaration(spotModule, "_computeSpotLightMatrix");
+    const { declaration } = context.functionDeclaration(
+        spotModule,
+        "_computeSpotLightMatrix",
+    );
     const bindings = new Map<string, PinnedBinding>([
         ...vec3MemberBindings("light.direction"),
         ...vec3MemberBindings("light.position"),
@@ -256,59 +258,83 @@ function lowerComputeSpotLightMatrix(context: LoweringContext): string {
         ["far", { cpp: "far_plane", type: "scalar" }],
         ...eyeOffsetBindings,
     ]);
-    return lowerPinnedFunction(context, spotModule, "_computeSpotLightMatrix", [
-        { pinned: "light", kind: "record", annotation: "SpotLight", cpp: "light", cppType: "LightRecord" },
-        { pinned: "near", kind: "number", cpp: "near_plane" },
-        { pinned: "far", kind: "number", cpp: "far_plane" },
-        ...eyeOffsetBindings.map(([pinned, binding]): PinnedFunctionParameter => ({
-            pinned, kind: "number", cpp: binding.cpp, binding, specialized: true, defaultValue: 0,
-        })),
-    ], {
-        cppName: "compute_spot_light_matrix", inline: true, trailingParameters: ["Vec3d eye"],
-        memberBindings: bindings,
-        calls: new Map([
-            ...mathCalls,
-            [
-                "buildLightViewMatrix",
-                (a: readonly string[]): string =>
-                    `build_light_view_matrix(${a.join(", ")})`,
-            ],
-            [
-                "multiply4x4",
-                (a: readonly string[]): string =>
-                    `multiply_4x4(${a.join(", ")})`,
-            ],
-        ]),
-        matrixCalls: new Set(["buildLightViewMatrix", "multiply4x4"]),
-        returns: { type: "ShadowLightMatrix", value: (lowerer, expression): string => {
-            const returned = expression
-                ? context.unwrapExpression(expression)
-                : undefined;
-            if (!returned || !ts.isObjectLiteralExpression(returned)) {
-                return context.contractError(
-                    declaration,
-                    "Expected pinned _computeSpotLightMatrix to return an " +
-                        "object literal.",
-                );
-            }
-            const fields: readonly (readonly [string, string])[] = [
-                ["_view", "view"],
-                ["_viewProj", "view_projection"],
-                ["_near", "near_plane"],
-                ["_far", "far_plane"],
-            ];
-            const values = fields.map(([pinned]) =>
-                lowerer.expression(
-                    context.propertyInitializer(returned, pinned),
-                ),
-            );
-            return (
-                `ShadowLightMatrix{\n        ${values[0]},\n` +
-                `        ${values[1]},\n        ${values[2]},\n` +
-                `        ${values[3]}}`
-            );
-        } },
-    });
+    return lowerPinnedFunction(
+        context,
+        spotModule,
+        "_computeSpotLightMatrix",
+        [
+            {
+                pinned: "light",
+                kind: "record",
+                annotation: "SpotLight",
+                cpp: "light",
+                cppType: "LightRecord",
+            },
+            { pinned: "near", kind: "number", cpp: "near_plane" },
+            { pinned: "far", kind: "number", cpp: "far_plane" },
+            ...eyeOffsetBindings.map(
+                ([pinned, binding]): PinnedFunctionParameter => ({
+                    pinned,
+                    kind: "number",
+                    cpp: binding.cpp,
+                    binding,
+                    specialized: true,
+                    defaultValue: 0,
+                }),
+            ),
+        ],
+        {
+            cppName: "compute_spot_light_matrix",
+            inline: true,
+            trailingParameters: ["Vec3d eye"],
+            memberBindings: bindings,
+            calls: new Map([
+                ...mathCalls,
+                [
+                    "buildLightViewMatrix",
+                    (a: readonly string[]): string =>
+                        `build_light_view_matrix(${a.join(", ")})`,
+                ],
+                [
+                    "multiply4x4",
+                    (a: readonly string[]): string =>
+                        `multiply_4x4(${a.join(", ")})`,
+                ],
+            ]),
+            matrixCalls: new Set(["buildLightViewMatrix", "multiply4x4"]),
+            returns: {
+                type: "ShadowLightMatrix",
+                value: (lowerer, expression): string => {
+                    const returned = expression
+                        ? context.unwrapExpression(expression)
+                        : undefined;
+                    if (!returned || !ts.isObjectLiteralExpression(returned)) {
+                        return context.contractError(
+                            declaration,
+                            "Expected pinned _computeSpotLightMatrix to return an " +
+                                "object literal.",
+                        );
+                    }
+                    const fields: readonly (readonly [string, string])[] = [
+                        ["_view", "view"],
+                        ["_viewProj", "view_projection"],
+                        ["_near", "near_plane"],
+                        ["_far", "far_plane"],
+                    ];
+                    const values = fields.map(([pinned]) =>
+                        lowerer.expression(
+                            context.propertyInitializer(returned, pinned),
+                        ),
+                    );
+                    return (
+                        `ShadowLightMatrix{\n        ${values[0]},\n` +
+                        `        ${values[1]},\n        ${values[2]},\n` +
+                        `        ${values[3]}}`
+                    );
+                },
+            },
+        },
+    );
 }
 
 /**
@@ -322,7 +348,10 @@ function lowerComputeSpotLightMatrix(context: LoweringContext): string {
  * arithmetic stays the pin's.
  */
 function lowerComputeDirectionalLightMatrix(context: LoweringContext): string {
-    const { declaration } = context.functionDeclaration(baseModule, "computeDirectionalLightMatrix");
+    const { declaration } = context.functionDeclaration(
+        baseModule,
+        "computeDirectionalLightMatrix",
+    );
     const bindings = new Map<string, PinnedBinding>([
         ...vec3MemberBindings("light.direction"),
         ...vec3MemberBindings("light.position"),
@@ -330,85 +359,120 @@ function lowerComputeDirectionalLightMatrix(context: LoweringContext): string {
         ["orthoMaxZ", { cpp: "ortho_max_z", type: "scalar" }],
         ...eyeOffsetBindings,
     ]);
-    return lowerPinnedFunction(context, baseModule, "computeDirectionalLightMatrix", [
-        { pinned: "light", kind: "record", annotation: "DirectionalLight", cpp: "light", cppType: "LightRecord" },
-        { pinned: "casterMeshes", kind: "record", annotation: "readonly Mesh[]", cpp: "casters", cppType: "std::vector<ShadowCaster>" },
-        { pinned: "orthoMinZ", kind: "number", cpp: "ortho_min_z" },
-        { pinned: "orthoMaxZ", kind: "number", cpp: "ortho_max_z" },
-        ...eyeOffsetBindings.map(([pinned, binding]): PinnedFunctionParameter => ({
-            pinned, kind: "number", cpp: binding.cpp, binding, specialized: true, defaultValue: 0,
-        })),
-    ], {
-        cppName: "compute_directional_light_matrix", inline: true, trailingParameters: ["Vec3d eye"],
-        memberBindings: bindings,
-        calls: new Map([
-            ...mathCalls,
-            [
-                "buildLightViewMatrix",
-                (a: readonly string[]): string =>
-                    `build_light_view_matrix(${a.join(", ")})`,
-            ],
-            [
-                "multiply4x4",
-                (a: readonly string[]): string =>
-                    `multiply_4x4(${a.join(", ")})`,
-            ],
-            [
-                "Number.isFinite",
-                (a: readonly string[]): string =>
-                    `std::isfinite(${a.join(", ")})`,
-            ],
-        ]),
-        matrixCalls: new Set(["buildLightViewMatrix", "multiply4x4"]),
-        forOf: (iterated, element) => {
-            if (iterated !== "casterMeshes") return undefined;
-            return {
-                range: "casters",
-                bindings: new Map<string, PinnedBinding>([
-                    [
-                        `${element}.worldMatrix`,
-                        { cpp: `${element}.world`, type: "f32" },
-                    ],
-                    [
-                        `${element}.boundMin`,
-                        { cpp: `${element}.bounds_min`, type: "f32" },
-                    ],
-                    [
-                        `${element}.boundMax`,
-                        { cpp: `${element}.bounds_max`, type: "f32" },
-                    ],
-                ]),
-            };
-        },
-        booleanOr: true,
-        returns: { type: "ShadowLightMatrix", value: (lowerer, expression): string => {
-            const returned = expression
-                ? context.unwrapExpression(expression)
-                : undefined;
-            if (!returned || !ts.isObjectLiteralExpression(returned)) {
-                return context.contractError(
-                    declaration,
-                    "Expected pinned computeDirectionalLightMatrix to " +
-                        "return an object literal.",
-                );
-            }
-            const fields = ["_view", "_viewProj", "_near", "_far"] as const;
-            const values = fields.map((pinned) =>
-                lowerer.expression(
-                    context.propertyInitializer(returned, pinned),
-                ),
-            );
-            return (
-                `ShadowLightMatrix{
+    return lowerPinnedFunction(
+        context,
+        baseModule,
+        "computeDirectionalLightMatrix",
+        [
+            {
+                pinned: "light",
+                kind: "record",
+                annotation: "DirectionalLight",
+                cpp: "light",
+                cppType: "LightRecord",
+            },
+            {
+                pinned: "casterMeshes",
+                kind: "record",
+                annotation: "readonly Mesh[]",
+                cpp: "casters",
+                cppType: "std::vector<ShadowCaster>",
+            },
+            { pinned: "orthoMinZ", kind: "number", cpp: "ortho_min_z" },
+            { pinned: "orthoMaxZ", kind: "number", cpp: "ortho_max_z" },
+            ...eyeOffsetBindings.map(
+                ([pinned, binding]): PinnedFunctionParameter => ({
+                    pinned,
+                    kind: "number",
+                    cpp: binding.cpp,
+                    binding,
+                    specialized: true,
+                    defaultValue: 0,
+                }),
+            ),
+        ],
+        {
+            cppName: "compute_directional_light_matrix",
+            inline: true,
+            trailingParameters: ["Vec3d eye"],
+            memberBindings: bindings,
+            calls: new Map([
+                ...mathCalls,
+                [
+                    "buildLightViewMatrix",
+                    (a: readonly string[]): string =>
+                        `build_light_view_matrix(${a.join(", ")})`,
+                ],
+                [
+                    "multiply4x4",
+                    (a: readonly string[]): string =>
+                        `multiply_4x4(${a.join(", ")})`,
+                ],
+                [
+                    "Number.isFinite",
+                    (a: readonly string[]): string =>
+                        `std::isfinite(${a.join(", ")})`,
+                ],
+            ]),
+            matrixCalls: new Set(["buildLightViewMatrix", "multiply4x4"]),
+            forOf: (iterated, element) => {
+                if (iterated !== "casterMeshes") return undefined;
+                return {
+                    range: "casters",
+                    bindings: new Map<string, PinnedBinding>([
+                        [
+                            `${element}.worldMatrix`,
+                            { cpp: `${element}.world`, type: "f32" },
+                        ],
+                        [
+                            `${element}.boundMin`,
+                            { cpp: `${element}.bounds_min`, type: "f32" },
+                        ],
+                        [
+                            `${element}.boundMax`,
+                            { cpp: `${element}.bounds_max`, type: "f32" },
+                        ],
+                    ]),
+                };
+            },
+            booleanOr: true,
+            returns: {
+                type: "ShadowLightMatrix",
+                value: (lowerer, expression): string => {
+                    const returned = expression
+                        ? context.unwrapExpression(expression)
+                        : undefined;
+                    if (!returned || !ts.isObjectLiteralExpression(returned)) {
+                        return context.contractError(
+                            declaration,
+                            "Expected pinned computeDirectionalLightMatrix to " +
+                                "return an object literal.",
+                        );
+                    }
+                    const fields = [
+                        "_view",
+                        "_viewProj",
+                        "_near",
+                        "_far",
+                    ] as const;
+                    const values = fields.map((pinned) =>
+                        lowerer.expression(
+                            context.propertyInitializer(returned, pinned),
+                        ),
+                    );
+                    return (
+                        `ShadowLightMatrix{
         ${values[0]},
 ` +
-                `        ${values[1]},
+                        `        ${values[1]},
         ${values[2]},
 ` +
-                `        ${values[3]}}`
-            );
-        } },
-    });
+                        `        ${values[3]}}`
+                    );
+                },
+            },
+        },
+    );
 }
 
 /**
@@ -436,10 +500,7 @@ function assertShadowUboLayout(context: LoweringContext): void {
         [23, "sg._shadowsInfo[3]!"],
     ]);
     for (const store of context.pinnedElementStores(declaration, "out")) {
-        const index = context.numericValue(
-            store.left.argumentExpression,
-            file,
-        );
+        const index = context.numericValue(store.left.argumentExpression, file);
         const shape = expected.get(index);
         if (shape === undefined) {
             context.contractError(
@@ -590,19 +651,33 @@ function csmDefaults(context: LoweringContext) {
     const stabilize = context.nullishDefault(
         context.propertyInitializer(csmCfg, "_stabilizeCascades"),
     )?.right;
-    if (!stabilize || (stabilize.kind !== ts.SyntaxKind.TrueKeyword &&
-        stabilize.kind !== ts.SyntaxKind.FalseKeyword)) {
-        context.contractError(csmCfg, "Expected the pinned CSM stabilization default.");
+    if (
+        !stabilize ||
+        (stabilize.kind !== ts.SyntaxKind.TrueKeyword &&
+            stabilize.kind !== ts.SyntaxKind.FalseKeyword)
+    ) {
+        context.contractError(
+            csmCfg,
+            "Expected the pinned CSM stabilization default.",
+        );
     }
     const worldBias = context.unwrapExpression(
         context.propertyInitializer(csmCfg, "_worldSpaceBias"),
     );
-    if (!ts.isConditionalExpression(worldBias) ||
-        worldBias.whenTrue.kind !== ts.SyntaxKind.NullKeyword) {
-        context.contractError(worldBias, "Expected the omitted CSM world-space bias to be null.");
+    if (
+        !ts.isConditionalExpression(worldBias) ||
+        worldBias.whenTrue.kind !== ts.SyntaxKind.NullKeyword
+    ) {
+        context.contractError(
+            worldBias,
+            "Expected the omitted CSM world-space bias to be null.",
+        );
     }
-    context.assertExpressionShape(worldBias.condition,
-        "worldSpaceBias === undefined", "Omitted CSM world-space bias");
+    context.assertExpressionShape(
+        worldBias.condition,
+        "worldSpaceBias === undefined",
+        "Omitted CSM world-space bias",
+    );
     return {
         mapSize: optionDefault(context, declaration, "mapSize", file),
         numCascades: fallback,
@@ -665,7 +740,7 @@ function shadowLane(
         ts.isNewExpression(initializer) &&
         initializer.arguments?.length === 1 &&
         ts.isArrayLiteralExpression(initializer.arguments[0]!)
-            ? initializer.arguments[0]!.elements
+            ? initializer.arguments[0].elements
             : undefined;
     if (!elements || elements.length !== width) {
         return context.contractError(
@@ -809,9 +884,10 @@ function shadowBlockArms(context: LoweringContext): string {
  * -0.5]`. The lowered fold binds the present arm, so the absent one has to
  * reach the carrier the PAL fills -- from the pin's literal, never retyped.
  */
-function esmCasterBoundsFallback(
-    context: LoweringContext,
-): { min: readonly number[]; max: readonly number[] } {
+function esmCasterBoundsFallback(context: LoweringContext): {
+    min: readonly number[];
+    max: readonly number[];
+} {
     const { file, declaration } = context.functionDeclaration(
         baseModule,
         "computeDirectionalLightMatrix",
@@ -910,10 +986,7 @@ function assertPcfResourceContracts(
         spotModule,
         "createPcfSpotlightShadowGenerator",
     );
-    const texture = context.callObjectArgument(
-        declaration,
-        "createTexture",
-    );
+    const texture = context.callObjectArgument(declaration, "createTexture");
     if (
         context.stringValue(
             context.propertyInitializer(texture, "format"),
@@ -930,10 +1003,7 @@ function assertPcfResourceContracts(
         "TU.RENDER_ATTACHMENT | TU.TEXTURE_BINDING",
         "Pinned PCF shadow map usage",
     );
-    const sampler = context.callObjectArgument(
-        declaration,
-        "createSampler",
-    );
+    const sampler = context.callObjectArgument(declaration, "createSampler");
     for (const [property, value] of [
         ["compare", "less"],
         ["magFilter", "linear"],
@@ -1041,8 +1111,18 @@ function assertShadowRenderGateContracts(context: LoweringContext): void {
         "lightVersion === state._lastLightVersion && " +
         "foVersion === state._lastFoVersion";
     for (const [module, renderer, ensure, stateLocal] of [
-        [esmModule, "renderEsmShadowMap", "ensureEsmShadowTaskState", "taskState"],
-        [hooksModule, "renderPcfShadowMap", "ensurePcfShadowTaskState", "state"],
+        [
+            esmModule,
+            "renderEsmShadowMap",
+            "ensureEsmShadowTaskState",
+            "taskState",
+        ],
+        [
+            hooksModule,
+            "renderPcfShadowMap",
+            "ensurePcfShadowTaskState",
+            "state",
+        ],
     ] as const) {
         const { file, declaration } = context.functionDeclaration(
             module,
@@ -1073,8 +1153,10 @@ function assertShadowRenderGateContracts(context: LoweringContext): void {
         );
         // A fresh task state renders its first frame: every `_last*` lane
         // starts at -1, which no live version sum equals.
-        const { declaration: ensureDeclaration } =
-            context.functionDeclaration(module, ensure);
+        const { declaration: ensureDeclaration } = context.functionDeclaration(
+            module,
+            ensure,
+        );
         // The identity test that makes `caster_list_version` the right
         // mirror: the pin rebuilds this state — fresh -1 sentinels, so a
         // forced next render — exactly when `ensure*` is handed a new
@@ -1165,11 +1247,10 @@ function assertShadowRenderGateContracts(context: LoweringContext): void {
         "cfg.forceRefreshEveryFrame ?? false",
         "CSM forceRefreshEveryFrame default",
     );
-    const { declaration: pcfDirectionalFactory } =
-        context.functionDeclaration(
-            pcfDirectionalModule,
-            "createPcfDirectionalShadowGenerator",
-        );
+    const { declaration: pcfDirectionalFactory } = context.functionDeclaration(
+        pcfDirectionalModule,
+        "createPcfDirectionalShadowGenerator",
+    );
     context.expectShapeCount(
         pcfDirectionalFactory,
         "cfg.forceRefreshEveryFrame ?? false",
@@ -1247,9 +1328,9 @@ export function esmShadowHeader(
             .map(
                 (texture) =>
                     `            {${texture.width}u, ` +
-                    `${texture.height}u, EsmTextureFormat::${
-                        esmTextureFormat(texture.format)
-                    }},`,
+                    `${texture.height}u, EsmTextureFormat::${esmTextureFormat(
+                        texture.format,
+                    )}},`,
             )
             .join("\n");
         const directions = shadow.blurDirections
@@ -1260,11 +1341,12 @@ export function esmShadowHeader(
                         .join(", ")}},`,
             )
             .join("\n");
-        return `    // Generator ${index}: ${
-            shadow.textures[0]!.width
-        }x${shadow.textures[0]!.height} map, blurred at ${
-            shadow.textures[2]!.width
-        }x${shadow.textures[2]!.height}.
+        return (
+            `    // Generator ${index}: ${
+                shadow.textures[0]!.width
+            }x${shadow.textures[0]!.height} map, blurred at ${
+                shadow.textures[2]!.width
+            }x${shadow.textures[2]!.height}.
     EsmShadowResources{
         std::array<EsmTextureDescriptor, 4>{{
 ${textures}
@@ -1275,7 +1357,8 @@ ${directions}
         EsmTextureFormat::${esmTextureFormat(shadow.blurTargetFormat)},
         {EsmFilter::${esmFilter(shadow.blurSampler.magFilter)}, ` +
             `EsmFilter::${esmFilter(shadow.blurSampler.minFilter)}},
-    },`;
+    },`
+        );
     });
     return `#pragma once
 
@@ -1372,8 +1455,10 @@ function lowerShadowParamsBlock(context: LoweringContext): string {
         // fill, so the local those writes landed in IS the return value.
         returnValue: (): string => "data",
     });
-    const body = declaration.body!.statements
-        .flatMap((statement) => lowerer.statement(statement, "    "))
+    const body = declaration
+        .body!.statements.flatMap((statement) =>
+            lowerer.statement(statement, "    "),
+        )
         .join("\n");
     return `// ${context.provenance(baseModule, "createShadowParamsUBO")}
 inline std::array<float, 8> shadow_params_block(
@@ -1387,7 +1472,10 @@ inline constexpr std::size_t shadow_params_block_bytes =
 }
 
 /** The generated header carrying the pinned shadow family. */
-export function pinnedShadowHeader(context: LoweringContext, features: readonly string[] = []): string {
+export function pinnedShadowHeader(
+    context: LoweringContext,
+    features: readonly string[] = [],
+): string {
     assertShadowUboLayout(context);
     assertShadowRenderGateContracts(context);
     const target = assertPcfResourceContracts(context);
@@ -1432,35 +1520,35 @@ namespace bbl::upstream {
 /** The pin's own defaults for a spot-light PCF generator. */
 inline constexpr std::uint32_t pcf_spot_default_map_size =
     ${defaults.mapSize}u;
-inline constexpr double pcf_spot_default_bias = ${
-        context.doubleLiteral(defaults.bias)
-    };
-inline constexpr double pcf_spot_default_darkness = ${
-        context.doubleLiteral(defaults.darkness)
-    };
-inline constexpr double pcf_spot_default_near = ${
-        context.doubleLiteral(defaults.near)
-    };
+inline constexpr double pcf_spot_default_bias = ${context.doubleLiteral(
+        defaults.bias,
+    )};
+inline constexpr double pcf_spot_default_darkness = ${context.doubleLiteral(
+        defaults.darkness,
+    )};
+inline constexpr double pcf_spot_default_near = ${context.doubleLiteral(
+        defaults.near,
+    )};
 /** \`light.range === Number.MAX_VALUE ? 10000 : light.range\`. */
-inline constexpr double pcf_spot_unbounded_far = ${
-        context.doubleLiteral(defaults.far)
-    };
+inline constexpr double pcf_spot_unbounded_far = ${context.doubleLiteral(
+        defaults.far,
+    )};
 
 /** The pin's own defaults for a directional-light PCF generator. */
 inline constexpr std::uint32_t pcf_directional_default_map_size =
     ${pcfDirectional.mapSize}u;
-inline constexpr double pcf_directional_default_bias = ${
-        context.doubleLiteral(pcfDirectional.bias)
-    };
-inline constexpr double pcf_directional_default_darkness = ${
-        context.doubleLiteral(pcfDirectional.darkness)
-    };
-inline constexpr double pcf_directional_default_ortho_min_z = ${
-        context.doubleLiteral(pcfDirectional.orthoMinZ)
-    };
-inline constexpr double pcf_directional_default_ortho_max_z = ${
-        context.doubleLiteral(pcfDirectional.orthoMaxZ)
-    };
+inline constexpr double pcf_directional_default_bias = ${context.doubleLiteral(
+        pcfDirectional.bias,
+    )};
+inline constexpr double pcf_directional_default_darkness = ${context.doubleLiteral(
+        pcfDirectional.darkness,
+    )};
+inline constexpr double pcf_directional_default_ortho_min_z = ${context.doubleLiteral(
+        pcfDirectional.orthoMinZ,
+    )};
+inline constexpr double pcf_directional_default_ortho_max_z = ${context.doubleLiteral(
+        pcfDirectional.orthoMaxZ,
+    )};
 
 /**
  * The pin's own shadow target, which is its ONE exception to this port's
@@ -1512,30 +1600,24 @@ inline ShadowReceiverBlock shadow_receiver_bytes(const Block& block) {
 
 /** The pin's own defaults for a directional ESM generator. */
 inline constexpr std::uint32_t esm_default_map_size = ${esm.mapSize}u;
-inline constexpr double esm_default_depth_scale = ${
-        context.doubleLiteral(esm.depthScale)
-    };
-inline constexpr double esm_default_bias = ${
-        context.doubleLiteral(esm.bias)
-    };
-inline constexpr std::uint32_t esm_default_blur_kernel = ${
-        esm.blurKernel
-    }u;
-inline constexpr std::uint32_t esm_default_blur_scale = ${
-        esm.blurScale
-    }u;
-inline constexpr double esm_default_darkness = ${
-        context.doubleLiteral(esm.darkness)
-    };
-inline constexpr double esm_default_frustum_edge_falloff = ${
-        context.doubleLiteral(esm.frustumEdgeFalloff)
-    };
-inline constexpr double esm_default_ortho_min_z = ${
-        context.doubleLiteral(esm.orthoMinZ)
-    };
-inline constexpr double esm_default_ortho_max_z = ${
-        context.doubleLiteral(esm.orthoMaxZ)
-    };
+inline constexpr double esm_default_depth_scale = ${context.doubleLiteral(
+        esm.depthScale,
+    )};
+inline constexpr double esm_default_bias = ${context.doubleLiteral(esm.bias)};
+inline constexpr std::uint32_t esm_default_blur_kernel = ${esm.blurKernel}u;
+inline constexpr std::uint32_t esm_default_blur_scale = ${esm.blurScale}u;
+inline constexpr double esm_default_darkness = ${context.doubleLiteral(
+        esm.darkness,
+    )};
+inline constexpr double esm_default_frustum_edge_falloff = ${context.doubleLiteral(
+        esm.frustumEdgeFalloff,
+    )};
+inline constexpr double esm_default_ortho_min_z = ${context.doubleLiteral(
+        esm.orthoMinZ,
+    )};
+inline constexpr double esm_default_ortho_max_z = ${context.doubleLiteral(
+        esm.orthoMaxZ,
+    )};
 
 /** What \`_computeSpotLightMatrix\` returns. */
 struct ShadowLightMatrix {
@@ -2063,9 +2145,11 @@ function shadowGeneratorFactory(spec: {
             "${spec.article} requires a ${spec.lightKind} light.");
     }
     ShadowGeneratorRecord generator;
-${spec.filter === undefined
+${
+    spec.filter === undefined
         ? ""
-        : `    generator.filter = ShadowFilter::${spec.filter};\n`}\
+        : `    generator.filter = ShadowFilter::${spec.filter};\n`
+}\
 ${assignments}
 ${spec.tail === undefined ? "" : `${spec.tail}\n`}\
     engine.shadow_generators.push_back(std::move(generator));
@@ -2100,9 +2184,7 @@ export function shadowFactorySource(
     // builds and differs only in the volume its light matrix is fitted with,
     // so what this gates is the factory alone -- no caster view, no second
     // map format, no receiver arm.
-    const pcfDirectionalShadows = features.includes(
-        "shadow:pcf-directional",
-    );
+    const pcfDirectionalShadows = features.includes("shadow:pcf-directional");
     // The cascaded generator: a layered map, one caster pass per
     // cascade, and the 320-byte cascade block its receivers bind.
     const csmShadows = features.includes("shadow:csm");
@@ -2112,9 +2194,10 @@ export function shadowFactorySource(
     // caster-only binding.
     const nodeCasters = nodeEsmCasters || nodePcfCasters;
     const casterView = (family: "standard" | "pbr" | "node"): string => {
-        const noColor = family === "node"
-            ? `create_node_no_color_material_view(engine, material)`
-            : `create_${family}_no_color_material_view(engine, material)`;
+        const noColor =
+            family === "node"
+                ? `create_node_no_color_material_view(engine, material)`
+                : `create_${family}_no_color_material_view(engine, material)`;
         if (!esmShadows) return noColor;
         // The ESM view is defined per FAMILY, and the node family's exists
         // only where a composed node graph carries an ESM caster module --
@@ -2124,12 +2207,13 @@ export function shadowFactorySource(
         // generator's caster at all. Say so by name rather than falling
         // back to the no-colour view, which writes the wrong depth
         // encoding into an ESM map.
-        const esmView = family !== "node" || nodeEsmCasters
-            ? `create_${family}_esm_shadow_material_view(
+        const esmView =
+            family !== "node" || nodeEsmCasters
+                ? `create_${family}_esm_shadow_material_view(
                         engine,
                         material,
                         handle)`
-            : `throw std::runtime_error(
+                : `throw std::runtime_error(
                         "This scene composed no node ESM caster module, "
                         "so a node material cannot cast into an ESM "
                         "shadow generator.")`;
@@ -2279,61 +2363,73 @@ ${shadowGeneratorFactory({
     tail: `    upstream::update_pcf_spot_shadow(
         generator, engine.lights[light.value], Vec3d{});`,
 })}
-${!pcfDirectionalShadows ? "" : shadowGeneratorFactory({
-    name: "pcf_directional",
-    options: "PcfDirectionalShadowOptions",
-    article: "A PCF directional shadow generator",
-    lightKind: "directional",
-    filter: "pcf_directional",
-    fields: [
-        "map_size",
-        "bias",
-        "darkness",
-        "ortho_min_z",
-        "ortho_max_z",
-        "force_refresh_every_frame",
-    ],
-})}
-${!csmShadows ? "" : shadowGeneratorFactory({
-    name: "csm_directional",
-    options: "CsmDirectionalShadowOptions",
-    article: "A CSM directional shadow generator",
-    lightKind: "directional",
-    filter: "csm_directional",
-    fields: [
-        "map_size",
-        "csm_lambda",
-        "csm_cascade_blend_percentage",
-        "csm_shadow_max_z",
-        "bias",
-        "darkness",
-        "frustum_edge_falloff",
-        "force_refresh_every_frame",
-    ],
-    // \`Math.min(cfg.numCascades ?? N, MAX)\`, applied where the pin
-    // applies it: the fit, the layered map and its caster passes then all
-    // read one already-clamped count off the record.
-    tail: `    generator.csm_num_cascades = std::min(
+${
+    !pcfDirectionalShadows
+        ? ""
+        : shadowGeneratorFactory({
+              name: "pcf_directional",
+              options: "PcfDirectionalShadowOptions",
+              article: "A PCF directional shadow generator",
+              lightKind: "directional",
+              filter: "pcf_directional",
+              fields: [
+                  "map_size",
+                  "bias",
+                  "darkness",
+                  "ortho_min_z",
+                  "ortho_max_z",
+                  "force_refresh_every_frame",
+              ],
+          })
+}
+${
+    !csmShadows
+        ? ""
+        : shadowGeneratorFactory({
+              name: "csm_directional",
+              options: "CsmDirectionalShadowOptions",
+              article: "A CSM directional shadow generator",
+              lightKind: "directional",
+              filter: "csm_directional",
+              fields: [
+                  "map_size",
+                  "csm_lambda",
+                  "csm_cascade_blend_percentage",
+                  "csm_shadow_max_z",
+                  "bias",
+                  "darkness",
+                  "frustum_edge_falloff",
+                  "force_refresh_every_frame",
+              ],
+              // \`Math.min(cfg.numCascades ?? N, MAX)\`, applied where the pin
+              // applies it: the fit, the layered map and its caster passes then all
+              // read one already-clamped count off the record.
+              tail: `    generator.csm_num_cascades = std::min(
         options.csm_num_cascades, upstream::csm_max_cascades);`,
-})}
-${!esmShadows ? "" : shadowGeneratorFactory({
-    name: "esm_directional",
-    options: "EsmDirectionalShadowOptions",
-    article: "An ESM shadow generator",
-    lightKind: "directional",
-    filter: "esm_directional",
-    fields: [
-        "map_size",
-        "bias",
-        "darkness",
-        "depth_scale",
-        "frustum_edge_falloff",
-        "ortho_min_z",
-        "ortho_max_z",
-        "force_refresh_every_frame",
-        "esm_index",
-    ],
-})}
+          })
+}
+${
+    !esmShadows
+        ? ""
+        : shadowGeneratorFactory({
+              name: "esm_directional",
+              options: "EsmDirectionalShadowOptions",
+              article: "An ESM shadow generator",
+              lightKind: "directional",
+              filter: "esm_directional",
+              fields: [
+                  "map_size",
+                  "bias",
+                  "darkness",
+                  "depth_scale",
+                  "frustum_edge_falloff",
+                  "ortho_min_z",
+                  "ortho_max_z",
+                  "force_refresh_every_frame",
+                  "esm_index",
+              ],
+          })
+}
 namespace {
 
 MaterialHandle shadow_caster_view(
@@ -2349,16 +2445,24 @@ MaterialHandle shadow_caster_view(
             return generator.caster_material_views[index];
         }
     }
-${esmShadows ? `    const bool esm =
+${
+    esmShadows
+        ? `    const bool esm =
         generator.filter == ShadowFilter::esm_directional;
-` : ""}\
+`
+        : ""
+}\
     const MaterialRecord& source = engine.materials[material.value];
     const MaterialHandle view =
         source.shadow_caster_material.value != invalid_handle
             ? source.shadow_caster_material
-            : ${nodeCasters ? `source.node_material
+            : ${
+                nodeCasters
+                    ? `source.node_material
             ? ${casterView("node")}
-            : ` : ""}source.standard_material
+            : `
+                    : ""
+            }source.standard_material
             ? ${casterView("standard")}
             : ${casterView("pbr")};
     generator.caster_material_sources.push_back(material);
@@ -2466,16 +2570,24 @@ void build_shadow_task(Scene& scene, ShadowGeneratorHandle handle) {
     if (engine.shadow_generators[handle.value].caster_meshes.empty()) {
         return;
     }
-    const bool esm =${esmShadows ? `
+    const bool esm =${
+        esmShadows
+            ? `
         engine.shadow_generators[handle.value].filter ==
-        ShadowFilter::esm_directional` : " false"};
+        ShadowFilter::esm_directional`
+            : " false"
+    };
     const std::uint32_t map_size =
         engine.shadow_generators[handle.value].map_size;
-    const std::uint32_t layers =${csmShadows ? `
+    const std::uint32_t layers =${
+        csmShadows
+            ? `
         engine.shadow_generators[handle.value].filter ==
                 ShadowFilter::csm_directional
             ? engine.shadow_generators[handle.value].csm_num_cascades
-            : 1u` : " 1u"};
+            : 1u`
+            : " 1u"
+    };
     RenderTargetOptions target;
     target.samples = 1;
     // \`createShadowRenderTarget\` takes a colour texture for the ESM
@@ -2565,19 +2677,21 @@ void register_scene_with_shadow_support(Scene& scene) {
 /** The reached cascade fitting and receiver family. */
 export function csmShadowHeader(context: LoweringContext): string {
     const csm = csmDefaults(context);
-    return pinnedHeader(["<bblite/upstream/pinned_shadow.hpp>"], `
+    return pinnedHeader(
+        ["<bblite/upstream/pinned_shadow.hpp>"],
+        `
 /** Defaults read from createCsmDirectionalShadowGenerator's own config. */
 inline constexpr std::uint32_t csm_default_map_size = ${csm.mapSize}u;
 inline constexpr std::uint32_t csm_default_num_cascades = ${csm.numCascades}u;
 inline constexpr double csm_default_lambda = ${context.doubleLiteral(csm.lambda)};
-inline constexpr double csm_default_cascade_blend_percentage = ${
-        context.doubleLiteral(csm.cascadeBlendPercentage)
-    };
+inline constexpr double csm_default_cascade_blend_percentage = ${context.doubleLiteral(
+            csm.cascadeBlendPercentage,
+        )};
 inline constexpr double csm_default_bias = ${context.doubleLiteral(csm.bias)};
 inline constexpr double csm_default_darkness = ${context.doubleLiteral(csm.darkness)};
-inline constexpr double csm_default_frustum_edge_falloff = ${
-        context.doubleLiteral(csm.frustumEdgeFalloff)
-    };
+inline constexpr double csm_default_frustum_edge_falloff = ${context.doubleLiteral(
+            csm.frustumEdgeFalloff,
+        )};
 
 ${pinnedCsmFunctions(context)}
 
@@ -2665,7 +2779,9 @@ inline void update_csm_cascades(
             fitted.caster_view_projection, csm_caster_clip_bias(cfg, cascades, index));
     }
 }
-`, { compactPragma: true });
+`,
+        { compactPragma: true },
+    );
 }
 
 function csmShadowUniforms(context: LoweringContext): string {

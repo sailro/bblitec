@@ -174,10 +174,7 @@ interface PinnedRenderTargetModule {
         samples: number;
         size: { width: number; height: number };
     }) => PinnedRenderTarget;
-    buildRenderTarget: (
-        target: PinnedRenderTarget,
-        engine: unknown,
-    ) => void;
+    buildRenderTarget: (target: PinnedRenderTarget, engine: unknown) => void;
 }
 
 /** The composite facade, of which composition calls only `record`. */
@@ -226,12 +223,10 @@ async function resolvePinnedEnums(
     if (members.length === 0) {
         return resolved;
     }
-    const entry =
-        await importPinnedModule<Record<string, unknown>>("index.js");
+    const entry = await importPinnedModule<Record<string, unknown>>("index.js");
     for (const [option, reference] of members) {
         const values = entry[reference.pinnedEnum] as
-            | Record<string, unknown>
-            | undefined;
+            Record<string, unknown> | undefined;
         const value = values?.[reference.member];
         if (typeof value !== "number") {
             throw new Error(
@@ -270,25 +265,21 @@ async function runComposite(
                 scene: unknown,
             ) => unknown
         >
-    >(
-        pinnedEffectModule(composite),
-        composite.passes,
-        (intrinsic, value) => {
-            // A pass the composite built itself takes the descriptor's own
-            // name for it, and is marked so the parameter read below knows
-            // to look at the composite: its `_shader` closes over the
-            // composite's state, so the pass publishes none of it. Which
-            // effect it is cannot come from the symbol -- every inline pass
-            // is built through the same one -- so it comes from the suffix
-            // the pin gave the pass, resolved once every pass is in.
-            const task = value as PinnedPostProcessTask;
-            passes.push({
-                intrinsic,
-                inline: intrinsic === composite.inlinePasses?.symbol,
-                task,
-            });
-        },
-    );
+    >(pinnedEffectModule(composite), composite.passes, (intrinsic, value) => {
+        // A pass the composite built itself takes the descriptor's own
+        // name for it, and is marked so the parameter read below knows
+        // to look at the composite: its `_shader` closes over the
+        // composite's state, so the pass publishes none of it. Which
+        // effect it is cannot come from the symbol -- every inline pass
+        // is built through the same one -- so it comes from the suffix
+        // the pin gave the pass, resolved once every pass is in.
+        const task = value as PinnedPostProcessTask;
+        passes.push({
+            intrinsic,
+            inline: intrinsic === composite.inlinePasses?.symbol,
+            task,
+        });
+    });
     const factory = module[composite.intrinsic];
     if (typeof factory !== "function") {
         throw new Error(
@@ -332,7 +323,9 @@ async function runComposite(
     const task = factory(config, engine, undefined) as PinnedCompositeTask;
     for (const option of composite.sourceTasks ?? []) {
         if (!Object.values(task).includes(config[option])) {
-            throw new Error(`Pinned ${composite.intrinsic} does not retain '${option}' by identity.`);
+            throw new Error(
+                `Pinned ${composite.intrinsic} does not retain '${option}' by identity.`,
+            );
         }
     }
     // The chain is not settled by the factory alone: a composite may size an
@@ -346,8 +339,9 @@ async function runComposite(
     task.record();
     // A temporal composite presents before writing history. Resolve the
     // public output from actual target identity, independently of pass order.
-    const outputPass = passes.findIndex((pass) =>
-        task.outputTexture === pass.task.outputTexture);
+    const outputPass = passes.findIndex(
+        (pass) => task.outputTexture === pass.task.outputTexture,
+    );
     if (outputPass < 0) {
         throw new Error(
             `Pinned ${composite.intrinsic} publishes a pass this port did not ` +
@@ -425,13 +419,11 @@ export async function composeComposite(
             `Post-process composite '${request.intrinsic}' has no descriptor.`,
         );
     }
-    const taskModule = await importPinnedModuleWithExports<
-        PinnedPostProcessTaskModule
-    >("frame-graph/post-process-task.js", [
-        "getShaderModule",
-        "getUniformBinding",
-        "align16",
-    ]);
+    const taskModule =
+        await importPinnedModuleWithExports<PinnedPostProcessTaskModule>(
+            "frame-graph/post-process-task.js",
+            ["getShaderModule", "getUniformBinding", "align16"],
+        );
     // Two runs, differing in both source extent and source format, so an
     // intermediate that tracks either is told apart from one that does not.
     const [run, check] = await Promise.all([
@@ -446,7 +438,9 @@ export async function composeComposite(
         );
     }
     if (run.outputPass !== check.outputPass) {
-        throw new Error(`Pinned ${request.intrinsic} changes its public output pass with source size.`);
+        throw new Error(
+            `Pinned ${request.intrinsic} changes its public output pass with source size.`,
+        );
     }
     const intermediates: CompositeIntermediate[] = [];
     const indices = new Map<PinnedRenderTarget, number>();
@@ -501,16 +495,31 @@ export async function composeComposite(
     let taa: ComposedComposite["taa"];
     if (request.intrinsic === "createTaaPostProcessTask") {
         const factor: unknown = Reflect.get(run.composite, "factor");
-        const disableOnCameraMove: unknown = Reflect.get(run.composite, "disableOnCameraMove");
+        const disableOnCameraMove: unknown = Reflect.get(
+            run.composite,
+            "disableOnCameraMove",
+        );
         const samples: unknown = Reflect.get(run.composite, "samples");
-        if (typeof factor !== "number" || typeof disableOnCameraMove !== "boolean" ||
-            typeof samples !== "number" || !Number.isSafeInteger(samples) || samples < 1) {
-            throw new Error("Pinned TAA no longer exposes its numeric factor, camera-move flag and positive sample count.");
+        if (
+            typeof factor !== "number" ||
+            typeof disableOnCameraMove !== "boolean" ||
+            typeof samples !== "number" ||
+            !Number.isSafeInteger(samples) ||
+            samples < 1
+        ) {
+            throw new Error(
+                "Pinned TAA no longer exposes its numeric factor, camera-move flag and positive sample count.",
+            );
         }
         taa = { factor, disableOnCameraMove, samples };
     }
-    return { intrinsic: request.intrinsic, intermediates, passes, outputPass: run.outputPass,
-        ...(taa ? { taa } : {}) };
+    return {
+        intrinsic: request.intrinsic,
+        intermediates,
+        passes,
+        outputPass: run.outputPass,
+        ...(taa ? { taa } : {}),
+    };
 }
 
 /**
@@ -655,7 +664,10 @@ function resolveCompositeTexture(
  * beyond this list refuses rather than composing quietly differently, which
  * is the property that makes the recording safe.
  */
-function compositionEngine(): { scRT: PinnedRenderTarget | null; _device: unknown } {
+function compositionEngine(): {
+    scRT: PinnedRenderTarget | null;
+    _device: unknown;
+} {
     const { device } = createRecordingDevice({
         producer: "post-process",
         device: [
@@ -701,9 +713,7 @@ export async function composePostProcess(
             "frame-graph/post-process-task.js",
             ["getShaderModule", "getUniformBinding", "align16"],
         ),
-        importPinnedModule<PinnedRenderTargetModule>(
-            "engine/render-target.js",
-        ),
+        importPinnedModule<PinnedRenderTargetModule>("engine/render-target.js"),
         importPinnedModule<
             Record<
                 string,

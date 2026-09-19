@@ -42,7 +42,12 @@ export function syntaxKindName(kind: ts.SyntaxKind): string {
     if (!kindNames) {
         kindNames = new Map();
         for (const [name, value] of Object.entries(ts.SyntaxKind)) {
-            if (typeof value !== "number" || /^(?:First|Last)[A-Z]/.test(name) || kindNames.has(value)) continue;
+            if (
+                typeof value !== "number" ||
+                /^(?:First|Last)[A-Z]/.test(name) ||
+                kindNames.has(value)
+            )
+                continue;
             kindNames.set(value, name);
         }
     }

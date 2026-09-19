@@ -10,32 +10,63 @@ export function pinnedVertexNormalization(context: LoweringContext): string {
     const module = "src/material/pbr/pbr-template.ts";
     const template = pinnedPbrVertexOutputs(context);
     const { declaration } = template;
-    const fail = (): never => context.contractError(declaration, "Pinned vertex normal/tangent normalization contract changed.");
+    const fail = (): never =>
+        context.contractError(
+            declaration,
+            "Pinned vertex normal/tangent normalization contract changed.",
+        );
     const direction = (output: string, input: string[]): ShaderExpression => {
         const world = template.outputs.get(output);
-        if (world?.kind !== "member" || world.member !== "xyz" ||
-            world.expression.kind !== "binary" || world.expression.operator !== "*" ||
-            !isPath(world.expression.left, "mesh", "world")) return fail();
+        if (
+            world?.kind !== "member" ||
+            world.member !== "xyz" ||
+            world.expression.kind !== "binary" ||
+            world.expression.operator !== "*" ||
+            !isPath(world.expression.left, "mesh", "world")
+        )
+            return fail();
         const homogeneous = world.expression.right;
-        if (homogeneous.kind !== "construct" || homogeneous.type !== "vec4<f32>" ||
-            homogeneous.arguments.length !== 2 || homogeneous.arguments[1]?.kind !== "number" ||
-            Number(homogeneous.arguments[1].value) !== 0) return fail();
+        if (
+            homogeneous.kind !== "construct" ||
+            homogeneous.type !== "vec4<f32>" ||
+            homogeneous.arguments.length !== 2 ||
+            homogeneous.arguments[1]?.kind !== "number" ||
+            Number(homogeneous.arguments[1].value) !== 0
+        )
+            return fail();
         const value = homogeneous.arguments[0]!;
-        if (value.kind !== "call" || value.name !== "normalize" || value.arguments.length !== 1) return fail();
-        return mapShaderExpression(value, expression =>
-            isPath(expression, ...input) ? { kind: "path", parts: ["bakedDirection"] } : expression);
+        if (
+            value.kind !== "call" ||
+            value.name !== "normalize" ||
+            value.arguments.length !== 1
+        )
+            return fail();
+        return mapShaderExpression(value, (expression) =>
+            isPath(expression, ...input)
+                ? { kind: "path", parts: ["bakedDirection"] }
+                : expression,
+        );
     };
     const normal = direction("worldNormal", [template.normal]);
     const tangent = direction("worldTangent", ["tangent", "xyz"]);
     if (JSON.stringify(normal) !== JSON.stringify(tangent)) return fail();
-    const projected = emitShaderCppExpression(normal, new Map([
-        ["bakedDirection", ["x", "y", "z"].map(component => ({ cpp: `value.${component}` }))],
-    ]), { minimumNormalizeLength: bakedDirectionMinimumLength });
+    const projected = emitShaderCppExpression(
+        normal,
+        new Map([
+            [
+                "bakedDirection",
+                ["x", "y", "z"].map((component) => ({
+                    cpp: `value.${component}`,
+                })),
+            ],
+        ]),
+        { minimumNormalizeLength: bakedDirectionMinimumLength },
+    );
     if (projected.components.length !== 3) return fail();
     return `// ${context.provenance(module, "createPbrTemplate")}
 // CPU-bake normalization keeps its explicit degenerate-vector adaptation.
 inline Vec3 normalize_baked_direction(Vec3 value) {
-${projected.declarations.map(line => `    ${line}`).join("\n")}
+${projected.declarations.map((line) => `    ${line}`).join("\n")}
     return Vec3{${projected.components.join(", ")}};
 }`;
 }

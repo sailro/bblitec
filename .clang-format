@@ -1,0 +1,12 @@
+BasedOnStyle: LLVM
+Standard: c++20
+IndentWidth: 4
+AccessModifierOffset: -4
+ColumnLimit: 100
+PointerAlignment: Left
+SortIncludes: Never
+ReflowComments: Never
+BreakStringLiterals: false
+InsertBraces: false
+LineEnding: LF
+StatementMacros: [RESOURCE, RELEASE]

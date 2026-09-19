@@ -6,13 +6,9 @@ import {
     postProcessComposite,
     postProcessEffect,
 } from "../../post-process-effects.js";
-import type {
-    Value,
-} from "../types.js";
+import type { Value } from "../types.js";
 import type { IntrinsicCallContext } from "./context.js";
-import type {
-    EngineOptionContext,
-} from "./engine-options.js";
+import type { EngineOptionContext } from "./engine-options.js";
 import { compileScreenSpaceTaskOptions } from "./screen-space-options.js";
 import {
     compilePostProcessCompositeOptions,
@@ -21,37 +17,38 @@ import {
 import { isScreenSpaceIntrinsic } from "../../pinned-screen-space.js";
 import { validateObjectProperties } from "../option-helpers.js";
 
-
 export interface EngineIntrinsicContext
-    extends IntrinsicCallContext,
-    EngineOptionContext,
-    Pick<LoweringServices,
-        | "noteTextSceneLifecycle"
-        | "noteTemporalRecordBoundary"
-        | "emit"
-        | "emitDiscardedValue"
-        | "fail"
-        | "expectSameEngine"
-        | "requireDefaultEngine"
-        | "allocateTemporaryCppName"
-        | "compileEngineCreation"
-        | "compileRenderTargetOptions"
-        | "compileRenderTaskOptions"
-        | "compileGeometryTaskOptions"
-        | "compileCopyTaskOptions"
-        | "recordGeometryOutputTask"
-        | "recordPostProcessTask"
-        | "recordPostProcessComposite"
-        | "recordScreenSpaceTask"
-        | "postProcessTasks"
-        | "postProcessComposites"
-        | "screenSpaceTasks"
-        | "compileSceneDefaultRenderTask"
-        | "expectObjectLiteral"
-        | "objectProperty"
-        | "propertyName"
-        | "compileFrameCallback"
-    > {}
+    extends
+        IntrinsicCallContext,
+        EngineOptionContext,
+        Pick<
+            LoweringServices,
+            | "noteTextSceneLifecycle"
+            | "noteTemporalRecordBoundary"
+            | "emit"
+            | "emitDiscardedValue"
+            | "fail"
+            | "expectSameEngine"
+            | "requireDefaultEngine"
+            | "allocateTemporaryCppName"
+            | "compileEngineCreation"
+            | "compileRenderTargetOptions"
+            | "compileRenderTaskOptions"
+            | "compileGeometryTaskOptions"
+            | "compileCopyTaskOptions"
+            | "recordGeometryOutputTask"
+            | "recordPostProcessTask"
+            | "recordPostProcessComposite"
+            | "recordScreenSpaceTask"
+            | "postProcessTasks"
+            | "postProcessComposites"
+            | "screenSpaceTasks"
+            | "compileSceneDefaultRenderTask"
+            | "expectObjectLiteral"
+            | "objectProperty"
+            | "propertyName"
+            | "compileFrameCallback"
+        > {}
 
 function reachRenderer(
     context: EngineIntrinsicContext,
@@ -70,9 +67,7 @@ export function compileEngineIntrinsic(
         case "createEngine":
             return context.compileEngineCreation(
                 call,
-                context.allocateTemporaryCppName(
-                    "inline_engine",
-                ),
+                context.allocateTemporaryCppName("inline_engine"),
             );
 
         case "createSurface": {
@@ -83,7 +78,10 @@ export function compileEngineIntrinsic(
             context.expectKind(canvas, "ui-element", argumentAt(call, 1));
             context.expectSameEngine(engine, canvas, call);
             if (canvas.uiTag !== "canvas") {
-                context.fail(call, "Additional surfaces require retained canvas elements.");
+                context.fail(
+                    call,
+                    "Additional surfaces require retained canvas elements.",
+                );
             }
             context.reachFeature("renderer:surface", call);
             return {
@@ -125,37 +123,44 @@ export function compileEngineIntrinsic(
 
         case "createSceneContext": {
             context.expectArgumentCount(call, 1, 2);
-            const engine =
-                context.compileValue(argumentAt(call, 0));
+            const engine = context.compileValue(argumentAt(call, 0));
             if (engine.kind !== "surface") {
-                context.expectKind(
-                    engine,
-                    "engine",
-                    argumentAt(call, 0),
-                );
+                context.expectKind(engine, "engine", argumentAt(call, 0));
             }
-            const defaultRenderTask = context.compileSceneDefaultRenderTask(call.arguments[1]);
-            if (!defaultRenderTask) context.noteTextSceneLifecycle(call, "Text requires the default scene render task; empty and custom text task execution is not represented.");
-            if (defaultRenderTask) context.noteTemporalRecordBoundary(call, "implicit default scene passes", "always");
+            const defaultRenderTask = context.compileSceneDefaultRenderTask(
+                call.arguments[1],
+            );
+            if (!defaultRenderTask)
+                context.noteTextSceneLifecycle(
+                    call,
+                    "Text requires the default scene render task; empty and custom text task execution is not represented.",
+                );
+            if (defaultRenderTask)
+                context.noteTemporalRecordBoundary(
+                    call,
+                    "implicit default scene passes",
+                    "always",
+                );
             const samples = engine.msaaSamples ?? 4;
             const create = `bbl::create_scene_context(${engine.cpp})`;
             return {
                 kind: "scene",
-                ...(engine.surfaceCanvas ? { surfaceCanvas: true as const } : {}),
-                cpp: defaultRenderTask && samples === 4
-                    ? create
-                    : `bbl::configure_scene_render_defaults(${create}, ${defaultRenderTask}, ${engineSampleCountCpp(engine)})`,
+                ...(engine.surfaceCanvas
+                    ? { surfaceCanvas: true as const }
+                    : {}),
+                cpp:
+                    defaultRenderTask && samples === 4
+                        ? create
+                        : `bbl::configure_scene_render_defaults(${create}, ${defaultRenderTask}, ${engineSampleCountCpp(engine)})`,
                 sceneEnvironmentState: {
                     rotationSet: false,
                     hasTexturedSkybox: false,
                 },
                 sceneTopologyState: { lights: [] },
-                engineCpp:
-                    engine.engineCpp ?? engine.cpp,
+                engineCpp: engine.engineCpp ?? engine.cpp,
                 ...(engine.msaaSamples
                     ? {
-                          msaaSamples:
-                              engine.msaaSamples,
+                          msaaSamples: engine.msaaSamples,
                       }
                     : {}),
             };
@@ -180,10 +185,18 @@ export function compileEngineIntrinsic(
                 ? context.objectProperty(options, "update")
                 : undefined;
             context.reachFeature("renderer:frame-graph", call);
-            const nativeContext = context.allocateTemporaryCppName("frame_graph");
-            context.emit({ kind: "declaration", type: "auto", name: nativeContext, initializer: `bbl::create_frame_graph_context(${surface.cpp})` });
+            const nativeContext =
+                context.allocateTemporaryCppName("frame_graph");
+            context.emit({
+                kind: "declaration",
+                type: "auto",
+                name: nativeContext,
+                initializer: `bbl::create_frame_graph_context(${surface.cpp})`,
+            });
             if (update) {
-                context.emit(`bbl::on_frame_graph_update(${nativeContext}, ${context.compileFrameCallback(update)});`);
+                context.emit(
+                    `bbl::on_frame_graph_update(${nativeContext}, ${context.compileFrameCallback(update)});`,
+                );
             }
             return {
                 kind: "frame-graph-context",
@@ -201,12 +214,10 @@ export function compileEngineIntrinsic(
 
         case "createRenderTarget": {
             context.expectArgumentCount(call, 1, 1);
-            const engine =
-                context.requireDefaultEngine(call);
-            const options =
-                context.compileRenderTargetOptions(
-                    argumentAt(call, 0),
-                );
+            const engine = context.requireDefaultEngine(call);
+            const options = context.compileRenderTargetOptions(
+                argumentAt(call, 0),
+            );
             context.reachFeature("frame-graph:resources", call);
             return {
                 kind: "render-target",
@@ -218,17 +229,11 @@ export function compileEngineIntrinsic(
 
         case "createRenderTargetTexture": {
             context.expectArgumentCount(call, 2, 2);
-            const engine =
-                context.compileValue(argumentAt(call, 0));
-            context.expectKind(
-                engine,
-                "engine",
-                argumentAt(call, 0),
+            const engine = context.compileValue(argumentAt(call, 0));
+            context.expectKind(engine, "engine", argumentAt(call, 0));
+            const options = context.compileRenderTargetOptions(
+                argumentAt(call, 1),
             );
-            const options =
-                context.compileRenderTargetOptions(
-                    argumentAt(call, 1),
-                );
             context.reachFeature("frame-graph:resources", call);
             return {
                 kind: "render-target-texture",
@@ -242,32 +247,20 @@ export function compileEngineIntrinsic(
                 // otherwise, so a colourless target's texture samples
                 // depth. The `.texture` read carries this through.
                 ...(options.hasColor ? {} : { isDepthTexture: true as const }),
-                engineCpp:
-                    engine.engineCpp ?? engine.cpp,
+                engineCpp: engine.engineCpp ?? engine.cpp,
             };
         }
 
         case "createRenderTask": {
             context.expectArgumentCount(call, 3, 3);
-            const engine =
-                context.compileValue(argumentAt(call, 1));
-            const scene =
-                context.compileValue(argumentAt(call, 2));
-            context.expectKind(
-                engine,
-                "engine",
-                argumentAt(call, 1),
-            );
-            context.expectKind(
-                scene,
-                "scene",
-                argumentAt(call, 2),
-            );
+            const engine = context.compileValue(argumentAt(call, 1));
+            const scene = context.compileValue(argumentAt(call, 2));
+            context.expectKind(engine, "engine", argumentAt(call, 1));
+            context.expectKind(scene, "scene", argumentAt(call, 2));
             context.expectSameEngine(engine, scene, call);
-            const options =
-                context.compileRenderTaskOptions(
-                    argumentAt(call, 0),
-                );
+            const options = context.compileRenderTaskOptions(
+                argumentAt(call, 0),
+            );
             reachRenderer(context, call);
             return {
                 kind: "task",
@@ -275,36 +268,26 @@ export function compileEngineIntrinsic(
                     `bbl::create_render_task(${engine.cpp}, ` +
                     `${scene.cpp}, ${options})`,
                 renderTask: true,
-                engineCpp:
-                    engine.engineCpp ?? engine.cpp,
+                engineCpp: engine.engineCpp ?? engine.cpp,
             };
         }
 
         case "createGeometryRendererTask": {
-            context.noteTemporalRecordBoundary(call, "geometry-output task preparation", "always");
+            context.noteTemporalRecordBoundary(
+                call,
+                "geometry-output task preparation",
+                "always",
+            );
             context.expectArgumentCount(call, 3, 3);
-            const engine =
-                context.compileValue(argumentAt(call, 1));
-            const scene =
-                context.compileValue(argumentAt(call, 2));
-            context.expectKind(
-                engine,
-                "engine",
-                argumentAt(call, 1),
-            );
-            context.expectKind(
-                scene,
-                "scene",
-                argumentAt(call, 2),
-            );
+            const engine = context.compileValue(argumentAt(call, 1));
+            const scene = context.compileValue(argumentAt(call, 2));
+            context.expectKind(engine, "engine", argumentAt(call, 1));
+            context.expectKind(scene, "scene", argumentAt(call, 2));
             context.expectSameEngine(engine, scene, call);
-            const compiled =
-                context.compileGeometryTaskOptions(
-                    argumentAt(call, 0),
-                );
-            context.recordGeometryOutputTask(
-                compiled.manifest,
+            const compiled = context.compileGeometryTaskOptions(
+                argumentAt(call, 0),
             );
+            context.recordGeometryOutputTask(compiled.manifest);
             reachRenderer(context, call);
             return {
                 kind: "task",
@@ -312,58 +295,39 @@ export function compileEngineIntrinsic(
                     `bbl::create_geometry_renderer_task(` +
                     `${engine.cpp}, ${scene.cpp}, ` +
                     `${compiled.cpp})`,
-                engineCpp:
-                    engine.engineCpp ?? engine.cpp,
+                engineCpp: engine.engineCpp ?? engine.cpp,
                 geometryTask: compiled.manifest,
             };
         }
 
         case "createCopyToTextureTask": {
-            context.noteTemporalRecordBoundary(call, "copy task preparation", "always");
+            context.noteTemporalRecordBoundary(
+                call,
+                "copy task preparation",
+                "always",
+            );
             context.expectArgumentCount(call, 3, 3);
-            const engine =
-                context.compileValue(argumentAt(call, 1));
-            const scene =
-                context.compileValue(argumentAt(call, 2));
-            context.expectKind(
-                engine,
-                "engine",
-                argumentAt(call, 1),
-            );
-            context.expectKind(
-                scene,
-                "scene",
-                argumentAt(call, 2),
-            );
+            const engine = context.compileValue(argumentAt(call, 1));
+            const scene = context.compileValue(argumentAt(call, 2));
+            context.expectKind(engine, "engine", argumentAt(call, 1));
+            context.expectKind(scene, "scene", argumentAt(call, 2));
             context.expectSameEngine(engine, scene, call);
-            const options =
-                context.compileCopyTaskOptions(
-                    argumentAt(call, 0),
-                );
+            const options = context.compileCopyTaskOptions(argumentAt(call, 0));
             reachRenderer(context, call);
             return {
                 kind: "task",
                 cpp:
                     `bbl::create_copy_to_texture_task(` +
                     `${engine.cpp}, ${scene.cpp}, ${options})`,
-                engineCpp:
-                    engine.engineCpp ?? engine.cpp,
+                engineCpp: engine.engineCpp ?? engine.cpp,
             };
         }
 
         default:
             if (isScreenSpaceIntrinsic(importedName)) {
-                return compileScreenSpaceIntrinsic(
-                    context,
-                    importedName,
-                    call,
-                );
+                return compileScreenSpaceIntrinsic(context, importedName, call);
             }
-            return compilePostProcessIntrinsic(
-                context,
-                importedName,
-                call,
-            );
+            return compilePostProcessIntrinsic(context, importedName, call);
     }
 }
 
@@ -480,10 +444,9 @@ function compilePostProcessIntrinsic(
         }
         return {
             kind: "task",
-            cpp:
-                `bbl::create_composite_post_process_task_${
-                    built.manifest.compositeIndex
-                }(${engine.cpp}, ${built.cpp})`,
+            cpp: `bbl::create_composite_post_process_task_${
+                built.manifest.compositeIndex
+            }(${engine.cpp}, ${built.cpp})`,
             engineCpp: engine.engineCpp ?? engine.cpp,
             postProcessComposite: built.manifest,
         };
@@ -497,8 +460,7 @@ function compilePostProcessIntrinsic(
     context.recordPostProcessTask(compiled.manifest);
     return {
         kind: "task",
-        cpp:
-            `bbl::create_post_process_task(${engine.cpp}, ${compiled.cpp})`,
+        cpp: `bbl::create_post_process_task(${engine.cpp}, ${compiled.cpp})`,
         engineCpp: engine.engineCpp ?? engine.cpp,
         postProcessTask: compiled.manifest,
     };

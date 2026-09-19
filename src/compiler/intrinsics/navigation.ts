@@ -30,23 +30,25 @@ import {
 import { PINNED_AGENT_PARAM_DEFAULTS } from "../../lowering/navigation-lowerer.js";
 
 export interface NavigationIntrinsicContext
-    extends IntrinsicCallContext,
-    ObjectValidationContext,
-    PositiveIntegerContext,
-    Pick<LoweringServices,
-        | "expectObjectLiteral"
-        | "expectStaticArrayLiteral"
-        | "objectProperty"
-        | "compileNumber"
-        | "compileVec3"
-        | "compileBoolean"
-        | "emitDataVectorOfStructs"
-        | "allocateTemporaryCppName"
-        | "registerNativeBinding"
-        | "emit"
-        | "requireEngine"
-        | "unwrap"
-    > {}
+    extends
+        IntrinsicCallContext,
+        ObjectValidationContext,
+        PositiveIntegerContext,
+        Pick<
+            LoweringServices,
+            | "expectObjectLiteral"
+            | "expectStaticArrayLiteral"
+            | "objectProperty"
+            | "compileNumber"
+            | "compileVec3"
+            | "compileBoolean"
+            | "emitDataVectorOfStructs"
+            | "allocateTemporaryCppName"
+            | "registerNativeBinding"
+            | "emit"
+            | "requireEngine"
+            | "unwrap"
+        > {}
 
 /**
  * The build parameters a reached `createNavMesh` may name, each mapping
@@ -97,16 +99,11 @@ function emitOffMeshConnections(
     options: ts.ObjectLiteralExpression,
     parameters: string,
 ): void {
-    const value = context.objectProperty(
-        options,
-        "offMeshConnections",
-    );
+    const value = context.objectProperty(options, "offMeshConnections");
     if (!value) {
         return;
     }
-    for (const element of context
-        .expectStaticArrayLiteral(value)
-        .elements) {
+    for (const element of context.expectStaticArrayLiteral(value).elements) {
         const connection = context.expectObjectLiteral(element);
         const required = (name: string): ts.Expression => {
             const found = context.objectProperty(connection, name);
@@ -124,8 +121,7 @@ function emitOffMeshConnections(
         // and its members are copied across, rather than the expression
         // being spelled three times.
         const endpoint = (name: string): string => {
-            const temporary =
-                context.allocateTemporaryCppName("nav_offmesh");
+            const temporary = context.allocateTemporaryCppName("nav_offmesh");
             context.emit(
                 `const bbl::Vec3 ${temporary} = ` +
                     `${context.compileVec3(required(name))};`,
@@ -180,11 +176,7 @@ export function compileNavigationIntrinsic(
         case "createNavMesh": {
             context.expectArgumentCount(call, 3, 3);
             const plugin = context.compileValue(argumentAt(call, 0));
-            context.expectKind(
-                plugin,
-                "navigation",
-                argumentAt(call, 0),
-            );
+            context.expectKind(plugin, "navigation", argumentAt(call, 0));
             const meshList = context.expectStaticArrayLiteral(
                 argumentAt(call, 1),
             );
@@ -199,13 +191,8 @@ export function compileNavigationIntrinsic(
                     "createNavMesh requires at least one mesh.",
                 );
             }
-            const engine = context.requireEngine(
-                meshes[0]!,
-                call,
-            );
-            const options = context.expectObjectLiteral(
-                argumentAt(call, 2),
-            );
+            const engine = context.requireEngine(meshes[0]!, call);
+            const options = context.expectObjectLiteral(argumentAt(call, 2));
             validateNavMeshParams(context, options);
             // Which arm this build takes is decided HERE and nowhere else:
             // the feature is what carries it to the emitted dispatch, to
@@ -214,11 +201,8 @@ export function compileNavigationIntrinsic(
             if (buildGate(context, options, "maxObstacles") !== 0) {
                 context.reachFeature("navigation:tile-cache", call);
             }
-            const parameters =
-                context.allocateTemporaryCppName("nav_params");
-            context.emit(
-                `bbl::pal::NavMeshBuildParams ${parameters}{};`,
-            );
+            const parameters = context.allocateTemporaryCppName("nav_params");
+            context.emit(`bbl::pal::NavMeshBuildParams ${parameters}{};`);
             for (const [name, field] of NAV_MESH_NUMBER_PARAMS) {
                 const value = context.objectProperty(options, name);
                 if (value) {
@@ -249,22 +233,12 @@ export function compileNavigationIntrinsic(
             const box = importedName === "addBoxObstacle";
             context.expectArgumentCount(call, 4, 4);
             const plugin = context.compileValue(argumentAt(call, 0));
-            context.expectKind(
-                plugin,
-                "navigation",
-                argumentAt(call, 0),
-            );
-            const position = context.compileVec3(
-                argumentAt(call, 1),
-                "double",
-            );
+            context.expectKind(plugin, "navigation", argumentAt(call, 0));
+            const position = context.compileVec3(argumentAt(call, 1), "double");
             const second = box
                 ? context.compileVec3(argumentAt(call, 2), "double")
                 : context.compileNumber(argumentAt(call, 2), "double");
-            const third = context.compileNumber(
-                argumentAt(call, 3),
-                "double",
-            );
+            const third = context.compileNumber(argumentAt(call, 3), "double");
             return {
                 kind: "navigation-obstacle",
                 cpp:
@@ -277,11 +251,7 @@ export function compileNavigationIntrinsic(
         case "removeObstacle": {
             context.expectArgumentCount(call, 2, 2);
             const plugin = context.compileValue(argumentAt(call, 0));
-            context.expectKind(
-                plugin,
-                "navigation",
-                argumentAt(call, 0),
-            );
+            context.expectKind(plugin, "navigation", argumentAt(call, 0));
             const obstacle = context.compileValue(argumentAt(call, 1));
             context.expectKind(
                 obstacle,
@@ -304,11 +274,7 @@ export function compileNavigationIntrinsic(
             // day an add stops waiting this is what would carry the wait.
             context.expectArgumentCount(call, 1, 1);
             const plugin = context.compileValue(argumentAt(call, 0));
-            context.expectKind(
-                plugin,
-                "navigation",
-                argumentAt(call, 0),
-            );
+            context.expectKind(plugin, "navigation", argumentAt(call, 0));
             return {
                 kind: "void",
                 cpp:
@@ -320,19 +286,9 @@ export function compileNavigationIntrinsic(
         case "computePath": {
             context.expectArgumentCount(call, 3, 3);
             const plugin = context.compileValue(argumentAt(call, 0));
-            context.expectKind(
-                plugin,
-                "navigation",
-                argumentAt(call, 0),
-            );
-            const start = context.compileVec3(
-                argumentAt(call, 1),
-                "double",
-            );
-            const end = context.compileVec3(
-                argumentAt(call, 2),
-                "double",
-            );
+            context.expectKind(plugin, "navigation", argumentAt(call, 0));
+            const start = context.compileVec3(argumentAt(call, 1), "double");
+            const end = context.compileVec3(argumentAt(call, 2), "double");
             const path = context.allocateTemporaryCppName("nav_path");
             context.emit(
                 `const std::vector<bbl::Vec3d> ${path} = ` +
@@ -343,29 +299,18 @@ export function compileNavigationIntrinsic(
             // are filled by name rather than by position -- the pinned
             // interface declares x, y, z, but the generated order is the
             // registry's to decide.
-            return context.emitDataVectorOfStructs(
-                call,
-                path,
-                (point) => ({
-                    x: `${point}.x`,
-                    y: `${point}.y`,
-                    z: `${point}.z`,
-                }),
-            );
+            return context.emitDataVectorOfStructs(call, path, (point) => ({
+                x: `${point}.x`,
+                y: `${point}.y`,
+                z: `${point}.z`,
+            }));
         }
 
         case "agentGoto": {
             context.expectArgumentCount(call, 3, 3);
             const crowd = context.compileValue(argumentAt(call, 0));
-            context.expectKind(
-                crowd,
-                "navigation-crowd",
-                argumentAt(call, 0),
-            );
-            const index = context.compileNumber(
-                argumentAt(call, 1),
-                "double",
-            );
+            context.expectKind(crowd, "navigation-crowd", argumentAt(call, 0));
+            const index = context.compileNumber(argumentAt(call, 1), "double");
             const destination = context.compileVec3(
                 argumentAt(call, 2),
                 "double",
@@ -381,15 +326,8 @@ export function compileNavigationIntrinsic(
         case "updateNavCrowd": {
             context.expectArgumentCount(call, 2, 2);
             const crowd = context.compileValue(argumentAt(call, 0));
-            context.expectKind(
-                crowd,
-                "navigation-crowd",
-                argumentAt(call, 0),
-            );
-            const delta = context.compileNumber(
-                argumentAt(call, 1),
-                "double",
-            );
+            context.expectKind(crowd, "navigation-crowd", argumentAt(call, 0));
+            const delta = context.compileNumber(argumentAt(call, 1), "double");
             return {
                 kind: "void",
                 cpp:
@@ -401,13 +339,8 @@ export function compileNavigationIntrinsic(
         case "createDebugNavMeshGeometry": {
             context.expectArgumentCount(call, 1, 1);
             const plugin = context.compileValue(argumentAt(call, 0));
-            context.expectKind(
-                plugin,
-                "navigation",
-                argumentAt(call, 0),
-            );
-            const temporary =
-                context.allocateTemporaryCppName("nav_debug");
+            context.expectKind(plugin, "navigation", argumentAt(call, 0));
+            const temporary = context.allocateTemporaryCppName("nav_debug");
             context.emit(
                 `const bbl::pal::NavDebugGeometry ${temporary} = ` +
                     `bbl::upstream::create_debug_nav_mesh_geometry(` +
@@ -439,23 +372,14 @@ export function compileNavigationIntrinsic(
         case "raycast": {
             context.expectArgumentCount(call, 3, 3);
             const plugin = context.compileValue(argumentAt(call, 0));
-            context.expectKind(
-                plugin,
-                "navigation",
-                argumentAt(call, 0),
-            );
-            const start = context.compileVec3(
-                argumentAt(call, 1),
-                "double",
-            );
-            const end = context.compileVec3(
-                argumentAt(call, 2),
-                "double",
-            );
-            const temporary =
-                context.allocateTemporaryCppName("nav_ray");
+            context.expectKind(plugin, "navigation", argumentAt(call, 0));
+            const start = context.compileVec3(argumentAt(call, 1), "double");
+            const end = context.compileVec3(argumentAt(call, 2), "double");
+            const temporary = context.allocateTemporaryCppName("nav_ray");
             context.emit({
-                kind: "declaration", type: "const bbl::upstream::NavRaycastResult", name: temporary,
+                kind: "declaration",
+                type: "const bbl::upstream::NavRaycastResult",
+                name: temporary,
                 initializer: `bbl::upstream::nav_raycast(${plugin.cpp}, ${start}, ${end})`,
             });
             const owner = context.registerNativeBinding(temporary);
@@ -485,15 +409,8 @@ export function compileNavigationIntrinsic(
         case "getClosestPoint": {
             context.expectArgumentCount(call, 2, 2);
             const plugin = context.compileValue(argumentAt(call, 0));
-            context.expectKind(
-                plugin,
-                "navigation",
-                argumentAt(call, 0),
-            );
-            const position = context.compileVec3(
-                argumentAt(call, 1),
-                "double",
-            );
+            context.expectKind(plugin, "navigation", argumentAt(call, 0));
+            const position = context.compileVec3(argumentAt(call, 1), "double");
             return navVec3Record(
                 context,
                 "nav_closest",
@@ -505,11 +422,7 @@ export function compileNavigationIntrinsic(
             context.reachFeature("navigation:crowd", call);
             context.expectArgumentCount(call, 3, 3);
             const plugin = context.compileValue(argumentAt(call, 0));
-            context.expectKind(
-                plugin,
-                "navigation",
-                argumentAt(call, 0),
-            );
+            context.expectKind(plugin, "navigation", argumentAt(call, 0));
             const maxAgents = context.compileNumber(
                 argumentAt(call, 1),
                 "double",
@@ -530,18 +443,9 @@ export function compileNavigationIntrinsic(
         case "addAgent": {
             context.expectArgumentCount(call, 3, 3);
             const crowd = context.compileValue(argumentAt(call, 0));
-            context.expectKind(
-                crowd,
-                "navigation-crowd",
-                argumentAt(call, 0),
-            );
-            const position = context.compileVec3(
-                argumentAt(call, 1),
-                "double",
-            );
-            const options = context.expectObjectLiteral(
-                argumentAt(call, 2),
-            );
+            context.expectKind(crowd, "navigation-crowd", argumentAt(call, 0));
+            const position = context.compileVec3(argumentAt(call, 1), "double");
+            const options = context.expectObjectLiteral(argumentAt(call, 2));
             validateObjectProperties(
                 context,
                 options,
@@ -559,11 +463,8 @@ export function compileNavigationIntrinsic(
                         "forwarded to the crowd by the pinned module.",
                 );
             }
-            const parameters =
-                context.allocateTemporaryCppName("agent_params");
-            context.emit(
-                `bbl::pal::NavAgentParams ${parameters}{};`,
-            );
+            const parameters = context.allocateTemporaryCppName("agent_params");
+            context.emit(`bbl::pal::NavAgentParams ${parameters}{};`);
             for (const [name, field] of AGENT_FLOAT_PARAMS) {
                 const value = context.objectProperty(options, name);
                 if (!value) {
@@ -582,11 +483,7 @@ export function compileNavigationIntrinsic(
             // wrapper's spread never decides them. The numbers come from
             // the table the lowerer gates against the pinned expression,
             // so neither side can move alone.
-            for (const [
-                name,
-                field,
-                fallback,
-            ] of PINNED_AGENT_PARAM_DEFAULTS) {
+            for (const [name, field, fallback] of PINNED_AGENT_PARAM_DEFAULTS) {
                 const value = context.objectProperty(options, name);
                 const resolved = value
                     ? context.compileNumber(value, "double")
@@ -607,15 +504,8 @@ export function compileNavigationIntrinsic(
         case "getAgentPosition": {
             context.expectArgumentCount(call, 2, 2);
             const crowd = context.compileValue(argumentAt(call, 0));
-            context.expectKind(
-                crowd,
-                "navigation-crowd",
-                argumentAt(call, 0),
-            );
-            const index = context.compileNumber(
-                argumentAt(call, 1),
-                "double",
-            );
+            context.expectKind(crowd, "navigation-crowd", argumentAt(call, 0));
+            const index = context.compileNumber(argumentAt(call, 1), "double");
             return navVec3Record(
                 context,
                 "agent_pos",
@@ -678,9 +568,12 @@ function navVec3Record(
     expression: string,
 ): Value {
     const temporary = context.allocateTemporaryCppName(label);
-    context.emit(
-        { kind: "declaration", type: "const bbl::Vec3d", name: temporary, initializer: expression },
-    );
+    context.emit({
+        kind: "declaration",
+        type: "const bbl::Vec3d",
+        name: temporary,
+        initializer: expression,
+    });
     return vec3LanesOf(temporary, context.registerNativeBinding(temporary));
 }
 

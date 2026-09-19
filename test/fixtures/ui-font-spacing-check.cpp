@@ -12,11 +12,16 @@
 #include <iostream>
 
 struct Recorder final : Rml::RenderInterface {
-    Rml::CompiledGeometryHandle CompileGeometry(Rml::Span<const Rml::Vertex>, Rml::Span<const int>) override { return 1; }
+    Rml::CompiledGeometryHandle CompileGeometry(Rml::Span<const Rml::Vertex>,
+                                                Rml::Span<const int>) override {
+        return 1;
+    }
     void RenderGeometry(Rml::CompiledGeometryHandle, Rml::Vector2f, Rml::TextureHandle) override {}
     void ReleaseGeometry(Rml::CompiledGeometryHandle) override {}
     Rml::TextureHandle LoadTexture(Rml::Vector2i&, const Rml::String&) override { return 0; }
-    Rml::TextureHandle GenerateTexture(Rml::Span<const Rml::byte>, Rml::Vector2i) override { return 1; }
+    Rml::TextureHandle GenerateTexture(Rml::Span<const Rml::byte>, Rml::Vector2i) override {
+        return 1;
+    }
     void ReleaseTexture(Rml::TextureHandle) override {}
     void EnableScissorRegion(bool) override {}
     void SetScissorRegion(Rml::Rectanglei) override {}
@@ -40,7 +45,8 @@ int main() {
             const auto color = white.ToPremultiplied(opacity);
             const auto expected = static_cast<Rml::byte>(alpha * opacity + 0.5f);
             assert(color.alpha == expected);
-            assert(color.red == color.alpha && color.green == color.alpha && color.blue == color.alpha);
+            assert(color.red == color.alpha && color.green == color.alpha &&
+                   color.blue == color.alpha);
         }
     }
     const std::string arrow = "\xE2\x96\xB6";
@@ -65,11 +71,12 @@ int main() {
     assert(ui_normalize_emoji_presentation(controller + vs15) == controller);
     const std::string attributed = "<span title=\"a > " + controller + vs16 + "\">";
     assert(ui_normalize_emoji_presentation(attributed + controller + "</span>") ==
-        attributed + open + controller + "</span></span>");
+           attributed + open + controller + "</span></span>");
     assert(ui_normalize_emoji_presentation(attributed + "text</span>") ==
-        attributed + "text</span>");
-    assert(ui_normalize_emoji_presentation("before " + controller + " between " + arrow + vs16 + " after") ==
-        "before " + open + controller + "</span> between " + open + arrow + "</span> after");
+           attributed + "text</span>");
+    assert(ui_normalize_emoji_presentation("before " + controller + " between " + arrow + vs16 +
+                                           " after") ==
+           "before " + open + controller + "</span> between " + open + arrow + "</span> after");
     Recorder recorder;
     System system;
     Rml::SetSystemInterface(&system);
@@ -80,31 +87,35 @@ int main() {
     const auto font = bbl::pal::find_system_font("Segoe UI", 400);
     assert(font);
     assert(Rml::LoadFontFace(font->path.string(), "fixture", Rml::Style::FontStyle::Normal,
-        Rml::Style::FontWeight::Normal, false, font->face_index));
+                             Rml::Style::FontWeight::Normal, false, font->face_index));
     auto* engine = Rml::GetFontEngineInterface();
-    auto face = engine->GetFontFaceHandle("fixture", Rml::Style::FontStyle::Normal, Rml::Style::FontWeight::Normal, 16);
+    auto face = engine->GetFontFaceHandle("fixture", Rml::Style::FontStyle::Normal,
+                                          Rml::Style::FontWeight::Normal, 16);
     const Rml::String language = "en";
     Rml::TextShapingContext context{language};
     const int baseline = engine->GetStringWidth(face, "1111111111111111", context);
     for (const float spacing : {0.25f, -0.25f, 2.5f}) {
         context.letter_spacing = spacing;
-        assert(engine->GetStringWidth(face, "1111111111111111", context) == baseline + int(16 * spacing));
+        assert(engine->GetStringWidth(face, "1111111111111111", context) ==
+               baseline + int(16 * spacing));
     }
     const auto bold = bbl::pal::find_system_font("Segoe UI", 700);
     assert(bold);
     assert(Rml::LoadFontFace(bold->path.string(), "fixture", Rml::Style::FontStyle::Normal,
-        Rml::Style::FontWeight::Bold, false, bold->face_index));
+                             Rml::Style::FontWeight::Bold, false, bold->face_index));
     auto* layout = Rml::CreateContext("heading-defaults", {800, 600});
     assert(layout);
     auto* document = layout->CreateDocument();
-    document->SetAttribute("style", "width:800px;height:600px;font-family:fixture;font-size:16px;line-height:1.32;");
+    document->SetAttribute(
+        "style", "width:800px;height:600px;font-family:fixture;font-size:16px;line-height:1.32;");
     document->SetStyleSheetContainer(Rml::Factory::InstanceStyleSheetString(
         std::string(bbl::pal::ui_user_agent_css) +
         ".panel{width:340px;padding:28px;}"
         ".panel h2{margin:0 0 18px;font-size:20px;letter-spacing:0.15em;}"
         ".items{height:40px;}"
         ".custom{display:inline;font-weight:400;font-size:12px;margin:0;}"));
-    document->SetInnerRML("<div class='panel'><h2 id='title'>PAUSED</h2><div class='items' id='items'></div></div>"
+    document->SetInnerRML(
+        "<div class='panel'><h2 id='title'>PAUSED</h2><div class='items' id='items'></div></div>"
         "<h1 id='default-title'>Heading</h1><h2 class='custom' id='override'>Inline</h2>");
     document->Show();
     layout->Update();
@@ -114,22 +125,27 @@ int main() {
     assert(title->GetComputedValues().display() == Rml::Style::Display::Block);
     assert(title->GetComputedValues().font_weight() == Rml::Style::FontWeight::Bold);
     const float gap = items->GetAbsoluteOffset(Rml::BoxArea::Border).y -
-        title->GetAbsoluteOffset(Rml::BoxArea::Border).y - title->GetBox().GetSize(Rml::BoxArea::Border).y;
+                      title->GetAbsoluteOffset(Rml::BoxArea::Border).y -
+                      title->GetBox().GetSize(Rml::BoxArea::Border).y;
     assert(std::abs(gap - 18.0f) < 0.01f);
     const auto& heading = document->GetElementById("default-title")->GetComputedValues();
     assert(heading.display() == Rml::Style::Display::Block);
     assert(heading.font_weight() == Rml::Style::FontWeight::Bold && heading.font_size() == 32.0f);
     const auto& overridden = document->GetElementById("override")->GetComputedValues();
     assert(overridden.display() == Rml::Style::Display::Inline);
-    assert(overridden.font_weight() == Rml::Style::FontWeight::Normal && overridden.font_size() == 12.0f);
+    assert(overridden.font_weight() == Rml::Style::FontWeight::Normal &&
+           overridden.font_size() == 12.0f);
     document->SetStyleSheetContainer(Rml::Factory::InstanceStyleSheetString(
         ".centered{position:absolute;left:50%;top:0;width:200px;height:40px;transform:translateX(-50%);transition:transform 0.05s;}"
-        ".centered:active{transform:translateX(-50%) translateY(1px);}"
-    ));
-    document->SetInnerRML("<div id='control' class='centered'>Short</div><div id='sibling' class='centered'>Sibling</div>");
+        ".centered:active{transform:translateX(-50%) translateY(1px);}"));
+    document->SetInnerRML(
+        "<div id='control' class='centered'>Short</div><div id='sibling' class='centered'>Sibling</div>");
     auto* control = document->GetElementById("control");
     auto* sibling = document->GetElementById("sibling");
-    const auto update = [&] { layout->Update(); layout->Render(); };
+    const auto update = [&] {
+        layout->Update();
+        layout->Render();
+    };
     const auto centered = [&](Rml::Element& element) {
         const auto offset = element.GetAbsoluteOffset(Rml::BoxArea::Border);
         const auto size = element.GetBox().GetSize(Rml::BoxArea::Border);
@@ -159,7 +175,8 @@ int main() {
 
     // A centered column starts scrolling on a short/high-density viewport.
     // An unstyled RmlUi vertical scrollbar consumes the entire panel width.
-    document->SetAttribute("style", "width:100%;height:100%;font-family:fixture;font-size:16dp;pointer-events:none;");
+    document->SetAttribute(
+        "style", "width:100%;height:100%;font-family:fixture;font-size:16dp;pointer-events:none;");
     document->SetStyleSheetContainer(Rml::Factory::InstanceStyleSheetString(
         std::string(bbl::pal::ui_user_agent_css) +
         ".menu{position:absolute;top:0;left:0;width:100%;height:100%;display:flex;align-items:center;justify-content:center;}"
@@ -167,8 +184,7 @@ int main() {
         ".menu-title{font-size:32dp;line-height:1.05;text-align:center;margin:0 0 10dp;}"
         ".menu-buttons{width:100%;display:flex;flex-direction:column;gap:10dp;}"
         ".menu-item{height:48dp;flex-shrink:0;}"
-        ".menu-credit{height:180dp;flex-shrink:0;}"
-    ));
+        ".menu-credit{height:180dp;flex-shrink:0;}"));
     document->SetInnerRML(
         "<div class='menu'><div class='menu-panel' id='menu-panel'>"
         "<h1 class='menu-title' id='menu-title'>ANTIGRAVITY<div>RACER</div></h1>"
@@ -180,13 +196,20 @@ int main() {
     auto* panel = document->GetElementById("menu-panel");
     auto* buttons = document->GetElementById("menu-buttons");
     auto* menu_title = document->GetElementById("menu-title");
-    struct Viewport { int width, height; float density; bool overflow; };
+    struct Viewport {
+        int width, height;
+        float density;
+        bool overflow;
+    };
     for (const auto view : {
-        Viewport{2560, 1440, 1.f, false}, Viewport{1280, 720, 1.f, false},
-        Viewport{1280, 720, 2.f, true}, Viewport{3840, 2300, 2.f, false},
-        Viewport{1280, 720, 2.f, true}, Viewport{640, 360, 1.f, true},
-        Viewport{2560, 1440, 1.f, false},
-    }) {
+             Viewport{2560, 1440, 1.f, false},
+             Viewport{1280, 720, 1.f, false},
+             Viewport{1280, 720, 2.f, true},
+             Viewport{3840, 2300, 2.f, false},
+             Viewport{1280, 720, 2.f, true},
+             Viewport{640, 360, 1.f, true},
+             Viewport{2560, 1440, 1.f, false},
+         }) {
         layout->SetDimensions({view.width, view.height});
         layout->SetDensityIndependentPixelRatio(view.density);
         update();
@@ -199,19 +222,22 @@ int main() {
         assert(content_width >= 400.f && content_width <= 420.f);
         assert(menu_title->GetBox().GetSize().y / view.density < 80.f);
         assert(scroll->GetScrollbarSize(Rml::ElementScroll::HORIZONTAL) == 0.f);
-        assert(view.overflow ? (scrollbar > 0.f && scrollbar / view.density <= 20.f) : scrollbar == 0.f);
+        assert(view.overflow ? (scrollbar > 0.f && scrollbar / view.density <= 20.f)
+                             : scrollbar == 0.f);
         if (view.overflow) {
             auto* vertical = scroll->GetScrollbar(Rml::ElementScroll::VERTICAL);
             Rml::Element* thumb = nullptr;
             for (int i = 0; i < vertical->GetNumChildren(true); ++i) {
-                if (vertical->GetChild(i)->GetTagName() == "sliderbar") thumb = vertical->GetChild(i);
+                if (vertical->GetChild(i)->GetTagName() == "sliderbar")
+                    thumb = vertical->GetChild(i);
             }
             assert(thumb);
             const auto thumb_size = thumb->GetBox().GetSize();
             assert(thumb_size.x > 0.f && thumb_size.x <= scrollbar && thumb_size.y > 0.f);
             assert(thumb->GetComputedValues().background_color().alpha > 0);
             layout->SetDefaultScrollBehavior(Rml::ScrollBehavior::Instant, 1.f);
-            const auto position = thumb->GetAbsoluteOffset(Rml::BoxArea::Content) + thumb_size * 0.5f;
+            const auto position =
+                thumb->GetAbsoluteOffset(Rml::BoxArea::Content) + thumb_size * 0.5f;
             layout->ProcessMouseMove(int(position.x), int(position.y), 0);
             layout->ProcessMouseWheel(2.f, 0);
             update();
@@ -227,14 +253,17 @@ int main() {
             panel->SetScrollTop(panel->GetScrollHeight());
             update();
             auto* last = document->GetElementById("last-item");
-            const float last_bottom = last->GetAbsoluteOffset(Rml::BoxArea::Border).y + last->GetBox().GetSize().y;
-            assert(last_bottom <= panel->GetAbsoluteOffset(Rml::BoxArea::Padding).y + panel->GetClientHeight());
+            const float last_bottom =
+                last->GetAbsoluteOffset(Rml::BoxArea::Border).y + last->GetBox().GetSize().y;
+            assert(last_bottom <=
+                   panel->GetAbsoluteOffset(Rml::BoxArea::Padding).y + panel->GetClientHeight());
             panel->SetScrollTop(0.f);
         }
     }
 
     // Both axes reserve space, then release it when overflow disappears.
-    document->SetInnerRML("<div id='scroll-box' style='width:200dp;height:100dp;overflow:auto;'>"
+    document->SetInnerRML(
+        "<div id='scroll-box' style='width:200dp;height:100dp;overflow:auto;'>"
         "<div id='scroll-content' style='width:400dp;height:300dp;'></div></div>");
     for (const float density : {1.f, 2.f}) {
         layout->SetDensityIndependentPixelRatio(density);

@@ -20,18 +20,18 @@ class SdlWindowRun;
 inline thread_local SdlWindowRun* active_window_run = nullptr;
 
 inline void trace_run_window(const char* action, SDL_Window* window) {
-    if (!runtime_trace_enabled()) return;
+    if (!runtime_trace_enabled())
+        return;
     int x = 0, y = 0, width = 0, height = 0;
     SDL_GetWindowPosition(window, &x, &y);
     SDL_GetWindowSize(window, &width, &height);
-    std::cerr << "[bblite trace] window " << action
-              << " id=" << SDL_GetWindowID(window)
+    std::cerr << "[bblite trace] window " << action << " id=" << SDL_GetWindowID(window)
 #ifdef _WIN32
-              << " native=" << SDL_GetPointerProperty(SDL_GetWindowProperties(window),
-                   SDL_PROP_WINDOW_WIN32_HWND_POINTER, nullptr)
+              << " native="
+              << SDL_GetPointerProperty(SDL_GetWindowProperties(window),
+                                        SDL_PROP_WINDOW_WIN32_HWND_POINTER, nullptr)
 #endif
-              << " position=" << x << ',' << y
-              << " size=" << width << 'x' << height << '\n';
+              << " position=" << x << ',' << y << " size=" << width << 'x' << height << '\n';
 }
 
 inline void configure_run_surface(const EngineOptions& options) {
@@ -39,15 +39,19 @@ inline void configure_run_surface(const EngineOptions& options) {
     SDL_SetHint(SDL_HINT_ORIENTATIONS, "LandscapeLeft LandscapeRight");
     auto* env = static_cast<JNIEnv*>(SDL_GetAndroidJNIEnv());
     auto activity = static_cast<jobject>(SDL_GetAndroidActivity());
-    if (!env || !activity) throw std::runtime_error("Android activity unavailable.");
+    if (!env || !activity)
+        throw std::runtime_error("Android activity unavailable.");
     const jclass type = env->GetObjectClass(activity);
     const jmethodID configure = env->GetMethodID(type, "configureSurface", "(D)Z");
-    const bool configured = configure && env->CallBooleanMethod(activity, configure, options.max_device_pixel_ratio);
+    const bool configured =
+        configure && env->CallBooleanMethod(activity, configure, options.max_device_pixel_ratio);
     const bool exception = env->ExceptionCheck();
-    if (exception) env->ExceptionClear();
+    if (exception)
+        env->ExceptionClear();
     env->DeleteLocalRef(type);
     env->DeleteLocalRef(activity);
-    if (!configured || exception) throw std::runtime_error("Android surface configuration failed.");
+    if (!configured || exception)
+        throw std::runtime_error("Android surface configuration failed.");
 #elif defined(SDL_PLATFORM_IOS)
     const double cap = options.max_device_pixel_ratio;
     if (std::isnan(cap) || cap <= 0) {
@@ -55,9 +59,11 @@ inline void configure_run_surface(const EngineOptions& options) {
     }
     if (std::isfinite(cap) && cap != 1.0) {
         const auto* mode = SDL_GetCurrentDisplayMode(SDL_GetPrimaryDisplay());
-        if (!mode) throw std::runtime_error("iOS display density is unavailable.");
+        if (!mode)
+            throw std::runtime_error("iOS display density is unavailable.");
         if (cap < mode->pixel_density) {
-            throw std::runtime_error("iOS supports maxDevicePixelRatio=1 or a cap at least the native display density.");
+            throw std::runtime_error(
+                "iOS supports maxDevicePixelRatio=1 or a cap at least the native display density.");
         }
     }
 #else
@@ -65,24 +71,30 @@ inline void configure_run_surface(const EngineOptions& options) {
 #endif
 }
 
-inline SDL_WindowFlags run_window_flags(SDL_WindowFlags flags, [[maybe_unused]] const EngineOptions& options) {
+inline SDL_WindowFlags run_window_flags(SDL_WindowFlags flags,
+                                        [[maybe_unused]] const EngineOptions& options) {
 #ifdef __ANDROID__
     flags |= SDL_WINDOW_FULLSCREEN;
 #if BBLITE_HAS_DAWN
     // Mark Dawn's external Vulkan context so SDL does not restore an EGL context on resume.
-    if (use_dawn_backend()) flags |= SDL_WINDOW_VULKAN;
+    if (use_dawn_backend())
+        flags |= SDL_WINDOW_VULKAN;
 #endif
 #elif defined(SDL_PLATFORM_IOS)
     flags |= SDL_WINDOW_FULLSCREEN;
-    if (options.max_device_pixel_ratio == 1.0) flags &= ~SDL_WINDOW_HIGH_PIXEL_DENSITY;
-    else flags |= SDL_WINDOW_HIGH_PIXEL_DENSITY;
+    if (options.max_device_pixel_ratio == 1.0)
+        flags &= ~SDL_WINDOW_HIGH_PIXEL_DENSITY;
+    else
+        flags |= SDL_WINDOW_HIGH_PIXEL_DENSITY;
 #endif
     return flags;
 }
 
-inline float window_render_density(SDL_Window* window, [[maybe_unused]] const EngineOptions& options) {
+inline float window_render_density(SDL_Window* window,
+                                   [[maybe_unused]] const EngineOptions& options) {
     float density = SDL_GetWindowDisplayScale(window);
-    if (density <= 0) density = 1;
+    if (density <= 0)
+        density = 1;
 #ifdef __ANDROID__
     density = std::min(density, static_cast<float>(options.max_device_pixel_ratio));
 #endif
@@ -90,10 +102,8 @@ inline float window_render_density(SDL_Window* window, [[maybe_unused]] const En
 }
 
 class SdlWindowRun {
-  public:
-    SdlWindowRun() : previous_(active_window_run) {
-        active_window_run = this;
-    }
+public:
+    SdlWindowRun() : previous_(active_window_run) { active_window_run = this; }
     SdlWindowRun(const SdlWindowRun&) = delete;
     SdlWindowRun& operator=(const SdlWindowRun&) = delete;
     ~SdlWindowRun() {
@@ -102,12 +112,14 @@ class SdlWindowRun {
             SDL_DestroyWindow(window_);
         }
         active_window_run = previous_;
-        if (initialized_ && !previous_) SDL_QuitSubSystem(initialized_);
+        if (initialized_ && !previous_)
+            SDL_QuitSubSystem(initialized_);
     }
 
     bool initialize(SDL_InitFlags flags) {
         const SDL_InitFlags missing = flags & ~SDL_WasInit(0);
-        if (missing && !SDL_Init(missing)) return false;
+        if (missing && !SDL_Init(missing))
+            return false;
         // An outer run may not have initialized its own backend yet. It
         // still owns final SDL shutdown if a nested run initialized SDL.
         for (auto* run = this; run; run = run->previous_) {
@@ -120,7 +132,8 @@ class SdlWindowRun {
 #if defined(SDL_PLATFORM_IOS)
         // UIKit has one application window, acquired before source setup reads
         // its canvas extent and borrowed by renderer/recovery scopes.
-        if (previous_) return previous_->acquire(options, flags);
+        if (previous_)
+            return previous_->acquire(options, flags);
 #endif
         if (window_) {
             // Do not reset size, position, maximization or focus when the
@@ -129,18 +142,18 @@ class SdlWindowRun {
             return window_;
         }
         configure_run_surface(options);
-        window_ = SDL_CreateWindow(options.title.c_str(), options.width,
-                                   options.height, run_window_flags(flags, options));
-        if (window_) trace_run_window("create", window_);
+        window_ = SDL_CreateWindow(options.title.c_str(), options.width, options.height,
+                                   run_window_flags(flags, options));
+        if (window_)
+            trace_run_window("create", window_);
         return window_;
     }
 
     bool owns(SDL_Window* window) const {
-        return window &&
-            (window == window_ || (previous_ && previous_->owns(window)));
+        return window && (window == window_ || (previous_ && previous_->owns(window)));
     }
 
-  private:
+private:
     SdlWindowRun* previous_ = nullptr;
     SDL_Window* window_ = nullptr;
     SDL_InitFlags initialized_ = 0;
@@ -150,16 +163,17 @@ inline bool initialize_run_sdl(SDL_InitFlags flags) {
     // Offscreen producers own no SDL video/event lifecycle. Their host must
     // initialize it on the OS thread before starting them and join them before
     // shutdown; a worker must never initialize video or call SDL_Quit.
-    if (OffscreenRun::current()) return (SDL_WasInit(flags) & flags) == flags;
-    return active_window_run
-        ? active_window_run->initialize(flags) : SDL_Init(flags);
+    if (OffscreenRun::current())
+        return (SDL_WasInit(flags) & flags) == flags;
+    return active_window_run ? active_window_run->initialize(flags) : SDL_Init(flags);
 }
 
-inline SDL_Window* acquire_run_window(
-    const EngineOptions& options, SDL_WindowFlags flags) {
-    if (active_window_run) return active_window_run->acquire(options, flags);
+inline SDL_Window* acquire_run_window(const EngineOptions& options, SDL_WindowFlags flags) {
+    if (active_window_run)
+        return active_window_run->acquire(options, flags);
     configure_run_surface(options);
-    return SDL_CreateWindow(options.title.c_str(), options.width, options.height, run_window_flags(flags, options));
+    return SDL_CreateWindow(options.title.c_str(), options.width, options.height,
+                            run_window_flags(flags, options));
 }
 
 inline void release_run_window(SDL_Window* window) {
@@ -186,7 +200,8 @@ inline void release_canvas_cursors() {
 }
 
 inline void quit_run_sdl() {
-    if (OffscreenRun::current()) return;
+    if (OffscreenRun::current())
+        return;
     if (!active_window_run) {
         release_canvas_cursors();
         SDL_Quit();

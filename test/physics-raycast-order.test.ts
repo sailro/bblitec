@@ -1,3 +1,4 @@
+import { createJavaScriptFunction } from "../src/typescript-transpile.js";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
@@ -7,7 +8,10 @@ import ts from "typescript";
 import { compileSource } from "../src/compiler.js";
 import { LoweringContext } from "../src/lowering/context.js";
 import { PhysicsLowerer } from "../src/lowering/physics-lowerer.js";
-import { optionalNativeFixtureTools, runNativeFixtureCompiler } from "./native-fixture.js";
+import {
+    optionalNativeFixtureTools,
+    runNativeFixtureCompiler,
+} from "./native-fixture.js";
 
 const source = `
 import HavokPhysics from "@babylonjs/havok";
@@ -85,16 +89,21 @@ querySnapshot();
 type ObservedRay = {
     from: { x: number; y: number; z: number };
     to: { x: number; y: number; z: number };
-    membership: number; collideWith: number; shouldHitTriggers: boolean;
+    membership: number;
+    collideWith: number;
+    shouldHitTriggers: boolean;
 };
 
 async function javascriptRays(): Promise<ObservedRay[]> {
     // Observe arguments at the same function-entry boundary as Havok's
     // query, after JavaScript has evaluated the entire argument list.
     const script = ts.transpileModule(source.replace(/^import .+;$/gm, ""), {
-        compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext },
+        compilerOptions: {
+            target: ts.ScriptTarget.ES2022,
+            module: ts.ModuleKind.ESNext,
+        },
     }).outputText;
-    return new Function(`return (async () => {
+    return createJavaScriptFunction(`return (async () => {
         const observed = [];
         const createEngine = async () => ({}), createSceneContext = () => ({});
         const createHavokWorld = () => ({}), HavokPhysics = async () => ({});
@@ -124,35 +133,69 @@ test("physics ray arguments compile with side effects and retained point objects
     assert.equal(rays[7]!.shouldHitTriggers, true);
     assert.equal(rays[8]!.membership, 4);
     assert.equal(rays[8]!.shouldHitTriggers, true);
-    assert.equal(compileSource(source).cpp.match(/bbl::upstream::physics_raycast\(/g)?.length, rays.length);
+    assert.equal(
+        compileSource(source).cpp.match(/bbl::upstream::physics_raycast\(/g)
+            ?.length,
+        rays.length,
+    );
 });
 
 test("physics ray options refuse unmaterialized aliases instead of replaying dynamic initializers", () => {
-    const query = "const query: { membership: number; shouldHitTriggers: boolean; collideWith: number }";
-    assert.throws(() => compileSource(source.replace(query, "const query")),
-        /input\.ts:\d+:\d+: Physics raycast option aliases require stored scalar fields or generation-known values/);
-    assert.throws(() => compileSource(source.replace(
-        "const query: { shouldHitTriggers: boolean }", "const query")),
-        /input\.ts:\d+:\d+: Physics raycast option aliases require stored scalar fields or generation-known values/);
+    const query =
+        "const query: { membership: number; shouldHitTriggers: boolean; collideWith: number }";
+    assert.throws(
+        () => compileSource(source.replace(query, "const query")),
+        /input\.ts:\d+:\d+: Physics raycast option aliases require stored scalar fields or generation-known values/,
+    );
+    assert.throws(
+        () =>
+            compileSource(
+                source.replace(
+                    "const query: { shouldHitTriggers: boolean }",
+                    "const query",
+                ),
+            ),
+        /input\.ts:\d+:\d+: Physics raycast option aliases require stored scalar fields or generation-known values/,
+    );
 });
 
 const nativeTools = optionalNativeFixtureTools(false);
-test("native physics ray arguments match JavaScript evaluation and object identity", { skip: !nativeTools }, async () => {
-    const rays = await javascriptRays();
-    const output = resolve("artifacts/physics-raycast-order");
-    const include = join(output, "bblite/upstream");
-    mkdirSync(include, { recursive: true });
-    writeFileSync(join(output, "program.hpp"), compileSource(source).cpp);
-    writeFileSync(join(include, "physics.hpp"), new PhysicsLowerer(new LoweringContext()).lowerPhysics().header);
-    const cases = rays.map((ray, index) => `case ${index}:\n` + [
-        ...["x", "y", "z"].map((axis) => `assert(from.${axis} == ${ray.from[axis as keyof typeof ray.from]});`),
-        ...["x", "y", "z"].map((axis) => `assert(to.${axis} == ${ray.to[axis as keyof typeof ray.to]});`),
-        `assert(membership == ${ray.membership}u);`,
-        `assert(collide_with == ${ray.collideWith}u);`,
-        `assert(should_hit_triggers == ${ray.shouldHitTriggers}); break;`,
-    ].join("\n")).join("\n");
-    const fixture = join(output, "check.cpp");
-    writeFileSync(fixture, `
+test(
+    "native physics ray arguments match JavaScript evaluation and object identity",
+    { skip: !nativeTools },
+    async () => {
+        const rays = await javascriptRays();
+        const output = resolve("artifacts/physics-raycast-order");
+        const include = join(output, "bblite/upstream");
+        mkdirSync(include, { recursive: true });
+        writeFileSync(join(output, "program.hpp"), compileSource(source).cpp);
+        writeFileSync(
+            join(include, "physics.hpp"),
+            new PhysicsLowerer(new LoweringContext()).lowerPhysics().header,
+        );
+        const cases = rays
+            .map(
+                (ray, index) =>
+                    `case ${index}:\n` +
+                    [
+                        ...["x", "y", "z"].map(
+                            (axis) =>
+                                `assert(from.${axis} == ${ray.from[axis as keyof typeof ray.from]});`,
+                        ),
+                        ...["x", "y", "z"].map(
+                            (axis) =>
+                                `assert(to.${axis} == ${ray.to[axis as keyof typeof ray.to]});`,
+                        ),
+                        `assert(membership == ${ray.membership}u);`,
+                        `assert(collide_with == ${ray.collideWith}u);`,
+                        `assert(should_hit_triggers == ${ray.shouldHitTriggers}); break;`,
+                    ].join("\n"),
+            )
+            .join("\n");
+        const fixture = join(output, "check.cpp");
+        writeFileSync(
+            fixture,
+            `
         #define main generated_scene_main
         #include "program.hpp"
         #undef main
@@ -170,12 +213,25 @@ test("native physics ray arguments match JavaScript evaluation and object identi
         }
         }
         int main() { assert(generated_scene_main() == 0); assert(raycasts == ${rays.length}); }
-    `);
-    const executable = join(output, "check.exe");
-    runNativeFixtureCompiler(nativeTools!, [
-        "/nologo", "/std:c++20", "/W4", "/WX", "/permissive-", "/EHsc",
-        `/Fo:${output}\\`, `/Fe:${executable}`, "/I", "native/include", "/I", output, fixture,
-        "test/fixtures/js-callback/data-engine-stubs.cpp",
-    ]);
-    execFileSync(executable, { encoding: "utf8" });
-});
+    `,
+        );
+        const executable = join(output, "check.exe");
+        runNativeFixtureCompiler(nativeTools!, [
+            "/nologo",
+            "/std:c++20",
+            "/W4",
+            "/WX",
+            "/permissive-",
+            "/EHsc",
+            `/Fo:${output}\\`,
+            `/Fe:${executable}`,
+            "/I",
+            "native/include",
+            "/I",
+            output,
+            fixture,
+            "test/fixtures/js-callback/data-engine-stubs.cpp",
+        ]);
+        execFileSync(executable, { encoding: "utf8" });
+    },
+);

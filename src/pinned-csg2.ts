@@ -21,20 +21,35 @@ import {
     type CsgSourceMesh,
 } from "./pinned-csg.js";
 
-export const csg2BooleanNames = ["csg2Subtract", "csg2Intersect", "csg2Add"] as const;
+export const csg2BooleanNames = [
+    "csg2Subtract",
+    "csg2Intersect",
+    "csg2Add",
+] as const;
 export type Csg2BooleanName = (typeof csg2BooleanNames)[number];
 let materialSlotCount: number | undefined;
 export function csg2MaterialSlotCount(): number {
     if (materialSlotCount === undefined) {
         const context = new LoweringContext();
         const source = context.sourceFile("src/mesh/csg2.ts");
-        materialSlotCount = context.numericValue(context.variableInitializer(source, "MATERIAL_ID_RESERVE_COUNT"), source);
+        materialSlotCount = context.numericValue(
+            context.variableInitializer(source, "MATERIAL_ID_RESERVE_COUNT"),
+            source,
+        );
     }
     return materialSlotCount;
 }
 export type Csg2SolidPlan =
-    | { readonly op: "from-mesh"; readonly source: CsgSourceMesh; readonly materialSlot: number }
-    | { readonly op: Csg2BooleanName; readonly left: Csg2SolidPlan; readonly right: Csg2SolidPlan };
+    | {
+          readonly op: "from-mesh";
+          readonly source: CsgSourceMesh;
+          readonly materialSlot: number;
+      }
+    | {
+          readonly op: Csg2BooleanName;
+          readonly left: Csg2SolidPlan;
+          readonly right: Csg2SolidPlan;
+      };
 
 export interface Csg2BakeRequest {
     readonly plan: Csg2SolidPlan;
@@ -62,20 +77,37 @@ interface PinnedMesh {
     readonly _cpuUvs?: Float32Array;
     readonly _cpuIndices?: Uint32Array;
 }
-interface PinnedSolid { readonly _manifold: unknown }
-type PinnedCsg2 = Record<Csg2BooleanName, (a: PinnedSolid, b: PinnedSolid) => PinnedSolid> & {
+interface PinnedSolid {
+    readonly _manifold: unknown;
+}
+type PinnedCsg2 = Record<
+    Csg2BooleanName,
+    (a: PinnedSolid, b: PinnedSolid) => PinnedSolid
+> & {
     initializeCsg2Async(): Promise<void>;
     createCsg2FromMesh(mesh: PinnedMesh, materialSlot: number): PinnedSolid;
     disposeCsg2(solid: PinnedSolid): void;
-    createMeshFromCsg2(engine: unknown, solid: PinnedSolid, name: string): PinnedMesh;
-    createMeshesFromCsg2(engine: unknown, solid: PinnedSolid, materials: { slot: number }[], name: string): PinnedMesh[];
+    createMeshFromCsg2(
+        engine: unknown,
+        solid: PinnedSolid,
+        name: string,
+    ): PinnedMesh;
+    createMeshesFromCsg2(
+        engine: unknown,
+        solid: PinnedSolid,
+        materials: { slot: number }[],
+        name: string,
+    ): PinnedMesh[];
 };
 
 /** This body is serialized into the page; every dependency is an argument. */
 async function replayPlan(
     request: Csg2BakeRequest,
     csg: PinnedCsg2,
-    factories: Record<CsgSourceMesh["factory"], (engine: unknown, options: unknown) => PinnedMesh>,
+    factories: Record<
+        CsgSourceMesh["factory"],
+        (engine: unknown, options: unknown) => PinnedMesh
+    >,
     makeEngine: typeof recordingCsgEngine,
     pack: typeof packBakedCsgMesh,
     base64: (bytes: Uint8Array) => string,
@@ -86,10 +118,20 @@ async function replayPlan(
     const build = (plan: Csg2SolidPlan): PinnedSolid => {
         let solid: PinnedSolid;
         if (plan.op === "from-mesh") {
-            const mesh = factories[plan.source.factory](engine, plan.source.options);
+            const mesh = factories[plan.source.factory](
+                engine,
+                plan.source.options,
+            );
             const identity = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
-            if (mesh.worldMatrix.length !== 16 || identity.some((value, index) => mesh.worldMatrix[index] !== value)) {
-                throw new Error("A pinned CSG2 source factory no longer starts at the identity transform.");
+            if (
+                mesh.worldMatrix.length !== 16 ||
+                identity.some(
+                    (value, index) => mesh.worldMatrix[index] !== value,
+                )
+            ) {
+                throw new Error(
+                    "A pinned CSG2 source factory no longer starts at the identity transform.",
+                );
             }
             solid = csg.createCsg2FromMesh(mesh, plan.materialSlot);
         } else {
@@ -100,19 +142,40 @@ async function replayPlan(
     };
     try {
         const solid = build(request.plan);
-        const meshes = request.materialCount === undefined
-            ? [csg.createMeshFromCsg2(engine, solid, request.name)]
-            : csg.createMeshesFromCsg2(engine, solid,
-                Array.from({ length: request.materialCount }, (_, slot) => ({ slot })), request.name);
+        const meshes =
+            request.materialCount === undefined
+                ? [csg.createMeshFromCsg2(engine, solid, request.name)]
+                : csg.createMeshesFromCsg2(
+                      engine,
+                      solid,
+                      Array.from(
+                          { length: request.materialCount },
+                          (_, slot) => ({ slot }),
+                      ),
+                      request.name,
+                  );
         return meshes.map((mesh) => {
-            if (!mesh._cpuPositions || !mesh._cpuNormals || !mesh._cpuUvs || !mesh._cpuIndices) {
-                throw new Error("A pinned CSG2 output omitted a required retained CPU stream.");
+            if (
+                !mesh._cpuPositions ||
+                !mesh._cpuNormals ||
+                !mesh._cpuUvs ||
+                !mesh._cpuIndices
+            ) {
+                throw new Error(
+                    "A pinned CSG2 output omitted a required retained CPU stream.",
+                );
             }
             return {
                 name: mesh.name,
                 ...(mesh.material ? { materialSlot: mesh.material.slot } : {}),
-                geometry: base64(pack({ positions: mesh._cpuPositions, normals: mesh._cpuNormals,
-                    uvs: mesh._cpuUvs, indices: mesh._cpuIndices })),
+                geometry: base64(
+                    pack({
+                        positions: mesh._cpuPositions,
+                        normals: mesh._cpuNormals,
+                        uvs: mesh._cpuUvs,
+                        indices: mesh._cpuIndices,
+                    }),
+                ),
             };
         });
     } finally {
@@ -150,47 +213,87 @@ window.__bakeCsg2 = () => (${replayPlan.toString()})(
 
 /** Called by the synchronous compiler's generation child. */
 // Referenced by name from the generation-child script `bakeCsg2Meshes` runs below.
-export async function executeCsg2Bake(request: Csg2BakeRequest): Promise<unknown> {
+export async function executeCsg2Bake(
+    request: Csg2BakeRequest,
+): Promise<unknown> {
     const server = createSuiteSceneServer(csg2Driver(request), {
         virtualModules: { [RECORDER_MODULE_PATH]: recorderModuleSource() },
     });
     return runPageGlobal(server, "__bakeCsg2", {
         serverName: "pinned CSG2 bake",
-        browserRequirement: "Pinned CSG2 Manifold WASM requires Chrome or Edge.",
+        browserRequirement:
+            "Pinned CSG2 Manifold WASM requires Chrome or Edge.",
     });
 }
 
-export function bakeCsg2Meshes(request: Csg2BakeRequest): readonly BakedCsg2Mesh[] {
-    const bytes = cachedBakeSync({
-        kind: "executed-csg2-solid", version: "1", module: moduleIdentity(import.meta.url),
-        // The complete executed driver includes the recording engine and the
-        // stream transport helpers, and the served recorder module joins it,
-        // so changes to any of them cannot reuse old bytes.
-        browser: true, parameters: { request },
-        inputs: [Buffer.from(csg2Driver(request)), Buffer.from(recorderModuleSource())],
-    }, () => Buffer.from(runGenerationChild({
-        script: `
+export function bakeCsg2Meshes(
+    request: Csg2BakeRequest,
+): readonly BakedCsg2Mesh[] {
+    const bytes = cachedBakeSync(
+        {
+            kind: "executed-csg2-solid",
+            version: "1",
+            module: moduleIdentity(import.meta.url),
+            // The complete executed driver includes the recording engine and the
+            // stream transport helpers, and the served recorder module joins it,
+            // so changes to any of them cannot reuse old bytes.
+            browser: true,
+            parameters: { request },
+            inputs: [
+                Buffer.from(csg2Driver(request)),
+                Buffer.from(recorderModuleSource()),
+            ],
+        },
+        () =>
+            Buffer.from(
+                runGenerationChild({
+                    script: `
 const source = JSON.parse(process.env.BBLITE_CSG2_REQUEST);
 const module = await import(process.env.BBLITE_CSG2_MODULE);
 process.stdout.write(JSON.stringify(await module.executeCsg2Bake(source)));
 `,
-        label: "Executing pinned CSG2 Manifold WASM",
-        env: { BBLITE_CSG2_REQUEST: JSON.stringify(request), BBLITE_CSG2_MODULE: import.meta.url },
-        maxBuffer: 128 * 1024 * 1024,
-    }), "utf8"));
+                    label: "Executing pinned CSG2 Manifold WASM",
+                    env: {
+                        BBLITE_CSG2_REQUEST: JSON.stringify(request),
+                        BBLITE_CSG2_MODULE: import.meta.url,
+                    },
+                    maxBuffer: 128 * 1024 * 1024,
+                }),
+                "utf8",
+            ),
+    );
     const value: unknown = JSON.parse(Buffer.from(bytes).toString("utf8"));
-    if (!Array.isArray(value)) throw new Error("Pinned CSG2 bake did not return a mesh list.");
+    if (!Array.isArray(value))
+        throw new Error("Pinned CSG2 bake did not return a mesh list.");
     return value.map((entry: unknown) => {
-        if (typeof entry !== "object" || entry === null || !("name" in entry) || typeof entry.name !== "string" ||
-            !("geometry" in entry) || typeof entry.geometry !== "string") {
-            throw new Error("Pinned CSG2 bake returned an invalid mesh descriptor.");
+        if (
+            typeof entry !== "object" ||
+            entry === null ||
+            !("name" in entry) ||
+            typeof entry.name !== "string" ||
+            !("geometry" in entry) ||
+            typeof entry.geometry !== "string"
+        ) {
+            throw new Error(
+                "Pinned CSG2 bake returned an invalid mesh descriptor.",
+            );
         }
-        const materialSlot = "materialSlot" in entry ? entry.materialSlot : undefined;
-        if (materialSlot !== undefined && (typeof materialSlot !== "number" || !Number.isInteger(materialSlot) || materialSlot < 0)) {
-            throw new Error("Pinned CSG2 bake returned an invalid material slot.");
+        const materialSlot =
+            "materialSlot" in entry ? entry.materialSlot : undefined;
+        if (
+            materialSlot !== undefined &&
+            (typeof materialSlot !== "number" ||
+                !Number.isInteger(materialSlot) ||
+                materialSlot < 0)
+        ) {
+            throw new Error(
+                "Pinned CSG2 bake returned an invalid material slot.",
+            );
         }
-        return { name: entry.name,
+        return {
+            name: entry.name,
             ...(materialSlot !== undefined ? { materialSlot } : {}),
-            geometry: unpackBakedCsgMesh(Buffer.from(entry.geometry, "base64")) };
+            geometry: unpackBakedCsgMesh(Buffer.from(entry.geometry, "base64")),
+        };
     });
 }

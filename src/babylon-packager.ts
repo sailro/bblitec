@@ -28,9 +28,10 @@ function hash(value: string): string {
 function safeTextureName(source: string): string {
     const sourceName = basename(source.split(/[?#]/, 1)[0] ?? source);
     const extension = extname(sourceName);
-    const stem = basename(sourceName, extension)
-        .replace(/[^A-Za-z0-9._-]/g, "_")
-        .replace(/^_+|_+$/g, "") || "texture";
+    const stem =
+        basename(sourceName, extension)
+            .replace(/[^A-Za-z0-9._-]/g, "_")
+            .replace(/^_+|_+$/g, "") || "texture";
     const safeExtension = extension.replace(/[^A-Za-z0-9.]/g, "");
     return `${hash(source)}-${stem}${safeExtension}`;
 }
@@ -74,7 +75,14 @@ export async function packageBabylon(
                 : resolve(baseDirectory, dirname(source), texture.name);
             if (texture.isCube === true) {
                 const outputBase = `textures/${safeTextureName(resourceSource)}`;
-                for (const suffix of ["_px", "_nx", "_py", "_ny", "_pz", "_nz"]) {
+                for (const suffix of [
+                    "_px",
+                    "_nx",
+                    "_py",
+                    "_ny",
+                    "_pz",
+                    "_nz",
+                ]) {
                     addResource(
                         `${resourceSource}${suffix}.jpg`,
                         `${outputBase}${suffix}.jpg`,
@@ -102,7 +110,10 @@ export async function packageBabylon(
                 if (!resource) return;
                 const output = resolve(dirname(destination), resource.output);
                 mkdirSync(dirname(output), { recursive: true });
-                writeFileSync(output, await readResource(resource.source, baseDirectory));
+                writeFileSync(
+                    output,
+                    await readResource(resource.source, baseDirectory),
+                );
             }
         },
     );

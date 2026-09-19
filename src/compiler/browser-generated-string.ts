@@ -60,7 +60,10 @@ function pinnedWgslTagRanges(
     const ranges: Array<readonly [start: number, end: number]> = [];
     const visit = (node: ts.Node): void => {
         if (ts.isTaggedTemplateExpression(node) && pinnedWgslTemplate(node)) {
-            ranges.push([node.getStart(source), node.template.getStart(source)]);
+            ranges.push([
+                node.getStart(source),
+                node.template.getStart(source),
+            ]);
         }
         ts.forEachChild(node, visit);
     };
@@ -75,10 +78,7 @@ export function browserGeneratedString(
     pinnedWgslTemplate: PinnedWgslTemplate,
 ): string | undefined {
     if (!ts.isIdentifier(call.expression)) return undefined;
-    const declaration = tryResolveFunctionDeclaration(
-        checker,
-        call.expression,
-    );
+    const declaration = tryResolveFunctionDeclaration(checker, call.expression);
     if (!declaration?.body || !ts.isFunctionDeclaration(declaration)) {
         return undefined;
     }
@@ -118,7 +118,10 @@ export function browserGeneratedString(
     const removed: Array<readonly [start: number, end: number]> = [
         ...source.statements
             .filter(ts.isImportDeclaration)
-            .map((statement) => [statement.getFullStart(), statement.end] as const),
+            .map(
+                (statement) =>
+                    [statement.getFullStart(), statement.end] as const,
+            ),
         ...pinnedWgslTagRanges(source, pinnedWgslTemplate),
     ];
     for (const [start, end] of removed.sort((a, b) => b[0] - a[0])) {
@@ -162,7 +165,11 @@ export function cachedBrowserGeneratedString(
             version: "1",
             module: moduleIdentity(import.meta.url),
             browser: true,
-            parameters: { functionName, arguments: argumentsText, browserArgs: canvasBakeBrowserArgs },
+            parameters: {
+                functionName,
+                arguments: argumentsText,
+                browserArgs: canvasBakeBrowserArgs,
+            },
             inputs: [Buffer.from(javascript, "utf8")],
         },
         () => Buffer.from(run(javascript, functionName), "utf8"),
@@ -183,10 +190,8 @@ function runCanvasHelperInChromium(
     javascript: string,
     functionName: string,
 ): string {
-    const harnessModule = new URL(
-        "../browser-harness.js",
-        import.meta.url,
-    ).href;
+    const harnessModule = new URL("../browser-harness.js", import.meta.url)
+        .href;
     const script = `
         import { createServer } from "node:http";
         import { withBrowserPage } from ${JSON.stringify(harnessModule)};
@@ -284,8 +289,7 @@ function isLiteralConfiguration(expression: ts.Expression): boolean {
     if (ts.isArrayLiteralExpression(current)) {
         return current.elements.every(
             (element) =>
-                !ts.isSpreadElement(element) &&
-                isLiteralConfiguration(element),
+                !ts.isSpreadElement(element) && isLiteralConfiguration(element),
         );
     }
     if (ts.isObjectLiteralExpression(current)) {

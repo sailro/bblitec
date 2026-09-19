@@ -1,3 +1,4 @@
+import { createJavaScriptFunction } from "../src/typescript-transpile.js";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -5,7 +6,10 @@ import { join, resolve } from "node:path";
 import test from "node:test";
 import ts from "typescript";
 import { compileSource } from "../src/compiler.js";
-import { optionalNativeFixtureTools, runNativeFixtureCompiler } from "./native-fixture.js";
+import {
+    optionalNativeFixtureTools,
+    runNativeFixtureCompiler,
+} from "./native-fixture.js";
 
 const program = `
 import {createEngine,createStorageBuffer,updateStorageBuffer} from "@babylonjs/lite";
@@ -134,19 +138,28 @@ async function main() {
 
 test("numeric buffer views preserve JavaScript aliases, stores, order and ToIndex", async () => {
     const javascript = ts.transpileModule(program, {
-        compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext },
+        compilerOptions: {
+            target: ts.ScriptTarget.ES2022,
+            module: ts.ModuleKind.ESNext,
+        },
     }).outputText;
     // Engine creation/upload are the only seams; the source performs every
     // view operation with the host JavaScript typed-array constructors.
     let uploads = 0;
-    await new Function("createEngine", "createStorageBuffer", "updateStorageBuffer",
-        `${javascript.replace(/^import[^\n]+\n/m, "")}\nreturn main();`)(
-        async () => ({}), (_engine: unknown, bytes: Uint8Array) => bytes.slice(),
+    await createJavaScriptFunction(
+        "createEngine",
+        "createStorageBuffer",
+        "updateStorageBuffer",
+        `${javascript.replace(/^import[^\n]+\n/m, "")}\nreturn main();`,
+    )(
+        async () => ({}),
+        (_engine: unknown, bytes: Uint8Array) => bytes.slice(),
         (_engine: unknown, storage: Uint8Array, bytes: Uint8Array) => {
             storage.set(bytes);
             assert.equal(storage.length, 16);
             assert.equal(storage[0], 7 + uploads++ * 2);
-        });
+        },
+    );
     assert.equal(uploads, 2);
     const compiled = compileSource(program);
     assert.match(compiled.cpp, /bbl::js::F32Array\(v_bblite_view_buffer_/);
@@ -154,26 +167,56 @@ test("numeric buffer views preserve JavaScript aliases, stores, order and ToInde
 });
 
 test("generic typed-array buffer resolution does not admit SharedArrayBuffer", () => {
-    assert.throws(() => compileSource(`
+    assert.throws(
+        () =>
+            compileSource(`
         const shared=new SharedArrayBuffer(16);
         const values=new Float32Array(shared);
         values[0]=1;
-    `), /input\.ts:2:\d+: Unsupported constructor expression/);
+    `),
+        /input\.ts:2:\d+: Unsupported constructor expression/,
+    );
 });
 
 const tools = optionalNativeFixtureTools(false);
-test("native byte-backed numeric views match the same observing program and refuse contiguous methods", { skip: !tools }, () => {
-    const output = resolve("artifacts/numeric-buffer-views-check");
-    mkdirSync(output, { recursive: true });
-    const source = join(output, "check.cpp");
-    const executable = join(output, "check.exe");
-    writeFileSync(source,
-        `#include <bblite/runtime.hpp>\nnamespace bbl { template<class Data> void observe_upload(Engine&, StorageBufferHandle, const Data&, double); }\n` +
-        `#define main generated_scene_main\n${compileSource(program).cpp.replaceAll("bbl::update_storage_buffer(", "bbl::observe_upload(")}\n#undef main\n` +
-        readFileSync("test/fixtures/numeric-buffer-views-check.cpp", "utf8"));
-    runNativeFixtureCompiler(tools!, [
-        "/nologo", "/std:c++20", "/W4", "/WX", "/permissive-", "/EHsc", "/MD", "/O2", "/Gy",
-        "/I", "native/include", `/Fo:${output}\\`, `/Fe:${executable}`, source, "/link", "/OPT:REF",
-    ]);
-    assert.match(execFileSync(executable, { encoding: "utf8" }), /numeric-buffer-views-check: ok/);
-});
+test(
+    "native byte-backed numeric views match the same observing program and refuse contiguous methods",
+    { skip: !tools },
+    () => {
+        const output = resolve("artifacts/numeric-buffer-views-check");
+        mkdirSync(output, { recursive: true });
+        const source = join(output, "check.cpp");
+        const executable = join(output, "check.exe");
+        writeFileSync(
+            source,
+            `#include <bblite/runtime.hpp>\nnamespace bbl { template<class Data> void observe_upload(Engine&, StorageBufferHandle, const Data&, double); }\n` +
+                `#define main generated_scene_main\n${compileSource(program).cpp.replaceAll("bbl::update_storage_buffer(", "bbl::observe_upload(")}\n#undef main\n` +
+                readFileSync(
+                    "test/fixtures/numeric-buffer-views-check.cpp",
+                    "utf8",
+                ),
+        );
+        runNativeFixtureCompiler(tools!, [
+            "/nologo",
+            "/std:c++20",
+            "/W4",
+            "/WX",
+            "/permissive-",
+            "/EHsc",
+            "/MD",
+            "/O2",
+            "/Gy",
+            "/I",
+            "native/include",
+            `/Fo:${output}\\`,
+            `/Fe:${executable}`,
+            source,
+            "/link",
+            "/OPT:REF",
+        ]);
+        assert.match(
+            execFileSync(executable, { encoding: "utf8" }),
+            /numeric-buffer-views-check: ok/,
+        );
+    },
+);

@@ -33,7 +33,11 @@ function bodyStatements(body: string): readonly ts.Statement[] {
         true,
     );
     const declaration = file.statements[0];
-    assert.ok(declaration && ts.isFunctionDeclaration(declaration) && declaration.body);
+    assert.ok(
+        declaration &&
+            ts.isFunctionDeclaration(declaration) &&
+            declaration.body,
+    );
     return declaration.body.statements;
 }
 
@@ -114,9 +118,13 @@ test("the first control statement in source order comes back", () => {
 });
 
 test("a return search descends loops and switches but not functions", () => {
-    const nested = bodyStatements("while (x) { switch (y) { case 1: return 2; } }");
+    const nested = bodyStatements(
+        "while (x) { switch (y) { case 1: return 2; } }",
+    );
     const found = firstReturn(nested);
-    assert.ok(found && found.expression && ts.isNumericLiteral(found.expression));
+    assert.ok(
+        found && found.expression && ts.isNumericLiteral(found.expression),
+    );
     assert.equal(
         firstReturn(bodyStatements("const g = () => { return 1; };")),
         undefined,

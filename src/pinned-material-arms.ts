@@ -41,7 +41,7 @@ import {
     type PinnedPbrVariant,
 } from "./pinned-pbr-variants.js";
 import type { PinnedClusteredMarker } from "./pinned-clustered-lights.js";
-import {applyPinnedLocalCubemap} from "./pinned-local-cubemap.js";
+import { applyPinnedLocalCubemap } from "./pinned-local-cubemap.js";
 import type { PinnedSceneArm } from "./pinned-scene-arms.js";
 import { pinnedReceiverReachesArm } from "./pinned-light-mode.js";
 import type { ShadowLightSlot } from "./pinned-shadow-slots.js";
@@ -57,11 +57,18 @@ import { importPinnedModule } from "./pinned-shader-composer.js";
 import { sharedUpstreamStore } from "./upstream-source.js";
 import { refuseGeneration } from "./generation-refusal.js";
 import { gltfVariantPlan } from "./gltf-variant-plan.js";
-import { packagedGltfMeshPlan, type GltfConstructedMaterialPlan } from "./gltf-mesh-plan.js";
+import {
+    packagedGltfMeshPlan,
+    type GltfConstructedMaterialPlan,
+} from "./gltf-mesh-plan.js";
 import { packagedGltfLights } from "./gltf-light-plan.js";
-import {packagedGltfTransmissionPlan, selectedGltfTransmission, type GltfTransmissionPlan} from "./gltf-transmission-plan.js";
-import {pinnedPbrTransmissionSelection} from "./pinned-pbr-transmission.js";
-import type {LoweringContext} from "./lowering/context.js";
+import {
+    packagedGltfTransmissionPlan,
+    selectedGltfTransmission,
+    type GltfTransmissionPlan,
+} from "./gltf-transmission-plan.js";
+import { pinnedPbrTransmissionSelection } from "./pinned-pbr-transmission.js";
+import type { LoweringContext } from "./lowering/context.js";
 
 /**
  * The uv2-mask bit `createPbrTemplateExt` decodes as `_hasOcclusionUv2`.
@@ -200,8 +207,7 @@ function pinnedVariantArms(
         // `gltf-ext-sheen.ts` passes `albedoScaling: true` — but read
         // from the composition rather than asserted, so it follows the
         // pin if that ever stops being true.
-        sheenAlbedoScaling:
-            (variant.features & bits.sheenAlbedoScaling) !== 0,
+        sheenAlbedoScaling: (variant.features & bits.sheenAlbedoScaling) !== 0,
         iridescence: key.includes("iridescence"),
         // The occlusion bit alone: `createPbrTemplateExt`
         // declares the dedicated occlusion pair for
@@ -217,11 +223,9 @@ function pinnedVariantArms(
         // extension's `frag` reads off the material to choose the
         // chromatic sample, so it is read from the same place.
         dispersion:
-            (
-                asObject(
-                    asObject(input["_subsurface"])?.["refraction"],
-                )?.["dispersion"]
-            ) !== undefined,
+            asObject(asObject(input["_subsurface"])?.["refraction"])?.[
+                "dispersion"
+            ] !== undefined,
         specularGlossiness: (variant.features & bits.specGloss) !== 0,
     };
 }
@@ -254,8 +258,7 @@ type GltfDocument = {
 };
 
 /** The shared tolerant reader, through this module's typed view of it. */
-const glbView = (path: string): GltfDocument | undefined =>
-    glbDocument(path) as GltfDocument | undefined;
+const glbView = (path: string): GltfDocument | undefined => glbDocument(path);
 
 /** One material's composer input, plus what it takes to name and place it. */
 export interface MaterialSubject {
@@ -285,10 +288,12 @@ export interface GltfNodeLights {
 
 export function gltfNodeLights(path: string): GltfNodeLights {
     const document = glbDocument(path);
-    if (!document) return {count: 0, kinds: []};
+    if (!document) return { count: 0, kinds: [] };
     const plan = packagedGltfLights(document);
-    const kinds = new Set(plan.sceneLights.map(index => plan.lights[index]!.kind));
-    return {count: plan.sceneLights.length, kinds: [...kinds]};
+    const kinds = new Set(
+        plan.sceneLights.map((index) => plan.lights[index]!.kind),
+    );
+    return { count: plan.sceneLights.length, kinds: [...kinds] };
 }
 
 /**
@@ -304,35 +309,66 @@ export function gltfHasImageBasedLight(path: string): boolean {
     const record = glbDocument(path);
     if (!record) return false;
     const used = record["extensionsUsed"];
-    return Array.isArray(used) &&
-        used.includes("EXT_lights_image_based");
+    return Array.isArray(used) && used.includes("EXT_lights_image_based");
 }
 
 /** Source material construction, registration and selection over the actual scene mesh list. */
-export async function gltfTransmissionPlan(document: JsonObject, context?: LoweringContext): Promise<GltfTransmissionPlan> {
+export async function gltfTransmissionPlan(
+    document: JsonObject,
+    context?: LoweringContext,
+): Promise<GltfTransmissionPlan> {
     const base = packagedGltfMeshPlan(document);
     const variants = await gltfVariantPlan(document);
     const subjects = await materialSubjects(document);
-    const registered = subjects.some(subject => subject.transmissionRegistered);
+    const registered = subjects.some(
+        (subject) => subject.transmissionRegistered,
+    );
     const select = pinnedPbrTransmissionSelection(context);
-    const selected = (slots: readonly number[]): boolean => registered && select(base.sceneMeshes.map(index => {
-        const subject = subjects[slots[index]!];
-        if (!subject) throw new Error("glTF transmission selection references an unconstructed material.");
-        return subject.input;
-    }));
-    return {registered, initial: selected(base.meshes.map(mesh => mesh.material)),
-        variants: Object.fromEntries(Object.entries(variants.selections).map(([name, slots]) => [name, selected(slots)]))};
+    const selected = (slots: readonly number[]): boolean =>
+        registered &&
+        select(
+            base.sceneMeshes.map((index) => {
+                const subject = subjects[slots[index]!];
+                if (!subject)
+                    throw new Error(
+                        "glTF transmission selection references an unconstructed material.",
+                    );
+                return subject.input;
+            }),
+        );
+    return {
+        registered,
+        initial: selected(base.meshes.map((mesh) => mesh.material)),
+        variants: Object.fromEntries(
+            Object.entries(variants.selections).map(([name, slots]) => [
+                name,
+                selected(slots),
+            ]),
+        ),
+    };
 }
 
 /** Persist the async source decision before synchronous asset specialization. */
-export async function packageGltfTransmissionPlan(document: JsonObject): Promise<void> {
-    if (GLTF_TRANSMISSION_PLAN in document) throw new Error("glTF source already carries compiler transmission metadata.");
+export async function packageGltfTransmissionPlan(
+    document: JsonObject,
+): Promise<void> {
+    if (GLTF_TRANSMISSION_PLAN in document)
+        throw new Error(
+            "glTF source already carries compiler transmission metadata.",
+        );
     document[GLTF_TRANSMISSION_PLAN] = await gltfTransmissionPlan(document);
 }
 
 /** The asset-side linear target decision; explicit scene opt-ins remain separate. */
-export async function gltfLinearImageProcessing(document: JsonObject, selectedVariant?: string): Promise<boolean> {
-    return selectedGltfTransmission(packagedGltfTransmissionPlan(document) ?? await gltfTransmissionPlan(document), selectedVariant);
+export async function gltfLinearImageProcessing(
+    document: JsonObject,
+    selectedVariant?: string,
+): Promise<boolean> {
+    return selectedGltfTransmission(
+        packagedGltfTransmissionPlan(document) ??
+            (await gltfTransmissionPlan(document)),
+        selectedVariant,
+    );
 }
 
 /**
@@ -436,11 +472,11 @@ export function meshNameSelected(
             return !meshNameSelected(predicate.operand, name);
         case "and":
             return predicate.operands.every((operand) =>
-                meshNameSelected(operand, name)
+                meshNameSelected(operand, name),
             );
         case "or":
             return predicate.operands.some((operand) =>
-                meshNameSelected(operand, name)
+                meshNameSelected(operand, name),
             );
     }
 }
@@ -478,12 +514,10 @@ export async function gltfLightmapMaterials(
     const selected = new Set<number>();
     // One traversal, so a selected variant's material remap reaches the
     // stamp exactly as it reaches every other composer reading this walk.
-    for (
-        const renderable of await gltfRenderables(
-            document as unknown as GltfDocument,
-            selectedVariantName,
-        )
-    ) {
+    for (const renderable of await gltfRenderables(
+        document,
+        selectedVariantName,
+    )) {
         if (!meshNameSelected(predicate, renderable.name)) continue;
         selected.add(renderable.material);
     }
@@ -518,7 +552,11 @@ export async function materialSubjects(
          */
         sceneLightmap?: SceneLightmapSelection;
     } = {},
-    construction?: {meshPlan: GltfConstructedMaterialPlan; context?: LoweringContext; deferAnimationPointers?: boolean},
+    construction?: {
+        meshPlan: GltfConstructedMaterialPlan;
+        context?: LoweringContext;
+        deferAnimationPointers?: boolean;
+    },
 ): Promise<readonly MaterialSubject[]> {
     // The executed pinned loader behind every reader below, run on first
     // need: this is the one async choke point through which production
@@ -534,61 +572,103 @@ export async function materialSubjects(
     const materials = view.materials ?? [];
     const imageOf = gltfImageResolver(document);
     const prepareAnimationPointers = !construction?.deferAnimationPointers;
-    const animatedBaseColor = prepareAnimationPointers ? gltfAnimatedMaterialPointers(
-        document,
-        animatedMaterialPointerPatterns.baseColorFactor,
-    ) : undefined;
-    const animatedUvTransform = prepareAnimationPointers ? gltfAnimatedMaterialPointers(
-        document,
-        animatedMaterialPointerPatterns.uvTransform,
-    ) : undefined;
-    const animatedEmissive = prepareAnimationPointers ? new Set(
-        animatedMaterialPointerPatterns.emissive.flatMap((pointer) => [
-            ...gltfAnimatedMaterialPointers(document, pointer),
-        ]),
-    ) : undefined;
-    const animatedExtensions = prepareAnimationPointers ? gltfAnimatedExtensionTargets(document) : undefined;
+    const animatedBaseColor = prepareAnimationPointers
+        ? gltfAnimatedMaterialPointers(
+              document,
+              animatedMaterialPointerPatterns.baseColorFactor,
+          )
+        : undefined;
+    const animatedUvTransform = prepareAnimationPointers
+        ? gltfAnimatedMaterialPointers(
+              document,
+              animatedMaterialPointerPatterns.uvTransform,
+          )
+        : undefined;
+    const animatedEmissive = prepareAnimationPointers
+        ? new Set(
+              animatedMaterialPointerPatterns.emissive.flatMap((pointer) => [
+                  ...gltfAnimatedMaterialPointers(document, pointer),
+              ]),
+          )
+        : undefined;
+    const animatedExtensions = prepareAnimationPointers
+        ? gltfAnimatedExtensionTargets(document)
+        : undefined;
     // Which primitive first names each material, for the subject's mesh half:
     // a second UV set or a vertex-colour stream changes the composed fragment.
     const basePlan = construction?.meshPlan ?? packagedGltfMeshPlan(document);
     const primitiveOf = new Map<
         number,
-        { primitive: JsonObject; skinned: boolean; morphed: boolean; geometry: {attributes: JsonObject; flatNormal: boolean} }
+        {
+            primitive: JsonObject;
+            skinned: boolean;
+            morphed: boolean;
+            geometry: { attributes: JsonObject; flatNormal: boolean };
+        }
     >();
-    const nodes = asRecords(document.nodes), meshes = asRecords(document.meshes);
-    const primitives = meshes.map(mesh => asRecords(mesh.primitives));
+    const nodes = asRecords(document.nodes),
+        meshes = asRecords(document.meshes);
+    const primitives = meshes.map((mesh) => asRecords(mesh.primitives));
     for (const entry of basePlan.meshes) {
         const mesh = asIndex(nodes[entry.node]!.mesh)!;
-        if (!primitiveOf.has(entry.material)) primitiveOf.set(entry.material,
-            {primitive: primitives[mesh]![entry.primitive]!, skinned: entry.skin !== undefined, morphed: entry.morph !== undefined,
-                geometry: {attributes: basePlan.geometries[entry.geometry]!.attributes, flatNormal: entry.flatNormal}});
+        if (!primitiveOf.has(entry.material))
+            primitiveOf.set(entry.material, {
+                primitive: primitives[mesh]![entry.primitive]!,
+                skinned: entry.skin !== undefined,
+                morphed: entry.morph !== undefined,
+                geometry: {
+                    attributes: basePlan.geometries[entry.geometry]!.attributes,
+                    flatNormal: entry.flatNormal,
+                },
+            });
     }
     const subjects: MaterialSubject[] = [];
-    const variantPlan = await gltfVariantPlan(document, construction?.context, construction?.meshPlan);
+    const variantPlan = await gltfVariantPlan(
+        document,
+        construction?.context,
+        construction?.meshPlan,
+    );
     const materialEntries = [
         ...basePlan.materials.map((core, index) => {
             const sourceIndex = basePlan.cores[core]!;
-            return {material: sourceIndex === -1 ? {} : materials[sourceIndex]!, index, sourceIndex, variant: false};
+            return {
+                material: sourceIndex === -1 ? {} : materials[sourceIndex]!,
+                index,
+                sourceIndex,
+                variant: false,
+            };
         }),
-        ...variantPlan.materials.map((sourceIndex, index) => ({material: materials[sourceIndex]!,
-            index: variantPlan.baseCount + index, sourceIndex, variant: true})),
+        ...variantPlan.materials.map((sourceIndex, index) => ({
+            material: materials[sourceIndex]!,
+            index: variantPlan.baseCount + index,
+            sourceIndex,
+            variant: true,
+        })),
     ];
-    for (const {index, material, sourceIndex, variant} of materialEntries) {
+    for (const { index, material, sourceIndex, variant } of materialEntries) {
         let metallicReflectanceRegistered = false;
         let transmissionRegistered = false;
         const input = pinnedMaterialInputFromGltf(material, {
             imageOf,
             ...scene,
-            animatedBaseColorFactor: !variant && animatedBaseColor?.has(sourceIndex) === true,
-            animatedEmissive: !variant && animatedEmissive?.has(sourceIndex) === true,
-            animatedUvTransform: !variant && animatedUvTransform?.has(sourceIndex) === true,
+            animatedBaseColorFactor:
+                !variant && animatedBaseColor?.has(sourceIndex) === true,
+            animatedEmissive:
+                !variant && animatedEmissive?.has(sourceIndex) === true,
+            animatedUvTransform:
+                !variant && animatedUvTransform?.has(sourceIndex) === true,
             ...(!variant && animatedExtensions?.has(sourceIndex)
-                ? { animatedExtensionTargets: animatedExtensions.get(sourceIndex)! }
+                ? {
+                      animatedExtensionTargets:
+                          animatedExtensions.get(sourceIndex)!,
+                  }
                 : {}),
             recordMetallicReflectanceRegistration: () => {
                 metallicReflectanceRegistered = true;
             },
-            recordTransmissionRegistration: () => { transmissionRegistered = true; },
+            recordTransmissionRegistration: () => {
+                transmissionRegistered = true;
+            },
         });
         stampClusteredLightState(input, scene.clusteredLights);
         stampSceneUnlit(input, scene.sceneUnlit);
@@ -599,17 +679,20 @@ export async function materialSubjects(
         subjects.push({
             index,
             sourceIndex,
-            name: sourceIndex === -1 ? "default material" : typeof material["name"] === "string"
-                ? material["name"]
-                : `material ${index}`,
+            name:
+                sourceIndex === -1
+                    ? "default material"
+                    : typeof material["name"] === "string"
+                      ? material["name"]
+                      : `material ${index}`,
             input,
-            uv2Mask: (input["_uv2Mask"] as number | undefined) ?? 0,
+            uv2Mask: input["_uv2Mask"] ?? 0,
             meshFeatures: drawn
                 ? await pinnedMeshFeaturesFromPrimitive(drawn.primitive, {
-                    skinned: drawn.skinned,
-                    morphed: drawn.morphed,
-                    geometry: drawn.geometry,
-                })
+                      skinned: drawn.skinned,
+                      morphed: drawn.morphed,
+                      geometry: drawn.geometry,
+                  })
                 : 0,
             metallicReflectanceRegistered,
             transmissionRegistered,
@@ -637,7 +720,7 @@ export async function composeGltfMaterials(
 ): Promise<readonly PinnedComposedMaterial[]> {
     const document = glbView(path);
     if (!document) return [];
-    if (!packagedGltfMeshPlan(document as JsonObject).materials.length) return [];
+    if (!packagedGltfMeshPlan(document).materials.length) return [];
     const { PBR_HAS_ENV } = await importPinnedModule<{
         PBR_HAS_ENV: number;
     }>("material/pbr/pbr-flag-bits.js");
@@ -648,10 +731,7 @@ export async function composeGltfMaterials(
         input,
         uv2Mask,
         metallicReflectanceRegistered,
-    } of await materialSubjects(
-        document!,
-        scene,
-    )) {
+    } of await materialSubjects(document, scene)) {
         const options: PinnedComposeOptions = {
             sceneFeatures: PBR_HAS_ENV,
             uv2Mask,
@@ -804,34 +884,33 @@ export async function composeRenderableVariants(
 ): Promise<readonly PinnedRenderableVariant[]> {
     const document = glbView(path);
     if (!document || arms.length === 0) return [];
-    if (!packagedGltfMeshPlan(document as JsonObject).materials.length) return [];
+    if (!packagedGltfMeshPlan(document).materials.length) return [];
     // The first primitive drawn with each material. A material used on two
     // primitives with different attribute sets composes two variants; the
     // renderable table keys on `(material, meshFeatures)` so both are
     // reached. Grouped from the same walk that keys the runtime's handles.
     const featureSets = new Map<number, Set<number>>();
-    for (
-        const renderable of await gltfRenderables(
-            document,
-            scene.selectedVariant,
-        )
-    ) {
+    for (const renderable of await gltfRenderables(
+        document,
+        scene.selectedVariant,
+    )) {
         const set = featureSets.get(renderable.material) ?? new Set<number>();
         set.add(renderable.features);
         featureSets.set(renderable.material, set);
     }
     const subjects = await materialSubjects(document, scene);
     const variants: PinnedRenderableVariant[] = [];
-    const receiveBit = scene.shadowLights && scene.shadowLights.length > 0
-        ? await pinnedReceiveShadowsBit()
-        : 0;
+    const receiveBit =
+        scene.shadowLights && scene.shadowLights.length > 0
+            ? await pinnedReceiveShadowsBit()
+            : 0;
     const bits = await pinnedArmBits();
     for (const subject of subjects) {
         // A material no primitive references still composes, at the attribute
         // set a primitive would have to have: scene code can assign it to a
         // mesh the asset does not, and a missing variant is a missing draw.
-        for (const meshFeatures of
-            scene.meshFeatureSets ?? featureSets.get(subject.index) ?? [0]) {
+        for (const meshFeatures of scene.meshFeatureSets ??
+            featureSets.get(subject.index) ?? [0]) {
             for (const arm of arms) {
                 if (
                     receiveBit !== 0 &&
@@ -843,17 +922,18 @@ export async function composeRenderableVariants(
                 ) {
                     continue;
                 }
-                const materialViewOptions = scene.materialView === "no-color"
-                    ? {
-                        passFeatures2: (
-                            await importPinnedModule<{
-                                PBR2_NO_COLOR_OUTPUT: number;
-                            }>("material/pbr/pbr-flag-bits.js")
-                        ).PBR2_NO_COLOR_OUTPUT,
-                    }
-                    : scene.materialView === "esm-shadow"
-                      ? { esmShadowView: true as const }
-                      : {};
+                const materialViewOptions =
+                    scene.materialView === "no-color"
+                        ? {
+                              passFeatures2: (
+                                  await importPinnedModule<{
+                                      PBR2_NO_COLOR_OUTPUT: number;
+                                  }>("material/pbr/pbr-flag-bits.js")
+                              ).PBR2_NO_COLOR_OUTPUT,
+                          }
+                        : scene.materialView === "esm-shadow"
+                          ? { esmShadowView: true as const }
+                          : {};
                 const variant = await composePinnedPbrVariant(subject.input, {
                     ...arm.options,
                     ...materialViewOptions,
@@ -919,9 +999,7 @@ export async function composeRenderableVariants(
                         ),
                         vertexWgsl: geometry.vertexWgsl,
                         fragmentWgsl: geometry.fragmentWgsl,
-                        materialUboSpec: plainUboSpec(
-                            geometry.materialUboSpec,
-                        ),
+                        materialUboSpec: plainUboSpec(geometry.materialUboSpec),
                     });
                 }
             }
@@ -946,7 +1024,7 @@ export async function composeRenderableVariants(
 export async function gltfMaterialCount(path: string): Promise<number> {
     const document = glbView(path);
     if (!document) return 0;
-    const plan = await gltfVariantPlan(document as unknown as JsonObject);
+    const plan = await gltfVariantPlan(document);
     return plan.baseCount + plan.materials.length;
 }
 
@@ -997,40 +1075,41 @@ function scenePbrSetters(): Promise<ScenePbrSetters> {
             gammaAlbedo,
             lightmap,
             shadowOnly,
-        ] =
-            await Promise.all([
-                importPinnedModule<Pick<ScenePbrSetters, "setPbrSheen">>(
-                    "material/pbr/set-sheen.js",
-                ),
-                importPinnedModule<Pick<ScenePbrSetters, "setPbrClearCoat">>(
-                    "material/pbr/set-clearcoat.js",
-                ),
-                importPinnedModule<Pick<ScenePbrSetters, "setPbrIridescence">>(
-                    "material/pbr/set-iridescence.js",
-                ),
-                importPinnedModule<Pick<ScenePbrSetters, "setPbrAnisotropy">>(
-                    "material/pbr/set-anisotropy.js",
-                ),
-                importPinnedModule<Pick<ScenePbrSetters, "setPbrSubsurface">>(
-                    "material/pbr/set-subsurface.js",
-                ),
-                importPinnedModule<Pick<ScenePbrSetters, "setPbrEmissive">>(
-                    "material/pbr/set-emissive.js",
-                ),
-                importPinnedModule<
-                    Pick<ScenePbrSetters, "setPbrMetallicReflectance">
-                >("material/pbr/set-metallic-reflectance.js"),
-                importPinnedModule<Pick<ScenePbrSetters, "setPbrGammaAlbedo">>(
-                    "material/pbr/set-gamma-albedo.js",
-                ),
-                // The lightmap's setter shares its module with the opt-in
-                // that registers the extension, which `pinned-pbr-variants`
-                // already performs.
-                importPinnedModule<Pick<ScenePbrSetters, "setPbrLightmap">>(
-                    "material/pbr/enable-pbr-lightmap.js",
-                ),
-                importPinnedModule<Pick<ScenePbrSetters, "setShadowOnly">>("material/pbr/set-shadow-only.js"),
-            ]);
+        ] = await Promise.all([
+            importPinnedModule<Pick<ScenePbrSetters, "setPbrSheen">>(
+                "material/pbr/set-sheen.js",
+            ),
+            importPinnedModule<Pick<ScenePbrSetters, "setPbrClearCoat">>(
+                "material/pbr/set-clearcoat.js",
+            ),
+            importPinnedModule<Pick<ScenePbrSetters, "setPbrIridescence">>(
+                "material/pbr/set-iridescence.js",
+            ),
+            importPinnedModule<Pick<ScenePbrSetters, "setPbrAnisotropy">>(
+                "material/pbr/set-anisotropy.js",
+            ),
+            importPinnedModule<Pick<ScenePbrSetters, "setPbrSubsurface">>(
+                "material/pbr/set-subsurface.js",
+            ),
+            importPinnedModule<Pick<ScenePbrSetters, "setPbrEmissive">>(
+                "material/pbr/set-emissive.js",
+            ),
+            importPinnedModule<
+                Pick<ScenePbrSetters, "setPbrMetallicReflectance">
+            >("material/pbr/set-metallic-reflectance.js"),
+            importPinnedModule<Pick<ScenePbrSetters, "setPbrGammaAlbedo">>(
+                "material/pbr/set-gamma-albedo.js",
+            ),
+            // The lightmap's setter shares its module with the opt-in
+            // that registers the extension, which `pinned-pbr-variants`
+            // already performs.
+            importPinnedModule<Pick<ScenePbrSetters, "setPbrLightmap">>(
+                "material/pbr/enable-pbr-lightmap.js",
+            ),
+            importPinnedModule<Pick<ScenePbrSetters, "setShadowOnly">>(
+                "material/pbr/set-shadow-only.js",
+            ),
+        ]);
         return {
             setPbrSheen: sheen.setPbrSheen,
             setPbrClearCoat: clearCoat.setPbrClearCoat,
@@ -1038,8 +1117,7 @@ function scenePbrSetters(): Promise<ScenePbrSetters> {
             setPbrAnisotropy: anisotropy.setPbrAnisotropy,
             setPbrSubsurface: subsurface.setPbrSubsurface,
             setPbrEmissive: emissive.setPbrEmissive,
-            setPbrMetallicReflectance:
-                reflectance.setPbrMetallicReflectance,
+            setPbrMetallicReflectance: reflectance.setPbrMetallicReflectance,
             setPbrGammaAlbedo: gammaAlbedo.setPbrGammaAlbedo,
             setPbrLightmap: lightmap.setPbrLightmap,
             setShadowOnly: shadowOnly.setShadowOnly,
@@ -1075,9 +1153,10 @@ export async function composeScenePbrVariants(
     // Scene 21 stamps its sheen material across the asset's meshes -- so the
     // variants compose over every distinct attribute set in the scene, the
     // procedural builders' fixed set included.
-    const featureSets = meshFeatureSets && meshFeatureSets.length > 0
-        ? meshFeatureSets
-        : [await proceduralRenderableFeatures()];
+    const featureSets =
+        meshFeatureSets && meshFeatureSets.length > 0
+            ? meshFeatureSets
+            : [await proceduralRenderableFeatures()];
     const setters = await scenePbrSetters();
     // Extension registration is process-global in the pin. A setter on any
     // material makes a dormant creation-time F0 visible to detect on every
@@ -1091,9 +1170,10 @@ export async function composeScenePbrVariants(
     // from the caller: a caller that passed the slots and forgot the bit
     // would compose a receiver's single-light arm AND splice the shadow
     // fragment into it, which is two deployed stages no draw can select.
-    const receiveBit = scene.shadowLights && scene.shadowLights.length > 0
-        ? await pinnedReceiveShadowsBit()
-        : 0;
+    const receiveBit =
+        scene.shadowLights && scene.shadowLights.length > 0
+            ? await pinnedReceiveShadowsBit()
+            : 0;
     const bits = await pinnedArmBits();
     const variants: PinnedRenderableVariant[] = [];
     // Scene 20 creates many material records with one composition shape.
@@ -1109,7 +1189,10 @@ export async function composeScenePbrVariants(
         // this scene-code path.
         const input: PinnedMaterialInput = {};
         if (material.localCubemapCandidates !== undefined) {
-            await applyPinnedLocalCubemap(input, material.localCubemapCandidates);
+            await applyPinnedLocalCubemap(
+                input,
+                material.localCubemapCandidates,
+            );
         }
         // The pin's setPbrUnlit stamps `mat._unlit = true`, and setPbrSkybox
         // stamps `mat._skyboxMode = true`.
@@ -1134,16 +1217,18 @@ export async function composeScenePbrVariants(
             // The pin derives this UBO field from array truthiness only.
             // Refuse if future composition starts inspecting runtime lanes.
             input.baseColorFactor = new Proxy<number[]>([], {
-                get(_target, key) { return refuseGeneration("material:pbr", `PBR composition reads runtime baseColorFactor.${String(key)}.`); },
+                get(_target, key) {
+                    return refuseGeneration(
+                        "material:pbr",
+                        `PBR composition reads runtime baseColorFactor.${String(key)}.`,
+                    );
+                },
             });
         }
         if (material.hasOrmTexture) input["ormTexture"] = {};
         if (material.enableSpecularAA) input.enableSpecularAA = true;
         input.occlusionStrength = material.occlusionStrength ?? 1;
-        if (
-            reflectanceRegistered &&
-            material.metallicF0Factor !== undefined
-        ) {
+        if (reflectanceRegistered && material.metallicF0Factor !== undefined) {
             input["_metallicF0Factor"] = material.metallicF0Factor;
         }
         if (material.doubleSided) input.doubleSided = true;
@@ -1165,14 +1250,14 @@ export async function composeScenePbrVariants(
             setters.setPbrMetallicReflectance(input, {
                 ...(material.metallicReflectance.hasColor
                     ? {
-                        // A map decides the fragment flags without consulting
-                        // the colour. Preserve a computed runtime colour in
-                        // native C++, and use neutral white only to replay the
-                        // setter's property-presence shape for composition.
-                        color:
-                            material.metallicReflectance.color ??
-                            [1, 1, 1],
-                    }
+                          // A map decides the fragment flags without consulting
+                          // the colour. Preserve a computed runtime colour in
+                          // native C++, and use neutral white only to replay the
+                          // setter's property-presence shape for composition.
+                          color: material.metallicReflectance.color ?? [
+                              1, 1, 1,
+                          ],
+                      }
                     : {}),
                 ...(material.metallicReflectance.hasMetallicTexture
                     ? { texture: {} }
@@ -1180,13 +1265,13 @@ export async function composeScenePbrVariants(
                 ...(material.metallicReflectance.hasReflectanceTexture
                     ? { reflectanceTexture: {} }
                     : {}),
-                ...(material.metallicReflectance
-                        .useOnlyMetallicFromTexture !== undefined
+                ...(material.metallicReflectance.useOnlyMetallicFromTexture !==
+                undefined
                     ? {
-                        useOnlyMetallicFromTexture:
-                            material.metallicReflectance
-                                .useOnlyMetallicFromTexture,
-                    }
+                          useOnlyMetallicFromTexture:
+                              material.metallicReflectance
+                                  .useOnlyMetallicFromTexture,
+                      }
                     : {}),
             });
         }
@@ -1213,8 +1298,7 @@ export async function composeScenePbrVariants(
                 translucency: {
                     intensity: material.subsurface.intensity,
                     color: material.subsurface.color,
-                    diffusionDistance:
-                        material.subsurface.diffusionDistance,
+                    diffusionDistance: material.subsurface.diffusionDistance,
                 },
                 thickness: {
                     ...(material.subsurface.hasThicknessTexture
@@ -1285,10 +1369,7 @@ export async function composeScenePbrVariants(
             // pinned extension's detect() reads. Runtime-computed channels
             // therefore use an inert finite witness while composition runs;
             // the generated setter writes their real values to the record.
-            setters.setPbrEmissive(
-                input,
-                material.emissiveColor ?? [0, 0, 0],
-            );
+            setters.setPbrEmissive(input, material.emissiveColor ?? [0, 0, 0]);
         }
         // One boolean and a registration, so the setter is the whole port:
         // its ext's `detect` turns the stamp into PBR_HAS_GAMMA_ALBEDO and
@@ -1296,7 +1377,8 @@ export async function composeScenePbrVariants(
         if (material.gammaAlbedo) {
             setters.setPbrGammaAlbedo(input);
         }
-        if (material.shadowOnly) setters.setShadowOnly(input, material.shadowOnly);
+        if (material.shadowOnly)
+            setters.setShadowOnly(input, material.shadowOnly);
         if (material.transmission > 0) {
             refuseGeneration(
                 "renderer:transmission",
@@ -1314,83 +1396,87 @@ export async function composeScenePbrVariants(
                   ).PBR2_NO_COLOR_OUTPUT,
               }
             : material.esmShadowView
-            // The ESM caster's view sets its own bit and clears the blend
-            // one, so the composer runs the pinned factory rather than
-            // taking a bit to OR.
-            ? { esmShadowView: true as const }
-            : {};
+              ? // The ESM caster's view sets its own bit and clears the blend
+                // one, so the composer runs the pinned factory rather than
+                // taking a bit to OR.
+                { esmShadowView: true as const }
+              : {};
         // A material that names its own sets composes over those: a
         // caster's no-colour view is drawn on its caster and nowhere else.
         for (const meshFeatures of material.meshFeatureSets ?? featureSets) {
-        for (const arm of arms) {
-            // A receiving mesh reaches fewer arms than the scene does, from
-            // the port's one statement of the pin's own light-mode rule --
-            // the same statement the generated lookup the runtime keys with
-            // is enumerated from. Composing a pair no draw can select
-            // deploys a compiled stage and its artifacts for nothing.
-            if (
-                receiveBit !== 0 &&
-                (meshFeatures & receiveBit) !== 0 &&
-                !pinnedReceiverReachesArm(
-                    arm.lightMode,
-                    scene.perMeshLightLists === true,
-                )
-            ) {
-                continue;
+            for (const arm of arms) {
+                // A receiving mesh reaches fewer arms than the scene does, from
+                // the port's one statement of the pin's own light-mode rule --
+                // the same statement the generated lookup the runtime keys with
+                // is enumerated from. Composing a pair no draw can select
+                // deploys a compiled stage and its artifacts for nothing.
+                if (
+                    receiveBit !== 0 &&
+                    (meshFeatures & receiveBit) !== 0 &&
+                    !pinnedReceiverReachesArm(
+                        arm.lightMode,
+                        scene.perMeshLightLists === true,
+                    )
+                ) {
+                    continue;
+                }
+                const composeOptions: PinnedComposeOptions = {
+                    ...arm.options,
+                    ...noColor,
+                    meshFeatures,
+                    ...(scene.shadowLights
+                        ? { shadowLights: scene.shadowLights }
+                        : {}),
+                };
+                const cacheKey = material.plugins
+                    ? undefined
+                    : JSON.stringify([
+                          material.baseColorFactorRuntime
+                              ? { ...input, baseColorFactor: "runtime-array" }
+                              : input,
+                          composeOptions,
+                          material.localCubemapCandidates,
+                      ]);
+                let variant = cacheKey
+                    ? compositionCache.get(cacheKey)
+                    : undefined;
+                if (!variant) {
+                    variant = await composePinnedPbrVariant(
+                        input,
+                        composeOptions,
+                    );
+                    if (cacheKey) compositionCache.set(cacheKey, variant);
+                }
+                variants.push({
+                    materialIndex:
+                        materialIndexBase +
+                        (material.sourceMaterialsBefore ??
+                            material.materialsBefore),
+                    materialName: `scene-material-${
+                        materialIndexBase + material.materialsBefore
+                    }`,
+                    ...(material.noColorView
+                        ? { materialView: "no-color" as const }
+                        : material.esmShadowView
+                          ? { materialView: "esm-shadow" as const }
+                          : {}),
+                    meshFeatures,
+                    lightMode: arm.lightMode,
+                    singleLightType: arm.singleLightType,
+                    toneMapping: arm.toneMapping,
+                    armLabel: arm.label,
+                    fragmentKey: variant.fragmentKey,
+                    arms: pinnedVariantArms(
+                        input,
+                        composeOptions.uv2Mask ?? 0,
+                        variant,
+                        bits,
+                    ),
+                    vertexWgsl: variant.vertexWgsl,
+                    fragmentWgsl: variant.fragmentWgsl,
+                    materialUboSpec: plainUboSpec(variant.materialUboSpec),
+                });
             }
-            const composeOptions: PinnedComposeOptions = {
-                ...arm.options,
-                ...noColor,
-                meshFeatures,
-                ...(scene.shadowLights
-                    ? { shadowLights: scene.shadowLights }
-                    : {}),
-            };
-            const cacheKey = material.plugins
-                ? undefined
-                : JSON.stringify([material.baseColorFactorRuntime
-                    ? {...input, baseColorFactor: "runtime-array"} : input, composeOptions,
-                    material.localCubemapCandidates]);
-            let variant = cacheKey
-                ? compositionCache.get(cacheKey)
-                : undefined;
-            if (!variant) {
-                variant = await composePinnedPbrVariant(
-                    input,
-                    composeOptions,
-                );
-                if (cacheKey) compositionCache.set(cacheKey, variant);
-            }
-            variants.push({
-                materialIndex:
-                    materialIndexBase +
-                    (material.sourceMaterialsBefore ??
-                        material.materialsBefore),
-                materialName: `scene-material-${
-                    materialIndexBase + material.materialsBefore
-                }`,
-                ...(material.noColorView
-                    ? { materialView: "no-color" as const }
-                    : material.esmShadowView
-                      ? { materialView: "esm-shadow" as const }
-                      : {}),
-                meshFeatures,
-                lightMode: arm.lightMode,
-                singleLightType: arm.singleLightType,
-                toneMapping: arm.toneMapping,
-                armLabel: arm.label,
-                fragmentKey: variant.fragmentKey,
-                arms: pinnedVariantArms(
-                    input,
-                    composeOptions.uv2Mask ?? 0,
-                    variant,
-                    bits,
-                ),
-                vertexWgsl: variant.vertexWgsl,
-                fragmentWgsl: variant.fragmentWgsl,
-                materialUboSpec: plainUboSpec(variant.materialUboSpec),
-            });
-        }
         }
     }
     return variants;
@@ -1405,18 +1491,18 @@ export async function gltfRenderables(
     ReadonlyArray<{ material: number; features: number; name: string }>
 > {
     const record = document as unknown as Record<string, unknown>;
-    const nodes = asRecords(record.nodes), meshes = asRecords(record.meshes);
-    const primitives = meshes.map(mesh => asRecords(mesh.primitives));
+    const nodes = asRecords(record.nodes),
+        meshes = asRecords(record.meshes);
+    const primitives = meshes.map((mesh) => asRecords(mesh.primitives));
     const basePlan = packagedGltfMeshPlan(record);
     // A selected variant reassigns which material a mapped primitive draws
     // with, so the arms compose for the material the frame actually carries.
-    selectedVariantIndex(
-        record,
-        selectedVariantName,
-        "composition",
-    );
+    selectedVariantIndex(record, selectedVariantName, "composition");
     const variantPlan = await gltfVariantPlan(record);
-    const selectedMaterials = selectedVariantName === undefined ? undefined : variantPlan.selections[selectedVariantName];
+    const selectedMaterials =
+        selectedVariantName === undefined
+            ? undefined
+            : variantPlan.selections[selectedVariantName];
     const renderables: {
         material: number;
         features: number;
@@ -1426,13 +1512,18 @@ export async function gltfRenderables(
         const node = nodes[entry.node]!;
         const primitive = primitives[asIndex(node.mesh)!]![entry.primitive]!;
         renderables.push({
-            material: selectedMaterials ? selectedMaterials[renderables.length]! : entry.material,
+            material: selectedMaterials
+                ? selectedMaterials[renderables.length]!
+                : entry.material,
             name: entry.name,
             features: await pinnedMeshFeaturesFromPrimitive(primitive, {
                 skinned: entry.skin !== undefined,
                 morphed: entry.morph !== undefined,
                 instanced: entry.setup.instances !== undefined,
-                geometry: {attributes: basePlan.geometries[entry.geometry]!.attributes, flatNormal: entry.flatNormal},
+                geometry: {
+                    attributes: basePlan.geometries[entry.geometry]!.attributes,
+                    flatNormal: entry.flatNormal,
+                },
             }),
         });
     }

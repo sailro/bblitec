@@ -20,28 +20,19 @@
 namespace bbl::pal {
 
 inline std::optional<std::wstring> utf8_to_wide(std::string_view value) {
-    if (value.empty()) return std::wstring{};
-    if (value.size() > static_cast<std::size_t>(
-                           (std::numeric_limits<int>::max)())) {
+    if (value.empty())
+        return std::wstring{};
+    if (value.size() > static_cast<std::size_t>((std::numeric_limits<int>::max)())) {
         return std::nullopt;
     }
     const int input_size = static_cast<int>(value.size());
-    const int output_size = MultiByteToWideChar(
-        CP_UTF8,
-        MB_ERR_INVALID_CHARS,
-        value.data(),
-        input_size,
-        nullptr,
-        0);
-    if (output_size <= 0) return std::nullopt;
+    const int output_size =
+        MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, value.data(), input_size, nullptr, 0);
+    if (output_size <= 0)
+        return std::nullopt;
     std::wstring result(static_cast<std::size_t>(output_size), L'\0');
-    if (MultiByteToWideChar(
-            CP_UTF8,
-            MB_ERR_INVALID_CHARS,
-            value.data(),
-            input_size,
-            result.data(),
-            output_size) != output_size) {
+    if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, value.data(), input_size, result.data(),
+                            output_size) != output_size) {
         return std::nullopt;
     }
     return result;

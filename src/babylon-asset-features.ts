@@ -36,9 +36,9 @@ export function babylonLights(
         if (!existsSync(materialized)) {
             continue;
         }
-        const document = JSON.parse(
-            readFileSync(materialized, "utf8"),
-        ) as { lights?: BabylonLight[] };
+        const document = JSON.parse(readFileSync(materialized, "utf8")) as {
+            lights?: BabylonLight[];
+        };
         result.push(...(document.lights ?? []));
     }
     return result;
@@ -62,15 +62,12 @@ export function reachedDiffuseUv2(
         if (!existsSync(materialized)) {
             continue;
         }
-        const document = JSON.parse(
-            readFileSync(materialized, "utf8"),
-        ) as {
+        const document = JSON.parse(readFileSync(materialized, "utf8")) as {
             materials?: { diffuseTexture?: { coordinatesIndex?: number } }[];
         };
         if (
             (document.materials ?? []).some(
-                (material) =>
-                    material.diffuseTexture?.coordinatesIndex === 1,
+                (material) => material.diffuseTexture?.coordinatesIndex === 1,
             )
         ) {
             return true;
@@ -84,9 +81,7 @@ export function reachedDiffuseUv2(
  * engine keeps that as a per-mesh light set, which the Standard uniform
  * block only has to express for a scene whose assets declare one.
  */
-export function reachedStandardLightLists(
-    lights: BabylonLight[],
-): boolean {
+export function reachedStandardLightLists(lights: BabylonLight[]): boolean {
     return lights.some(
         (light) =>
             light.type === 0 &&

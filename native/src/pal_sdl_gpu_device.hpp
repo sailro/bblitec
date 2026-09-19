@@ -13,10 +13,14 @@ struct SdlGpuDevice {
     ~SdlGpuDevice() { release(); }
 
     void release() noexcept {
-        if (std::exchange(window_claimed, false)) SDL_ReleaseWindowFromGPUDevice(device, window);
-        if (auto* value = std::exchange(device, nullptr); value && owns_device) SDL_DestroyGPUDevice(value);
-        if (auto* value = std::exchange(window, nullptr)) release_run_window(value);
-        if (std::exchange(sdl_initialized, false)) quit_run_sdl();
+        if (std::exchange(window_claimed, false))
+            SDL_ReleaseWindowFromGPUDevice(device, window);
+        if (auto* value = std::exchange(device, nullptr); value && owns_device)
+            SDL_DestroyGPUDevice(value);
+        if (auto* value = std::exchange(window, nullptr))
+            release_run_window(value);
+        if (std::exchange(sdl_initialized, false))
+            quit_run_sdl();
     }
 
     SDL_Window* window = nullptr;

@@ -5,26 +5,45 @@ import { join, resolve } from "node:path";
 import test from "node:test";
 import { doubleLiteral } from "../src/cpp-literals.js";
 import { composeTextPipeline } from "../src/pinned-text-pipeline.js";
-import { optionalNativeFixtureTools, runNativeFixtureCompiler } from "./native-fixture.js";
+import {
+    optionalNativeFixtureTools,
+    runNativeFixtureCompiler,
+} from "./native-fixture.js";
 
 test("Dawn stage descriptors retain independent numeric override keys and values", async (t) => {
     const tools = optionalNativeFixtureTools(false);
     const dawnInclude = resolve("artifacts/tools/dawn/include");
     if (!tools || !existsSync(join(dawnInclude, "webgpu/webgpu.h"))) {
-        t.skip("A native fixture compiler and the pinned Dawn headers are required.");
+        t.skip(
+            "A native fixture compiler and the pinned Dawn headers are required.",
+        );
         return;
     }
-    const ordinary = await composeTextPipeline({ format: "bgra8unorm", sampleCount: 4,
-        depthStencilFormat: "depth24plus-stencil8", depthWrite: true, alphaToCoverage: false });
-    const covered = await composeTextPipeline({ format: "bgra8unorm", sampleCount: 4,
-        depthStencilFormat: "depth24plus-stencil8", depthWrite: true, alphaToCoverage: true });
-    const rows = (values: typeof covered.fragmentConstants): string => values.map(({ id, value }) =>
-        `Constant{${id}u, ${doubleLiteral(value)}}`).join(", ");
+    const ordinary = await composeTextPipeline({
+        format: "bgra8unorm",
+        sampleCount: 4,
+        depthStencilFormat: "depth24plus-stencil8",
+        depthWrite: true,
+        alphaToCoverage: false,
+    });
+    const covered = await composeTextPipeline({
+        format: "bgra8unorm",
+        sampleCount: 4,
+        depthStencilFormat: "depth24plus-stencil8",
+        depthWrite: true,
+        alphaToCoverage: true,
+    });
+    const rows = (values: typeof covered.fragmentConstants): string =>
+        values
+            .map(({ id, value }) => `Constant{${id}u, ${doubleLiteral(value)}}`)
+            .join(", ");
     const output = resolve("artifacts/test-dawn-stage-constants");
     mkdirSync(output, { recursive: true });
     const source = join(output, "check.cpp");
     const executable = join(output, "check.exe");
-    writeFileSync(source, `#include "pal_dawn_constants.hpp"
+    writeFileSync(
+        source,
+        `#include "pal_dawn_constants.hpp"
 #include <array>
 #include <cassert>
 #include <cmath>
@@ -72,8 +91,19 @@ int main() {
         assert(actual.value == i + .5);
     }
 }
-`);
-    runNativeFixtureCompiler(tools, ["/nologo", "/std:c++20", "/EHsc", "/W4", "/WX",
-        `/I${resolve("native/src")}`, `/I${dawnInclude}`, source, `/Fe:${executable}`, `/Fo:${join(output, "check.obj")}`]);
+`,
+    );
+    runNativeFixtureCompiler(tools, [
+        "/nologo",
+        "/std:c++20",
+        "/EHsc",
+        "/W4",
+        "/WX",
+        `/I${resolve("native/src")}`,
+        `/I${dawnInclude}`,
+        source,
+        `/Fe:${executable}`,
+        `/Fo:${join(output, "check.obj")}`,
+    ]);
     assert.equal(execFileSync(executable, { encoding: "utf8" }), "");
 });

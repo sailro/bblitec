@@ -2,16 +2,26 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import test from "node:test";
-import { cppFunction, optionalNativeFixtureTools, runNativeFixtureCompiler } from "./native-fixture.js";
+import {
+    cppFunction,
+    optionalNativeFixtureTools,
+    runNativeFixtureCompiler,
+} from "./native-fixture.js";
 
 const native = optionalNativeFixtureTools(false);
 
-test("SDL shader texture binding follows active slots and refuses stale or incomplete uploads", { skip: !native }, () => {
-    const output = resolve("artifacts/material-texture-bindings");
-    mkdirSync(output, { recursive: true });
-    const source = readFileSync("native/src/pal_sdl_gpu.cpp", "utf8");
-    const file = join(output, "check.cpp"), executable = join(output, "check.exe");
-    writeFileSync(file, `#include <bblite/runtime.hpp>
+test(
+    "SDL shader texture binding follows active slots and refuses stale or incomplete uploads",
+    { skip: !native },
+    () => {
+        const output = resolve("artifacts/material-texture-bindings");
+        mkdirSync(output, { recursive: true });
+        const source = readFileSync("native/src/pal_sdl_gpu.cpp", "utf8");
+        const file = join(output, "check.cpp"),
+            executable = join(output, "check.exe");
+        writeFileSync(
+            file,
+            `#include <bblite/runtime.hpp>
 #include <cassert>
 #include <stdexcept>
 using Uint32 = std::uint32_t;
@@ -71,8 +81,19 @@ int main() {
     mesh.textures.clear(); bind(1);
     assert(bindings == 2);
 }
-`);
-    runNativeFixtureCompiler(native!, ["/nologo", "/std:c++20", "/EHsc", "/W4", "/WX",
-        `/I${resolve("native/include")}`, file, `/Fe:${executable}`, `/Fo:${join(output, "check.obj")}`]);
-    execFileSync(executable, { stdio: "pipe" });
-});
+`,
+        );
+        runNativeFixtureCompiler(native!, [
+            "/nologo",
+            "/std:c++20",
+            "/EHsc",
+            "/W4",
+            "/WX",
+            `/I${resolve("native/include")}`,
+            file,
+            `/Fe:${executable}`,
+            `/Fo:${join(output, "check.obj")}`,
+        ]);
+        execFileSync(executable, { stdio: "pipe" });
+    },
+);

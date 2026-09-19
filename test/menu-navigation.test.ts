@@ -2,13 +2,20 @@ import assert from "node:assert/strict";
 import { readFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { join, resolve } from "node:path";
-import { nativeFixtureVcpkgRoot, optionalNativeFixtureTools, runNativeFixtureCompiler } from "./native-fixture.js";
+import {
+    nativeFixtureVcpkgRoot,
+    optionalNativeFixtureTools,
+    runNativeFixtureCompiler,
+} from "./native-fixture.js";
 import test from "node:test";
 import { compileSource } from "../src/compiler.js";
+import { readNativeHostUi } from "../src/native-host-ui.js";
 
 test("retained button navigation helpers preserve focus, activeElement and click", () => {
-    const nav = readFileSync("corpus/babylon-lite/lab/lite/src/demos/antigravity-racer/gamepad-list-nav.ts", "utf8")
-        .replace(/^import type .*;\r?\n/m, "");
+    const nav = readFileSync(
+        "corpus/babylon-lite/lab/lite/src/demos/antigravity-racer/gamepad-list-nav.ts",
+        "utf8",
+    ).replace(/^import type .*;\r?\n/m, "");
     const cpp = compileSource(`
         import { createEngine } from "babylon-lite";
         interface InputSystem {
@@ -40,28 +47,50 @@ test("retained button navigation helpers preserve focus, activeElement and click
 
 test("every renderer device entry initializes reached gamepads", () => {
     for (const file of ["pal_sdl_gpu_shared.hpp", "pal_dawn_shared.hpp"]) {
-        assert.match(readFileSync(`native/src/${file}`, "utf8"), /BBLITE_HAS_GAMEPAD[\s\S]*?init_flags \|= SDL_INIT_GAMEPAD;[\s\S]*?initialize_run_sdl\(init_flags\)/);
+        assert.match(
+            readFileSync(`native/src/${file}`, "utf8"),
+            /BBLITE_HAS_GAMEPAD[\s\S]*?init_flags \|= SDL_INIT_GAMEPAD;[\s\S]*?initialize_run_sdl\(init_flags\)/,
+        );
     }
 });
 
 test("host focus-visible outline retains its authored color and offset", () => {
-    const cpp = compileSource(`
+    const cpp = compileSource(
+        `
         import { createEngine } from "babylon-lite";
         const engine = await createEngine({});
         const button = document.createElement("button");
         button.className = "entry";
         document.body.appendChild(button);
         button.focus();
-    `, { nativeHostUi: { sourcePath: "fixture.json", elements: [], styleRules: [
-        { kind: "class", primary: "entry", focusVisible: true, style: "outline:2px solid #7fe0ff;outline-offset:2px;" },
-    ] } }).cpp;
-    assert.match(cpp, /ui_add_host_style_rule\([^\n]+--bbl-outline:2px solid #7fe0ff;--bbl-outline-offset:2px;", true, false, bbl::UiScrollbarPart::None, bbl::UiMotionPreference::Any\)/);
+    `,
+        {
+            nativeHostUi: {
+                sourcePath: "fixture.json",
+                elements: [],
+                styleRules: [
+                    {
+                        kind: "class",
+                        primary: "entry",
+                        focusVisible: true,
+                        style: "outline:2px solid #7fe0ff;outline-offset:2px;",
+                    },
+                ],
+            },
+        },
+    ).cpp;
+    assert.match(
+        cpp,
+        /ui_add_host_style_rule\([^\n]+--bbl-outline:2px solid #7fe0ff;--bbl-outline-offset:2px;", true, false, bbl::UiScrollbarPart::None, bbl::UiMotionPreference::Any\)/,
+    );
 });
 
 test("Antigravity hover rules are independent of keyboard focus", () => {
-    const host = JSON.parse(readFileSync("ui/antigravity-racer-host.json", "utf8"));
+    const host = readNativeHostUi("ui/antigravity-racer-host.json");
     for (const primary of ["ag-btn", "ag-attract-btn"]) {
-        const hover = host.styleRules.find((rule: { primary: string; hover?: boolean }) => rule.primary === primary && rule.hover);
+        const hover = host.styleRules?.find(
+            (rule) => rule.primary === primary && rule.hover,
+        );
         assert.ok(hover);
         assert.equal(hover.focusVisible, undefined);
         assert.match(hover.style, /background:rgba\(255,255,255,0.12\)/);
@@ -78,10 +107,13 @@ test("button labels and emoji share their owning button's mouse activation targe
 const nativeTools = optionalNativeFixtureTools();
 const compilerNativeTools = optionalNativeFixtureTools(false);
 
-test("generated gamepad indexing retains fresh arrays and source evaluation order", { skip: !compilerNativeTools }, () => {
-    const output = resolve("artifacts/gamepad-indexing-check");
-    mkdirSync(output, { recursive: true });
-    const compiled = compileSource(`
+test(
+    "generated gamepad indexing retains fresh arrays and source evaluation order",
+    { skip: !compilerNativeTools },
+    () => {
+        const output = resolve("artifacts/gamepad-indexing-check");
+        mkdirSync(output, { recursive: true });
+        const compiled = compileSource(`
         import { createEngine } from "babylon-lite";
         const engine = await createEngine({});
         const pads = navigator.getGamepads();
@@ -108,8 +140,10 @@ test("generated gamepad indexing retains fresh arrays and source evaluation orde
         if (pressed !== 6 || axes !== 1.5 || indexCalls !== 3 || fallback !== 10)
             throw new Error("gamepad indexing changed");
     `);
-    writeFileSync(join(output, "program.hpp"), compiled.cpp);
-    writeFileSync(join(output, "check.cpp"), `
+        writeFileSync(join(output, "program.hpp"), compiled.cpp);
+        writeFileSync(
+            join(output, "check.cpp"),
+            `
         #define main generated_scene_main
         #include "program.hpp"
         #undef main
@@ -139,14 +173,25 @@ test("generated gamepad indexing retains fresh arrays and source evaluation orde
             assert(generated_scene_main() == 0);
             assert(button_reads == 9u && axis_reads == 3u && pressed_reads == 9u && index_reads == 1u);
         }
-    `);
-    const executable = join(output, "check.exe");
-    runNativeFixtureCompiler(compilerNativeTools!, [
-        "/nologo", "/std:c++20", "/W4", "/WX", "/permissive-", "/EHsc",
-        `/Fo:${output}\\`, `/Fe:${executable}`, "/I", "native/include", join(output, "check.cpp"),
-    ]);
-    execFileSync(executable, { stdio: "pipe" });
-});
+    `,
+        );
+        const executable = join(output, "check.exe");
+        runNativeFixtureCompiler(compilerNativeTools!, [
+            "/nologo",
+            "/std:c++20",
+            "/W4",
+            "/WX",
+            "/permissive-",
+            "/EHsc",
+            `/Fo:${output}\\`,
+            `/Fe:${executable}`,
+            "/I",
+            "native/include",
+            join(output, "check.cpp"),
+        ]);
+        execFileSync(executable, { stdio: "pipe" });
+    },
+);
 
 test("transparent button borders and backgrounds are not gradient text colors", () => {
     const cpp = compileSource(`
@@ -162,32 +207,67 @@ test("transparent button borders and backgrounds are not gradient text colors", 
 
 test("native links retain browser user-agent decoration below author rules", () => {
     const source = readFileSync("native/src/pal_ui_defaults.hpp", "utf8");
-    assert.match(source, /a\[href\]\{color:#0000ee;text-decoration:underline;cursor:pointer;\}/);
-    assert.match(readFileSync("native/src/pal_ui_rml.cpp", "utf8"), /std::string source\(ui_user_agent_css\)/);
+    assert.match(
+        source,
+        /a\[href\]\{color:#0000ee;text-decoration:underline;cursor:pointer;\}/,
+    );
+    assert.match(
+        readFileSync("native/src/pal_ui_rml.cpp", "utf8"),
+        /std::string source\(ui_user_agent_css\)/,
+    );
 });
 
 test("per-glyph gradient spans preserve inter-word spaces", () => {
     const source = readFileSync("native/src/pal_ui_rml.cpp", "utf8");
-    assert.ok(source.includes('CreateTextNode(character == " " ? "\\xC2\\xA0" : character)'));
+    assert.match(
+        source,
+        /CreateTextNode\(\s*character == " " \? "\\xC2\\xA0" : character\)/,
+    );
 });
 
 test("canvas focus clears the previously focused retained button", () => {
     const source = readFileSync("src/lowering/scene-lowerer.ts", "utf8");
-    assert.match(source, /void focus_canvas\(Engine& engine\)[\s\S]*?engine\.ui_focused_element = \{\};[\s\S]*?\+\+engine\.ui_focus_revision;/);
+    assert.match(
+        source,
+        /void focus_canvas\(Engine& engine\)[\s\S]*?engine\.ui_focused_element = \{\};[\s\S]*?\+\+engine\.ui_focus_revision;/,
+    );
 });
 
-test("virtual controller buttons/axes and UI keyboard bubbling use the platform bridge", { skip: !nativeTools }, () => {
-    const output = resolve("artifacts/gamepad-check");
-    mkdirSync(output, { recursive: true });
-    const executable = join(output, "gamepad-check.exe");
-    runNativeFixtureCompiler(nativeTools!, [
-        "/nologo", "/std:c++20", "/W4", "/WX", "/permissive-", "/EHsc",
-        `/Fo:${output}\\`, `/Fe:${executable}`, "/I", "native/include", "/I", "native/src",
-        "/I", join(nativeFixtureVcpkgRoot, "include"),
-        "test/fixtures/js-callback/gamepad-check.cpp", join(nativeFixtureVcpkgRoot, "lib/SDL3.lib"),
-    ]);
-    assert.match(execFileSync(executable, [], {
-        encoding: "utf8",
-        env: { ...process.env, SDL_VIDEODRIVER: "dummy", PATH: `${join(nativeFixtureVcpkgRoot, "bin")};${process.env.PATH ?? ""}` },
-    }), /gamepad-check: ok/);
-});
+test(
+    "virtual controller buttons/axes and UI keyboard bubbling use the platform bridge",
+    { skip: !nativeTools },
+    () => {
+        const output = resolve("artifacts/gamepad-check");
+        mkdirSync(output, { recursive: true });
+        const executable = join(output, "gamepad-check.exe");
+        runNativeFixtureCompiler(nativeTools!, [
+            "/nologo",
+            "/std:c++20",
+            "/W4",
+            "/WX",
+            "/permissive-",
+            "/EHsc",
+            `/Fo:${output}\\`,
+            `/Fe:${executable}`,
+            "/I",
+            "native/include",
+            "/I",
+            "native/src",
+            "/I",
+            join(nativeFixtureVcpkgRoot, "include"),
+            "test/fixtures/js-callback/gamepad-check.cpp",
+            join(nativeFixtureVcpkgRoot, "lib/SDL3.lib"),
+        ]);
+        assert.match(
+            execFileSync(executable, [], {
+                encoding: "utf8",
+                env: {
+                    ...process.env,
+                    SDL_VIDEODRIVER: "dummy",
+                    PATH: `${join(nativeFixtureVcpkgRoot, "bin")};${process.env.PATH ?? ""}`,
+                },
+            }),
+            /gamepad-check: ok/,
+        );
+    },
+);

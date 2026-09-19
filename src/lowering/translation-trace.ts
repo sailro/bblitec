@@ -10,15 +10,23 @@ export interface TranslationTrace {
 
 let observer: ((trace: TranslationTrace) => void) | undefined;
 
-export function observePinnedTranslation(next: (trace: TranslationTrace) => void): () => void {
+export function observePinnedTranslation(
+    next: (trace: TranslationTrace) => void,
+): () => void {
     const previous = observer;
     observer = next;
-    return () => { observer = previous; };
+    return () => {
+        observer = previous;
+    };
 }
 
-export function pinnedTranslationObserved(): boolean { return observer !== undefined; }
+export function pinnedTranslationObserved(): boolean {
+    return observer !== undefined;
+}
 
-export function tracePinnedTranslation(trace: () => TranslationTrace): void { observer?.(trace()); }
+export function tracePinnedTranslation(trace: () => TranslationTrace): void {
+    observer?.(trace());
+}
 
 /** Per-translator activity; discarded with a failed translation. */
 export class TranslationActivity {
@@ -35,8 +43,11 @@ export class TranslationActivity {
 
     request(kind: string, node: ts.Node, file: ts.SourceFile): void {
         const target = ts.isCallExpression(node) ? node.expression : node;
-        const name = target.pos >= 0 && (ts.isIdentifier(target) || ts.isPropertyAccessExpression(target))
-            ? target.getText(file) : ts.SyntaxKind[target.kind];
+        const name =
+            target.pos >= 0 &&
+            (ts.isIdentifier(target) || ts.isPropertyAccessExpression(target))
+                ? target.getText(file)
+                : ts.SyntaxKind[target.kind];
         this.requests.add(`${kind}: ${name}`);
     }
 }

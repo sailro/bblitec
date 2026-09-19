@@ -86,15 +86,17 @@ export interface PinnedDitherWgsl {
  * of every background fragment (`enableNoise ? WGSL_DITHER : WGSL_NO_DITHER`),
  * so the undithered variant is the pin's zero function, not an edited body.
  */
-export function readPinnedDitherWgsl(
-    packageRoot: string,
-): PinnedDitherWgsl {
+export function readPinnedDitherWgsl(packageRoot: string): PinnedDitherWgsl {
     const helpers = readFileSync(
         resolve(packageRoot, "lib/shader/wgsl-helpers.js"),
         "utf8",
     );
     const dither = extractPackagedTemplateLiteral(helpers, "WGSL_DITHER");
-    for (const marker of ["fn dither(", packagedWgsl`12.9898, 78.233`, "43758.5453"]) {
+    for (const marker of [
+        "fn dither(",
+        packagedWgsl`12.9898, 78.233`,
+        "43758.5453",
+    ]) {
         if (!dither.includes(marker)) {
             backgroundLiftError(`dither helper (WGSL_DITHER '${marker}')`);
         }
@@ -145,17 +147,11 @@ export function readPinnedBackgroundSkyboxSource(
     packageRoot: string,
 ): PinnedBackgroundSkyboxSource {
     const ddsModule = readFileSync(
-        resolve(
-            packageRoot,
-            "lib/material/pbr/background-dds-skybox.js",
-        ),
+        resolve(packageRoot, "lib/material/pbr/background-dds-skybox.js"),
         "utf8",
     );
     return {
-        ddsVertex: extractPackagedStringLiteral(
-            ddsModule,
-            "ddsSkyboxVertSrc",
-        ),
+        ddsVertex: extractPackagedStringLiteral(ddsModule, "ddsSkyboxVertSrc"),
         ddsFragment: extractPackagedStringLiteral(
             ddsModule,
             "ddsSkyboxFragSrc",
@@ -271,7 +267,10 @@ export function backgroundGroundFragmentWgsl(
             ["mesh.backgroundCenter", "uniforms.backgroundCenter.xyz"],
             ["scene.vEyePosition.xyz", "uniforms.cameraExposure.xyz"],
             ["scene.vImageInfos.w", "uniforms.imageParameters.y"],
-            [`${taken.parameter}.vPositionW`, `${taken.parameter}.worldPosition`],
+            [
+                `${taken.parameter}.vPositionW`,
+                `${taken.parameter}.worldPosition`,
+            ],
             [`${taken.parameter}.vNormalW`, `${taken.parameter}.normal`],
             [`${taken.parameter}.vUV`, `${taken.parameter}.uv`],
         ],
@@ -593,9 +592,7 @@ export interface PinnedSolidSkyboxSource {
 const solidSkyboxSceneMembers = ["viewProjection", "vEyePosition"] as const;
 
 function pinnedError(what: string): never {
-    throw new Error(
-        `Pinned Babylon Lite solid-skybox ${what} changed.`,
-    );
+    throw new Error(`Pinned Babylon Lite solid-skybox ${what} changed.`);
 }
 
 /** Re-indent a minified `name:type` member list, keeping every member's text. */
@@ -629,8 +626,7 @@ function solidSkyboxSceneStruct(sceneUniforms: string): string {
     );
     if (
         solidSkyboxSceneMembers.some(
-            (name) =>
-                !list.some((member) => member.startsWith(`${name}:`)),
+            (name) => !list.some((member) => member.startsWith(`${name}:`)),
         )
     ) {
         pinnedError("scene uniform members");
@@ -669,14 +665,8 @@ function takePinnedEntry(
     };
 }
 
-function varyingMembers(
-    source: string,
-    varying: string,
-    what: string,
-): string {
-    const declaration = new RegExp(
-        `struct ${varying}\\{(.+?)\\}`,
-    ).exec(source);
+function varyingMembers(source: string, varying: string, what: string): string {
+    const declaration = new RegExp(`struct ${varying}\\{(.+?)\\}`).exec(source);
     if (!declaration) pinnedError(`${what} varying block`);
     return members(declaration[1]!, `${what} varying members`);
 }

@@ -300,17 +300,13 @@ export class GizmoLowerer {
                                     "be a plain named property assignment.",
                             );
                         }
-                        const initializer =
-                            this.context.unwrapExpression(
-                                property.initializer,
-                            );
+                        const initializer = this.context.unwrapExpression(
+                            property.initializer,
+                        );
                         const constant =
                             ts.isNumericLiteral(initializer) ||
                             ts.isPrefixUnaryExpression(initializer)
-                                ? this.context.numericValue(
-                                      initializer,
-                                      file,
-                                  )
+                                ? this.context.numericValue(initializer, file)
                                 : undefined;
                         options.set(name, constant);
                     }
@@ -337,11 +333,7 @@ export class GizmoLowerer {
     }
 
     /** One factory call's constant option, or a named failure. */
-    private option(
-        call: PinnedFactoryCall,
-        name: string,
-        at: ts.Node,
-    ): number {
+    private option(call: PinnedFactoryCall, name: string, at: ts.Node): number {
         if (!call.options.has(name)) {
             return this.context.contractError(
                 at,
@@ -364,7 +356,10 @@ export class GizmoLowerer {
      * here, because each guards a degenerate axis with an early
      * `return [0, 0, 0, 1]`.
      */
-    private quatReturn(modulePath: string, symbolName: string): {
+    private quatReturn(
+        modulePath: string,
+        symbolName: string,
+    ): {
         type: string;
         value: (
             lowerer: PinnedNumericLowerer,
@@ -514,7 +509,10 @@ export class GizmoLowerer {
                 cppName: "direction_to_quat",
                 calls,
                 memberBindings: new Map([
-                    ...vec3MemberBindings("dir", (axis) => "static_cast<double>(dir." + axis + ")"),
+                    ...vec3MemberBindings(
+                        "dir",
+                        (axis) => "static_cast<double>(dir." + axis + ")",
+                    ),
                     // The pin's own constant, at the width its body reads
                     // it: a JavaScript number, so a double here.
                     ["Math.PI", { cpp: "pi_double", type: "scalar" as const }],
@@ -542,10 +540,7 @@ export class GizmoLowerer {
             MATH_MODULE,
             "rotationQuatFromMatrix",
         );
-        this.context.callExpression(
-            rotationQuat.declaration,
-            "decomposeMat4",
-        );
+        this.context.callExpression(rotationQuat.declaration, "decomposeMat4");
         if (
             !this.context.hasNode(
                 rotationQuat.declaration,
@@ -582,7 +577,10 @@ export class GizmoLowerer {
                 cppName: "length_vec3",
                 calls,
                 memberBindings: new Map([
-                    ...vec3MemberBindings("v", (axis) => "static_cast<double>(v." + axis + ")"),
+                    ...vec3MemberBindings(
+                        "v",
+                        (axis) => "static_cast<double>(v." + axis + ")",
+                    ),
                 ]),
                 returns: "double",
             },
@@ -604,25 +602,30 @@ export class GizmoLowerer {
                 cppName: "normalize_vec3",
                 calls,
                 memberBindings: new Map([
-                    ...vec3MemberBindings("v", (axis) => "static_cast<double>(v." + axis + ")"),
+                    ...vec3MemberBindings(
+                        "v",
+                        (axis) => "static_cast<double>(v." + axis + ")",
+                    ),
                 ]),
                 returns: {
                     type: "Vec3d",
                     value: (lowerer, expression) =>
-                        vec3d(lowerObjectComponents(
-                            this.context,
-                            lowerer,
-                            expression ??
-                                this.context.contractError(
-                                    this.context.functionDeclaration(
-                                        NORMALIZE_MODULE,
-                                        "normalizeVec3",
-                                    ).declaration,
-                                    "Expected pinned normalizeVec3 to " +
-                                        "return a value.",
-                                ),
-                            ["x", "y", "z"],
-                        )),
+                        vec3d(
+                            lowerObjectComponents(
+                                this.context,
+                                lowerer,
+                                expression ??
+                                    this.context.contractError(
+                                        this.context.functionDeclaration(
+                                            NORMALIZE_MODULE,
+                                            "normalizeVec3",
+                                        ).declaration,
+                                        "Expected pinned normalizeVec3 to " +
+                                            "return a value.",
+                                    ),
+                                ["x", "y", "z"],
+                            ),
+                        ),
                 },
             },
         );
@@ -733,7 +736,10 @@ export class GizmoLowerer {
                             },
                         ],
                     ),
-                    ...vec3MemberBindings("dir", (axis) => "static_cast<double>(dir." + axis + ")"),
+                    ...vec3MemberBindings(
+                        "dir",
+                        (axis) => "static_cast<double>(dir." + axis + ")",
+                    ),
                 ]),
                 returns: {
                     type: "Vec3d",
@@ -759,12 +765,14 @@ export class GizmoLowerer {
                                     "combination.",
                             );
                         }
-                        return `normalize_vec3(${vec3d(lowerObjectComponents(
-                            this.context,
-                            lowerer,
-                            returned.arguments[0]!,
-                            ["x", "y", "z"],
-                        ))})`;
+                        return `normalize_vec3(${vec3d(
+                            lowerObjectComponents(
+                                this.context,
+                                lowerer,
+                                returned.arguments[0]!,
+                                ["x", "y", "z"],
+                            ),
+                        )})`;
                     },
                 },
             },
@@ -786,7 +794,10 @@ export class GizmoLowerer {
                 cppName: "look_at_quat",
                 calls,
                 memberBindings: new Map([
-                    ...vec3MemberBindings("dir", (axis) => "static_cast<double>(dir." + axis + ")"),
+                    ...vec3MemberBindings(
+                        "dir",
+                        (axis) => "static_cast<double>(dir." + axis + ")",
+                    ),
                 ]),
                 returns: this.quatReturn(MATH_MODULE, "lookAtQuat"),
             },
@@ -832,21 +843,18 @@ export class GizmoLowerer {
         modulePath: string,
         bindings: ReadonlyMap<string, string>,
     ): PinnedNumericLowerer {
-        return new PinnedNumericLowerer(
-            this.context.sourceFile(modulePath),
-            {
-                bindings: new Map([
-                    ["Math.PI", { cpp: "pi_double", type: "scalar" }],
-                    ...[...bindings].map(
-                        ([pinned, cpp]): [string, PinnedBinding] => [
-                            pinned,
-                            { cpp, type: "scalar" },
-                        ],
-                    ),
-                ]),
-                calls: pinnedNumericMathCallsWithHypot(),
-            },
-        );
+        return new PinnedNumericLowerer(this.context.sourceFile(modulePath), {
+            bindings: new Map([
+                ["Math.PI", { cpp: "pi_double", type: "scalar" }],
+                ...[...bindings].map(
+                    ([pinned, cpp]): [string, PinnedBinding] => [
+                        pinned,
+                        { cpp, type: "scalar" },
+                    ],
+                ),
+            ]),
+            calls: pinnedNumericMathCallsWithHypot(),
+        });
     }
 
     private displayLowerer(
@@ -860,10 +868,16 @@ export class GizmoLowerer {
             ]),
             calls: new Map([
                 ...pinnedNumericMathCallsWithHypot(),
-                ["quatFromBjsEuler", (args: readonly string[]) =>
-                    `quat_from_bjs_euler(${args.join(", ")})`],
-                ["rotateVec3ByQuat", (args: readonly string[]) =>
-                    `rotate_vec3_by_quat(${args.join(", ")})`],
+                [
+                    "quatFromBjsEuler",
+                    (args: readonly string[]) =>
+                        `quat_from_bjs_euler(${args.join(", ")})`,
+                ],
+                [
+                    "rotateVec3ByQuat",
+                    (args: readonly string[]) =>
+                        `rotate_vec3_by_quat(${args.join(", ")})`,
+                ],
             ]),
             booleanAnd: true,
         });
@@ -875,11 +889,27 @@ export class GizmoLowerer {
         local: string,
         lowerer: PinnedNumericLowerer,
     ): string {
-        const position = this.channel(scope, local, "position", lowerer, ["0.0", "0.0", "0.0"]);
-        const scaling = this.channel(scope, local, "scaling", lowerer, ["1.0", "1.0", "1.0"]);
-        const rotation = this.channel(scope, local, "rotationQuaternion", lowerer, ["0.0", "0.0", "0.0", "1.0"]);
-        return `${vec3d(position)}, ${vec3f(scaling)}, ` +
-            `std::array<double, 4>{${rotation.join(", ")}}`;
+        const position = this.channel(scope, local, "position", lowerer, [
+            "0.0",
+            "0.0",
+            "0.0",
+        ]);
+        const scaling = this.channel(scope, local, "scaling", lowerer, [
+            "1.0",
+            "1.0",
+            "1.0",
+        ]);
+        const rotation = this.channel(
+            scope,
+            local,
+            "rotationQuaternion",
+            lowerer,
+            ["0.0", "0.0", "0.0", "1.0"],
+        );
+        return (
+            `${vec3d(position)}, ${vec3f(scaling)}, ` +
+            `std::array<double, 4>{${rotation.join(", ")}}`
+        );
     }
 
     /** A node factory's supplied TRS and the factory's own omitted defaults. */
@@ -888,43 +918,84 @@ export class GizmoLowerer {
         local: string,
         lowerer: PinnedNumericLowerer,
     ): string {
-        const call = this.context.unwrapExpression(this.localInitializer(scope, local));
-        if (!ts.isCallExpression(call) || !ts.isIdentifier(call.expression) ||
+        const call = this.context.unwrapExpression(
+            this.localInitializer(scope, local),
+        );
+        if (
+            !ts.isCallExpression(call) ||
+            !ts.isIdentifier(call.expression) ||
             call.expression.text !== "createTransformNode" ||
-            !call.arguments[0] || !ts.isStringLiteral(call.arguments[0])) {
-            this.context.contractError(call, "Expected a named pinned display transform node.");
+            !call.arguments[0] ||
+            !ts.isStringLiteral(call.arguments[0])
+        ) {
+            this.context.contractError(
+                call,
+                "Expected a named pinned display transform node.",
+            );
         }
         const factory = this.context.functionDeclaration(
-            "src/scene/transform-node.ts", "createTransformNode",
+            "src/scene/transform-node.ts",
+            "createTransformNode",
         ).declaration;
-        if (factory.parameters.length !== 11 || call.arguments.length > factory.parameters.length) {
-            this.context.contractError(call, "Expected the pinned transform-node TRS parameters.");
+        if (
+            factory.parameters.length !== 11 ||
+            call.arguments.length > factory.parameters.length
+        ) {
+            this.context.contractError(
+                call,
+                "Expected the pinned transform-node TRS parameters.",
+            );
         }
         const values = factory.parameters.slice(1).map((parameter, index) => {
             const value = call.arguments[index + 1] ?? parameter.initializer;
-            if (!value) this.context.contractError(parameter, "Missing pinned transform-node default.");
+            if (!value)
+                this.context.contractError(
+                    parameter,
+                    "Missing pinned transform-node default.",
+                );
             return lowerer.expression(value);
         });
-        return `${JSON.stringify(call.arguments[0].text)}, ${vec3d(values.slice(0, 3))}, ` +
-            `${vec4f(values.slice(3, 7))}, ${vec3f(values.slice(7))}`;
+        return (
+            `${JSON.stringify(call.arguments[0].text)}, ${vec3d(values.slice(0, 3))}, ` +
+            `${vec4f(values.slice(3, 7))}, ${vec3f(values.slice(7))}`
+        );
     }
 
     private lightGeometryArm(scope: ts.Node, type: string): ts.Node {
-        const branch = this.context.findNodes(scope, (node): node is ts.IfStatement => {
-            if (!ts.isIfStatement(node)) return false;
-            const condition = this.context.unwrapExpression(node.expression);
-            return ts.isBinaryExpression(condition) &&
-                condition.operatorToken.kind === ts.SyntaxKind.EqualsEqualsEqualsToken &&
-                ts.isIdentifier(condition.left) && condition.left.text === "lightType" &&
-                ts.isStringLiteral(condition.right) &&
-                condition.right.text === (type === "spot" ? "hemispheric" : type);
-        });
+        const branch = this.context.findNodes(
+            scope,
+            (node): node is ts.IfStatement => {
+                if (!ts.isIfStatement(node)) return false;
+                const condition = this.context.unwrapExpression(
+                    node.expression,
+                );
+                return (
+                    ts.isBinaryExpression(condition) &&
+                    condition.operatorToken.kind ===
+                        ts.SyntaxKind.EqualsEqualsEqualsToken &&
+                    ts.isIdentifier(condition.left) &&
+                    condition.left.text === "lightType" &&
+                    ts.isStringLiteral(condition.right) &&
+                    condition.right.text ===
+                        (type === "spot" ? "hemispheric" : type)
+                );
+            },
+        );
         if (branch.length !== 1) {
-            this.context.contractError(scope, `Expected the pinned '${type}' light geometry branch.`);
+            this.context.contractError(
+                scope,
+                `Expected the pinned '${type}' light geometry branch.`,
+            );
         }
-        const body = type === "spot" ? branch[0]!.elseStatement : branch[0]!.thenStatement;
+        const body =
+            type === "spot"
+                ? branch[0]!.elseStatement
+                : branch[0]!.thenStatement;
         if (!body || !ts.isBlock(body)) {
-            this.context.contractError(branch[0]!, "Expected a pinned per-light geometry block.");
+            this.context.contractError(
+                branch[0]!,
+                "Expected a pinned per-light geometry block.",
+            );
         }
         return body;
     }
@@ -1069,12 +1140,13 @@ export class GizmoLowerer {
                 return `normalize_vec3(${render(node.arguments[0]!)})`;
             }
             if (ts.isObjectLiteralExpression(node)) {
-                return vec3d(lowerObjectComponents(
-                    this.context,
-                    lowerer,
-                    node,
-                    ["x", "y", "z"],
-                ));
+                return vec3d(
+                    lowerObjectComponents(this.context, lowerer, node, [
+                        "x",
+                        "y",
+                        "z",
+                    ]),
+                );
             }
             return this.context.contractError(
                 node,
@@ -1114,8 +1186,7 @@ export class GizmoLowerer {
                 ts.isPropertyAccessExpression(node.expression) &&
                 node.expression.name.text === "set" &&
                 ts.isPropertyAccessExpression(node.expression.expression) &&
-                node.expression.expression.name.text ===
-                    "rotationQuaternion" &&
+                node.expression.expression.name.text === "rotationQuaternion" &&
                 ts.isIdentifier(node.expression.expression.expression) &&
                 node.expression.expression.expression.text === "root"
             ) {
@@ -1132,18 +1203,13 @@ export class GizmoLowerer {
                     `quaternion inside the '${guardName}' arm.`,
             );
         }
-        return found.arguments.map((argument) =>
-            lowerer.expression(argument),
-        );
+        return found.arguments.map((argument) => lowerer.expression(argument));
     }
 
     /** A pinned mesh factory option that has to be a compile-time number. */
     private widgetOptionNumber(
         part: {
-            options: ReadonlyMap<
-                string,
-                { cpp: string; node: ts.Expression }
-            >;
+            options: ReadonlyMap<string, { cpp: string; node: ts.Expression }>;
             at: ts.Node;
         },
         name: string,
@@ -1162,10 +1228,7 @@ export class GizmoLowerer {
     }
 
     /** The boolean form of `optionDefault`, for a `?? false` flag. */
-    private optionDefaultFlag(
-        declaration: ts.Node,
-        member: string,
-    ): string {
+    private optionDefaultFlag(declaration: ts.Node, member: string): string {
         let found: ts.Expression | undefined;
         const visit = (node: ts.Node): void => {
             if (found) return;
@@ -1199,9 +1262,7 @@ export class GizmoLowerer {
                     "boolean literal through a nullish coalesce.",
             );
         }
-        return found.kind === ts.SyntaxKind.TrueKeyword
-            ? "true"
-            : "false";
+        return found.kind === ts.SyntaxKind.TrueKeyword ? "true" : "false";
     }
 
     /** The right side of the pin's own `options.<member> ?? <default>`. */
@@ -1257,9 +1318,7 @@ export class GizmoLowerer {
                 node.expression.name.text === "set" &&
                 ts.isPropertyAccessExpression(node.expression.expression) &&
                 node.expression.expression.name.text === channelName &&
-                ts.isIdentifier(
-                    node.expression.expression.expression,
-                ) &&
+                ts.isIdentifier(node.expression.expression.expression) &&
                 node.expression.expression.expression.text === local
             ) {
                 found = node;
@@ -1279,9 +1338,7 @@ export class GizmoLowerer {
                     `${fallback.length} components.`,
             );
         }
-        return found.arguments.map((argument) =>
-            lowerer.expression(argument),
-        );
+        return found.arguments.map((argument) => lowerer.expression(argument));
     }
 
     /** `<local>.visible = false`, which is what makes a part pick-only. */
@@ -1311,9 +1368,7 @@ export class GizmoLowerer {
                 // Matched by TEXT rather than as an identifier: the cage
                 // clears the flag on `c.meshes[1]!`, an element access,
                 // where the widgets clear it on a plain local.
-                node.left.expression.getText(
-                    node.getSourceFile(),
-                ) === local &&
+                node.left.expression.getText(node.getSourceFile()) === local &&
                 node.right.kind === ts.SyntaxKind.FalseKeyword
             ) {
                 found = true;
@@ -1371,10 +1426,7 @@ export class GizmoLowerer {
             );
         }
         const argument = initializer.arguments[1];
-        const options = new Map<
-            string,
-            { cpp: string; node: ts.Expression }
-        >();
+        const options = new Map<string, { cpp: string; node: ts.Expression }>();
         let scalar: string | undefined;
         if (argument && ts.isObjectLiteralExpression(argument)) {
             for (const property of argument.properties) {
@@ -1387,7 +1439,9 @@ export class GizmoLowerer {
                       ? property.name
                       : undefined;
                 const name = value
-                    ? this.context.propertyName(property.name as ts.PropertyName)
+                    ? this.context.propertyName(
+                          property.name as ts.PropertyName,
+                      )
                     : undefined;
                 if (!value || !name) {
                     this.context.contractError(
@@ -1429,10 +1483,7 @@ export class GizmoLowerer {
     /** A widget part's option, lowered, or a named failure. */
     private widgetOption(
         part: {
-            options: ReadonlyMap<
-                string,
-                { cpp: string; node: ts.Expression }
-            >;
+            options: ReadonlyMap<string, { cpp: string; node: ts.Expression }>;
             at: ts.Node;
         },
         name: string,
@@ -1538,11 +1589,7 @@ ${indent}    root);`;
         // arm is dropped by `bodyScope`, and it hides the same locals, so
         // asserting over the whole declaration would let that arm answer
         // for the one this port keeps.
-        const builderScope = this.bodyScope(
-            modulePath,
-            builder,
-            excludeGuard,
-        );
+        const builderScope = this.bodyScope(modulePath, builder, excludeGuard);
         for (const local of locals) {
             this.assertHidden(builderScope.roots, local);
         }
@@ -1585,8 +1632,7 @@ ${indent}    root);`;
         lowerer: PinnedNumericLowerer,
     ): readonly string[] {
         return this.channel(
-            this.context.functionDeclaration(modulePath, factory)
-                .declaration,
+            this.context.functionDeclaration(modulePath, factory).declaration,
             "root",
             "scaling",
             lowerer,
@@ -1825,15 +1871,11 @@ EditGizmoHandle push_edit_gizmo(
         const attachBodies = EDIT_MODULES.map(({ modulePath, attach }) =>
             this.context
                 .functionDeclaration(modulePath, attach)
-                .declaration.body!.getText(
-                    this.context.sourceFile(modulePath),
-                ),
+                .declaration.body!.getText(this.context.sourceFile(modulePath)),
         );
         if (
             new Set(
-                attachBodies.map((body) =>
-                    body.replace(/\s+/g, " ").trim(),
-                ),
+                attachBodies.map((body) => body.replace(/\s+/g, " ").trim()),
             ).size !== 1
         ) {
             this.context.contractError(
@@ -1973,12 +2015,12 @@ EditGizmoHandle push_edit_gizmo(
             const value = member(name);
             if (name === "color") {
                 return value
-                    ? `std::optional<Vec3d>{${vec3d(lowerTupleComponents(
-                          this.context,
-                          lowerer,
-                          value,
-                          { arity: 3, at: options },
-                      ))}}`
+                    ? `std::optional<Vec3d>{${vec3d(
+                          lowerTupleComponents(this.context, lowerer, value, {
+                              arity: 3,
+                              at: options,
+                          }),
+                      )}}`
                     : "std::optional<Vec3d>{}";
             }
             if (name === "uniformScaling") {
@@ -1995,9 +2037,7 @@ EditGizmoHandle push_edit_gizmo(
                     );
                 }
                 return `std::optional<bool>{${
-                    flag.kind === ts.SyntaxKind.TrueKeyword
-                        ? "true"
-                        : "false"
+                    flag.kind === ts.SyntaxKind.TrueKeyword ? "true" : "false"
                 }}`;
             }
             return value
@@ -2011,17 +2051,16 @@ EditGizmoHandle push_edit_gizmo(
             `${widget.cppFactory}(`,
             "engine,",
             "layer,",
-            `${vec3d(lowerObjectComponents(
-                this.context,
-                lowerer,
-                axis,
-                ["x", "y", "z"],
-            ))}${supplied.length > 0 ? "," : ")"}`,
+            `${vec3d(
+                lowerObjectComponents(this.context, lowerer, axis, [
+                    "x",
+                    "y",
+                    "z",
+                ]),
+            )}${supplied.length > 0 ? "," : ")"}`,
             ...supplied.map(
                 (argument, index) =>
-                    `${argument}${
-                        index === supplied.length - 1 ? ")" : ","
-                    }`,
+                    `${argument}${index === supplied.length - 1 ? ")" : ","}`,
             ),
         ].join(ARGUMENT_BREAK);
     }
@@ -2065,8 +2104,7 @@ EditGizmoHandle push_edit_gizmo(
         const tail: string[] = [];
         for (const statement of declaration.body!.statements) {
             if (ts.isVariableStatement(statement)) {
-                for (const binding of statement.declarationList
-                    .declarations) {
+                for (const binding of statement.declarationList.declarations) {
                     if (
                         !ts.isIdentifier(binding.name) ||
                         !binding.initializer
@@ -2081,8 +2119,7 @@ EditGizmoHandle push_edit_gizmo(
                     const initializer = this.context.unwrapExpression(
                         binding.initializer,
                     );
-                    const coalesce =
-                        this.context.nullishDefault(initializer);
+                    const coalesce = this.context.nullishDefault(initializer);
                     if (coalesce) {
                         const option = composite.options.find(
                             ({ pinned }) => pinned === local,
@@ -2101,10 +2138,7 @@ EditGizmoHandle push_edit_gizmo(
                         const flag =
                             right.kind === ts.SyntaxKind.TrueKeyword ||
                             right.kind === ts.SyntaxKind.FalseKeyword;
-                        optionTypes.set(
-                            option.cpp,
-                            flag ? "bool" : "double",
-                        );
+                        optionTypes.set(option.cpp, flag ? "bool" : "double");
                         prologue.push(
                             flag
                                 ? `    const bool ${option.cpp} = ` +
@@ -2131,9 +2165,8 @@ EditGizmoHandle push_edit_gizmo(
                     if (ts.isConditionalExpression(initializer)) {
                         if (
                             !ts.isIdentifier(initializer.condition) ||
-                            this.context.unwrapExpression(
-                                initializer.whenFalse,
-                            ).kind !== ts.SyntaxKind.NullKeyword
+                            this.context.unwrapExpression(initializer.whenFalse)
+                                .kind !== ts.SyntaxKind.NullKeyword
                         ) {
                             this.context.contractError(
                                 initializer,
@@ -2152,10 +2185,7 @@ EditGizmoHandle push_edit_gizmo(
                         ts.isIdentifier(call.expression)
                             ? EDIT_MODULES.find(
                                   ({ factory }) =>
-                                      factory ===
-                                      (
-                                          call as ts.CallExpression
-                                      ).expression.getText(file),
+                                      factory === call.expression.getText(file),
                               )
                             : undefined;
                     if (!widget || !ts.isCallExpression(call)) {
@@ -2169,11 +2199,7 @@ EditGizmoHandle push_edit_gizmo(
                     parts.push({
                         local,
                         guard,
-                        cpp: this.compositeSubGizmo(
-                            widget,
-                            call,
-                            lowerer,
-                        ),
+                        cpp: this.compositeSubGizmo(widget, call, lowerer),
                     });
                 }
                 continue;
@@ -2280,9 +2306,9 @@ EditGizmoHandle push_edit_gizmo(
         }
         const unguarded = parts.length - guarded.length;
         const emitPart = (index: number, indent: string): string =>
-            `${indent}gizmo.parts[${index}] = ${parts[index]!.cpp
-                .split(ARGUMENT_BREAK)
-                .join(`\n${indent}    `)};`;
+            `${indent}gizmo.parts[${index}] = ${parts[index]!.cpp.split(
+                ARGUMENT_BREAK,
+            ).join(`\n${indent}    `)};`;
         const body = [
             ...prologue,
             "    CompositeGizmoHandle gizmo;",
@@ -2366,13 +2392,35 @@ ${body}
         );
         let colliderThickness: ts.Expression | undefined;
         this.context.hasNode(factory, (node) => {
-            if (ts.isCallExpression(node) && node.expression.getText(file) === "buildArrow" && node.arguments[5]?.kind === ts.SyntaxKind.TrueKeyword) colliderThickness = node.arguments[4];
+            if (
+                ts.isCallExpression(node) &&
+                node.expression.getText(file) === "buildArrow" &&
+                node.arguments[5]?.kind === ts.SyntaxKind.TrueKeyword
+            )
+                colliderThickness = node.arguments[4];
             return false;
         });
-        if (!colliderThickness) this.context.contractError(factory, "Missing pinned axis-drag collider width.");
-        const colliderLowerer = this.widgetLowerer(AXIS_DRAG_MODULE, new Map([["thickness", arrow.expression(colliderThickness)]]));
-        const colliderCone = this.widgetMesh(AXIS_DRAG_MODULE, "buildArrow", "cone", colliderLowerer);
-        const colliderLine = this.widgetMesh(AXIS_DRAG_MODULE, "buildArrow", "line", colliderLowerer);
+        if (!colliderThickness)
+            this.context.contractError(
+                factory,
+                "Missing pinned axis-drag collider width.",
+            );
+        const colliderLowerer = this.widgetLowerer(
+            AXIS_DRAG_MODULE,
+            new Map([["thickness", arrow.expression(colliderThickness)]]),
+        );
+        const colliderCone = this.widgetMesh(
+            AXIS_DRAG_MODULE,
+            "buildArrow",
+            "cone",
+            colliderLowerer,
+        );
+        const colliderLine = this.widgetMesh(
+            AXIS_DRAG_MODULE,
+            "buildArrow",
+            "line",
+            colliderLowerer,
+        );
         this.assertColliderArm(
             AXIS_DRAG_MODULE,
             "createAxisDragGizmo",
@@ -2415,12 +2463,16 @@ ${this.widgetPart(
     `create_cylinder(engine, ${this.widgetCylinder(line)})`,
     line,
 )}
-${this.features.includes("gizmo:pointer-drag") ? `
+${
+    this.features.includes("gizmo:pointer-drag")
+        ? `
     const auto collider_start = scene.meshes.size();
 ${this.widgetPart(`create_cylinder(engine, ${this.widgetCylinder(colliderCone)})`, colliderCone)}
 ${this.widgetPart(`create_cylinder(engine, ${this.widgetCylinder(colliderLine)})`, colliderLine)}
     for (std::size_t i = collider_start; i < scene.meshes.size(); ++i) engine.meshes[scene.meshes[i].value].visible = false;
-` : ""}
+`
+        : ""
+}
     const auto handle = push_edit_gizmo(
         engine,
         scene,
@@ -2440,9 +2492,13 @@ ${this.widgetPart(`create_cylinder(engine, ${this.widgetCylinder(colliderLine)})
         )},
         baked,
         GizmoLocalOrientation::look_at_world_axis);
-${this.features.includes("gizmo:pointer-drag") ? `
+${
+    this.features.includes("gizmo:pointer-drag")
+        ? `
     initialize_pointer_gizmo(engine, layer, handle, material, false);
-` : ""}
+`
+        : ""
+}
     return handle;
 }`;
     }
@@ -2566,9 +2622,7 @@ ${this.features.includes("gizmo:pointer-drag") ? `
                 .map(
                     (row) =>
                         `{${row
-                            .map((value) =>
-                                this.context.doubleLiteral(value),
-                            )
+                            .map((value) => this.context.doubleLiteral(value))
                             .join(", ")}}`,
                 )
                 .join(", ")}}`;
@@ -2754,9 +2808,13 @@ ${this.widgetPart(
         )},
         baked,
         GizmoLocalOrientation::look_at_world_axis);
-${this.features.includes("gizmo:pointer-drag") ? `
+${
+    this.features.includes("gizmo:pointer-drag")
+        ? `
     initialize_pointer_gizmo(engine, layer, handle, material, true);
-` : ""}
+`
+        : ""
+}
     return handle;
 }`;
     }
@@ -2776,11 +2834,7 @@ ${this.features.includes("gizmo:pointer-drag") ? `
             )
             .map((component) => this.context.doubleLiteral(component));
         const thickness = this.optionDefault(factory, "thickness", file);
-        const tessellation = this.optionDefault(
-            factory,
-            "tessellation",
-            file,
-        );
+        const tessellation = this.optionDefault(factory, "tessellation", file);
         const lowerer = this.widgetLowerer(
             PLANE_ROTATION_MODULE,
             new Map([
@@ -2794,7 +2848,12 @@ ${this.features.includes("gizmo:pointer-drag") ? `
             "ring",
             lowerer,
         );
-        const collider = this.widgetMesh(PLANE_ROTATION_MODULE, "createPlaneRotationGizmo", "collider", lowerer);
+        const collider = this.widgetMesh(
+            PLANE_ROTATION_MODULE,
+            "createPlaneRotationGizmo",
+            "collider",
+            lowerer,
+        );
         // The sector readout remains outside the native material slice.
         this.assertHidden(factory, "collider");
         this.assertHidden(factory, "rotationDisplayPlane");
@@ -2846,11 +2905,15 @@ ${this.widgetPart(
         )})})`,
     ring,
 )}
-${this.features.includes("gizmo:pointer-drag") ? `
+${
+    this.features.includes("gizmo:pointer-drag")
+        ? `
     const auto collider_start = scene.meshes.size();
 ${this.widgetPart(`create_torus(engine, TorusOptions{${this.widgetOption(collider, "diameter")}, ${this.widgetOption(collider, "thickness")}, static_cast<std::uint32_t>(${this.widgetOption(collider, "tessellation")})})`, collider)}
     for (std::size_t i = collider_start; i < scene.meshes.size(); ++i) engine.meshes[scene.meshes[i].value].visible = false;
-` : ""}
+`
+        : ""
+}
     const auto handle = push_edit_gizmo(
         engine,
         scene,
@@ -2871,10 +2934,14 @@ ${this.widgetPart(`create_torus(engine, TorusOptions{${this.widgetOption(collide
         )},
         baked,
         GizmoLocalOrientation::look_at_world_axis);
-${this.features.includes("gizmo:pointer-drag") ? `
+${
+    this.features.includes("gizmo:pointer-drag")
+        ? `
     initialize_pointer_gizmo(engine, layer, handle, material, true);
     engine.edit_gizmos[handle.value].rotation_drag = true;
-` : ""}
+`
+        : ""
+}
     return handle;
 }`;
     }
@@ -2936,10 +3003,7 @@ ${this.features.includes("gizmo:pointer-drag") ? `
      * vectors and the layout's own indices in step with an upstream
      * change.
      */
-    private pushedLoop(
-        declaration: ts.Node,
-        list: string,
-    ): ts.ForStatement {
+    private pushedLoop(declaration: ts.Node, list: string): ts.ForStatement {
         let loop: ts.ForStatement | undefined;
         const visit = (node: ts.Node): void => {
             if (loop) return;
@@ -3114,8 +3178,7 @@ ${this.features.includes("gizmo:pointer-drag") ? `
                               lowerer.expression(element),
                           )
                         : ["x", "y", "z"].map(
-                              (lane) =>
-                                  `${lowerer.expression(value)}.${lane}`,
+                              (lane) => `${lowerer.expression(value)}.${lane}`,
                           );
                     if (components.length !== 3) {
                         this.context.contractError(
@@ -3126,8 +3189,11 @@ ${this.features.includes("gizmo:pointer-drag") ? `
                     }
                     if (member === "diffuseColor") {
                         if (!ts.isArrayLiteralExpression(value)) {
-                            this.context.assertExpressionShape(value, retainedColor.source,
-                                "Bounding-box materials share their source color array");
+                            this.context.assertExpressionShape(
+                                value,
+                                retainedColor.source,
+                                "Bounding-box materials share their source color array",
+                            );
                         }
                         const channels = ts.isArrayLiteralExpression(value)
                             ? `js::Array<double>{${components.join(", ")}}`
@@ -3196,7 +3262,7 @@ ${this.features.includes("gizmo:pointer-drag") ? `
                     "template literal with one interpolated index.",
             );
         }
-        const span = (found as ts.TemplateExpression).templateSpans[0]!;
+        const span = found.templateSpans[0]!;
         const index = this.context.unwrapExpression(span.expression);
         if (!ts.isIdentifier(index)) {
             this.context.contractError(
@@ -3205,17 +3271,11 @@ ${this.features.includes("gizmo:pointer-drag") ? `
                     "build loop's own counter.",
             );
         }
-        return (
-            `"${(found as ts.TemplateExpression).head.text}" + ` +
-            `std::to_string(${index.text})`
-        );
+        return `"${found.head.text}" + ` + `std::to_string(${index.text})`;
     }
 
     /** The `const <name> = (...) => {...}` arrow inside one pinned body. */
-    private arrowLocal(
-        scope: ts.Node,
-        name: string,
-    ): ts.ArrowFunction {
+    private arrowLocal(scope: ts.Node, name: string): ts.ArrowFunction {
         const initializer = this.context.unwrapExpression(
             this.localInitializer(scope, name),
         );
@@ -3230,10 +3290,7 @@ ${this.features.includes("gizmo:pointer-drag") ? `
     }
 
     /** Every `createBox(engine, <size>)` in one pinned body, in order. */
-    private boxSizes(
-        scope: ts.Node,
-        lowerer: PinnedNumericLowerer,
-    ): string[] {
+    private boxSizes(scope: ts.Node, lowerer: PinnedNumericLowerer): string[] {
         const sizes: string[] = [];
         const visit = (node: ts.Node): void => {
             if (
@@ -3292,7 +3349,7 @@ ${this.features.includes("gizmo:pointer-drag") ? `
         lowerer = new PinnedNumericLowerer(file, scope);
         const body = declaration
             .body!.statements.flatMap((statement) =>
-                lowerer!.statement(statement, "    "),
+                lowerer.statement(statement, "    "),
             )
             .join("\n");
         return `// ${this.context.provenance(
@@ -3316,10 +3373,12 @@ ${body}
         );
         const lowerer = new PinnedNumericLowerer(file, {
             bindings: new Map<string, PinnedBinding>(
-                ["qx", "qy", "qz", "qw"].map((name): [
-                    string,
-                    PinnedBinding,
-                ] => [name, { cpp: name, type: "scalar" }]),
+                ["qx", "qy", "qz", "qw"].map(
+                    (name): [string, PinnedBinding] => [
+                        name,
+                        { cpp: name, type: "scalar" },
+                    ],
+                ),
             ),
             calls: new Map(),
         });
@@ -3600,22 +3659,45 @@ std::array<float, 16> bbox_mat4_from_quat(
                 "Expected the pinned edge builder to make one cylinder.",
             );
         }
-        const edgeCall = this.context.callExpression(edgeBuilder, "createCylinder");
-        const edgeLiteral = this.context.callObjectArgument(edgeBuilder, "createCylinder", 1);
-        const edgeLowerer = this.widgetLowerer(BOUNDING_BOX_MODULE, new Map([["thickness", "edge_thickness"]]));
-        const edgeOptions = new Map<string, { cpp: string; node: ts.Expression }>();
+        const edgeCall = this.context.callExpression(
+            edgeBuilder,
+            "createCylinder",
+        );
+        const edgeLiteral = this.context.callObjectArgument(
+            edgeBuilder,
+            "createCylinder",
+            1,
+        );
+        const edgeLowerer = this.widgetLowerer(
+            BOUNDING_BOX_MODULE,
+            new Map([["thickness", "edge_thickness"]]),
+        );
+        const edgeOptions = new Map<
+            string,
+            { cpp: string; node: ts.Expression }
+        >();
         for (const property of edgeLiteral.properties) {
             if (!ts.isPropertyAssignment(property)) {
-                this.context.contractError(property, "Expected a pinned bounding-edge cylinder option.");
+                this.context.contractError(
+                    property,
+                    "Expected a pinned bounding-edge cylinder option.",
+                );
             }
             const name = this.context.propertyName(property.name);
-            if (!name) this.context.contractError(property, "Expected a named bounding-edge cylinder option.");
+            if (!name)
+                this.context.contractError(
+                    property,
+                    "Expected a named bounding-edge cylinder option.",
+                );
             edgeOptions.set(name, {
                 cpp: edgeLowerer.expression(property.initializer),
                 node: this.context.unwrapExpression(property.initializer),
             });
         }
-        const edgeCylinder = this.widgetCylinder({ options: edgeOptions, at: edgeCall });
+        const edgeCylinder = this.widgetCylinder({
+            options: edgeOptions,
+            at: edgeCall,
+        });
         const rootCalls = this.factoryCalls(
             file,
             this.localInitializer(factory, "root"),
@@ -3785,7 +3867,10 @@ std::array<float, 16> bbox_mat4_from_quat(
                 new Map([
                     ["mesh.position", "bbox_set_position(engine, mesh"],
                     ["mesh.scaling", "bbox_set_scaling(engine, mesh"],
-                    ["mesh.rotationQuaternion", "bbox_set_rotation(engine, mesh"],
+                    [
+                        "mesh.rotationQuaternion",
+                        "bbox_set_rotation(engine, mesh",
+                    ],
                 ]),
                 new Map([...vec3("a", "a"), ...vec3("b", "b")]),
             ),
@@ -3793,27 +3878,34 @@ std::array<float, 16> bbox_mat4_from_quat(
         );
         const handlePlace = this.arrowLocal(handleBuilder, "place");
         const anchorPlace = this.arrowLocal(anchorBuilder, "place");
-        const placeHandleBody = (arrow: ts.ArrowFunction): string => this.loweredArrow(
-            arrow,
-            this.placementScope(
-                new Map([
-                    ["mesh.position", "bbox_set_position(engine, mesh"],
-                    ["mesh.rotationQuaternion", "bbox_set_rotation(engine, mesh"],
-                ]),
-                new Map([
-                    ...vec3("p", "p"),
-                    ["q", { cpp: "q", type: "scalar" }],
-                ]),
-            ),
-            file,
-        );
+        const placeHandleBody = (arrow: ts.ArrowFunction): string =>
+            this.loweredArrow(
+                arrow,
+                this.placementScope(
+                    new Map([
+                        ["mesh.position", "bbox_set_position(engine, mesh"],
+                        [
+                            "mesh.rotationQuaternion",
+                            "bbox_set_rotation(engine, mesh",
+                        ],
+                    ]),
+                    new Map([
+                        ...vec3("p", "p"),
+                        ["q", { cpp: "q", type: "scalar" }],
+                    ]),
+                ),
+                file,
+            );
         const placeHandle = placeHandleBody(handlePlace);
         const placeAnchor = placeHandleBody(anchorPlace);
         const placeCorner = this.loweredArrow(
             this.arrowLocal(cornerBuilder, "place"),
             this.placementScope(
                 new Map([
-                    ["anchor.position", "bbox_set_position(engine, corner.anchor"],
+                    [
+                        "anchor.position",
+                        "bbox_set_position(engine, corner.anchor",
+                    ],
                     [
                         "anchor.rotationQuaternion",
                         "bbox_set_rotation(engine, corner.anchor",
@@ -3842,34 +3934,36 @@ std::array<float, 16> bbox_mat4_from_quat(
 
         // ---- `layout`, lowered whole ----
         const layout = this.arrowLocal(factory, "layout");
-        const boxAxes = ["xs", "ys", "zs"].map((name) => {
-            const initializer = this.context.unwrapExpression(
-                this.localInitializer(layout, name),
-            );
-            if (
-                !ts.isArrayLiteralExpression(initializer) ||
-                initializer.elements.length !== 2
-            ) {
-                this.context.contractError(
-                    layout,
-                    `Expected the pinned layout to bracket '${name}' ` +
-                        "between two bounds.",
+        const boxAxes = ["xs", "ys", "zs"]
+            .map((name) => {
+                const initializer = this.context.unwrapExpression(
+                    this.localInitializer(layout, name),
                 );
-            }
-            const bounds = initializer.elements.map((element) =>
-                new PinnedNumericLowerer(file, {
-                    bindings: new Map<string, PinnedBinding>([
-                        ...vec3("b.min", "b.min"),
-                        ...vec3("b.max", "b.max"),
-                    ]),
-                    calls: new Map(),
-                }).expression(element),
-            );
-            return (
-                `    const std::array<double, 2> ${name}{` +
-                `${bounds.join(", ")}};`
-            );
-        }).join("\n");
+                if (
+                    !ts.isArrayLiteralExpression(initializer) ||
+                    initializer.elements.length !== 2
+                ) {
+                    this.context.contractError(
+                        layout,
+                        `Expected the pinned layout to bracket '${name}' ` +
+                            "between two bounds.",
+                    );
+                }
+                const bounds = initializer.elements.map((element) =>
+                    new PinnedNumericLowerer(file, {
+                        bindings: new Map<string, PinnedBinding>([
+                            ...vec3("b.min", "b.min"),
+                            ...vec3("b.max", "b.max"),
+                        ]),
+                        calls: new Map(),
+                    }).expression(element),
+                );
+                return (
+                    `    const std::array<double, 2> ${name}{` +
+                    `${bounds.join(", ")}};`
+                );
+            })
+            .join("\n");
         // `toWorld` is the pin's own one-expression alias for
         // `rotatePoint(q, ...)`, and the translator inlines only a block
         // body -- so it is asserted here and bound as that call instead.
@@ -3894,12 +3988,7 @@ std::array<float, 16> bbox_mat4_from_quat(
                     "through rotatePoint(q, ...).",
             );
         }
-        const layoutSkipped = new Set<string>([
-            "toWorld",
-            "xs",
-            "ys",
-            "zs",
-        ]);
+        const layoutSkipped = new Set<string>(["toWorld", "xs", "ys", "zs"]);
         const placementBindings = new Map<string, PinnedBinding>();
         const placementFunctions = new Map<PinnedBinding, string>();
         for (const [name, fn] of [
@@ -3908,7 +3997,11 @@ std::array<float, 16> bbox_mat4_from_quat(
             ["rotators", "bbox_place_anchor"],
             ["faces", "bbox_place_handle"],
         ] as const) {
-            const binding: PinnedBinding = { cpp: `record.${name}`, type: "scalar", absentCpp: "false" };
+            const binding: PinnedBinding = {
+                cpp: `record.${name}`,
+                type: "scalar",
+                absentCpp: "false",
+            };
             placementBindings.set(name, binding);
             placementFunctions.set(binding, fn);
         }
@@ -3916,7 +4009,10 @@ std::array<float, 16> bbox_mat4_from_quat(
             new Map([
                 ["body.position", "bbox_set_position(engine, record.body"],
                 ["body.scaling", "bbox_set_scaling(engine, record.body"],
-                ["body.rotationQuaternion", "bbox_set_rotation(engine, record.body"],
+                [
+                    "body.rotationQuaternion",
+                    "bbox_set_rotation(engine, record.body",
+                ],
             ]),
             new Map<string, PinnedBinding>([
                 ...vec3("b.min", "b.min"),
@@ -3927,7 +4023,10 @@ std::array<float, 16> bbox_mat4_from_quat(
                 ["q", { cpp: "q", type: "scalar" }],
                 ["worldCenter", { cpp: "world_center", type: "vec3" }],
                 ...vec3("worldCenter", "world_center"),
-                ["faceBoxSize", { cpp: "record.face_box_size", type: "scalar" }],
+                [
+                    "faceBoxSize",
+                    { cpp: "record.face_box_size", type: "scalar" },
+                ],
                 ["xs", { cpp: "xs", type: "scalar" }],
                 ["ys", { cpp: "ys", type: "scalar" }],
                 ["zs", { cpp: "zs", type: "scalar" }],
@@ -3956,9 +4055,17 @@ std::array<float, 16> bbox_mat4_from_quat(
             ...(layoutScope.methods ?? []),
             [
                 "place",
-                (receiver: string, args: readonly string[], binding: PinnedBinding): string => {
+                (
+                    receiver: string,
+                    args: readonly string[],
+                    binding: PinnedBinding,
+                ): string => {
                     const fn = placementFunctions.get(binding);
-                    if (!fn) this.context.contractError(layout, "Unbound pinned gizmo placement receiver.");
+                    if (!fn)
+                        this.context.contractError(
+                            layout,
+                            "Unbound pinned gizmo placement receiver.",
+                        );
                     return `${fn}(engine, ${receiver}, ${args.join(", ")})`;
                 },
             ],
@@ -4111,11 +4218,7 @@ std::array<float, 16> bbox_mat4_from_quat(
         // cylinder here for the same reason it does for the four editors,
         // and the pin's own zero extents are read so a root that started
         // having a shape fails generation instead of drawing one.
-        for (const name of [
-            "diameterTop",
-            "diameterBottom",
-            "height",
-        ]) {
+        for (const name of ["diameterTop", "diameterBottom", "height"]) {
             if (rootOption(name) !== this.context.doubleLiteral(0)) {
                 this.context.contractError(
                     factory,
@@ -4251,10 +4354,7 @@ void bbox_place_edge(
 ${placeEdge}
 }
 
-// ${this.context.provenance(
-            BOUNDING_BOX_MODULE,
-            "buildHandle",
-        )}
+// ${this.context.provenance(BOUNDING_BOX_MODULE, "buildHandle")}
 void bbox_place_handle(
     Engine& engine,
     MeshHandle mesh,
@@ -4684,8 +4784,7 @@ void attach_bounding_box_gizmo_to_node(
                 !this.context.hasNode(
                     declaration,
                     (node) =>
-                        ts.isIdentifier(node) &&
-                        node.text === "_dispatchers",
+                        ts.isIdentifier(node) && node.text === "_dispatchers",
                 )
             ) {
                 this.context.contractError(
@@ -4706,29 +4805,17 @@ void attach_bounding_box_gizmo_to_node(
         // reads live records rather than lowering that body, so a pin that
         // changed how the follow places its root would still generate.
         for (const [modulePath, symbols] of [
-            [
-                UTILITY_MODULE,
-                ["createUtilityLayer", "registerUtilityLayer"],
-            ],
+            [UTILITY_MODULE, ["createUtilityLayer", "registerUtilityLayer"]],
             [CORE_MODULE, ["attachFollowTarget"]],
-            [
-                CAMERA_MODULE,
-                ["createCameraGizmo", "attachCameraGizmoToCamera"],
-            ],
-            [
-                LIGHT_MODULE,
-                ["createLightGizmo", "attachLightGizmoToLight"],
-            ],
+            [CAMERA_MODULE, ["createCameraGizmo", "attachCameraGizmoToCamera"]],
+            [LIGHT_MODULE, ["createLightGizmo", "attachLightGizmoToLight"]],
             // The editing widgets. `createGizmoMaterials` is anchored
             // with them rather than above, because it belongs to the four
             // and nothing the display gizmos emit calls it.
             [CORE_MODULE, ["createGizmoMaterials"]],
             [AXIS_DRAG_MODULE, ["buildArrow"]],
             [AXIS_SCALE_MODULE, ["buildScaleArrow"]],
-            [
-                MATH_MODULE,
-                ["lookAtQuat", "quatNormalize", "quatFromAxisAngle"],
-            ],
+            [MATH_MODULE, ["lookAtQuat", "quatNormalize", "quatFromAxisAngle"]],
             [LENGTH_MODULE, ["lengthVec3"]],
             [NORMALIZE_MODULE, ["normalizeVec3"]],
             // The bounding-box cage, anchored whole: its factory, its
@@ -4764,20 +4851,19 @@ void attach_bounding_box_gizmo_to_node(
             // an arm.
             [
                 COMPOSITE_MODULE,
-                COMPOSITE_MODULES.flatMap(
-                    ({ factory, attach, setLocal }) => [
-                        factory,
-                        attach,
-                        setLocal,
-                    ],
-                ),
+                COMPOSITE_MODULES.flatMap(({ factory, attach, setLocal }) => [
+                    factory,
+                    attach,
+                    setLocal,
+                ]),
             ] as const,
         ] as const) {
             for (const symbol of symbols) {
                 this.context.functionDeclaration(modulePath, symbol);
             }
         }
-        if (!this.features.includes("gizmo:pointer-drag")) this.assertPointerDispatchersInert();
+        if (!this.features.includes("gizmo:pointer-drag"))
+            this.assertPointerDispatchersInert();
         // The bounding-box cage, emitted only for a scene that builds
         // one: it is the family's largest widget by some way, and an
         // emitted static function nothing calls fails under -Werror.
@@ -4848,18 +4934,14 @@ void attach_bounding_box_gizmo_to_node(
         }
         const lineCall = this.factoryCalls(
             lightFile,
-            this.context.functionDeclaration(
-                LIGHT_MODULE,
-                "buildLightLines",
-            ).declaration,
+            this.context.functionDeclaration(LIGHT_MODULE, "buildLightLines")
+                .declaration,
             ["createCylinder"],
         )[0]!;
         const typeCalls = this.factoryCalls(
             lightFile,
-            this.context.functionDeclaration(
-                LIGHT_MODULE,
-                "buildLightTypeMesh",
-            ).declaration,
+            this.context.functionDeclaration(LIGHT_MODULE, "buildLightTypeMesh")
+                .declaration,
             ["createSphere", "createCylinder"],
         );
         // directional: sphere, shaft, head. point/hemi/spot: one sphere
@@ -4883,20 +4965,9 @@ void attach_bounding_box_gizmo_to_node(
             PinnedFactoryCall,
             PinnedFactoryCall,
         ];
-        const cylinder = (
-            call: PinnedFactoryCall,
-            at: ts.Node,
-        ): string => {
-            const top = this.option(
-                call,
-                "diameterTop",
-                at,
-            );
-            const bottom = this.option(
-                call,
-                "diameterBottom",
-                at,
-            );
+        const cylinder = (call: PinnedFactoryCall, at: ts.Node): string => {
+            const top = this.option(call, "diameterTop", at);
+            const bottom = this.option(call, "diameterBottom", at);
             return (
                 `CylinderOptions{` +
                 `${this.context.doubleLiteral(
@@ -4929,8 +5000,14 @@ void attach_bounding_box_gizmo_to_node(
             LIGHT_MODULE,
             "buildLightTypeMesh",
         ).declaration;
-        const cameraFactory = this.context.functionDeclaration(CAMERA_MODULE, "createCameraGizmo").declaration;
-        const lightFactory = this.context.functionDeclaration(LIGHT_MODULE, "createLightGizmo").declaration;
+        const cameraFactory = this.context.functionDeclaration(
+            CAMERA_MODULE,
+            "createCameraGizmo",
+        ).declaration;
+        const lightFactory = this.context.functionDeclaration(
+            LIGHT_MODULE,
+            "createLightGizmo",
+        ).declaration;
         const cameraMath = this.displayLowerer(CAMERA_MODULE, [
             ["rotX", { cpp: "rot_x", type: "f64-buffer" }],
             ["rotZ", { cpp: "rot_z", type: "f64-buffer" }],
@@ -4938,15 +5015,22 @@ void attach_bounding_box_gizmo_to_node(
             ["canvas.width", { cpp: "canvas_width", type: "scalar" }],
             ["canvas.height", { cpp: "canvas_height", type: "scalar" }],
         ]);
-        const lineDeclaration = this.context.functionDeclaration(LIGHT_MODULE, "buildLightLines").declaration;
+        const lineDeclaration = this.context.functionDeclaration(
+            LIGHT_MODULE,
+            "buildLightLines",
+        ).declaration;
         const lineMath = this.displayLowerer(LIGHT_MODULE, [
             ["rootQ", { cpp: "root_q", type: "f64-buffer" }],
             ["q", { cpp: "q", type: "f64-buffer" }],
             ["px", { cpp: "p[0]", type: "scalar" }],
             ["py", { cpp: "p[1]", type: "scalar" }],
             ["pz", { cpp: "p[2]", type: "scalar" }],
-            ...["pivotY", "pivotZ", "posY", "sx", "sy", "sz"].map((member): [string, PinnedBinding] =>
-                [`def.${member}`, { cpp: `def.${member}`, type: "scalar" }]),
+            ...["pivotY", "pivotZ", "posY", "sx", "sy", "sz"].map(
+                (member): [string, PinnedBinding] => [
+                    `def.${member}`,
+                    { cpp: `def.${member}`, type: "scalar" },
+                ],
+            ),
         ]);
         const lightMath = this.displayLowerer(LIGHT_MODULE, [
             ["mq", { cpp: "mq", type: "f64-buffer" }],
@@ -4956,36 +5040,66 @@ void attach_bounding_box_gizmo_to_node(
             ["y", { cpp: "entry[1]", type: "scalar" }],
             ["sy", { cpp: "entry[1]", type: "scalar" }],
         ]);
-        const directionalArm = this.lightGeometryArm(lightDeclaration, "directional");
+        const directionalArm = this.lightGeometryArm(
+            lightDeclaration,
+            "directional",
+        );
         const pointArm = this.lightGeometryArm(lightDeclaration, "point");
-        const hemisphereArm = this.lightGeometryArm(lightDeclaration, "hemispheric");
+        const hemisphereArm = this.lightGeometryArm(
+            lightDeclaration,
+            "hemispheric",
+        );
         const spotArm = this.lightGeometryArm(lightDeclaration, "spot");
         const shaftBuilder = this.arrowLocal(directionalArm, "makeShaft");
         const headBuilder = this.arrowLocal(directionalArm, "makeHead");
-        const argumentRows = (scope: ts.Node, callee: string): readonly string[] =>
-            this.context.findNodes(scope, (node): node is ts.CallExpression =>
-                ts.isCallExpression(node) && ts.isIdentifier(node.expression) &&
-                node.expression.text === callee).map((call) => {
-                if (call.arguments.length !== 2) {
-                    this.context.contractError(call, "Expected two pinned directional-light placement arguments.");
-                }
-                return `{{${call.arguments.map((argument) => lightMath.expression(argument)).join(", ")}}}`;
-            });
+        const argumentRows = (
+            scope: ts.Node,
+            callee: string,
+        ): readonly string[] =>
+            this.context
+                .findNodes(
+                    scope,
+                    (node): node is ts.CallExpression =>
+                        ts.isCallExpression(node) &&
+                        ts.isIdentifier(node.expression) &&
+                        node.expression.text === callee,
+                )
+                .map((call) => {
+                    if (call.arguments.length !== 2) {
+                        this.context.contractError(
+                            call,
+                            "Expected two pinned directional-light placement arguments.",
+                        );
+                    }
+                    return `{{${call.arguments.map((argument) => lightMath.expression(argument)).join(", ")}}}`;
+                });
         const shafts = argumentRows(directionalArm, "makeShaft");
         const heads = argumentRows(directionalArm, "makeHead");
         const lightLinesLevel = (scope: ts.Node): string => {
             const call = this.context.callExpression(scope, "buildLightLines");
             if (call.arguments.length !== 5) {
-                this.context.contractError(call, "Expected the pinned light-line level argument.");
+                this.context.contractError(
+                    call,
+                    "Expected the pinned light-line level argument.",
+                );
             }
             return lightMath.expression(call.arguments[4]!);
         };
         const hemisphereArguments = (scope: ts.Node): string => {
-            const call = this.context.callExpression(scope, "buildHemisphereMesh");
+            const call = this.context.callExpression(
+                scope,
+                "buildHemisphereMesh",
+            );
             if (call.arguments.length !== 3) {
-                this.context.contractError(call, "Expected pinned hemisphere segments and diameter.");
+                this.context.contractError(
+                    call,
+                    "Expected pinned hemisphere segments and diameter.",
+                );
             }
-            return call.arguments.slice(1).map((argument) => lightMath.expression(argument)).join(", ");
+            return call.arguments
+                .slice(1)
+                .map((argument) => lightMath.expression(argument))
+                .join(", ");
         };
         return {
             modulePath: CAMERA_MODULE,
@@ -5203,9 +5317,9 @@ CameraGizmoHandle create_camera_gizmo(
     const MeshHandle box = create_box(
         engine,
         BoxOptions{
-            ${this.context.floatLiteral(bodyCalls[0]!.scalar!)},
-            ${this.context.floatLiteral(bodyCalls[0]!.scalar!)},
-            ${this.context.floatLiteral(bodyCalls[0]!.scalar!)}});
+            ${this.context.floatLiteral(bodyCalls[0]!.scalar)},
+            ${this.context.floatLiteral(bodyCalls[0]!.scalar)},
+            ${this.context.floatLiteral(bodyCalls[0]!.scalar)}});
     gizmo_mesh(engine, scene, box, gizmo.material);
     place_mesh(
         engine,
@@ -5538,10 +5652,10 @@ ${this.features.includes("gizmo:pointer-drag") ? "void initialize_pointer_gizmo(
 ${this.reachesEditGizmos() ? this.editGizmos() : ""}
 
 // ${this.context.provenance(
-        AXIS_DRAG_MODULE,
-        "attachAxisDragGizmoToNode",
-        "the three sibling widgets' identical attach bodies",
-    )}
+                AXIS_DRAG_MODULE,
+                "attachAxisDragGizmoToNode",
+                "the three sibling widgets' identical attach bodies",
+            )}
 void attach_gizmo_to_node(
     Engine& engine,
     EditGizmoHandle gizmo,
@@ -5567,8 +5681,8 @@ bool pointer_drag_has_collider(
 }
 
 ${
-            this.reachedComposites().length > 0
-                ? `
+    this.reachedComposites().length > 0
+        ? `
 // The pin keeps useLocalCoordinates as a plain mutable field on each
 // widget, read by its follow; this is that write. It sits inside the
 // composite gate because the composite fan-out below and the composite
@@ -5583,10 +5697,10 @@ void set_edit_gizmo_local_coordinates(
 }
 
 // ${this.context.provenance(
-                      COMPOSITE_MODULE,
-                      "attachPositionGizmoToNode",
-                      "the composite coordinate-mode fan-out beside it",
-                  )}
+              COMPOSITE_MODULE,
+              "attachPositionGizmoToNode",
+              "the composite coordinate-mode fan-out beside it",
+          )}
 void attach_composite_gizmo_to_node(
     Engine& engine,
     CompositeGizmoHandle gizmo,
@@ -5637,8 +5751,8 @@ void dispose_composite_gizmo(
     }
 }
 `
-                : ""
-        }
+        : ""
+}
 ${boundingBox ? boundingBox.factories : ""}
 ${this.features.includes("gizmo:pointer-drag") ? lowerPointerDrag(this.context, this.features.includes("gizmo:plane-rotation")) : ""}
 } // namespace bbl

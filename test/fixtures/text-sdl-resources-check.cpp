@@ -23,13 +23,21 @@ int main() {
     ops.write_renderable_buffer(first, TextBufferKind::uniform, 80, rear);
     assert(group->uniform == old && group->uniform->bytes[80] == 11);
     bool destroyed = false;
-    try { group->uniform->check(); } catch (const std::runtime_error&) { destroyed = true; }
+    try {
+        group->uniform->check();
+    } catch (const std::runtime_error&) {
+        destroyed = true;
+    }
     assert(destroyed);
-    auto replacement = std::static_pointer_cast<SdlTextGroup>(ops.create_bind_group(first, atlas, {}));
+    auto replacement =
+        std::static_pointer_cast<SdlTextGroup>(ops.create_bind_group(first, atlas, {}));
     assert(replacement->uniform != old && replacement->uniform->bytes[80] == 21);
     bool range = false;
-    try { ops.write_renderable_buffer(first, TextBufferKind::uniform, 94, front); }
-    catch (const std::runtime_error&) { range = true; }
+    try {
+        ops.write_renderable_buffer(first, TextBufferKind::uniform, 94, front);
+    } catch (const std::runtime_error&) {
+        range = true;
+    }
     assert(range && replacement->uniform->bytes[94] == 0);
     owner->retire();
     assert(replacement->uniform->destroyed && group->uniform->destroyed);

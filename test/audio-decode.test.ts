@@ -3,7 +3,11 @@ import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import test from "node:test";
-import { cppFunction, optionalNativeFixtureTools, runNativeFixtureCompiler } from "./native-fixture.js";
+import {
+    cppFunction,
+    optionalNativeFixtureTools,
+    runNativeFixtureCompiler,
+} from "./native-fixture.js";
 import { compileSource } from "../src/compiler.js";
 import { AUDIO_CODECS, audioCodecForBytes } from "../src/audio-codecs.js";
 
@@ -12,12 +16,25 @@ const labSound = resolve("artifacts/tools/labsound");
 
 test("audio codec signatures distinguish supported containers with bounded reads", () => {
     const cases = [
-        ["RIFF0000WAVE", "wav"], ["wvpk", "wv"], ["MPCK", "mpc"], ["fLaC", "flac"],
-        ["ID3", "mp3"], ["OggS0000OpusHead", "opus"], ["OggS0000vorbis", "ogg"],
+        ["RIFF0000WAVE", "wav"],
+        ["wvpk", "wv"],
+        ["MPCK", "mpc"],
+        ["fLaC", "flac"],
+        ["ID3", "mp3"],
+        ["OggS0000OpusHead", "opus"],
+        ["OggS0000vorbis", "ogg"],
     ] as const;
-    for (const [header, codec] of cases) assert.equal(audioCodecForBytes(Buffer.from(header)), codec);
+    for (const [header, codec] of cases)
+        assert.equal(audioCodecForBytes(Buffer.from(header)), codec);
     assert.equal(audioCodecForBytes(new Uint8Array([255, 251])), "mp3");
-    for (const header of ["", "R", "RIFF", "RIFF0000AVI ", "OggS", "not audio"]) {
+    for (const header of [
+        "",
+        "R",
+        "RIFF",
+        "RIFF0000AVI ",
+        "OggS",
+        "not audio",
+    ]) {
         assert.equal(audioCodecForBytes(Buffer.from(header)), undefined);
     }
 });
@@ -26,47 +43,81 @@ test("direct packaged audio reads select byte formats and stored buffers keep al
     const output = resolve("artifacts/audio-codec-selection");
     mkdirSync(output, { recursive: true });
     writeFileSync(resolve(output, "encoded.bin"), "RIFF0000WAVE");
-    const compile = (body: string) => compileSource(`
+    const compile = (body: string) =>
+        compileSource(
+            `
         import { createAudioEngineAsync } from "@babylonjs/lite";
         const audio = await createAudioEngineAsync();
         const response = await fetch("encoded.bin");
         ${body}
-    `, { fileName: resolve(output, "input.ts") }).manifest.features.filter(feature => feature.startsWith("audio:decode-"));
-    assert.deepEqual(compile(`await audio.audioContext.decodeAudioData(await response.arrayBuffer());`), ["audio:decode-wav"]);
-    assert.deepEqual(compile(`
+    `,
+            { fileName: resolve(output, "input.ts") },
+        ).manifest.features.filter((feature) =>
+            feature.startsWith("audio:decode-"),
+        );
+    assert.deepEqual(
+        compile(
+            `await audio.audioContext.decodeAudioData(await response.arrayBuffer());`,
+        ),
+        ["audio:decode-wav"],
+    );
+    assert.deepEqual(
+        compile(`
         const bytes = await response.arrayBuffer();
         const alias = new Uint8Array(bytes);
         alias[0] = 0;
         await audio.audioContext.decodeAudioData(bytes);
-    `), AUDIO_CODECS.map(codec => `audio:decode-${codec}`));
-    assert.deepEqual(compile(`
+    `),
+        AUDIO_CODECS.map((codec) => `audio:decode-${codec}`),
+    );
+    assert.deepEqual(
+        compile(`
         async function arrayBuffer() { const bytes = await response.arrayBuffer(); const view = new Uint8Array(bytes); view[0] = 0; return bytes; }
         await audio.audioContext.decodeAudioData(await arrayBuffer());
-    `), AUDIO_CODECS.map(codec => `audio:decode-${codec}`));
+    `),
+        AUDIO_CODECS.map((codec) => `audio:decode-${codec}`),
+    );
 });
 
 function writeWave(output: string): string {
     const bytes = Buffer.alloc(44 + 1024 * 4);
-    bytes.write("RIFF"); bytes.writeUInt32LE(bytes.length - 8, 4); bytes.write("WAVEfmt ", 8);
-    bytes.writeUInt32LE(16, 16); bytes.writeUInt16LE(1, 20); bytes.writeUInt16LE(2, 22);
-    bytes.writeUInt32LE(44100, 24); bytes.writeUInt32LE(44100 * 4, 28);
-    bytes.writeUInt16LE(4, 32); bytes.writeUInt16LE(16, 34); bytes.write("data", 36);
+    bytes.write("RIFF");
+    bytes.writeUInt32LE(bytes.length - 8, 4);
+    bytes.write("WAVEfmt ", 8);
+    bytes.writeUInt32LE(16, 16);
+    bytes.writeUInt16LE(1, 20);
+    bytes.writeUInt16LE(2, 22);
+    bytes.writeUInt32LE(44100, 24);
+    bytes.writeUInt32LE(44100 * 4, 28);
+    bytes.writeUInt16LE(4, 32);
+    bytes.writeUInt16LE(16, 34);
+    bytes.write("data", 36);
     bytes.writeUInt32LE(bytes.length - 44, 40);
-    for (let index = 0; index < 2048; index++) bytes.writeInt16LE((index * 997) % 60000 - 30000, 44 + index * 2);
+    for (let index = 0; index < 2048; index++)
+        bytes.writeInt16LE(((index * 997) % 60000) - 30000, 44 + index * 2);
     const wave = resolve(output, "tone.wav");
     writeFileSync(wave, bytes);
     return wave;
 }
 
-test("WAVE and Vorbis byte decoding match file PCM and read current ArrayBuffer contents", {
-    skip: !tools || !existsSync(resolve(labSound, "lib/LabSound.lib")),
-}, () => {
-    const output = resolve("artifacts/audio-decode-check");
-    mkdirSync(output, { recursive: true });
-    const source = resolve(output, "check.cpp"), executable = resolve(output, "check.exe");
-    const wave = writeWave(output);
-    const decode = cppFunction(readFileSync("native/src/pal_audio_labsound.cpp", "utf8"), "AudioBufferHandle audio_decode_buffer(");
-    writeFileSync(source, `
+test(
+    "WAVE and Vorbis byte decoding match file PCM and read current ArrayBuffer contents",
+    {
+        skip: !tools || !existsSync(resolve(labSound, "lib/LabSound.lib")),
+    },
+    () => {
+        const output = resolve("artifacts/audio-decode-check");
+        mkdirSync(output, { recursive: true });
+        const source = resolve(output, "check.cpp"),
+            executable = resolve(output, "check.exe");
+        const wave = writeWave(output);
+        const decode = cppFunction(
+            readFileSync("native/src/pal_audio_labsound.cpp", "utf8"),
+            "AudioBufferHandle audio_decode_buffer(",
+        );
+        writeFileSync(
+            source,
+            `
         #define BBLITE_HAS_AUDIO_BUFFER_SOURCE 1
         #define BBLITE_HAS_AUDIO_DECODE_FILE 1
         #define BBLITE_AUDIO_DECODE_WAV 1
@@ -114,23 +165,57 @@ test("WAVE and Vorbis byte decoding match file PCM and read current ArrayBuffer 
                 assert(bbl::pal::audio_decode_buffer({1}, short_input).value == 0);
             }
         }
-    `);
-    runNativeFixtureCompiler(tools!, ["/nologo", "/std:c++20", "/MD", "/EHsc", "/W4", "/WX", "/permissive-",
-        "/external:W0", `/external:I${resolve(labSound, "include")}`,
-        `/I${resolve("native/include")}`, `/I${resolve("native/src")}`, `/Fo:${output}\\`, `/Fe:${executable}`, source,
-        "/link", resolve(labSound, "lib/LabSound.lib"), resolve(labSound, "lib/libnyquist.lib")]);
-    assert.doesNotThrow(() => execFileSync(executable, [wave, resolve("corpus/babylon-lite/lab/lite/src/demos/racer/audio/skid.ogg")], { stdio: "pipe" }));
-});
+    `,
+        );
+        runNativeFixtureCompiler(tools!, [
+            "/nologo",
+            "/std:c++20",
+            "/MD",
+            "/EHsc",
+            "/W4",
+            "/WX",
+            "/permissive-",
+            "/external:W0",
+            `/external:I${resolve(labSound, "include")}`,
+            `/I${resolve("native/include")}`,
+            `/I${resolve("native/src")}`,
+            `/Fo:${output}\\`,
+            `/Fe:${executable}`,
+            source,
+            "/link",
+            resolve(labSound, "lib/LabSound.lib"),
+            resolve(labSound, "lib/libnyquist.lib"),
+        ]);
+        assert.doesNotThrow(() =>
+            execFileSync(
+                executable,
+                [
+                    wave,
+                    resolve(
+                        "corpus/babylon-lite/lab/lite/src/demos/racer/audio/skid.ogg",
+                    ),
+                ],
+                { stdio: "pipe" },
+            ),
+        );
+    },
+);
 
-test("a WAVE-only native decoder omits other decoder entry points and registries", {
-    skip: !tools || !existsSync(resolve(labSound, "lib/LabSound.lib")),
-}, () => {
-    const output = resolve("artifacts/audio-decode-check");
-    mkdirSync(output, { recursive: true });
-    const source = resolve(output, "wave-only.cpp"), executable = resolve(output, "wave-only.exe");
-    const map = resolve(output, "wave-only.map");
-    const wave = writeWave(output);
-    writeFileSync(source, `
+test(
+    "a WAVE-only native decoder omits other decoder entry points and registries",
+    {
+        skip: !tools || !existsSync(resolve(labSound, "lib/LabSound.lib")),
+    },
+    () => {
+        const output = resolve("artifacts/audio-decode-check");
+        mkdirSync(output, { recursive: true });
+        const source = resolve(output, "wave-only.cpp"),
+            executable = resolve(output, "wave-only.exe");
+        const map = resolve(output, "wave-only.map");
+        const wave = writeWave(output);
+        writeFileSync(
+            source,
+            `
         #define BBLITE_AUDIO_DECODE_WAV 1
         #include "pal_audio_decode.hpp"
         #include <cassert>
@@ -143,13 +228,40 @@ test("a WAVE-only native decoder omits other decoder entry points and registries
             const auto decoded = bbl::pal::decode_audio_bus(bytes, bbl::pal::audio_container_extension(bytes));
             assert(decoded && decoded->length() == 1024 && decoded->numberOfChannels() == 2);
         }
-    `);
-    runNativeFixtureCompiler(tools!, ["/nologo", "/std:c++20", "/MD", "/EHsc", "/O2", "/Gy", "/W4", "/WX", "/permissive-",
-        "/external:W0", `/external:I${resolve(labSound, "include")}`, `/I${resolve("native/src")}`,
-        `/Fo:${output}\\`, `/Fe:${executable}`, source, "/link", "/INCREMENTAL:NO", "/OPT:REF", "/OPT:ICF", `/MAP:${map}`,
-        resolve(labSound, "lib/LabSound.lib"), resolve(labSound, "lib/libnyquist.lib")]);
-    assert.doesNotThrow(() => execFileSync(executable, [wave], { stdio: "pipe" }));
-    const symbols = readFileSync(map, "utf8");
-    assert.match(symbols, /LoadFromBuffer@WavDecoder/);
-    assert.doesNotMatch(symbols, /(?:LoadFrom(?:Buffer|Path)@|\?\?_7)(?:Flac|Mp3|Vorbis|Opus|Musepack|WavPack)Decoder|BuildDecoderTable|MakeBusFromFile/);
-});
+    `,
+        );
+        runNativeFixtureCompiler(tools!, [
+            "/nologo",
+            "/std:c++20",
+            "/MD",
+            "/EHsc",
+            "/O2",
+            "/Gy",
+            "/W4",
+            "/WX",
+            "/permissive-",
+            "/external:W0",
+            `/external:I${resolve(labSound, "include")}`,
+            `/I${resolve("native/src")}`,
+            `/Fo:${output}\\`,
+            `/Fe:${executable}`,
+            source,
+            "/link",
+            "/INCREMENTAL:NO",
+            "/OPT:REF",
+            "/OPT:ICF",
+            `/MAP:${map}`,
+            resolve(labSound, "lib/LabSound.lib"),
+            resolve(labSound, "lib/libnyquist.lib"),
+        ]);
+        assert.doesNotThrow(() =>
+            execFileSync(executable, [wave], { stdio: "pipe" }),
+        );
+        const symbols = readFileSync(map, "utf8");
+        assert.match(symbols, /LoadFromBuffer@WavDecoder/);
+        assert.doesNotMatch(
+            symbols,
+            /(?:LoadFrom(?:Buffer|Path)@|\?\?_7)(?:Flac|Mp3|Vorbis|Opus|Musepack|WavPack)Decoder|BuildDecoderTable|MakeBusFromFile/,
+        );
+    },
+);

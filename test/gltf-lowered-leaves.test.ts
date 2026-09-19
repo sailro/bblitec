@@ -12,7 +12,7 @@ import {
 } from "../src/lowering/gltf-lowerer.js";
 import { UpstreamSourceStore } from "../src/upstream-source.js";
 import { pinnedMatrixHeader } from "../src/lowering/pinned-matrix.js";
-import {lowerGltfAnimationEvaluator} from "../src/lowering/gltf/animation-evaluator.js";
+import { lowerGltfAnimationEvaluator } from "../src/lowering/gltf/animation-evaluator.js";
 
 const store = new UpstreamSourceStore();
 
@@ -208,8 +208,7 @@ test("lowers the pinned interpolation functions byte-identically to the shipped 
 
 test("the emitted loader carries the complete source sampler evaluator", () => {
     const context = new LoweringContext(store);
-    const adapter = new GltfLowerer(context)
-        .lowerLoaderAdapter();
+    const adapter = new GltfLowerer(context).lowerLoaderAdapter();
     assert.ok(adapter.source.includes(lowerGltfAnimationEvaluator(context)));
 });
 
@@ -229,9 +228,9 @@ test("a changed Hermite coefficient flows into both cubic variants", () => {
             "const h00 = 2 * f3 - 3 * f2 + 7;",
         ),
     );
-    const occurrences = lowered.split(
-        "const double h00 = 2.0 * amount3 - 3.0 * amount2 + 7.0;",
-    ).length - 1;
+    const occurrences =
+        lowered.split("const double h00 = 2.0 * amount3 - 3.0 * amount2 + 7.0;")
+            .length - 1;
     assert.equal(occurrences, 2);
 });
 
@@ -239,11 +238,7 @@ test("a math intrinsic without a lowering refuses generation", () => {
     assert.throws(
         () =>
             lowerAnimationInterpolationCpp(
-                mutatedFile(
-                    evaluateModule,
-                    "Math.acos(dot)",
-                    "Math.atan(dot)",
-                ),
+                mutatedFile(evaluateModule, "Math.acos(dot)", "Math.atan(dot)"),
             ),
         /Math\.atan, which has no lowering/,
     );
@@ -427,12 +422,12 @@ const expectedMatrixNative = `Matrix native_matrix(const Matrix& matrix) {
 test("lowers the pinned matrix multiply through the shared translation", () => {
     const header = pinnedMatrixHeader(new LoweringContext(store));
     for (const line of expectedMultiplyWriterLines) {
-        assert.ok(
-            header.includes(line),
-            `multiply emission lost: ${line}`,
-        );
+        assert.ok(header.includes(line), `multiply emission lost: ${line}`);
     }
-    assert.match(header, /multiply-mat4-into-buffer\.ts#multiplyMat4IntoBuffer\./);
+    assert.match(
+        header,
+        /multiply-mat4-into-buffer\.ts#multiplyMat4IntoBuffer\./,
+    );
 });
 
 test("lowers the pinned TRS compose byte-identically to the shipped loader text", () => {
@@ -450,8 +445,9 @@ test("lowers the native change of basis byte-identically to the shipped loader t
 });
 
 test("the emitted loader carries the source matrix helpers", () => {
-    const adapter = new GltfLowerer(new LoweringContext(store))
-        .lowerLoaderAdapter();
+    const adapter = new GltfLowerer(
+        new LoweringContext(store),
+    ).lowerLoaderAdapter();
     for (const segment of [
         lowerMatrixComposeCpp(pinnedFile(composeModule), true),
         expectedMatrixNative,
@@ -479,7 +475,9 @@ test("a re-associated pinned matrix product flows into the translation", () => {
         ),
     );
     assert.ok(
-        emitted.includes("((((a4 * b1) + (a0 * b0)) + (a8 * b2)) + (a12 * b3))"),
+        emitted.includes(
+            "((((a4 * b1) + (a0 * b0)) + (a8 * b2)) + (a12 * b3))",
+        ),
     );
 });
 
@@ -520,7 +518,6 @@ test("a moved RH-to-LH flip axis flows into the matrix adapter", () => {
     );
     const native = lowerMatrixNativeCpp(doctored);
     assert.match(native, /row == 1 \? -1\.0f : 1\.0f;/);
-
 });
 
 test("a root that stops flipping exactly one axis refuses", () => {

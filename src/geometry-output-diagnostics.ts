@@ -1,8 +1,4 @@
-import {
-    existsSync,
-    mkdirSync,
-    readFileSync,
-} from "node:fs";
+import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import {
     captureSuiteReference,
@@ -23,10 +19,7 @@ import {
     enableGpuDebug,
     resolveNativeExecutable,
 } from "./tooling/native-run.js";
-import {
-    compareImages,
-    generateDiffMap,
-} from "./parity.js";
+import { compareImages, generateDiffMap } from "./parity.js";
 import { resolveScene } from "./scene-registry.js";
 
 interface GeometryDiagnosticResult {

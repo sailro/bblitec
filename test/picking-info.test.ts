@@ -1,3 +1,4 @@
+import { createJavaScriptFunction } from "../src/typescript-transpile.js";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -9,9 +10,13 @@ import { LoweringContext } from "../src/lowering/context.js";
 import { PickingLowerer } from "../src/lowering/picking-lowerer.js";
 import { pinnedNormalizeVec3Header } from "../src/lowering/pinned-normalize-vec3.js";
 import { importPinnedModule } from "../src/pinned-shader-composer.js";
-import { optionalNativeFixtureTools, runNativeFixtureCompiler } from "./native-fixture.js";
+import {
+    optionalNativeFixtureTools,
+    runNativeFixtureCompiler,
+} from "./native-fixture.js";
 
-function program(twoEngines=false):string { return `
+function program(twoEngines = false): string {
+    return `
 import {createEngine,createSceneContext,createUtilityLayer,createGpuPicker,pickAsync,disposePicker,getPickedNormal,
  type EngineContext,type SceneContext,type PickingInfo,type Mesh} from "@babylonjs/lite";
 async function directPicks(engine:EngineContext):Promise<void> {
@@ -51,10 +56,10 @@ async function main() {
  const canvas=document.getElementById("renderCanvas") as HTMLCanvasElement;
  const firstEngine=await createEngine({title:"first"});
  const firstScene=createSceneContext(firstEngine);
- const secondEngine=${twoEngines?'await createEngine({title:"second"})':'firstEngine'};
+ const secondEngine=${twoEngines ? 'await createEngine({title:"second"})' : "firstEngine"};
  const secondScene=createSceneContext(secondEngine);
  const first=await find(firstScene,canvas,"first");
- const second=await find(secondScene,canvas,"${twoEngines?'second':'first'}");
+ const second=await find(secondScene,canvas,"${twoEngines ? "second" : "first"}");
  const miss=await find(firstScene,canvas,"absent");
  if(!first?.hit || !second?.hit || miss!==null) throw new Error("nullable early return");
  const alias=first;
@@ -67,8 +72,8 @@ async function main() {
  indices.set(first,7); indices.set(second,11);
  if(indices.get(alias)!==7 || indices.get(again!)!==undefined) throw new Error("Map identity");
  if(!record.pick?.hit) throw new Error("record optional result");
- if(record.pick.pickedMesh?.name!=="${twoEngines?'second':'first'}" || rows[0]!.pickedMesh?.name!=="first") throw new Error("engine provenance");
- if(normalY(rows[0]!)!==0 || normalY(record.pick!)!==${twoEngines?1:0}) throw new Error("normal provenance");
+ if(record.pick.pickedMesh?.name!=="${twoEngines ? "second" : "first"}" || rows[0]!.pickedMesh?.name!=="first") throw new Error("engine provenance");
+ if(normalY(rows[0]!)!==0 || normalY(record.pick!)!==${twoEngines ? 1 : 0}) throw new Error("normal provenance");
  let index=0;
  if(rows[index++]!.pickedMesh?.name!=="first" || index!==1) throw new Error("owner evaluated twice");
  if(first.bu!==1/3 || first.bv!==1/7) throw new Error("barycentric precision");
@@ -82,7 +87,8 @@ async function main() {
  if(first.bu!==0.75 || rows[0]!.bv!==0.5) throw new Error("shared scalar mutation");
  await directPicks(firstEngine);
 }
-`; }
+`;
+}
 
 test("nullable picking results reuse data returns and preserve the unchanged scene", () => {
     const result = compileSource(program());
@@ -92,12 +98,22 @@ test("nullable picking results reuse data returns and preserve the unchanged sce
     assert.equal(result.cpp.match(/bbl::gpu_pick\(/g)?.length, 5);
     assert.equal(result.cpp.match(/for \(;/g)?.length, 8);
     const fileName = "corpus/babylon-lite/lab/lite/src/lite/scene114.ts";
-    const unchanged = compileSource(readFileSync(fileName, "utf8"), { fileName });
+    const unchanged = compileSource(readFileSync(fileName, "utf8"), {
+        fileName,
+    });
     assert.equal(unchanged.cpp.match(/bbl::gpu_pick\(/g)?.length, 4);
     assert.equal(unchanged.manifest.sceneMeshes.length, 19);
-    for (const access of ["if(info.subMeshId>0) throw new Error(\"subMeshId\")", "info.pickedMesh = null", "info.pickedPoint = [3,2,1]"]) {
-        assert.throws(() => compileSource(`import {createEngine,createSceneContext,createGpuPicker,pickAsync} from "@babylonjs/lite";
-            async function main(){const e=await createEngine({});const s=createSceneContext(e);const p=createGpuPicker(s);const info=await pickAsync(p,0,0);${access};}`), /Unsupported|not supported/);
+    for (const access of [
+        'if(info.subMeshId>0) throw new Error("subMeshId")',
+        "info.pickedMesh = null",
+        "info.pickedPoint = [3,2,1]",
+    ]) {
+        assert.throws(
+            () =>
+                compileSource(`import {createEngine,createSceneContext,createGpuPicker,pickAsync} from "@babylonjs/lite";
+            async function main(){const e=await createEngine({});const s=createSceneContext(e);const p=createGpuPicker(s);const info=await pickAsync(p,0,0);${access};}`),
+            /Unsupported|not supported/,
+        );
     }
 });
 
@@ -109,7 +125,9 @@ test("data-transported results refuse bare mesh casts and sinks that discard the
         "const selected=direct.pickedMesh ?? info.pickedMesh; const mesh=selected as Mesh; return mesh.name;",
         "let selected=direct; selected=info; const mesh=selected.pickedMesh as Mesh; return mesh.name;",
     ]) {
-        assert.throws(() => compileSource(`
+        assert.throws(
+            () =>
+                compileSource(`
             import {createEngine,createSceneContext,createGpuPicker,pickAsync,type PickingInfo,type Mesh} from "@babylonjs/lite";
             async function main() {
                 const engine=await createEngine({}); const scene=createSceneContext(engine);
@@ -117,57 +135,171 @@ test("data-transported results refuse bare mesh casts and sinks that discard the
                 const readers:Array<(info:PickingInfo)=>string>=[(info)=>{${body}}];
                 if(readers[0]!(direct)==="wrong") throw new Error("wrong owner");
             }
-        `), /data-transported PickingInfo cannot become a bare Mesh handle/, body);
+        `),
+            /data-transported PickingInfo cannot become a bare Mesh handle/,
+            body,
+        );
     }
 });
 
 test("pinned result identity, nullable helpers and engine provenance satisfy the same assertions", async () => {
     const pin = await import("@babylonjs/lite");
     const { createEmptyPickingInfo } = await importPinnedModule<{
-        createEmptyPickingInfo(): import("@babylonjs/lite").PickingInfo;
+        createEmptyPickingInfo(
+            this: void,
+        ): import("@babylonjs/lite").PickingInfo;
     }>("picking/picking-info.js");
-    const javascript = ts.transpileModule(program(true).replace(/import\s*\{[^}]+\}\s*from\s*"@babylonjs\/lite";/, ""), {
-        compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext },
-    }).outputText;
-    interface Host { title:string; mesh:{name:string;_cpuNormals:Float32Array;_cpuIndices:Uint32Array;worldMatrix:Float32Array} }
-    const identity = new Float32Array([1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1]);
-    const createEngine = async ({title}:{title:string}):Promise<Host> => ({ title,
-        mesh:{name:title,_cpuNormals:new Float32Array(title==="first"?[1,0,0,1,0,0,1,0,0]:[0,1,0,0,1,0,0,1,0]),
-        _cpuIndices:new Uint32Array([0,1,2]),worldMatrix:identity} });
-    const createSceneContext = (engine:Host) => ({engine});
-    const createGpuPicker = (scene:{engine:Host}) => ({scene});
+    const javascript = ts.transpileModule(
+        program(true).replace(
+            /import\s*\{[^}]+\}\s*from\s*"@babylonjs\/lite";/,
+            "",
+        ),
+        {
+            compilerOptions: {
+                target: ts.ScriptTarget.ES2022,
+                module: ts.ModuleKind.ESNext,
+            },
+        },
+    ).outputText;
+    interface Host {
+        title: string;
+        mesh: {
+            name: string;
+            _cpuNormals: Float32Array;
+            _cpuIndices: Uint32Array;
+            worldMatrix: Float32Array;
+        };
+    }
+    const identity = new Float32Array([
+        1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1,
+    ]);
+    const createEngine = async ({
+        title,
+    }: {
+        title: string;
+    }): Promise<Host> => ({
+        title,
+        mesh: {
+            name: title,
+            _cpuNormals: new Float32Array(
+                title === "first"
+                    ? [1, 0, 0, 1, 0, 0, 1, 0, 0]
+                    : [0, 1, 0, 0, 1, 0, 0, 1, 0],
+            ),
+            _cpuIndices: new Uint32Array([0, 1, 2]),
+            worldMatrix: identity,
+        },
+    });
+    const createSceneContext = (engine: Host) => ({ engine });
+    const createGpuPicker = (scene: { engine: Host }) => ({ scene });
     const queries: number[][] = [];
-    const pickAsync = async (picker:{scene:{engine:Host}},x:number,y:number) => {
-        queries.push([x,y]);
-        const info=createEmptyPickingInfo();
-        if(!((x===160 && y===60) || (x===1 && y===0)))return info;
+    const pickAsync = async (
+        picker: { scene: { engine: Host } },
+        x: number,
+        y: number,
+    ) => {
+        queries.push([x, y]);
+        const info = createEmptyPickingInfo();
+        if (!((x === 160 && y === 60) || (x === 1 && y === 0))) return info;
         // Only GPU readback is a seam. The result/default factory and normal
         // helper are the installed pin, and the source assertions are shared.
-        Object.assign(info,{hit:true,pickedMesh:picker.scene.engine.mesh,pickedPoint:[1,2,3],faceId:0,bu:1/3,bv:1/7});
+        Object.assign(info, {
+            hit: true,
+            pickedMesh: picker.scene.engine.mesh,
+            pickedPoint: [1, 2, 3],
+            faceId: 0,
+            bu: 1 / 3,
+            bv: 1 / 7,
+        });
         return info;
     };
     // Graphics factories expose only engine/scene association at this seam.
-    const createUtilityLayer = (engine:Host) => ({scene:createSceneContext(engine)});
-    const run = new Function("createEngine","createSceneContext","createUtilityLayer","createGpuPicker","pickAsync","disposePicker","getPickedNormal","document",`${javascript}\nreturn main();`);
-    await run(createEngine,createSceneContext,createUtilityLayer,createGpuPicker,pickAsync,()=>{},pin.getPickedNormal,
-        {getElementById:()=>({clientWidth:1280,clientHeight:720})});
-    assert.deepEqual(queries,[...[20,20,221,20].flatMap(count=>
-        Array.from({length:count},(_,index)=>[(index%17)*80,Math.floor(index/17)*60])),[1,0],[1,0]]);
+    const createUtilityLayer = (engine: Host) => ({
+        scene: createSceneContext(engine),
+    });
+    const run = createJavaScriptFunction(
+        "createEngine",
+        "createSceneContext",
+        "createUtilityLayer",
+        "createGpuPicker",
+        "pickAsync",
+        "disposePicker",
+        "getPickedNormal",
+        "document",
+        `${javascript}\nreturn main();`,
+    );
+    await run(
+        createEngine,
+        createSceneContext,
+        createUtilityLayer,
+        createGpuPicker,
+        pickAsync,
+        () => {},
+        pin.getPickedNormal,
+        { getElementById: () => ({ clientWidth: 1280, clientHeight: 720 }) },
+    );
+    assert.deepEqual(queries, [
+        ...[20, 20, 221, 20].flatMap((count) =>
+            Array.from({ length: count }, (_, index) => [
+                (index % 17) * 80,
+                Math.floor(index / 17) * 60,
+            ]),
+        ),
+        [1, 0],
+        [1, 0],
+    ]);
 });
 
-const tools=optionalNativeFixtureTools(false);
-test("native picking preserves identity, aliased callback engines, query order and checked lifetime",{skip:!tools},()=>{
-    const output=resolve("artifacts/picking-info-check");
-    const headers=join(output,"bblite/upstream");
-    mkdirSync(headers,{recursive:true});
-    const context=new LoweringContext();
-    writeFileSync(join(headers,"pinned_normalize_vec3.hpp"),pinnedNormalizeVec3Header(context));
-    writeFileSync(join(headers,"renderer_plan.hpp"),`#pragma once\n#include <bblite/runtime.hpp>\nnamespace bbl::upstream { std::array<float,16> mesh_world_matrix(const Engine&,const MeshRecord&); }\n`);
-    writeFileSync(join(output,"picking.cpp"),new PickingLowerer(context).lower(false,true).source);
-    const source=join(output,"check.cpp");
-    const executable=join(output,"check.exe");
-    writeFileSync(source,`#define main generated_scene_main\n${compileSource(program()).cpp}\n#undef main\n${readFileSync("test/fixtures/picking-info-check.cpp","utf8")}`);
-    runNativeFixtureCompiler(tools!,["/nologo","/std:c++20","/W4","/WX","/EHsc","/MD","/O2","/Gy","/I","native/include","/I",output,
-        `/Fo:${output}\\`,`/Fe:${executable}`,source,join(output,"picking.cpp"),"/link","/OPT:REF"]);
-    assert.match(execFileSync(executable,{encoding:"utf8"}),/picking-info-check: ok/);
-});
+const tools = optionalNativeFixtureTools(false);
+test(
+    "native picking preserves identity, aliased callback engines, query order and checked lifetime",
+    { skip: !tools },
+    () => {
+        const output = resolve("artifacts/picking-info-check");
+        const headers = join(output, "bblite/upstream");
+        mkdirSync(headers, { recursive: true });
+        const context = new LoweringContext();
+        writeFileSync(
+            join(headers, "pinned_normalize_vec3.hpp"),
+            pinnedNormalizeVec3Header(context),
+        );
+        writeFileSync(
+            join(headers, "renderer_plan.hpp"),
+            `#pragma once\n#include <bblite/runtime.hpp>\nnamespace bbl::upstream { std::array<float,16> mesh_world_matrix(const Engine&,const MeshRecord&); }\n`,
+        );
+        writeFileSync(
+            join(output, "picking.cpp"),
+            new PickingLowerer(context).lower(false, true).source,
+        );
+        const source = join(output, "check.cpp");
+        const executable = join(output, "check.exe");
+        writeFileSync(
+            source,
+            `#define main generated_scene_main\n${compileSource(program()).cpp}\n#undef main\n${readFileSync("test/fixtures/picking-info-check.cpp", "utf8")}`,
+        );
+        runNativeFixtureCompiler(tools!, [
+            "/nologo",
+            "/std:c++20",
+            "/W4",
+            "/WX",
+            "/EHsc",
+            "/MD",
+            "/O2",
+            "/Gy",
+            "/I",
+            "native/include",
+            "/I",
+            output,
+            `/Fo:${output}\\`,
+            `/Fe:${executable}`,
+            source,
+            join(output, "picking.cpp"),
+            "/link",
+            "/OPT:REF",
+        ]);
+        assert.match(
+            execFileSync(executable, { encoding: "utf8" }),
+            /picking-info-check: ok/,
+        );
+    },
+);

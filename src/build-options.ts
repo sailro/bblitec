@@ -6,17 +6,30 @@ export const DEVELOPMENT_VCPKG_INSTALL = "development-full";
 export function defaultDevelopmentBackend(
     platform: NodeJS.Platform,
 ): "SDL_GPU" | "BOTH" {
-    return platform === "win32" || platform === "linux" || platform === "darwin" ? "BOTH" : "SDL_GPU";
+    return platform === "win32" || platform === "linux" || platform === "darwin"
+        ? "BOTH"
+        : "SDL_GPU";
 }
 
-export function developmentTriplet(platform: NodeJS.Platform = process.platform, arch = process.arch): string {
-    const target = platform === "win32" ? "windows" : platform === "darwin" ? "osx" : platform;
+export function developmentTriplet(
+    platform: NodeJS.Platform = process.platform,
+    arch = process.arch,
+): string {
+    const target =
+        platform === "win32"
+            ? "windows"
+            : platform === "darwin"
+              ? "osx"
+              : platform;
     return `${arch}-${target}`;
 }
 
-export function selectedCompiledBackend(): ReturnType<typeof canonicalCompiledBackend> {
+export function selectedCompiledBackend(): ReturnType<
+    typeof canonicalCompiledBackend
+> {
     return canonicalCompiledBackend(
-        process.env.BBLITE_BACKEND ?? defaultDevelopmentBackend(process.platform),
+        process.env.BBLITE_BACKEND ??
+            defaultDevelopmentBackend(process.platform),
         "BBLITE_BACKEND",
     );
 }
@@ -26,13 +39,18 @@ export function compiledBuildDirectory(
     directory: string,
     backend = selectedCompiledBackend(),
 ): string {
-    return backend === "BOTH" ? directory : `${directory}-${backend.toLowerCase()}`;
+    return backend === "BOTH"
+        ? directory
+        : `${directory}-${backend.toLowerCase()}`;
 }
 
 export type OfflineShaderTarget = "d3d12" | "vulkan" | "metal" | "all";
 
 /** Dawn consumes WGSL directly; an explicit offline target still requests a sweep. */
-export function needsOfflineShaders(backend: string, requestedTarget?: string): boolean {
+export function needsOfflineShaders(
+    backend: string,
+    requestedTarget?: string,
+): boolean {
     return backend !== "DAWN" || requestedTarget !== undefined;
 }
 
@@ -101,9 +119,7 @@ export function canonicalDevelopmentCompiler(
     ) {
         return canonical;
     }
-    throw new Error(
-        `--compiler must be auto|msvc|clangcl (got '${value}').`,
-    );
+    throw new Error(`--compiler must be auto|msvc|clangcl (got '${value}').`);
 }
 
 export function canonicalCompiledBackend(

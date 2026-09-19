@@ -7,32 +7,75 @@ import { compileSource } from "../src/compiler.js";
 import { LoweringContext } from "../src/lowering/context.js";
 import { MeshBuilderLowerer } from "../src/lowering/factory/mesh-builders.js";
 import { importPinnedModule } from "../src/pinned-shader-composer.js";
-import { cppFunction, optionalNativeFixtureTools, runNativeFixtureCompiler } from "./native-fixture.js";
+import {
+    cppFunction,
+    optionalNativeFixtureTools,
+    runNativeFixtureCompiler,
+} from "./native-fixture.js";
 
 const native = optionalNativeFixtureTools(false);
 
-test("thin-instance color writes retain owned buffers and offset views with pinned rounding", { skip: !native }, async () => {
-    const pinned = await importPinnedModule<{
-        setThinInstanceColors(mesh: unknown, colors: Float32Array): void;
-        setThinInstanceColor(mesh: unknown, index: number, r: number, g: number, b: number, a: number): void;
-        setThinInstanceCullBoundsPad(mesh: unknown, pad: number): void;
-    }>("mesh/thin-instance.js");
-    const colors = new Float32Array(new ArrayBuffer(48), 8, 8);
-    const mesh = { thinInstances: { count: 2, _version: 0, _colorVersion: 0, _colorDirtyMin: 0, _colorDirtyMax: 0, _cullBoundsPad: 0 } };
-    pinned.setThinInstanceColors(mesh, colors);
-    pinned.setThinInstanceColor(mesh, 1, .1, .2, .3, .4);
-    pinned.setThinInstanceColor(mesh, -.25, 1, 2, 3, 4);
-    pinned.setThinInstanceColor(mesh, NaN, 5, 6, 7, 8);
-    pinned.setThinInstanceCullBoundsPad(mesh, 2.5);
-    const lowered = new MeshBuilderLowerer(new LoweringContext()).lowerMeshFactories([
-        "mesh:thin-instances", "mesh:thin-instance-colors",
-    ]).source;
-    const functions = ["set_thin_instance_colors", "set_thin_instance_color", "set_thin_instance_cull_bounds_pad"]
-        .map(name => cppFunction(lowered, `void ${name}(`)).join("\n");
-    const output = resolve("artifacts/thin-instance-colors");
-    mkdirSync(output, { recursive: true });
-    const source = join(output, "check.cpp"), executable = join(output, "check.exe");
-    writeFileSync(source, `#include <bblite/js_data.hpp>
+test(
+    "thin-instance color writes retain owned buffers and offset views with pinned rounding",
+    { skip: !native },
+    async () => {
+        const pinned = await importPinnedModule<{
+            setThinInstanceColors(
+                this: void,
+                mesh: unknown,
+                colors: Float32Array,
+            ): void;
+            setThinInstanceColor(
+                this: void,
+                mesh: unknown,
+                index: number,
+                r: number,
+                g: number,
+                b: number,
+                a: number,
+            ): void;
+            setThinInstanceCullBoundsPad(
+                this: void,
+                mesh: unknown,
+                pad: number,
+            ): void;
+        }>("mesh/thin-instance.js");
+        const colors = new Float32Array(new ArrayBuffer(48), 8, 8);
+        const mesh = {
+            thinInstances: {
+                count: 2,
+                _version: 0,
+                _colorVersion: 0,
+                _colorDirtyMin: 0,
+                _colorDirtyMax: 0,
+                _cullBoundsPad: 0,
+            },
+        };
+        pinned.setThinInstanceColors(mesh, colors);
+        pinned.setThinInstanceColor(mesh, 1, 0.1, 0.2, 0.3, 0.4);
+        pinned.setThinInstanceColor(mesh, -0.25, 1, 2, 3, 4);
+        pinned.setThinInstanceColor(mesh, NaN, 5, 6, 7, 8);
+        pinned.setThinInstanceCullBoundsPad(mesh, 2.5);
+        const lowered = new MeshBuilderLowerer(
+            new LoweringContext(),
+        ).lowerMeshFactories([
+            "mesh:thin-instances",
+            "mesh:thin-instance-colors",
+        ]).source;
+        const functions = [
+            "set_thin_instance_colors",
+            "set_thin_instance_color",
+            "set_thin_instance_cull_bounds_pad",
+        ]
+            .map((name) => cppFunction(lowered, `void ${name}(`))
+            .join("\n");
+        const output = resolve("artifacts/thin-instance-colors");
+        mkdirSync(output, { recursive: true });
+        const source = join(output, "check.cpp"),
+            executable = join(output, "check.exe");
+        writeFileSync(
+            source,
+            `#include <bblite/js_data.hpp>
 #include <cassert>
 namespace bbl {
 struct MeshHandle { unsigned value; };
@@ -67,11 +110,23 @@ int main() {
         assert(engine.meshes[0].instance_version == ${mesh.thinInstances._version});
         assert(engine.meshes[0].thin_instance_cull_bounds_pad == ${mesh.thinInstances._cullBoundsPad});
     }
-}`);
-    runNativeFixtureCompiler(native!, ["/nologo", "/std:c++20", "/W4", "/WX", "/permissive-", "/EHsc",
-        `/Fo:${output}/`, `/Fe:${executable}`, "/I", "native/include", source]);
-    execFileSync(executable, { stdio: "pipe" });
-    const result = compileSource(`
+}`,
+        );
+        runNativeFixtureCompiler(native!, [
+            "/nologo",
+            "/std:c++20",
+            "/W4",
+            "/WX",
+            "/permissive-",
+            "/EHsc",
+            `/Fo:${output}/`,
+            `/Fe:${executable}`,
+            "/I",
+            "native/include",
+            source,
+        ]);
+        execFileSync(executable, { stdio: "pipe" });
+        const result = compileSource(`
         import { createEngine, createBox, setThinInstances, setThinInstanceColors, setThinInstanceColor,
             setThinInstanceCullBoundsPad } from "@babylonjs/lite";
         const engine = createEngine(document.createElement("canvas"));
@@ -81,6 +136,7 @@ int main() {
         setThinInstanceColor(mesh, 0, 1, .5, .25, 1);
         setThinInstanceCullBoundsPad(mesh, 2);
     `);
-    assert.match(result.cpp, /bbl::set_thin_instance_color\(/);
-    assert.match(result.cpp, /bbl::set_thin_instance_cull_bounds_pad\(/);
-});
+        assert.match(result.cpp, /bbl::set_thin_instance_color\(/);
+        assert.match(result.cpp, /bbl::set_thin_instance_cull_bounds_pad\(/);
+    },
+);

@@ -12,7 +12,7 @@ unsigned color_tasks = 0;
 unsigned enabled_registrations = 0;
 unsigned disabled_registrations = 0;
 unsigned mesh_registrations = 0;
-}
+} // namespace
 
 namespace bbl {
 Engine create_engine(EngineOptions) { return {}; }
@@ -33,9 +33,7 @@ RenderTargetHandle create_render_target(Engine& engine, RenderTargetOptions opti
     return {static_cast<std::uint32_t>(targets.size() - 1)};
 }
 RenderTargetHandle swapchain_render_target(Engine&) { return {100}; }
-RenderTextureRef render_target_texture(RenderTargetHandle target) {
-    return {.target = target};
-}
+RenderTextureRef render_target_texture(RenderTargetHandle target) { return {.target = target}; }
 TaskHandle create_render_task(Engine&, Scene& scene, RenderTaskOptions options) {
     assert(scene.state->default_render_task);
     assert(options.name == "default-render-task" && options.scene_stages);
@@ -48,7 +46,8 @@ TaskHandle create_copy_to_texture_task(Engine&, Scene&, CopyTaskOptions options)
 }
 void add_task(Scene& scene, TaskHandle task) { scene.tasks.push_back(task); }
 void register_scene_with_shadow_support(Scene& scene) {
-    if (mesh_registrations) assert(scene.meshes.size() == 1 && scene.meshes[0].value == 7);
+    if (mesh_registrations)
+        assert(scene.meshes.size() == 1 && scene.meshes[0].value == 7);
     if (scene.state->default_render_task) {
         assert(scene.state->default_render_task_created && scene.tasks.size() == 3);
         ++enabled_registrations;
@@ -57,14 +56,15 @@ void register_scene_with_shadow_support(Scene& scene) {
         ++disabled_registrations;
     }
 }
-}
+} // namespace bbl
 
 int main() {
     assert(generated_scene_main() == 0);
     assert(enabled_registrations == 2 && disabled_registrations == 2);
     assert(color_tasks == 1 && task_count == 3);
     assert(targets.size() == 2 && targets[0].samples == 4 && targets[1].samples == 1);
-    assert(copies.size() == 2 && copies[0].name == "default-resolve" && copies[1].name == "default-present");
+    assert(copies.size() == 2 && copies[0].name == "default-resolve" &&
+           copies[1].name == "default-present");
     assert(copies[0].source.target.value == 0 && copies[0].resolve_target.value == 1);
     assert(copies[1].source.target.value == 1 && copies[1].target.value == 100);
     bbl::Scene scene;

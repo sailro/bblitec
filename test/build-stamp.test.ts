@@ -26,10 +26,7 @@ function scratchRepository(): string {
     mkdirSync(resolve(root, "native/include/bblite"), {
         recursive: true,
     });
-    writeFileSync(
-        resolve(root, "native/CMakeLists.txt"),
-        "project(bblite)\n",
-    );
+    writeFileSync(resolve(root, "native/CMakeLists.txt"), "project(bblite)\n");
     writeFileSync(
         resolve(root, "native/src/pal.cpp"),
         "int pal() { return 0; }\n",
@@ -38,14 +35,12 @@ function scratchRepository(): string {
         resolve(root, "native/include/bblite/runtime.hpp"),
         "#pragma once\n",
     );
-    mkdirSync(
-        resolve(root, "generated/scene/upstream/src"),
-        { recursive: true },
-    );
-    mkdirSync(
-        resolve(root, "generated/scene/upstream/shaders"),
-        { recursive: true },
-    );
+    mkdirSync(resolve(root, "generated/scene/upstream/src"), {
+        recursive: true,
+    });
+    mkdirSync(resolve(root, "generated/scene/upstream/shaders"), {
+        recursive: true,
+    });
     writeFileSync(
         resolve(root, "generated/scene/main.cpp"),
         "int main() { return 0; }\n",
@@ -108,11 +103,7 @@ test("identifies sticky CMake cache changes that require a fresh tree", () => {
     ];
     assert.deepEqual(
         incompatibleCacheEntries(cache, requested).map((entry) => entry.name),
-        [
-            "CMAKE_CXX_COMPILER",
-            "CMAKE_TOOLCHAIN_FILE",
-            "VCPKG_INSTALLED_DIR",
-        ],
+        ["CMAKE_CXX_COMPILER", "CMAKE_TOOLCHAIN_FILE", "VCPKG_INSTALLED_DIR"],
         "adding a missing toolchain is incompatible just like changing compilers",
     );
     assert.deepEqual(
@@ -138,7 +129,7 @@ test("cache paths follow the host's case and separator rules", () => {
         incompatibleCacheEntries(
             { CMAKE_CXX_COMPILER: resolve("tools/Clang") },
             [`-DCMAKE_CXX_COMPILER=${resolve("tools/clang")}`],
-        ).map(entry => entry.name),
+        ).map((entry) => entry.name),
         windows ? [] : ["CMAKE_CXX_COMPILER"],
     );
 });
@@ -156,25 +147,15 @@ test("keeps the stamp independent of the payload and of itself", (t) => {
         "@fragment fn mainFragment() {}\n",
     );
     mkdirSync(resolve(generated, "assets"), { recursive: true });
-    writeFileSync(
-        resolve(generated, "assets/model.glb"),
-        "glTF",
-    );
-    mkdirSync(
-        resolve(
-            generated,
-            "upstream/include/bblite/upstream",
-        ),
-        { recursive: true },
-    );
+    writeFileSync(resolve(generated, "assets/model.glb"), "glTF");
+    mkdirSync(resolve(generated, "upstream/include/bblite/upstream"), {
+        recursive: true,
+    });
     writeFileSync(
         resolve(generated, buildStampHeaderPath),
         buildStampHeader(before),
     );
-    assert.equal(
-        computeBuildStamp(generated, root).stamp,
-        before,
-    );
+    assert.equal(computeBuildStamp(generated, root).stamp, before);
 });
 
 test("compares a deployed payload against its generated source", (t) => {
@@ -227,10 +208,7 @@ test("reads the cache values that shape a build directory", (t) => {
     const cache = readCacheConfiguration(root);
     assert.equal(cache?.BBLITE_BACKEND, "BOTH");
     assert.equal(cache?.CMAKE_GENERATOR, "Ninja");
-    assert.equal(
-        cache?.BBLITE_GENERATED_DIR,
-        "C:/Dev/generated/scene1",
-    );
+    assert.equal(cache?.BBLITE_GENERATED_DIR, "C:/Dev/generated/scene1");
 });
 
 test("uses CMake's generation marker rather than the cache mtime", (t) => {

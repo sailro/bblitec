@@ -31,11 +31,14 @@ export const CPP_ELEMENT = {
 export type CppElementWidth = keyof typeof CPP_ELEMENT;
 
 /** An owned buffer of one element width: the pin's typed array. */
-export function cppVector(element: CppElementWidth | string): string {
+export function cppVector(element: string): string {
     return `std::vector<${element in CPP_ELEMENT ? CPP_ELEMENT[element as CppElementWidth] : element}>`;
 }
 
-export function cppFixedArray(element: CppElementWidth, length: number): string {
+export function cppFixedArray(
+    element: CppElementWidth,
+    length: number,
+): string {
     return `std::array<${CPP_ELEMENT[element]}, ${length}>`;
 }
 

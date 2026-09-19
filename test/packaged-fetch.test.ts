@@ -1,22 +1,30 @@
 import assert from "node:assert/strict";
-import {execFileSync} from "node:child_process";
-import {copyFileSync, mkdirSync, writeFileSync} from "node:fs";
-import {dirname, join, resolve} from "node:path";
+import { execFileSync } from "node:child_process";
+import { copyFileSync, mkdirSync, writeFileSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
 import test from "node:test";
-import {compileSource} from "../src/compiler.js";
-import {nativeFixtureVcpkgRoot, optionalNativeFixtureTools, runNativeFixtureCompiler} from "./native-fixture.js";
+import { compileSource } from "../src/compiler.js";
+import {
+    nativeFixtureVcpkgRoot,
+    optionalNativeFixtureTools,
+    runNativeFixtureCompiler,
+} from "./native-fixture.js";
 
-test("packaged fetch owns responses, snapshots selections and rejects missing or consumed bodies", t => {
+test("packaged fetch owns responses, snapshots selections and rejects missing or consumed bodies", (t) => {
     const directory = resolve("artifacts/packaged-fetch");
     const publicDir = join(directory, "public");
     const files = join(publicDir, "files");
-    mkdirSync(files, {recursive:true});
+    mkdirSync(files, { recursive: true });
     writeFileSync(join(directory, "worker.ts"), "self.close();");
-    writeFileSync(join(files, "bytes.bin"), Buffer.from([1,2,255]));
-    writeFileSync(join(files, "text.txt"), Buffer.from([0xef,0xbb,0xbf,0x61,0xe0,0x80,0xe2,0x82]));
+    writeFileSync(join(files, "bytes.bin"), Buffer.from([1, 2, 255]));
+    writeFileSync(
+        join(files, "text.txt"),
+        Buffer.from([0xef, 0xbb, 0xbf, 0x61, 0xe0, 0x80, 0xe2, 0x82]),
+    );
     writeFileSync(join(files, "document.json"), '{"answer":42}');
     writeFileSync(join(files, "missing.bin"), "exists only while compiling");
-    const result = compileSource(`
+    const result = compileSource(
+        `
         const worker=new Worker(new URL("./worker.ts",import.meta.url),{type:"module"});
         worker.terminate();
         async function load(name:string):Promise<Response>{return fetch("/files/"+name);}
@@ -57,21 +65,48 @@ test("packaged fetch owns responses, snapshots selections and rejects missing or
             if(sized.length!==3||sequence[0]!==2||sequence[1]!==3) throw new Error("awaited typed array constructor");
             globalThis.close();
         })();
-    `, {fileName:join(directory,"entry.ts"),publicDir,siteUrl:"https://assets.example/"});
+    `,
+        {
+            fileName: join(directory, "entry.ts"),
+            publicDir,
+            siteUrl: "https://assets.example/",
+        },
+    );
     assert.ok(result.manifest.features.includes("platform:packaged-fetch"));
     assert.ok(!result.manifest.features.includes("platform:http"));
     assert.ok(!result.manifest.runtimeSources.includes("src/pal_http.cpp"));
-    for(const asset of result.manifest.assets) {
-        if(asset.source.endsWith("missing.bin")) continue;
-        const output=join(directory,asset.output);
-        mkdirSync(dirname(output),{recursive:true});
-        copyFileSync(resolve(directory,asset.source),output);
+    for (const asset of result.manifest.assets) {
+        if (asset.source.endsWith("missing.bin")) continue;
+        const output = join(directory, asset.output);
+        mkdirSync(dirname(output), { recursive: true });
+        copyFileSync(resolve(directory, asset.source), output);
     }
-    const native=optionalNativeFixtureTools();
-    if(!native){t.skip("Native fixture compiler unavailable.");return;}
-    const cpp=join(directory,"check.cpp"),exe=join(directory,"check.exe");
-    writeFileSync(cpp,result.cpp);
-    runNativeFixtureCompiler(native,["/nologo","/std:c++20","/W4","/WX","/EHsc","/MD","/DBBLITE_WORKERS=1",
-        "/I","native/include",`/I${nativeFixtureVcpkgRoot}/include`,`/Fo:${directory}/`,`/Fe:${exe}`,cpp,"test/fixtures/packaged-fetch-check.cpp"]);
-    assert.equal(execFileSync(exe,{cwd:directory,encoding:"utf8",timeout:10000}),"");
+    const native = optionalNativeFixtureTools();
+    if (!native) {
+        t.skip("Native fixture compiler unavailable.");
+        return;
+    }
+    const cpp = join(directory, "check.cpp"),
+        exe = join(directory, "check.exe");
+    writeFileSync(cpp, result.cpp);
+    runNativeFixtureCompiler(native, [
+        "/nologo",
+        "/std:c++20",
+        "/W4",
+        "/WX",
+        "/EHsc",
+        "/MD",
+        "/DBBLITE_WORKERS=1",
+        "/I",
+        "native/include",
+        `/I${nativeFixtureVcpkgRoot}/include`,
+        `/Fo:${directory}/`,
+        `/Fe:${exe}`,
+        cpp,
+        "test/fixtures/packaged-fetch-check.cpp",
+    ]);
+    assert.equal(
+        execFileSync(exe, { cwd: directory, encoding: "utf8", timeout: 10000 }),
+        "",
+    );
 });

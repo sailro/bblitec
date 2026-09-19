@@ -4,7 +4,12 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import test from "node:test";
 import { compileSource } from "../src/compiler.js";
-import { cppFunction, cppSection, optionalNativeFixtureTools, runNativeFixtureCompiler } from "./native-fixture.js";
+import {
+    cppFunction,
+    cppSection,
+    optionalNativeFixtureTools,
+    runNativeFixtureCompiler,
+} from "./native-fixture.js";
 import { CameraLowerer } from "../src/lowering/camera-lowerer.js";
 import { LoweringContext } from "../src/lowering/context.js";
 import { CompressedTextureLowerer } from "../src/lowering/compressed-texture-lowerer.js";
@@ -13,15 +18,29 @@ import { packageKtx1 } from "../src/compressed-texture-package.js";
 
 const nativeTools = optionalNativeFixtureTools(false);
 
-test("GPU picking maps CSS coordinates before bounds checks on both backends", { skip: !nativeTools }, () => {
-    const functions = ["sdl", "dawn"].map(backend => {
-        const file = backend === "sdl" ? "pal_sdl_gpu.cpp" : "pal_dawn.cpp";
-        const source = readFileSync(`native/src/${file}`, "utf8");
-        const picker = cppFunction(source, `PickingInfo pick_${backend}_scene(`);
-        const mapping = cppSection(picker, "const double width =", backend === "sdl" ? "    if (camera_record->viewport" : "    if (camera.viewport");
-        return `PickingInfo ${backend}(const Engine& engine, double x, double y) { ${mapping} return {true, x, y}; }`;
-    });
-    runCpp("pick-client-coordinates", `
+test(
+    "GPU picking maps CSS coordinates before bounds checks on both backends",
+    { skip: !nativeTools },
+    () => {
+        const functions = ["sdl", "dawn"].map((backend) => {
+            const file = backend === "sdl" ? "pal_sdl_gpu.cpp" : "pal_dawn.cpp";
+            const source = readFileSync(`native/src/${file}`, "utf8");
+            const picker = cppFunction(
+                source,
+                `PickingInfo pick_${backend}_scene(`,
+            );
+            const mapping = cppSection(
+                picker,
+                "const double width =",
+                backend === "sdl"
+                    ? "    if (camera_record->viewport"
+                    : "    if (camera.viewport",
+            );
+            return `PickingInfo ${backend}(const Engine& engine, double x, double y) { ${mapping} return {true, x, y}; }`;
+        });
+        runCpp(
+            "pick-client-coordinates",
+            `
         #include <cassert>
         #include <cmath>
         #include <initializer_list>
@@ -40,12 +59,19 @@ test("GPU picking maps CSS coordinates before bounds checks on both backends", {
                 }
             }
         }
-    `);
-});
+    `,
+        );
+    },
+);
 
-test("laid-out canvas panes retain physical bounds at any CSS density", { skip: !nativeTools }, () => {
-    const source = readFileSync("native/src/pal_gpu_shared.hpp", "utf8");
-    runCpp("canvas-pane-density", `
+test(
+    "laid-out canvas panes retain physical bounds at any CSS density",
+    { skip: !nativeTools },
+    () => {
+        const source = readFileSync("native/src/pal_gpu_shared.hpp", "utf8");
+        runCpp(
+            "canvas-pane-density",
+            `
         #define BBLITE_HAS_UI 1
         #include <bblite/runtime.hpp>
         #include <cassert>
@@ -61,11 +87,18 @@ test("laid-out canvas panes retain physical bounds at any CSS density", { skip: 
                 assert(pane.x == 300 && pane.y == 50 && pane.width == 200 && pane.height == 300);
             }
         }
-    `);
-});
+    `,
+        );
+    },
+);
 
-test("storage synchronization preserves live buffers and versions across failures", { skip: !nativeTools }, () => {
-    runCpp("storage-record-sync", `
+test(
+    "storage synchronization preserves live buffers and versions across failures",
+    { skip: !nativeTools },
+    () => {
+        runCpp(
+            "storage-record-sync",
+            `
         #include "${resolve("native/src/pal_record_sync.hpp").replaceAll("\\", "/")}"
         #include <cassert>
         #include <string>
@@ -112,11 +145,18 @@ test("storage synchronization preserves live buffers and versions across failure
             sources[0].bytes.push_back(9); sync(); sources.clear(); events.clear(); sync();
             assert(events == "ir" && targets.empty() && live == 0);
         }
-    `);
-});
+    `,
+        );
+    },
+);
 
-test("sprite membership preserves clocks and releases removed or failed new records", { skip: !nativeTools }, () => {
-    runCpp("ordered-record-sync", `
+test(
+    "sprite membership preserves clocks and releases removed or failed new records",
+    { skip: !nativeTools },
+    () => {
+        runCpp(
+            "ordered-record-sync",
+            `
         #include "${resolve("native/src/pal_record_sync.hpp").replaceAll("\\", "/")}"
         #include <cassert>
         #include <memory>
@@ -163,12 +203,19 @@ test("sprite membership preserves clocks and releases removed or failed new reco
             assert(events.empty()); in_use = false; textures_sync();
             assert((events == std::vector<unsigned>{0,20,11}));
         }
-    `);
-});
+    `,
+        );
+    },
+);
 
-test("VAT synchronization retains unchanged payloads and retries failed uploads", { skip: !nativeTools }, () => {
-    const source = readFileSync("native/src/pal_gpu_shared.hpp", "utf8");
-    runCpp("vat-record-sync", `
+test(
+    "VAT synchronization retains unchanged payloads and retries failed uploads",
+    { skip: !nativeTools },
+    () => {
+        const source = readFileSync("native/src/pal_gpu_shared.hpp", "utf8");
+        runCpp(
+            "vat-record-sync",
+            `
         #define BBLITE_VAT_INSTANCES 1
         #include <bblite/runtime.hpp>
         #include <cassert>
@@ -208,12 +255,19 @@ test("VAT synchronization retains unchanged payloads and retries failed uploads"
             fail = false; events.clear(); sync(); assert(events == "su" && gpu.pinned_vat_instance_version == 1);
             events.clear(); sync(); assert(events == "s");
         }
-    `);
-});
+    `,
+        );
+    },
+);
 
-test("target planning resolves pane sizes, scaled chains and format inheritance before allocation", { skip: !nativeTools }, () => {
-    const source = readFileSync("native/src/pal_gpu_shared.hpp", "utf8");
-    runCpp("render-target-plan", `
+test(
+    "target planning resolves pane sizes, scaled chains and format inheritance before allocation",
+    { skip: !nativeTools },
+    () => {
+        const source = readFileSync("native/src/pal_gpu_shared.hpp", "utf8");
+        runCpp(
+            "render-target-plan",
+            `
         #include <bblite/runtime.hpp>
         #include <cassert>
         namespace bbl::pal {
@@ -250,12 +304,22 @@ test("target planning resolves pane sizes, scaled chains and format inheritance 
             try { plan(); } catch (const std::runtime_error&) { refused = true; }
             assert(refused);
         }
-    `);
-});
+    `,
+        );
+    },
+);
 
-test("clustered uploads use the pinned payload extents and publish a version only after success", { skip: !nativeTools }, () => {
-    const source = readFileSync("native/src/pal_clustered_shared.hpp", "utf8");
-    runCpp("clustered-record-sync", `
+test(
+    "clustered uploads use the pinned payload extents and publish a version only after success",
+    { skip: !nativeTools },
+    () => {
+        const source = readFileSync(
+            "native/src/pal_clustered_shared.hpp",
+            "utf8",
+        );
+        runCpp(
+            "clustered-record-sync",
+            `
         #include <bblite/runtime.hpp>
         #include <cassert>
         namespace bbl::upstream {
@@ -300,12 +364,19 @@ test("clustered uploads use the pinned payload extents and publish a version onl
             fail = false; events.clear(); sync(); assert(version == 1 && events == "plci");
             events.clear(); sync(); assert(events.empty() && bbl::upstream::refreshes == 3);
         }
-    `);
-});
+    `,
+        );
+    },
+);
 
-test("backdrop sizing and screen-space recording preserve allocation retries and pass order", { skip: !nativeTools }, () => {
-    const source = readFileSync("native/src/pal_gpu_shared.hpp", "utf8");
-    runCpp("effect-pass-plans", `
+test(
+    "backdrop sizing and screen-space recording preserve allocation retries and pass order",
+    { skip: !nativeTools },
+    () => {
+        const source = readFileSync("native/src/pal_gpu_shared.hpp", "utf8");
+        runCpp(
+            "effect-pass-plans",
+            `
         #define BBLITE_HAS_UI 1
         #include <bblite/runtime.hpp>
         #include "${resolve("native/src/pal_ui_backdrop.hpp").replaceAll("\\", "/")}"
@@ -348,13 +419,20 @@ test("backdrop sizing and screen-space recording preserve allocation retries and
             events.clear(); decision.clear_identity = true; decision.run_effect = true;
             record(true); assert(events == "ihptsc");
         }
-    `);
-});
+    `,
+        );
+    },
+);
 
-test("pick contributor admission follows the picked scene, visibility and source filter", { skip: !nativeTools }, () => {
-    const source = readFileSync("native/src/pal_gpu_shared.hpp", "utf8");
-    for (const floating of [0, 1]) {
-        runCpp(`pick-contributor-admission-${floating}`, `
+test(
+    "pick contributor admission follows the picked scene, visibility and source filter",
+    { skip: !nativeTools },
+    () => {
+        const source = readFileSync("native/src/pal_gpu_shared.hpp", "utf8");
+        for (const floating of [0, 1]) {
+            runCpp(
+                `pick-contributor-admission-${floating}`,
+                `
             #define BBLITE_HAS_BILLBOARDS 1
             #define BBLITE_HAS_SPLATS 1
             #define BBLITE_FLOATING_ORIGIN ${floating}
@@ -394,24 +472,38 @@ test("pick contributor admission follows the picked scene, visibility and source
                 billboard.visible = true; billboard.count = 0;
                 bbl::pal::validate_pick_contributors(engine, scene, true, true);
                 billboard.count = 3; billboard.depth_mode = bbl::BillboardDepthMode::transparent;
-                ${floating ? `refuses(false, "eye-relative");` : `
+                ${
+                    floating
+                        ? `refuses(false, "eye-relative");`
+                        : `
                     bbl::pal::validate_pick_contributors(engine, scene, false, true);
                     refuses(true, "billboard contributor");
                     scene.splat_meshes.push_back({0});
                     refuses(false, "registration order");
                     engine.splat_meshes[0].vertex_count = 0;
                     bbl::pal::validate_pick_contributors(engine, scene, false, true);
-                `}
+                `
+                }
             }
-        `);
-    }
-});
+        `,
+            );
+        }
+    },
+);
 
-test("detailed picking refuses only thin instances admitted by geometry and filter gates", { skip: !nativeTools }, () => {
-    const source = readFileSync("native/src/pal_gpu_shared.hpp", "utf8");
-    const renderer = readFileSync("src/lowering/renderer-lowerer.ts", "utf8");
-    const activeCount = "inline std::size_t thin_instance_active_count(";
-    runCpp("detailed-pick-admission", `
+test(
+    "detailed picking refuses only thin instances admitted by geometry and filter gates",
+    { skip: !nativeTools },
+    () => {
+        const source = readFileSync("native/src/pal_gpu_shared.hpp", "utf8");
+        const renderer = readFileSync(
+            "src/lowering/renderer-lowerer.ts",
+            "utf8",
+        );
+        const activeCount = "inline std::size_t thin_instance_active_count(";
+        runCpp(
+            "detailed-pick-admission",
+            `
         #define BBLITE_GPU_INSTANCING 1
         #define BBLITE_DEFORM_PICKING 0
         #include <bblite/runtime.hpp>
@@ -422,7 +514,7 @@ test("detailed picking refuses only thin instances admitted by geometry and filt
             ${cppFunction(renderer, "bool pick_candidate(const MeshRecord& mesh) {")}
         }
         namespace bbl::pal {
-            ${["struct PickMeshUniforms {", "struct PickRange {", "struct PickMeshCandidate {"].map(signature => cppFunction(source, signature) + ";").join("\n")}
+            ${["struct PickMeshUniforms {", "struct PickRange {", "struct PickMeshCandidate {"].map((signature) => cppFunction(source, signature) + ";").join("\n")}
             ${cppFunction(source.slice(source.lastIndexOf(activeCount)), activeCount)}
             std::array<float,16> shader_draw_world(const Engine&, const MeshRecord&) { return {}; }
             std::array<float,16> instance_parent_draw_world(const MeshRecord&, const Scene&, const Engine&) { return {}; }
@@ -457,12 +549,19 @@ test("detailed picking refuses only thin instances admitted by geometry and filt
             catch (const std::runtime_error& error) { refused = std::string(error.what()).find("thin-instance world matrix") != std::string::npos; }
             assert(refused);
         }
-    `);
-});
+    `,
+        );
+    },
+);
 
-test("text admission checks attached scene records and permits unattached resources", { skip: !nativeTools }, () => {
-    const source = readFileSync("native/src/pal_text_scene.hpp", "utf8");
-    runCpp("text-scene-admission", `
+test(
+    "text admission checks attached scene records and permits unattached resources",
+    { skip: !nativeTools },
+    () => {
+        const source = readFileSync("native/src/pal_text_scene.hpp", "utf8");
+        runCpp(
+            "text-scene-admission",
+            `
         #define BBLITE_HAS_TEXT 1
         #define BBLITE_FLOATING_ORIGIN 0
         #include <bblite/runtime.hpp>
@@ -496,13 +595,26 @@ test("text admission checks attached scene records and permits unattached resour
             scene.tasks.push_back({0}); scene.meshes.push_back({0});
             bbl::pal::validate_text_scene(scene);
         }
-    `);
-});
+    `,
+        );
+    },
+);
 
-test("temporal admission checks the prepared draw list and its camera and scene", { skip: !nativeTools }, () => {
-    const source = readFileSync("native/src/pal_temporal_shared.hpp", "utf8");
-    const renderer = readFileSync("src/lowering/renderer-lowerer.ts", "utf8");
-    runCpp("temporal-pass-admission", `
+test(
+    "temporal admission checks the prepared draw list and its camera and scene",
+    { skip: !nativeTools },
+    () => {
+        const source = readFileSync(
+            "native/src/pal_temporal_shared.hpp",
+            "utf8",
+        );
+        const renderer = readFileSync(
+            "src/lowering/renderer-lowerer.ts",
+            "utf8",
+        );
+        runCpp(
+            "temporal-pass-admission",
+            `
         #include <bblite/runtime.hpp>
         #include <cassert>
         namespace bbl::upstream {
@@ -545,11 +657,16 @@ test("temporal admission checks the prepared draw list and its camera and scene"
             engine.registered_sprite_renderers.clear();
             bbl::pal::validate_temporal_source(engine, task, &camera, draws);
         }
-    `);
-});
+    `,
+        );
+    },
+);
 
-test("returned record scalars share one allocation while preserving aliases and fresh calls", { skip: !nativeTools }, () => {
-    const result = compileSource(`
+test(
+    "returned record scalars share one allocation while preserving aliases and fresh calls",
+    { skip: !nativeTools },
+    () => {
+        const result = compileSource(`
         import { createEngine, createBox, type Mesh } from "@babylonjs/lite";
         function snapshot(mesh: Mesh) {
             return { mesh, x: mesh.position.x, y: mesh.position.y, enabled: true, label: "start" };
@@ -571,8 +688,13 @@ test("returned record scalars share one allocation while preserving aliases and 
             createBox(engine);
         }
     `);
-    assert.doesNotMatch(result.cpp, /make_gc_shared<(?:double|bool|std::string)>/);
-    runCpp("record-scalar-storage", `#define main generated_record_main\n${result.cpp}\n#undef main
+        assert.doesNotMatch(
+            result.cpp,
+            /make_gc_shared<(?:double|bool|std::string)>/,
+        );
+        runCpp(
+            "record-scalar-storage",
+            `#define main generated_record_main\n${result.cpp}\n#undef main
         #include <cassert>
         namespace { std::size_t retained_nodes = 0; }
         namespace bbl {
@@ -590,11 +712,16 @@ test("returned record scalars share one allocation while preserving aliases and 
             assert(retained_nodes == 2);
             assert(bbl::js::managed_node_count() == 0);
         }
-    `);
-});
+    `,
+        );
+    },
+);
 
-test("packed record fields stay shared after their creating helper returns", { skip: !nativeTools }, () => {
-    const result = compileSource(`
+test(
+    "packed record fields stay shared after their creating helper returns",
+    { skip: !nativeTools },
+    () => {
+        const result = compileSource(`
         import { createEngine, createSceneContext, onBeforeRender, startEngine, type SceneContext } from "@babylonjs/lite";
         function make(scene: SceneContext) { return { scene, x: 1, y: 2, enabled: true }; }
         function install(scene: SceneContext) {
@@ -610,7 +737,10 @@ test("packed record fields stay shared after their creating helper returns", { s
         install(scene);
         await startEngine(engine);
     `);
-    runCpp("record-scalar-captures", result.cpp + `
+        runCpp(
+            "record-scalar-captures",
+            result.cpp +
+                `
         namespace bbl {
             static std::vector<js::Callback<void(float)>> callbacks;
             Engine create_engine(EngineOptions) { return {}; }
@@ -618,8 +748,10 @@ test("packed record fields stay shared after their creating helper returns", { s
             void on_before_render(Scene&, js::Callback<void(float)> callback) { callbacks.push_back(std::move(callback)); }
             void start_engine(Engine&) { for (const auto& callback : callbacks) callback(16); callbacks.clear(); }
         }
-    `);
-});
+    `,
+        );
+    },
+);
 
 function runCpp(name: string, cpp: string): void {
     assert.ok(nativeTools);
@@ -629,14 +761,28 @@ function runCpp(name: string, cpp: string): void {
     const executable = join(output, "check.exe");
     writeFileSync(source, cpp);
     runNativeFixtureCompiler(nativeTools, [
-        "/nologo", "/std:c++20", "/W4", "/WX", "/permissive-", "/EHsc",
-        `/Fo:${output}\\`, `/Fe:${executable}`, "/I", "native/include", source,
+        "/nologo",
+        "/std:c++20",
+        "/W4",
+        "/WX",
+        "/permissive-",
+        "/EHsc",
+        `/Fo:${output}\\`,
+        `/Fe:${executable}`,
+        "/I",
+        "native/include",
+        source,
     ]);
     execFileSync(executable, { stdio: "pipe" });
 }
 
-test("checked handles preserve references and diagnose invalid and sentinel indices", { skip: !nativeTools }, () => {
-    runCpp("checked-handles", `
+test(
+    "checked handles preserve references and diagnose invalid and sentinel indices",
+    { skip: !nativeTools },
+    () => {
+        runCpp(
+            "checked-handles",
+            `
         #define BBLITE_CHECKED_HANDLES 1
         #include <bblite/runtime.hpp>
         #include <cassert>
@@ -659,21 +805,51 @@ test("checked handles preserve references and diagnose invalid and sentinel indi
                 assert(refused);
             }
         }
-    `);
-});
+    `,
+        );
+    },
+);
 
-test("compressed mips retain one container across moves and texture copies", { skip: !nativeTools }, async () => {
-    const lowerer = new CompressedTextureLowerer(new LoweringContext());
-    const lowered = lowerer.lower();
-    const bytes = await packageKtx1(writeKtx1({ gpuFormat: "bc7-rgba-unorm", width: 8, height: 4, mips: [
-        { width: 8, height: 4, bytes: new Uint8Array(32).fill(0xa5) },
-        { width: 4, height: 2, bytes: new Uint8Array(16).fill(0x5a) },
-    ] }, lowerer.magicBytes(), lowerer.glInternalFormat("bc7-rgba-unorm"), lowerer.headerLayout()));
-    const output = resolve("artifacts/audit-correctness/compressed-mips");
-    mkdirSync(output, { recursive: true });
-    const header = join(output, "compressed_texture.hpp").replaceAll("\\", "/");
-    writeFileSync(header, lowered.header);
-    runCpp("compressed-mips", `
+test(
+    "compressed mips retain one container across moves and texture copies",
+    { skip: !nativeTools },
+    async () => {
+        const lowerer = new CompressedTextureLowerer(new LoweringContext());
+        const lowered = lowerer.lower();
+        const bytes = await packageKtx1(
+            writeKtx1(
+                {
+                    gpuFormat: "bc7-rgba-unorm",
+                    width: 8,
+                    height: 4,
+                    mips: [
+                        {
+                            width: 8,
+                            height: 4,
+                            bytes: new Uint8Array(32).fill(0xa5),
+                        },
+                        {
+                            width: 4,
+                            height: 2,
+                            bytes: new Uint8Array(16).fill(0x5a),
+                        },
+                    ],
+                },
+                lowerer.magicBytes(),
+                lowerer.glInternalFormat("bc7-rgba-unorm"),
+                lowerer.headerLayout(),
+            ),
+        );
+        const output = resolve("artifacts/audit-correctness/compressed-mips");
+        mkdirSync(output, { recursive: true });
+        const header = join(output, "compressed_texture.hpp").replaceAll(
+            "\\",
+            "/",
+        );
+        writeFileSync(header, lowered.header);
+        runCpp(
+            "compressed-mips",
+            `
         #include <cassert>
         ${lowered.source.replace("#include <bblite/upstream/compressed_texture.hpp>", `#include "${header}"`)}
         namespace bbl::pal { std::vector<std::uint8_t> read_binary_file(const std::string&) { return {}; } }
@@ -698,12 +874,21 @@ test("compressed mips retain one container across moves and texture copies", { s
             catch (const std::runtime_error&) { refused = true; }
             assert(refused);
         }
-    `);
-});
+    `,
+        );
+    },
+);
 
-test("eye memoization reuses unchanged inputs and preserves F64 input bits", { skip: !nativeTools }, () => {
-    const source = new CameraLowerer(new LoweringContext()).lowerArcRotateFactory(false, true).source;
-    runCpp("eye-cache", `
+test(
+    "eye memoization reuses unchanged inputs and preserves F64 input bits",
+    { skip: !nativeTools },
+    () => {
+        const source = new CameraLowerer(
+            new LoweringContext(),
+        ).lowerArcRotateFactory(false, true).source;
+        runCpp(
+            "eye-cache",
+            `
         #include <bblite/runtime.hpp>
         #include <bit>
         #include <cassert>
@@ -736,18 +921,35 @@ test("eye memoization reuses unchanged inputs and preserves F64 input bits", { s
             assert(upstream::arc_rotate_eye_position(camera).x == 99);
             assert(upstream::calls == 8);
         }
-    `);
-});
+    `,
+        );
+    },
+);
 
-test("stylesheet revisions track rules, text and attachment order independently of ordinary UI changes", { skip: !nativeTools }, () => {
-    const source = readFileSync("native/src/pal_ui_rml.cpp", "utf8");
-    const functions = [
-        "UiElementRecord& ui_element(", "void mark_ui_changed(Engine& engine)",
-        "void mark_ui_changed(Engine& engine,", "void ui_set_text(", "void ui_set_inner_rml(",
-        "void ui_clear_style_rules(", "void ui_add_style_rule(", "void ui_add_host_style_rule(",
-        "UiElementHandle ui_append_child(", "UiElementHandle ui_append_to_root(", "void ui_replace_children(", "void ui_remove(",
-    ].map((signature) => cppFunction(source, signature)).join("\n");
-    runCpp("style-revision", `
+test(
+    "stylesheet revisions track rules, text and attachment order independently of ordinary UI changes",
+    { skip: !nativeTools },
+    () => {
+        const source = readFileSync("native/src/pal_ui_rml.cpp", "utf8");
+        const functions = [
+            "UiElementRecord& ui_element(",
+            "void mark_ui_changed(Engine& engine)",
+            "void mark_ui_changed(Engine& engine,",
+            "void ui_set_text(",
+            "void ui_set_inner_rml(",
+            "void ui_clear_style_rules(",
+            "void ui_add_style_rule(",
+            "void ui_add_host_style_rule(",
+            "UiElementHandle ui_append_child(",
+            "UiElementHandle ui_append_to_root(",
+            "void ui_replace_children(",
+            "void ui_remove(",
+        ]
+            .map((signature) => cppFunction(source, signature))
+            .join("\n");
+        runCpp(
+            "style-revision",
+            `
         #define BBLITE_HAS_UI 1
         #include <bblite/pal_ui.hpp>
         #include <cassert>
@@ -791,14 +993,27 @@ test("stylesheet revisions track rules, text and attachment order independently 
             ui_add_host_style_rule(engine, UiStyleSelectorKind::Class, "item", "", "", false, -1, "color:blue;", false, false, UiScrollbarPart::None);
             assert(engine.ui_style_revision == after_remove + 1);
         }
-    `);
-});
+    `,
+        );
+    },
+);
 
-test("window document snapshots preserve stylesheet revisions across ordinary UI updates", { skip: !nativeTools }, () => {
-    const source = readFileSync("native/src/pal_window_realm.cpp", "utf8");
-    const declarations = ["struct WindowEvent final", "struct WindowDomEvent final", "struct ListenerNames", "struct DocumentSnapshot"]
-        .map(signature => `${cppFunction(source, signature)};`).join("\n");
-    runCpp("window-style-revision", `
+test(
+    "window document snapshots preserve stylesheet revisions across ordinary UI updates",
+    { skip: !nativeTools },
+    () => {
+        const source = readFileSync("native/src/pal_window_realm.cpp", "utf8");
+        const declarations = [
+            "struct WindowEvent final",
+            "struct WindowDomEvent final",
+            "struct ListenerNames",
+            "struct DocumentSnapshot",
+        ]
+            .map((signature) => `${cppFunction(source, signature)};`)
+            .join("\n");
+        runCpp(
+            "window-style-revision",
+            `
         #define BBLITE_HAS_UI 1
         #define BBLITE_WORKERS 1
         #include <bblite/runtime.hpp>
@@ -829,11 +1044,16 @@ test("window document snapshots preserve stylesheet revisions across ordinary UI
             assert(target.ui_style_revision == 8);
             assert(target.ui_elements[0].text == "99");
         }
-    `);
-});
+    `,
+        );
+    },
+);
 
-test("nullable scalar conditions follow JavaScript truthiness and evaluate calls once", { skip: !nativeTools }, () => {
-    const result = compileSource(`
+test(
+    "nullable scalar conditions follow JavaScript truthiness and evaluate calls once",
+    { skip: !nativeTools },
+    () => {
+        const result = compileSource(`
         function text(value: string | null): boolean { return !!value; }
         function number(value: number | null): boolean { return !!value; }
         function flag(value: boolean | null): boolean { return !!value; }
@@ -853,8 +1073,9 @@ test("nullable scalar conditions follow JavaScript truthiness and evaluate calls
         if (!reader.next()) throw new Error("nonempty call result");
         if (reader.calls !== 2) throw new Error("condition evaluated more than once");
     `);
-    runCpp("nullable", result.cpp);
-});
+        runCpp("nullable", result.cpp);
+    },
+);
 
 test("material record fields refuse the wrong family through aliases and helpers", () => {
     const preamble = `
@@ -862,23 +1083,37 @@ test("material record fields refuse the wrong family through aliases and helpers
         const engine = await createEngine({});
     `;
     for (const [property, value] of [
-        ["diffuseColor", "[1, 0, 0]"], ["specularColor", "[1, 1, 1]"],
-        ["emissiveColor", "[1, 0, 0]"], ["uvOffset", "[0, 0]"], ["uvScale", "[1, 1]"],
-        ["specularPower", "8"], ["lightmapLevel", "1"], ["alphaCutOff", "0.2"],
-        ["disableLighting", "true"], ["backFaceCulling", "false"],
+        ["diffuseColor", "[1, 0, 0]"],
+        ["specularColor", "[1, 1, 1]"],
+        ["emissiveColor", "[1, 0, 0]"],
+        ["uvOffset", "[0, 0]"],
+        ["uvScale", "[1, 1]"],
+        ["specularPower", "8"],
+        ["lightmapLevel", "1"],
+        ["alphaCutOff", "0.2"],
+        ["disableLighting", "true"],
+        ["backFaceCulling", "false"],
     ]) {
-        assert.throws(() => compileSource(`${preamble}
+        assert.throws(
+            () =>
+                compileSource(`${preamble}
             const material = createPbrMaterial({});
             const alias = material;
             alias.${property} = ${value};
-        `), new RegExp(`Material ${property} requires a standard material`));
+        `),
+            new RegExp(`Material ${property} requires a standard material`),
+        );
     }
-    assert.throws(() => compileSource(`${preamble}
+    assert.throws(
+        () =>
+            compileSource(`${preamble}
         function update(material: ReturnType<typeof createStandardMaterial>): void {
             material.directIntensity = 2;
         }
         update(createStandardMaterial());
-    `), /Material directIntensity requires a pbr material/);
+    `),
+        /Material directIntensity requires a pbr material/,
+    );
     const valid = compileSource(`${preamble}
         const standard = createStandardMaterial();
         standard.diffuseColor = [1, 0, 0];
@@ -892,8 +1127,13 @@ test("material record fields refuse the wrong family through aliases and helpers
     assert.match(valid.cpp, /\.direct_intensity = 2\.0f/);
 });
 
-test("GC counters separate live nodes from allocations across collection", { skip: !nativeTools }, () => {
-    runCpp("gc-counters", `
+test(
+    "GC counters separate live nodes from allocations across collection",
+    { skip: !nativeTools },
+    () => {
+        runCpp(
+            "gc-counters",
+            `
         #include <bblite/js_gc.hpp>
         #include <cassert>
         int main() {
@@ -913,11 +1153,16 @@ test("GC counters separate live nodes from allocations across collection", { ski
             assert(gc::registry.size == initial_nodes);
             assert(gc::registry.total_allocations == initial_allocations + 2);
         }
-    `);
-});
+    `,
+        );
+    },
+);
 
-test("counted frame waits preserve each drain and the pending capture barrier", { skip: !nativeTools }, () => {
-    const result = compileSource(`
+test(
+    "counted frame waits preserve each drain and the pending capture barrier",
+    { skip: !nativeTools },
+    () => {
+        const result = compileSource(`
         import { createEngine, createSceneContext, registerScene, startEngine } from "@babylonjs/lite";
         const engine = await createEngine({});
         const scene = createSceneContext(engine);
@@ -933,15 +1178,22 @@ test("counted frame waits preserve each drain and the pending capture barrier", 
         }
         scene.clearColor = { r: 0, g: 1, b: 0, a: 1 };
     `);
-    assert.match(result.cpp, /remaining = 161u/);
-    assert.match(result.cpp, /remaining = 2u/);
-    assert.equal((result.cpp.match(/bbl::defer_start_continuation_until\(/g) ?? []).length, 2);
-    const pal = readFileSync("native/src/pal.cpp", "utf8");
-    const start = pal.indexOf("void defer_callback(");
-    const end = pal.indexOf("double set_timeout(", start);
-    assert.ok(start >= 0 && end > start);
-    // Compile the actual PAL queue and drain with a CPU frame host.
-    runCpp("counted-frames", result.cpp + `
+        assert.match(result.cpp, /remaining = 161u/);
+        assert.match(result.cpp, /remaining = 2u/);
+        assert.equal(
+            (result.cpp.match(/bbl::defer_start_continuation_until\(/g) ?? [])
+                .length,
+            2,
+        );
+        const pal = readFileSync("native/src/pal.cpp", "utf8");
+        const start = pal.indexOf("void defer_callback(");
+        const end = pal.indexOf("double set_timeout(", start);
+        assert.ok(start >= 0 && end > start);
+        // Compile the actual PAL queue and drain with a CPU frame host.
+        runCpp(
+            "counted-frames",
+            result.cpp +
+                `
         #include <cassert>
         namespace bbl {
         ${pal.slice(start, end)}
@@ -962,11 +1214,16 @@ test("counted frame waits preserve each drain and the pending capture barrier", 
             assert(engine.deferred_callbacks.empty());
         }
         }
-    `);
-});
+    `,
+        );
+    },
+);
 
-test("a static string switch selects its first matching body and empty-label fallthrough", { skip: !nativeTools }, () => {
-    const result = compileSource(`
+test(
+    "a static string switch selects its first matching body and empty-label fallthrough",
+    { skip: !nativeTools },
+    () => {
+        const result = compileSource(`
         let value = 0;
         switch ("second") {
             case "first": throw new Error("unreachable first");
@@ -981,12 +1238,19 @@ test("a static string switch selects its first matching body and empty-label fal
         switch ("absent") { case "first": throw new Error("unreachable absent"); }
         if (value !== 5) throw new Error("selected body");
     `);
-    assert.doesNotMatch(result.cpp, /unreachable|std::string_view .*switch/);
-    runCpp("static-switch", result.cpp);
-});
+        assert.doesNotMatch(
+            result.cpp,
+            /unreachable|std::string_view .*switch/,
+        );
+        runCpp("static-switch", result.cpp);
+    },
+);
 
-test("continuation locals initialize on every entry invocation and survive later yields", { skip: !nativeTools }, () => {
-    const result = compileSource(`
+test(
+    "continuation locals initialize on every entry invocation and survive later yields",
+    { skip: !nativeTools },
+    () => {
+        const result = compileSource(`
         import { createEngine, startEngine } from "@babylonjs/lite";
         const engine = await createEngine({});
         await startEngine(engine);
@@ -1003,14 +1267,19 @@ test("continuation locals initialize on every entry invocation and survive later
         const finalValue = 12;
         if (finalValue !== 12) throw new Error("final local");
     `);
-    assert.doesNotMatch(result.cpp, /static [^\n;]*v_(values|first|second|finalValue)\b/);
-    assert.doesNotMatch(result.cpp, /v_finalValue = [^\n]*->retain/);
-    assert.match(result.cpp, /ContinuationStorage/);
-    const pal = readFileSync("native/src/pal.cpp", "utf8");
-    const start = pal.indexOf("void defer_callback(");
-    const end = pal.indexOf("double set_timeout(", start);
-    assert.ok(start >= 0 && end > start);
-    runCpp("continuation-storage", `#define main generated_continuation_main\n${result.cpp}\n#undef main
+        assert.doesNotMatch(
+            result.cpp,
+            /static [^\n;]*v_(values|first|second|finalValue)\b/,
+        );
+        assert.doesNotMatch(result.cpp, /v_finalValue = [^\n]*->retain/);
+        assert.match(result.cpp, /ContinuationStorage/);
+        const pal = readFileSync("native/src/pal.cpp", "utf8");
+        const start = pal.indexOf("void defer_callback(");
+        const end = pal.indexOf("double set_timeout(", start);
+        assert.ok(start >= 0 && end > start);
+        runCpp(
+            "continuation-storage",
+            `#define main generated_continuation_main\n${result.cpp}\n#undef main
         #include <cassert>
         namespace bbl {
             ${pal.slice(start, end)}
@@ -1026,11 +1295,16 @@ test("continuation locals initialize on every entry invocation and survive later
                 assert(generated_continuation_main() == 0);
             }
         }
-    `);
-});
+    `,
+        );
+    },
+);
 
-test("a callback installed after engine start owns its local cells", { skip: !nativeTools }, () => {
-    const result = compileSource(`
+test(
+    "a callback installed after engine start owns its local cells",
+    { skip: !nativeTools },
+    () => {
+        const result = compileSource(`
         import { createEngine, createSceneContext, onBeforeRender, startEngine } from "@babylonjs/lite";
         const engine = await createEngine({});
         const scene = createSceneContext(engine);
@@ -1045,12 +1319,14 @@ test("a callback installed after engine start owns its local cells", { skip: !na
             }
         });
     `);
-    assert.doesNotMatch(result.cpp, /continuation_storage.hpp/);
-    const pal = readFileSync("native/src/pal.cpp", "utf8");
-    const start = pal.indexOf("void defer_callback(");
-    const end = pal.indexOf("double set_timeout(", start);
-    assert.ok(start >= 0 && end > start);
-    runCpp("continuation-callback-cells", `#define main generated_continuation_main\n${result.cpp}\n#undef main
+        assert.doesNotMatch(result.cpp, /continuation_storage.hpp/);
+        const pal = readFileSync("native/src/pal.cpp", "utf8");
+        const start = pal.indexOf("void defer_callback(");
+        const end = pal.indexOf("double set_timeout(", start);
+        assert.ok(start >= 0 && end > start);
+        runCpp(
+            "continuation-callback-cells",
+            `#define main generated_continuation_main\n${result.cpp}\n#undef main
         #include <cassert>
         namespace bbl {
             ${pal.slice(start, end)}
@@ -1071,11 +1347,16 @@ test("a callback installed after engine start owns its local cells", { skip: !na
                 assert(bbl::js::managed_node_count() == 0);
             }
         }
-    `);
-});
+    `,
+        );
+    },
+);
 
-test("direct mutual recursion uses automatic callables and preserves changing captures", { skip: !nativeTools }, () => {
-    const result = compileSource(`
+test(
+    "direct mutual recursion uses automatic callables and preserves changing captures",
+    { skip: !nativeTools },
+    () => {
+        const result = compileSource(`
         import { createEngine, createBox, type Mesh } from "@babylonjs/lite";
         function even(mesh: Mesh, count: number): number {
             if (count <= 0) return mesh.position.x;
@@ -1092,9 +1373,12 @@ test("direct mutual recursion uses automatic callables and preserves changing ca
         if (odd(box, 5) !== 15) throw new Error("changed recursion");
         createBox(engine);
     `);
-    assert.match(result.cpp, /make_recursive_group/);
-    assert.doesNotMatch(result.cpp, /Callback<double\(double\)>/);
-    runCpp("automatic-recursive-group", result.cpp + `
+        assert.match(result.cpp, /make_recursive_group/);
+        assert.doesNotMatch(result.cpp, /Callback<double\(double\)>/);
+        runCpp(
+            "automatic-recursive-group",
+            result.cpp +
+                `
         #include <cassert>
         namespace bbl {
             Engine create_engine(EngineOptions) { return {}; }
@@ -1106,12 +1390,19 @@ test("direct mutual recursion uses automatic callables and preserves changing ca
             }
             void mark_mesh_dirty(Engine&, MeshHandle) {}
         }
-    `);
-});
+    `,
+        );
+    },
+);
 
-test("hoisted Float32 tables keep target width, rounding and independent array identity", { skip: !nativeTools }, () => {
-    const values = Array.from({length: 130}, (_, index) => index === 0 ? "16777217" : index === 1 ? "-0" : "0.1");
-    const result = compileSource(`
+test(
+    "hoisted Float32 tables keep target width, rounding and independent array identity",
+    { skip: !nativeTools },
+    () => {
+        const values = Array.from({ length: 130 }, (_, index) =>
+            index === 0 ? "16777217" : index === 1 ? "-0" : "0.1",
+        );
+        const result = compileSource(`
         const first = new Float32Array([${values.join(",")}]);
         const second = new Float32Array([${values.join(",")}]);
         if (first[0] !== 16777216 || first[2] !== ${Math.fround(0.1)}) throw new Error("float rounding");
@@ -1119,13 +1410,20 @@ test("hoisted Float32 tables keep target width, rounding and independent array i
         first[0] = 8;
         if (second[0] !== 16777216) throw new Error("array identity");
     `);
-    assert.match(result.cpp, /std::array<float, 130>/);
-    assert.equal((result.cpp.match(/std::array<float, 130>/g) ?? []).length, 1);
-    runCpp("float-table", result.cpp);
-});
+        assert.match(result.cpp, /std::array<float, 130>/);
+        assert.equal(
+            (result.cpp.match(/std::array<float, 130>/g) ?? []).length,
+            1,
+        );
+        runCpp("float-table", result.cpp);
+    },
+);
 
-test("frame callbacks retain block and helper locals with shared mutations", { skip: !nativeTools }, () => {
-    const result = compileSource(`
+test(
+    "frame callbacks retain block and helper locals with shared mutations",
+    { skip: !nativeTools },
+    () => {
+        const result = compileSource(`
         import { createEngine, createSceneContext, onBeforeRender, startEngine } from "@babylonjs/lite";
         import type { SceneContext } from "@babylonjs/lite";
         function install(scene: SceneContext): void {
@@ -1146,11 +1444,17 @@ test("frame callbacks retain block and helper locals with shared mutations", { s
         install(scene);
         await startEngine(engine);
     `);
-    assert.doesNotMatch(result.cpp, /std::ref\(v_\w*(?:counter|blockCounter|label)\)/i);
-    assert.match(result.cpp, /make_gc_shared<double>\(0\.0\)/);
-    // A CPU host dispatches the actual emitted closures after both scopes end.
-    // Only the platform/registration boundary is substituted.
-    runCpp("frame-captures", result.cpp + `
+        assert.doesNotMatch(
+            result.cpp,
+            /std::ref\(v_\w*(?:counter|blockCounter|label)\)/i,
+        );
+        assert.match(result.cpp, /make_gc_shared<double>\(0\.0\)/);
+        // A CPU host dispatches the actual emitted closures after both scopes end.
+        // Only the platform/registration boundary is substituted.
+        runCpp(
+            "frame-captures",
+            result.cpp +
+                `
         namespace bbl {
         static std::vector<js::Callback<void(float)>> callbacks;
         Engine create_engine(EngineOptions) { return {}; }
@@ -1158,5 +1462,7 @@ test("frame callbacks retain block and helper locals with shared mutations", { s
         void on_before_render(Scene&, js::Callback<void(float)> callback) { callbacks.push_back(std::move(callback)); }
         void start_engine(Engine&) { for (const auto& callback : callbacks) callback(16); callbacks.clear(); }
         }
-    `);
-});
+    `,
+        );
+    },
+);

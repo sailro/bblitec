@@ -58,9 +58,7 @@ export function parseFlags(
         if (spec.value?.includes(name)) {
             const value = rest[index + 1];
             if (value === undefined) {
-                throw new Error(
-                    `${command}: ${argument} requires a value.`,
-                );
+                throw new Error(`${command}: ${argument} requires a value.`);
             }
             index += 1;
             parsed.values.set(name, value);
@@ -105,9 +103,7 @@ export function parseRgbTriple(
     const parts = value.split(",").map((part) => Number(part.trim()));
     if (
         parts.length !== 3 ||
-        parts.some(
-            (part) => !Number.isInteger(part) || part < 0 || part > 255,
-        )
+        parts.some((part) => !Number.isInteger(part) || part < 0 || part > 255)
     ) {
         throw new Error(
             `${command}: ${flag} must be three 0-255 integers 'r,g,b' (got '${value}').`,
@@ -140,5 +136,7 @@ export function usageFromSpec(spec: FlagSpec): string {
  */
 export function isMainModule(moduleUrl: string): boolean {
     const entry = process.argv[1];
-    return entry !== undefined && pathToFileURL(resolve(entry)).href === moduleUrl;
+    return (
+        entry !== undefined && pathToFileURL(resolve(entry)).href === moduleUrl
+    );
 }

@@ -2,11 +2,17 @@
 #include <cassert>
 #include <cstdio>
 
-namespace bbl::pal { std::string environment_variable(const char*) { return {}; } }
+namespace bbl::pal {
+std::string environment_variable(const char*) { return {}; }
+} // namespace bbl::pal
 
 template <typename F> void must_throw(F function) {
     bool threw = false;
-    try { function(); } catch (const std::exception&) { threw = true; }
+    try {
+        function();
+    } catch (const std::exception&) {
+        threw = true;
+    }
     assert(threw);
 }
 
@@ -22,9 +28,15 @@ int main() {
     bbl::disable_device_recovery(disabled);
     bbl::disable_device_recovery(disabled);
     assert(engine.device_recovery->registrations.size() == 1);
-    first->on_lost = [&] { ++lost; bbl::disable_device_recovery(first); };
+    first->on_lost = [&] {
+        ++lost;
+        bbl::disable_device_recovery(first);
+    };
     first->on_recovered = [&] { ++recovered; };
-    bbl::add_gpu_error_listener(old_device, [&](const std::string& error) { assert(error == "old"); ++errors; });
+    bbl::add_gpu_error_listener(old_device, [&](const std::string& error) {
+        assert(error == "old");
+        ++errors;
+    });
     bbl::report_gpu_error(engine, "old");
     assert(errors == 1);
     bbl::force_device_loss(engine);
@@ -42,7 +54,10 @@ int main() {
     must_throw([&] { bbl::force_device_loss(engine); });
 
     auto next = bbl::enable_device_lost_scene_recovery(engine);
-    next->on_failed = [&](const std::string& error) { assert(error == "rebuild failed"); ++failed; };
+    next->on_failed = [&](const std::string& error) {
+        assert(error == "rebuild failed");
+        ++failed;
+    };
     next->on_lost = [&] { engine.stopped = true; };
     bbl::force_device_loss(engine);
     bbl::begin_device_recovery(engine);

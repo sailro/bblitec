@@ -65,10 +65,15 @@ test("a wrong previous pin does not explain the move", () => {
     // produced them.
     const recorded = sha256(moduleText(previous, "scene1"));
     assert.equal(
-        moduleMoveExplainedByPin(moduleText(current, "scene1"), recorded, {
-            version: "1.25.0",
-            sourceVersion: "0".repeat(40),
-        }, current),
+        moduleMoveExplainedByPin(
+            moduleText(current, "scene1"),
+            recorded,
+            {
+                version: "1.25.0",
+                sourceVersion: "0".repeat(40),
+            },
+            current,
+        ),
         false,
     );
 });
@@ -79,10 +84,15 @@ test("both halves of the pin are reverted, not just the commit", () => {
     // reads as unexplained.
     const recorded = sha256(moduleText(previous, "scene1"));
     assert.equal(
-        moduleMoveExplainedByPin(moduleText(current, "scene1"), recorded, {
-            version: current.version,
-            sourceVersion: previous.sourceVersion,
-        }, current),
+        moduleMoveExplainedByPin(
+            moduleText(current, "scene1"),
+            recorded,
+            {
+                version: current.version,
+                sourceVersion: previous.sourceVersion,
+            },
+            current,
+        ),
         false,
     );
 });

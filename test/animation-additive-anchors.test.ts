@@ -11,10 +11,7 @@ import { lowerGltfAnimationPlayback } from "../src/lowering/gltf/animation-playb
 
 const MIXER_MODULE = "src/animation/weighted-gltf-mixer.ts";
 
-function doctoredContext(
-    needle: string,
-    replacement: string,
-): LoweringContext {
+function doctoredContext(needle: string, replacement: string): LoweringContext {
     return doctoredModuleContext(MIXER_MODULE, needle, replacement);
 }
 
@@ -41,15 +38,11 @@ test("the additive group writers carry the pinned conversion and guard", () => {
         /category_handler =\s*AnimationCategoryHandler::gltf_mixer;/,
     );
     // The direct currentTime write reaches the loader's own time writer.
-    assert.match(
-        lowered.source,
-        /void set_animation_current_time\(/,
-    );
+    assert.match(lowered.source, /void set_animation_current_time\(/);
     assert.doesNotMatch(
         // Without the reaches, neither writer is emitted — the gates keep
         // untouched scenes byte-identical.
-        new AnimationLowerer(new LoweringContext())
-            .lowerGroupOperations()
+        new AnimationLowerer(new LoweringContext()).lowerGroupOperations()
             .source,
         /set_animation_additive|set_animation_current_time/,
     );
@@ -63,12 +56,24 @@ test("the loader integrates source additive passes, arithmetic and playback", ()
     });
     // Native differential fixtures exercise the complete pass order and
     // Float32 additive arithmetic; these checks keep those bodies connected.
-    for (const body of [lowerGltfWeightedAnimationRuntime(context),
-        lowerGltfWeightedAnimationPasses(context), lowerGltfAnimationPlayback(context, true)])
-        assert.ok(adapter.source.includes(body), "the loader includes the tested source animation body");
+    for (const body of [
+        lowerGltfWeightedAnimationRuntime(context),
+        lowerGltfWeightedAnimationPasses(context),
+        lowerGltfAnimationPlayback(context, true),
+    ])
+        assert.ok(
+            adapter.source.includes(body),
+            "the loader includes the tested source animation body",
+        );
     assert.match(adapter.source, /asset\.set_clip_additive\s*=/);
-    assert.match(adapter.source, /clip\.additive_reference_time\s*=\s*reference_time/);
-    assert.match(adapter.source, /if\(clip\.stopped\|\|!clip\.playing\)continue;/);
+    assert.match(
+        adapter.source,
+        /clip\.additive_reference_time\s*=\s*reference_time/,
+    );
+    assert.match(
+        adapter.source,
+        /if\(clip\.stopped\|\|!clip\.playing\)continue;/,
+    );
 });
 
 test("a doctored additive difference changes the integrated source body", () => {
@@ -79,7 +84,10 @@ test("a doctored additive difference changes the integrated source body", () => 
     const original = lowerGltfWeightedAnimationRuntime(new LoweringContext());
     const changed = lowerGltfWeightedAnimationRuntime(context);
     assert.notEqual(changed, original);
-    const source = new GltfLowerer(context).lowerLoaderAdapter({animationBlending: true, animationAdditive: true}).source;
+    const source = new GltfLowerer(context).lowerLoaderAdapter({
+        animationBlending: true,
+        animationAdditive: true,
+    }).source;
     assert.ok(source.includes(changed));
     assert.ok(!source.includes(original));
 });

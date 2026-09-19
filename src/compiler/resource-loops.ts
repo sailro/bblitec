@@ -2,7 +2,12 @@ import { EmissionSet, EmissionMap } from "./emission-transaction.js";
 import type { LoweringServices } from "./lowering-services.js";
 import ts from "typescript";
 import { forEachAnalysisNode } from "./analysis-walk.js";
-import { declaredInDomLibrary, isPinnedType, pinnedHandleKind, platformHandleKind } from "./data-types.js";
+import {
+    declaredInDomLibrary,
+    isPinnedType,
+    pinnedHandleKind,
+    platformHandleKind,
+} from "./data-types.js";
 import { propertyRules } from "./properties.js";
 import {
     staticNumberValue,
@@ -23,7 +28,10 @@ import {
     rootIdentifier,
     unwrapExpression,
 } from "./syntax.js";
-import { nativeDataIterationIntrinsics, runtimeOnlyIntrinsics } from "./intrinsics/registry.js";
+import {
+    nativeDataIterationIntrinsics,
+    runtimeOnlyIntrinsics,
+} from "./intrinsics/registry.js";
 import { isMaterialCallEffectIntrinsic } from "./intrinsics/material.js";
 import { isAssetCallEffectIntrinsic } from "./intrinsics/asset.js";
 import { declarationInDefaultLibrary } from "./symbols.js";
@@ -31,55 +39,97 @@ import { resizingArrayMethods } from "./data-methods.js";
 import { sceneNodeTransformDescriptor } from "../scene-node-transform-descriptor.js";
 
 interface ResourceLoopContext
-    extends PositiveIntegerContext,
-    Pick<LoweringServices,
-        | "checker"
-        | "symbols"
-        | "canvasSizeProperty"
-        | "constArrayLiteral"
-        | "knownCollectionCardinality"
-        | "knownValueWithoutEvaluation"
-    > {}
+    extends
+        PositiveIntegerContext,
+        Pick<
+            LoweringServices,
+            | "checker"
+            | "symbols"
+            | "canvasSizeProperty"
+            | "constArrayLiteral"
+            | "knownCollectionCardinality"
+            | "knownValueWithoutEvaluation"
+        > {}
 
 function resolvedLoopCallee(
-    context: Pick<ResourceLoopContext, "checker"> & Partial<Pick<ResourceLoopContext, "lookupOptional" | "knownValueWithoutEvaluation">>,
+    context: Pick<ResourceLoopContext, "checker"> &
+        Partial<
+            Pick<
+                ResourceLoopContext,
+                "lookupOptional" | "knownValueWithoutEvaluation"
+            >
+        >,
     call: ts.CallExpression | ts.NewExpression,
 ): ts.Signature["declaration"] {
     const callee = unwrapExpression(call.expression);
-    const value = context.knownValueWithoutEvaluation?.(callee) ??
-        (ts.isIdentifier(callee) ? context.lookupOptional?.(callee) : undefined);
+    const value =
+        context.knownValueWithoutEvaluation?.(callee) ??
+        (ts.isIdentifier(callee)
+            ? context.lookupOptional?.(callee)
+            : undefined);
     const owner = ts.isPropertyAccessExpression(callee)
-        ? context.knownValueWithoutEvaluation?.(callee.expression) : undefined;
-    const declaration = value?.callbackDeclaration ??
-        (ts.isPropertyAccessExpression(callee) && !owner?.recordGetters?.[callee.name.text]
-            ? owner?.recordMethods?.[callee.name.text] : undefined);
+        ? context.knownValueWithoutEvaluation?.(callee.expression)
+        : undefined;
+    const declaration =
+        value?.callbackDeclaration ??
+        (ts.isPropertyAccessExpression(callee) &&
+        !owner?.recordGetters?.[callee.name.text]
+            ? owner?.recordMethods?.[callee.name.text]
+            : undefined);
     if (declaration) {
         return ts.isIdentifier(declaration)
             ? tryResolveFunctionDeclaration(context.checker, declaration)
             : declaration;
     }
-    return (ts.isIdentifier(callee)
-        ? tryResolveFunctionDeclaration(context.checker, callee)
-        : undefined) ?? context.checker.getResolvedSignature(call)?.declaration;
+    return (
+        (ts.isIdentifier(callee)
+            ? tryResolveFunctionDeclaration(context.checker, callee)
+            : undefined) ??
+        context.checker.getResolvedSignature(call)?.declaration
+    );
 }
 
 function expressionHandleKind(
     context: Pick<ResourceLoopContext, "checker">,
     expression: ts.Expression,
 ) {
-    const type = context.checker.getNonNullableType(context.checker.getTypeAtLocation(expression));
-    return pinnedHandleKind(type) ?? platformHandleKind(type) ??
-        (isPinnedType(type, ["StandardMaterialProps", "PbrMaterialProps"]) ? "material" : undefined);
+    const type = context.checker.getNonNullableType(
+        context.checker.getTypeAtLocation(expression),
+    );
+    return (
+        pinnedHandleKind(type) ??
+        platformHandleKind(type) ??
+        (isPinnedType(type, ["StandardMaterialProps", "PbrMaterialProps"])
+            ? "material"
+            : undefined)
+    );
 }
 
-function nativePlatformRead(context: Pick<ResourceLoopContext, "checker">, node: ts.Node): boolean {
+function nativePlatformRead(
+    context: Pick<ResourceLoopContext, "checker">,
+    node: ts.Node,
+): boolean {
     if (!ts.isPropertyAccessExpression(node)) return false;
     const owner = unwrapExpression(node.expression);
-    if (node.name.text === "getGamepads" && ts.isIdentifier(owner) && owner.text === "navigator") return true;
-    const type = context.checker.getNonNullableType(context.checker.getTypeAtLocation(owner));
+    if (
+        node.name.text === "getGamepads" &&
+        ts.isIdentifier(owner) &&
+        owner.text === "navigator"
+    )
+        return true;
+    const type = context.checker.getNonNullableType(
+        context.checker.getTypeAtLocation(owner),
+    );
     const kind = platformHandleKind(type);
-    return kind !== undefined && propertyRules.some(rule =>
-        rule.owner === kind && rule.property === node.name.text && !("unsupported" in rule));
+    return (
+        kind !== undefined &&
+        propertyRules.some(
+            (rule) =>
+                rule.owner === kind &&
+                rule.property === node.name.text &&
+                !("unsupported" in rule),
+        )
+    );
 }
 
 function nativeSceneMembershipChange(
@@ -87,16 +137,26 @@ function nativeSceneMembershipChange(
     imported: string,
     call: ts.CallExpression,
 ): boolean {
-    if (imported !== "addToScene" && imported !== "removeFromScene") return false;
-    const kind = call.arguments[1] && expressionHandleKind(context, call.arguments[1]);
+    if (imported !== "addToScene" && imported !== "removeFromScene")
+        return false;
+    const kind =
+        call.arguments[1] && expressionHandleKind(context, call.arguments[1]);
     return kind === "mesh" || kind === "transform-node";
 }
 
-function nativeTransformSet(context: Pick<ResourceLoopContext, "checker">, call: ts.CallExpression): boolean {
+function nativeTransformSet(
+    context: Pick<ResourceLoopContext, "checker">,
+    call: ts.CallExpression,
+): boolean {
     const callee = unwrapExpression(call.expression);
-    if (!ts.isPropertyAccessExpression(callee) || callee.name.text !== "set") return false;
+    if (!ts.isPropertyAccessExpression(callee) || callee.name.text !== "set")
+        return false;
     const owner = unwrapExpression(callee.expression);
-    if (!ts.isPropertyAccessExpression(owner) || !sceneNodeTransformDescriptor(owner.name.text)) return false;
+    if (
+        !ts.isPropertyAccessExpression(owner) ||
+        !sceneNodeTransformDescriptor(owner.name.text)
+    )
+        return false;
     const kind = expressionHandleKind(context, owner.expression);
     return kind === "mesh" || kind === "transform-node";
 }
@@ -112,47 +172,67 @@ export function walkReachedLoopNodes(
         if (functions.has(node)) return;
         functions.add(node);
         if (
-            (isSupportedFunction(node) || ts.isConstructorDeclaration(node) ||
-                ts.isGetAccessorDeclaration(node) || ts.isSetAccessorDeclaration(node)) &&
+            (isSupportedFunction(node) ||
+                ts.isConstructorDeclaration(node) ||
+                ts.isGetAccessorDeclaration(node) ||
+                ts.isSetAccessorDeclaration(node)) &&
             node.body
         ) {
             walk(node.body);
         }
     };
-    const walk = (subtree: ts.Node): void => forEachAnalysisNode(subtree, node => {
-        if (visit(node) === false) return "skip";
-        if (ts.isCallExpression(node) || ts.isNewExpression(node)) {
-            const callee = unwrapExpression(node.expression);
-            const imported = ts.isIdentifier(callee)
-                ? context.symbols.importedName(callee)
-                : undefined;
-            if (!imported) {
-                const called = resolvedLoopCallee(context, node);
-                if (called) walkFunction(called);
-            }
-            if (ts.isNewExpression(node)) {
-                const declaration = context.checker.getTypeAtLocation(callee)
-                    .symbol?.valueDeclaration;
-                if (declaration &&
-                    (ts.isClassDeclaration(declaration) || ts.isClassExpression(declaration))) {
-                    for (const member of declaration.members) {
-                        if (ts.isPropertyDeclaration(member) && member.initializer) walk(member.initializer);
+    const walk = (subtree: ts.Node): void =>
+        forEachAnalysisNode(
+            subtree,
+            (node) => {
+                if (visit(node) === false) return "skip";
+                if (ts.isCallExpression(node) || ts.isNewExpression(node)) {
+                    const callee = unwrapExpression(node.expression);
+                    const imported = ts.isIdentifier(callee)
+                        ? context.symbols.importedName(callee)
+                        : undefined;
+                    if (!imported) {
+                        const called = resolvedLoopCallee(context, node);
+                        if (called) walkFunction(called);
+                    }
+                    if (ts.isNewExpression(node)) {
+                        const declaration =
+                            context.checker.getTypeAtLocation(callee).symbol
+                                ?.valueDeclaration;
+                        if (
+                            declaration &&
+                            (ts.isClassDeclaration(declaration) ||
+                                ts.isClassExpression(declaration))
+                        ) {
+                            for (const member of declaration.members) {
+                                if (
+                                    ts.isPropertyDeclaration(member) &&
+                                    member.initializer
+                                )
+                                    walk(member.initializer);
+                            }
+                        }
+                    }
+                    for (const argument of node.arguments ?? []) {
+                        const unwrapped = unwrapExpression(argument);
+                        if (isSupportedFunction(unwrapped))
+                            walkFunction(unwrapped);
                     }
                 }
-            }
-            for (const argument of node.arguments ?? []) {
-                const unwrapped = unwrapExpression(argument);
-                if (isSupportedFunction(unwrapped)) walkFunction(unwrapped);
-            }
-        }
-        if (ts.isPropertyAccessExpression(node)) {
-            for (const declaration of context.checker.getSymbolAtLocation(node.name)
-                ?.declarations ?? []) {
-                if (ts.isGetAccessorDeclaration(declaration) ||
-                    ts.isSetAccessorDeclaration(declaration)) walkFunction(declaration);
-            }
-        }
-    }, { skip: node => node !== subtree && ts.isFunctionLike(node) });
+                if (ts.isPropertyAccessExpression(node)) {
+                    for (const declaration of context.checker.getSymbolAtLocation(
+                        node.name,
+                    )?.declarations ?? []) {
+                        if (
+                            ts.isGetAccessorDeclaration(declaration) ||
+                            ts.isSetAccessorDeclaration(declaration)
+                        )
+                            walkFunction(declaration);
+                    }
+                }
+            },
+            { skip: (node) => node !== subtree && ts.isFunctionLike(node) },
+        );
     walk(root);
 }
 
@@ -187,56 +267,101 @@ export function requiresStaticDataIteration(
     walkReachedLoopNodes(context, statement, (node) => {
         if (required) return false;
         // Handle and finite record properties dispatch by their source key.
-        if (ts.isElementAccessExpression(node) &&
-            !ts.isStringLiteralLike(unwrapExpression(node.argumentExpression))) {
-            const ownerType = context.checker.getNonNullableType(context.checker.getTypeAtLocation(node.expression));
-            const keyType = context.checker.getTypeAtLocation(node.argumentExpression);
-            const stringKey = (keyType.isUnion() ? keyType.types : [keyType])
-                .every((type) => (type.flags & ts.TypeFlags.StringLike) !== 0);
-            if (expressionHandleKind(context, node.expression) ||
-                (stringKey && expressionHandleKind(context, node) &&
-                    !context.checker.getIndexInfoOfType(ownerType, ts.IndexKind.String))) {
+        if (
+            ts.isElementAccessExpression(node) &&
+            !ts.isStringLiteralLike(unwrapExpression(node.argumentExpression))
+        ) {
+            const ownerType = context.checker.getNonNullableType(
+                context.checker.getTypeAtLocation(node.expression),
+            );
+            const keyType = context.checker.getTypeAtLocation(
+                node.argumentExpression,
+            );
+            const stringKey = (
+                keyType.isUnion() ? keyType.types : [keyType]
+            ).every((type) => (type.flags & ts.TypeFlags.StringLike) !== 0);
+            if (
+                expressionHandleKind(context, node.expression) ||
+                (stringKey &&
+                    expressionHandleKind(context, node) &&
+                    !context.checker.getIndexInfoOfType(
+                        ownerType,
+                        ts.IndexKind.String,
+                    ))
+            ) {
                 required = true;
                 return false;
             }
         }
         // Canvas extents have native reads; writes still belong to their
         // normal DOM/retained-canvas lowering and cannot use this exemption.
-        if (writesThroughTrackedRoot(node, (target) => {
-            const member = unwrapExpression(target);
-            const symbol = ts.isPropertyAccessExpression(member)
-                ? context.checker.getSymbolAtLocation(member.name) : undefined;
-            return symbol !== undefined && declaredInDomLibrary(symbol);
-        })) {
+        if (
+            writesThroughTrackedRoot(node, (target) => {
+                const member = unwrapExpression(target);
+                const symbol = ts.isPropertyAccessExpression(member)
+                    ? context.checker.getSymbolAtLocation(member.name)
+                    : undefined;
+                return symbol !== undefined && declaredInDomLibrary(symbol);
+            })
+        ) {
             required = true;
             return false;
         }
         const symbol = ts.isPropertyAccessExpression(node)
             ? context.checker.getSymbolAtLocation(node.name)
             : ts.isCallExpression(node) && ts.isIdentifier(node.expression)
-                ? context.checker.getSymbolAtLocation(node.expression)
-                : undefined;
-        if (symbol && declaredInDomLibrary(symbol) &&
-            !(ts.isPropertyAccessExpression(node) && context.canvasSizeProperty(node)) &&
-            !nativePlatformRead(context, node)) {
+              ? context.checker.getSymbolAtLocation(node.expression)
+              : undefined;
+        if (
+            symbol &&
+            declaredInDomLibrary(symbol) &&
+            !(
+                ts.isPropertyAccessExpression(node) &&
+                context.canvasSizeProperty(node)
+            ) &&
+            !nativePlatformRead(context, node)
+        ) {
             required = true;
             return false;
         }
         // Readback intrinsics return their resolved native value after waiting
         // for submitted work. Their await does not create a frame continuation
         // or a generation-owned resource. Still walk the call's arguments.
-        const awaited = ts.isAwaitExpression(node) ? unwrapExpression(node.expression) : undefined;
-        const awaitedCallee = awaited && ts.isCallExpression(awaited)
-            ? unwrapExpression(awaited.expression) : undefined;
-        const awaitedIntrinsic = awaitedCallee && ts.isIdentifier(awaitedCallee)
-            ? context.symbols.importedName(awaitedCallee) : undefined;
-        const effectAwait = callEffects && awaited && ts.isCallExpression(awaited) &&
-            ((awaitedIntrinsic && (isMaterialCallEffectIntrinsic(awaitedIntrinsic) || isAssetCallEffectIntrinsic(awaitedIntrinsic))) ||
+        const awaited = ts.isAwaitExpression(node)
+            ? unwrapExpression(node.expression)
+            : undefined;
+        const awaitedCallee =
+            awaited && ts.isCallExpression(awaited)
+                ? unwrapExpression(awaited.expression)
+                : undefined;
+        const awaitedIntrinsic =
+            awaitedCallee && ts.isIdentifier(awaitedCallee)
+                ? context.symbols.importedName(awaitedCallee)
+                : undefined;
+        const effectAwait =
+            callEffects &&
+            awaited &&
+            ts.isCallExpression(awaited) &&
+            ((awaitedIntrinsic &&
+                (isMaterialCallEffectIntrinsic(awaitedIntrinsic) ||
+                    isAssetCallEffectIntrinsic(awaitedIntrinsic))) ||
                 isSupportedFunction(resolvedLoopCallee(context, awaited)));
-        if ((ts.isAwaitExpression(node) && !effectAwait &&
-                !(awaitedIntrinsic && (runtimeOnlyIntrinsics.has(awaitedIntrinsic) ||
-                    (awaited && ts.isCallExpression(awaited) && runtimeProfileCall(context, awaitedIntrinsic, awaited))))) ||
-            ts.isYieldExpression(node)) {
+        if (
+            (ts.isAwaitExpression(node) &&
+                !effectAwait &&
+                !(
+                    awaitedIntrinsic &&
+                    (runtimeOnlyIntrinsics.has(awaitedIntrinsic) ||
+                        (awaited &&
+                            ts.isCallExpression(awaited) &&
+                            runtimeProfileCall(
+                                context,
+                                awaitedIntrinsic,
+                                awaited,
+                            )))
+                )) ||
+            ts.isYieldExpression(node)
+        ) {
             required = true;
             return false;
         }
@@ -245,10 +370,17 @@ export function requiresStaticDataIteration(
             const imported = ts.isIdentifier(callee)
                 ? context.symbols.importedName(callee)
                 : undefined;
-            if (imported && !nativeDataIterationIntrinsics.has(imported) &&
-                !(callEffects && (isMaterialCallEffectIntrinsic(imported) || isAssetCallEffectIntrinsic(imported))) &&
+            if (
+                imported &&
+                !nativeDataIterationIntrinsics.has(imported) &&
+                !(
+                    callEffects &&
+                    (isMaterialCallEffectIntrinsic(imported) ||
+                        isAssetCallEffectIntrinsic(imported))
+                ) &&
                 !nativeSceneMembershipChange(context, imported, node) &&
-                !runtimeProfileCall(context, imported, node)) {
+                !runtimeProfileCall(context, imported, node)
+            ) {
                 required = true;
                 return false;
             }
@@ -256,22 +388,25 @@ export function requiresStaticDataIteration(
         const target = isAssignmentExpression(node)
             ? node.left
             : isUpdateExpression(node)
-                ? node.operand
-                : undefined;
+              ? node.operand
+              : undefined;
         if (!target) return;
         let member = unwrapExpression(target);
         while (ts.isPropertyAccessExpression(member)) {
             const kind = expressionHandleKind(context, member.expression);
             if (kind) {
                 const property = member.name.text;
-                required = kind === "mesh" || kind === "transform-node"
-                    ? !runtimeMeshProperties.has(property) &&
-                        property !== "material" && property !== "receiveShadows"
-                    : kind === "node-input"
-                        ? property !== "texture"
-                    : kind === "material"
-                        ? !callEffects && !runtimeMaterialProperties.has(property)
-                        : true;
+                required =
+                    kind === "mesh" || kind === "transform-node"
+                        ? !runtimeMeshProperties.has(property) &&
+                          property !== "material" &&
+                          property !== "receiveShadows"
+                        : kind === "node-input"
+                          ? property !== "texture"
+                          : kind === "material"
+                            ? !callEffects &&
+                              !runtimeMaterialProperties.has(property)
+                            : true;
                 return !required;
             }
             member = unwrapExpression(member.expression);
@@ -281,35 +416,63 @@ export function requiresStaticDataIteration(
 }
 
 /** Shared bodies use native construction profiles and ordinary resource operations. */
-export function canShareFunctionBody(context: ResourceLoopContext, body: ts.Node, callEffects = false): boolean {
+export function canShareFunctionBody(
+    context: ResourceLoopContext,
+    body: ts.Node,
+    callEffects = false,
+): boolean {
     if (requiresStaticDataIteration(context, body, callEffects)) return false;
     let touchesHandle = false;
     let specializes = false;
-    walkReachedLoopNodes(context, body, node => {
-        if ((ts.isIdentifier(node) || ts.isPropertyAccessExpression(node) || ts.isElementAccessExpression(node) || ts.isCallExpression(node)) &&
-            expressionHandleKind(context, node)) touchesHandle = true;
+    walkReachedLoopNodes(context, body, (node) => {
+        if (
+            (ts.isIdentifier(node) ||
+                ts.isPropertyAccessExpression(node) ||
+                ts.isElementAccessExpression(node) ||
+                ts.isCallExpression(node)) &&
+            expressionHandleKind(context, node)
+        )
+            touchesHandle = true;
         if (nativePlatformRead(context, node)) touchesHandle = true;
         if (!ts.isCallExpression(node)) return;
         const callee = unwrapExpression(node.expression);
-        const imported = ts.isIdentifier(callee) ? context.symbols.importedName(callee) : undefined;
-        if (callEffects && imported && (isMaterialCallEffectIntrinsic(imported) || isAssetCallEffectIntrinsic(imported))) touchesHandle = true;
+        const imported = ts.isIdentifier(callee)
+            ? context.symbols.importedName(callee)
+            : undefined;
+        if (
+            callEffects &&
+            imported &&
+            (isMaterialCallEffectIntrinsic(imported) ||
+                isAssetCallEffectIntrinsic(imported))
+        )
+            touchesHandle = true;
         const resolved = resolvedLoopCallee(context, node);
-        if (resolved && !resolved.getSourceFile().isDeclarationFile &&
-            !(isSupportedFunction(resolved) && resolved.body)) specializes = true;
+        if (
+            resolved &&
+            !resolved.getSourceFile().isDeclarationFile &&
+            !(isSupportedFunction(resolved) && resolved.body)
+        )
+            specializes = true;
     });
     return touchesHandle && !specializes;
 }
 
 /** Construction and generation-dependent operations replay their ordinary recorder effects. */
-export function sharedFunctionHasCallEffects(context: ResourceLoopContext, body: ts.Node): boolean {
+export function sharedFunctionHasCallEffects(
+    context: ResourceLoopContext,
+    body: ts.Node,
+): boolean {
     if (!canShareFunctionBody(context, body, true)) return false;
     if (requiresStaticDataIteration(context, body)) return true;
     let constructs = false;
-    walkReachedLoopNodes(context, body, node => {
+    walkReachedLoopNodes(context, body, (node) => {
         if (!ts.isCallExpression(node)) return;
         const callee = unwrapExpression(node.expression);
-        const imported = ts.isIdentifier(callee) ? context.symbols.importedName(callee) : undefined;
-        if (imported && runtimeProfileConstructionIntrinsics.has(imported)) constructs = true;
+        const imported = ts.isIdentifier(callee)
+            ? context.symbols.importedName(callee)
+            : undefined;
+        if (imported && runtimeProfileConstructionIntrinsics.has(imported))
+            constructs = true;
     });
     return constructs;
 }
@@ -321,7 +484,8 @@ export function loopBoundMayChange(
     bound: ts.Expression,
 ): boolean {
     const unwrapped = unwrapExpression(bound);
-    const arrayLength = ts.isPropertyAccessExpression(unwrapped) &&
+    const arrayLength =
+        ts.isPropertyAccessExpression(unwrapped) &&
         unwrapped.name.text === "length" &&
         ts.isIdentifier(unwrapExpression(unwrapped.expression));
     const dependencies: ts.Identifier[] = [];
@@ -337,42 +501,73 @@ export function loopBoundMayChange(
     reads(bound);
     if (dependencies.length === 0) return false;
     const reached = new EmissionSet<ts.Node>();
-    walkReachedLoopNodes(context, body, (node) => { reached.add(node); });
-    return dependencies.some((identifier) => aliasedMutationScan(
-        identifier,
-        (name) => context.symbols.valueSymbol(name),
-        {
-            aliasingInitializer: (initializer, scan) => {
-                if (arrayLength) return scan.namesAlias(unwrapExpression(initializer));
-                const root = rootIdentifier(initializer);
-                if (!root || !scan.namesAlias(root)) return false;
-                const type = context.checker.getTypeAtLocation(initializer);
-                return (type.flags & (ts.TypeFlags.Object | ts.TypeFlags.Intersection | ts.TypeFlags.Union)) !== 0;
+    walkReachedLoopNodes(context, body, (node) => {
+        reached.add(node);
+    });
+    return dependencies.some((identifier) =>
+        aliasedMutationScan(
+            identifier,
+            (name) => context.symbols.valueSymbol(name),
+            {
+                aliasingInitializer: (initializer, scan) => {
+                    if (arrayLength)
+                        return scan.namesAlias(unwrapExpression(initializer));
+                    const root = rootIdentifier(initializer);
+                    if (!root || !scan.namesAlias(root)) return false;
+                    const type = context.checker.getTypeAtLocation(initializer);
+                    return (
+                        (type.flags &
+                            (ts.TypeFlags.Object |
+                                ts.TypeFlags.Intersection |
+                                ts.TypeFlags.Union)) !==
+                        0
+                    );
+                },
+                mutates: (node, scan) => {
+                    if (!reached.has(node)) return false;
+                    const namesAlias = (expression: ts.Expression): boolean => {
+                        if (arrayLength) {
+                            const target = unwrapExpression(expression);
+                            return (
+                                scan.namesAlias(target) ||
+                                ((ts.isElementAccessExpression(target) ||
+                                    (ts.isPropertyAccessExpression(target) &&
+                                        target.name.text === "length")) &&
+                                    scan.namesAlias(
+                                        unwrapExpression(target.expression),
+                                    ))
+                            );
+                        }
+                        const root = rootIdentifier(expression);
+                        return root !== undefined && scan.namesAlias(root);
+                    };
+                    return (
+                        writesThroughTrackedRoot(
+                            node,
+                            namesAlias,
+                            arrayLength
+                                ? (method) => resizingArrayMethods.has(method)
+                                : undefined,
+                        ) ||
+                        (ts.isCallExpression(node) &&
+                            node.arguments.some(
+                                (argument, index) =>
+                                    (arrayLength
+                                        ? scan.namesAlias(
+                                              unwrapExpression(argument),
+                                          )
+                                        : namesAlias(argument)) &&
+                                    !callArgumentIsReadOnly(
+                                        context.checker,
+                                        node,
+                                        index,
+                                    ),
+                            ))
+                    );
+                },
             },
-            mutates: (node, scan) => {
-                if (!reached.has(node)) return false;
-                const namesAlias = (expression: ts.Expression): boolean => {
-                    if (arrayLength) {
-                        const target = unwrapExpression(expression);
-                        return scan.namesAlias(target) ||
-                            ((ts.isElementAccessExpression(target) ||
-                                (ts.isPropertyAccessExpression(target) && target.name.text === "length")) &&
-                                scan.namesAlias(unwrapExpression(target.expression)));
-                    }
-                    const root = rootIdentifier(expression);
-                    return root !== undefined && scan.namesAlias(root);
-                };
-                return writesThroughTrackedRoot(node, namesAlias,
-                    arrayLength ? (method) => resizingArrayMethods.has(method) : undefined) ||
-                    (ts.isCallExpression(node) && node.arguments.some(
-                        (argument, index) => (arrayLength
-                            ? scan.namesAlias(unwrapExpression(argument))
-                            : namesAlias(argument)) &&
-                            !callArgumentIsReadOnly(context.checker, node, index),
-                    ));
-            },
-        },
-    ));
+        ),
+    );
 }
 
 interface StaticIndexLoop {
@@ -403,8 +598,10 @@ export function staticIndexLoopShape(
         statement.initializer.declarations.length !== 1 ||
         !statement.condition ||
         !ts.isBinaryExpression(statement.condition) ||
-        (statement.condition.operatorToken.kind !== ts.SyntaxKind.LessThanToken &&
-            statement.condition.operatorToken.kind !== ts.SyntaxKind.LessThanEqualsToken) ||
+        (statement.condition.operatorToken.kind !==
+            ts.SyntaxKind.LessThanToken &&
+            statement.condition.operatorToken.kind !==
+                ts.SyntaxKind.LessThanEqualsToken) ||
         !statement.incrementor
     ) {
         return undefined;
@@ -437,7 +634,9 @@ export function staticIndexLoopShape(
         indexBinding: declaration.name,
         start,
         end: statement.condition.right,
-        inclusive: statement.condition.operatorToken.kind === ts.SyntaxKind.LessThanEqualsToken,
+        inclusive:
+            statement.condition.operatorToken.kind ===
+            ts.SyntaxKind.LessThanEqualsToken,
     };
 }
 
@@ -461,14 +660,15 @@ const meshFactories: ReadonlyMap<string, readonly string[]> = new EmissionMap([
     ["createTorusKnot", []],
 ]);
 /** These native factories have a closed call-site profile, not a baked body. */
-export const runtimeProfileConstructionIntrinsics: ReadonlySet<string> = new EmissionSet([
-    ...meshFactories.keys(),
-    "createMeshFromData",
-    "cloneTransformNode",
-    "createStandardMaterial",
-    "createShaderMaterial",
-    "parseNodeMaterialFromSnippet",
-]);
+export const runtimeProfileConstructionIntrinsics: ReadonlySet<string> =
+    new EmissionSet([
+        ...meshFactories.keys(),
+        "createMeshFromData",
+        "cloneTransformNode",
+        "createStandardMaterial",
+        "createShaderMaterial",
+        "parseNodeMaterialFromSnippet",
+    ]);
 
 function runtimeProfileCall(
     context: ResourceLoopContext,
@@ -481,20 +681,45 @@ function runtimeProfileCall(
     const expression = context.resolveStaticExpression(call.arguments[1]);
     if (!ts.isObjectLiteralExpression(expression)) return false;
     return expression.properties.every((property) => {
-        if (!ts.isPropertyAssignment(property) && !ts.isShorthandPropertyAssignment(property)) return false;
+        if (
+            !ts.isPropertyAssignment(property) &&
+            !ts.isShorthandPropertyAssignment(property)
+        )
+            return false;
         const name = property.name;
-        if (!ts.isIdentifier(name) && !ts.isStringLiteralLike(name)) return false;
-        return !options.includes(name.text) ||
-            staticNumberValue(context, ts.isPropertyAssignment(property) ? property.initializer : property.name) !== undefined;
+        if (!ts.isIdentifier(name) && !ts.isStringLiteralLike(name))
+            return false;
+        return (
+            !options.includes(name.text) ||
+            staticNumberValue(
+                context,
+                ts.isPropertyAssignment(property)
+                    ? property.initializer
+                    : property.name,
+            ) !== undefined
+        );
     });
 }
 const runtimeMeshProperties = new EmissionSet([
-    "position", "rotation", "rotationQuaternion", "scaling",
-    "name", "visibility", "visible", "isVisible", "isPickable", "renderOrder",
-    "boundMin", "boundMax",
+    "position",
+    "rotation",
+    "rotationQuaternion",
+    "scaling",
+    "name",
+    "visibility",
+    "visible",
+    "isVisible",
+    "isPickable",
+    "renderOrder",
+    "boundMin",
+    "boundMax",
 ]);
 const runtimeMaterialProperties = new EmissionSet([
-    "diffuseColor", "specularColor", "ambientColor", "emissiveColor", "specularPower",
+    "diffuseColor",
+    "specularColor",
+    "ambientColor",
+    "emissiveColor",
+    "specularPower",
 ]);
 
 /**
@@ -556,7 +781,8 @@ export function parameterizedResourceLoop(
     };
     const staticContext: PositiveIntegerContext = {
         resolveStaticExpression: resolve,
-        isDefaultLibraryIdentifier: (identifier) => context.isDefaultLibraryIdentifier(identifier),
+        isDefaultLibraryIdentifier: (identifier) =>
+            context.isDefaultLibraryIdentifier(identifier),
         lookup: (identifier) => context.lookup(identifier),
         lookupOptional: (identifier) =>
             indices.has(context.symbols.valueSymbol(identifier)!)
@@ -584,8 +810,12 @@ export function parameterizedResourceLoop(
             if (indices.has(symbol) || rebound.has(symbol)) return false;
             const bound = bindings.get(symbol);
             const value = bound ? undefined : context.lookupOptional(node);
-            if (value?.kind === "engine" || value?.kind === "scene" ||
-                value?.kind === "material" || value?.kind === "texture") {
+            if (
+                value?.kind === "engine" ||
+                value?.kind === "scene" ||
+                value?.kind === "material" ||
+                value?.kind === "texture"
+            ) {
                 return true;
             }
             const declaration = symbol.valueDeclaration;
@@ -594,12 +824,18 @@ export function parameterizedResourceLoop(
                 (declaration && ts.isVariableDeclaration(declaration)
                     ? declaration.initializer
                     : undefined);
-            const localStandard = initializer && ts.isCallExpression(initializer) &&
+            const localStandard =
+                initializer &&
+                ts.isCallExpression(initializer) &&
                 ts.isIdentifier(initializer.expression) &&
-                context.symbols.importedName(initializer.expression) === "createStandardMaterial";
+                context.symbols.importedName(initializer.expression) ===
+                    "createStandardMaterial";
             if (mutated.has(symbol) && !localStandard) return false;
             if (initializer) {
-                return invariant(initializer, new EmissionSet([...seen, symbol]));
+                return invariant(
+                    initializer,
+                    new EmissionSet([...seen, symbol]),
+                );
             }
             return context.lookupOptional(node) !== undefined;
         }
@@ -607,39 +843,54 @@ export function parameterizedResourceLoop(
             return invariant(node.expression, seen);
         }
         if (ts.isCallExpression(node)) {
-            return ts.isIdentifier(node.expression) &&
+            return (
+                ts.isIdentifier(node.expression) &&
                 context.symbols.importedName(node.expression) ===
-                    "createStandardMaterial";
+                    "createStandardMaterial"
+            );
         }
         if (ts.isObjectLiteralExpression(node)) {
             return node.properties.every((property) =>
                 ts.isPropertyAssignment(property)
                     ? invariant(property.initializer, seen)
                     : ts.isShorthandPropertyAssignment(property) &&
-                        invariant(property.name, seen),
+                      invariant(property.name, seen),
             );
         }
         let answer = true;
         ts.forEachChild(node, (child) => {
-            if (ts.isExpression(child) && !invariant(child, seen)) answer = false;
+            if (ts.isExpression(child) && !invariant(child, seen))
+                answer = false;
         });
         return answer;
     };
     const forOfCount = (loop: ts.ForOfStatement): number | undefined => {
-        if (loop === statement && knownIterations !== undefined) return knownIterations;
-        if (loop.awaitModifier ||
+        if (loop === statement && knownIterations !== undefined)
+            return knownIterations;
+        if (
+            loop.awaitModifier ||
             !ts.isVariableDeclarationList(loop.initializer) ||
-            loop.initializer.declarations.length !== 1) return undefined;
+            loop.initializer.declarations.length !== 1
+        )
+            return undefined;
         const count = context.knownCollectionCardinality(loop.expression);
-        if (count !== undefined && !loopBoundMayChange(context, loop.statement, loop.expression)) return count;
+        if (
+            count !== undefined &&
+            !loopBoundMayChange(context, loop.statement, loop.expression)
+        )
+            return count;
         if (!invariant(loop.expression)) return undefined;
         const resolved = resolve(loop.expression);
         const expression = context.constArrayLiteral(resolved) ?? resolved;
         if (ts.isArrayLiteralExpression(expression)) {
             let effect = false;
             const check = (node: ts.Node): void => {
-                if (ts.isCallExpression(node) || ts.isNewExpression(node) ||
-                    ts.isSpreadElement(node) || ts.isOmittedExpression(node)) {
+                if (
+                    ts.isCallExpression(node) ||
+                    ts.isNewExpression(node) ||
+                    ts.isSpreadElement(node) ||
+                    ts.isOmittedExpression(node)
+                ) {
                     effect = true;
                     return;
                 }
@@ -651,12 +902,19 @@ export function parameterizedResourceLoop(
         const value = ts.isIdentifier(expression)
             ? context.lookupOptional(expression)
             : undefined;
-        if (value?.collectionCardinality || value?.staticElementsOwner?.collectionCardinality) {
+        if (
+            value?.collectionCardinality ||
+            value?.staticElementsOwner?.collectionCardinality
+        ) {
             return context.knownCollectionCardinality(loop.expression);
         }
-        return (value?.tupleElements ??
-            value?.staticElementsOwner?.staticElements ??
-            value?.staticElements)?.length ?? context.knownCollectionCardinality(loop.expression);
+        return (
+            (
+                value?.tupleElements ??
+                value?.staticElementsOwner?.staticElements ??
+                value?.staticElements
+            )?.length ?? context.knownCollectionCardinality(loop.expression)
+        );
     };
     const visitFunction = (
         call: ts.CallExpression,
@@ -672,7 +930,10 @@ export function parameterizedResourceLoop(
         fn.parameters.forEach((parameter, index) => {
             const argument = call.arguments[index] ?? parameter.initializer;
             if (ts.isIdentifier(parameter.name) && argument) {
-                bindings.set(context.symbols.valueSymbol(parameter.name)!, resolve(argument));
+                bindings.set(
+                    context.symbols.valueSymbol(parameter.name)!,
+                    resolve(argument),
+                );
             }
         });
         let work = 0;
@@ -680,8 +941,12 @@ export function parameterizedResourceLoop(
         dataFunction = !requiresStaticLoopIteration(context, fn.body);
         if (ts.isBlock(fn.body)) {
             for (const [index, child] of fn.body.statements.entries()) {
-                if (ts.isReturnStatement(child) && index === fn.body.statements.length - 1) {
-                    if (child.expression) work += visit(child.expression, conditional);
+                if (
+                    ts.isReturnStatement(child) &&
+                    index === fn.body.statements.length - 1
+                ) {
+                    if (child.expression)
+                        work += visit(child.expression, conditional);
                 } else {
                     work += visit(child, conditional);
                 }
@@ -691,37 +956,50 @@ export function parameterizedResourceLoop(
         }
         dataFunction = previousDataFunction;
         bindings.clear();
-        for (const [symbol, expression] of previous) bindings.set(symbol, expression);
+        for (const [symbol, expression] of previous)
+            bindings.set(symbol, expression);
         active.delete(fn);
         return work;
     };
     const visit = (node: ts.Node, conditional: boolean): number => {
         if (!safe || ts.isFunctionLike(node)) return 0;
         if (ts.isIfStatement(node) || ts.isConditionalExpression(node)) {
-            const condition = resolve(ts.isIfStatement(node) ? node.expression : node.condition);
-            const fixed = condition.kind === ts.SyntaxKind.TrueKeyword
-                ? true
-                : condition.kind === ts.SyntaxKind.FalseKeyword
-                    ? false
-                    : ts.isIdentifier(condition) &&
-                        !indices.has(context.symbols.valueSymbol(condition)!) &&
-                        !mutated.has(context.symbols.valueSymbol(condition)!)
+            const condition = resolve(
+                ts.isIfStatement(node) ? node.expression : node.condition,
+            );
+            const fixed =
+                condition.kind === ts.SyntaxKind.TrueKeyword
+                    ? true
+                    : condition.kind === ts.SyntaxKind.FalseKeyword
+                      ? false
+                      : ts.isIdentifier(condition) &&
+                          !indices.has(
+                              context.symbols.valueSymbol(condition)!,
+                          ) &&
+                          !mutated.has(context.symbols.valueSymbol(condition)!)
                         ? context.lookupOptional(condition)?.staticBoolean
                         : undefined;
             if (fixed !== undefined) {
                 const selected = ts.isIfStatement(node)
-                    ? fixed ? node.thenStatement : node.elseStatement
-                    : fixed ? node.whenTrue : node.whenFalse;
+                    ? fixed
+                        ? node.thenStatement
+                        : node.elseStatement
+                    : fixed
+                      ? node.whenTrue
+                      : node.whenFalse;
                 return selected ? visit(selected, conditional) : 0;
             }
         }
         if (ts.isForStatement(node)) {
             const shape = staticIndexLoopShape(context.symbols, node);
-            const end = shape && !loopBoundMayChange(context, node.statement, shape.end)
-                ? boundValue(shape.end)
-                : undefined;
-            const count = shape && end !== undefined
-                ? staticIndexLoopIterations(shape, end) : undefined;
+            const end =
+                shape && !loopBoundMayChange(context, node.statement, shape.end)
+                    ? boundValue(shape.end)
+                    : undefined;
+            const count =
+                shape && end !== undefined
+                    ? staticIndexLoopIterations(shape, end)
+                    : undefined;
             if (!shape || count === undefined) {
                 safe = false;
                 return 0;
@@ -734,7 +1012,10 @@ export function parameterizedResourceLoop(
         }
         if (ts.isForOfStatement(node)) {
             const count = forOfCount(node);
-            if (count === undefined || !ts.isVariableDeclarationList(node.initializer)) {
+            if (
+                count === undefined ||
+                !ts.isVariableDeclarationList(node.initializer)
+            ) {
                 safe = false;
                 return 0;
             }
@@ -761,40 +1042,57 @@ export function parameterizedResourceLoop(
             return node.expression ? visit(node.expression, conditional) : 0;
         }
         if (
-            ts.isWhileStatement(node) || ts.isDoStatement(node) ||
+            ts.isWhileStatement(node) ||
+            ts.isDoStatement(node) ||
             ts.isForInStatement(node) ||
-            ts.isBreakStatement(node) || ts.isContinueStatement(node) ||
-            ts.isReturnStatement(node) || ts.isTryStatement(node) ||
-            ts.isAwaitExpression(node) || ts.isNewExpression(node)
+            ts.isBreakStatement(node) ||
+            ts.isContinueStatement(node) ||
+            ts.isReturnStatement(node) ||
+            ts.isTryStatement(node) ||
+            ts.isAwaitExpression(node) ||
+            ts.isNewExpression(node)
         ) {
             safe = false;
             return 0;
         }
-        if (writesThroughTrackedRoot(node, (target) =>
-            ts.isIdentifier(target) &&
-            indices.has(context.symbols.valueSymbol(target)!),
-        )) {
+        if (
+            writesThroughTrackedRoot(
+                node,
+                (target) =>
+                    ts.isIdentifier(target) &&
+                    indices.has(context.symbols.valueSymbol(target)!),
+            )
+        ) {
             safe = false;
             return 0;
         }
-        if (ts.isPropertyAccessExpression(node) &&
-            context.checker.getSymbolAtLocation(node.name)?.declarations?.some(
-                (declaration) => (ts.isGetAccessorDeclaration(declaration) ||
-                    ts.isSetAccessorDeclaration(declaration)) && declaration.body !== undefined,
-            )) {
+        if (
+            ts.isPropertyAccessExpression(node) &&
+            context.checker
+                .getSymbolAtLocation(node.name)
+                ?.declarations?.some(
+                    (declaration) =>
+                        (ts.isGetAccessorDeclaration(declaration) ||
+                            ts.isSetAccessorDeclaration(declaration)) &&
+                        declaration.body !== undefined,
+                )
+        ) {
             safe = false;
             return 0;
         }
         const assignment = isAssignmentExpression(node)
             ? { target: node.left, value: node.right }
             : isUpdateExpression(node)
-                ? { target: node.operand, value: undefined }
-                : undefined;
+              ? { target: node.operand, value: undefined }
+              : undefined;
         if (assignment) {
             const target = unwrapExpression(assignment.target);
             // An outer optional handle would retain one arbitrary iteration's
             // composition identity. Containers already withdraw that identity.
-            if (ts.isIdentifier(target) && expressionHandleKind(context, target)) {
+            if (
+                ts.isIdentifier(target) &&
+                expressionHandleKind(context, target)
+            ) {
                 safe = false;
                 return 0;
             }
@@ -803,14 +1101,20 @@ export function parameterizedResourceLoop(
                 const kind = expressionHandleKind(context, lane.expression);
                 if (kind) {
                     const property = lane.name.text;
-                    const fixed = assignment.value !== undefined && invariant(assignment.value);
+                    const fixed =
+                        assignment.value !== undefined &&
+                        invariant(assignment.value);
                     if (kind === "material") {
-                        if (!runtimeMaterialProperties.has(property) &&
-                            (conditional || !fixed)) safe = false;
+                        if (
+                            !runtimeMaterialProperties.has(property) &&
+                            (conditional || !fixed)
+                        )
+                            safe = false;
                     } else if (kind !== "mesh" && kind !== "transform-node") {
                         safe = false;
                     } else if (property === "material") {
-                        if (conditional || assignment.value === undefined) safe = false;
+                        if (conditional || assignment.value === undefined)
+                            safe = false;
                     } else if (property === "receiveShadows") {
                         if (conditional || !fixed) safe = false;
                     } else if (!runtimeMeshProperties.has(property)) {
@@ -845,13 +1149,25 @@ export function parameterizedResourceLoop(
                             safe = false;
                         } else {
                             for (const property of options.properties) {
-                                if (ts.isPropertyAssignment(property) ||
-                                    ts.isShorthandPropertyAssignment(property)) {
+                                if (
+                                    ts.isPropertyAssignment(property) ||
+                                    ts.isShorthandPropertyAssignment(property)
+                                ) {
                                     const name = property.name;
-                                    if (ts.isIdentifier(name) || ts.isStringLiteralLike(name)) {
-                                        if (staticOptions.includes(name.text) &&
-                                            !invariant(ts.isPropertyAssignment(property)
-                                                ? property.initializer : property.name)) {
+                                    if (
+                                        ts.isIdentifier(name) ||
+                                        ts.isStringLiteralLike(name)
+                                    ) {
+                                        if (
+                                            staticOptions.includes(name.text) &&
+                                            !invariant(
+                                                ts.isPropertyAssignment(
+                                                    property,
+                                                )
+                                                    ? property.initializer
+                                                    : property.name,
+                                            )
+                                        ) {
                                             safe = false;
                                         }
                                     }
@@ -861,12 +1177,19 @@ export function parameterizedResourceLoop(
                             }
                         }
                     }
-                } else if (imported === "addToScene" || imported === "removeFromScene") {
-                    if (!nativeSceneMembershipChange(context, imported, node)) safe = false;
+                } else if (
+                    imported === "addToScene" ||
+                    imported === "removeFromScene"
+                ) {
+                    if (!nativeSceneMembershipChange(context, imported, node))
+                        safe = false;
                 } else if (nativeDataIterationIntrinsics.has(imported)) {
                     reachesConstruction = true;
-                } else if (imported !== "setParent" && imported !== "markMeshDirty" &&
-                    !runtimeOnlyIntrinsics.has(imported)) {
+                } else if (
+                    imported !== "setParent" &&
+                    imported !== "markMeshDirty" &&
+                    !runtimeOnlyIntrinsics.has(imported)
+                ) {
                     safe = false;
                 }
                 return work + 1;
@@ -878,21 +1201,30 @@ export function parameterizedResourceLoop(
             // Native data/Math methods have library signatures. An unresolved
             // callback or opaque method might conceal generation-time effects.
             if (
-                !(called !== undefined && declarationInDefaultLibrary(called)) &&
+                !(
+                    called !== undefined && declarationInDefaultLibrary(called)
+                ) &&
                 !nativeTransformSet(context, node)
             ) {
                 safe = false;
             }
             return work + 1;
         }
-        const guarded = conditional || ts.isIfStatement(node) ||
-            ts.isConditionalExpression(node) || ts.isSwitchStatement(node) ||
+        const guarded =
+            conditional ||
+            ts.isIfStatement(node) ||
+            ts.isConditionalExpression(node) ||
+            ts.isSwitchStatement(node) ||
             (ts.isBinaryExpression(node) &&
-                (node.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken ||
+                (node.operatorToken.kind ===
+                    ts.SyntaxKind.AmpersandAmpersandToken ||
                     node.operatorToken.kind === ts.SyntaxKind.BarBarToken ||
-                    node.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken));
+                    node.operatorToken.kind ===
+                        ts.SyntaxKind.QuestionQuestionToken));
         let work = 0;
-        ts.forEachChild(node, (child) => { work += visit(child, guarded); });
+        ts.forEachChild(node, (child) => {
+            work += visit(child, guarded);
+        });
         return work + (ts.isStatement(node) && !ts.isBlock(node) ? 1 : 0);
     };
     const shape = ts.isForStatement(statement)
@@ -902,11 +1234,9 @@ export function parameterizedResourceLoop(
     const iterations = ts.isForOfStatement(statement)
         ? forOfCount(statement)
         : shape && end !== undefined
-            ? staticIndexLoopIterations(shape, end)
-            : undefined;
+          ? staticIndexLoopIterations(shape, end)
+          : undefined;
     if (iterations === undefined) return undefined;
     const expansion = visit(statement, false);
-    return safe && reachesConstruction
-        ? { iterations, expansion }
-        : undefined;
+    return safe && reachesConstruction ? { iterations, expansion } : undefined;
 }

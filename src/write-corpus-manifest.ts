@@ -152,10 +152,22 @@ function rewriteExactCorpusManifest(
         row.sourceSha256 = sourceSha256;
 
         // The golden is evidence, not a row to refresh.
-        const golden = sha256(readFileSync(resolve(repositoryRoot, row.reference)));
-        if (row.referenceHostPage !== parity.referenceHostPage || (row.referenceHostPage &&
-            row.referenceHostPageSha256 !== sha256(readFileSync(resolve(repositoryRoot, row.referenceHostPage))))) {
-            throw new Error(`${row.id}: host HTML differs from golden provenance; explicit reference adoption is required.`);
+        const golden = sha256(
+            readFileSync(resolve(repositoryRoot, row.reference)),
+        );
+        if (
+            row.referenceHostPage !== parity.referenceHostPage ||
+            (row.referenceHostPage &&
+                row.referenceHostPageSha256 !==
+                    sha256(
+                        readFileSync(
+                            resolve(repositoryRoot, row.referenceHostPage),
+                        ),
+                    ))
+        ) {
+            throw new Error(
+                `${row.id}: host HTML differs from golden provenance; explicit reference adoption is required.`,
+            );
         }
         if (golden !== row.referenceSha256) {
             throw new Error(
@@ -182,7 +194,12 @@ function rewriteExactCorpusManifest(
             const previousComposed = sourceMoved
                 ? suiteBrowserModule(
                       scene.source,
-                      () => previousSource(repositoryRoot, previousTree, scene.source),
+                      () =>
+                          previousSource(
+                              repositoryRoot,
+                              previousTree,
+                              scene.source,
+                          ),
                       parity.referenceTimeSeconds,
                       parity.referenceAnimationGroups,
                       parity.referenceFrame,
@@ -242,7 +259,9 @@ function assertExplainedByPin(
     previous: UpstreamPinPair,
     current: UpstreamPinPair,
 ): void {
-    if (moduleMoveExplainedByPin(composed, row.moduleSha256, previous, current)) {
+    if (
+        moduleMoveExplainedByPin(composed, row.moduleSha256, previous, current)
+    ) {
         return;
     }
     throw new Error(
@@ -261,18 +280,26 @@ function previousSource(
     tree: string,
     path: string,
 ): string {
-    return execFileSync("git", ["show", `${tree}:${path.replace(/\\/g, "/")}`], {
-        cwd: repositoryRoot,
-        encoding: "utf8",
-        maxBuffer: 1 << 26,
-    });
+    return execFileSync(
+        "git",
+        ["show", `${tree}:${path.replace(/\\/g, "/")}`],
+        {
+            cwd: repositoryRoot,
+            encoding: "utf8",
+            maxBuffer: 1 << 26,
+        },
+    );
 }
 
 async function main(): Promise<void> {
     const parsed = parseFlags(
         process.argv.slice(2),
         {
-            value: ["--previous-version", "--previous-commit", "--previous-tree"],
+            value: [
+                "--previous-version",
+                "--previous-commit",
+                "--previous-tree",
+            ],
             boolean: ["--write"],
         },
         "corpus:manifest",

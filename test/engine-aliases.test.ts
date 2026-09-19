@@ -30,29 +30,41 @@ test("retains an engine returned by a helper without copying or recreating it", 
     assert.equal(result.cpp.match(/bbl::create_engine\(/g)?.length, 1);
     const owner = /auto (\w+) = bbl::create_engine\(/.exec(result.cpp)?.[1];
     assert.ok(owner);
-    assert.equal(result.cpp.match(new RegExp(`bbl::stop_engine\\(${owner}\\)`, "g"))?.length, 2);
+    assert.equal(
+        result.cpp.match(new RegExp(`bbl::stop_engine\\(${owner}\\)`, "g"))
+            ?.length,
+        2,
+    );
 });
 
 test("still refuses a second engine allocation", () => {
-    assert.throws(() => compileSource(`
+    assert.throws(
+        () =>
+            compileSource(`
         import { createEngine } from "babylon-lite";
         async function main() {
             const first = await createEngine({});
             const alias = first;
             const second = await createEngine({});
         }
-    `), /supports one engine per entry point/);
+    `),
+        /supports one engine per entry point/,
+    );
 });
 
 test("refuses an engine alias that would need rebinding storage", () => {
-    assert.throws(() => compileSource(`
+    assert.throws(
+        () =>
+            compileSource(`
         import { createEngine } from "babylon-lite";
         async function main() {
             const engine = await createEngine({});
             let alias = engine;
             alias = engine;
         }
-    `), /Reassigning an engine alias is not supported/);
+    `),
+        /Reassigning an engine alias is not supported/,
+    );
 });
 
 test("compiled helper and alias operations address the scene's original engine", (t) => {
@@ -67,11 +79,17 @@ test("compiled helper and alias operations address the scene's original engine",
     const executable = resolve(directory, "check.exe");
     writeFileSync(generated, compileSource(source).cpp);
     runNativeFixtureCompiler(tools, [
-        "/nologo", "/std:c++20", "/EHsc", "/W4", "/WX", "/MD",
+        "/nologo",
+        "/std:c++20",
+        "/EHsc",
+        "/W4",
+        "/WX",
+        "/MD",
         `/I${resolve("native/include")}`,
         generated,
         resolve("test/fixtures/engine-alias-check.cpp"),
-        `/Fo${directory}/`, `/Fe${executable}`,
+        `/Fo${directory}/`,
+        `/Fe${executable}`,
     ]);
     execFileSync(executable, { stdio: "pipe", timeout: 10000 });
 });

@@ -1,27 +1,89 @@
-import {gltfMaterialPropertyFields, gltfMaterialTextureFields} from "./material-projection.js";
+import {
+    gltfMaterialPropertyFields,
+    gltfMaterialTextureFields,
+} from "./material-projection.js";
 
-const transforms = [["uScale", "u_scale"], ["vScale", "v_scale"], ["uOffset", "u_offset"],
-    ["vOffset", "v_offset"], ["uAng", "rotation"]] as const;
-const path = (parts: readonly string[]) => `{${parts.map(part => JSON.stringify(part)).join(", ")}}`;
+const transforms = [
+    ["uScale", "u_scale"],
+    ["vScale", "v_scale"],
+    ["uOffset", "u_offset"],
+    ["vOffset", "v_offset"],
+    ["uAng", "rotation"],
+] as const;
+const path = (parts: readonly string[]) =>
+    `{${parts.map((part) => JSON.stringify(part)).join(", ")}}`;
 
 /** Live native fields are storage leaves; source writers retain all guards and arithmetic. */
 export function gltfAnimationPointerRuntimeCpp(): string {
-    const fields = [...gltfMaterialPropertyFields,
-        {kind: "color", path: [], key: "_animEmissiveFactor", field: "emissive_base_factor"},
-        {kind: "number", path: [], key: "_animEmissiveStrength", field: "emissive_strength"},
+    const fields = [
+        ...gltfMaterialPropertyFields,
+        {
+            kind: "color",
+            path: [],
+            key: "_animEmissiveFactor",
+            field: "emissive_base_factor",
+        },
+        {
+            kind: "number",
+            path: [],
+            key: "_animEmissiveStrength",
+            field: "emissive_strength",
+        },
     ];
-    const numeric = fields.flatMap(field => field.kind === "number" ? [{path: field.path, key: field.key, field: field.field, lane: -1}]
-        : ["r", "g", "b"].map((lane, index) => ({path: field.path, key: field.key, field: `${field.field}.${lane}`, lane: index})));
-    const texture = gltfMaterialTextureFields.flatMap(slot => transforms.map(([key, field]) =>
-        ({path: slot.path, key, field: `${slot.transform}.${field}`, lane: -1})));
+    const numeric = fields.flatMap((field) =>
+        field.kind === "number"
+            ? [
+                  {
+                      path: field.path,
+                      key: field.key,
+                      field: field.field,
+                      lane: -1,
+                  },
+              ]
+            : ["r", "g", "b"].map((lane, index) => ({
+                  path: field.path,
+                  key: field.key,
+                  field: `${field.field}.${lane}`,
+                  lane: index,
+              })),
+    );
+    const texture = gltfMaterialTextureFields.flatMap((slot) =>
+        transforms.map(([key, field]) => ({
+            path: slot.path,
+            key,
+            field: `${slot.transform}.${field}`,
+            lane: -1,
+        })),
+    );
     const slots = [...numeric, ...texture];
-    const readSource = slots.map(slot => `gltf_pointer_number(gltf_pointer_path(props, ${path(slot.path)}), ${JSON.stringify(slot.key)}, ${slot.lane})`);
-    const observe = slots.map(slot => `static_cast<double>(material.${slot.field})`).join(", ");
-    const refresh = slots.map((slot, index) => `        refresh_number(${path(slot.path)}, ${JSON.stringify(slot.key)}, ${slot.lane},
-            static_cast<double>(material.${slot.field}), observed[${index}]);`).join("\n");
-    const publish = slots.map((slot, index) => `        if (gltf_pointer_number_changed(source[${index}], observed_source[${index}]) && source[${index}])
-            material.${slot.field} = static_cast<float>(*source[${index}]);`).join("\n");
-    const refractionIndex = slots.findIndex(slot => slot.field === "transmission_factor");
+    const readSource = slots.map(
+        (slot) =>
+            `gltf_pointer_number(gltf_pointer_path(props, ${path(slot.path)}), ${JSON.stringify(slot.key)}, ${slot.lane})`,
+    );
+    const observe = slots
+        .map((slot) => `static_cast<double>(material.${slot.field})`)
+        .join(", ");
+    const refresh = slots
+        .map(
+            (
+                slot,
+                index,
+            ) => `        refresh_number(${path(slot.path)}, ${JSON.stringify(slot.key)}, ${slot.lane},
+            static_cast<double>(material.${slot.field}), observed[${index}]);`,
+        )
+        .join("\n");
+    const publish = slots
+        .map(
+            (
+                slot,
+                index,
+            ) => `        if (gltf_pointer_number_changed(source[${index}], observed_source[${index}]) && source[${index}])
+            material.${slot.field} = static_cast<float>(*source[${index}]);`,
+        )
+        .join("\n");
+    const refractionIndex = slots.findIndex(
+        (slot) => slot.field === "transmission_factor",
+    );
     return `GltfPbrValue gltf_pointer_path(GltfPbrValue value, std::initializer_list<const char*> path) {
     for (const auto* key : path) value = value.get(key, true);
     return value;

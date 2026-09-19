@@ -1,5 +1,15 @@
 import ts from "typescript";
 
+/** The dynamic-code boundary returns unknown until its caller supplies the source contract. */
+export function createJavaScriptFunction(
+    ...parametersAndBody: string[]
+): (...args: unknown[]) => unknown {
+    // eslint-disable-next-line @typescript-eslint/no-implied-eval -- Pinned and generated JavaScript executes only at this explicit boundary.
+    return new Function(...parametersAndBody) as (
+        ...args: unknown[]
+    ) => unknown;
+}
+
 function transpileTypeScript(
     source: string,
     fileName: string,
@@ -17,24 +27,10 @@ function transpileTypeScript(
     }).outputText;
 }
 
-export function transpileCommonJs(
-    source: string,
-    fileName: string,
-): string {
-    return transpileTypeScript(
-        source,
-        fileName,
-        ts.ModuleKind.CommonJS,
-    );
+export function transpileCommonJs(source: string, fileName: string): string {
+    return transpileTypeScript(source, fileName, ts.ModuleKind.CommonJS);
 }
 
-export function transpileForBrowser(
-    source: string,
-    fileName: string,
-): string {
-    return transpileTypeScript(
-        source,
-        fileName,
-        ts.ModuleKind.ES2022,
-    );
+export function transpileForBrowser(source: string, fileName: string): string {
+    return transpileTypeScript(source, fileName, ts.ModuleKind.ES2022);
 }

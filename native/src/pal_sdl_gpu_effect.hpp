@@ -58,7 +58,8 @@ struct EffectResources {
 };
 
 inline void release_effect_resources(SDL_GPUDevice*, EffectResources&) noexcept;
-using EffectPass = OwnedGpuRecord<EffectResources, std::remove_pointer_t<SDL_GPUDevice*>, release_effect_resources>;
+using EffectPass = OwnedGpuRecord<EffectResources, std::remove_pointer_t<SDL_GPUDevice*>,
+                                  release_effect_resources>;
 
 /**
  * The 1x1 texture `createSolidTexture2D` built: the texel the record already
@@ -67,19 +68,13 @@ using EffectPass = OwnedGpuRecord<EffectResources, std::remove_pointer_t<SDL_GPU
  * a single texel is every sampler. Nothing here rounds -- the pin's own
  * rounding happened once, in the lowered `create_solid_texture`.
  */
-inline void append_solid_texture(
-    SDL_GPUDevice* device,
-    std::vector<SDL_GPUTextureSamplerBinding>& textures,
-    const SolidTexture& texture) {
+inline void append_solid_texture(SDL_GPUDevice* device,
+                                 std::vector<SDL_GPUTextureSamplerBinding>& textures,
+                                 const SolidTexture& texture) {
     auto& binding = textures.emplace_back();
-    binding.texture = upload_2d_texture(
-            device,
-            texture.texel.data(),
-            texture.texel.size(),
-            1,
-            1,
-            SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM,
-            "SDL_CreateGPUTexture effect solid");
+    binding.texture = upload_2d_texture(device, texture.texel.data(), texture.texel.size(), 1, 1,
+                                        SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM,
+                                        "SDL_CreateGPUTexture effect solid");
     binding.sampler = create_texture_sampler(device, TextureSamplerState{});
 }
 
@@ -90,35 +85,26 @@ inline void append_solid_texture(
  * sample count belong to the pipeline rather than to the wrapper; a caller
  * that draws one effect into two targets builds two passes.
  */
-inline EffectPass create_effect_pass(
-    SDL_GPUDevice* device,
-    const Engine& engine,
-    EffectWrapperHandle handle,
-    SDL_GPUTextureFormat format,
-    std::uint32_t samples) {
-    const EffectWrapperRecord& wrapper =
-        engine.effect_wrappers.at(handle.value);
-    const upstream::EffectVariantEntry& entry =
-        upstream::effect_variants.at(wrapper.variant);
+inline EffectPass create_effect_pass(SDL_GPUDevice* device, const Engine& engine,
+                                     EffectWrapperHandle handle, SDL_GPUTextureFormat format,
+                                     std::uint32_t samples) {
+    const EffectWrapperRecord& wrapper = engine.effect_wrappers.at(handle.value);
+    const upstream::EffectVariantEntry& entry = upstream::effect_variants.at(wrapper.variant);
     EffectPass pass{device};
     // What the compiled stage kept, from the sidecar the shader step wrote
     // beside it -- the same authority the composed material families bind
     // through. Counting the descriptor's own rows instead would over-count a
     // binding the caller's body never samples, and SDL_GPU takes both
     // samplers and uniform buffers by dense slot.
-    const PinnedStageSlots slots =
-        read_pinned_stage_slots(std::string(entry.fragment_stem));
-    const std::uint32_t sampler_count =
-        static_cast<std::uint32_t>(slots.textures.size());
-    const std::uint32_t uniform_count =
-        static_cast<std::uint32_t>(slots.uniforms.size());
+    const PinnedStageSlots slots = read_pinned_stage_slots(std::string(entry.fragment_stem));
+    const std::uint32_t sampler_count = static_cast<std::uint32_t>(slots.textures.size());
+    const std::uint32_t uniform_count = static_cast<std::uint32_t>(slots.uniforms.size());
     pass.has_uniform_block = !slots.uniforms.empty();
     // The declared block's size, from the same variant table the Dawn
     // side sizes its buffer with.
     for (std::size_t index = 0; index < entry.binding_count; ++index) {
         const upstream::EffectVariantBinding& binding =
-            upstream::effect_variant_bindings.at(
-                entry.first_binding + index);
+            upstream::effect_variant_bindings.at(entry.first_binding + index);
         if (binding.kind == upstream::EffectBindingKind::uniform) {
             pass.uniform_bytes = binding.uniform_bytes;
         }
@@ -126,20 +112,11 @@ inline EffectPass create_effect_pass(
 
     // The vertex stage is the pin's own fullscreen triangle: no vertex
     // buffers, no samplers, no uniforms.
-    auto vertex = load_shader(
-        device,
-        std::string(entry.vertex_stem).c_str(),
-        SDL_GPU_SHADERSTAGE_VERTEX,
-        0,
-        0,
-        "effectFullscreenVertex");
-    auto fragment = load_shader(
-        device,
-        std::string(entry.fragment_stem).c_str(),
-        SDL_GPU_SHADERSTAGE_FRAGMENT,
-        sampler_count,
-        uniform_count,
-        "effectFragment");
+    auto vertex = load_shader(device, std::string(entry.vertex_stem).c_str(),
+                              SDL_GPU_SHADERSTAGE_VERTEX, 0, 0, "effectFullscreenVertex");
+    auto fragment =
+        load_shader(device, std::string(entry.fragment_stem).c_str(), SDL_GPU_SHADERSTAGE_FRAGMENT,
+                    sampler_count, uniform_count, "effectFragment");
 
     SDL_GPUColorTargetDescription color{};
     color.format = format;
@@ -158,26 +135,24 @@ inline EffectPass create_effect_pass(
     info.target_info.num_color_targets = 1;
     info.target_info.color_target_descriptions = &color;
     info.target_info.has_depth_stencil_target = false;
-    pass.pipeline = OwnedSdlPipeline{
-        create_sdl_graphics_pipeline(device, &info), {device}};
+    pass.pipeline = OwnedSdlPipeline{create_sdl_graphics_pipeline(device, &info), {device}};
     vertex.reset();
     fragment.reset();
-    if (!pass.pipeline) gpu_error("SDL_CreateGPUGraphicsPipeline effect");
+    if (!pass.pipeline)
+        gpu_error("SDL_CreateGPUGraphicsPipeline effect");
 
     // The textures the caller set, in the order the sidecar kept them: the
     // fragment names each binding, and a texture the body never samples does
     // not survive to the compiled stage. The lookup and its not-set
     // refusal are the shared `effect_texture_for_binding`.
     for (const std::string& name : slots.textures) {
-        append_solid_texture(
-                device,
-                pass.textures,
-                effect_texture_for_binding(wrapper, name));
+        append_solid_texture(device, pass.textures, effect_texture_for_binding(wrapper, name));
     }
     return pass;
 }
 
-inline void release_effect_resources([[maybe_unused]] SDL_GPUDevice* device, EffectResources& pass) noexcept {
+inline void release_effect_resources([[maybe_unused]] SDL_GPUDevice* device,
+                                     EffectResources& pass) noexcept {
     release_sprite_fragment_textures(device, pass.textures);
     pass.pipeline.reset();
     pass = EffectResources{};
@@ -186,31 +161,21 @@ inline void release_effect_resources([[maybe_unused]] SDL_GPUDevice* device, Eff
 inline void release_effect_pass(SDL_GPUDevice*, EffectPass& pass) { pass.reset(); }
 
 /** `_record`: the pin's own three-vertex draw, into an already-open pass. */
-inline void record_effect_pass(
-    SDL_GPUCommandBuffer* command,
-    SDL_GPURenderPass* render_pass,
-    const Engine& engine,
-    const EffectPass& pass,
-    EffectWrapperHandle handle) {
+inline void record_effect_pass(SDL_GPUCommandBuffer* command, SDL_GPURenderPass* render_pass,
+                               const Engine& engine, const EffectPass& pass,
+                               EffectWrapperHandle handle) {
     SDL_BindGPUGraphicsPipeline(render_pass, pass.pipeline.get());
-    const EffectWrapperRecord& wrapper =
-        engine.effect_wrappers.at(handle.value);
+    const EffectWrapperRecord& wrapper = engine.effect_wrappers.at(handle.value);
     if (pass.has_uniform_block && !wrapper.uniform_values.empty()) {
         // The symmetric size validation (pal_gpu_shared.hpp): a short
         // push leaves a stale tail behind the declared size.
         require_effect_uniform_size(wrapper, pass.uniform_bytes);
-        push_stage_uniform(
-            command,
-            0,
-            wrapper.uniform_values.data(),
-            wrapper.uniform_values.size() * sizeof(float));
+        push_stage_uniform(command, 0, wrapper.uniform_values.data(),
+                           wrapper.uniform_values.size() * sizeof(float));
     }
     if (!pass.textures.empty()) {
-        SDL_BindGPUFragmentSamplers(
-            render_pass,
-            0,
-            pass.textures.data(),
-            static_cast<Uint32>(pass.textures.size()));
+        SDL_BindGPUFragmentSamplers(render_pass, 0, pass.textures.data(),
+                                    static_cast<Uint32>(pass.textures.size()));
     }
     SDL_DrawGPUPrimitives(render_pass, 3, 1, 0, 0);
 }

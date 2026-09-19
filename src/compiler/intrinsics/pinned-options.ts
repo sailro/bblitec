@@ -50,7 +50,10 @@ function pinnedSource(): LoweringContext {
     return shared;
 }
 
-const memberCache = new EmissionMap<string, ReadonlyMap<string, DeclaredMember>>();
+const memberCache = new EmissionMap<
+    string,
+    ReadonlyMap<string, DeclaredMember>
+>();
 
 /** The declared option names of a factory's config, own and inherited. */
 export function pinnedOptionNames(factory: PinnedFactory): readonly string[] {
@@ -140,7 +143,13 @@ function collectInterfaceMembers(
                     `${module} neither declares nor imports '${baseName}', which ${name} extends.`,
                 );
             }
-            collectInterfaceMembers(source, baseModule, baseName, members, visited);
+            collectInterfaceMembers(
+                source,
+                baseModule,
+                baseName,
+                members,
+                visited,
+            );
         }
     }
 }
@@ -155,10 +164,17 @@ function heritageBaseName(
     }
     if (base.expression.text === "Omit") {
         const first = base.typeArguments?.[0];
-        if (first && ts.isTypeReferenceNode(first) && ts.isIdentifier(first.typeName)) {
+        if (
+            first &&
+            ts.isTypeReferenceNode(first) &&
+            ts.isIdentifier(first.typeName)
+        ) {
             return first.typeName.text;
         }
-        source.contractError(base, "Expected Omit<Base, ...> over a named base.");
+        source.contractError(
+            base,
+            "Expected Omit<Base, ...> over a named base.",
+        );
     }
     return base.expression.text;
 }
@@ -212,17 +228,23 @@ function classify(
         if (ts.isLiteralTypeNode(type)) {
             if (ts.isStringLiteral(type.literal)) return { kind: "string" };
             if (ts.isNumericLiteral(type.literal)) return { kind: "number" };
-            return refuse(type, `is the literal type ${type.getText(member.file)}`);
+            return refuse(
+                type,
+                `is the literal type ${type.getText(member.file)}`,
+            );
         }
         if (ts.isUnionTypeNode(type)) {
             const present = type.types.filter(
                 (option) =>
-                    !(ts.isLiteralTypeNode(option) && option.literal.kind === ts.SyntaxKind.NullKeyword) &&
-                    option.kind !== ts.SyntaxKind.UndefinedKeyword,
+                    !(
+                        ts.isLiteralTypeNode(option) &&
+                        option.literal.kind === ts.SyntaxKind.NullKeyword
+                    ) && option.kind !== ts.SyntaxKind.UndefinedKeyword,
             );
             const kinds = present.map((option) => visit(option, module));
             const first = kinds[0];
-            if (first && kinds.every((kind) => kind.kind === first.kind)) return first;
+            if (first && kinds.every((kind) => kind.kind === first.kind))
+                return first;
             return refuse(type, "is a union of different shapes");
         }
         if (ts.isTypeOperatorNode(type)) {
@@ -232,7 +254,8 @@ function classify(
             const numbers = type.elements.every(
                 (element) => element.kind === ts.SyntaxKind.NumberKeyword,
             );
-            if (numbers && type.elements.length === 3) return { kind: "triple" };
+            if (numbers && type.elements.length === 3)
+                return { kind: "triple" };
             return refuse(type, "is a tuple that is not three numbers");
         }
         if (ts.isTypeLiteralNode(type)) {
@@ -242,21 +265,36 @@ function classify(
             const name = type.typeName.text;
             const declaredIn = declaringModule(source, module, name);
             if (declaredIn === undefined) {
-                return refuse(type, `names '${name}', which the pin neither declares nor imports`);
+                return refuse(
+                    type,
+                    `names '${name}', which the pin neither declares nor imports`,
+                );
             }
             const file = source.sourceFile(declaredIn);
             for (const statement of file.statements) {
-                if (ts.isEnumDeclaration(statement) && statement.name.text === name) {
+                if (
+                    ts.isEnumDeclaration(statement) &&
+                    statement.name.text === name
+                ) {
                     return { kind: "enum", name };
                 }
-                if (ts.isTypeAliasDeclaration(statement) && statement.name.text === name) {
+                if (
+                    ts.isTypeAliasDeclaration(statement) &&
+                    statement.name.text === name
+                ) {
                     return visit(statement.type, declaredIn);
                 }
-                if (ts.isInterfaceDeclaration(statement) && statement.name.text === name) {
+                if (
+                    ts.isInterfaceDeclaration(statement) &&
+                    statement.name.text === name
+                ) {
                     return literalShape(statement.members, statement);
                 }
             }
-            return refuse(type, `names '${name}', which ${declaredIn} does not declare`);
+            return refuse(
+                type,
+                `names '${name}', which ${declaredIn} does not declare`,
+            );
         }
         return refuse(type, `is declared as ${type.getText(member.file)}`);
     };
@@ -277,7 +315,10 @@ function classify(
             expected.every((field) => names.includes(field));
         if (exactly(["x", "y"])) return { kind: "vector" };
         if (exactly(["x", "y", "width", "height"])) return { kind: "viewport" };
-        return refuse(node, "is an object the scene cannot spell as a vector or a viewport");
+        return refuse(
+            node,
+            "is an object the scene cannot spell as a vector or a viewport",
+        );
     };
     return visit(member.type, member.module);
 }

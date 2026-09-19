@@ -7,7 +7,10 @@ import { compileSource } from "../src/compiler.js";
 import { LoweringContext } from "../src/lowering/context.js";
 import { lowerMeshMaterialSetter } from "../src/lowering/mesh-material-setter.js";
 import { meshProfileBindingCpp } from "../src/lowering/resource-profiles.js";
-import { optionalNativeFixtureTools, runNativeFixtureCompiler } from "./native-fixture.js";
+import {
+    optionalNativeFixtureTools,
+    runNativeFixtureCompiler,
+} from "./native-fixture.js";
 
 const source = `
     import { createEngine, createBox, createStandardMaterial, type Mesh } from "@babylonjs/lite";
@@ -100,27 +103,42 @@ const source = `
 
 test("resource factories and forwarding helpers share native bodies", () => {
     const result = compileSource(source);
-    for (const marker of ["shared box body", "shared identity body", "shared method factory"]) {
+    for (const marker of [
+        "shared box body",
+        "shared identity body",
+        "shared method factory",
+    ]) {
         assert.equal(result.cpp.split(marker).length - 1, 1, marker);
     }
     assert.equal(result.cpp.match(/bbl::create_box\(/g)?.length, 3);
     assert.equal(result.manifest.sceneMeshes.length, 7);
-    assert.ok(result.manifest.sceneMeshes.every(mesh => !mesh.runtimeInstances));
+    assert.ok(
+        result.manifest.sceneMeshes.every((mesh) => !mesh.runtimeInstances),
+    );
 });
 
 const tools = optionalNativeFixtureTools(false);
-test("shared returns preserve identity, captures and argument evaluation", { skip: !tools }, () => {
-    const output = resolve("artifacts/shared-resource-returns-check");
-    const includes = join(output, "bblite/upstream");
-    mkdirSync(includes, { recursive: true });
-    const compiled = compileSource(source);
-    writeFileSync(join(output, "program.hpp"), compiled.cpp);
-    writeFileSync(join(includes, "renderer_plan.hpp"), `#pragma once
+test(
+    "shared returns preserve identity, captures and argument evaluation",
+    { skip: !tools },
+    () => {
+        const output = resolve("artifacts/shared-resource-returns-check");
+        const includes = join(output, "bblite/upstream");
+        mkdirSync(includes, { recursive: true });
+        const compiled = compileSource(source);
+        writeFileSync(join(output, "program.hpp"), compiled.cpp);
+        writeFileSync(
+            join(includes, "renderer_plan.hpp"),
+            `#pragma once
         #include <bblite/runtime.hpp>
         namespace bbl::upstream { MeshHandle bind_scene_mesh_profile(Engine&, MeshHandle, std::uint32_t); }
-    `);
-    const file = join(output, "check.cpp"), executable = join(output, "check.exe");
-    writeFileSync(file, `
+    `,
+        );
+        const file = join(output, "check.cpp"),
+            executable = join(output, "check.exe");
+        writeFileSync(
+            file,
+            `
         #define main generated_main
         #include "program.hpp"
         #undef main
@@ -145,8 +163,24 @@ test("shared returns preserve identity, captures and argument evaluation", { ski
             ${meshProfileBindingCpp({ sceneRows: [0, 1, 2], staticRows: [1], rowCount: 3 })}
         }
         int main() { assert(generated_main() == 0); assert(constructions == 7); }
-    `);
-    runNativeFixtureCompiler(tools!, ["/nologo", "/std:c++20", "/W4", "/WX", "/permissive-", "/EHsc", "/MD",
-        `/Fo:${output}\\`, `/Fe:${executable}`, "/I", output, "/I", "native\\include", file]);
-    execFileSync(executable, { encoding: "utf8" });
-});
+    `,
+        );
+        runNativeFixtureCompiler(tools!, [
+            "/nologo",
+            "/std:c++20",
+            "/W4",
+            "/WX",
+            "/permissive-",
+            "/EHsc",
+            "/MD",
+            `/Fo:${output}\\`,
+            `/Fe:${executable}`,
+            "/I",
+            output,
+            "/I",
+            "native\\include",
+            file,
+        ]);
+        execFileSync(executable, { encoding: "utf8" });
+    },
+);

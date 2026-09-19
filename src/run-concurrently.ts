@@ -48,10 +48,7 @@ export async function runConcurrently<T>(
         await Promise.all(
             Array.from(
                 {
-                    length: Math.max(
-                        1,
-                        Math.min(batchLimit, queue.length),
-                    ),
+                    length: Math.max(1, Math.min(batchLimit, queue.length)),
                 },
                 worker,
             ),
@@ -60,11 +57,7 @@ export async function runConcurrently<T>(
     };
 
     let failures = await runBatch(items, limit);
-    if (
-        failures.length > 0 &&
-        options.retryFailuresSequentially &&
-        limit > 1
-    ) {
+    if (failures.length > 0 && options.retryFailuresSequentially && limit > 1) {
         console.warn(
             `Retrying ${failures.length} failed item(s) sequentially after the parallel batch.`,
         );

@@ -97,14 +97,9 @@ struct SpriteInstanceUpload {
  */
 struct Sprite2DYSortHook {
     /** `uploadSorted`'s staging half: pack the rows this copy uploads. */
-    std::function<SpriteInstanceUpload(
-        Sprite2DLayerRecord&,
-        std::uint32_t,
-        std::uint32_t)>
-        stage;
+    std::function<SpriteInstanceUpload(Sprite2DLayerRecord&, std::uint32_t, std::uint32_t)> stage;
     /** `getDrawOrder`: draw slot -> logical slot, or null when disabled. */
-    std::function<const std::uint32_t*(const Sprite2DLayerRecord&)>
-        draw_order;
+    std::function<const std::uint32_t*(const Sprite2DLayerRecord&)> draw_order;
 };
 
 /**

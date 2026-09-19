@@ -45,8 +45,16 @@ test("writes independently reachable shader stages exactly once", () => {
         const tree = new GeneratedTree(root);
         const sharedVertex = "@vertex fn mainVertex() {}";
         const manifest = writePinnedPbrVariants(tree, [
-            variant(0, sharedVertex, "@fragment fn mainFragment() { var a = 1; }"),
-            variant(1, sharedVertex, "@fragment fn mainFragment() { var a = 2; }"),
+            variant(
+                0,
+                sharedVertex,
+                "@fragment fn mainFragment() { var a = 1; }",
+            ),
+            variant(
+                1,
+                sharedVertex,
+                "@fragment fn mainFragment() { var a = 2; }",
+            ),
         ]);
 
         assert.equal(manifest.length, 2);
@@ -55,8 +63,14 @@ test("writes independently reachable shader stages exactly once", () => {
         assert.notEqual(manifest[0]!.pipeline, manifest[1]!.pipeline);
 
         const files = readdirSync(join(root, "upstream", "pbr-variants"));
-        assert.equal(files.filter((file) => file.endsWith(".vert.wgsl")).length, 1);
-        assert.equal(files.filter((file) => file.endsWith(".frag.wgsl")).length, 2);
+        assert.equal(
+            files.filter((file) => file.endsWith(".vert.wgsl")).length,
+            1,
+        );
+        assert.equal(
+            files.filter((file) => file.endsWith(".frag.wgsl")).length,
+            2,
+        );
     } finally {
         rmSync(root, { recursive: true, force: true });
     }

@@ -18,28 +18,38 @@ void wgpuDeviceDestroy(WGPUDevice) { released.push_back(8); }
 
 namespace bbl::pal {
 std::string environment_variable(const char*) { return {}; }
-}
+} // namespace bbl::pal
 
 template <typename T> T fake() { return reinterpret_cast<T>(std::uintptr_t{1}); }
 
 int main() {
     using namespace bbl::pal;
-    static_assert(!std::is_copy_constructible_v<SdlGpuDevice> && !std::is_move_constructible_v<SdlGpuDevice>);
-    static_assert(!std::is_copy_constructible_v<DawnDevice> && !std::is_move_constructible_v<DawnDevice>);
+    static_assert(!std::is_copy_constructible_v<SdlGpuDevice> &&
+                  !std::is_move_constructible_v<SdlGpuDevice>);
+    static_assert(!std::is_copy_constructible_v<DawnDevice> &&
+                  !std::is_move_constructible_v<DawnDevice>);
     for (int stage = 0; stage <= 5; ++stage) {
         released.clear();
         try {
             DawnDevice device;
-            if (stage >= 1) device.instance = fake<WGPUInstance>();
-            if (stage >= 2) device.adapter = fake<WGPUAdapter>();
-            if (stage >= 3) device.device = fake<WGPUDevice>();
-            if (stage >= 4) device.queue = fake<WGPUQueue>();
-            if (stage >= 5) device.surface = fake<WGPUSurface>();
-            if (stage % 2) device.release();
+            if (stage >= 1)
+                device.instance = fake<WGPUInstance>();
+            if (stage >= 2)
+                device.adapter = fake<WGPUAdapter>();
+            if (stage >= 3)
+                device.device = fake<WGPUDevice>();
+            if (stage >= 4)
+                device.queue = fake<WGPUQueue>();
+            if (stage >= 5)
+                device.surface = fake<WGPUSurface>();
+            if (stage % 2)
+                device.release();
             throw std::runtime_error("construction interrupted");
-        } catch (const std::runtime_error&) {}
+        } catch (const std::runtime_error&) {
+        }
         assert(released.size() == static_cast<std::size_t>(stage));
-        for (int i = 0; i < stage; ++i) assert(released[i] == 2 + stage - i);
+        for (int i = 0; i < stage; ++i)
+            assert(released[i] == 2 + stage - i);
     }
     released.clear();
     {

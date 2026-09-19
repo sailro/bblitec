@@ -1,6 +1,9 @@
 import { LoweringContext } from "./context.js";
 import ts from "typescript";
-import { type PinnedBinding, type PinnedNumericScope } from "./pinned-numeric-lowerer.js";
+import {
+    type PinnedBinding,
+    type PinnedNumericScope,
+} from "./pinned-numeric-lowerer.js";
 import { pinnedNumericMathCalls } from "./pinned-operators.js";
 import { defaultTextDataContracts } from "./text-data-update-contracts.js";
 import { lowerPinnedBody } from "./pinned-body-lowerer.js";
@@ -15,132 +18,355 @@ export class TextDataUpdateLowerer {
 
     private body(name: string, parameters: readonly string[]): string {
         const c: LoweringContext = this.context;
-        const {file,declaration} = c.functionDeclaration(module,name);
+        const { file, declaration } = c.functionDeclaration(module, name);
         const fields = new Map([
-            ["_instanceCount","instance_count"],["_styleCount","style_count"],["_version","version"],["_styleVersion","style_version"],
-            ["_layoutVersion","layout_version"],["_dirtyStart","dirty_start"],["_dirtyEnd","dirty_end"],
+            ["_instanceCount", "instance_count"],
+            ["_styleCount", "style_count"],
+            ["_version", "version"],
+            ["_styleVersion", "style_version"],
+            ["_layoutVersion", "layout_version"],
+            ["_dirtyStart", "dirty_start"],
+            ["_dirtyEnd", "dirty_end"],
         ]);
-        const bindings = new Map<string,PinnedBinding>([
-            ...parameters.map(p => [p, scalar(p)] as const),
-            ...[...fields].map(([a,b]) => [`data.${a}`,scalar(`data.${b}`)] as const),
-            ["data._instances",{cpp:"data.instances",type:"f32",mutable:true}],
-            ["data._styles",{cpp:"data.styles",type:"f32",mutable:true}],
-            ["color",{cpp:"color",type:"f64-buffer"}],
-            ["data",{cpp:"data",type:"opaque"}], ["group",{cpp:"data",type:"opaque"}],
-            ["curveSet",{cpp:"data",type:"opaque"}],
-            ["group._slotStart",scalar("0.0")], ["group._slotCount",scalar("data.slot_count")],
-            ["group._freeSlots",{cpp:"data.free_slots",type:"f64-list"}],
-            ["slots",{cpp:"slots",type:"f64-list"}],
-            ["out",{cpp:"data.instances",type:"f32",mutable:true}],
-            ["outU32",{cpp:"outU32",type:"u32",mutable:true}],
-            ["data._instancesU32",{cpp:"outU32",type:"u32",mutable:true}],
-            ["ascendingSlot",{cpp:"ascending_slot",type:"opaque"}],
-            ["Number.POSITIVE_INFINITY",scalar("std::numeric_limits<double>::infinity()")],
-            ["run.pixelsPerFontUnit",scalar("layout.pixels_per_font_unit")],
-            ["run.glyphs.length",scalar("static_cast<double>(layout.glyphs.size())")],
-            ["styleSlots",{cpp:"styleSlots",type:"f64-buffer"}],
-            ["pg",{cpp:"pg",type:"opaque"}],
-            ["pg.glyphId",scalar("pg.glyph_id")], ["pg.x",scalar("pg.x")], ["pg.y",scalar("pg.y")],
-            ["group._curveSet",{cpp:"data",type:"opaque"}],
-            ["pg.color",{cpp:"",type:"opaque",staticallyAbsent:true}],
-            ["color !== undefined",{cpp:"false",type:"bool",staticBoolean:false}],
-            ...["TEXT_INSTANCE_FLOATS","TEXT_STYLE_FLOATS","DEAD_GLYPH","MAX_PACKED_INDEX"].map(key => [key,scalar(String(c.numericValue(c.variableInitializer(file,key),file)))] as const),
+        const bindings = new Map<string, PinnedBinding>([
+            ...parameters.map((p) => [p, scalar(p)] as const),
+            ...[...fields].map(
+                ([a, b]) => [`data.${a}`, scalar(`data.${b}`)] as const,
+            ),
+            [
+                "data._instances",
+                { cpp: "data.instances", type: "f32", mutable: true },
+            ],
+            [
+                "data._styles",
+                { cpp: "data.styles", type: "f32", mutable: true },
+            ],
+            ["color", { cpp: "color", type: "f64-buffer" }],
+            ["data", { cpp: "data", type: "opaque" }],
+            ["group", { cpp: "data", type: "opaque" }],
+            ["curveSet", { cpp: "data", type: "opaque" }],
+            ["group._slotStart", scalar("0.0")],
+            ["group._slotCount", scalar("data.slot_count")],
+            ["group._freeSlots", { cpp: "data.free_slots", type: "f64-list" }],
+            ["slots", { cpp: "slots", type: "f64-list" }],
+            ["out", { cpp: "data.instances", type: "f32", mutable: true }],
+            ["outU32", { cpp: "outU32", type: "u32", mutable: true }],
+            [
+                "data._instancesU32",
+                { cpp: "outU32", type: "u32", mutable: true },
+            ],
+            ["ascendingSlot", { cpp: "ascending_slot", type: "opaque" }],
+            [
+                "Number.POSITIVE_INFINITY",
+                scalar("std::numeric_limits<double>::infinity()"),
+            ],
+            ["run.pixelsPerFontUnit", scalar("layout.pixels_per_font_unit")],
+            [
+                "run.glyphs.length",
+                scalar("static_cast<double>(layout.glyphs.size())"),
+            ],
+            ["styleSlots", { cpp: "styleSlots", type: "f64-buffer" }],
+            ["pg", { cpp: "pg", type: "opaque" }],
+            ["pg.glyphId", scalar("pg.glyph_id")],
+            ["pg.x", scalar("pg.x")],
+            ["pg.y", scalar("pg.y")],
+            ["group._curveSet", { cpp: "data", type: "opaque" }],
+            ["pg.color", { cpp: "", type: "opaque", staticallyAbsent: true }],
+            [
+                "color !== undefined",
+                { cpp: "false", type: "bool", staticBoolean: false },
+            ],
+            ...[
+                "TEXT_INSTANCE_FLOATS",
+                "TEXT_STYLE_FLOATS",
+                "DEAD_GLYPH",
+                "MAX_PACKED_INDEX",
+            ].map(
+                (key) =>
+                    [
+                        key,
+                        scalar(
+                            String(
+                                c.numericValue(
+                                    c.variableInitializer(file, key),
+                                    file,
+                                ),
+                            ),
+                        ),
+                    ] as const,
+            ),
         ]);
-        const statement: NonNullable<PinnedNumericScope["statement"]> = (node,lowerer,indent) => {
-            if(ts.isReturnStatement(node) && node.expression) return [`${indent}return ${lowerer.expression(node.expression)};`];
-            if(ts.isVariableStatement(node) && node.declarationList.declarations.length===1) {
-                const d=node.declarationList.declarations[0]!;
-                if(ts.isIdentifier(d.name) && d.initializer) {
-                    const key=d.name.text;
-                    const adapted = new Map<string,readonly [string,string,PinnedBinding]>([
-                        ["atlasSlot",["curveSet._atlas._glyphSlots.get(glyphId)","const double atlasSlot=glyphId>=0 && glyphId<static_cast<double>(data.glyph_slots.size())?data.glyph_slots.at(size(glyphId)):-1;",{cpp:"atlasSlot",type:"opaque",absentCpp:"atlasSlot < 0"}]],
-                        ["styleParam",["_textStyleSeam?._param(run) ?? 0","",scalar("data.style_param")]],
-                        ["overrideEntry",["0","",scalar("0.0")]],
-                        ["pg",["run.glyphs[i]!","const auto& pg=layout.glyphs.at(size(static_cast<double>(i)));",{cpp:"pg",type:"opaque"}]],
-                        ["liveSlots",["null","std::optional<std::vector<double>> liveSlots;",{cpp:"(*liveSlots)",type:"f64-list",absentCpp:"!liveSlots"}]],
+        const statement: NonNullable<PinnedNumericScope["statement"]> = (
+            node,
+            lowerer,
+            indent,
+        ) => {
+            if (ts.isReturnStatement(node) && node.expression)
+                return [
+                    `${indent}return ${lowerer.expression(node.expression)};`,
+                ];
+            if (
+                ts.isVariableStatement(node) &&
+                node.declarationList.declarations.length === 1
+            ) {
+                const d = node.declarationList.declarations[0]!;
+                if (ts.isIdentifier(d.name) && d.initializer) {
+                    const key = d.name.text;
+                    const adapted = new Map<
+                        string,
+                        readonly [string, string, PinnedBinding]
+                    >([
+                        [
+                            "atlasSlot",
+                            [
+                                "curveSet._atlas._glyphSlots.get(glyphId)",
+                                "const double atlasSlot=glyphId>=0 && glyphId<static_cast<double>(data.glyph_slots.size())?data.glyph_slots.at(size(glyphId)):-1;",
+                                {
+                                    cpp: "atlasSlot",
+                                    type: "opaque",
+                                    absentCpp: "atlasSlot < 0",
+                                },
+                            ],
+                        ],
+                        [
+                            "styleParam",
+                            [
+                                "_textStyleSeam?._param(run) ?? 0",
+                                "",
+                                scalar("data.style_param"),
+                            ],
+                        ],
+                        ["overrideEntry", ["0", "", scalar("0.0")]],
+                        [
+                            "pg",
+                            [
+                                "run.glyphs[i]!",
+                                "const auto& pg=layout.glyphs.at(size(static_cast<double>(i)));",
+                                { cpp: "pg", type: "opaque" },
+                            ],
+                        ],
+                        [
+                            "liveSlots",
+                            [
+                                "null",
+                                "std::optional<std::vector<double>> liveSlots;",
+                                {
+                                    cpp: "(*liveSlots)",
+                                    type: "f64-list",
+                                    absentCpp: "!liveSlots",
+                                },
+                            ],
+                        ],
                     ]).get(key);
-                    if(adapted) {
-                        c.assertExpressionShape(d.initializer,adapted[0],`Text ${key} representation`);
-                        bindings.set(key,adapted[2]);
-                        if(key==="atlasSlot")bindings.set("atlasSlot._index",scalar("atlasSlot"));
-                        return adapted[1]?[`${indent}${adapted[1]}`]:[];
+                    if (adapted) {
+                        c.assertExpressionShape(
+                            d.initializer,
+                            adapted[0],
+                            `Text ${key} representation`,
+                        );
+                        bindings.set(key, adapted[2]);
+                        if (key === "atlasSlot")
+                            bindings.set(
+                                "atlasSlot._index",
+                                scalar("atlasSlot"),
+                            );
+                        return adapted[1] ? [`${indent}${adapted[1]}`] : [];
                     }
                 }
-                if(ts.isIdentifier(d.name) && d.name.text==="out" && d.initializer) {
-                    c.assertExpressionShape(d.initializer,"new Array(count).fill(-1)","Packed slot allocation");
-                    bindings.set("out",{cpp:"out",type:"f64-list"});
-                    return [`${indent}std::vector<double> out(size(count),-1);`];
+                if (
+                    ts.isIdentifier(d.name) &&
+                    d.name.text === "out" &&
+                    d.initializer
+                ) {
+                    c.assertExpressionShape(
+                        d.initializer,
+                        "new Array(count).fill(-1)",
+                        "Packed slot allocation",
+                    );
+                    bindings.set("out", { cpp: "out", type: "f64-list" });
+                    return [
+                        `${indent}std::vector<double> out(size(count),-1);`,
+                    ];
                 }
-                if(ts.isIdentifier(d.name) && d.name.text==="grown" && d.initializer) {
-                    c.assertExpressionShape(d.initializer,"new Float32Array(newLen)","Instance capacity allocation");
-                    bindings.set("grown",{cpp:"grown",type:"f32",mutable:true});
+                if (
+                    ts.isIdentifier(d.name) &&
+                    d.name.text === "grown" &&
+                    d.initializer
+                ) {
+                    c.assertExpressionShape(
+                        d.initializer,
+                        "new Float32Array(newLen)",
+                        "Instance capacity allocation",
+                    );
+                    bindings.set("grown", {
+                        cpp: "grown",
+                        type: "f32",
+                        mutable: true,
+                    });
                     return [`${indent}std::vector<float> grown(size(newLen));`];
                 }
             }
-            if(ts.isExpressionStatement(node) && c.expressionMatchesShape(node.expression,"grown.set(data._instances.subarray(0, data._instanceCount * TEXT_INSTANCE_FLOATS))"))
-                return [`${indent}std::copy_n(data.instances.begin(), size(data.instance_count * ${c.numericValue(c.variableInitializer(file,"TEXT_INSTANCE_FLOATS"),file)}), grown.begin());`];
-            if(ts.isExpressionStatement(node) && c.expressionMatchesShape(node.expression,"liveSlots = slots.slice(0, i)"))
-                return [`${indent}liveSlots.emplace(slots.begin(),slots.begin()+static_cast<std::ptrdiff_t>(i));`];
-            if(ts.isExpressionStatement(node) && ts.isBinaryExpression(node.expression)) {
-                const e=node.expression;
-                if(e.operatorToken.kind===ts.SyntaxKind.AmpersandAmpersandEqualsToken)
-                    return [`${indent}${lowerer.expression(e.left)} = ${lowerer.expression(e.left)} && ${lowerer.expression(e.right)};`];
-                if(e.left.getText(file)==="data._instancesU32") {
-                    c.assertExpressionShape(e.right,"new Uint32Array(grown.buffer)","Instance word alias after capacity growth");
+            if (
+                ts.isExpressionStatement(node) &&
+                c.expressionMatchesShape(
+                    node.expression,
+                    "grown.set(data._instances.subarray(0, data._instanceCount * TEXT_INSTANCE_FLOATS))",
+                )
+            )
+                return [
+                    `${indent}std::copy_n(data.instances.begin(), size(data.instance_count * ${c.numericValue(c.variableInitializer(file, "TEXT_INSTANCE_FLOATS"), file)}), grown.begin());`,
+                ];
+            if (
+                ts.isExpressionStatement(node) &&
+                c.expressionMatchesShape(
+                    node.expression,
+                    "liveSlots = slots.slice(0, i)",
+                )
+            )
+                return [
+                    `${indent}liveSlots.emplace(slots.begin(),slots.begin()+static_cast<std::ptrdiff_t>(i));`,
+                ];
+            if (
+                ts.isExpressionStatement(node) &&
+                ts.isBinaryExpression(node.expression)
+            ) {
+                const e = node.expression;
+                if (
+                    e.operatorToken.kind ===
+                    ts.SyntaxKind.AmpersandAmpersandEqualsToken
+                )
+                    return [
+                        `${indent}${lowerer.expression(e.left)} = ${lowerer.expression(e.left)} && ${lowerer.expression(e.right)};`,
+                    ];
+                if (e.left.getText(file) === "data._instancesU32") {
+                    c.assertExpressionShape(
+                        e.right,
+                        "new Uint32Array(grown.buffer)",
+                        "Instance word alias after capacity growth",
+                    );
                     return [];
                 }
             }
             return undefined;
         };
 
-        return `    // ${c.provenance(module,name)}\n` + lowerPinnedBody(file, declaration.body!.statements, { bindings, calls:new Map([...pinnedNumericMathCalls(),
-            ["Math.fround",(args:readonly string[])=>`static_cast<double>(static_cast<float>(${args[0]}))`],
-            ["popFreeSlot",()=>"pop_free_slot(data)"],
-            ["growGroup",args=>`grow_group(data,${args[2]})`],
-            ["ensureInstanceCapacity",args=>`capacity(data,${args[1]})`],
-            ["markDirty",args=>`mark_dirty(data,${args[1]},${args[2]})`],
-            ["markSlotDead",args=>`dead(data,${args[2]})`],
-            ["out.sort",()=>"std::sort(out.begin(),out.end())"],
-            ["group._freeSlots.push",args=>`data.free_slots.push_back(${args[0]})`],
-            ["data._instances.copyWithin",args=>`copy_within(data.instances,${args.join(",")})`],
-            ["shiftSlotsAtOrAfter",()=>"++data.layout_version"],
-            ["writeStyle",args=>`write_style(data,${args.slice(1).join(",")})`],
-            ["packGlyphAtSlot",args=>`pack_glyph(data,${[args[2],...args.slice(4)].join(",")})`],
-            ["liveSlots.push",args=>`liveSlots->push_back(${args[0]})`],
-        ]),
-            expression:(node)=> {
-                if(c.expressionMatchesShape(node,"run.defaultColor ?? WHITE_COLOR"))return "data.color";
-                if(c.expressionMatchesShape(node,"liveSlots ?? slots"))return "liveSlots ? *liveSlots : slots";
-                if(c.expressionMatchesShape(node,"liveSlots === null"))return "!liveSlots";
-                if(c.expressionMatchesShape(node,"liveSlots !== null"))return "liveSlots.has_value()";
-                return undefined;
-            },
-            forOf:(range,pinned)=> range==="slots" ? {range:"slots",bindings:new Map([[pinned,scalar(pinned)]])}:undefined,
-            arrayCopy:(receiver,source,offset)=>`std::copy(${source}.begin(), ${source}.end(), ${receiver}.begin() + size(${offset}));`,
-            booleanAnd:true, booleanOr:true, statement,
-        });
+        return (
+            `    // ${c.provenance(module, name)}\n` +
+            lowerPinnedBody(file, declaration.body!.statements, {
+                bindings,
+                calls: new Map([
+                    ...pinnedNumericMathCalls(),
+                    [
+                        "Math.fround",
+                        (args: readonly string[]) =>
+                            `static_cast<double>(static_cast<float>(${args[0]}))`,
+                    ],
+                    ["popFreeSlot", () => "pop_free_slot(data)"],
+                    ["growGroup", (args) => `grow_group(data,${args[2]})`],
+                    [
+                        "ensureInstanceCapacity",
+                        (args) => `capacity(data,${args[1]})`,
+                    ],
+                    [
+                        "markDirty",
+                        (args) => `mark_dirty(data,${args[1]},${args[2]})`,
+                    ],
+                    ["markSlotDead", (args) => `dead(data,${args[2]})`],
+                    ["out.sort", () => "std::sort(out.begin(),out.end())"],
+                    [
+                        "group._freeSlots.push",
+                        (args) => `data.free_slots.push_back(${args[0]})`,
+                    ],
+                    [
+                        "data._instances.copyWithin",
+                        (args) =>
+                            `copy_within(data.instances,${args.join(",")})`,
+                    ],
+                    ["shiftSlotsAtOrAfter", () => "++data.layout_version"],
+                    [
+                        "writeStyle",
+                        (args) =>
+                            `write_style(data,${args.slice(1).join(",")})`,
+                    ],
+                    [
+                        "packGlyphAtSlot",
+                        (args) =>
+                            `pack_glyph(data,${[args[2], ...args.slice(4)].join(",")})`,
+                    ],
+                    [
+                        "liveSlots.push",
+                        (args) => `liveSlots->push_back(${args[0]})`,
+                    ],
+                ]),
+                expression: (node) => {
+                    if (
+                        c.expressionMatchesShape(
+                            node,
+                            "run.defaultColor ?? WHITE_COLOR",
+                        )
+                    )
+                        return "data.color";
+                    if (c.expressionMatchesShape(node, "liveSlots ?? slots"))
+                        return "liveSlots ? *liveSlots : slots";
+                    if (c.expressionMatchesShape(node, "liveSlots === null"))
+                        return "!liveSlots";
+                    if (c.expressionMatchesShape(node, "liveSlots !== null"))
+                        return "liveSlots.has_value()";
+                    return undefined;
+                },
+                forOf: (range, pinned) =>
+                    range === "slots"
+                        ? {
+                              range: "slots",
+                              bindings: new Map([[pinned, scalar(pinned)]]),
+                          }
+                        : undefined,
+                arrayCopy: (receiver, source, offset) =>
+                    `std::copy(${source}.begin(), ${source}.end(), ${receiver}.begin() + size(${offset}));`,
+                booleanAnd: true,
+                booleanOr: true,
+                statement,
+            })
+        );
     }
 
     public header(): string {
         const c: LoweringContext = this.context;
-        const mark = this.body("markDirty",["startInstance","endInstance"]);
-        const style = this.body("writeStyle",["entry","invScale","styleParam"]);
-        const dead = this.body("markSlotDead",["slot"]);
-        const capacity = this.body("ensureInstanceCapacity",["requiredInstances"]);
-        const grow = this.body("growGroup",["extraSlots"]);
-        const allocate = this.body("allocateSlots",["count"]);
-        const free = this.body("freeSlots",[]);
-        const packBody = this.body("packGlyphAtSlot",["slot","glyphId","x","y","styleIdx"]);
-        const write = this.body("writeRunToSlots",[]);
+        const mark = this.body("markDirty", ["startInstance", "endInstance"]);
+        const style = this.body("writeStyle", [
+            "entry",
+            "invScale",
+            "styleParam",
+        ]);
+        const dead = this.body("markSlotDead", ["slot"]);
+        const capacity = this.body("ensureInstanceCapacity", [
+            "requiredInstances",
+        ]);
+        const grow = this.body("growGroup", ["extraSlots"]);
+        const allocate = this.body("allocateSlots", ["count"]);
+        const free = this.body("freeSlots", []);
+        const packBody = this.body("packGlyphAtSlot", [
+            "slot",
+            "glyphId",
+            "x",
+            "y",
+            "styleIdx",
+        ]);
+        const write = this.body("writeRunToSlots", []);
         const constants = c.sourceFile(module);
-        const numeric = (name:string) => c.numericValue(c.variableInitializer(constants,name),constants);
+        const numeric = (name: string) =>
+            c.numericValue(c.variableInitializer(constants, name), constants);
         // Only the source-owned DefaultTextData run reaches this path. Its
         // glyph records have no per-glyph colors and its group has no neighbors.
         // Compare complete body ASTs for the structural specialization; added
         // statements, reordered calls and changed branches cannot be skipped.
-        for(const [path,symbol,expected] of defaultTextDataContracts) {
-            const fn=c.functionDeclaration(path,symbol).declaration;
-            c.assertFunctionBodyShape(fn,expected,`DefaultTextData single-run ${symbol}`);
+        for (const [path, symbol, expected] of defaultTextDataContracts) {
+            const fn = c.functionDeclaration(path, symbol).declaration;
+            c.assertFunctionBodyShape(
+                fn,
+                expected,
+                `DefaultTextData single-run ${symbol}`,
+            );
         }
         return `#pragma once
 #include <bblite/upstream_text_layout.hpp>

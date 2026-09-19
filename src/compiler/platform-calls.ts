@@ -1,7 +1,10 @@
 import ts from "typescript";
 import { registerUiImageAsset } from "./assets.js";
 import { bakeCanvasReadback } from "./canvas-readback.js";
-import { compileCharacterMethod, type CharacterIntrinsicContext } from "./intrinsics/character-controller.js";
+import {
+    compileCharacterMethod,
+    type CharacterIntrinsicContext,
+} from "./intrinsics/character-controller.js";
 import type { LoweringServices } from "./lowering-services.js";
 import { argumentAt } from "./syntax.js";
 import type { Value } from "./types.js";
@@ -9,9 +12,13 @@ import { UiProjection } from "./ui-projection.js";
 import { requireWindowHost, windowErrorEventValue } from "./window-events.js";
 import { browserGlobalNamed } from "./browser-erasure.js";
 import { emitDomEventListener } from "./dom-listeners.js";
-import {parseUiSelectorSequence, splitUiSelectorList, uiSelectorSequenceCpp, uiSelectorSequenceTests, isUiSelectorState} from "../ui-selector.js";
-
-
+import {
+    parseUiSelectorSequence,
+    splitUiSelectorList,
+    uiSelectorSequenceCpp,
+    uiSelectorSequenceTests,
+    isUiSelectorState,
+} from "../ui-selector.js";
 
 type PlatformEventTarget = "window" | "document" | "canvas";
 
@@ -66,90 +73,152 @@ const PLATFORM_EVENT_DESCRIPTORS: Readonly<
     },
 };
 
-interface PlatformCallContext extends CharacterIntrinsicContext, Pick<LoweringServices,
-    "assets" | "assetPayloads" |
-    "allocateTemporaryCppName" |
-    "callbackIdentity" |
-    "canvasReadbackFunctions" |
-    "checker" |
-    "compileBoolean" |
-    "compileCondition" |
-    "compileFrameCallback" |
-    "compileNumber" |
-    "compilePlatformCallback" |
-    "compileStringLiteral" |
-    "compileValue" |
-    "cppString" |
-    "defaultEngine" |
-    "dataLowerer" |
-    "dataTypes" |
-    "emit" |
-    "engineHasStarted" |
-    "evaluateBrowserValue" |
-    "evaluator" |
-    "expectArgumentCount" |
-    "expectKind" |
-    "expectSameEngine" |
-    "fail" |
-    "hasPresentationHost" |
-    "hoistForwardCallbackBindings" |
-    "probeEmission" |
-    "isBrowserOnlyExpression" |
-    "isCanvasElement" |
-    "isDefaultLibraryIdentifier" |
-    "isInFrameCallback" |
-    "isNativeHostUiLookup" |
-    "isPrimaryCanvas2DContextCall" |
-    "lookupOptional" |
-    "objectProperty" |
-    "options" |
-    "pinValueToTemporary" |
-    "emitDiscardedValue" |
-    "reachFeature" |
-    "reachJsData" |
-    "registerAsset" |
-    "requireDefaultEngine" |
-    "requireEngine" |
-    "requirePresentationHost" |
-    "symbols" |
-    "userFunctions" |
-    "unwrap"
-> {}
+interface PlatformCallContext
+    extends
+        CharacterIntrinsicContext,
+        Pick<
+            LoweringServices,
+            | "assets"
+            | "assetPayloads"
+            | "allocateTemporaryCppName"
+            | "callbackIdentity"
+            | "canvasReadbackFunctions"
+            | "checker"
+            | "compileBoolean"
+            | "compileCondition"
+            | "compileFrameCallback"
+            | "compileNumber"
+            | "compilePlatformCallback"
+            | "compileStringLiteral"
+            | "compileValue"
+            | "cppString"
+            | "defaultEngine"
+            | "dataLowerer"
+            | "dataTypes"
+            | "emit"
+            | "engineHasStarted"
+            | "evaluateBrowserValue"
+            | "evaluator"
+            | "expectArgumentCount"
+            | "expectKind"
+            | "expectSameEngine"
+            | "fail"
+            | "hasPresentationHost"
+            | "hoistForwardCallbackBindings"
+            | "probeEmission"
+            | "isBrowserOnlyExpression"
+            | "isCanvasElement"
+            | "isDefaultLibraryIdentifier"
+            | "isInFrameCallback"
+            | "isNativeHostUiLookup"
+            | "isPrimaryCanvas2DContextCall"
+            | "lookupOptional"
+            | "objectProperty"
+            | "options"
+            | "pinValueToTemporary"
+            | "emitDiscardedValue"
+            | "reachFeature"
+            | "reachJsData"
+            | "registerAsset"
+            | "requireDefaultEngine"
+            | "requireEngine"
+            | "requirePresentationHost"
+            | "symbols"
+            | "userFunctions"
+            | "unwrap"
+        > {}
 
 export class PlatformCalls {
-    public constructor(private readonly context: PlatformCallContext, private readonly ui: UiProjection) {}
-
+    public constructor(
+        private readonly context: PlatformCallContext,
+        private readonly ui: UiProjection,
+    ) {}
 
     /** Platform-backed browser APIs that remain ordinary expression values. */
     public compilePlatformCall(call: ts.CallExpression): Value | undefined {
-        if (this.emitPlatformEventListener(call)) return {kind:"void", cpp:""};
+        if (this.emitPlatformEventListener(call))
+            return { kind: "void", cpp: "" };
         const callee = this.context.unwrap(call.expression);
         if (ts.isPropertyAccessExpression(callee)) {
-            const typeName = this.context.checker.getTypeAtLocation(callee.expression).getSymbol()?.getName();
-            if (typeName === "PhysicsCharacterController" || typeName === "CharacterCollisionObservable") {
+            const typeName = this.context.checker
+                .getTypeAtLocation(callee.expression)
+                .getSymbol()
+                ?.getName();
+            if (
+                typeName === "PhysicsCharacterController" ||
+                typeName === "CharacterCollisionObservable"
+            ) {
                 const owner = this.context.compileValue(callee.expression);
-                const result = compileCharacterMethod(this.context, call, owner, callee.name.text);
+                const result = compileCharacterMethod(
+                    this.context,
+                    call,
+                    owner,
+                    callee.name.text,
+                );
                 if (result) return result;
             }
         }
-        if (ts.isPropertyAccessExpression(callee) && callee.name.text === "addEventListener" &&
-            !this.context.isBrowserOnlyExpression(callee.expression)) {
+        if (
+            ts.isPropertyAccessExpression(callee) &&
+            callee.name.text === "addEventListener" &&
+            !this.context.isBrowserOnlyExpression(callee.expression)
+        ) {
             const owner = this.context.compileValue(callee.expression);
             if (owner.kind === "gpu-device") {
                 this.context.expectArgumentCount(call, 2, 2);
-                if (this.context.compileStringLiteral(argumentAt(call, 0)) !== "uncapturederror") this.context.fail(call, "Only GPU uncapturederror listeners are represented.");
+                if (
+                    this.context.compileStringLiteral(argumentAt(call, 0)) !==
+                    "uncapturederror"
+                )
+                    this.context.fail(
+                        call,
+                        "Only GPU uncapturederror listeners are represented.",
+                    );
                 this.context.reachFeature("engine:device-recovery", call);
-                const message = this.context.allocateTemporaryCppName("gpu_error");
-                const value: Value = { kind: "record", cpp: "", recordProperties: { error: { kind: "record", cpp: "", recordProperties: { message: { kind: "string", cpp: message, dataType: { kind: "string" } } } } } };
-                const callback = this.context.compilePlatformCallback(argumentAt(call, 1), { cppType: "const std::string&", name: message }, [value], undefined, false, false);
-                return { kind: "void", cpp: `bbl::add_gpu_error_listener(${owner.cpp}, ${callback.cpp})` };
+                const message =
+                    this.context.allocateTemporaryCppName("gpu_error");
+                const value: Value = {
+                    kind: "record",
+                    cpp: "",
+                    recordProperties: {
+                        error: {
+                            kind: "record",
+                            cpp: "",
+                            recordProperties: {
+                                message: {
+                                    kind: "string",
+                                    cpp: message,
+                                    dataType: { kind: "string" },
+                                },
+                            },
+                        },
+                    },
+                };
+                const callback = this.context.compilePlatformCallback(
+                    argumentAt(call, 1),
+                    { cppType: "const std::string&", name: message },
+                    [value],
+                    undefined,
+                    false,
+                    false,
+                );
+                return {
+                    kind: "void",
+                    cpp: `bbl::add_gpu_error_listener(${owner.cpp}, ${callback.cpp})`,
+                };
             }
         }
-        if (ts.isPropertyAccessExpression(callee) && callee.name.text === "disable") {
+        if (
+            ts.isPropertyAccessExpression(callee) &&
+            callee.name.text === "disable"
+        ) {
             const owner = this.context.compileValue(callee.expression);
             if (owner.kind === "device-recovery") {
                 this.context.expectArgumentCount(call, 0, 0);
-                return { kind: "void", cpp: `bbl::disable_device_recovery(${owner.cpp})` };
+                return {
+                    kind: "void",
+                    cpp: `bbl::disable_device_recovery(${owner.cpp})`,
+                };
             }
         }
         if (ts.isPropertyAccessExpression(callee)) {
@@ -176,7 +245,10 @@ export class PlatformCalls {
                     argumentAt(call, 0),
                     "interval",
                 );
-                const delay = this.context.compileNumber(argumentAt(call, 1), "double");
+                const delay = this.context.compileNumber(
+                    argumentAt(call, 1),
+                    "double",
+                );
                 return {
                     kind: "number",
                     cpp: `bbl::set_interval(${engine}, ${callback}, ${delay})`,
@@ -258,7 +330,9 @@ export class PlatformCalls {
             };
         }
         if (
-            callee.name.text === "preventDefault" || callee.name.text === "stopPropagation" || callee.name.text === "stopImmediatePropagation"
+            callee.name.text === "preventDefault" ||
+            callee.name.text === "stopPropagation" ||
+            callee.name.text === "stopImmediatePropagation"
         ) {
             const platformEvent = ts.isIdentifier(receiver)
                 ? this.context.lookupOptional(receiver)
@@ -268,13 +342,28 @@ export class PlatformCalls {
                   : undefined;
             if (
                 platformEvent?.kind === "platform-keyboard-event" ||
-                platformEvent?.kind === "platform-mouse-event" || platformEvent?.nativeErrorEvent
+                platformEvent?.kind === "platform-mouse-event" ||
+                platformEvent?.nativeErrorEvent
             ) {
-                if (call.arguments.length) this.context.fail(call, `Event.${callee.name.text} accepts no arguments.`);
-                if (platformEvent.nativeErrorEvent && callee.name.text !== "preventDefault")
-                    this.context.fail(call, "Application error propagation methods are not represented.");
-                const method = callee.name.text === "preventDefault" ? "prevent_default"
-                    : callee.name.text === "stopPropagation" ? "stop_propagation" : "stop_immediate_propagation";
+                if (call.arguments.length)
+                    this.context.fail(
+                        call,
+                        `Event.${callee.name.text} accepts no arguments.`,
+                    );
+                if (
+                    platformEvent.nativeErrorEvent &&
+                    callee.name.text !== "preventDefault"
+                )
+                    this.context.fail(
+                        call,
+                        "Application error propagation methods are not represented.",
+                    );
+                const method =
+                    callee.name.text === "preventDefault"
+                        ? "prevent_default"
+                        : callee.name.text === "stopPropagation"
+                          ? "stop_propagation"
+                          : "stop_immediate_propagation";
                 return {
                     kind: "void",
                     cpp: `${platformEvent.cpp}.${method}()`,
@@ -317,7 +406,6 @@ export class PlatformCalls {
         }
         return undefined;
     }
-
 
     /** Whether a named RAF callback explicitly schedules itself again. */
     private animationFrameCallbackRearmsItself(
@@ -372,7 +460,6 @@ export class PlatformCalls {
         return rearmed;
     }
 
-
     /**
      * Registers an application-owned browser animation loop on the native
      * frame conductor. Browser RAF callbacks run in registration order. A
@@ -393,12 +480,14 @@ export class PlatformCalls {
     ): Value | undefined {
         this.context.expectArgumentCount(call, 1, 1);
         const argument = this.context.unwrap(argumentAt(call, 0));
-        const stored = ts.isIdentifier(argument) ? this.context.lookupOptional(argument) : undefined;
+        const stored = ts.isIdentifier(argument)
+            ? this.context.lookupOptional(argument)
+            : undefined;
         // A materialized callback retains its own requeue operation, including
         // conditional schedules and synchronous priming calls.
-        const recurring = !(stored?.kind === "callback" && stored.cpp.length > 0) && this.animationFrameCallbackRearmsItself(
-            argumentAt(call, 0),
-        );
+        const recurring =
+            !(stored?.kind === "callback" && stored.cpp.length > 0) &&
+            this.animationFrameCallbackRearmsItself(argumentAt(call, 0));
         const nested = this.context.isInFrameCallback();
         if (nested && recurring) {
             return { kind: "void", cpp: "" };
@@ -409,7 +498,10 @@ export class PlatformCalls {
             "timestamp",
         );
         if (!recurring) {
-            return { kind: "void", cpp: `bbl::request_animation_frame(${engine}, ${callback})` };
+            return {
+                kind: "void",
+                cpp: `bbl::request_animation_frame(${engine}, ${callback})`,
+            };
         }
         this.requireCompatibleFrameConductor("persistent", call);
         const callbacks = this.context.engineHasStarted()
@@ -421,17 +513,20 @@ export class PlatformCalls {
         };
     }
 
-
     private frameConductorOwner: "manager" | "persistent" | undefined;
 
-
-    public requireCompatibleFrameConductor(owner: "manager" | "persistent", site: ts.Node): void {
+    public requireCompatibleFrameConductor(
+        owner: "manager" | "persistent",
+        site: ts.Node,
+    ): void {
         if (this.frameConductorOwner && this.frameConductorOwner !== owner) {
-            this.context.fail(site, "Autonomous animation managers cannot share a program with a persistent application RAF loop; that loop must retain its source requeue before the two callback orders can compose.");
+            this.context.fail(
+                site,
+                "Autonomous animation managers cannot share a program with a persistent application RAF loop; that loop must retain its source requeue before the two callback orders can compose.",
+            );
         }
         this.frameConductorOwner = owner;
     }
-
 
     public emitPlatformEventListener(call: ts.CallExpression): boolean {
         const callee = this.context.unwrap(call.expression);
@@ -444,12 +539,26 @@ export class PlatformCalls {
         }
         const removing = callee.name.text === "removeEventListener";
         const uiElement = this.ui.uiElementValue(callee.expression);
-        if (this.context.probeEmission(() => emitDomEventListener(this.context, call, uiElement,
-            (value, node) => this.platformEventCallbackIdentity(value, node)) ? true : undefined)) return true;
+        if (
+            this.context.probeEmission(() =>
+                emitDomEventListener(
+                    this.context,
+                    call,
+                    uiElement,
+                    (value, node) =>
+                        this.platformEventCallbackIdentity(value, node),
+                )
+                    ? true
+                    : undefined,
+            )
+        )
+            return true;
         if (uiElement) {
             if (removing) return false;
             this.context.expectArgumentCount(call, 2, 2);
-            const event = this.context.compileStringLiteral(argumentAt(call, 0));
+            const event = this.context.compileStringLiteral(
+                argumentAt(call, 0),
+            );
             if (event === "change") {
                 if (uiElement.uiTag !== "input" || !uiElement.uiFileInput) {
                     this.context.fail(
@@ -495,7 +604,8 @@ export class PlatformCalls {
                 // Native has no browser context menu to suppress.
                 return true;
             }
-            const parameter = this.context.allocateTemporaryCppName("ui_pointer_event");
+            const parameter =
+                this.context.allocateTemporaryCppName("ui_pointer_event");
             const pointerValue: Value = {
                 kind: "platform-mouse-event",
                 cpp: parameter,
@@ -533,7 +643,9 @@ export class PlatformCalls {
             return true;
         }
         if (!ts.isIdentifier(callee.expression)) return false;
-        const target = this.context.isDefaultLibraryIdentifier(callee.expression)
+        const target = this.context.isDefaultLibraryIdentifier(
+            callee.expression,
+        )
             ? callee.expression.text
             : this.context.isCanvasElement(callee.expression)
               ? "canvas"
@@ -551,7 +663,9 @@ export class PlatformCalls {
                 "Platform event listeners require an event name, callback, and optional options record.",
             );
         }
-        const event = this.context.evaluator.staticTextValue(argumentAt(call, 0));
+        const event = this.context.evaluator.staticTextValue(
+            argumentAt(call, 0),
+        );
         const callback = argumentAt(call, 1);
         this.context.hoistForwardCallbackBindings(callback, call.pos);
         let once = false;
@@ -575,17 +689,32 @@ export class PlatformCalls {
                 once = compiled === "true";
             }
         }
-        if (target === "window" && this.context.options.workers && (event === "error" || event === "unhandledrejection")) {
+        if (
+            target === "window" &&
+            this.context.options.workers &&
+            (event === "error" || event === "unhandledrejection")
+        ) {
             requireWindowHost(this.context, call);
             const rejection = event === "unhandledrejection";
             if (removing) {
-                const identity = this.platformEventCallbackIdentity(this.context.compileValue(callback), callback);
-                this.context.emit(`bbl::pal::window_off_application_error(${rejection}, ${identity});`);
+                const identity = this.platformEventCallbackIdentity(
+                    this.context.compileValue(callback),
+                    callback,
+                );
+                this.context.emit(
+                    `bbl::pal::window_off_application_error(${rejection}, ${identity});`,
+                );
             } else {
-                const name = this.context.allocateTemporaryCppName("application_error");
-                const listener = this.context.compilePlatformCallback(callback,
-                    {cppType:"bbl::pal::ApplicationErrorEvent&", name}, [windowErrorEventValue(this.context, name, rejection)]);
-                this.context.emit(`bbl::pal::window_on_application_error(${rejection}, ${listener.identity}, ${listener.cpp}, ${once});`);
+                const name =
+                    this.context.allocateTemporaryCppName("application_error");
+                const listener = this.context.compilePlatformCallback(
+                    callback,
+                    { cppType: "bbl::pal::ApplicationErrorEvent&", name },
+                    [windowErrorEventValue(this.context, name, rejection)],
+                );
+                this.context.emit(
+                    `bbl::pal::window_on_application_error(${rejection}, ${listener.identity}, ${listener.cpp}, ${once});`,
+                );
             }
             return true;
         }
@@ -633,7 +762,8 @@ export class PlatformCalls {
                 },
             ];
         } else if (descriptor.parameter === "visibility") {
-            const name = this.context.allocateTemporaryCppName("document_hidden");
+            const name =
+                this.context.allocateTemporaryCppName("document_hidden");
             parameter = { cppType: "bool", name };
             documentHiddenCpp = name;
         }
@@ -651,7 +781,6 @@ export class PlatformCalls {
         return true;
     }
 
-
     private platformEventDescriptor(
         target: PlatformEventTarget,
         event: string | undefined,
@@ -661,14 +790,17 @@ export class PlatformCalls {
             : PLATFORM_EVENT_DESCRIPTORS[target][event];
     }
 
-
     public platformEventCallbackIdentity(
         callback: Value,
         node: ts.Node,
     ): string {
-        if (callback.kind === "data" && callback.dataType?.kind === "function") return `(${callback.cpp}).identity()`;
+        if (callback.kind === "data" && callback.dataType?.kind === "function")
+            return `(${callback.cpp}).identity()`;
         if (callback.kind !== "callback") {
-            this.context.fail(node, "Platform event listener is not a callback.");
+            this.context.fail(
+                node,
+                "Platform event listener is not a callback.",
+            );
         }
         if (callback.platformCallbackIdentity !== undefined) {
             return `${callback.platformCallbackIdentity}u`;
@@ -685,61 +817,131 @@ export class PlatformCalls {
         )}u`;
     }
 
-    private compileUiCall(call: ts.CallExpression, callee: ts.PropertyAccessExpression, preparedElement?: Value): Value | undefined {
+    private compileUiCall(
+        call: ts.CallExpression,
+        callee: ts.PropertyAccessExpression,
+        preparedElement?: Value,
+    ): Value | undefined {
         if (!preparedElement && callee.questionDotToken) {
             const stored = this.context.probeEmission(() => {
-                const value = this.context.dataLowerer.compileDataPath(callee.expression, "read");
-                return value?.dataType?.kind === "optional" && value.dataType.inner.kind === "handle" &&
-                    value.dataType.inner.handle === "ui-element" ? value : undefined;
+                const value = this.context.dataLowerer.compileDataPath(
+                    callee.expression,
+                    "read",
+                );
+                return value?.dataType?.kind === "optional" &&
+                    value.dataType.inner.kind === "handle" &&
+                    value.dataType.inner.handle === "ui-element"
+                    ? value
+                    : undefined;
             });
-            const type = stored?.dataType ?? this.context.dataLowerer.dataTypeAt(callee.expression);
-            if (type?.kind === "optional" && type.inner.kind === "handle" && type.inner.handle === "ui-element") {
-                return this.context.dataLowerer.optionalAccess(stored ?? this.context.compileValue(callee.expression), call,
-                    element => this.compileUiCall(call, callee, element));
+            const type =
+                stored?.dataType ??
+                this.context.dataLowerer.dataTypeAt(callee.expression);
+            if (
+                type?.kind === "optional" &&
+                type.inner.kind === "handle" &&
+                type.inner.handle === "ui-element"
+            ) {
+                return this.context.dataLowerer.optionalAccess(
+                    stored ?? this.context.compileValue(callee.expression),
+                    call,
+                    (element) => this.compileUiCall(call, callee, element),
+                );
             }
         }
         const style = this.context.unwrap(callee.expression);
-        if (ts.isPropertyAccessExpression(style) && style.name.text === "style" &&
-            ["setProperty", "getPropertyValue", "removeProperty"].includes(callee.name.text)) {
+        if (
+            ts.isPropertyAccessExpression(style) &&
+            style.name.text === "style" &&
+            ["setProperty", "getPropertyValue", "removeProperty"].includes(
+                callee.name.text,
+            )
+        ) {
             const element = this.ui.uiElementValue(style.expression);
             if (element) {
                 const setting = callee.name.text === "setProperty";
-                this.context.expectArgumentCount(call, setting ? 2 : 1, setting ? 3 : 1);
+                this.context.expectArgumentCount(
+                    call,
+                    setting ? 2 : 1,
+                    setting ? 3 : 1,
+                );
                 const name = this.ui.uiStylePropertyName(argumentAt(call, 0));
                 if (setting) {
-                    if (call.arguments[2] && this.context.compileStringLiteral(call.arguments[2]) !== "")
-                        this.context.fail(call.arguments[2], "Native UI setProperty priority requires an empty string; important priority is not represented.");
-                    this.ui.emitUiStyleProperty(element, name, argumentAt(call, 1), call);
-                    return {kind:"void", cpp:""};
+                    if (
+                        call.arguments[2] &&
+                        this.context.compileStringLiteral(call.arguments[2]) !==
+                            ""
+                    )
+                        this.context.fail(
+                            call.arguments[2],
+                            "Native UI setProperty priority requires an empty string; important priority is not represented.",
+                        );
+                    this.ui.emitUiStyleProperty(
+                        element,
+                        name,
+                        argumentAt(call, 1),
+                        call,
+                    );
+                    return { kind: "void", cpp: "" };
                 }
                 if (callee.name.text === "removeProperty")
-                    return this.ui.removeUiStyleProperty(element, name, argumentAt(call, 0));
+                    return this.ui.removeUiStyleProperty(
+                        element,
+                        name,
+                        argumentAt(call, 0),
+                    );
                 const property = this.ui.nativeUiStyleProperty(name);
                 this.ui.auditUiStylePropertyName(property, argumentAt(call, 0));
-                return {kind:"string", cpp:`bbl::ui_get_style_property(${this.context.requireEngine(element, call)}, ${element.cpp}, ${this.context.cppString(property)})`};
+                return {
+                    kind: "string",
+                    cpp: `bbl::ui_get_style_property(${this.context.requireEngine(element, call)}, ${element.cpp}, ${this.context.cppString(property)})`,
+                };
             }
         }
         if (this.context.isPrimaryCanvas2DContextCall(call)) {
-            if (this.context.defaultEngine() && !this.context.hasPresentationHost()) {
-                this.context.fail(call, "The primary canvas already belongs to a Babylon engine; it cannot also acquire a Canvas2D context.");
+            if (
+                this.context.defaultEngine() &&
+                !this.context.hasPresentationHost()
+            ) {
+                this.context.fail(
+                    call,
+                    "The primary canvas already belongs to a Babylon engine; it cannot also acquire a Canvas2D context.",
+                );
             }
             this.context.requirePresentationHost(call);
         }
         if (this.context.isNativeHostUiLookup(call)) {
             if (callee.name.text !== "getElementById") {
-                return this.compileUiQuery(call, callee.name.text, this.ui.documentEngine(call), "{}");
+                return this.compileUiQuery(
+                    call,
+                    callee.name.text,
+                    this.ui.documentEngine(call),
+                    "{}",
+                );
             }
-            const id = this.context.evaluator.staticTextValue(argumentAt(call, 0));
+            const id = this.context.evaluator.staticTextValue(
+                argumentAt(call, 0),
+            );
             const engine = this.ui.documentEngine(call);
             this.context.reachFeature("ui:rml", call);
-            const tag = id !== undefined ? this.ui.nativeHostUiTags().get(id) : undefined;
-            if (!tag) return {
-                kind:"data", cpp:`bbl::ui_find_element_by_id(${engine}, ${this.ui.uiStringCpp(argumentAt(call, 0), "element id")})`,
-                dataType:{kind:"optional", inner:{kind:"handle", handle:"ui-element"}}, engineCpp:engine,
-            };
+            const tag =
+                id !== undefined
+                    ? this.ui.nativeHostUiTags().get(id)
+                    : undefined;
+            if (!tag)
+                return {
+                    kind: "data",
+                    cpp: `bbl::ui_find_element_by_id(${engine}, ${this.ui.uiStringCpp(argumentAt(call, 0), "element id")})`,
+                    dataType: {
+                        kind: "optional",
+                        inner: { kind: "handle", handle: "ui-element" },
+                    },
+                    engineCpp: engine,
+                };
             return {
                 kind: "ui-element",
-                cpp: `bbl::ui_get_element_by_id(${engine}, ` +
+                cpp:
+                    `bbl::ui_get_element_by_id(${engine}, ` +
                     `${this.context.cppString(id!)})`,
                 engineCpp: engine,
                 uiHostId: id!,
@@ -747,18 +949,26 @@ export class PlatformCalls {
                 truthinessCpp: "true",
             };
         }
-        if (callee.name.text === "createElement" &&
+        if (
+            callee.name.text === "createElement" &&
             ts.isIdentifier(callee.expression) &&
             callee.expression.text === "document" &&
-            this.context.isDefaultLibraryIdentifier(callee.expression)) {
+            this.context.isDefaultLibraryIdentifier(callee.expression)
+        ) {
             this.context.expectArgumentCount(call, 1, 1);
             const tag = this.context.compileStringLiteral(argumentAt(call, 0));
             const normalizedTag = tag.toLowerCase();
             if (!/^[a-z][a-z0-9-]*$/i.test(tag)) {
-                this.context.fail(argumentAt(call, 0), `Native UI element tag '${tag}' is not valid.`);
+                this.context.fail(
+                    argumentAt(call, 0),
+                    `Native UI element tag '${tag}' is not valid.`,
+                );
             }
             if (UiProjection.UI_IMPLEMENTATION_TAGS.has(normalizedTag)) {
-                this.context.fail(argumentAt(call, 0), `Native UI element tag '${tag}' is reserved for the retained projection.`);
+                this.context.fail(
+                    argumentAt(call, 0),
+                    `Native UI element tag '${tag}' is reserved for the retained projection.`,
+                );
             }
             const engine = this.ui.documentEngine(call);
             this.context.reachFeature("ui:rml", call);
@@ -772,39 +982,61 @@ export class PlatformCalls {
                 uiStaticId,
                 ...(normalizedTag === "canvas"
                     ? {
-                        uiCanvas: true as const,
-                        uiCanvasId: this.ui.uiCanvasIds++,
-                    }
+                          uiCanvas: true as const,
+                          uiCanvasId: this.ui.uiCanvasIds++,
+                      }
                     : {}),
             };
         }
-        const classListMutation = ts.isPropertyAccessExpression(callee.expression) &&
+        const classListMutation =
+            ts.isPropertyAccessExpression(callee.expression) &&
             callee.expression.name.text === "classList" &&
             (callee.name.text === "add" ||
                 callee.name.text === "remove" ||
                 callee.name.text === "toggle");
-        const rootAppend = (callee.name.text === "append" || callee.name.text === "appendChild") &&
+        const rootAppend =
+            (callee.name.text === "append" ||
+                callee.name.text === "appendChild") &&
             ts.isPropertyAccessExpression(callee.expression) &&
             callee.expression.name.text === "body" &&
-            browserGlobalNamed(this.context, callee.expression.expression)?.text === "document";
-        if (rootAppend && callee.name.text === "append" && call.arguments.length === 0) return {kind:"void", cpp:""};
-        const element: Value | undefined = preparedElement ?? (rootAppend
-            ? {kind:"ui-element", cpp:"{}", uiRoot:true, engineCpp:this.ui.documentEngine(call)}
-            : classListMutation
-            ? undefined
-            : this.ui.uiElementValue(callee.expression));
-        if (element?.uiTag === "image-bitmap" &&
-            callee.name.text === "close") {
+            browserGlobalNamed(this.context, callee.expression.expression)
+                ?.text === "document";
+        if (
+            rootAppend &&
+            callee.name.text === "append" &&
+            call.arguments.length === 0
+        )
+            return { kind: "void", cpp: "" };
+        const element: Value | undefined =
+            preparedElement ??
+            (rootAppend
+                ? {
+                      kind: "ui-element",
+                      cpp: "{}",
+                      uiRoot: true,
+                      engineCpp: this.ui.documentEngine(call),
+                  }
+                : classListMutation
+                  ? undefined
+                  : this.ui.uiElementValue(callee.expression));
+        if (element?.uiTag === "image-bitmap" && callee.name.text === "close") {
             this.context.expectArgumentCount(call, 0, 0);
             return { kind: "void", cpp: "" };
         }
-        if (element?.uiCanvas &&
+        if (
+            element?.uiCanvas &&
             !element.uiCanvasContext &&
-            callee.name.text === "getContext") {
+            callee.name.text === "getContext"
+        ) {
             this.context.expectArgumentCount(call, 1, 1);
-            const context = this.context.compileStringLiteral(argumentAt(call, 0));
+            const context = this.context.compileStringLiteral(
+                argumentAt(call, 0),
+            );
             if (context !== "2d") {
-                this.context.fail(argumentAt(call, 0), "Retained native canvas only supports the '2d' context.");
+                this.context.fail(
+                    argumentAt(call, 0),
+                    "Retained native canvas only supports the '2d' context.",
+                );
             }
             return {
                 ...element,
@@ -813,12 +1045,18 @@ export class PlatformCalls {
         }
         if (element?.uiCanvasContext) {
             const engine = this.context.requireEngine(element, call);
-            const number = (index: number): string => this.context.compileNumber(argumentAt(call, index), "double");
-            const invocation = (name: string, minimum: number, maximum = minimum): Value => {
+            const number = (index: number): string =>
+                this.context.compileNumber(argumentAt(call, index), "double");
+            const invocation = (
+                name: string,
+                minimum: number,
+                maximum = minimum,
+            ): Value => {
                 this.context.expectArgumentCount(call, minimum, maximum);
                 return {
                     kind: "void",
-                    cpp: `bbl::ui_canvas_${name}(${engine}, ${element.cpp}` +
+                    cpp:
+                        `bbl::ui_canvas_${name}(${engine}, ${element.cpp}` +
                         `${call.arguments.length > 0 ? ", " : ""}` +
                         `${call.arguments.map((_argument, index) => number(index)).join(", ")})`,
                 };
@@ -828,7 +1066,10 @@ export class PlatformCalls {
                     this.ui.recordUiCanvasLogicalScale(call);
                     return invocation("scale", 2);
                 case "clearRect":
-                    this.ui.expectUiCanvasFullSurfaceClear(call, element.uiCanvasId);
+                    this.ui.expectUiCanvasFullSurfaceClear(
+                        call,
+                        element.uiCanvasId,
+                    );
                     return invocation("clear_rect", 4);
                 case "fillRect":
                     return invocation("fill_rect", 4);
@@ -846,7 +1087,8 @@ export class PlatformCalls {
                     this.context.expectArgumentCount(call, 5, 6);
                     return {
                         kind: "void",
-                        cpp: `bbl::ui_canvas_arc(${engine}, ${element.cpp}, ` +
+                        cpp:
+                            `bbl::ui_canvas_arc(${engine}, ${element.cpp}, ` +
                             `${call.arguments
                                 .slice(0, 5)
                                 .map((_argument, index) => number(index))
@@ -861,9 +1103,16 @@ export class PlatformCalls {
                     this.context.expectArgumentCount(call, 4, 4);
                     const atlas = bakeCanvasReadback(this.context, call);
                     for (const image of atlas.images) {
-                        registerUiImageAsset(this.context, image.source, image.logicalPath);
+                        registerUiImageAsset(
+                            this.context,
+                            image.source,
+                            image.logicalPath,
+                        );
                     }
-                    const asset = this.context.registerAsset(`data:application/octet-stream;base64,${Buffer.from(atlas.pixels).toString("base64")}`, "pixels");
+                    const asset = this.context.registerAsset(
+                        `data:application/octet-stream;base64,${Buffer.from(atlas.pixels).toString("base64")}`,
+                        "pixels",
+                    );
                     this.context.reachJsData();
                     return {
                         kind: "record",
@@ -871,7 +1120,8 @@ export class PlatformCalls {
                         recordProperties: {
                             data: {
                                 kind: "data",
-                                cpp: `bbl::js::U8Array(bbl::js::ArrayBuffer(` +
+                                cpp:
+                                    `bbl::js::U8Array(bbl::js::ArrayBuffer(` +
                                     `bbl::pal::read_binary_file(bbl::asset_path(` +
                                     `${this.context.cppString(asset.output)}))))`,
                                 dataType: { kind: "u8array" },
@@ -882,32 +1132,48 @@ export class PlatformCalls {
                 case "putImageData": {
                     this.context.expectArgumentCount(call, 3, 3);
                     const imageData = this.context.unwrap(argumentAt(call, 0));
-                    if (!ts.isNewExpression(imageData) ||
+                    if (
+                        !ts.isNewExpression(imageData) ||
                         !ts.isIdentifier(imageData.expression) ||
                         imageData.expression.text !== "ImageData" ||
-                        !this.context.isDefaultLibraryIdentifier(imageData.expression) ||
-                        (imageData.arguments?.length ?? 0) !== 3) {
-                        this.context.fail(argumentAt(call, 0), "Retained Canvas2D putImageData requires new ImageData(rgba, width, height).");
+                        !this.context.isDefaultLibraryIdentifier(
+                            imageData.expression,
+                        ) ||
+                        (imageData.arguments?.length ?? 0) !== 3
+                    ) {
+                        this.context.fail(
+                            argumentAt(call, 0),
+                            "Retained Canvas2D putImageData requires new ImageData(rgba, width, height).",
+                        );
                     }
                     let pixelsExpression = imageData.arguments![0]!;
-                    const pixelsConstructor = this.context.unwrap(pixelsExpression);
-                    if (ts.isNewExpression(pixelsConstructor) &&
+                    const pixelsConstructor =
+                        this.context.unwrap(pixelsExpression);
+                    if (
+                        ts.isNewExpression(pixelsConstructor) &&
                         ts.isIdentifier(pixelsConstructor.expression) &&
                         (pixelsConstructor.expression.text ===
                             "Uint8ClampedArray" ||
                             pixelsConstructor.expression.text ===
                                 "Uint8Array") &&
-                        pixelsConstructor.arguments?.length === 1) {
+                        pixelsConstructor.arguments?.length === 1
+                    ) {
                         pixelsExpression = argumentAt(pixelsConstructor, 0);
                     }
                     const pixels = this.context.compileValue(pixelsExpression);
-                    if (pixels.kind !== "data" ||
-                        pixels.dataType?.kind !== "u8array") {
-                        this.context.fail(pixelsExpression, "Retained Canvas2D ImageData pixels must lower to a Uint8Array.");
+                    if (
+                        pixels.kind !== "data" ||
+                        pixels.dataType?.kind !== "u8array"
+                    ) {
+                        this.context.fail(
+                            pixelsExpression,
+                            "Retained Canvas2D ImageData pixels must lower to a Uint8Array.",
+                        );
                     }
                     return {
                         kind: "void",
-                        cpp: `bbl::ui_canvas_put_image_data(${engine}, ${element.cpp}, ` +
+                        cpp:
+                            `bbl::ui_canvas_put_image_data(${engine}, ${element.cpp}, ` +
                             `${pixels.cpp}, ` +
                             `${this.context.compileNumber(imageData.arguments![1]!, "double")}, ` +
                             `${this.context.compileNumber(imageData.arguments![2]!, "double")}, ` +
@@ -916,50 +1182,80 @@ export class PlatformCalls {
                 }
                 case "drawImage": {
                     this.context.expectArgumentCount(call, 5, 5);
-                    const source = this.context.compileValue(argumentAt(call, 0));
+                    const source = this.context.compileValue(
+                        argumentAt(call, 0),
+                    );
                     if (source.kind !== "ui-element") {
-                        this.context.fail(argumentAt(call, 0), "Retained Canvas2D drawImage source must be a retained UI element; " +
-                            `received ${source.kind}.`);
+                        this.context.fail(
+                            argumentAt(call, 0),
+                            "Retained Canvas2D drawImage source must be a retained UI element; " +
+                                `received ${source.kind}.`,
+                        );
                     }
                     if (source.uiTag === "image-bitmap") {
                         return { kind: "void", cpp: "" };
                     }
                     this.context.expectSameEngine(element, source, call);
-                    const sourceText = this.context.unwrap(argumentAt(call, 0)).getText();
-                    const extent = (argumentIndex: number, axis: "width" | "height"): string => {
-                        const argument = this.context.unwrap(argumentAt(call, argumentIndex));
+                    const sourceText = this.context
+                        .unwrap(argumentAt(call, 0))
+                        .getText();
+                    const extent = (
+                        argumentIndex: number,
+                        axis: "width" | "height",
+                    ): string => {
+                        const argument = this.context.unwrap(
+                            argumentAt(call, argumentIndex),
+                        );
                         let dimension: ts.Expression = argument;
                         let multiplier = "1.0";
-                        if (ts.isBinaryExpression(argument) &&
+                        if (
+                            ts.isBinaryExpression(argument) &&
                             argument.operatorToken.kind ===
-                                ts.SyntaxKind.AsteriskToken) {
+                                ts.SyntaxKind.AsteriskToken
+                        ) {
                             const left = this.context.unwrap(argument.left);
                             const right = this.context.unwrap(argument.right);
-                            const leftIsDimension = ts.isPropertyAccessExpression(left) &&
+                            const leftIsDimension =
+                                ts.isPropertyAccessExpression(left) &&
                                 left.name.text === axis;
-                            const rightIsDimension = ts.isPropertyAccessExpression(right) &&
+                            const rightIsDimension =
+                                ts.isPropertyAccessExpression(right) &&
                                 right.name.text === axis;
                             if (leftIsDimension) {
                                 dimension = left;
-                                multiplier = this.context.compileNumber(argument.right, "double");
-                            }
-                            else if (rightIsDimension) {
+                                multiplier = this.context.compileNumber(
+                                    argument.right,
+                                    "double",
+                                );
+                            } else if (rightIsDimension) {
                                 dimension = right;
-                                multiplier = this.context.compileNumber(argument.left, "double");
+                                multiplier = this.context.compileNumber(
+                                    argument.left,
+                                    "double",
+                                );
                             }
                         }
-                        if (!ts.isPropertyAccessExpression(dimension) ||
+                        if (
+                            !ts.isPropertyAccessExpression(dimension) ||
                             dimension.name.text !== axis ||
-                            this.context.unwrap(dimension.expression).getText() !==
-                                sourceText) {
-                            this.context.fail(argumentAt(call, argumentIndex), `Retained Canvas2D drawImage ${axis} must be source.${axis}, optionally multiplied by a scale.`);
+                            this.context
+                                .unwrap(dimension.expression)
+                                .getText() !== sourceText
+                        ) {
+                            this.context.fail(
+                                argumentAt(call, argumentIndex),
+                                `Retained Canvas2D drawImage ${axis} must be source.${axis}, optionally multiplied by a scale.`,
+                            );
                         }
-                        return (`(bbl::ui_canvas_${axis}(${engine}, ${source.cpp}) * ` +
-                            `(${multiplier}))`);
+                        return (
+                            `(bbl::ui_canvas_${axis}(${engine}, ${source.cpp}) * ` +
+                            `(${multiplier}))`
+                        );
                     };
                     return {
                         kind: "void",
-                        cpp: `bbl::ui_canvas_draw_image(${engine}, ${element.cpp}, ${source.cpp}, ` +
+                        cpp:
+                            `bbl::ui_canvas_draw_image(${engine}, ${element.cpp}, ${source.cpp}, ` +
                             `${number(1)}, ${number(2)}, ${extent(3, "width")}, ${extent(4, "height")})`,
                     };
                 }
@@ -967,18 +1263,31 @@ export class PlatformCalls {
                     this.context.expectArgumentCount(call, 3, 3);
                     return {
                         kind: "void",
-                        cpp: `bbl::ui_canvas_fill_text(${engine}, ${element.cpp}, ` +
+                        cpp:
+                            `bbl::ui_canvas_fill_text(${engine}, ${element.cpp}, ` +
                             `${this.ui.uiStringCpp(argumentAt(call, 0), "Canvas2D fillText")}, ` +
                             `${number(1)}, ${number(2)})`,
                     };
             }
         }
         if (element && callee.name.text === "decode") {
-            if (!this.context.options.workers) this.context.fail(call, "Image decoding requires an asynchronous realm.");
+            if (!this.context.options.workers)
+                this.context.fail(
+                    call,
+                    "Image decoding requires an asynchronous realm.",
+                );
             this.context.expectArgumentCount(call, 0, 0);
-            if (element.uiTag && element.uiTag !== "img") this.context.fail(call, "Image decoding requires an img element.");
-            return {kind:"promise", cpp:`bbl::ui_decode_image(${this.context.requireEngine(element, call)}, ${element.cpp})`,
-                promiseType:"bbl::js::PromiseVoid", promiseResult:{kind:"void", cpp:""}};
+            if (element.uiTag && element.uiTag !== "img")
+                this.context.fail(
+                    call,
+                    "Image decoding requires an img element.",
+                );
+            return {
+                kind: "promise",
+                cpp: `bbl::ui_decode_image(${this.context.requireEngine(element, call)}, ${element.cpp})`,
+                promiseType: "bbl::js::PromiseVoid",
+                promiseResult: { kind: "void", cpp: "" },
+            };
         }
         if (element && callee.name.text === "focus") {
             this.context.expectArgumentCount(call, 0, 0);
@@ -995,11 +1304,13 @@ export class PlatformCalls {
             this.context.expectArgumentCount(call, 0, 0);
             if (element.uiTag === "input") {
                 if (!element.uiFileInput) {
-                    this.context.fail(call, "Programmatic <input>.click() requires the static type 'file'.");
+                    this.context.fail(
+                        call,
+                        "Programmatic <input>.click() requires the static type 'file'.",
+                    );
                 }
                 this.context.reachFeature("browser:file", call);
-            }
-            else if (element.uiTag === "a") {
+            } else if (element.uiTag === "a") {
                 this.context.reachFeature("browser:file", call);
             }
             const engine = this.context.requireEngine(element, call);
@@ -1008,60 +1319,95 @@ export class PlatformCalls {
                 cpp: `bbl::ui_click(${engine}, ${element.cpp})`,
             };
         }
-        if (element && ["querySelector", "querySelectorAll", "matches", "closest"].includes(callee.name.text) &&
-            !(callee.name.text.startsWith("querySelector") && element.uiStaticId !== undefined && this.ui.uiStaticDescendants(element.uiStaticId).markup.length > 0)) {
-            return this.compileUiQuery(call, callee.name.text, this.context.requireEngine(element, call), element.cpp, element.optionalFoundCpp);
+        if (
+            element &&
+            [
+                "querySelector",
+                "querySelectorAll",
+                "matches",
+                "closest",
+            ].includes(callee.name.text) &&
+            !(
+                callee.name.text.startsWith("querySelector") &&
+                element.uiStaticId !== undefined &&
+                this.ui.uiStaticDescendants(element.uiStaticId).markup.length >
+                    0
+            )
+        ) {
+            return this.compileUiQuery(
+                call,
+                callee.name.text,
+                this.context.requireEngine(element, call),
+                element.cpp,
+                element.optionalFoundCpp,
+            );
         }
         if (element && callee.name.text === "querySelector") {
             this.context.expectArgumentCount(call, 1, 1);
-            const selector = this.context.compileStringLiteral(argumentAt(call, 0));
+            const selector = this.context.compileStringLiteral(
+                argumentAt(call, 0),
+            );
             if (element.uiStaticId === undefined) {
-                this.context.fail(call, "Retained UI querySelector requires a statically-known retained root.");
+                this.context.fail(
+                    call,
+                    "Retained UI querySelector requires a statically-known retained root.",
+                );
             }
             const query = selector.match(/^\.([A-Za-z_][A-Za-z0-9_-]*)$/)
                 ? {
-                    kind: "class" as const,
-                    name: selector.slice(1),
-                    value: "",
-                }
+                      kind: "class" as const,
+                      name: selector.slice(1),
+                      value: "",
+                  }
                 : selector.match(/^#([A-Za-z_][A-Za-z0-9_-]*)$/)
-                    ? {
+                  ? {
                         kind: "attribute" as const,
                         name: "id",
                         value: selector.slice(1),
                     }
-                    : (() => {
-                        const matched = selector.match(/^\[([A-Za-z_:][A-Za-z0-9_:.-]*)=["']([^"']*)["']\]$/);
+                  : (() => {
+                        const matched = selector.match(
+                            /^\[([A-Za-z_:][A-Za-z0-9_:.-]*)=["']([^"']*)["']\]$/,
+                        );
                         return matched
                             ? {
-                                kind: "attribute" as const,
-                                name: matched[1]!.toLowerCase(),
-                                value: matched[2]!,
-                            }
+                                  kind: "attribute" as const,
+                                  name: matched[1]!.toLowerCase(),
+                                  value: matched[2]!,
+                              }
                             : selector.match(/^[A-Za-z][A-Za-z0-9-]*$/)
-                                ? {
+                              ? {
                                     kind: "tag" as const,
                                     name: selector.toLowerCase(),
                                     value: "",
                                 }
-                                : undefined;
+                              : undefined;
                     })();
             if (!query) {
-                this.context.fail(argumentAt(call, 0), `Retained UI querySelector selector '${selector}' is not lowered.`);
+                this.context.fail(
+                    argumentAt(call, 0),
+                    `Retained UI querySelector selector '${selector}' is not lowered.`,
+                );
             }
             const descendants = this.ui.uiStaticDescendants(element.uiStaticId);
-            const match = descendants.markup.find((node) => query.kind === "class"
-                ? node.classes.has(query.name)
-                : query.kind === "tag"
-                    ? node.tag === query.name
-                    : node.attributes.get(query.name) === query.value);
+            const match = descendants.markup.find((node) =>
+                query.kind === "class"
+                    ? node.classes.has(query.name)
+                    : query.kind === "tag"
+                      ? node.tag === query.name
+                      : node.attributes.get(query.name) === query.value,
+            );
             if (!descendants.complete || !match) {
-                this.context.fail(call, `Retained UI querySelector('${selector}') requires a matching node in a complete static innerHTML subtree.`);
+                this.context.fail(
+                    call,
+                    `Retained UI querySelector('${selector}') requires a matching node in a complete static innerHTML subtree.`,
+                );
             }
             const engine = this.context.requireEngine(element, call);
             return {
                 kind: "ui-element",
-                cpp: `bbl::ui_query_markup(${engine}, ${element.cpp}, ` +
+                cpp:
+                    `bbl::ui_query_markup(${engine}, ${element.cpp}, ` +
                     `${match.id}u, ${this.context.cppString(match.tag)})`,
                 engineCpp: engine,
                 uiTag: match.tag,
@@ -1070,26 +1416,42 @@ export class PlatformCalls {
         }
         if (element && callee.name.text === "querySelectorAll") {
             this.context.expectArgumentCount(call, 1, 1);
-            const selector = this.context.compileStringLiteral(argumentAt(call, 0));
+            const selector = this.context.compileStringLiteral(
+                argumentAt(call, 0),
+            );
             const matched = selector.match(/^\.([A-Za-z_][A-Za-z0-9_-]*)$/);
             if (!matched) {
-                this.context.fail(argumentAt(call, 0), `Retained UI querySelectorAll selector '${selector}' is not lowered; only a static '.class' scoped query is supported.`);
+                this.context.fail(
+                    argumentAt(call, 0),
+                    `Retained UI querySelectorAll selector '${selector}' is not lowered; only a static '.class' scoped query is supported.`,
+                );
             }
             if (element.uiStaticId !== undefined) {
-                const descendants = this.ui.uiStaticDescendants(element.uiStaticId);
-                const markupMatches = descendants.markup.filter((node) => node.classes.has(matched[1]!));
+                const descendants = this.ui.uiStaticDescendants(
+                    element.uiStaticId,
+                );
+                const markupMatches = descendants.markup.filter((node) =>
+                    node.classes.has(matched[1]!),
+                );
                 if (markupMatches.length > 0) {
                     if (!descendants.complete) {
-                        this.context.fail(call, "Retained UI markup query requires a complete static innerHTML subtree.");
+                        this.context.fail(
+                            call,
+                            "Retained UI markup query requires a complete static innerHTML subtree.",
+                        );
                     }
                     const engine = this.context.requireEngine(element, call);
                     this.context.reachJsData();
                     return {
                         kind: "data",
-                        cpp: "bbl::js::Array<bbl::UiElementHandle>{" +
+                        cpp:
+                            "bbl::js::Array<bbl::UiElementHandle>{" +
                             markupMatches
-                                .map((node) => `bbl::ui_query_markup(${engine}, ${element.cpp}, ` +
-                                `${node.id}u, ${this.context.cppString(node.tag)})`)
+                                .map(
+                                    (node) =>
+                                        `bbl::ui_query_markup(${engine}, ${element.cpp}, ` +
+                                        `${node.id}u, ${this.context.cppString(node.tag)})`,
+                                )
                                 .join(", ") +
                             "}",
                         dataType: {
@@ -1113,11 +1475,11 @@ export class PlatformCalls {
                 kind: "data",
                 cpp: element.optionalFoundCpp
                     ? `(${element.optionalFoundCpp} ? ` +
-                        `bbl::ui_query_class(${engine}, ${element.cpp}, ` +
-                        `${this.context.cppString(matched[1]!)}) : ` +
-                        "bbl::js::Array<bbl::UiElementHandle>{})"
+                      `bbl::ui_query_class(${engine}, ${element.cpp}, ` +
+                      `${this.context.cppString(matched[1]!)}) : ` +
+                      "bbl::js::Array<bbl::UiElementHandle>{})"
                     : `bbl::ui_query_class(${engine}, ${element.cpp}, ` +
-                        `${this.context.cppString(matched[1]!)})`,
+                      `${this.context.cppString(matched[1]!)})`,
                 dataType: {
                     kind: "vector",
                     element: {
@@ -1132,15 +1494,30 @@ export class PlatformCalls {
             const name = this.ui.uiAttributeName(argumentAt(call, 0));
             const engine = this.context.requireEngine(element, call);
             if (name === "class" || name === "id")
-                this.ui.recordUiStaticAttribute(element, name, argumentAt(call, 0), "");
+                this.ui.recordUiStaticAttribute(
+                    element,
+                    name,
+                    argumentAt(call, 0),
+                    "",
+                );
             else if (name === "style") this.ui.recordUiStaticStyle(element, "");
-            return {kind: "void", cpp: `bbl::ui_remove_attribute(${engine}, ${element.cpp}, ${this.context.cppString(name)})`};
+            return {
+                kind: "void",
+                cpp: `bbl::ui_remove_attribute(${engine}, ${element.cpp}, ${this.context.cppString(name)})`,
+            };
         }
         if (element && callee.name.text === "setAttribute") {
             this.context.expectArgumentCount(call, 2, 2);
             const name = this.ui.uiAttributeName(argumentAt(call, 0));
             const engine = this.context.requireEngine(element, call);
-            const browserFile = this.ui.compileUiBrowserFileAttribute(element, engine, name, argumentAt(call, 1), call, "attribute");
+            const browserFile = this.ui.compileUiBrowserFileAttribute(
+                element,
+                engine,
+                name,
+                argumentAt(call, 1),
+                call,
+                "attribute",
+            );
             if (browserFile) {
                 return {
                     kind: "void",
@@ -1148,22 +1525,47 @@ export class PlatformCalls {
                 };
             }
             const staticValue = this.ui.tryUiStaticString(argumentAt(call, 1));
-            if (element.uiTag === "img" && name === "src" && staticValue !== undefined) this.ui.registerImageSource(staticValue);
-            const value = staticValue !== undefined
-                ? this.context.cppString(this.ui.lowerUiAttributeLiteral(name, staticValue, argumentAt(call, 1)))
-                : this.ui.uiStringCpp(argumentAt(call, 1), "UI setAttribute value");
+            if (
+                element.uiTag === "img" &&
+                name === "src" &&
+                staticValue !== undefined
+            )
+                this.ui.registerImageSource(staticValue);
+            const value =
+                staticValue !== undefined
+                    ? this.context.cppString(
+                          this.ui.lowerUiAttributeLiteral(
+                              name,
+                              staticValue,
+                              argumentAt(call, 1),
+                          ),
+                      )
+                    : this.ui.uiStringCpp(
+                          argumentAt(call, 1),
+                          "UI setAttribute value",
+                      );
             if (name === "class" || name === "id") {
-                this.ui.recordUiStaticAttribute(element, name, argumentAt(call, 1));
-            }
-            else if (name === "style" && staticValue !== undefined) {
-                this.ui.recordUiStaticStyle(element, this.ui.lowerUiAttributeLiteral("style", staticValue, argumentAt(call, 1)));
-            }
-            else if (name === "style") {
+                this.ui.recordUiStaticAttribute(
+                    element,
+                    name,
+                    argumentAt(call, 1),
+                );
+            } else if (name === "style" && staticValue !== undefined) {
+                this.ui.recordUiStaticStyle(
+                    element,
+                    this.ui.lowerUiAttributeLiteral(
+                        "style",
+                        staticValue,
+                        argumentAt(call, 1),
+                    ),
+                );
+            } else if (name === "style") {
                 this.ui.recordUiUnknownStaticStyle(element);
             }
             return {
                 kind: "void",
-                cpp: `bbl::ui_set_attribute(${engine}, ${element.cpp}, ` +
+                cpp:
+                    `bbl::ui_set_attribute(${engine}, ${element.cpp}, ` +
                     `${this.context.cppString(name)}, ` +
                     `${value})`,
             };
@@ -1175,11 +1577,13 @@ export class PlatformCalls {
             if (!element.uiRoot) {
                 this.context.expectSameEngine(element, child, call);
             }
-            const engine = this.context.requireEngine(element.uiRoot ? child : element, call);
+            const engine = this.context.requireEngine(
+                element.uiRoot ? child : element,
+                call,
+            );
             if (element.uiRoot) {
                 this.ui.recordUiStaticRootAppend(child);
-            }
-            else {
+            } else {
                 this.ui.recordUiStaticAppend(element, child);
             }
             return {
@@ -1193,34 +1597,60 @@ export class PlatformCalls {
         if (element && callee.name.text === "append") {
             // Even named handles need a snapshot: later arguments may rebind
             // the receiver or an earlier argument before insertion begins.
-            const snapshot = (value: Value, label: string, node: ts.Expression): Value => {
-                const {nativeBinding, ...expression} = value;
-                return this.context.pinValueToTemporary(expression, label, node);
+            const snapshot = (
+                value: Value,
+                label: string,
+                node: ts.Expression,
+            ): Value => {
+                const { nativeBinding, ...expression } = value;
+                return this.context.pinValueToTemporary(
+                    expression,
+                    label,
+                    node,
+                );
             };
-            const receiver = element.uiRoot ? element : snapshot(element, "append_receiver", callee.expression);
+            const receiver = element.uiRoot
+                ? element
+                : snapshot(element, "append_receiver", callee.expression);
             const children = call.arguments.map((argument) => {
                 const child = this.context.compileValue(argument);
-                if (child.kind !== "string") this.context.expectKind(child, "ui-element", argument);
+                if (child.kind !== "string")
+                    this.context.expectKind(child, "ui-element", argument);
                 return snapshot(child, "append_argument", argument);
             });
             if (children.length === 0) {
                 return { kind: "void", cpp: "" };
             }
-            const engine = receiver.uiRoot ? this.ui.documentEngine(call) : this.context.requireEngine(receiver, call);
+            const engine = receiver.uiRoot
+                ? this.ui.documentEngine(call)
+                : this.context.requireEngine(receiver, call);
             const appends = children.map((value) => {
-                const child: Value = value.kind === "string" ? {
-                    kind:"ui-element", cpp:"", engineCpp:engine,
-                    uiTag:"#text", uiStaticId:this.ui.createUiStaticElement("#text"),
-                } : value;
+                const child: Value =
+                    value.kind === "string"
+                        ? {
+                              kind: "ui-element",
+                              cpp: "",
+                              engineCpp: engine,
+                              uiTag: "#text",
+                              uiStaticId:
+                                  this.ui.createUiStaticElement("#text"),
+                          }
+                        : value;
                 if (receiver.uiRoot) {
-                    this.context.expectSameEngine({kind:"engine", cpp:engine, engineCpp:engine}, child, call);
+                    this.context.expectSameEngine(
+                        { kind: "engine", cpp: engine, engineCpp: engine },
+                        child,
+                        call,
+                    );
                     this.ui.recordUiStaticRootAppend(child);
-                    if (value.kind === "string") return `bbl::ui_append_text(${engine}, {}, ${value.cpp})`;
+                    if (value.kind === "string")
+                        return `bbl::ui_append_text(${engine}, {}, ${value.cpp})`;
                     return `bbl::ui_append_to_root(${engine}, ${child.cpp})`;
                 }
                 this.context.expectSameEngine(receiver, child, call);
                 this.ui.recordUiStaticAppend(receiver, child);
-                if (value.kind === "string") return `bbl::ui_append_text(${engine}, ${receiver.cpp}, ${value.cpp})`;
+                if (value.kind === "string")
+                    return `bbl::ui_append_text(${engine}, ${receiver.cpp}, ${value.cpp})`;
                 return `bbl::ui_append_child(${engine}, ${receiver.cpp}, ${child.cpp})`;
             });
             return { kind: "void", cpp: appends.join(", ") };
@@ -1242,8 +1672,8 @@ export class PlatformCalls {
                 kind: "void",
                 cpp: element.optionalFoundCpp
                     ? `(${element.optionalFoundCpp} ? ` +
-                        `bbl::ui_remove(${engine}, ${element.cpp}) : ` +
-                        "static_cast<void>(0))"
+                      `bbl::ui_remove(${engine}, ${element.cpp}) : ` +
+                      "static_cast<void>(0))"
                     : `bbl::ui_remove(${engine}, ${element.cpp})`,
             };
         }
@@ -1251,7 +1681,9 @@ export class PlatformCalls {
             this.context.expectArgumentCount(call, 0, 0);
             const engine = this.context.requireEngine(element, call);
             const rect = this.context.allocateTemporaryCppName("ui_rect");
-            this.context.emit(`const auto ${rect} = bbl::ui_get_client_rect(${engine}, ${element.cpp});`);
+            this.context.emit(
+                `const auto ${rect} = bbl::ui_get_client_rect(${engine}, ${element.cpp});`,
+            );
             const component = (name: string): Value => ({
                 kind: "number",
                 cpp: `${rect}.${name}`,
@@ -1269,9 +1701,11 @@ export class PlatformCalls {
                 },
             };
         }
-        if (element &&
+        if (
+            element &&
             (callee.name.text === "setPointerCapture" ||
-                callee.name.text === "releasePointerCapture")) {
+                callee.name.text === "releasePointerCapture")
+        ) {
             this.context.expectArgumentCount(call, 1, 1);
             // RmlUi owns pointer capture while dispatching a pressed
             // control. The DOM call has no additional native action.
@@ -1291,13 +1725,18 @@ export class PlatformCalls {
             return { kind: "void", cpp: "" };
         }
         if (element && callee.name.text === "removeEventListener") {
-            this.context.fail(call, "Removal of this retained UI event family is not represented.");
+            this.context.fail(
+                call,
+                "Removal of this retained UI event family is not represented.",
+            );
         }
         if (classListMutation) {
             const classOwner = callee.expression.expression;
             let classElement = this.ui.uiElementValue(classOwner);
-            if (!classElement &&
-                ts.isCallExpression(this.context.unwrap(classOwner))) {
+            if (
+                !classElement &&
+                ts.isCallExpression(this.context.unwrap(classOwner))
+            ) {
                 const compiled = this.context.compileValue(classOwner);
                 if (compiled.kind === "ui-element") {
                     classElement = compiled;
@@ -1305,17 +1744,35 @@ export class PlatformCalls {
             }
             if (classElement) {
                 const method = callee.name.text;
-                this.context.expectArgumentCount(call, method === "toggle" ? 2 : 1, method === "toggle" ? 2 : 1);
-                const name = this.context.compileStringLiteral(argumentAt(call, 0));
+                this.context.expectArgumentCount(
+                    call,
+                    method === "toggle" ? 2 : 1,
+                    method === "toggle" ? 2 : 1,
+                );
+                const name = this.context.compileStringLiteral(
+                    argumentAt(call, 0),
+                );
                 if (!/^[A-Za-z_][A-Za-z0-9_-]*$/.test(name)) {
-                    this.context.fail(argumentAt(call, 0), `Native UI class name '${name}' is not valid.`);
+                    this.context.fail(
+                        argumentAt(call, 0),
+                        `Native UI class name '${name}' is not valid.`,
+                    );
                 }
-                const enabled = method === "toggle"
-                    ? this.ui.uiBooleanCpp(argumentAt(call, 1), "UI classList.toggle")
-                    : method === "add"
-                        ? "true"
-                        : "false";
-                this.ui.recordUiStaticClass(classElement, name, method as "add" | "remove" | "toggle", enabled);
+                const enabled =
+                    method === "toggle"
+                        ? this.ui.uiBooleanCpp(
+                              argumentAt(call, 1),
+                              "UI classList.toggle",
+                          )
+                        : method === "add"
+                          ? "true"
+                          : "false";
+                this.ui.recordUiStaticClass(
+                    classElement,
+                    name,
+                    method,
+                    enabled,
+                );
                 if (classElement.uiStaticId === undefined) {
                     this.ui.uiUnknownClassMutations.push({
                         className: name,
@@ -1323,7 +1780,8 @@ export class PlatformCalls {
                     });
                 }
                 const engine = this.context.requireEngine(classElement, call);
-                const mutation = `bbl::ui_toggle_class(${engine}, ${classElement.cpp}, ` +
+                const mutation =
+                    `bbl::ui_toggle_class(${engine}, ${classElement.cpp}, ` +
                     `${this.context.cppString(name)}, ${enabled})`;
                 return {
                     kind: "void",
@@ -1336,35 +1794,81 @@ export class PlatformCalls {
         return undefined;
     }
 
-    private compileUiQuery(call: ts.CallExpression, method: string, engine: string, root: string, found?: string): Value {
+    private compileUiQuery(
+        call: ts.CallExpression,
+        method: string,
+        engine: string,
+        root: string,
+        found?: string,
+    ): Value {
         this.context.expectArgumentCount(call, 1, 1);
         const source = this.context.compileStringLiteral(argumentAt(call, 0));
-        const selectors = splitUiSelectorList(source).map(part => {
+        const selectors = splitUiSelectorList(source).map((part) => {
             const sequence = parseUiSelectorSequence(part);
-            if (!sequence) this.context.fail(call, `Retained DOM query selector '${part}' is not lowered.`);
+            if (!sequence)
+                this.context.fail(
+                    call,
+                    `Retained DOM query selector '${part}' is not lowered.`,
+                );
             for (const test of uiSelectorSequenceTests(sequence)) {
-                if (isUiSelectorState(test.kind)) this.context.fail(call, `Retained DOM query state ':${test.kind}' requires an interaction snapshot.`);
+                if (isUiSelectorState(test.kind))
+                    this.context.fail(
+                        call,
+                        `Retained DOM query state ':${test.kind}' requires an interaction snapshot.`,
+                    );
             }
-            return uiSelectorSequenceCpp(sequence, text => this.context.cppString(text));
+            return uiSelectorSequenceCpp(sequence, (text) =>
+                this.context.cppString(text),
+            );
         });
-        if (!selectors.length) this.context.fail(call, "Retained DOM query requires a selector.");
+        if (!selectors.length)
+            this.context.fail(call, "Retained DOM query requires a selector.");
         this.context.reachFeature("ui:rml", call);
         this.context.reachJsData();
         const terms = `{${selectors.join(", ")}}`;
         if (method === "matches") {
             const query = `bbl::ui_matches_element(${engine}, ${root}, ${terms})`;
-            return found ? {kind:"data", cpp:`(${found} ? std::optional<bool>{${query}} : std::nullopt)`,
-                dataType:{kind:"optional", inner:{kind:"boolean"}}} : {kind:"boolean", cpp:query};
+            return found
+                ? {
+                      kind: "data",
+                      cpp: `(${found} ? std::optional<bool>{${query}} : std::nullopt)`,
+                      dataType: {
+                          kind: "optional",
+                          inner: { kind: "boolean" },
+                      },
+                  }
+                : { kind: "boolean", cpp: query };
         }
         if (method === "querySelectorAll") {
             const query = `bbl::ui_query_elements(${engine}, ${root}, ${terms})`;
-            const array = {kind:"vector", element:{kind:"handle", handle:"ui-element"}} as const;
-            const dataType = found ? {kind:"optional" as const, inner:array} : array;
+            const array = {
+                kind: "vector",
+                element: { kind: "handle", handle: "ui-element" },
+            } as const;
+            const dataType = found
+                ? { kind: "optional" as const, inner: array }
+                : array;
             const cppType = this.context.dataTypes.cppType(dataType);
-            return {kind:"data", cpp:found ? `(${found} ? ${cppType}{${query}} : ${cppType}{std::nullopt})` : query, dataType, engineCpp:engine};
+            return {
+                kind: "data",
+                cpp: found
+                    ? `(${found} ? ${cppType}{${query}} : ${cppType}{std::nullopt})`
+                    : query,
+                dataType,
+                engineCpp: engine,
+            };
         }
         const query = `bbl::ui_query_element(${engine}, ${root}, ${terms}${method === "closest" ? ", bbl::UiQueryMode::Closest" : ""})`;
-        return {kind:"data", cpp:found ? `(${found} ? ${query} : bbl::js::Nullable<bbl::UiElementHandle>{})` : query,
-            dataType:{kind:"optional", inner:{kind:"handle", handle:"ui-element"}}, engineCpp:engine};
+        return {
+            kind: "data",
+            cpp: found
+                ? `(${found} ? ${query} : bbl::js::Nullable<bbl::UiElementHandle>{})`
+                : query,
+            dataType: {
+                kind: "optional",
+                inner: { kind: "handle", handle: "ui-element" },
+            },
+            engineCpp: engine,
+        };
     }
 }

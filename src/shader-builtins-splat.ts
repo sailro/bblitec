@@ -206,9 +206,7 @@ const cache = new Map<string, SplatShaderSource>();
  * of them refuses generation rather than compiling a shader whose resources
  * this port binds in the wrong order.
  */
-export function pinnedSplatShader(
-    composedModule?: string,
-): SplatShaderSource {
+export function pinnedSplatShader(composedModule?: string): SplatShaderSource {
     const stock = pinnedSplatModuleWgsl();
     return splitSplatShader(stockDialect(stock), stock, composedModule);
 }
@@ -272,7 +270,10 @@ function splitSplatShader(
     // definitions slot. The mangler upstream runs over the whole composed
     // string is idempotent on a base the bundler already shortened, and
     // that is the property this checks rather than assumes.
-    if (composedModule && wgsl.slice(0, vertexEnd) !== stock.slice(0, vertexEnd)) {
+    if (
+        composedModule &&
+        wgsl.slice(0, vertexEnd) !== stock.slice(0, vertexEnd)
+    ) {
         throw new Error(
             "Splicing Gaussian-splat shader fragments rewrote the vertex " +
                 "half of the pinned module.",

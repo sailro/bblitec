@@ -7,7 +7,13 @@ import ts from "typescript";
 import { tracePinnedTranslation } from "./translation-trace.js";
 import { doubleLiteral } from "../cpp-literals.js";
 import type { LoweringContext } from "./context.js";
-import { CPP_ELEMENT, CPP_RECORD, CPP_SCALAR, cppFixedArray, cppVector } from "./cpp-types.js";
+import {
+    CPP_ELEMENT,
+    CPP_RECORD,
+    CPP_SCALAR,
+    cppFixedArray,
+    cppVector,
+} from "./cpp-types.js";
 import {
     absentBinding,
     type PinnedBinding,
@@ -22,7 +28,10 @@ export function vec3MemberBindings(
 ): [string, PinnedBinding][] {
     return (["x", "y", "z"] as const).map((axis, index) => [
         `${pinned}.${axis}`,
-        { cpp: typeof cpp === "string" ? `${cpp}.${axis}` : cpp(axis, index), type: "scalar" },
+        {
+            cpp: typeof cpp === "string" ? `${cpp}.${axis}` : cpp(axis, index),
+            type: "scalar",
+        },
     ]);
 }
 
@@ -47,16 +56,32 @@ function functionStatements(
 ): readonly ts.Statement[] {
     const statements = declaration.body!.statements;
     if (!selected) return statements;
-    const guards = statements.filter((statement): statement is ts.IfStatement =>
-        ts.isIfStatement(statement) && context.expressionMatchesShape(statement.expression, selected.condition));
+    const guards = statements.filter(
+        (statement): statement is ts.IfStatement =>
+            ts.isIfStatement(statement) &&
+            context.expressionMatchesShape(
+                statement.expression,
+                selected.condition,
+            ),
+    );
     const guard = guards[0];
-    if (guards.length !== 1 || !guard || !ts.isBlock(guard.thenStatement) ||
-        !guard.elseStatement || !ts.isBlock(guard.elseStatement)) {
-        return context.contractError(declaration,
-            `Expected one pinned '${selected.condition}' guard with two block arms.`);
+    if (
+        guards.length !== 1 ||
+        !guard ||
+        !ts.isBlock(guard.thenStatement) ||
+        !guard.elseStatement ||
+        !ts.isBlock(guard.elseStatement)
+    ) {
+        return context.contractError(
+            declaration,
+            `Expected one pinned '${selected.condition}' guard with two block arms.`,
+        );
     }
-    const arm = selected.arm === "then" ? guard.thenStatement : guard.elseStatement;
-    return statements.flatMap(statement => statement === guard ? [...arm.statements] : [statement]);
+    const arm =
+        selected.arm === "then" ? guard.thenStatement : guard.elseStatement;
+    return statements.flatMap((statement) =>
+        statement === guard ? [...arm.statements] : [statement],
+    );
 }
 
 /** One pinned parameter: its pinned name, its annotation, its C++ name. */
@@ -165,15 +190,18 @@ const parameterKinds: Readonly<
     >
 > = {
     number: {
-        annotation: "number", bindingType: "scalar",
+        annotation: "number",
+        bindingType: "scalar",
         declare: (cpp) => `${CPP_SCALAR.number} ${cpp}`,
     },
     index: {
-        annotation: "number", bindingType: "index",
+        annotation: "number",
+        bindingType: "index",
         declare: (cpp) => `${CPP_ELEMENT.i64} ${cpp}`,
     },
     boolean: {
-        annotation: "boolean", bindingType: "bool",
+        annotation: "boolean",
+        bindingType: "bool",
         declare: (cpp) => `${CPP_SCALAR.boolean} ${cpp}`,
     },
     mat4: {
@@ -420,32 +448,63 @@ export function lowerMat4InvertCpp(
     const module = "src/math/invert-mat4.ts";
     const symbol = "invertMat4";
     const at = context.functionDeclaration(module, symbol).declaration;
-    return lowerPinnedFunction(context, module, symbol, [
-        { pinned: "input", kind: "mat4Const", cpp: "input" },
-    ], {
-        ...options,
-        cppName: options.cppName ?? "mat4_invert",
-        localStorage: [
-            { pinned: "m", initializer: "input", binding: { cpp: "input", type: "f32" } },
-            { pinned: "out", initializer: "allocateMat4()", binding: { cpp: "out", type: "f32" },
-                declaration: "std::array<float, 16> out{};" },
-        ],
-        calls: new Map([["Math.abs", (args) => {
-            if (args.length !== 1) {
-                return context.contractError(at, "Expected pinned invertMat4 Math.abs to take one argument.");
-            }
-            return "std::abs(" + args[0] + ")";
-        }]]),
-        returns: {
-            type: "std::optional<std::array<float, 16>>",
-            value: (_lowerer, expression) => {
-                const returned = expression ? context.unwrapExpression(expression) : undefined;
-                if (returned?.kind === ts.SyntaxKind.NullKeyword) return "std::nullopt";
-                if (returned && ts.isIdentifier(returned) && returned.text === "out") return "out";
-                return context.contractError(returned ?? at, "Expected pinned invertMat4 to return null or out.");
+    return lowerPinnedFunction(
+        context,
+        module,
+        symbol,
+        [{ pinned: "input", kind: "mat4Const", cpp: "input" }],
+        {
+            ...options,
+            cppName: options.cppName ?? "mat4_invert",
+            localStorage: [
+                {
+                    pinned: "m",
+                    initializer: "input",
+                    binding: { cpp: "input", type: "f32" },
+                },
+                {
+                    pinned: "out",
+                    initializer: "allocateMat4()",
+                    binding: { cpp: "out", type: "f32" },
+                    declaration: "std::array<float, 16> out{};",
+                },
+            ],
+            calls: new Map([
+                [
+                    "Math.abs",
+                    (args) => {
+                        if (args.length !== 1) {
+                            return context.contractError(
+                                at,
+                                "Expected pinned invertMat4 Math.abs to take one argument.",
+                            );
+                        }
+                        return "std::abs(" + args[0] + ")";
+                    },
+                ],
+            ]),
+            returns: {
+                type: "std::optional<std::array<float, 16>>",
+                value: (_lowerer, expression) => {
+                    const returned = expression
+                        ? context.unwrapExpression(expression)
+                        : undefined;
+                    if (returned?.kind === ts.SyntaxKind.NullKeyword)
+                        return "std::nullopt";
+                    if (
+                        returned &&
+                        ts.isIdentifier(returned) &&
+                        returned.text === "out"
+                    )
+                        return "out";
+                    return context.contractError(
+                        returned ?? at,
+                        "Expected pinned invertMat4 to return null or out.",
+                    );
+                },
             },
         },
-    });
+    );
 }
 
 /** A pinned function of scalars (and at most a Mat4Storage target), as C++. */
@@ -610,12 +669,20 @@ export function lowerPinnedFunctionParts(
             );
         }
         if (spec.optional && !parameter.questionToken) {
-            context.contractError(parameter, `Expected pinned '${spec.pinned}' to stay optional.`);
+            context.contractError(
+                parameter,
+                `Expected pinned '${spec.pinned}' to stay optional.`,
+            );
         }
-        if (spec.defaultValue !== undefined && (!defaulted ||
-            context.numericValue(defaulted, file) !== spec.defaultValue)) {
-            context.contractError(parameter,
-                `Expected pinned '${spec.pinned}' to default to ${spec.defaultValue}.`);
+        if (
+            spec.defaultValue !== undefined &&
+            (!defaulted ||
+                context.numericValue(defaulted, file) !== spec.defaultValue)
+        ) {
+            context.contractError(
+                parameter,
+                `Expected pinned '${spec.pinned}' to default to ${spec.defaultValue}.`,
+            );
         }
         if (spec.absent) {
             if (!parameter.questionToken) {
@@ -637,7 +704,11 @@ export function lowerPinnedFunctionParts(
             },
         );
         if (spec.specialized) {
-            if (!spec.binding) context.contractError(parameter, "A specialized parameter requires a binding.");
+            if (!spec.binding)
+                context.contractError(
+                    parameter,
+                    "A specialized parameter requires a binding.",
+                );
             return;
         }
         const declared = spec.cppType
@@ -672,18 +743,33 @@ export function lowerPinnedFunctionParts(
     const statements = functionStatements(context, declaration, options.armOf);
     const storageDeclarations: string[] = [];
     for (const storage of options.localStorage ?? []) {
-        const locals = statements.filter(ts.isVariableStatement)
-            .flatMap(statement => [...statement.declarationList.declarations])
-            .filter(local => ts.isIdentifier(local.name) && local.name.text === storage.pinned);
+        const locals = statements
+            .filter(ts.isVariableStatement)
+            .flatMap((statement) => [...statement.declarationList.declarations])
+            .filter(
+                (local) =>
+                    ts.isIdentifier(local.name) &&
+                    local.name.text === storage.pinned,
+            );
         const local = locals[0];
-        if (locals.length !== 1 || !local?.initializer || bindings.has(storage.pinned)) {
-            context.contractError(local ?? declaration,
-                `Expected one unbound pinned local '${storage.pinned}' with an initializer.`);
+        if (
+            locals.length !== 1 ||
+            !local?.initializer ||
+            bindings.has(storage.pinned)
+        ) {
+            context.contractError(
+                local ?? declaration,
+                `Expected one unbound pinned local '${storage.pinned}' with an initializer.`,
+            );
         }
-        context.assertExpressionShape(local.initializer, storage.initializer,
-            `Pinned ${symbolName} '${storage.pinned}' storage initializer`);
+        context.assertExpressionShape(
+            local.initializer,
+            storage.initializer,
+            `Pinned ${symbolName} '${storage.pinned}' storage initializer`,
+        );
         bindings.set(storage.pinned, storage.binding);
-        if (storage.declaration) storageDeclarations.push(`    ${storage.declaration}`);
+        if (storage.declaration)
+            storageDeclarations.push(`    ${storage.declaration}`);
     }
     const lowerer: PinnedNumericLowerer = new PinnedNumericLowerer(file, {
         bindings,
@@ -691,7 +777,9 @@ export function lowerPinnedFunctionParts(
         ...(options.methods ? { methods: options.methods } : {}),
         ...(options.arrayCopy ? { arrayCopy: options.arrayCopy } : {}),
         ...(options.matrixCalls ? { matrixCalls: options.matrixCalls } : {}),
-        ...(options.nullableMatrixCalls ? { nullableMatrixCalls: options.nullableMatrixCalls } : {}),
+        ...(options.nullableMatrixCalls
+            ? { nullableMatrixCalls: options.nullableMatrixCalls }
+            : {}),
         ...(options.recordCalls ? { recordCalls: options.recordCalls } : {}),
         ...(options.tupleCalls ? { tupleCalls: options.tupleCalls } : {}),
         ...(options.fixedTupleCalls
@@ -726,18 +814,45 @@ export function lowerPinnedFunctionParts(
                   },
               }),
     });
-    const body = [...storageDeclarations, ...lowerer.statements(statements, "    ")].join("\n");
-    const returnType = typeof options.returns === "string"
-        ? options.returns
-        : options.returns.type;
-    tracePinnedTranslation(() => ({ file, symbolName: options.enclosing ? `${options.enclosing}.${symbolName}` : symbolName,
-        extent: options.armOf || parameters.some(parameter => parameter.absent || parameter.specialized) ? "specialization" : "function",
+    const body = [
+        ...storageDeclarations,
+        ...lowerer.statements(statements, "    "),
+    ].join("\n");
+    const returnType =
+        typeof options.returns === "string"
+            ? options.returns
+            : options.returns.type;
+    tracePinnedTranslation(() => ({
+        file,
+        symbolName: options.enclosing
+            ? `${options.enclosing}.${symbolName}`
+            : symbolName,
+        extent:
+            options.armOf ||
+            parameters.some(
+                (parameter) => parameter.absent || parameter.specialized,
+            )
+                ? "specialization"
+                : "function",
         adapters: [
-            ...parameters.filter(parameter => parameter.binding || parameter.cppType || parameter.absent || parameter.specialized).map(parameter => `parameter:${parameter.pinned}`),
-            ...(options.calls?.size ? ["calls"] : []), ...(options.methods?.size ? ["methods"] : []),
-            ...(options.memberBindings?.size ? ["members"] : []), ...(options.localStorage?.length ? ["local-storage"] : []),
-            ...(typeof options.returns === "object" ? ["return"] : []), ...(options.armOf ? ["selected-arm"] : []),
-        ], requests: [...(lowerer.translationActivity?.requests ?? [])].sort() }));
+            ...parameters
+                .filter(
+                    (parameter) =>
+                        parameter.binding ||
+                        parameter.cppType ||
+                        parameter.absent ||
+                        parameter.specialized,
+                )
+                .map((parameter) => `parameter:${parameter.pinned}`),
+            ...(options.calls?.size ? ["calls"] : []),
+            ...(options.methods?.size ? ["methods"] : []),
+            ...(options.memberBindings?.size ? ["members"] : []),
+            ...(options.localStorage?.length ? ["local-storage"] : []),
+            ...(typeof options.returns === "object" ? ["return"] : []),
+            ...(options.armOf ? ["selected-arm"] : []),
+        ],
+        requests: [...(lowerer.translationActivity?.requests ?? [])].sort(),
+    }));
     return {
         provenance: context.provenance(
             modulePath,
@@ -745,8 +860,7 @@ export function lowerPinnedFunctionParts(
                 ? `${options.enclosing}.${symbolName}`
                 : symbolName,
         ),
-        declaration:
-            `${returnType} ${options.cppName}(\n    ${signature.join(",\n    ")})`,
+        declaration: `${returnType} ${options.cppName}(\n    ${signature.join(",\n    ")})`,
         body,
     };
 }

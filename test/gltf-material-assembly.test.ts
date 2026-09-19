@@ -10,67 +10,189 @@ import { lowerGltfMaterialTextures } from "../src/lowering/gltf/material-texture
 import { lowerGltfMaterialProperties } from "../src/lowering/gltf/material-properties.js";
 import { lowerGltfFactorBake } from "../src/lowering/gltf/factor-bake.js";
 import { lowerGltfParserJson } from "../src/lowering/gltf/parser-json.js";
-import { transpileCommonJs } from "../src/typescript-transpile.js";
-import { cppFunction, cppRecord, nativeFixtureVcpkgRoot, optionalNativeFixtureTools, runNativeFixtureCompiler } from "./native-fixture.js";
+import {
+    transpileCommonJs,
+    createJavaScriptFunction,
+} from "../src/typescript-transpile.js";
+import {
+    cppFunction,
+    cppRecord,
+    nativeFixtureVcpkgRoot,
+    optionalNativeFixtureTools,
+    runNativeFixtureCompiler,
+} from "./native-fixture.js";
 import { doctoredContext } from "./doctored-store.js";
 
 const module = "src/loader-gltf/gltf-material.ts";
 const tools = optionalNativeFixtureTools();
 
 function execute(context: LoweringContext, reads: number[]) {
-    const declarations = ["assembleMaterial", "makeImageFetcher"].map(name => context.functionDeclaration(module, name).declaration.getText());
-    declarations.push(context.functionDeclaration("src/loader-gltf/gltf-parser.ts", "getTextureImageIndex").declaration.getText());
+    const declarations = ["assembleMaterial", "makeImageFetcher"].map((name) =>
+        context.functionDeclaration(module, name).declaration.getText(),
+    );
+    declarations.push(
+        context
+            .functionDeclaration(
+                "src/loader-gltf/gltf-parser.ts",
+                "getTextureImageIndex",
+            )
+            .declaration.getText(),
+    );
     const code = transpileCommonJs(declarations.join("\n"), module);
     const resolver = (_json: object, _bytes: DataView, index: number) => {
         reads.push(index);
         return Promise.resolve({ index });
     };
-    return new Function("exports", "resolveImage", `${code}\nreturn assembleMaterial;`)({}, resolver) as
-        (json: object, bytes: DataView, index: number, url: string, cache: unknown[]) => Promise<Record<string, unknown>>;
+    return createJavaScriptFunction(
+        "exports",
+        "resolveImage",
+        `${code}\nreturn assembleMaterial;`,
+    )({}, resolver) as (
+        json: object,
+        bytes: DataView,
+        index: number,
+        url: string,
+        cache: unknown[],
+    ) => Promise<Record<string, unknown>>;
 }
 
-test("core glTF material assembly follows pinned defaults, branches, fetch order and image identity", { skip: !tools }, async () => {
-    const base = new LoweringContext();
-    const contexts = [base,
-        doctoredContext(module, "pbr.metallicFactor ?? 1", "(pbr.metallicFactor ?? 1) * 0.25"),
-        doctoredContext(module, "fetchImg(pbr.baseColorTexture)", "fetchImg(mat.normalTexture)"),
-        doctoredContext(module, "if (!texInfo) {", "if (!texInfo || texInfo.index === 0) {"),
-        doctoredContext(module, "pbr.baseColorFactor ?? [1, 1, 1, 1]", "pbr.baseColorFactor ?? [0.2, 0.3, 0.4, 0.5]"),
-        doctoredContext(module, "mat.emissiveFactor ?? [0, 0, 0]", "mat.emissiveFactor ?? [1, 0, 0]"),
-    ];
-    const inputs = [
-        {},
-        { materials: [null, {}, { pbrMetallicRoughness: null, emissiveFactor: null, alphaMode: null, alphaCutoff: null }] },
-        { materials: [{ pbrMetallicRoughness: { baseColorFactor: [.1, .2, .3, .4], metallicFactor: 0, roughnessFactor: .25 },
-            emissiveFactor: [2, 3, 4], doubleSided: true, alphaMode: "MASK", alphaCutoff: 0 }] },
-        { textures: [{ source: 3 }, { source: 5 }, { source: 3 }], materials: [
-            { pbrMetallicRoughness: { baseColorTexture: { index: 1 }, metallicRoughnessTexture: { index: 0 } },
-                normalTexture: { index: 2, scale: .75 }, occlusionTexture: { index: 0, texCoord: 1 }, emissiveTexture: { index: 1 }, alphaMode: "BLEND" },
-            { normalTexture: { index: 0, scale: "default" }, occlusionTexture: { index: 1, texCoord: null } },
-        ] },
-    ];
-    const rows: object[] = [];
-    for (const input of inputs) {
-        const count = "materials" in input ? input.materials.length : 0;
-        const indices = [...Array.from({ length: count }, (_value, index) => index), count, 0];
-        const outputs = [];
-        for (const context of contexts) {
-            const reads: number[] = [], run = execute(context, reads), cache: unknown[] = [];
-            const materials = [];
-            for (const index of indices) materials.push(await run(input, new DataView(new ArrayBuffer(0)), index, "", cache));
-            outputs.push({ materials, reads });
+test(
+    "core glTF material assembly follows pinned defaults, branches, fetch order and image identity",
+    { skip: !tools },
+    async () => {
+        const base = new LoweringContext();
+        const contexts = [
+            base,
+            doctoredContext(
+                module,
+                "pbr.metallicFactor ?? 1",
+                "(pbr.metallicFactor ?? 1) * 0.25",
+            ),
+            doctoredContext(
+                module,
+                "fetchImg(pbr.baseColorTexture)",
+                "fetchImg(mat.normalTexture)",
+            ),
+            doctoredContext(
+                module,
+                "if (!texInfo) {",
+                "if (!texInfo || texInfo.index === 0) {",
+            ),
+            doctoredContext(
+                module,
+                "pbr.baseColorFactor ?? [1, 1, 1, 1]",
+                "pbr.baseColorFactor ?? [0.2, 0.3, 0.4, 0.5]",
+            ),
+            doctoredContext(
+                module,
+                "mat.emissiveFactor ?? [0, 0, 0]",
+                "mat.emissiveFactor ?? [1, 0, 0]",
+            ),
+        ];
+        const inputs = [
+            {},
+            {
+                materials: [
+                    null,
+                    {},
+                    {
+                        pbrMetallicRoughness: null,
+                        emissiveFactor: null,
+                        alphaMode: null,
+                        alphaCutoff: null,
+                    },
+                ],
+            },
+            {
+                materials: [
+                    {
+                        pbrMetallicRoughness: {
+                            baseColorFactor: [0.1, 0.2, 0.3, 0.4],
+                            metallicFactor: 0,
+                            roughnessFactor: 0.25,
+                        },
+                        emissiveFactor: [2, 3, 4],
+                        doubleSided: true,
+                        alphaMode: "MASK",
+                        alphaCutoff: 0,
+                    },
+                ],
+            },
+            {
+                textures: [{ source: 3 }, { source: 5 }, { source: 3 }],
+                materials: [
+                    {
+                        pbrMetallicRoughness: {
+                            baseColorTexture: { index: 1 },
+                            metallicRoughnessTexture: { index: 0 },
+                        },
+                        normalTexture: { index: 2, scale: 0.75 },
+                        occlusionTexture: { index: 0, texCoord: 1 },
+                        emissiveTexture: { index: 1 },
+                        alphaMode: "BLEND",
+                    },
+                    {
+                        normalTexture: { index: 0, scale: "default" },
+                        occlusionTexture: { index: 1, texCoord: null },
+                    },
+                ],
+            },
+        ];
+        const rows: object[] = [];
+        for (const input of inputs) {
+            const count = "materials" in input ? input.materials.length : 0;
+            const indices = [
+                ...Array.from({ length: count }, (_value, index) => index),
+                count,
+                0,
+            ];
+            const outputs = [];
+            for (const context of contexts) {
+                const reads: number[] = [],
+                    run = execute(context, reads),
+                    cache: unknown[] = [];
+                const materials = [];
+                for (const index of indices)
+                    materials.push(
+                        await run(
+                            input,
+                            new DataView(new ArrayBuffer(0)),
+                            index,
+                            "",
+                            cache,
+                        ),
+                    );
+                outputs.push({ materials, reads });
+            }
+            rows.push({ input, indices, outputs });
         }
-        rows.push({ input, indices, outputs });
-    }
-    const output = resolve("artifacts/gltf-material-assembly");
-    mkdirSync(output, { recursive: true });
-    writeFileSync(join(output, "cases.json"), JSON.stringify(rows));
-    const loader = new GltfLowerer(base).lowerLoaderAdapter().source;
-    const file = join(output, "check.cpp"), executable = join(output, "check.exe");
-    const fields = ["_baseColorFactor", "_metallicFactor", "_roughnessFactor", "_emissiveFactor", "_normalScale",
-        "_occlusionTexCoord", "_doubleSided", "_alphaMode", "_alphaCutoff"];
-    const images = ["_baseColorImage", "_metallicRoughnessImage", "_normalImage", "_occlusionImage", "_emissiveImage"];
-    writeFileSync(file, `#include <bblite/ts_runtime.hpp>
+        const output = resolve("artifacts/gltf-material-assembly");
+        mkdirSync(output, { recursive: true });
+        writeFileSync(join(output, "cases.json"), JSON.stringify(rows));
+        const loader = new GltfLowerer(base).lowerLoaderAdapter().source;
+        const file = join(output, "check.cpp"),
+            executable = join(output, "check.exe");
+        const fields = [
+            "_baseColorFactor",
+            "_metallicFactor",
+            "_roughnessFactor",
+            "_emissiveFactor",
+            "_normalScale",
+            "_occlusionTexCoord",
+            "_doubleSided",
+            "_alphaMode",
+            "_alphaCutoff",
+        ];
+        const images = [
+            "_baseColorImage",
+            "_metallicRoughnessImage",
+            "_normalImage",
+            "_occlusionImage",
+            "_emissiveImage",
+        ];
+        writeFileSync(
+            file,
+            `#include <bblite/ts_runtime.hpp>
         #include <bblite/pal_image_canvas.hpp>
         #include <cassert>
         #include <fstream>
@@ -91,7 +213,9 @@ test("core glTF material assembly follows pinned defaults, branches, fetch order
             for (const auto& row : cases) {
                 const auto document = ts::JsonValue::from_native(row.at("input"));
                 const auto& json = document.as_object();
-                ${contexts.map((_context, variant) => `{
+                ${contexts
+                    .map(
+                        (_context, variant) => `{
                     using namespace variant${variant};
                     GltfMaterialImageCache cache;
                     std::vector<std::size_t> reads;
@@ -103,100 +227,342 @@ test("core glTF material assembly follows pinned defaults, branches, fetch order
                         const auto source_index = row.at("indices")[index].get<std::size_t>();
                         const auto actual = assemble_gltf_material(json, source_index, cache, resolve_image);
                         const auto& expected = row.at("outputs")[${variant}].at("materials")[index];
-                        ${fields.map(field => `assert(nlohmann::json(actual.${field}) == expected.at("${field}"));`).join("\n")}
-                        ${images.map(field => `if (expected.at("${field}").is_null()) assert(!actual.${field});
+                        ${fields.map((field) => `assert(nlohmann::json(actual.${field}) == expected.at("${field}"));`).join("\n")}
+                        ${images
+                            .map(
+                                (
+                                    field,
+                                ) => `if (expected.at("${field}").is_null()) assert(!actual.${field});
                             else { assert(actual.${field}); assert(actual.${field}->index == expected.at("${field}").at("index"));
-                                assert(actual.${field} == cache.at(actual.${field}->index).get()); }`).join("\n")}
+                                assert(actual.${field} == cache.at(actual.${field}->index).get()); }`,
+                            )
+                            .join("\n")}
                         assert(actual._rawMatDef == gltf_material_at(json, source_index));
                     }
                     assert(nlohmann::json(reads) == row.at("outputs")[${variant}].at("reads"));
-                }`).join("\n")}
+                }`,
+                    )
+                    .join("\n")}
             }
-        }`);
-    runNativeFixtureCompiler(tools!, ["/nologo", "/std:c++20", "/W4", "/WX", "/permissive-", "/EHsc", "/MD",
-        `/Fo:${output}\\`, `/Fe:${executable}`, "/I", "native/include", `/external:I${join(nativeFixtureVcpkgRoot, "include")}`, "/external:W0", file]);
-    execFileSync(executable, { cwd: output, stdio: "pipe" });
-});
+        }`,
+        );
+        runNativeFixtureCompiler(tools!, [
+            "/nologo",
+            "/std:c++20",
+            "/W4",
+            "/WX",
+            "/permissive-",
+            "/EHsc",
+            "/MD",
+            `/Fo:${output}\\`,
+            `/Fe:${executable}`,
+            "/I",
+            "native/include",
+            `/external:I${join(nativeFixtureVcpkgRoot, "include")}`,
+            "/external:W0",
+            file,
+        ]);
+        execFileSync(executable, { cwd: output, stdio: "pipe" });
+    },
+);
 
 test("glTF material assembly refuses unrepresented return fields and image operations", () => {
-    assert.throws(() => lowerGltfMaterialAssembly(doctoredContext(module,
-        "_rawMatDef: rawMat,", "_rawMatDef: rawMat, unexpected: 1,")), /Unrepresented core material member/);
-    assert.throws(() => lowerGltfMaterialAssembly(doctoredContext(module,
-        "resolveImage(json, binChunk, imgIdx, baseUrl)", "readOtherImage(imgIdx)")), /Material image resolution/);
+    assert.throws(
+        () =>
+            lowerGltfMaterialAssembly(
+                doctoredContext(
+                    module,
+                    "_rawMatDef: rawMat,",
+                    "_rawMatDef: rawMat, unexpected: 1,",
+                ),
+            ),
+        /Unrepresented core material member/,
+    );
+    assert.throws(
+        () =>
+            lowerGltfMaterialAssembly(
+                doctoredContext(
+                    module,
+                    "resolveImage(json, binChunk, imgIdx, baseUrl)",
+                    "readOtherImage(imgIdx)",
+                ),
+            ),
+        /Material image resolution/,
+    );
 });
 
-test("glTF texture builders and native material projection preserve source selection and factor baking", { skip: !tools }, async () => {
-    const builderModule = "src/loader-gltf/gltf-pbr-builder.ts", extModule = "src/loader-gltf/gltf-pbr-builder-ext.ts";
-    const base = new LoweringContext();
-    const contexts = [base,
-        doctoredContext(module, "pbr.metallicFactor ?? 1", "(pbr.metallicFactor ?? 1) * 0.25"),
-        doctoredContext(module, "fetchImg(pbr.baseColorTexture)", "fetchImg(mat.normalTexture)"),
-        doctoredContext(module, "if (!texInfo) {", "if (!texInfo || texInfo.index === 0) {"),
-        doctoredContext(extModule, "mat._occlusionTexCoord !== 0", "mat._occlusionTexCoord === 1"),
-        doctoredContext(builderModule, "clamp(roughness), clamp(metallic)", "clamp(metallic), clamp(roughness)"),
-        doctoredContext(builderModule, "Math.round(Math.max(0, Math.min(1, value)) * 255)", "Math.round(Math.max(0, Math.min(1, value)) * 127)"),
-        doctoredContext("src/math/color.ts", "Math.pow(c, 1 / 2.4)", "Math.pow(c, 1 / 2.2)"),
-        doctoredContext("src/math/color.ts", "c <= 0.0031308 ? c * 12.92", "c <= 0.03 ? c * 10.0"),
-        doctoredContext(module, "pbr.baseColorFactor ?? [1, 1, 1, 1]", "pbr.baseColorFactor ?? [0.2, 0.3, 0.4, 0.5]"),
-        doctoredContext(module, "mat.emissiveFactor ?? [0, 0, 0]", "mat.emissiveFactor ?? [1, 0, 0]"),
-    ];
-    type Texture = { index: number | null; srgb: boolean; fallback: number[] | null; info?: { index: number } | null };
-    const slots = ["baseColorTexture", "ormTexture", "normalTexture", "emissiveTexture", "occlusionTexture"];
-    const rows: object[] = [];
-    const materials: object[] = [{}, { pbrMetallicRoughness: { baseColorFactor: [.17, .31, .73, .42], metallicFactor: .13, roughnessFactor: .61 }, alphaMode: "MASK" },
-        { pbrMetallicRoughness: { baseColorFactor: [.0031, .02, .1, .4], metallicFactor: 0, roughnessFactor: 1 } }];
-    for (const mr of [-1, 0, 1]) for (const occlusion of [-1, 0, 1, 2]) for (const texCoord of [0, 1, 2]) {
-        materials.push({ pbrMetallicRoughness: {
-            baseColorFactor: [.17, .31, .73, .42], metallicFactor: .13, roughnessFactor: .61,
-            baseColorTexture: { index: 1 }, ...(mr < 0 ? {} : { metallicRoughnessTexture: { index: mr } }),
-        }, normalTexture: { index: 3, scale: .25 }, emissiveTexture: { index: 0 }, emissiveFactor: [.2, .4, .6],
-        ...(occlusion < 0 ? {} : { occlusionTexture: { index: occlusion, texCoord,
-            ...(occlusion === 2 ? { extensions: { KHR_texture_transform: { offset: [.25, .75], rotation: .4 } } } : {}) } }),
-        doubleSided: true, alphaMode: "BLEND", alphaCutoff: .35 });
-    }
-    const input = { textures: [{ source: 0 }, { source: 1, sampler: 0 }, { source: 0 }, { source: 7 }],
-        samplers: [{ minFilter: 9728, magFilter: 9728, wrapS: 33071, wrapT: 33648 }], materials };
-    for (const [variant, context] of contexts.entries()) {
-        new GltfLowerer(context).lowerLoaderAdapter();
-        const declarations = [
-            ...["uploadBaseColorFactorTexture", "uploadOrmFactorTexture", "buildDefaultPbrTextures"].map(name => context.functionDeclaration(builderModule, name).declaration.getText()),
-            ...["wrapTexCoord", "occlusionNeedsSplit", "buildDefaultPbrTexturesExt"].map(name => context.functionDeclaration(extModule, name).declaration.getText()),
-            context.functionDeclaration("src/math/color.ts", "linearToSrgbByte").declaration.getText(),
+test(
+    "glTF texture builders and native material projection preserve source selection and factor baking",
+    { skip: !tools },
+    async () => {
+        const builderModule = "src/loader-gltf/gltf-pbr-builder.ts",
+            extModule = "src/loader-gltf/gltf-pbr-builder-ext.ts";
+        const base = new LoweringContext();
+        const contexts = [
+            base,
+            doctoredContext(
+                module,
+                "pbr.metallicFactor ?? 1",
+                "(pbr.metallicFactor ?? 1) * 0.25",
+            ),
+            doctoredContext(
+                module,
+                "fetchImg(pbr.baseColorTexture)",
+                "fetchImg(mat.normalTexture)",
+            ),
+            doctoredContext(
+                module,
+                "if (!texInfo) {",
+                "if (!texInfo || texInfo.index === 0) {",
+            ),
+            doctoredContext(
+                extModule,
+                "mat._occlusionTexCoord !== 0",
+                "mat._occlusionTexCoord === 1",
+            ),
+            doctoredContext(
+                builderModule,
+                "clamp(roughness), clamp(metallic)",
+                "clamp(metallic), clamp(roughness)",
+            ),
+            doctoredContext(
+                builderModule,
+                "Math.round(Math.max(0, Math.min(1, value)) * 255)",
+                "Math.round(Math.max(0, Math.min(1, value)) * 127)",
+            ),
+            doctoredContext(
+                "src/math/color.ts",
+                "Math.pow(c, 1 / 2.4)",
+                "Math.pow(c, 1 / 2.2)",
+            ),
+            doctoredContext(
+                "src/math/color.ts",
+                "c <= 0.0031308 ? c * 12.92",
+                "c <= 0.03 ? c * 10.0",
+            ),
+            doctoredContext(
+                module,
+                "pbr.baseColorFactor ?? [1, 1, 1, 1]",
+                "pbr.baseColorFactor ?? [0.2, 0.3, 0.4, 0.5]",
+            ),
+            doctoredContext(
+                module,
+                "mat.emissiveFactor ?? [0, 0, 0]",
+                "mat.emissiveFactor ?? [1, 0, 0]",
+            ),
         ];
-        const upload = (_engine: unknown, _image: unknown, srgb: boolean, _sampler: unknown, _mipmaps: unknown, bytes: Uint8Array): Texture =>
-            ({ index: null, srgb, fallback: Array.from(bytes), info: null });
-        const builders = new Function("exports", "U8", "uploadTex", "cloneTexture2D",
-            `${transpileCommonJs(declarations.join("\n"), builderModule)}\nreturn [buildDefaultPbrTextures, buildDefaultPbrTexturesExt];`)(
-            {}, Uint8Array, upload, (texture: Texture, extra: object) => ({ ...texture, ...extra })) as
-            ((engine: object, material: object, sampler: object, mipmaps: () => void,
-                cache: (image: { index: number }, srgb: boolean) => Texture,
-                wrap: (texture: Texture, info: { index: number } | undefined) => Texture) => Record<string, Texture | undefined>)[];
-        const run = execute(context, []), cache: unknown[] = [];
-        const expected = [];
-        for (let index = 0; index <= materials.length; ++index) {
-            const mat = await run(input, new DataView(new ArrayBuffer(0)), index, "", cache);
-            const textures = builders.map(builder => {
-                const built = builder({}, mat, {}, () => {}, (image, srgb) => ({ index: image.index, srgb, fallback: null }),
-                    (texture, info) => ({ ...texture, info: info ?? null }));
-                return slots.map(slot => {
-                    const value = built[slot];
-                    return value ? { index: value.index, srgb: value.srgb, fallback: value.fallback, info: value.info?.index ?? null } : null;
-                });
+        type Texture = {
+            index: number | null;
+            srgb: boolean;
+            fallback: number[] | null;
+            info?: { index: number } | null;
+        };
+        const slots = [
+            "baseColorTexture",
+            "ormTexture",
+            "normalTexture",
+            "emissiveTexture",
+            "occlusionTexture",
+        ];
+        const rows: object[] = [];
+        const materials: object[] = [
+            {},
+            {
+                pbrMetallicRoughness: {
+                    baseColorFactor: [0.17, 0.31, 0.73, 0.42],
+                    metallicFactor: 0.13,
+                    roughnessFactor: 0.61,
+                },
+                alphaMode: "MASK",
+            },
+            {
+                pbrMetallicRoughness: {
+                    baseColorFactor: [0.0031, 0.02, 0.1, 0.4],
+                    metallicFactor: 0,
+                    roughnessFactor: 1,
+                },
+            },
+        ];
+        for (const mr of [-1, 0, 1])
+            for (const occlusion of [-1, 0, 1, 2])
+                for (const texCoord of [0, 1, 2]) {
+                    materials.push({
+                        pbrMetallicRoughness: {
+                            baseColorFactor: [0.17, 0.31, 0.73, 0.42],
+                            metallicFactor: 0.13,
+                            roughnessFactor: 0.61,
+                            baseColorTexture: { index: 1 },
+                            ...(mr < 0
+                                ? {}
+                                : { metallicRoughnessTexture: { index: mr } }),
+                        },
+                        normalTexture: { index: 3, scale: 0.25 },
+                        emissiveTexture: { index: 0 },
+                        emissiveFactor: [0.2, 0.4, 0.6],
+                        ...(occlusion < 0
+                            ? {}
+                            : {
+                                  occlusionTexture: {
+                                      index: occlusion,
+                                      texCoord,
+                                      ...(occlusion === 2
+                                          ? {
+                                                extensions: {
+                                                    KHR_texture_transform: {
+                                                        offset: [0.25, 0.75],
+                                                        rotation: 0.4,
+                                                    },
+                                                },
+                                            }
+                                          : {}),
+                                  },
+                              }),
+                        doubleSided: true,
+                        alphaMode: "BLEND",
+                        alphaCutoff: 0.35,
+                    });
+                }
+        const input = {
+            textures: [
+                { source: 0 },
+                { source: 1, sampler: 0 },
+                { source: 0 },
+                { source: 7 },
+            ],
+            samplers: [
+                {
+                    minFilter: 9728,
+                    magFilter: 9728,
+                    wrapS: 33071,
+                    wrapT: 33648,
+                },
+            ],
+            materials,
+        };
+        for (const [variant, context] of contexts.entries()) {
+            new GltfLowerer(context).lowerLoaderAdapter();
+            const declarations = [
+                ...[
+                    "uploadBaseColorFactorTexture",
+                    "uploadOrmFactorTexture",
+                    "buildDefaultPbrTextures",
+                ].map((name) =>
+                    context
+                        .functionDeclaration(builderModule, name)
+                        .declaration.getText(),
+                ),
+                ...[
+                    "wrapTexCoord",
+                    "occlusionNeedsSplit",
+                    "buildDefaultPbrTexturesExt",
+                ].map((name) =>
+                    context
+                        .functionDeclaration(extModule, name)
+                        .declaration.getText(),
+                ),
+                context
+                    .functionDeclaration(
+                        "src/math/color.ts",
+                        "linearToSrgbByte",
+                    )
+                    .declaration.getText(),
+            ];
+            const upload = (
+                _engine: unknown,
+                _image: unknown,
+                srgb: boolean,
+                _sampler: unknown,
+                _mipmaps: unknown,
+                bytes: Uint8Array,
+            ): Texture => ({
+                index: null,
+                srgb,
+                fallback: Array.from(bytes),
+                info: null,
             });
-            expected.push({ mat, textures });
+            const builders = createJavaScriptFunction(
+                "exports",
+                "U8",
+                "uploadTex",
+                "cloneTexture2D",
+                `${transpileCommonJs(declarations.join("\n"), builderModule)}\nreturn [buildDefaultPbrTextures, buildDefaultPbrTexturesExt];`,
+            )({}, Uint8Array, upload, (texture: Texture, extra: object) => ({
+                ...texture,
+                ...extra,
+            })) as ((
+                engine: object,
+                material: object,
+                sampler: object,
+                mipmaps: () => void,
+                cache: (image: { index: number }, srgb: boolean) => Texture,
+                wrap: (
+                    texture: Texture,
+                    info: { index: number } | undefined,
+                ) => Texture,
+            ) => Record<string, Texture | undefined>)[];
+            const run = execute(context, []),
+                cache: unknown[] = [];
+            const expected = [];
+            for (let index = 0; index <= materials.length; ++index) {
+                const mat = await run(
+                    input,
+                    new DataView(new ArrayBuffer(0)),
+                    index,
+                    "",
+                    cache,
+                );
+                const textures = builders.map((builder) => {
+                    const built = builder(
+                        {},
+                        mat,
+                        {},
+                        () => {},
+                        (image, srgb) => ({
+                            index: image.index,
+                            srgb,
+                            fallback: null,
+                        }),
+                        (texture, info) => ({ ...texture, info: info ?? null }),
+                    );
+                    return slots.map((slot) => {
+                        const value = built[slot];
+                        return value
+                            ? {
+                                  index: value.index,
+                                  srgb: value.srgb,
+                                  fallback: value.fallback,
+                                  info: value.info?.index ?? null,
+                              }
+                            : null;
+                    });
+                });
+                expected.push({ mat, textures });
+            }
+            rows.push({ variant, expected });
         }
-        rows.push({ variant, expected });
-    }
-    const output = resolve("artifacts/gltf-material-projection");
-    mkdirSync(output, { recursive: true });
-    writeFileSync(join(output, "cases.json"), JSON.stringify({ input, rows }));
-    const loader = new GltfLowerer(base).lowerLoaderAdapter().source;
-    const helpers = ["const ts::JsonValue& required(", "const ts::JsonValue* optional(", "std::size_t unsigned_value(",
-        "std::size_t unsigned_or(", "std::string string_or(",
-        "std::vector<double> double_array(", "const ts::JsonValue* texture_transform_value("]
-        .map(signature => cppFunction(loader, signature)).join("\n");
-    const file = join(output, "check.cpp"), executable = join(output, "check.exe");
-    writeFileSync(file, `#include <bblite/runtime.hpp>
+        const output = resolve("artifacts/gltf-material-projection");
+        mkdirSync(output, { recursive: true });
+        writeFileSync(
+            join(output, "cases.json"),
+            JSON.stringify({ input, rows }),
+        );
+        const loader = new GltfLowerer(base).lowerLoaderAdapter().source;
+        const helpers = [
+            "const ts::JsonValue& required(",
+            "const ts::JsonValue* optional(",
+            "std::size_t unsigned_value(",
+            "std::size_t unsigned_or(",
+            "std::string string_or(",
+            "std::vector<double> double_array(",
+            "const ts::JsonValue* texture_transform_value(",
+        ]
+            .map((signature) => cppFunction(loader, signature))
+            .join("\n");
+        const file = join(output, "check.cpp"),
+            executable = join(output, "check.exe");
+        writeFileSync(
+            file,
+            `#include <bblite/runtime.hpp>
         #include <bblite/js_data.hpp>
         #include <bblite/pal_image_canvas.hpp>
         #include <bblite/ts_runtime.hpp>
@@ -217,14 +583,18 @@ test("glTF texture builders and native material projection preserve source selec
                 else result.bytes = std::vector<std::uint8_t>{static_cast<std::uint8_t>(index + 1)};
                 return result;
             }
-            ${contexts.map((context, index) => `namespace variant${index} {
+            ${contexts
+                .map(
+                    (context, index) => `namespace variant${index} {
                 ${lowerGltfFactorBake(context.sourceFile("src/math/color.ts"))}
                 ${lowerGltfMaterialAssembly(context)}
                 ${lowerGltfMaterialTextures(context)}
                 ${lowerGltfMaterialProperties(context).source}
-                ${["void gltf_pbr_number(", "void gltf_pbr_color(", "void gltf_pbr_transform("].map(signature => cppFunction(loader, signature)).join("\n")}
+                ${["void gltf_pbr_number(", "void gltf_pbr_color(", "void gltf_pbr_transform("].map((signature) => cppFunction(loader, signature)).join("\n")}
                 ${cppFunction(loader, "MaterialHandle load_material(")}
-            }`).join("\n")}
+            }`,
+                )
+                .join("\n")}
         }
         int main() {
             using namespace bbl;
@@ -232,7 +602,9 @@ test("glTF texture builders and native material projection preserve source selec
             std::ifstream("cases.json") >> cases;
             const auto document = ts::JsonValue::from_native(cases.at("input"));
             const auto& json = document.as_object();
-            ${contexts.map((_context, variant) => `{
+            ${contexts
+                .map(
+                    (_context, variant) => `{
                 using namespace variant${variant};
                 GltfMaterialImageCache cache;
                 const auto resolve_image = [](std::size_t index) -> GltfMaterialImage {
@@ -246,7 +618,7 @@ test("glTF texture builders and native material projection preserve source selec
                     for (std::size_t path = 0; path < built.size(); ++path) {
                         const auto& textures = built[path];
                         std::size_t slot = 0;
-                        for (const GltfMaterialTexture* texture : {${slots.map(name => `&textures.${name}`).join(", ")}}) {
+                        for (const GltfMaterialTexture* texture : {${slots.map((name) => `&textures.${name}`).join(", ")}}) {
                             const auto& wanted = expected[index].at("textures")[path][slot++];
                             if (wanted.is_null()) { assert(!*texture); continue; }
                             assert(*texture && texture->srgb == wanted.at("srgb"));
@@ -297,9 +669,28 @@ test("glTF texture builders and native material projection preserve source selec
                         assert(material.base_color_texture.sampler.max_lod == 0);
                     }
                 }
-            }`).join("\n")}
-        }`);
-    runNativeFixtureCompiler(tools!, ["/nologo", "/std:c++20", "/bigobj", "/W4", "/WX", "/permissive-", "/EHsc", "/MD",
-        `/Fo:${output}\\`, `/Fe:${executable}`, "/I", "native/include", `/external:I${join(nativeFixtureVcpkgRoot, "include")}`, "/external:W0", file]);
-    execFileSync(executable, { cwd: output, stdio: "pipe" });
-});
+            }`,
+                )
+                .join("\n")}
+        }`,
+        );
+        runNativeFixtureCompiler(tools!, [
+            "/nologo",
+            "/std:c++20",
+            "/bigobj",
+            "/W4",
+            "/WX",
+            "/permissive-",
+            "/EHsc",
+            "/MD",
+            `/Fo:${output}\\`,
+            `/Fe:${executable}`,
+            "/I",
+            "native/include",
+            `/external:I${join(nativeFixtureVcpkgRoot, "include")}`,
+            "/external:W0",
+            file,
+        ]);
+        execFileSync(executable, { cwd: output, stdio: "pipe" });
+    },
+);

@@ -1,18 +1,10 @@
 import { strict as assert } from "node:assert";
 import { execFileSync } from "node:child_process";
-import {
-    mkdtempSync,
-    mkdirSync,
-    rmSync,
-    writeFileSync,
-} from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import {
-    validateRecord,
-    workHash,
-} from "../src/verify-simplify.js";
+import { validateRecord, workHash } from "../src/verify-simplify.js";
 
 test("committing a review record does not invalidate its work hash", () => {
     const root = mkdtempSync(join(tmpdir(), "bblite-simplify-"));
@@ -33,10 +25,7 @@ test("committing a review record does not invalidate its work hash", () => {
 
         const before = workHash(root).hash;
         mkdirSync(join(root, "docs", "reviews"), { recursive: true });
-        writeFileSync(
-            join(root, "docs", "reviews", `${before}.json`),
-            "{}\n",
-        );
+        writeFileSync(join(root, "docs", "reviews", `${before}.json`), "{}\n");
         git("add", "docs/reviews");
         git("commit", "-m", "record review");
 
@@ -58,7 +47,10 @@ test("duplicate, unknown or missing review angles cannot satisfy the gate", () =
         ["reuse", "simplification", "efficiency"],
         ["reuse", "simplification", "efficiency", "unknown"],
     ]) {
-        assert.match(validateRecord({ angles, findings: [] })[0]!, /exactly once/);
+        assert.match(
+            validateRecord({ angles, findings: [] })[0]!,
+            /exactly once/,
+        );
     }
 });
 
@@ -91,7 +83,7 @@ test("an unapplied finding needs a real blocker and a durable home", () => {
     assert.match(problems[1]!, /filedIn/);
 });
 
-test("\"out of scope\" is not a blocker", () => {
+test('"out of scope" is not a blocker', () => {
     const problems = validateRecord({
         angles: ["reuse", "simplification", "efficiency", "altitude"],
         findings: [
@@ -118,7 +110,9 @@ test("an applied finding needs neither", () => {
 });
 
 test("a missing findings array is named rather than ignored", () => {
-    const problems = validateRecord({ angles: ["reuse", "simplification", "efficiency", "altitude"] });
+    const problems = validateRecord({
+        angles: ["reuse", "simplification", "efficiency", "altitude"],
+    });
     assert.deepEqual(problems, [
         "`findings` must be an array, empty if nothing was found.",
     ]);

@@ -1,24 +1,71 @@
 import ts from "typescript";
 import type { LoweringContext } from "./context.js";
-import { characterControllerModule, lowerCharacterControllerKernel } from "./character-controller-lowerer.js";
+import {
+    characterControllerModule,
+    lowerCharacterControllerKernel,
+} from "./character-controller-lowerer.js";
 
 /** The pinned controller class above the existing physics/node APIs. */
-export function characterControllerHeader(context: LoweringContext, thinInstances = false): string {
+export function characterControllerHeader(
+    context: LoweringContext,
+    thinInstances = false,
+): string {
     for (const [name, source] of [
-        ["createPhysicsCharacterController", "return new PhysicsCharacterController(world, position, options);"],
+        [
+            "createPhysicsCharacterController",
+            "return new PhysicsCharacterController(world, position, options);",
+        ],
         ["getPhysicsCharacterControllerBody", "return controller.getBody();"],
     ]) {
-        const declaration = context.functionDeclaration(characterControllerModule, name!).declaration;
-        context.assertStatementShapes(declaration, declaration.body!.statements, source!, name!);
+        const declaration = context.functionDeclaration(
+            characterControllerModule,
+            name!,
+        ).declaration;
+        context.assertStatementShapes(
+            declaration,
+            declaration.body!.statements,
+            source!,
+            name!,
+        );
     }
     const observableSource = characterCollisionObservableSource(context);
-    const createNode = context.functionDeclaration("src/scene/transform-node.ts", "createTransformNode").declaration;
-    const nodeDefaults = new Map(createNode.parameters.slice(4).map(parameter => [parameter.name.getText(), context.floatLiteral(context.numericValue(parameter.initializer!, createNode.getSourceFile()))]));
-    const defaultRotation = ["qx", "qy", "qz", "qw"].map(name => nodeDefaults.get(name)).join(", ");
-    const defaultScale = ["sx", "sy", "sz"].map(name => nodeDefaults.get(name)).join(", ");
-    const bodyFactory = context.functionDeclaration("src/physics/havok.ts", "createPhysicsBody").declaration;
+    const createNode = context.functionDeclaration(
+        "src/scene/transform-node.ts",
+        "createTransformNode",
+    ).declaration;
+    const nodeDefaults = new Map(
+        createNode.parameters
+            .slice(4)
+            .map((parameter) => [
+                parameter.name.getText(),
+                context.floatLiteral(
+                    context.numericValue(
+                        parameter.initializer!,
+                        createNode.getSourceFile(),
+                    ),
+                ),
+            ]),
+    );
+    const defaultRotation = ["qx", "qy", "qz", "qw"]
+        .map((name) => nodeDefaults.get(name))
+        .join(", ");
+    const defaultScale = ["sx", "sy", "sz"]
+        .map((name) => nodeDefaults.get(name))
+        .join(", ");
+    const bodyFactory = context.functionDeclaration(
+        "src/physics/havok.ts",
+        "createPhysicsBody",
+    ).declaration;
     const asleep = bodyFactory.parameters[3]!.initializer!;
-    if (![ts.SyntaxKind.TrueKeyword, ts.SyntaxKind.FalseKeyword].includes(asleep.kind)) context.contractError(asleep, "Character body creation requires the pinned boolean startsAsleep default.");
+    if (
+        ![ts.SyntaxKind.TrueKeyword, ts.SyntaxKind.FalseKeyword].includes(
+            asleep.kind,
+        )
+    )
+        context.contractError(
+            asleep,
+            "Character body creation requires the pinned boolean startsAsleep default.",
+        );
     return `#pragma once
 #include <bblite/upstream/physics.hpp>
 #include <unordered_set>
@@ -39,17 +86,45 @@ ${characterControllerAdapter(defaultRotation, defaultScale, asleep.kind === ts.S
 `;
 }
 
-export function characterCollisionObservableSource(context: LoweringContext): string {
-    const observable = context.sourceFile(characterControllerModule).statements.find((node): node is ts.ClassDeclaration => ts.isClassDeclaration(node) && node.name?.text === "CharacterCollisionObservable")!;
+export function characterCollisionObservableSource(
+    context: LoweringContext,
+): string {
+    const observable = context
+        .sourceFile(characterControllerModule)
+        .statements.find(
+            (node): node is ts.ClassDeclaration =>
+                ts.isClassDeclaration(node) &&
+                node.name?.text === "CharacterCollisionObservable",
+        )!;
     for (const [name, source] of [
-        ["add", "this._subs.push(cb); return () => { const i = this._subs.indexOf(cb); if (i >= 0) { this._subs.splice(i, 1); } };"],
+        [
+            "add",
+            "this._subs.push(cb); return () => { const i = this._subs.indexOf(cb); if (i >= 0) { this._subs.splice(i, 1); } };",
+        ],
         ["notify", "for (const s of this._subs) { s(event); }"],
     ]) {
-        const declaration = observable.members.find((member): member is ts.MethodDeclaration => ts.isMethodDeclaration(member) && member.name.getText() === name)!;
-        context.assertStatementShapes(declaration, declaration.body!.statements, source!, `character observable ${name}`);
+        const declaration = observable.members.find(
+            (member): member is ts.MethodDeclaration =>
+                ts.isMethodDeclaration(member) &&
+                member.name.getText() === name,
+        )!;
+        context.assertStatementShapes(
+            declaration,
+            declaration.body!.statements,
+            source!,
+            `character observable ${name}`,
+        );
     }
-    const subs = observable.members.find((member): member is ts.PropertyDeclaration => ts.isPropertyDeclaration(member) && member.name.getText() === "_subs")!;
-    context.assertExpressionShape(subs.initializer!, "[]", "character observable initial subscriptions");
+    const subs = observable.members.find(
+        (member): member is ts.PropertyDeclaration =>
+            ts.isPropertyDeclaration(member) &&
+            member.name.getText() === "_subs",
+    )!;
+    context.assertExpressionShape(
+        subs.initializer!,
+        "[]",
+        "character observable initial subscriptions",
+    );
     return `// ${context.provenance(characterControllerModule, "CharacterCollisionObservable")}
 class CharacterCollisionObservable {
     js::Array<js::Callback<void(const CharacterCollisionEvent&)>> subscribers_;
@@ -71,7 +146,12 @@ public:
 `;
 }
 
-function characterControllerAdapter(defaultRotation: string, defaultScale: string, startsAsleep: boolean, thinInstances: boolean): string {
+function characterControllerAdapter(
+    defaultRotation: string,
+    defaultScale: string,
+    startsAsleep: boolean,
+    thinInstances: boolean,
+): string {
     return `
 class PhysicsCharacterController final : public CharacterControllerKernel {
     Engine* engine_;
@@ -152,7 +232,9 @@ ${thinInstances ? "        instance_wrappers_.clear();" : ""}
             static_cast<void>(wrapper);
             if (!live_bodies.contains(id)) static_cast<void>(body_wrappers_.erase(id));
         }
-${thinInstances ? `        std::unordered_set<double> live_instances;
+${
+    thinInstances
+        ? `        std::unordered_set<double> live_instances;
         for (const auto& [id, state] : upstream::physics_world_state(_world->value).thin_states) {
             static_cast<void>(id);
             for (const auto& handle : state.handles) live_instances.insert(handle.value);
@@ -160,7 +242,9 @@ ${thinInstances ? `        std::unordered_set<double> live_instances;
         for (const auto& [id, wrapper] : instance_wrappers_) {
             static_cast<void>(wrapper);
             if (!live_instances.contains(id)) static_cast<void>(instance_wrappers_.erase(id));
-        }` : ""}
+        }`
+        : ""
+}
         return result;
     }
     double _world_step_seconds() override { return upstream::physics_world_step_seconds(_world->value); }
@@ -172,21 +256,33 @@ ${thinInstances ? `        std::unordered_set<double> live_instances;
         return body->native;
     }
     std::optional<std::tuple<js::Ref<PhysicsBody>, js::Ref<NativeBody>, double>> _thin_resolve([[maybe_unused]] std::optional<double> id) override {
-${thinInstances ? `        if (!id) return std::nullopt;
+${
+    thinInstances
+        ? `        if (!id) return std::nullopt;
         const auto resolved = upstream::resolve_physics_thin_instance(_world->value, *id);
         if (!resolved) return std::nullopt;
         auto native = instance_wrappers_.get(*id);
         if (!native) { native = js::make_ref<NativeBody>(); native->handle = resolved->handle; instance_wrappers_.set(*id, native); }
-        return std::tuple{wrap_body(resolved->body), native, resolved->index};` : "        return std::nullopt;"}
+        return std::tuple{wrap_body(resolved->body), native, resolved->index};`
+        : "        return std::nullopt;"
+}
     }
     js::Ref<Vec3> _thin_com([[maybe_unused]] js::Ref<PhysicsBody> body, [[maybe_unused]] js::Ref<NativeBody> native, [[maybe_unused]] js::Array<double> center) override {
-${thinInstances ? `        const auto value = upstream::physics_thin_center(_world->value, body->value, native->handle, lanes<3>(center));
-        return value ? v(value->x, value->y, value->z) : js::Ref<Vec3>{};` : "        return {};"}
+${
+    thinInstances
+        ? `        const auto value = upstream::physics_thin_center(_world->value, body->value, native->handle, lanes<3>(center));
+        return value ? v(value->x, value->y, value->z) : js::Ref<Vec3>{};`
+        : "        return {};"
+}
     }
     std::optional<js::Array<double>> _thin_matrix([[maybe_unused]] js::Ref<PhysicsBody> body, [[maybe_unused]] js::Ref<NativeBody> native) override {
-${thinInstances ? `        const auto value = upstream::physics_thin_world_matrix(_world->value, body->value, native->handle);
+${
+    thinInstances
+        ? `        const auto value = upstream::physics_thin_world_matrix(_world->value, body->value, native->handle);
         if (!value) return std::nullopt;
-        return js::Array<double>{value->begin(), value->end()};` : "        return std::nullopt;"}
+        return js::Array<double>{value->begin(), value->end()};`
+        : "        return std::nullopt;"
+}
     }
     js::Array<double> _body_world_matrix(js::Ref<PhysicsBody> body) override {
         const auto& live = upstream::owning_body_record(body->value);

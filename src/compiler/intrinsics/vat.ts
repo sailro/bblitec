@@ -5,30 +5,31 @@ import type { Value } from "../types.js";
 import type { IntrinsicCallContext } from "./context.js";
 
 /** What the handle's own methods need. The expression compiler satisfies it. */
-interface VatMethodContext
-    extends Pick<LoweringServices,
-        | "emit"
-        | "increaseIndent"
-        | "decreaseIndent"
-        | "cppString"
-        | "compileValue"
-        | "compileStringLiteral"
-        | "compileNumber"
-        | "requireEngine"
-        | "reachFeature"
-        | "unwrap"
-        | "lookupOptional"
-        | "expectArgumentCount"
-        | "fail"
-    > {}
+interface VatMethodContext extends Pick<
+    LoweringServices,
+    | "emit"
+    | "increaseIndent"
+    | "decreaseIndent"
+    | "cppString"
+    | "compileValue"
+    | "compileStringLiteral"
+    | "compileNumber"
+    | "requireEngine"
+    | "reachFeature"
+    | "unwrap"
+    | "lookupOptional"
+    | "expectArgumentCount"
+    | "fail"
+> {}
 
 export interface VatIntrinsicContext
-    extends IntrinsicCallContext,
-    VatMethodContext,
-    Pick<LoweringServices,
-        | "allocateTemporaryCppName"
-        | "expectSameEngine"
-    > {}
+    extends
+        IntrinsicCallContext,
+        VatMethodContext,
+        Pick<
+            LoweringServices,
+            "allocateTemporaryCppName" | "expectSameEngine"
+        > {}
 
 /**
  * Vertex animation textures (`src/vat/vat-baker.ts`), the slice scenes 218
@@ -187,10 +188,7 @@ export function compileVatMethodCall(
             );
         } else if (method === "update") {
             context.expectArgumentCount(call, 1, 1);
-            const delta = context.compileNumber(
-                argumentAt(call, 0),
-                "double",
-            );
+            const delta = context.compileNumber(argumentAt(call, 0), "double");
             context.emit(
                 `bbl::vat_update(${engine}, ${receiver.cpp}, ${delta});`,
             );
@@ -257,10 +255,7 @@ function vatPlayOptions(
                 "VatHandle.play options take named offset and fps assignments.",
             );
         }
-        const value = context.compileNumber(
-            property.initializer,
-            "double",
-        );
+        const value = context.compileNumber(property.initializer, "double");
         if (property.name.text === "offset") {
             offset = value;
         } else if (property.name.text === "fps") {

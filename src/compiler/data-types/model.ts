@@ -1,44 +1,106 @@
-export type HandleKind = "worker-media-query" | AudioHandleKind | "engine" | "asset" | "gpu-device" | "gpu-texture" | "device-recovery" | "gpu-environment" | "node-input" | "text-data" | "text-renderable" | "text-layer" | "text-renderer" | "text-run" | "text-run-ref" | "picking-info" | "offscreen-canvas" | "mesh" | "animation-group" | "flow-graph" | "flow-graph-runtime" | "audio-buffer" | "audio-context" | "camera" | "property-animation-group" | "ui-element" | "utility-layer" | "pointer-drag" | "gamepad" | "gamepad-button" | "scene" | "scene-node" | "light" | "shadow-generator" | "hierarchy-instance-pool" | "storage-buffer" | "material" | "physics-body" | "physics-aggregate" | "physics-viewer" | "physics-character-controller" | "physics-shape" | "billboard-sprite" | "billboard-system" | "sprite-layer" | "sprite-atlas" | "splat-mesh" | "texture" | "transform-node" | "skeleton" | "scene-skeleton" | "bone" | "navigation-obstacle";
-export type AudioHandleKind = "audio-node" | "audio-param" | "media-stream" | "media-stream-track";
-export type TypedArrayKind = "u8array" | "i8array" | "f64array" | "f32array" | "u16array" | "i16array" | "u32array" | "i32array";
+export type HandleKind =
+    | "worker-media-query"
+    | AudioHandleKind
+    | "engine"
+    | "asset"
+    | "gpu-device"
+    | "gpu-texture"
+    | "device-recovery"
+    | "gpu-environment"
+    | "node-input"
+    | "text-data"
+    | "text-renderable"
+    | "text-layer"
+    | "text-renderer"
+    | "text-run"
+    | "text-run-ref"
+    | "picking-info"
+    | "offscreen-canvas"
+    | "mesh"
+    | "animation-group"
+    | "flow-graph"
+    | "flow-graph-runtime"
+    | "audio-buffer"
+    | "audio-context"
+    | "camera"
+    | "property-animation-group"
+    | "ui-element"
+    | "utility-layer"
+    | "pointer-drag"
+    | "gamepad"
+    | "gamepad-button"
+    | "scene"
+    | "scene-node"
+    | "light"
+    | "shadow-generator"
+    | "hierarchy-instance-pool"
+    | "storage-buffer"
+    | "material"
+    | "physics-body"
+    | "physics-aggregate"
+    | "physics-viewer"
+    | "physics-character-controller"
+    | "physics-shape"
+    | "billboard-sprite"
+    | "billboard-system"
+    | "sprite-layer"
+    | "sprite-atlas"
+    | "splat-mesh"
+    | "texture"
+    | "transform-node"
+    | "skeleton"
+    | "scene-skeleton"
+    | "bone"
+    | "navigation-obstacle";
+export type AudioHandleKind =
+    "audio-node" | "audio-param" | "media-stream" | "media-stream-track";
+export type TypedArrayKind =
+    | "u8array"
+    | "i8array"
+    | "f64array"
+    | "f32array"
+    | "u16array"
+    | "i16array"
+    | "u32array"
+    | "i32array";
 export interface DataKinds {
-    "event-target": {kind:"event-target"};
-    "http-response": {kind:"http-response"};
-    "search-params": {kind:"search-params"};
-    "promise": { kind: "promise"; result?: DataType; };
-    "storage": { kind: "storage"; };
-    "date": { kind: "date"; };
-    "date-time-format": { kind: "date-time-format"; };
-    "number": {
+    "event-target": { kind: "event-target" };
+    "http-response": { kind: "http-response" };
+    "search-params": { kind: "search-params" };
+    promise: { kind: "promise"; result?: DataType };
+    storage: { kind: "storage" };
+    date: { kind: "date" };
+    "date-time-format": { kind: "date-time-format" };
+    number: {
         kind: "number";
     };
-    "boolean": {
+    boolean: {
         kind: "boolean";
     };
-    "arraybuffer": {
+    arraybuffer: {
         kind: "arraybuffer";
     };
-    "dataview": {
+    dataview: {
         kind: "dataview";
     };
-    "bufferview": {
+    bufferview: {
         kind: "bufferview";
     };
-    "numberindex": {
+    numberindex: {
         kind: "numberindex";
     };
     "borrowed-platform-event": {
         kind: "borrowed-platform-event";
         event: "event" | "mouse" | "keyboard" | "error" | "rejection";
     };
-    "string": {
+    string: {
         kind: "string";
     };
-    "handle": {
+    handle: {
         kind: "handle";
         handle: HandleKind;
     };
-    "function": {
+    function: {
         kind: "function";
         parameters: DataType[];
         /** Native parameter index of the final, freshly packed rest array. */
@@ -58,87 +120,87 @@ export interface DataKinds {
          */
         erasedParameters?: number[];
     };
-    "struct": {
+    struct: {
         kind: "struct";
         name: string;
     };
-    "enum": {
+    enum: {
         kind: "enum";
         name: string;
     };
-    "json": {
+    json: {
         kind: "json";
     };
-    "optional": {
+    optional: {
         kind: "optional";
         /** The absent state is known to be undefined, including resized tuple lanes. */
         undefinedOnly?: true;
         inner: DataType;
     };
-    "union": {
+    union: {
         kind: "union";
         members: DataType[];
     };
-    "vector": {
+    vector: {
         kind: "vector";
         element: DataType;
     };
-    "map": {
+    map: {
         kind: "map";
         /** Source object index signature; a JavaScript Map has no enumerable entries. */
         dictionary?: true;
         key: DataType;
         value: DataType;
     };
-    "set": {
+    set: {
         kind: "set";
         element: DataType;
     };
-    "iterator": {
+    iterator: {
         kind: "iterator";
         element: DataType;
     };
-    "span": {
+    span: {
         kind: "span";
         element: DataType;
     };
-    "tuple": {
+    tuple: {
         kind: "tuple";
         arity: number;
     };
-    "product": {
+    product: {
         kind: "product";
         elements: DataType[];
     };
-    "enummap": {
+    enummap: {
         kind: "enummap";
         enumName: string;
         element: DataType;
     };
-    "table": {
+    table: {
         kind: "table";
         dimensions: number[];
     };
-    "u8array": {
+    u8array: {
         kind: "u8array";
     };
-    "i8array": { kind: "i8array"; };
-    "f64array": {
+    i8array: { kind: "i8array" };
+    f64array: {
         kind: "f64array";
     };
-    "f32array": {
+    f32array: {
         kind: "f32array";
     };
-    "u16array": {
+    u16array: {
         kind: "u16array";
     };
-    "i16array": {
+    i16array: {
         kind: "i16array";
     };
-    "u32array": {
+    u32array: {
         kind: "u32array";
     };
-    "i32array": {
+    i32array: {
         kind: "i32array";
     };
 }

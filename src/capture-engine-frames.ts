@@ -3,7 +3,10 @@
  * Only its RAF timestamps and final cancellation differ during capture. */
 export const engineCaptureEntryUrl = "/__capture/engine-entry.js";
 
-export function engineFrameCaptureModule(targetFrame: number, entryUrl: string): string {
+export function engineFrameCaptureModule(
+    targetFrame: number,
+    entryUrl: string,
+): string {
     if (!Number.isSafeInteger(targetFrame) || targetFrame < 0) {
         throw new Error("Engine capture frame must be a nonnegative integer.");
     }
@@ -43,14 +46,31 @@ export async function waitForCapturedEngines(timeoutMs: number): Promise<void> {
     const deadline = Date.now() + timeoutMs;
     for (;;) {
         const response = await fetch("/__capture/engines");
-        if (!response.ok) throw new Error("Engine capture status request failed.");
-        const state: { completed: number; expected: number } = await response.json();
+        if (!response.ok)
+            throw new Error("Engine capture status request failed.");
+        const state: unknown = await response.json();
+        if (
+            state === null ||
+            typeof state !== "object" ||
+            !("completed" in state) ||
+            typeof state.completed !== "number" ||
+            !Number.isSafeInteger(state.completed) ||
+            state.completed < 0 ||
+            !("expected" in state) ||
+            typeof state.expected !== "number" ||
+            !Number.isSafeInteger(state.expected) ||
+            state.expected < 1
+        ) {
+            throw new Error("Invalid engine capture status.");
+        }
         if (state.completed > state.expected) {
             throw new Error("More engines started than the capture declares.");
         }
         if (state.completed === state.expected) return;
         if (Date.now() >= deadline) {
-            throw new Error("Timed out waiting for every engine to reach the capture frame.");
+            throw new Error(
+                "Timed out waiting for every engine to reach the capture frame.",
+            );
         }
         await new Promise<void>((resolve) => setTimeout(resolve, 50));
     }

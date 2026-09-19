@@ -69,10 +69,7 @@ interface CompiledSceneManifest {
 function readCompiledSceneManifest(
     scene: SceneDefinition,
 ): CompiledSceneManifest | undefined {
-    const manifestPath = resolve(
-        scene.output,
-        "manifest.json",
-    );
+    const manifestPath = resolve(scene.output, "manifest.json");
     if (!existsSync(manifestPath)) {
         return undefined;
     }
@@ -80,13 +77,10 @@ function readCompiledSceneManifest(
         const manifest: unknown = JSON.parse(
             readFileSync(manifestPath, "utf8"),
         );
-        if (
-            typeof manifest !== "object" ||
-            manifest === null
-        ) {
+        if (typeof manifest !== "object" || manifest === null) {
             return undefined;
         }
-        return manifest as CompiledSceneManifest;
+        return manifest;
     } catch {
         return undefined;
     }
@@ -98,8 +92,7 @@ function manifestUsesSeededRandom(
     return (
         Array.isArray(manifest?.adaptations) &&
         manifest.adaptations.some(
-            (adaptation) =>
-                adaptation.id === "deterministic-seeded-random",
+            (adaptation) => adaptation.id === "deterministic-seeded-random",
         )
     );
 }
@@ -138,8 +131,7 @@ export function goldenFixedFrame(
         scene.parity?.nativeEnvironment?.BBLITE_SCREENSHOT_FRAME ?? "",
         10,
     );
-    return Number.isInteger(configuredNativeFrame) &&
-        configuredNativeFrame > 0
+    return Number.isInteger(configuredNativeFrame) && configuredNativeFrame > 0
         ? configuredNativeFrame
         : undefined;
 }
@@ -210,9 +202,11 @@ export function parseParityArguments(rest: string[]): ParityArguments {
             `parity: --without must be ground|background (got '${withoutValue}').`,
         );
     }
-    const without = withoutValue as "ground" | "background" | undefined;
+    const without = withoutValue;
     const result: ParityArguments = {
-        ...(parsed.flags.has("--attribute") ? { attribute: true as const } : {}),
+        ...(parsed.flags.has("--attribute")
+            ? { attribute: true as const }
+            : {}),
         ...(sceneId !== undefined ? { sceneId } : {}),
         ...(executable !== undefined ? { executable } : {}),
         ...(actual !== undefined ? { actual } : {}),
@@ -249,8 +243,15 @@ export function parseParityArguments(rest: string[]): ParityArguments {
             );
         }
     }
-    if (result.attribute && (result.actual !== undefined || result.executable !== undefined || result.without !== undefined)) {
-        throw new Error("parity: --attribute captures an instrumented twin; --actual, --exe and --without cannot supply its attribution buffers.");
+    if (
+        result.attribute &&
+        (result.actual !== undefined ||
+            result.executable !== undefined ||
+            result.without !== undefined)
+    ) {
+        throw new Error(
+            "parity: --attribute captures an instrumented twin; --actual, --exe and --without cannot supply its attribution buffers.",
+        );
     }
     if (result.without !== undefined) {
         // The suppression flags are read by the native GPU frame options,
@@ -295,9 +296,7 @@ export interface MemoryArguments {
     replay?: string;
 }
 
-export function parseMemoryArguments(
-    rest: readonly string[],
-): MemoryArguments {
+export function parseMemoryArguments(rest: readonly string[]): MemoryArguments {
     const parsed = parseFlags(rest, MEMORY_FLAGS, "memory");
     const frames = flagNumber(parsed, "--frames", "memory") ?? 6000;
     const minimumFrames = 3 * memoryProfileFrames;
@@ -355,7 +354,8 @@ export function parseMemoryProfile(stderr: string): MemorySample[] {
         const read = (name: string): number | undefined => {
             const value = values.get(name);
             return value === undefined || !Number.isFinite(value) || value < 0
-                ? undefined : value;
+                ? undefined
+                : value;
         };
         const frame = read("frame");
         const workingSetMb = read("working_set_mb");
@@ -365,17 +365,29 @@ export function parseMemoryProfile(stderr: string): MemorySample[] {
         const gcNodes = read("gc_nodes");
         const gcAllocations = read("gc_allocations");
         if (
-            frame === undefined || !Number.isInteger(frame) ||
-            workingSetMb === undefined || workingSetMb === 0 ||
+            frame === undefined ||
+            !Number.isInteger(frame) ||
+            workingSetMb === undefined ||
+            workingSetMb === 0 ||
             meshRecords === undefined ||
             sceneMeshes === undefined ||
             geometryMb === undefined ||
-            gcNodes === undefined || !Number.isInteger(gcNodes) ||
-            gcAllocations === undefined || !Number.isInteger(gcAllocations)
+            gcNodes === undefined ||
+            !Number.isInteger(gcNodes) ||
+            gcAllocations === undefined ||
+            !Number.isInteger(gcAllocations)
         ) {
             continue;
         }
-        samples.push({ frame, workingSetMb, meshRecords, sceneMeshes, geometryMb, gcNodes, gcAllocations });
+        samples.push({
+            frame,
+            workingSetMb,
+            meshRecords,
+            sceneMeshes,
+            geometryMb,
+            gcNodes,
+            gcAllocations,
+        });
     }
     return samples;
 }
@@ -405,9 +417,14 @@ export function summarizeMemoryProfile(
     const settled = samples[Math.ceil((samples.length - 1) / 3)]!;
     const last = samples[samples.length - 1]!;
     if (
-        (requestedFrames !== undefined && last.frame < requestedFrames - memoryProfileFrames) ||
-        samples.some((sample, index) => index > 0 && sample.frame <= samples[index - 1]!.frame)
-    ) return undefined;
+        (requestedFrames !== undefined &&
+            last.frame < requestedFrames - memoryProfileFrames) ||
+        samples.some(
+            (sample, index) =>
+                index > 0 && sample.frame <= samples[index - 1]!.frame,
+        )
+    )
+        return undefined;
     const growthMb = last.workingSetMb - settled.workingSetMb;
     return {
         settled,
@@ -493,17 +510,30 @@ export function runMemoryReport(
         );
         const reportStem = stampPath.slice(0, -".build-stamp".length);
         writeFileSync(`${reportStem}.log`, stderr);
-        writeReport(`${reportStem}.json`, {
-            tool: "memory", backend, generatedDirectory,
-        }, {
-            scene: scene.id,
-            requestedFrames: memoryArguments.frames,
-            maxGrowthMb: memoryArguments.maxGrowthMb,
-            ...(memoryArguments.replay !== undefined ? { replay: memoryArguments.replay } : {}),
-            status: summary === undefined ? "unmeasured" : summary.passed ? "passed" : "failed",
-            samples,
-            ...(summary !== undefined ? { summary } : {}),
-        });
+        writeReport(
+            `${reportStem}.json`,
+            {
+                tool: "memory",
+                backend,
+                generatedDirectory,
+            },
+            {
+                scene: scene.id,
+                requestedFrames: memoryArguments.frames,
+                maxGrowthMb: memoryArguments.maxGrowthMb,
+                ...(memoryArguments.replay !== undefined
+                    ? { replay: memoryArguments.replay }
+                    : {}),
+                status:
+                    summary === undefined
+                        ? "unmeasured"
+                        : summary.passed
+                          ? "passed"
+                          : "failed",
+                samples,
+                ...(summary !== undefined ? { summary } : {}),
+            },
+        );
         if (!summary) unmeasured += 1;
         if (summary && !summary.passed) failures += 1;
         console.log(formatMemorySummary(scene.id, summary));
@@ -600,14 +630,17 @@ export async function runSceneParity(
     }
     if (arguments_.gpuDebug) enableGpuDebug();
     if (arguments_.attribute && !sceneOverride) {
-        throw new Error("Build attribution through 'scene -- parity <id> --attribute'.");
+        throw new Error(
+            "Build attribution through 'scene -- parity <id> --attribute'.",
+        );
     }
     if (arguments_.sceneId === undefined) {
         throw new Error("parity requires a scene id or source path.");
     }
     const scene = sceneOverride ?? resolveScene(arguments_.sceneId);
     const config = scene.parity;
-    if (!config) throw new Error(`Scene '${scene.id}' has no parity definition.`);
+    if (!config)
+        throw new Error(`Scene '${scene.id}' has no parity definition.`);
     const backend = resolveBackend(arguments_.backend, "parity");
     // The native child reads the backend from the environment, so the
     // resolved selection is applied there once; the thresholds and the
@@ -671,29 +704,25 @@ export async function runSceneParity(
     // they are documented byte-identical across backends, but a filename
     // must not claim a provenance the run did not have.
     const token = backendFileToken(backend);
-    const idBufferPath = !without && config.attribution?.drawIds
-        ? resolve(outputDirectory, `draw-ids-${token}.png`)
-        : undefined;
+    const idBufferPath =
+        !without && config.attribution?.drawIds
+            ? resolve(outputDirectory, `draw-ids-${token}.png`)
+            : undefined;
     const idVisualizationPath = idBufferPath
         ? resolve(outputDirectory, `draw-ids-visual-${token}.png`)
         : undefined;
     const clusterBufferPath =
         !without && config.attribution?.triangleClusters
-        ? resolve(outputDirectory, `triangle-clusters-${token}.png`)
-        : undefined;
+            ? resolve(outputDirectory, `triangle-clusters-${token}.png`)
+            : undefined;
     const clusterVisualizationPath = clusterBufferPath
         ? resolve(outputDirectory, `triangle-clusters-visual-${token}.png`)
         : undefined;
 
     const recaptureReference =
-        arguments_.recaptureReference ||
-        (canvasOnly && !existsSync(reference));
+        arguments_.recaptureReference || (canvasOnly && !existsSync(reference));
     const browserReferenceFrame = goldenFixedFrame(scene, retainedUiCapture);
-    validateReferenceCapture(
-        scene,
-        reference,
-        recaptureReference,
-    );
+    validateReferenceCapture(scene, reference, recaptureReference);
     // What both browser captures share: the seeded-random stub, the
     // companion DOM and the registry's pose search. The DOM is present in
     // a canvas-only capture too -- the harness hides it from the canvas
@@ -701,8 +730,12 @@ export async function runSceneParity(
     // toggles) would otherwise throw before the scene starts.
     const sharedCaptureOptions = {
         seededRandom: manifestUsesSeededRandom(compiledManifest),
-        ...(config.independentEngines === undefined ? {} : { independentEngines: config.independentEngines }),
-        ...(config.referenceHostPage === undefined ? {} : { hostPage: config.referenceHostPage }),
+        ...(config.independentEngines === undefined
+            ? {}
+            : { independentEngines: config.independentEngines }),
+        ...(config.referenceHostPage === undefined
+            ? {}
+            : { hostPage: config.referenceHostPage }),
         ...(scene.nativeHostUi
             ? { hostUi: readNativeHostUi(scene.nativeHostUi) }
             : {}),
@@ -751,7 +784,10 @@ export async function runSceneParity(
 
     if (arguments_.attribute) {
         for (const buffer of [idBufferPath, clusterBufferPath]) {
-            if (!buffer || !existsSync(buffer)) throw new Error(`The instrumented renderer did not produce attribution buffer '${buffer ?? "unconfigured"}'.`);
+            if (!buffer || !existsSync(buffer))
+                throw new Error(
+                    `The instrumented renderer did not produce attribution buffer '${buffer ?? "unconfigured"}'.`,
+                );
         }
     }
     const actualDimensions = imageDimensions(actual);
@@ -767,7 +803,12 @@ export async function runSceneParity(
     }
 
     const full = compareImages(actual, reference);
-    const region = compareRegion(actual, reference, config.backgroundColor, config.backgroundThreshold);
+    const region = compareRegion(
+        actual,
+        reference,
+        config.backgroundColor,
+        config.backgroundThreshold,
+    );
     const breakdown = analyzeDifference(
         actual,
         reference,
@@ -776,21 +817,33 @@ export async function runSceneParity(
     );
     const idBreakdown =
         idBufferPath && existsSync(idBufferPath)
-            ? analyzeIdBuffer(actual, reference, idBufferPath, breakdown.hotspots)
+            ? analyzeIdBuffer(
+                  actual,
+                  reference,
+                  idBufferPath,
+                  breakdown.hotspots,
+              )
             : undefined;
     if (idBufferPath && idVisualizationPath && existsSync(idBufferPath)) {
         generateIdVisualization(idBufferPath, idVisualizationPath);
     }
     const specialization = config.attribution?.specialization;
-    const specializations = specialization && existsSync(resolve(specialization))
-        ? JSON.parse(readFileSync(resolve(specialization), "utf8")) as GltfSpecialization[]
-        : [];
+    const specializations =
+        specialization && existsSync(resolve(specialization))
+            ? (JSON.parse(
+                  readFileSync(resolve(specialization), "utf8"),
+              ) as GltfSpecialization[])
+            : [];
     const renderItems = new Map(
-        specializations.flatMap((specialization) => specialization.renderItems)
+        specializations
+            .flatMap((specialization) => specialization.renderItems)
             .map((item) => [item.drawId, item] as const),
     );
-    const renderItemForCluster = (clusterId: number): RenderItemSpecialization | undefined =>
-        specializations.flatMap((specialization) => specialization.renderItems)
+    const renderItemForCluster = (
+        clusterId: number,
+    ): RenderItemSpecialization | undefined =>
+        specializations
+            .flatMap((specialization) => specialization.renderItems)
             .find(
                 (item) =>
                     item.clusterCount > 0 &&
@@ -810,7 +863,12 @@ export async function runSceneParity(
     }));
     const clusterBreakdown =
         clusterBufferPath && existsSync(clusterBufferPath)
-            ? analyzeIdBuffer(actual, reference, clusterBufferPath, breakdown.hotspots)
+            ? analyzeIdBuffer(
+                  actual,
+                  reference,
+                  clusterBufferPath,
+                  breakdown.hotspots,
+              )
             : undefined;
     if (
         clusterBufferPath &&
@@ -846,19 +904,24 @@ export async function runSceneParity(
             renderItem,
         };
     });
-    const hotspotClusterAttribution = clusterBreakdown?.hotspots.map((hotspot) => {
-        const { drawIds, ...region } = hotspot;
-        return {
-            ...region,
-            clusterIds: drawIds.map(({ drawId, pixels }) => ({
-                clusterId: drawId,
-                pixels,
-                renderItem: renderItemForCluster(drawId),
-            })),
-        };
-    });
+    const hotspotClusterAttribution = clusterBreakdown?.hotspots.map(
+        (hotspot) => {
+            const { drawIds, ...region } = hotspot;
+            return {
+                ...region,
+                clusterIds: drawIds.map(({ drawId, pixels }) => ({
+                    clusterId: drawId,
+                    pixels,
+                    renderItem: renderItemForCluster(drawId),
+                })),
+            };
+        },
+    );
     const diffPath = resolve(outputDirectory, `diff-map-${artifactSuffix}.png`);
-    const hotspotPath = resolve(outputDirectory, `hotspots-${artifactSuffix}.png`);
+    const hotspotPath = resolve(
+        outputDirectory,
+        `hotspots-${artifactSuffix}.png`,
+    );
     generateDiffMap(actual, reference, diffPath);
     generateHotspotMap(actual, breakdown.hotspots, hotspotPath);
 
@@ -893,11 +956,7 @@ export async function runSceneParity(
           }
         | undefined;
     if (canvasThresholds) {
-        const canvasDirectory = resolve(
-            "artifacts",
-            "parity-canvas",
-            scene.id,
-        );
+        const canvasDirectory = resolve("artifacts", "parity-canvas", scene.id);
         mkdirSync(canvasDirectory, { recursive: true });
         // The reference reproduces the attribution run exactly — the
         // companion DOM present but hidden, the canvas screenshot
@@ -906,10 +965,7 @@ export async function runSceneParity(
         // settles onto its ad-hoc native frame) — and follows the
         // committed golden's lifecycle: captured when missing,
         // recaptured only with --recapture-reference.
-        const canvasReference = resolve(
-            canvasDirectory,
-            "browser-canvas.png",
-        );
+        const canvasReference = resolve(canvasDirectory, "browser-canvas.png");
         await withEnvironment("BBLITE_CAPTURE_UI", "0", () =>
             captureSuiteReference(
                 scene.source,
@@ -988,8 +1044,7 @@ export async function runSceneParity(
 
     const report = {
         scene: scene.name,
-        sourceOrigin:
-            scene.sourceOrigin ?? "babylon-lite",
+        sourceOrigin: scene.sourceOrigin ?? "babylon-lite",
         renderer,
         ...(without !== undefined
             ? {
@@ -1020,7 +1075,9 @@ export async function runSceneParity(
             reference,
             diff: diffPath,
             hotspots: hotspotPath,
-            ...(idBufferPath && existsSync(idBufferPath) ? { drawIds: idBufferPath } : {}),
+            ...(idBufferPath && existsSync(idBufferPath)
+                ? { drawIds: idBufferPath }
+                : {}),
             ...(idVisualizationPath && existsSync(idVisualizationPath)
                 ? { drawIdsVisual: idVisualizationPath }
                 : {}),
@@ -1057,7 +1114,9 @@ export async function runSceneParity(
             "Parity result is diagnostic-only because no thresholds are configured.",
         );
     }
-    console.log(`${scene.name} full image (${full.totalPixels} px): MAD=${full.mad.toFixed(3)}, max=${full.maxDiff}`);
+    console.log(
+        `${scene.name} full image (${full.totalPixels} px): MAD=${full.mad.toFixed(3)}, max=${full.maxDiff}`,
+    );
     console.log(
         `${scene.name} region (${region.regionPixels} px): MAD=${region.mad.toFixed(3)}, ` +
             `exact=${(report.ratios.exact * 100).toFixed(2)}%, ` +
@@ -1112,7 +1171,9 @@ export async function runSceneParity(
         thresholds.maxRegionMad !== undefined &&
         region.mad > thresholds.maxRegionMad
     ) {
-        failures.push(`region MAD ${region.mad.toFixed(3)} > ${thresholds.maxRegionMad}`);
+        failures.push(
+            `region MAD ${region.mad.toFixed(3)} > ${thresholds.maxRegionMad}`,
+        );
     }
     if (canvas) {
         if (canvas.full.mad > canvas.thresholds.maxMad) {
@@ -1176,7 +1237,10 @@ export async function runSceneParityDifferential(
     const sdlImage = parityNativeImagePath(outputDirectory, "gpu");
     const dawnImage = parityNativeImagePath(outputDirectory, "dawn");
     const sceneTarget = paritySceneTarget(scene);
-    const captureArguments = [sceneTarget, ...(sceneOverride ? ["--attribute"] : [])];
+    const captureArguments = [
+        sceneTarget,
+        ...(sceneOverride ? ["--attribute"] : []),
+    ];
     await withEnvironment("BBLITE_GPU_BACKEND", undefined, () =>
         runSceneParity(captureArguments, scene),
     );
@@ -1186,10 +1250,7 @@ export async function runSceneParityDifferential(
     const backendDelta = compareImages(sdlImage, dawnImage);
     const readBackendReport = (suffix: string): ParityReportSummary =>
         JSON.parse(
-            readFileSync(
-                parityReportPath(outputDirectory, suffix),
-                "utf8",
-            ),
+            readFileSync(parityReportPath(outputDirectory, suffix), "utf8"),
         ) as ParityReportSummary;
     const sdlReport = readBackendReport("gpu");
     const dawnReport = readBackendReport("dawn");
@@ -1343,9 +1404,7 @@ export function formatStabilityReport(
         );
     } else {
         const worst = wobbling.reduce((left, right) =>
-            (right.vsFirst?.mad ?? 0) > (left.vsFirst?.mad ?? 0)
-                ? right
-                : left,
+            (right.vsFirst?.mad ?? 0) > (left.vsFirst?.mad ?? 0) ? right : left,
         );
         lines.push(
             `Wobble: ${wobbling.length} of ${runs.length - 1} re-runs differ from run 1 ` +
@@ -1366,10 +1425,7 @@ export function formatStabilityReport(
                 "Golden column is context only under --single-sample: the goldens are multisampled, " +
                     "so every scene reads worse against them at one sample (docs/debugging.md).",
             );
-        } else if (
-            wobbling.length === 0 &&
-            first.vsGolden.maxDiff > 0
-        ) {
+        } else if (wobbling.length === 0 && first.vsGolden.maxDiff > 0) {
             lines.push(
                 `Stable but not golden: the runs agree with each other and differ from the golden ` +
                     `(MAD ${first.vsGolden.mad.toFixed(3)}) — run-to-run agreement alone would have hidden that; ` +
@@ -1422,10 +1478,7 @@ export function runStabilityReport(
     const modeSuffix =
         (stabilityArguments.singleSample ? "-single-sample" : "") +
         (!goldenComparable ? `-seek${seek}` : "");
-    const executable = resolveNativeExecutable(
-        undefined,
-        scene.buildDirectory,
-    );
+    const executable = resolveNativeExecutable(undefined, scene.buildDirectory);
     const comparisons: StabilityRunComparison[] = [];
     const images: string[] = [];
     const summarize = (result: {

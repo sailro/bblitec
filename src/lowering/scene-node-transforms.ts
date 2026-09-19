@@ -90,7 +90,8 @@ function componentWrite(
                 throw std::runtime_error("An imported root only supports resetting scaling to identity.");
             reset_asset_root_scaling(engine, concrete);`;
     } else {
-        asset = 'throw std::runtime_error("Reading an imported root quaternion is not supported.");';
+        asset =
+            'throw std::runtime_error("Reading an imported root quaternion is not supported.");';
     }
     return `
 void ${descriptor.sceneNodeComponentSetter}(

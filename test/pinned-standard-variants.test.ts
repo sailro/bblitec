@@ -106,11 +106,7 @@ test("a textured two-light-shaped variant is the pin's own text", async () => {
     );
     // The multi-slot expression of a point-light scene like Scene 9: the
     // pin's own loop over the mesh's light selection, not unrolled slots.
-    assert.ok(
-        fragment.includes(
-            `array<LightEntry,${types.MAX_LIGHTS}>`,
-        ),
-    );
+    assert.ok(fragment.includes(`array<LightEntry,${types.MAX_LIGHTS}>`));
     assert.ok(fragment.includes(`min(mesh.lc,${types.MAX_LIGHTS}u)`));
     assert.match(fragment, /for\(var li=0u;li<lc;li\+\+\)/);
     assert.match(fragment, /let lightIndex=mli\(li\);/);
@@ -122,10 +118,7 @@ test("a textured two-light-shaped variant is the pin's own text", async () => {
     assert.match(fragment, /textureSample\(dT,dS,input\.vu\)/);
     assert.match(fragment, /struct matUniforms\{/);
     // The vertex stage carries the uv passthrough against the up block.
-    assert.match(
-        variant.vertexWgsl,
-        /out\.vu=uv\*up\.u\.xy\+up\.u\.zw;/,
-    );
+    assert.match(variant.vertexWgsl, /out\.vu=uv\*up\.u\.xy\+up\.u\.zw;/);
 });
 
 test("extension fragments compose under the pin's ids", async () => {
@@ -184,8 +177,7 @@ test("getAlphaFromRGB composes the pin's luminance opacity arm", async () => {
         opacityFromRGB: true,
     });
     assert.equal(
-        fromRgb.features &
-            (flags.HAS_OPACITY_TEXTURE | flags.OPACITY_FROM_RGB),
+        fromRgb.features & (flags.HAS_OPACITY_TEXTURE | flags.OPACITY_FROM_RGB),
         flags.HAS_OPACITY_TEXTURE | flags.OPACITY_FROM_RGB,
     );
     assert.ok(
@@ -196,9 +188,7 @@ test("getAlphaFromRGB composes the pin's luminance opacity arm", async () => {
         ),
     );
     assert.ok(
-        !fromRgb.fragmentWgsl.includes(
-            "textureSample(oT,oS,input.vu).a",
-        ),
+        !fromRgb.fragmentWgsl.includes("textureSample(oT,oS,input.vu).a"),
     );
     // Fragment-only fork: the vertex stage is byte-identical either way.
     assert.equal(fromRgb.vertexWgsl, plain.vertexWgsl);
@@ -224,8 +214,10 @@ test("a 2D reflection composes the pin's std-reflection arm", async () => {
     // mode is a uniform fork (rCm < 1.5 spherical, else planar), not a
     // composition fork — Sponza carries both modes through one arm.
     assert.ok(
-        fragment.includes("if(mat.rCm<1.5){reflCoords=" +
-            "computeSphericalCoords(input.vp,normalW);}"),
+        fragment.includes(
+            "if(mat.rCm<1.5){reflCoords=" +
+                "computeSphericalCoords(input.vp,normalW);}",
+        ),
     );
     assert.ok(
         fragment.includes(
@@ -244,10 +236,7 @@ test("a 2D reflection composes the pin's std-reflection arm", async () => {
         /fn computeSphericalCoords\(worldPos:vec3<f32>,worldNormal:vec3<f32>\)->vec2<f32>\{/,
     );
     assert.match(fragment, /r\.z=r\.z-1\.0;/);
-    assert.match(
-        fragment,
-        /return vec2<f32>\(coords\.x,1\.0-coords\.y\);/,
-    );
+    assert.match(fragment, /return vec2<f32>\(coords\.x,1\.0-coords\.y\);/);
     // The bindings are the pin's rT/rS 2D pair, not the cube's.
     assert.match(fragment, /var rT:texture_2d<f32>;/);
     assert.match(fragment, /var rS:sampler;/);
@@ -452,14 +441,11 @@ test("the colourless thin-instance arm composes the pin's fragment", async () =>
     // multiplies into finalWorld before the world-position product.
     assert.ok(
         variant.vertexWgsl.includes(
-            "let instanceWorld=mat4x4<f32>(world0,world1,world2," +
-                "world3);",
+            "let instanceWorld=mat4x4<f32>(world0,world1,world2," + "world3);",
         ),
     );
     assert.ok(
-        variant.vertexWgsl.includes(
-            "finalWorld=mesh.world*instanceWorld;",
-        ),
+        variant.vertexWgsl.includes("finalWorld=mesh.world*instanceWorld;"),
     );
     const plain = await composePinnedStandardVariant({}, {});
     assert.notEqual(variant.vertexWgsl, plain.vertexWgsl);
@@ -478,7 +464,8 @@ test("a coloured pool composes the Standard family's own colour slot", async () 
     const variant = await composePinnedStandardVariant(
         {},
         {
-            meshFeatures: meshBits.MSH_HAS_THIN_INSTANCES |
+            meshFeatures:
+                meshBits.MSH_HAS_THIN_INSTANCES |
                 meshBits.MSH_HAS_INSTANCE_COLOR,
         },
     );
@@ -561,7 +548,7 @@ test("the scene driver composes, dedups and keys a runtime-sweep shape", async (
             sceneMaterials: true,
             sceneMeshFeatureValues: [0],
             geometryTasks: [],
-        shadowLights: [],
+            shadowLights: [],
         },
         () => {
             throw new Error("no assets to read");
@@ -594,8 +581,7 @@ test("the scene driver composes, dedups and keys a runtime-sweep shape", async (
         backFaceCulling: false,
     });
     const plain = composition.selectors.find(
-        (selector) =>
-            selector.features === 0 && selector.meshFeatures === 0,
+        (selector) => selector.features === 0 && selector.meshFeatures === 0,
     );
     const doubleSided = composition.selectors.find(
         (selector) =>
@@ -626,7 +612,7 @@ test("the scene driver composes, dedups and keys a runtime-sweep shape", async (
             sceneMaterials: true,
             sceneMeshFeatureValues: [0],
             geometryTasks: [],
-        shadowLights: [],
+            shadowLights: [],
         },
         () => {
             throw new Error("no assets to read");
@@ -717,29 +703,27 @@ test("the babylon walk mirrors the generated loader's records", async () => {
             sceneMaterials: false,
             sceneMeshFeatureValues: [],
             geometryTasks: [],
-        shadowLights: [],
+            shadowLights: [],
         },
         () => document,
     );
-    const words = composition.selectors.map(
-        (selector) => selector.features,
-    );
+    const words = composition.selectors.map((selector) => selector.features);
     assert.ok(
         words.includes(
-            flags.HAS_DIFFUSE_TEXTURE | flags.HAS_AMBIENT_TEXTURE |
+            flags.HAS_DIFFUSE_TEXTURE |
+                flags.HAS_AMBIENT_TEXTURE |
                 flags.AMBIENT_USES_UV2,
         ),
         "the walls material's word composes",
     );
     assert.ok(
-        words.includes(
-            flags.HAS_CUBE_REFLECTION | flags.MATERIAL_ALPHA_BLEND,
-        ),
+        words.includes(flags.HAS_CUBE_REFLECTION | flags.MATERIAL_ALPHA_BLEND),
         "the glass material's word composes",
     );
     assert.ok(
         words.includes(
-            flags.HAS_DIFFUSE_TEXTURE | flags.HAS_OPACITY_TEXTURE |
+            flags.HAS_DIFFUSE_TEXTURE |
+                flags.HAS_OPACITY_TEXTURE |
                 flags.OPACITY_FROM_RGB,
         ),
         "the chain material's getAlphaFromRGB word composes",
@@ -767,21 +751,23 @@ test("the native-support block flows from the pin's own declarations", async () 
         MSH_HAS_MORPH_TARGETS: number;
         MSH_HAS_THIN_INSTANCES: number;
     }>("material/mesh-features.js");
-    const block = inlineCpp(pinnedStandardSupportBlock(context, {
-        selectors: [
-            { features: 0, meshFeatures: 0, variant: 0 },
-            {
-                features: flags.DISABLE_LIGHTING,
-                meshFeatures: 0,
-                geometryTask: 1,
-                variant: 1,
-            },
-        ],
-        uvTransform: false,
-        plugins: false,
-        renderableMeshFeatures: [0, 0, 4],
-        runtimeMeshFeatures: 0,
-    }));
+    const block = inlineCpp(
+        pinnedStandardSupportBlock(context, {
+            selectors: [
+                { features: 0, meshFeatures: 0, variant: 0 },
+                {
+                    features: flags.DISABLE_LIGHTING,
+                    meshFeatures: 0,
+                    geometryTask: 1,
+                    variant: 1,
+                },
+            ],
+            uvTransform: false,
+            plugins: false,
+            renderableMeshFeatures: [0, 0, 4],
+            runtimeMeshFeatures: 0,
+        }),
+    );
     // The pinned values, evaluated from their own declarations rather than
     // restated: NEEDS_UV, the pass bit, and the MSH_* runtime OR bits.
     assert.ok(
@@ -791,12 +777,8 @@ test("the native-support block flows from the pin's own declarations", async () 
         ),
     );
     assert.ok(block.includes(`${flags.NO_COLOR_OUTPUT}u`));
-    assert.ok(
-        block.includes(`${meshBits.MSH_HAS_MORPH_TARGETS}u`),
-    );
-    assert.ok(
-        block.includes(`${meshBits.MSH_HAS_THIN_INSTANCES}u`),
-    );
+    assert.ok(block.includes(`${meshBits.MSH_HAS_MORPH_TARGETS}u`));
+    assert.ok(block.includes(`${meshBits.MSH_HAS_THIN_INSTANCES}u`));
     // The lowered derivation carries the pin's own structure: the diffuse
     // presence guard, the alpha-blend comparison and the disable-lighting flag.
     assert.ok(
@@ -811,9 +793,7 @@ test("the native-support block flows from the pin's own declarations", async () 
                 "HAS_DIFFUSE_TEXTURE",
         ),
     );
-    assert.ok(
-        block.includes("if (material.alpha < 1.0f) {"),
-    );
+    assert.ok(block.includes("if (material.alpha < 1.0f) {"));
     assert.ok(
         block.includes(
             `features |= ${flags.MATERIAL_ALPHA_BLEND}u; // ` +
@@ -824,13 +804,11 @@ test("the native-support block flows from the pin's own declarations", async () 
     // The record-gap closures: the alpha lane and the pin-default fields
     // left untouched. bump_level is one-to-one — the record stores the
     // authored level and the pinned writer derives 1 / level itself.
+    assert.ok(block.includes("props.bump_level = material.bump_scale;"));
+    assert.ok(block.includes("props.alpha = material.alpha;"));
     assert.ok(
-        block.includes("props.bump_level = material.bump_scale;"),
+        block.includes("props.lightmap_level = material.lightmap_level;"),
     );
-    assert.ok(
-        block.includes("props.alpha = material.alpha;"),
-    );
-    assert.ok(block.includes("props.lightmap_level = material.lightmap_level;"));
     // The rCm lane flows from the record's own field (the .babylon
     // loader's coordinatesMode === 2 write over the pin's default 1).
     assert.ok(
@@ -841,11 +819,7 @@ test("the native-support block flows from the pin's own declarations", async () 
     // The lowered derivation reaches both new record sources: the nested
     // OPACITY_FROM_RGB arm and the 2D reflection presence.
     assert.ok(block.includes("if (material.opacity_from_rgb) {"));
-    assert.ok(
-        block.includes(
-            "if (material.reflection_texture.has_image()) {",
-        ),
-    );
+    assert.ok(block.includes("if (material.reflection_texture.has_image()) {"));
     // The composed variants' rT/rS pair resolves through the slot table,
     // not the cube path.
     assert.ok(
@@ -859,21 +833,23 @@ test("the native-support block flows from the pin's own declarations", async () 
     assert.ok(block.includes("standard_renderable_mesh_features"));
     // Deterministic emission.
     assert.equal(
-        inlineCpp(pinnedStandardSupportBlock(context, {
-            selectors: [
-                { features: 0, meshFeatures: 0, variant: 0 },
-                {
-                    features: flags.DISABLE_LIGHTING,
-                    meshFeatures: 0,
-                    geometryTask: 1,
-                    variant: 1,
-                },
-            ],
-            uvTransform: false,
-            plugins: false,
-            renderableMeshFeatures: [0, 0, 4],
-            runtimeMeshFeatures: 0,
-        })),
+        inlineCpp(
+            pinnedStandardSupportBlock(context, {
+                selectors: [
+                    { features: 0, meshFeatures: 0, variant: 0 },
+                    {
+                        features: flags.DISABLE_LIGHTING,
+                        meshFeatures: 0,
+                        geometryTask: 1,
+                        variant: 1,
+                    },
+                ],
+                uvTransform: false,
+                plugins: false,
+                renderableMeshFeatures: [0, 0, 4],
+                runtimeMeshFeatures: 0,
+            }),
+        ),
         block,
     );
 });

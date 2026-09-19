@@ -4,7 +4,9 @@
 #include <cassert>
 #include <cstdio>
 
-namespace { std::uint32_t lights = 0; }
+namespace {
+std::uint32_t lights = 0;
+}
 namespace bbl {
 Engine create_engine(EngineOptions) { return {}; }
 MaterialHandle create_standard_material(Engine& engine) {
@@ -21,7 +23,7 @@ LightHandle create_hemispheric_light(Engine& engine, Vec3 direction, float inten
     assert(color.b == static_cast<float>(lights * 3 + 3));
     return {lights++};
 }
-}
+} // namespace bbl
 int main() {
     assert(generated_scene_main() == 0);
     assert(lights == 4);

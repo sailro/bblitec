@@ -13,12 +13,13 @@
 // What the bake supplies is only the values: the particle columns, the
 // texture the graph loaded and the mode the system block set.
 import ts from "typescript";
-import { cppArrayDeclaration, doubleLiteral, floatLiteral } from "../cpp-literals.js";
-import { LoweredSource, LoweringContext } from "./context.js";
 import {
-    blendFactorySymbol,
-    nativeBlendFactor,
-} from "./pinned-blend-table.js";
+    cppArrayDeclaration,
+    doubleLiteral,
+    floatLiteral,
+} from "../cpp-literals.js";
+import { LoweredSource, LoweringContext } from "./context.js";
+import { blendFactorySymbol, nativeBlendFactor } from "./pinned-blend-table.js";
 import {
     decodeAtlasImageCpp,
     gridSpriteAtlasFramesCpp,
@@ -37,18 +38,14 @@ import {
     type LoweredLiveSystem,
     NodeParticleLiveLowerer,
 } from "./node-particle-live-lowerer.js";
-import type {
-    CompileAsset,
-    PixelsTextureSource,
-} from "../compiler/types.js";
+import type { CompileAsset, PixelsTextureSource } from "../compiler/types.js";
 
 const billboardModule = "src/particle/particle-billboard.ts";
 const blendModule = "src/particle/particle-blend.ts";
 const sceneModule = "src/particle/particle-scene.ts";
 const blendSceneModule = "src/particle/particle-billboard-scene.ts";
 const sprite2dModule = "src/particle/particle-sprite-2d.ts";
-const sprite2dBlendModule =
-    "src/particle/particle-sprite-2d-blend-modes.ts";
+const sprite2dBlendModule = "src/particle/particle-sprite-2d-blend-modes.ts";
 
 /** One baked system, with the asset its texture packaged under. */
 export interface NodeParticleSystemEmit {
@@ -103,8 +100,7 @@ export interface NodeParticleRegistrationEmit {
  * One `registerNodeParticleSet2D*` call: the same walked systems, plus the
  * mapping constants, which unlike the system list are the scene's own.
  */
-export interface NodeParticleSprite2DEmit
-    extends NodeParticleRegistrationEmit {
+export interface NodeParticleSprite2DEmit extends NodeParticleRegistrationEmit {
     exact: boolean;
     /** Frozen simulation whose shared sprite-sheet cells remain live. */
     retainFrozen?: true;
@@ -193,7 +189,8 @@ export class NodeParticleLowerer {
                 `${label} changed; expected three returns.`,
             );
         }
-        const prefix = family === "billboard" ? "billboardBlend" : "spriteBlend";
+        const prefix =
+            family === "billboard" ? "billboardBlend" : "spriteBlend";
         const arms: ReadonlyArray<readonly [string, number | null]> = [
             [`${prefix}Alpha`, constant("BLENDMODE_STANDARD")],
             [`${prefix}OneOne`, constant("BLENDMODE_ONEONE")],
@@ -384,9 +381,7 @@ export class NodeParticleLowerer {
                 `        blend.alpha.src = SpriteBlendFactor::${factor(alphaSrc, "alpha source")};`,
                 `        blend.alpha.dst = SpriteBlendFactor::${factor(alphaDst, "alpha destination")};`,
                 `        blend.particle_passes = ${
-                    passes
-                        ? this.context.numericValue(passes, file)
-                        : 0
+                    passes ? this.context.numericValue(passes, file) : 0
                 };`,
                 "        return blend;",
             ].join("\n");
@@ -394,10 +389,7 @@ export class NodeParticleLowerer {
                 fallback = body;
                 continue;
             }
-            const mode = this.context.numericValue(
-                clause.expression,
-                file,
-            );
+            const mode = this.context.numericValue(clause.expression, file);
             lines.push(`    if (mode == ${mode}) {`, body, "    }");
         }
         if (fallback === undefined) {
@@ -473,9 +465,9 @@ export class NodeParticleLowerer {
         // one value with one anchor.
         this.context.assertExpressionShape(
             this.context.variableInitializer(declaration, "autoStart"),
-            `options.autoStart ?? ${
-                pinnedDefaultFlag("nodeParticleAutoStart")
-            }`,
+            `options.autoStart ?? ${pinnedDefaultFlag(
+                "nodeParticleAutoStart",
+            )}`,
             "registerNodeParticleSet autoStart",
         );
         // The registrar the pin picks per system: the enabler's, when one is
@@ -594,21 +586,19 @@ export class NodeParticleLowerer {
      * table entry, which makes the intrinsic's resolved value and the
      * pin's own fallback one number with one guard.
      */
-    private assertSprite2dDefaults(
-        declaration: ts.FunctionDeclaration,
-    ): void {
+    private assertSprite2dDefaults(declaration: ts.FunctionDeclaration): void {
         this.context.assertExpressionShape(
             this.context.variableInitializer(declaration, "pixelsPerUnit"),
-            `options.pixelsPerUnit ?? ${
-                pinnedDefaultNumber("sprite2dPixelsPerUnit")
-            }`,
+            `options.pixelsPerUnit ?? ${pinnedDefaultNumber(
+                "sprite2dPixelsPerUnit",
+            )}`,
             "pure-2D bridge pixelsPerUnit default",
         );
         this.context.assertExpressionShape(
             this.context.variableInitializer(declaration, "origin"),
-            `options.originPx ?? [${
-                pinnedDefaultVec2("sprite2dOriginPx").join(", ")
-            }]`,
+            `options.originPx ?? [${pinnedDefaultVec2("sprite2dOriginPx").join(
+                ", ",
+            )}]`,
             "pure-2D bridge originPx default",
         );
         const returned = this.context
@@ -635,9 +625,9 @@ export class NodeParticleLowerer {
             sprite2dModule,
             "registerNodeParticleSet2D",
         ).declaration;
-        const autoStartShape = `options.autoStart ?? ${
-            pinnedDefaultFlag("sprite2dAutoStart")
-        }`;
+        const autoStartShape = `options.autoStart ?? ${pinnedDefaultFlag(
+            "sprite2dAutoStart",
+        )}`;
         if (
             !this.context
                 .findNodes(registrar.body!, ts.isIfStatement)
@@ -645,7 +635,7 @@ export class NodeParticleLowerer {
                     this.context.expressionMatchesShape(
                         statement.expression,
                         autoStartShape,
-                    )
+                    ),
                 )
         ) {
             this.context.contractError(
@@ -667,10 +657,7 @@ export class NodeParticleLowerer {
     public sprite2dMultiplyFragment(): string {
         const file = this.context.sourceFile(sprite2dBlendModule);
         return this.context.stringValue(
-            this.context.variableInitializer(
-                file,
-                "MULTIPLY_FRAGMENT_WGSL",
-            ),
+            this.context.variableInitializer(file, "MULTIPLY_FRAGMENT_WGSL"),
             file,
         );
     }
@@ -698,10 +685,8 @@ export class NodeParticleLowerer {
                     (candidate) =>
                         candidate.operatorToken.kind ===
                             ts.SyntaxKind.EqualsToken &&
-                        candidate.left
-                            .getText()
-                            .replace(/\s+/g, " ")
-                            .trim() === target,
+                        candidate.left.getText().replace(/\s+/g, " ").trim() ===
+                            target,
                 );
             if (!found) {
                 this.context.contractError(
@@ -827,8 +812,7 @@ export class NodeParticleLowerer {
             );
         }
         this.assertAtlasCellRule(atlasOptions, "particle atlas");
-        const systemOptions =
-            call("createFacingBillboardSystem").arguments[1];
+        const systemOptions = call("createFacingBillboardSystem").arguments[1];
         if (!systemOptions || !ts.isObjectLiteralExpression(systemOptions)) {
             this.context.contractError(
                 declaration,
@@ -959,8 +943,7 @@ export class NodeParticleLowerer {
         // `bridge.exact ? …` fork, so the table's presence follows the
         // registrar rather than the binding's mode.
         const exact =
-            systems.some((entry) => entry.exactBlend) ||
-            sprite2d.length > 0;
+            systems.some((entry) => entry.exactBlend) || sprite2d.length > 0;
         const registered = registrations.length > 0;
         if (exact) {
             this.assertParticleBlendRegistrar();
@@ -986,7 +969,9 @@ export class NodeParticleLowerer {
         sprite2d.forEach((binding, request) => {
             const walked = binding.systems.map(nodeParticleKey);
             const live = walked.filter((key) =>
-                liveSystems.some((entry) => nodeParticleKey(entry.bake) === key),
+                liveSystems.some(
+                    (entry) => nodeParticleKey(entry.bake) === key,
+                ),
             );
             if (live.length === 0) return;
             if (live.length !== walked.length) {
@@ -998,24 +983,35 @@ export class NodeParticleLowerer {
             liveRequests.add(request);
         });
         const liveLowerer = new NodeParticleLiveLowerer(this.context);
-        const lowered = new Map(liveSystems.map((entry) => [
-            nodeParticleKey(entry.bake),
-            liveLowerer.lowerSystem(entry.live!.graph, entry.live!.facts, entry.live!.provider),
-        ]));
-        const simulation = liveSystems.length > 0
-            ? `${liveLowerer.sharedSource()}\n${[...lowered.values()].map((system) => system.source).join("\n\n")}`
-            : "";
-        const live = liveRequests.size > 0
-            ? this.liveSectionCpp(lowered, sprite2d, liveRequests)
-            : undefined;
+        const lowered = new Map(
+            liveSystems.map((entry) => [
+                nodeParticleKey(entry.bake),
+                liveLowerer.lowerSystem(
+                    entry.live!.graph,
+                    entry.live!.facts,
+                    entry.live!.provider,
+                ),
+            ]),
+        );
+        const simulation =
+            liveSystems.length > 0
+                ? `${liveLowerer.sharedSource()}\n${[...lowered.values()].map((system) => system.source).join("\n\n")}`
+                : "";
+        const live =
+            liveRequests.size > 0
+                ? this.liveSectionCpp(lowered, sprite2d, liveRequests)
+                : undefined;
         const providers = liveSystems.filter((entry) => entry.live!.provider);
-        const native = providers.length > 0
-            ? this.nativeSectionCpp(providers, lowered, registrations)
-            : undefined;
+        const native =
+            providers.length > 0
+                ? this.nativeSectionCpp(providers, lowered, registrations)
+                : undefined;
         const retained = sprite2d.some((binding) => binding.retainFrozen);
-        const frozen = retained || systems.some((entry) => entry.bake.bufferColumns !== undefined)
-            ? this.frozenSectionCpp(systems, sprite2d)
-            : undefined;
+        const frozen =
+            retained ||
+            systems.some((entry) => entry.bake.bufferColumns !== undefined)
+                ? this.frozenSectionCpp(systems, sprite2d)
+                : undefined;
         if (retained) this.assertLiveRules();
         // Which halves of the family this scene reaches. The two render
         // targets are exclusive per system, so a system a pure-2D binding
@@ -1109,11 +1105,11 @@ ${
 `
         : ""
 }${
-    sprite2d.length === 0
-        ? ""
-        : `#include <bblite/upstream/sprite_layer.hpp>
+                sprite2d.length === 0
+                    ? ""
+                    : `#include <bblite/upstream/sprite_layer.hpp>
 `
-}#include <bblite/upstream/node_particles.hpp>
+            }#include <bblite/upstream/node_particles.hpp>
 
 #include <algorithm>
 #include <array>
@@ -1165,12 +1161,16 @@ ${
           )
         : ""
 }
-${exact ? `
+${
+    exact
+        ? `
 ${this.particleBlendCpp()}
-` : ""}${
-    sprite2d.length === 0
-        ? ""
-        : `
+`
+        : ""
+}${
+                sprite2d.length === 0
+                    ? ""
+                    : `
 ${this.blendForModeCpp(
     sprite2dModule,
     "sprite",
@@ -1178,7 +1178,7 @@ ${this.blendForModeCpp(
     "the pure-2D blendForMode",
 )}
 `
-}
+            }
 /**
  * createGridSpriteAtlas over a loadTexture2D texture.
  *
@@ -1259,7 +1259,8 @@ const RegisteredSystem registered_systems[] = {
 ${registrations
     .flatMap((binding, request) =>
         binding.systems.map(
-            (entry) => `    {${request}, ${entry.set}, ${entry.system}, ${binding.autoStart ?? true}},`,
+            (entry) =>
+                `    {${request}, ${entry.set}, ${entry.system}, ${binding.autoStart ?? true}},`,
         ),
     )
     .join("\n")}
@@ -1291,7 +1292,9 @@ struct Sprite2DBridge {
 const Sprite2DBridge sprite_2d_bridges[] = {
 ${sprite2d
     .flatMap((binding, request) =>
-        binding.systems.map((entry) => sprite2dBridgeRowCpp(binding, request, entry)),
+        binding.systems.map((entry) =>
+            sprite2dBridgeRowCpp(binding, request, entry),
+        ),
     )
     .join("\n")}
 };
@@ -1320,14 +1323,18 @@ SpriteAtlasHandle particle_atlas(
     int set_index,
     int system_index) {
     const BakedSystem& system = baked(set_index, system_index);
-${frozen ? `    const FrozenSystem* retained = frozen_system(set_index, system_index);
+${
+    frozen
+        ? `    const FrozenSystem* retained = frozen_system(set_index, system_index);
     const double cell_width = retained && retained->has_sheet
         ? (retained->cell_width > 0 ? retained->cell_width : retained->texture_width)
         : system.cell_width_px;
     const double cell_height = retained && retained->has_sheet
         ? (retained->cell_height > 0 ? retained->cell_height : retained->texture_height)
         : system.cell_height_px;
-` : ""}\
+`
+        : ""
+}\
 ${systems
     .filter((entry) => entry.texturePixels)
     .map(
@@ -1457,24 +1464,24 @@ ${
         .custom_shader = false,
         .custom_textures = {},
         .custom_texture_names = {},${
-        exact
-            ? [
-                  "",
-                  "        // The mode-4 wrapper's second pass, built where the",
-                  "        // pin builds it: createParticleBlend(2) over the same",
-                  "        // instances, with no custom shader. Read only when",
-                  "        // the blend carries two passes.",
-                  "        .add_pass_blend = blend.particle_passes == 2",
-                  "            ? create_particle_blend(2)",
-                  "            : SpriteBlendDescriptor{}};",
-              ].join("\n")
-            : [
-                  "",
-                  "        // The three-arm mapping never builds a two-pass",
-                  "        // blend, so the second pass stays empty.",
-                  "        .add_pass_blend = SpriteBlendDescriptor{}};",
-              ].join("\n")
-    }
+            exact
+                ? [
+                      "",
+                      "        // The mode-4 wrapper's second pass, built where the",
+                      "        // pin builds it: createParticleBlend(2) over the same",
+                      "        // instances, with no custom shader. Read only when",
+                      "        // the blend carries two passes.",
+                      "        .add_pass_blend = blend.particle_passes == 2",
+                      "            ? create_particle_blend(2)",
+                      "            : SpriteBlendDescriptor{}};",
+                  ].join("\n")
+                : [
+                      "",
+                      "        // The three-arm mapping never builds a two-pass",
+                      "        // blend, so the second pass stays empty.",
+                      "        .add_pass_blend = SpriteBlendDescriptor{}};",
+                  ].join("\n")
+        }
     return create_billboard_system(
         engine,
         atlas,
@@ -1528,9 +1535,9 @@ void register_node_particle_set(
 }
 `
 }${
-    sprite2d.length === 0
-        ? ""
-        : `
+                sprite2d.length === 0
+                    ? ""
+                    : `
 void register_node_particle_set_2d(
     Engine& engine,
     SpriteRendererHandle renderer,
@@ -1574,7 +1581,7 @@ void register_node_particle_set_2d(
     }
 }
 `
-}${live?.publicFunctions ?? ""}${native?.publicFunctions ?? ""}${frozen?.publicFunctions ?? ""}
+            }${live?.publicFunctions ?? ""}${native?.publicFunctions ?? ""}${frozen?.publicFunctions ?? ""}
 }  // namespace bbl::upstream
 `,
         };
@@ -1584,27 +1591,63 @@ void register_node_particle_set_2d(
     private frozenSectionCpp(
         systems: readonly NodeParticleSystemEmit[],
         bindings: readonly NodeParticleSprite2DEmit[],
-    ): { header: string; state: string; registrar: string; publicFunctions: string } {
-        const retainedKeys = expandedSystems(bindings.filter((binding) => binding.retainFrozen));
-        const observed = systems.filter((entry) =>
-            entry.bake.bufferColumns !== undefined || retainedKeys.has(nodeParticleKey(entry.bake)),
+    ): {
+        header: string;
+        state: string;
+        registrar: string;
+        publicFunctions: string;
+    } {
+        const retainedKeys = expandedSystems(
+            bindings.filter((binding) => binding.retainFrozen),
+        );
+        const observed = systems.filter(
+            (entry) =>
+                entry.bake.bufferColumns !== undefined ||
+                retainedKeys.has(nodeParticleKey(entry.bake)),
         );
         const spriteFile = this.context.sourceFile("src/sprite/sprite-2d.ts");
         const savedSizeFloats = this.context.numericValue(
-            this.context.moduleScopeConstant(spriteFile, "SAVED_SIZE_FLOATS_PER_SPRITE")!, spriteFile,
+            this.context.moduleScopeConstant(
+                spriteFile,
+                "SAVED_SIZE_FLOATS_PER_SPRITE",
+            )!,
+            spriteFile,
         );
         if (bindings.some((binding) => binding.retainFrozen && binding.exact)) {
-            const copy = this.context.functionDeclaration(sprite2dBlendModule, "copyLogicalState").declaration;
-            for (const field of ["opacity", "visible", "order", "view.positionPx[0]", "view.positionPx[1]",
-                "view.zoom", "view.rotation", "pivot[0]", "pivot[1]"]) {
-                this.context.expectShapeCount(copy, `target.${field} = source.${field}`, "exact bridge presentation copy");
+            const copy = this.context.functionDeclaration(
+                sprite2dBlendModule,
+                "copyLogicalState",
+            ).declaration;
+            for (const field of [
+                "opacity",
+                "visible",
+                "order",
+                "view.positionPx[0]",
+                "view.positionPx[1]",
+                "view.zoom",
+                "view.rotation",
+                "pivot[0]",
+                "pivot[1]",
+            ]) {
+                this.context.expectShapeCount(
+                    copy,
+                    `target.${field} = source.${field}`,
+                    "exact bridge presentation copy",
+                );
             }
         }
         const number = (value: number): string =>
             Object.is(value, -0) ? "-0.0" : doubleLiteral(value);
         const tables: string[] = [];
         const stream = (symbol: string, values: readonly number[]): string => {
-            const declaration = cppArrayDeclaration(symbol, "double", values, number, undefined, "span");
+            const declaration = cppArrayDeclaration(
+                symbol,
+                "double",
+                values,
+                number,
+                undefined,
+                "span",
+            );
             tables.push(...declaration.lines);
             return declaration.expression;
         };
@@ -1613,11 +1656,16 @@ void register_node_particle_set_2d(
             const sizes = retainedKeys.has(nodeParticleKey(bake))
                 ? stream(`${prefix}_sizes`, bake.sizes)
                 : "std::span<const double>{}";
-            const columns = Object.entries(bake.bufferColumns ?? {}).map(([name, values]) =>
-                `    {${JSON.stringify(name)}, ${stream(`${prefix}_${name}`, values)}},`,
+            const columns = Object.entries(bake.bufferColumns ?? {}).map(
+                ([name, values]) =>
+                    `    {${JSON.stringify(name)}, ${stream(`${prefix}_${name}`, values)}},`,
             );
             if (columns.length > 0) {
-                tables.push(`static const FrozenColumn ${prefix}_columns[] = {`, ...columns, "};");
+                tables.push(
+                    `static const FrozenColumn ${prefix}_columns[] = {`,
+                    ...columns,
+                    "};",
+                );
             }
             return `    {${bake.set}, ${bake.system}, ${bake.texture!.width}, ${bake.texture!.height},
         ${sizes},
@@ -1663,7 +1711,10 @@ FrozenSystem* frozen_system(int set, int system) {
     return nullptr;
 }
 `,
-            registrar: retainedKeys.size === 0 ? "" : `
+            registrar:
+                retainedKeys.size === 0
+                    ? ""
+                    : `
 constexpr bool retained_frozen_request[] = {${bindings.map((binding) => !!binding.retainFrozen).join(", ")}};
 
 void assert_frozen_bridge_ownership(const Sprite2DLayerRecord& layer) {
@@ -1813,37 +1864,89 @@ bbl::js::Nullable<double> node_particle_frozen_column(
         lowered: ReadonlyMap<string, LoweredLiveSystem>,
         registrations: readonly NodeParticleRegistrationEmit[],
     ): { header: string; anonymous: string; publicFunctions: string } {
-        const { file, declaration } = this.context.functionDeclaration(sceneModule, "registerNodeParticleSet");
-        const frameMs = doubleLiteral(this.context.numericValue(
-            this.context.moduleScopeConstant(file, "FRAME_MS")!, file));
+        const { file, declaration } = this.context.functionDeclaration(
+            sceneModule,
+            "registerNodeParticleSet",
+        );
+        const frameMs = doubleLiteral(
+            this.context.numericValue(
+                this.context.moduleScopeConstant(file, "FRAME_MS")!,
+                file,
+            ),
+        );
         this.context.assertExpressionShape(
             this.context.variableInitializer(declaration, "ratio"),
-            "deltaMs > 0 ? deltaMs / FRAME_MS : 1", "particle scene frame ratio");
-        const loop = this.context.findNodes(declaration, ts.isForOfStatement)[0];
+            "deltaMs > 0 ? deltaMs / FRAME_MS : 1",
+            "particle scene frame ratio",
+        );
+        const loop = this.context.findNodes(
+            declaration,
+            ts.isForOfStatement,
+        )[0];
         if (!loop || !ts.isBlock(loop.statement)) {
-            this.context.contractError(declaration, "The particle scene registrar no longer walks its systems in a block.");
+            this.context.contractError(
+                declaration,
+                "The particle scene registrar no longer walks its systems in a block.",
+            );
         }
-        this.context.assertStatementInventory(loop, loop.statement.statements,
-            "registerNodeParticleSet", "the native registrar restates a per-system body",
-            ["variable statement", "expression statement", "if statement", "expression statement"]);
-        this.context.assertExpressionShape(loop.expression, "set.systems", "particle scene system order");
-        this.context.assertExpressionShape(this.context.variableInitializer(loop, "billboard"),
-            "createParticleBillboard(system)", "particle scene billboard creation");
+        this.context.assertStatementInventory(
+            loop,
+            loop.statement.statements,
+            "registerNodeParticleSet",
+            "the native registrar restates a per-system body",
+            [
+                "variable statement",
+                "expression statement",
+                "if statement",
+                "expression statement",
+            ],
+        );
+        this.context.assertExpressionShape(
+            loop.expression,
+            "set.systems",
+            "particle scene system order",
+        );
+        this.context.assertExpressionShape(
+            this.context.variableInitializer(loop, "billboard"),
+            "createParticleBillboard(system)",
+            "particle scene billboard creation",
+        );
         const attach = loop.statement.statements[1] as ts.ExpressionStatement;
-        this.context.assertExpressionShape(attach.expression,
-            "(system._registerBillboard ?? addFacingBillboardSystem)(scene, billboard)", "particle scene attachment");
+        this.context.assertExpressionShape(
+            attach.expression,
+            "(system._registerBillboard ?? addFacingBillboardSystem)(scene, billboard)",
+            "particle scene attachment",
+        );
         const start = loop.statement.statements[2] as ts.IfStatement;
         if (!ts.isBlock(start.thenStatement) || start.elseStatement) {
-            this.context.contractError(start, "Particle auto-start must have one block and no else arm.");
+            this.context.contractError(
+                start,
+                "Particle auto-start must have one block and no else arm.",
+            );
         }
-        this.context.assertExpressionShape(start.expression, "autoStart", "particle scene start condition");
-        this.context.assertStatementInventory(start, start.thenStatement.statements,
-            "registerNodeParticleSet", "auto-start restates one call", ["expression statement"]);
-        this.context.assertExpressionShape((start.thenStatement.statements[0] as ts.ExpressionStatement).expression,
-            "startParticleSystem(system)", "particle scene start");
-        this.context.assertExpressionShape((loop.statement.statements[3] as ts.ExpressionStatement).expression,
+        this.context.assertExpressionShape(
+            start.expression,
+            "autoStart",
+            "particle scene start condition",
+        );
+        this.context.assertStatementInventory(
+            start,
+            start.thenStatement.statements,
+            "registerNodeParticleSet",
+            "auto-start restates one call",
+            ["expression statement"],
+        );
+        this.context.assertExpressionShape(
+            (start.thenStatement.statements[0] as ts.ExpressionStatement)
+                .expression,
+            "startParticleSystem(system)",
+            "particle scene start",
+        );
+        this.context.assertExpressionShape(
+            (loop.statement.statements[3] as ts.ExpressionStatement).expression,
             "scene._beforeRender.push((deltaMs) => { const ratio = deltaMs > 0 ? deltaMs / FRAME_MS : 1; animateParticleSystem(system, ratio); syncParticleBillboard(system, billboard); })",
-            "particle scene frame callback");
+            "particle scene frame callback",
+        );
         const rows = systems.map((entry) => {
             const system = lowered.get(nodeParticleKey(entry.bake))!;
             const ops = `NativeParticleOps<${system.namespace}::state>`;
@@ -1933,7 +2036,9 @@ const NativeParticleSystem& native_particle_system(int set, int system) {
 }
 `,
             publicFunctions: `
-${registrations.length > 0 ? `
+${
+    registrations.length > 0
+        ? `
 void register_node_particle_set(Engine& engine, Scene& scene, int request) {
     for (const RegisteredSystem& entry : registered_systems) {
         if (entry.request != request) continue;
@@ -1948,7 +2053,9 @@ void register_node_particle_set(Engine& engine, Scene& scene, int request) {
         });
     }
 }
-` : ""}
+`
+        : ""
+}
 std::array<float, 16> sample_node_particle_emitter(const bbl::js::Callback<bbl::js::F32Array()>& provider) {
     const auto provided = npe_sample_provider(provider);
     std::array<float, 16> snapshot{};
@@ -2375,10 +2482,7 @@ function bakedFloatLiteral(value: number): string {
 }
 
 /** One system's live particles, as the table the sync walks. */
-function particleRowsCpp(
-    entry: NodeParticleSystemEmit,
-    index: number,
-): string {
+function particleRowsCpp(entry: NodeParticleSystemEmit, index: number): string {
     const { bake } = entry;
     const rows: string[] = [];
     for (let i = 0; i < bake.alive; i += 1) {
@@ -2431,9 +2535,7 @@ function bakedSystemRowCpp(
     const cellWidth =
         sheet && sheet.cellWidth > 0 ? sheet.cellWidth : bake.texture!.width;
     const cellHeight =
-        sheet && sheet.cellHeight > 0
-            ? sheet.cellHeight
-            : bake.texture!.height;
+        sheet && sheet.cellHeight > 0 ? sheet.cellHeight : bake.texture!.height;
     return (
         `    {${bake.set}, ${bake.system}, ${bake.capacity}, ` +
         `${bake.blendMode}, ${entry.exactBlend}, ` +

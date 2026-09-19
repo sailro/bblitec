@@ -25,14 +25,14 @@ using Uint8Array = js::U8Array;
 using DataView = js::DataView;
 
 class TextDecoder {
-  public:
+public:
     [[nodiscard]] std::string decode(const Uint8Array& bytes) const {
         return std::string(reinterpret_cast<const char*>(bytes.data()), bytes.length());
     }
 };
 
 class JsonValue {
-  public:
+public:
     using Array = std::vector<JsonValue>;
     using Object = std::map<std::string, JsonValue>;
     using Storage = std::variant<std::nullptr_t, bool, double, std::string, Array, Object>;
@@ -57,21 +57,29 @@ class JsonValue {
         return writer.take();
     }
     [[nodiscard]] bool truthy() const {
-        if (const auto* value = std::get_if<bool>(&storage_)) return *value;
-        if (const auto* value = std::get_if<double>(&storage_)) return *value != 0 && !std::isnan(*value);
-        if (const auto* value = std::get_if<std::string>(&storage_)) return !value->empty();
+        if (const auto* value = std::get_if<bool>(&storage_))
+            return *value;
+        if (const auto* value = std::get_if<double>(&storage_))
+            return *value != 0 && !std::isnan(*value);
+        if (const auto* value = std::get_if<std::string>(&storage_))
+            return !value->empty();
         return !is_null();
     }
 
     static JsonValue from_native(const nlohmann::json& value) {
-        if (value.is_null()) return JsonValue();
-        if (value.is_boolean()) return JsonValue(Storage{value.get<bool>()});
-        if (value.is_number()) return JsonValue(Storage{value.get<double>()});
-        if (value.is_string()) return JsonValue(Storage{value.get<std::string>()});
+        if (value.is_null())
+            return JsonValue();
+        if (value.is_boolean())
+            return JsonValue(Storage{value.get<bool>()});
+        if (value.is_number())
+            return JsonValue(Storage{value.get<double>()});
+        if (value.is_string())
+            return JsonValue(Storage{value.get<std::string>()});
         if (value.is_array()) {
             Array result;
             result.reserve(value.size());
-            for (const nlohmann::json& element : value) result.push_back(from_native(element));
+            for (const nlohmann::json& element : value)
+                result.push_back(from_native(element));
             return JsonValue(Storage{std::move(result)});
         }
         if (value.is_object()) {
@@ -84,15 +92,20 @@ class JsonValue {
         throw std::runtime_error("Unsupported JSON value kind.");
     }
 
-  private:
+private:
     void write_json(js::JsonWriter& writer) const {
-        if (is_null()) writer.null_value();
-        else if (is_boolean()) writer.boolean(as_boolean());
-        else if (is_number()) writer.number(as_number());
-        else if (is_string()) writer.string(as_string());
+        if (is_null())
+            writer.null_value();
+        else if (is_boolean())
+            writer.boolean(as_boolean());
+        else if (is_number())
+            writer.number(as_number());
+        else if (is_string())
+            writer.string(as_string());
         else if (is_array()) {
             writer.begin_array();
-            for (const auto& value : as_array()) value.write_json(writer);
+            for (const auto& value : as_array())
+                value.write_json(writer);
             writer.end_array();
         } else {
             writer.begin_object();
@@ -104,10 +117,10 @@ class JsonValue {
         }
     }
 
-    template <typename T>
-    [[nodiscard]] const T& require(const char* expected) const {
+    template <typename T> [[nodiscard]] const T& require(const char* expected) const {
         const T* value = std::get_if<T>(&storage_);
-        if (!value) throw std::runtime_error(std::string("Expected JSON ") + expected + ".");
+        if (!value)
+            throw std::runtime_error(std::string("Expected JSON ") + expected + ".");
         return *value;
     }
 
@@ -118,19 +131,15 @@ inline JsonValue json_parse(const std::string& text) {
     return JsonValue::from_native(nlohmann::json::parse(text));
 }
 
-template <typename T>
-class Promise {
-  public:
+template <typename T> class Promise {
+public:
     explicit Promise(T value) : value_(std::move(value)) {}
     T& value() { return value_; }
 
-  private:
+private:
     T value_;
 };
 
-template <typename T>
-T await(Promise<T> promise) {
-    return std::move(promise.value());
-}
+template <typename T> T await(Promise<T> promise) { return std::move(promise.value()); }
 
 } // namespace bbl::ts

@@ -1,75 +1,210 @@
 import assert from "node:assert/strict";
-import {execFileSync} from "node:child_process";
-import {mkdirSync, writeFileSync} from "node:fs";
-import {resolve} from "node:path";
+import { execFileSync } from "node:child_process";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { resolve } from "node:path";
 import test from "node:test";
 import ts from "typescript";
-import {LoweringContext} from "../src/lowering/context.js";
-import {lowerGltfAnimationPointerWriters, type GltfPointerWriterFunction} from "../src/lowering/gltf/animation-pointer-writers.js";
-import {gltfMaterialValueRuntime} from "../src/lowering/gltf/material-value-runtime.js";
-import {gltfAnimationPointerOwnersCpp} from "../src/lowering/gltf/animation-pointer-owners.js";
-import {compileSource} from "../src/compiler.js";
-import {transpileCommonJs} from "../src/typescript-transpile.js";
-import {doctoredContext} from "./doctored-store.js";
-import {nativeFixtureVcpkgRoot, optionalNativeFixtureTools, runNativeFixtureCompiler} from "./native-fixture.js";
+import { LoweringContext } from "../src/lowering/context.js";
+import {
+    lowerGltfAnimationPointerWriters,
+    type GltfPointerWriterFunction,
+} from "../src/lowering/gltf/animation-pointer-writers.js";
+import { gltfMaterialValueRuntime } from "../src/lowering/gltf/material-value-runtime.js";
+import { gltfAnimationPointerOwnersCpp } from "../src/lowering/gltf/animation-pointer-owners.js";
+import { compileSource } from "../src/compiler.js";
+import {
+    transpileCommonJs,
+    createJavaScriptFunction,
+} from "../src/typescript-transpile.js";
+import { doctoredContext } from "./doctored-store.js";
+import {
+    nativeFixtureVcpkgRoot,
+    optionalNativeFixtureTools,
+    runNativeFixtureCompiler,
+} from "./native-fixture.js";
 
 type Value = Record<string, unknown>;
-function sourceWriter(context: LoweringContext, writer: GltfPointerWriterFunction, captures: Value, effects: Value): (...args: unknown[]) => unknown {
-    const declarations = context.sourceFile(writer.site.split(":")[0]!).statements
-        .filter(ts.isFunctionDeclaration).map(value => value.getText()).join("\n");
+function sourceWriter(
+    context: LoweringContext,
+    writer: GltfPointerWriterFunction,
+    captures: Value,
+    effects: Value,
+): (...args: unknown[]) => unknown {
+    const declarations = context
+        .sourceFile(writer.site.split(":")[0]!)
+        .statements.filter(ts.isFunctionDeclaration)
+        .map((value) => value.getText())
+        .join("\n");
     const names = [...Object.keys(effects), ...writer.captures];
     const source = `${declarations}\nreturn (${writer.declaration.getText()});`;
-    return new Function("exports", ...names, transpileCommonJs(source, "pointer-writer.ts"))({},
-        ...Object.values(effects), ...writer.captures.map(name => captures[name])) as (...args: unknown[]) => unknown;
+    return createJavaScriptFunction(
+        "exports",
+        ...names,
+        transpileCommonJs(source, "pointer-writer.ts"),
+    )(
+        {},
+        ...Object.values(effects),
+        ...writer.captures.map((name) => captures[name]),
+    ) as (...args: unknown[]) => unknown;
 }
 
-function sourceCases(context: LoweringContext, writers: GltfPointerWriterFunction[]) {
+function sourceCases(
+    context: LoweringContext,
+    writers: GltfPointerWriterFunction[],
+) {
     const cases: Value[] = [];
-    const lookup = writers.find(writer => writer.kind === "lookup")!;
-    for (const writer of writers) for (let variant = 0; variant < 8; ++variant) {
-        const input = {
-            mat: {_uboVersion: 3, baseColorFactor: [1,1,1,1], baseColorTexture: {uScale: 1, vScale: 1, uOffset: 0, vOffset: 0, uAng: 0},
-                ...(variant === 1 ? {} : {_emissiveColor: [2,3,4]}), _animEmissiveFactor: [.1,.2,.3], _animEmissiveStrength: 2,
-                _subsurface: {refraction: {intensity: 1, indexOfRefraction: 1.5}, thickness: {min: 0, max: .2}, tint: {color: [1,1,1], atDistance: 1}},
-                _iridescence: {isEnabled: true, intensity: 1, indexOfRefraction: 1.3, maximumThickness: 250}},
-            n: {visible: true}, document: {},
-            light: variant === 0 ? null : {lightType: variant === 1 ? "point" : "spot", intensity: 1, range: 8, angle: .6,
-                ...(variant === 2 ? {} : {diffuse: [1,1,1], specular: [1,1,1]})},
-            field: ["color", "intensity", "range", "spot/outerConeAngle"][variant % 4],
-            branch: ["thicknessFactor", "attenuationDistance", "attenuationColor", "iridescenceFactor", "iridescenceIor", "iridescenceThicknessMaximum"][variant % 6],
-            isScale: variant % 2 === 0, withBump: variant !== 3,
-        };
-        const state: typeof input & {light: (NonNullable<typeof input.light> & {_bumpLightVersion?: () => void}) | null} = structuredClone(input);
-        const events = {visibility: 0, lookup: 0, bump: 0};
-        if (state.light && state.withBump) state.light._bumpLightVersion = () => { ++events.bump; };
-        const effects = {
-            setSubtreeVisible(node: Value, visible: boolean) { node.visible = visible; ++events.visibility; },
-            getGltfPunctualLight(document: object, index: number) { assert.equal(document, state.document); assert.equal(index, 0); ++events.lookup; return state.light; },
-        };
-        const captures = {mat: state.mat, n: state.n, tex: state.mat.baseColorTexture, refr: state.mat._subsurface.refraction,
-            iri: state.mat._iridescence, m: ["pointer", "0", state.branch], isScale: state.isScale,
-            field: state.field, ctx: {_json: state.document}, lightIdx: 0,
-            getLight: sourceWriter(context, lookup, {ctx: {_json: state.document}, lightIdx: 0}, effects)};
-        const output = Float32Array.from([99, -.25, .5, .75, 1.125, 2.25]);
-        const result = sourceWriter(context, writer, captures, effects)(...(writer.kind === "writer" ? [output, 1] : []));
-        if (state.light) delete state.light._bumpLightVersion;
-        cases.push({site: writer.site, lookupSite: lookup.site, input, output: [...output], expected: state, events,
-            ...(writer.kind === "lookup" ? {result: result ?? null} : {})});
-    }
+    const lookup = writers.find((writer) => writer.kind === "lookup")!;
+    for (const writer of writers)
+        for (let variant = 0; variant < 8; ++variant) {
+            const input = {
+                mat: {
+                    _uboVersion: 3,
+                    baseColorFactor: [1, 1, 1, 1],
+                    baseColorTexture: {
+                        uScale: 1,
+                        vScale: 1,
+                        uOffset: 0,
+                        vOffset: 0,
+                        uAng: 0,
+                    },
+                    ...(variant === 1 ? {} : { _emissiveColor: [2, 3, 4] }),
+                    _animEmissiveFactor: [0.1, 0.2, 0.3],
+                    _animEmissiveStrength: 2,
+                    _subsurface: {
+                        refraction: { intensity: 1, indexOfRefraction: 1.5 },
+                        thickness: { min: 0, max: 0.2 },
+                        tint: { color: [1, 1, 1], atDistance: 1 },
+                    },
+                    _iridescence: {
+                        isEnabled: true,
+                        intensity: 1,
+                        indexOfRefraction: 1.3,
+                        maximumThickness: 250,
+                    },
+                },
+                n: { visible: true },
+                document: {},
+                light:
+                    variant === 0
+                        ? null
+                        : {
+                              lightType: variant === 1 ? "point" : "spot",
+                              intensity: 1,
+                              range: 8,
+                              angle: 0.6,
+                              ...(variant === 2
+                                  ? {}
+                                  : {
+                                        diffuse: [1, 1, 1],
+                                        specular: [1, 1, 1],
+                                    }),
+                          },
+                field: ["color", "intensity", "range", "spot/outerConeAngle"][
+                    variant % 4
+                ],
+                branch: [
+                    "thicknessFactor",
+                    "attenuationDistance",
+                    "attenuationColor",
+                    "iridescenceFactor",
+                    "iridescenceIor",
+                    "iridescenceThicknessMaximum",
+                ][variant % 6],
+                isScale: variant % 2 === 0,
+                withBump: variant !== 3,
+            };
+            const state: typeof input & {
+                light:
+                    | (NonNullable<typeof input.light> & {
+                          _bumpLightVersion?: () => void;
+                      })
+                    | null;
+            } = structuredClone(input);
+            const events = { visibility: 0, lookup: 0, bump: 0 };
+            if (state.light && state.withBump)
+                state.light._bumpLightVersion = () => {
+                    ++events.bump;
+                };
+            const effects = {
+                setSubtreeVisible(node: Value, visible: boolean) {
+                    node.visible = visible;
+                    ++events.visibility;
+                },
+                getGltfPunctualLight(document: object, index: number) {
+                    assert.equal(document, state.document);
+                    assert.equal(index, 0);
+                    ++events.lookup;
+                    return state.light;
+                },
+            };
+            const captures = {
+                mat: state.mat,
+                n: state.n,
+                tex: state.mat.baseColorTexture,
+                refr: state.mat._subsurface.refraction,
+                iri: state.mat._iridescence,
+                m: ["pointer", "0", state.branch],
+                isScale: state.isScale,
+                field: state.field,
+                ctx: { _json: state.document },
+                lightIdx: 0,
+                getLight: sourceWriter(
+                    context,
+                    lookup,
+                    { ctx: { _json: state.document }, lightIdx: 0 },
+                    effects,
+                ),
+            };
+            const output = Float32Array.from([
+                99, -0.25, 0.5, 0.75, 1.125, 2.25,
+            ]);
+            const result = sourceWriter(
+                context,
+                writer,
+                captures,
+                effects,
+            )(...(writer.kind === "writer" ? [output, 1] : []));
+            if (state.light) delete state.light._bumpLightVersion;
+            cases.push({
+                site: writer.site,
+                lookupSite: lookup.site,
+                input,
+                output: [...output],
+                expected: state,
+                events,
+                ...(writer.kind === "lookup" ? { result: result ?? null } : {}),
+            });
+        }
     return cases;
 }
 
-test("source pointer bodies and native aliased stores agree across every writer and guard", async t => {
-    const native = optionalNativeFixtureTools(); if (!native) return t.skip("Native fixture tools unavailable");
-    const contexts = [new LoweringContext(), doctoredContext("src/loader-gltf/animation-pointer-lights.ts", "light.angle = out[off]! * 2;", "light.angle = out[off]! * 3;")];
-    const lowered = contexts.map(context => lowerGltfAnimationPointerWriters(context));
-    const cases = lowered.map((value, index) => sourceCases(contexts[index]!, value.writers));
+test("source pointer bodies and native aliased stores agree across every writer and guard", async (t) => {
+    const native = optionalNativeFixtureTools();
+    if (!native) return t.skip("Native fixture tools unavailable");
+    const contexts = [
+        new LoweringContext(),
+        doctoredContext(
+            "src/loader-gltf/animation-pointer-lights.ts",
+            "light.angle = out[off]! * 2;",
+            "light.angle = out[off]! * 3;",
+        ),
+    ];
+    const lowered = contexts.map((context) =>
+        lowerGltfAnimationPointerWriters(context),
+    );
+    const cases = lowered.map((value, index) =>
+        sourceCases(contexts[index]!, value.writers),
+    );
     assert.ok(cases[0]!.length >= 100);
     assert.notDeepEqual(cases[0], cases[1]);
-    const directory = resolve("artifacts/test-gltf-animation-pointer-writers"); mkdirSync(directory, {recursive: true});
+    const directory = resolve("artifacts/test-gltf-animation-pointer-writers");
+    mkdirSync(directory, { recursive: true });
     writeFileSync(resolve(directory, "cases.json"), JSON.stringify(cases));
-    const file = resolve(directory, "check.cpp"), executable = resolve(directory, "check.exe");
-    writeFileSync(file, `#include <bblite/ts_runtime.hpp>
+    const file = resolve(directory, "check.cpp"),
+        executable = resolve(directory, "check.exe");
+    writeFileSync(
+        file,
+        `#include <bblite/ts_runtime.hpp>
 #include <cassert>
 #include <fstream>
 #include <memory>
@@ -104,7 +239,9 @@ void equal(const GltfPbrValue& actual, const nlohmann::json& expected) {
     if (expected.is_array()) { for (std::size_t index = 0; index < expected.size(); ++index) equal(actual.at(double(index)), expected[index]); return; }
     for (const auto& [key, value] : expected.items()) equal(actual.get(key), value);
 }
-${lowered.map((value, index) => `namespace version_${index} {
+${lowered
+    .map(
+        (value, index) => `namespace version_${index} {
 ${value.source}
 void run(const nlohmann::json& item) {
     auto state = mutable_value(item.at("input")), captures = GltfPbrValue::object();
@@ -133,7 +270,9 @@ void run(const nlohmann::json& item) {
     if (item.contains("result")) equal(result, item.at("result"));
     assert(visibility == item.at("events").at("visibility")); assert(lookup == item.at("events").at("lookup")); assert(bump == item.at("events").at("bump"));
 }
-}`).join("\n")}
+}`,
+    )
+    .join("\n")}
 void capture_owners() {
     const auto mat = GltfPbrValue::object(), tex = GltfPbrValue::object();
     mat.set("ormTexture", tex);
@@ -155,10 +294,29 @@ int main() { nlohmann::json cases; std::ifstream("cases.json") >> cases;
 ${lowered.map((_, index) => `    for (const auto& item : cases[${index}]) version_${index}::run(item);`).join("\n")}
     capture_owners();
 }
-`);
-    runNativeFixtureCompiler(native, ["/nologo", "/std:c++20", "/W4", "/WX", "/permissive-", "/EHsc", "/MD", "/O2",
-        `/Fo:${directory}/`, `/Fe:${executable}`, "/I", "native/include", "/I", resolve(nativeFixtureVcpkgRoot, "include"), file]);
-    assert.equal(execFileSync(executable, {cwd: directory, encoding: "utf8"}), "");
+`,
+    );
+    runNativeFixtureCompiler(native, [
+        "/nologo",
+        "/std:c++20",
+        "/W4",
+        "/WX",
+        "/permissive-",
+        "/EHsc",
+        "/MD",
+        "/O2",
+        `/Fo:${directory}/`,
+        `/Fe:${executable}`,
+        "/I",
+        "native/include",
+        "/I",
+        resolve(nativeFixtureVcpkgRoot, "include"),
+        file,
+    ]);
+    assert.equal(
+        execFileSync(executable, { cwd: directory, encoding: "utf8" }),
+        "",
+    );
 });
 
 test("admitted glTF ORM and occlusion replacements cannot reattach their original file wrapper", () => {
@@ -174,7 +332,14 @@ test("admitted glTF ORM and occlusion replacements cannot reattach their origina
         }
         void main();`;
     for (const slot of ["ormTexture", "occlusionTexture"]) {
-        assert.throws(() => compileSource(source(slot, "old")), /requires a solid texture|uses createSolidTexture2D/);
-        assert.match(compileSource(source(slot, "createSolidTexture2D(engine, 1, 1, 1)")).cpp, /set_material_orm_file|set_pbr_occlusion_solid_texture/);
+        assert.throws(
+            () => compileSource(source(slot, "old")),
+            /requires a solid texture|uses createSolidTexture2D/,
+        );
+        assert.match(
+            compileSource(source(slot, "createSolidTexture2D(engine, 1, 1, 1)"))
+                .cpp,
+            /set_material_orm_file|set_pbr_occlusion_solid_texture/,
+        );
     }
 });

@@ -10,25 +10,27 @@ import type { Value } from "../types.js";
 import type { IntrinsicCallContext } from "./context.js";
 
 export interface CameraIntrinsicContext
-    extends IntrinsicCallContext,
-    PositiveIntegerContext,
-    Pick<LoweringServices,
-        | "dataTypes"
-        | "checker"
-        | "reachJsData"
-        | "allocateTemporaryCppName"
-        | "emit"
-        | "dataLowerer"
-        | "compileVec3"
-        | "compileNumber"
-        | "expectObjectLiteral"
-        | "objectProperty"
-        | "requireEngine"
-        | "requireDefaultEngine"
-        | "expectSameEngine"
-        | "vec3FromRecord"
-        | "fail"
-    > {}
+    extends
+        IntrinsicCallContext,
+        PositiveIntegerContext,
+        Pick<
+            LoweringServices,
+            | "dataTypes"
+            | "checker"
+            | "reachJsData"
+            | "allocateTemporaryCppName"
+            | "emit"
+            | "dataLowerer"
+            | "compileVec3"
+            | "compileNumber"
+            | "expectObjectLiteral"
+            | "objectProperty"
+            | "requireEngine"
+            | "requireDefaultEngine"
+            | "expectSameEngine"
+            | "vec3FromRecord"
+            | "fail"
+        > {}
 
 /**
  * A Vec3 argument a scene COMPUTES.
@@ -48,13 +50,15 @@ function compileVec3Argument(
     }
     const value = context.compileValue(expression);
     if (value.kind !== "data" || value.dataType?.kind !== "struct") {
-        context.fail(
-            expression,
-            "Expected a Vec3 record { x, y, z }.",
-        );
+        context.fail(expression, "Expected a Vec3 record { x, y, z }.");
     }
     const name = context.allocateTemporaryCppName("vec3");
-    context.emit({ kind: "declaration", type: "const auto", name: name, initializer: value.cpp });
+    context.emit({
+        kind: "declaration",
+        type: "const auto",
+        name: name,
+        initializer: value.cpp,
+    });
     return context.vec3FromRecord(
         { ...value, cpp: name },
         expression,
@@ -110,9 +114,7 @@ function typeMayBeAbsent(
     const members = type.isUnion() ? type.types : [type];
     return members.some(
         (member) =>
-            (member.flags &
-                (ts.TypeFlags.Null | ts.TypeFlags.Undefined)) !==
-            0,
+            (member.flags & (ts.TypeFlags.Null | ts.TypeFlags.Undefined)) !== 0,
     );
 }
 
@@ -178,21 +180,14 @@ export function compileCameraIntrinsic(
 
         case "createDefaultCamera": {
             context.expectArgumentCount(call, 1, 1);
-            const scene =
-                context.compileValue(argumentAt(call, 0));
-            context.expectKind(
-                scene,
-                "scene",
-                argumentAt(call, 0),
-            );
+            const scene = context.compileValue(argumentAt(call, 0));
+            context.expectKind(scene, "scene", argumentAt(call, 0));
             const engine = context.requireEngine(scene, call);
             context.reachFeature("camera:arc-rotate", call);
             context.reachFeature("camera:default", call);
             return {
                 kind: "camera",
-                cpp:
-                    `bbl::create_default_camera(` +
-                    `${engine}, ${scene.cpp})`,
+                cpp: `bbl::create_default_camera(` + `${engine}, ${scene.cpp})`,
                 engineCpp: engine,
                 cameraKind: "arc-rotate",
             };
@@ -318,9 +313,7 @@ export function compileCameraIntrinsic(
             context.expectSameEngine(camera, scene, call);
             context.reachFeature("camera:geospatial", call);
             const engine = context.requireEngine(camera, call);
-            context.emit(
-                `bbl::attach_control(${engine}, ${camera.cpp});`,
-            );
+            context.emit(`bbl::attach_control(${engine}, ${camera.cpp});`);
             return {
                 kind: "data",
                 cpp:
@@ -338,50 +331,27 @@ export function compileCameraIntrinsic(
             // its own record state, so it is rejected rather than
             // silently derived.
             context.expectArgumentCount(call, 1, 2);
-            const camera =
-                context.compileValue(argumentAt(call, 0));
-            context.expectKind(
-                camera,
-                "camera",
-                argumentAt(call, 0),
-            );
+            const camera = context.compileValue(argumentAt(call, 0));
+            context.expectKind(camera, "camera", argumentAt(call, 0));
             let halfHeight = "1.0";
             const options = call.arguments[1];
             if (options) {
-                const object =
-                    context.expectObjectLiteral(options);
-                for (const plane of [
-                    "left",
-                    "right",
-                    "bottom",
-                    "top",
-                ]) {
-                    if (
-                        context.objectProperty(
-                            object,
-                            plane,
-                        )
-                    ) {
+                const object = context.expectObjectLiteral(options);
+                for (const plane of ["left", "right", "bottom", "top"]) {
+                    if (context.objectProperty(object, plane)) {
                         context.fail(
                             options,
                             `Orthographic '${plane}' planes are not lowered; the reached scenes derive every plane from halfHeight.`,
                         );
                     }
                 }
-                const value = context.objectProperty(
-                    object,
-                    "halfHeight",
-                );
+                const value = context.objectProperty(object, "halfHeight");
                 if (value) {
-                    halfHeight =
-                        context.compileNumber(value, "double");
+                    halfHeight = context.compileNumber(value, "double");
                 }
             }
             context.reachFeature("camera:orthographic", call);
-            const engine = context.requireEngine(
-                camera,
-                call,
-            );
+            const engine = context.requireEngine(camera, call);
             return {
                 kind: "camera-ortho",
                 cpp:
@@ -440,10 +410,11 @@ export function compileCameraIntrinsic(
             // Built through the data lowerer rather than braced here: the
             // reference-vs-value fork is stated in `structAggregate` alone,
             // which is why the hit records route through it too.
-            const aggregate = context.dataLowerer.structAggregate(
-                resultType,
-                ["eye.x", "eye.y", "eye.z"],
-            );
+            const aggregate = context.dataLowerer.structAggregate(resultType, [
+                "eye.x",
+                "eye.y",
+                "eye.z",
+            ]);
             return {
                 kind: "data",
                 cpp:
@@ -470,10 +441,7 @@ export function compileCameraIntrinsic(
                 );
             }
             const engine = context.requireEngine(camera, call);
-            const aspect = context.compileNumber(
-                argumentAt(call, 1),
-                "double",
-            );
+            const aspect = context.compileNumber(argumentAt(call, 1), "double");
             context.reachJsData();
             context.reachFeature("camera:view-projection", call);
 
@@ -486,8 +454,7 @@ export function compileCameraIntrinsic(
             // function keeps valid storage for the whole call. The pin applies
             // no positive/finite aspect guard, so preserve that behavior while
             // binding the argument once.
-            const result =
-                context.allocateTemporaryCppName("view_projection");
+            const result = context.allocateTemporaryCppName("view_projection");
             context.emit(
                 `[[maybe_unused]] bbl::js::F32Array ${result} = ` +
                     `([&]() { const double aspect = ${aspect}; ` +

@@ -4,11 +4,14 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import test from "node:test";
 import { compileSource } from "../src/compiler.js";
-import { optionalNativeFixtureTools, runNativeFixtureCompiler } from "./native-fixture.js";
+import {
+    optionalNativeFixtureTools,
+    runNativeFixtureCompiler,
+} from "./native-fixture.js";
 
-test("application errors dispatch before engine creation with native cancellation and rejection timing", t => {
+test("application errors dispatch before engine creation with native cancellation and rejection timing", (t) => {
     const directory = resolve("artifacts/application-errors");
-    mkdirSync(directory, {recursive:true});
+    mkdirSync(directory, { recursive: true });
     writeFileSync(resolve(directory, "worker.ts"), "self.close();");
     const source = `
         const worker = new Worker(new URL("./worker.ts", import.meta.url), {type:"module"});
@@ -87,16 +90,28 @@ test("application errors dispatch before engine creation with native cancellatio
     `;
     const entry = resolve(directory, "entry.ts");
     writeFileSync(entry, source);
-    const result = compileSource(source, {fileName:entry});
+    const result = compileSource(source, { fileName: entry });
     assert.ok(result.manifest.features.includes("platform:window"));
     assert.match(result.cpp, /window_on_application_error/);
-    const escaping = source.replace('errors++;', 'setTimeout(() => { if (event.message) globalThis.close(); }, 0); errors++;');
-    assert.throws(() => compileSource(escaping, {fileName:entry}), /escaping callback cannot capture platform event|borrowed platform event cannot escape/);
+    const escaping = source.replace(
+        "errors++;",
+        "setTimeout(() => { if (event.message) globalThis.close(); }, 0); errors++;",
+    );
+    assert.throws(
+        () => compileSource(escaping, { fileName: entry }),
+        /escaping callback cannot capture platform event|borrowed platform event cannot escape/,
+    );
     const tools = optionalNativeFixtureTools(false);
-    if (!tools) { t.skip("Native fixture compiler unavailable."); return; }
+    if (!tools) {
+        t.skip("Native fixture compiler unavailable.");
+        return;
+    }
     writeFileSync(resolve(directory, "program.hpp"), result.cpp);
-    const cpp = resolve(directory, "check.cpp"), executable = resolve(directory, "check.exe");
-    writeFileSync(cpp, `
+    const cpp = resolve(directory, "check.cpp"),
+        executable = resolve(directory, "check.exe");
+    writeFileSync(
+        cpp,
+        `
         #define main generated_main
         #include "program.hpp"
         #undef main
@@ -150,8 +165,23 @@ test("application errors dispatch before engine creation with native cancellatio
                 assert(reports.str() == "Uncaught application error: listener failure\\nUncaught application error: second error\\n");
             }
         }
-    `);
-    runNativeFixtureCompiler(tools, ["/nologo", "/std:c++20", "/W4", "/WX", "/EHsc", "/MD", "/DBBLITE_WORKERS=1", "/DBBLITE_OFFSCREEN_SURFACES=1", "/DBBLITE_HAS_UI=1",
-        "/I", "native/include", `/Fo:${directory}/`, `/Fe:${executable}`, cpp]);
-    execFileSync(executable, {stdio:"pipe", timeout:10000});
+    `,
+    );
+    runNativeFixtureCompiler(tools, [
+        "/nologo",
+        "/std:c++20",
+        "/W4",
+        "/WX",
+        "/EHsc",
+        "/MD",
+        "/DBBLITE_WORKERS=1",
+        "/DBBLITE_OFFSCREEN_SURFACES=1",
+        "/DBBLITE_HAS_UI=1",
+        "/I",
+        "native/include",
+        `/Fo:${directory}/`,
+        `/Fe:${executable}`,
+        cpp,
+    ]);
+    execFileSync(executable, { stdio: "pipe", timeout: 10000 });
 });

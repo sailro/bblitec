@@ -29,7 +29,11 @@ function readJsonFile(path: string, what: string, sceneId: string): unknown {
 }
 
 const text = (value: unknown): string =>
-    typeof value === "string" ? value : value === undefined ? "" : JSON.stringify(value);
+    typeof value === "string"
+        ? value
+        : value === undefined
+          ? ""
+          : JSON.stringify(value);
 
 export interface FeatureActivationRow {
     name: string;
@@ -50,35 +54,50 @@ export function readFeatureActivation(
         "The feature activation census",
         sceneId,
     );
-    if (!Array.isArray(value)) throw new Error("feature-activation.json is not an array");
+    if (!Array.isArray(value))
+        throw new Error("feature-activation.json is not an array");
     return value.map((entry): FeatureActivationRow => {
-        if (!isRecord(entry)) throw new Error("feature-activation.json holds a non-object row");
+        if (!isRecord(entry))
+            throw new Error("feature-activation.json holds a non-object row");
         return {
             name: text(entry.name),
             mechanism: text(entry.mechanism),
             active: entry.active === true,
             activatedBy: text(entry.activatedBy),
-            consumers: Array.isArray(entry.consumers) ? entry.consumers.map(text) : [],
+            consumers: Array.isArray(entry.consumers)
+                ? entry.consumers.map(text)
+                : [],
             upstreamProvenance: text(entry.upstreamProvenance),
         };
     });
 }
 
-export function formatFeatureActivation(rows: readonly FeatureActivationRow[]): string {
+export function formatFeatureActivation(
+    rows: readonly FeatureActivationRow[],
+): string {
     const active = rows.filter((row) => row.active);
     const lines = [
         `${active.length} of ${rows.length} feature(s) active:`,
         ...active.map(
             (row) =>
                 `  ${row.name} [${row.mechanism}] <- ${row.activatedBy}` +
-                (row.consumers.length > 0 ? ` -> ${row.consumers.join(", ")}` : "") +
-                (row.upstreamProvenance ? `\n      pin: ${row.upstreamProvenance}` : ""),
+                (row.consumers.length > 0
+                    ? ` -> ${row.consumers.join(", ")}`
+                    : "") +
+                (row.upstreamProvenance
+                    ? `\n      pin: ${row.upstreamProvenance}`
+                    : ""),
         ),
     ];
-    const refused = rows.filter((row) => !row.active && row.activatedBy !== "not reached");
+    const refused = rows.filter(
+        (row) => !row.active && row.activatedBy !== "not reached",
+    );
     if (refused.length > 0) {
-        lines.push(`${refused.length} inactive feature(s) with a stated reason:`);
-        for (const row of refused) lines.push(`  ${row.name}: ${row.activatedBy}`);
+        lines.push(
+            `${refused.length} inactive feature(s) with a stated reason:`,
+        );
+        for (const row of refused)
+            lines.push(`  ${row.name}: ${row.activatedBy}`);
     }
     return lines.join("\n");
 }
@@ -105,14 +124,17 @@ export function readAdaptations(
         throw new Error("fidelity.json carries no adaptations array");
     }
     return value.adaptations.map((entry): AdaptationRow => {
-        if (!isRecord(entry)) throw new Error("fidelity.json holds a non-object adaptation");
+        if (!isRecord(entry))
+            throw new Error("fidelity.json holds a non-object adaptation");
         return {
             id: text(entry.id),
             category: text(entry.category),
             risk: text(entry.risk),
             sourceSemantics: text(entry.sourceSemantics),
             nativeSemantics: text(entry.nativeSemantics),
-            validation: Array.isArray(entry.validation) ? entry.validation.map(text) : [],
+            validation: Array.isArray(entry.validation)
+                ? entry.validation.map(text)
+                : [],
         };
     });
 }
@@ -129,7 +151,9 @@ export function formatAdaptations(rows: readonly AdaptationRow[]): string {
                 `  [${row.risk}] ${row.id} (${row.category})\n` +
                 `      source: ${row.sourceSemantics}\n` +
                 `      native: ${row.nativeSemantics}` +
-                (row.validation.length > 0 ? `\n      validated by: ${row.validation.join("; ")}` : ""),
+                (row.validation.length > 0
+                    ? `\n      validated by: ${row.validation.join("; ")}`
+                    : ""),
         ),
     ].join("\n");
 }
@@ -148,7 +172,11 @@ export function readProvenance(
         "The pinned-symbol provenance",
         sceneId,
     );
-    if (!isRecord(value) || !isRecord(value.package) || !Array.isArray(value.generated)) {
+    if (
+        !isRecord(value) ||
+        !isRecord(value.package) ||
+        !Array.isArray(value.generated)
+    ) {
         throw new Error("provenance.json carries no package/generated fields");
     }
     return {
@@ -158,8 +186,12 @@ export function readProvenance(
             sourceVersion: text(value.package.sourceVersion),
         },
         generated: value.generated.map((entry) => {
-            if (!isRecord(entry)) throw new Error("provenance.json holds a non-object row");
-            return { modulePath: text(entry.modulePath), symbolName: text(entry.symbolName) };
+            if (!isRecord(entry))
+                throw new Error("provenance.json holds a non-object row");
+            return {
+                modulePath: text(entry.modulePath),
+                symbolName: text(entry.symbolName),
+            };
         }),
     };
 }
@@ -172,7 +204,9 @@ export function formatProvenance(report: ProvenanceReport): string {
     return [
         `${report.package.package} ${report.package.version} @ ${report.package.sourceVersion}`,
         `${symbols} pinned symbol(s) lowered from ${report.generated.length} module(s):`,
-        ...report.generated.map((row) => `  ${row.modulePath}: ${row.symbolName}`),
+        ...report.generated.map(
+            (row) => `  ${row.modulePath}: ${row.symbolName}`,
+        ),
     ].join("\n");
 }
 
@@ -205,19 +239,24 @@ export function readSceneStatus(
 ): SceneStatus {
     const output = resolve(outputDirectory);
     const generatedTreeExists = existsSync(resolve(output, "main.cpp"));
-    const expectedStamp = generatedTreeExists ? computeBuildStamp(output).stamp : undefined;
+    const expectedStamp = generatedTreeExists
+        ? computeBuildStamp(output).stamp
+        : undefined;
     const executableExists = existsSync(executable);
     const payload = executableExists
-        ? deployedPayloads(resolve(executable, ".."), output).map(({ label, source, deployed }) => ({
-              label,
-              mismatches: comparePayload(source, deployed).length,
-          }))
+        ? deployedPayloads(resolve(executable, ".."), output).map(
+              ({ label, source, deployed }) => ({
+                  label,
+                  mismatches: comparePayload(source, deployed).length,
+              }),
+          )
         : [];
     const binaryCarriesStamp =
         executableExists && expectedStamp !== undefined
             ? readFileSync(executable).includes(expectedStamp)
             : undefined;
-    const configuredBackend = readCacheConfiguration(buildDirectory)?.BBLITE_BACKEND;
+    const configuredBackend =
+        readCacheConfiguration(buildDirectory)?.BBLITE_BACKEND;
     return {
         generatedTreeExists,
         generationCurrent,
@@ -236,16 +275,26 @@ export function readSceneStatus(
     };
 }
 
-export function formatSceneStatus(sceneId: string, status: SceneStatus): string {
-    const mark = (ok: boolean | undefined): string => (ok === undefined ? "?" : ok ? "ok" : "STALE");
+export function formatSceneStatus(
+    sceneId: string,
+    status: SceneStatus,
+): string {
+    const mark = (ok: boolean | undefined): string =>
+        ok === undefined ? "?" : ok ? "ok" : "STALE";
     const lines = [
         `status ${sceneId}: ${status.current ? "current" : "NOT current"}`,
         `  generated tree: ${status.generatedTreeExists ? "present" : "MISSING (scene -- compile)"}` +
-            (status.expectedStamp !== undefined ? `, stamp ${status.expectedStamp.slice(0, 12)}` : ""),
+            (status.expectedStamp !== undefined
+                ? `, stamp ${status.expectedStamp.slice(0, 12)}`
+                : ""),
         `  generation record: ${mark(status.generationCurrent)}` +
-            (status.generationCurrent ? "" : " (inputs moved since the tree was generated; scene -- compile)"),
+            (status.generationCurrent
+                ? ""
+                : " (inputs moved since the tree was generated; scene -- compile)"),
         `  executable: ${status.executableExists ? status.executable : `MISSING ${status.executable} (scene -- process)`}` +
-            (status.configuredBackend !== undefined ? ` [BBLITE_BACKEND=${status.configuredBackend}]` : ""),
+            (status.configuredBackend !== undefined
+                ? ` [BBLITE_BACKEND=${status.configuredBackend}]`
+                : ""),
     ];
     for (const entry of status.payload) {
         lines.push(
@@ -254,7 +303,9 @@ export function formatSceneStatus(sceneId: string, status: SceneStatus): string 
     }
     lines.push(
         `  binary carries the tree's stamp: ${mark(status.binaryCarriesStamp)}` +
-            (status.binaryCarriesStamp === false ? " (built from other sources; scene -- process)" : ""),
+            (status.binaryCarriesStamp === false
+                ? " (built from other sources; scene -- process)"
+                : ""),
     );
     return lines.join("\n");
 }

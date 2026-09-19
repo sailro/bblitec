@@ -43,13 +43,10 @@ function browserCandidates(): string[] {
 export function resolveBrowserPath(
     requirement = "No Chromium browser found.",
 ): string {
-    const candidates = [
-        process.env.CHROME_PATH,
-        ...browserCandidates(),
-    ].filter((value): value is string => !!value);
-    const found = candidates.find((candidate) =>
-        existsSync(candidate),
+    const candidates = [process.env.CHROME_PATH, ...browserCandidates()].filter(
+        (value): value is string => !!value,
     );
+    const found = candidates.find((candidate) => existsSync(candidate));
     if (!found) {
         throw new Error(`${requirement} Set CHROME_PATH.`);
     }

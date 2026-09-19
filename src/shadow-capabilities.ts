@@ -38,11 +38,9 @@ export const shadowGeneratorFeatures: readonly Feature[] = [
  * its own drift detector. What is typed is the list above, which is where a
  * mis-spelling would otherwise compile.
  */
-export function reachesShadowGenerator(
-    features: readonly string[],
-): boolean {
+export function reachesShadowGenerator(features: readonly string[]): boolean {
     return shadowGeneratorFeatures.some((feature) =>
-        features.includes(feature)
+        features.includes(feature),
     );
 }
 
@@ -111,7 +109,8 @@ export function shadowCapabilities(
     const reached = reachesShadowGenerator(inputs.features);
     const standard = reached && inputs.standardVariants > 0;
     const pbr = reached && inputs.pbrVariants > 0;
-    const node = reached &&
+    const node =
+        reached &&
         (inputs.nodeShadowReceivers > 0 ||
             inputs.nodeEsmCasters > 0 ||
             (inputs.nodePcfCasters ?? 0) > 0);
@@ -156,4 +155,3 @@ export function nodeShadowInputs(
         ).length,
     };
 }
-

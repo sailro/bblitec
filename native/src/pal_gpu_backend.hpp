@@ -22,7 +22,8 @@ inline bool use_dawn_backend() {
     }
     const bool dawn = requested == "dawn" || (requested.empty() && !has_sdl);
     if ((dawn && !has_dawn) || (!dawn && !has_sdl)) {
-        throw std::runtime_error(dawn ? "Dawn is not compiled into this build." : "SDL_GPU is not compiled into this build.");
+        throw std::runtime_error(dawn ? "Dawn is not compiled into this build."
+                                      : "SDL_GPU is not compiled into this build.");
     }
     return dawn;
 }

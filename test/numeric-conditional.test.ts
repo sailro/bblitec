@@ -3,12 +3,18 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import test from "node:test";
 import { compileSource } from "../src/compiler.js";
-import { optionalNativeFixtureTools, runNativeFixtureCompiler } from "./native-fixture.js";
+import {
+    optionalNativeFixtureTools,
+    runNativeFixtureCompiler,
+} from "./native-fixture.js";
 
 const tools = optionalNativeFixtureTools(false);
 
-test("numeric conditional preparation runs only in the selected branch", { skip: !tools }, () => {
-    const source = `
+test(
+    "numeric conditional preparation runs only in the selected branch",
+    { skip: !tools },
+    () => {
+        const source = `
         const values = new Map<number, number>();
         values.set(1, 7);
         const selectors = new Float64Array([0, 1, 0, 1]);
@@ -61,14 +67,24 @@ test("numeric conditional preparation runs only in the selected branch", { skip:
             }
         }
     `;
-    const output = resolve("artifacts/numeric-conditional");
-    mkdirSync(output, { recursive: true });
-    const file = join(output, "check.cpp");
-    const executable = join(output, "check.exe");
-    writeFileSync(file, compileSource(source).cpp);
-    runNativeFixtureCompiler(tools!, [
-        "/nologo", "/std:c++20", "/W4", "/WX", "/EHsc", "/permissive-",
-        `/Fo:${output}\\`, `/Fe:${executable}`, "/I", "native/include", file,
-    ]);
-    execFileSync(executable, { encoding: "utf8" });
-});
+        const output = resolve("artifacts/numeric-conditional");
+        mkdirSync(output, { recursive: true });
+        const file = join(output, "check.cpp");
+        const executable = join(output, "check.exe");
+        writeFileSync(file, compileSource(source).cpp);
+        runNativeFixtureCompiler(tools!, [
+            "/nologo",
+            "/std:c++20",
+            "/W4",
+            "/WX",
+            "/EHsc",
+            "/permissive-",
+            `/Fo:${output}\\`,
+            `/Fe:${executable}`,
+            "/I",
+            "native/include",
+            file,
+        ]);
+        execFileSync(executable, { encoding: "utf8" });
+    },
+);

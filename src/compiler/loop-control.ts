@@ -18,13 +18,19 @@
  * only at a function-like whose return is its own.
  */
 import ts from "typescript";
-import { findAnalysisNode, findAnalysisNodeWithState } from "./analysis-walk.js";
+import {
+    findAnalysisNode,
+    findAnalysisNodeWithState,
+} from "./analysis-walk.js";
 
 /** Emit one body until its lowered control flow proves the remainder unreachable. */
-export function emitReachableStatements(context: {
-    emitStatement(statement: ts.Statement): void;
-    statementTerminatesAfterLowering(statement: ts.Statement): boolean;
-}, statements: readonly ts.Statement[]): boolean {
+export function emitReachableStatements(
+    context: {
+        emitStatement(statement: ts.Statement): void;
+        statementTerminatesAfterLowering(statement: ts.Statement): boolean;
+    },
+    statements: readonly ts.Statement[],
+): boolean {
     for (const statement of statements) {
         context.emitStatement(statement);
         if (context.statementTerminatesAfterLowering(statement)) return true;
@@ -53,15 +59,21 @@ export function enclosingLoopControl(
     const continues = query.continues ?? true;
     const returns = query.returns ?? false;
     const labeled = query.labeled ?? true;
-    const found = findAnalysisNodeWithState(statement, query.insideSwitch ?? false, (node, insideSwitch) => {
-        if (ts.isBreakStatement(node)) {
-            return breaks && !insideSwitch && (labeled || !node.label);
-        }
-        if (ts.isContinueStatement(node)) {
-            return continues && (labeled || !node.label);
-        }
-        return returns && ts.isReturnStatement(node);
-    }, (node, insideSwitch) => insideSwitch || ts.isSwitchStatement(node), { functions: "skip", loops: "skip" });
+    const found = findAnalysisNodeWithState(
+        statement,
+        query.insideSwitch ?? false,
+        (node, insideSwitch) => {
+            if (ts.isBreakStatement(node)) {
+                return breaks && !insideSwitch && (labeled || !node.label);
+            }
+            if (ts.isContinueStatement(node)) {
+                return continues && (labeled || !node.label);
+            }
+            return returns && ts.isReturnStatement(node);
+        },
+        (node, insideSwitch) => insideSwitch || ts.isSwitchStatement(node),
+        { functions: "skip", loops: "skip" },
+    );
     return found && ts.isStatement(found) ? found : undefined;
 }
 
@@ -70,12 +82,21 @@ export function forEachReturn(
     roots: readonly ts.Node[],
     action: (node: ts.ReturnStatement, insideBreakable: boolean) => void,
 ): void {
-    for (const root of roots) findAnalysisNodeWithState(root, false, (node, insideBreakable) => {
-        if (!ts.isReturnStatement(node)) return false;
-        action(node, insideBreakable);
-        return "skip";
-    }, (node, insideBreakable) => insideBreakable || ts.isIterationStatement(node, false) || ts.isSwitchStatement(node),
-    { functions: "skip" });
+    for (const root of roots)
+        findAnalysisNodeWithState(
+            root,
+            false,
+            (node, insideBreakable) => {
+                if (!ts.isReturnStatement(node)) return false;
+                action(node, insideBreakable);
+                return "skip";
+            },
+            (node, insideBreakable) =>
+                insideBreakable ||
+                ts.isIterationStatement(node, false) ||
+                ts.isSwitchStatement(node),
+            { functions: "skip" },
+        );
 }
 
 export interface ReturnQuery {
@@ -89,9 +110,13 @@ export function firstReturn(
     query: ReturnQuery = {},
 ): ts.ReturnStatement | undefined {
     for (const root of roots) {
-        const found = findAnalysisNode(root,
-            (node): node is ts.ReturnStatement => ts.isReturnStatement(node) && (!query.valued || !!node.expression),
-            { functions: "skip" });
+        const found = findAnalysisNode(
+            root,
+            (node): node is ts.ReturnStatement =>
+                ts.isReturnStatement(node) &&
+                (!query.valued || !!node.expression),
+            { functions: "skip" },
+        );
         if (found) return found;
     }
     return undefined;

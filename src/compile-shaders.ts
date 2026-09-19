@@ -1,16 +1,52 @@
 import { spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import {
+    existsSync,
+    mkdirSync,
+    readFileSync,
+    readdirSync,
+    renameSync,
+    rmSync,
+    writeFileSync,
+} from "node:fs";
 import { EOL } from "node:os";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { hostOfflineShaderTarget, type OfflineShaderTarget } from "./build-options.js";
-import { discoverDevelopmentTools, type DevelopmentTools } from "./development-tools.js";
-import { compiledShaderArtifactExtensions, GeneratedTree } from "./generated-tree.js";
-import { contentDigest, hashEntries, isCompiledShaderOutput, writeJsonRecord } from "./validation-resume.js";
-import { assertReflectedBindings, assertUniformBufferCap, prepareSdlUniformAdaptation, sdlUniformSource,
-    normalizeTintHlslBindings, remapPinnedVariantRegisters, sdlSpirvSource, sdlMslSource, shaderStageSlots, type SdlUniformAdaptation } from "./shader-bindings.js";
-import { readShaderComposition, shaderStageConstants, type OfflineShaderStage } from "./shader-composition.js";
+import {
+    hostOfflineShaderTarget,
+    type OfflineShaderTarget,
+} from "./build-options.js";
+import {
+    discoverDevelopmentTools,
+    type DevelopmentTools,
+} from "./development-tools.js";
+import {
+    compiledShaderArtifactExtensions,
+    GeneratedTree,
+} from "./generated-tree.js";
+import {
+    contentDigest,
+    hashEntries,
+    isCompiledShaderOutput,
+    writeJsonRecord,
+} from "./validation-resume.js";
+import {
+    assertReflectedBindings,
+    assertUniformBufferCap,
+    prepareSdlUniformAdaptation,
+    sdlUniformSource,
+    normalizeTintHlslBindings,
+    remapPinnedVariantRegisters,
+    sdlSpirvSource,
+    sdlMslSource,
+    shaderStageSlots,
+    type SdlUniformAdaptation,
+} from "./shader-bindings.js";
+import {
+    readShaderComposition,
+    shaderStageConstants,
+    type OfflineShaderStage,
+} from "./shader-composition.js";
 import { isMainModule, parseFlags } from "./tooling/flags.js";
 import { repositoryModuleClosure } from "./bake-cache.js";
 
@@ -22,19 +58,58 @@ interface BinaryFormat {
 }
 
 const binaryFormats: readonly BinaryFormat[] = [
-    { kind: "dxil", extension: ".dxil", flags: ["-O3"], magic: [0x44, 0x58, 0x42, 0x43] },
+    {
+        kind: "dxil",
+        extension: ".dxil",
+        flags: ["-O3"],
+        magic: [0x44, 0x58, 0x42, 0x43],
+    },
     // Legalize SDL resource bindings without folding floating-point branches
     // such as x/x == 1; leave arithmetic optimization to the Vulkan driver.
-    { kind: "spirv", extension: ".spv", flags: ["-spirv", "-fspv-target-env=vulkan1.0", "-Oconfig=--legalize-hlsl"], magic: [3, 2, 0x23, 7] },
-    { kind: "spirv", extension: ".demote.spv", flags: ["-spirv", "-fspv-target-env=vulkan1.0", "-fspv-extension=SPV_EXT_demote_to_helper_invocation", "-Oconfig=--legalize-hlsl"], magic: [3, 2, 0x23, 7] },
+    {
+        kind: "spirv",
+        extension: ".spv",
+        flags: [
+            "-spirv",
+            "-fspv-target-env=vulkan1.0",
+            "-Oconfig=--legalize-hlsl",
+        ],
+        magic: [3, 2, 0x23, 7],
+    },
+    {
+        kind: "spirv",
+        extension: ".demote.spv",
+        flags: [
+            "-spirv",
+            "-fspv-target-env=vulkan1.0",
+            "-fspv-extension=SPV_EXT_demote_to_helper_invocation",
+            "-Oconfig=--legalize-hlsl",
+        ],
+        magic: [3, 2, 0x23, 7],
+    },
 ];
 
-export function offlineShaderFormats(target: OfflineShaderTarget): { tint: string[]; binaries: readonly BinaryFormat[] } {
+export function offlineShaderFormats(target: OfflineShaderTarget): {
+    tint: string[];
+    binaries: readonly BinaryFormat[];
+} {
     return {
-        tint: compiledShaderArtifactExtensions.filter(extension =>
-            !binaryFormats.some(format => format.extension === extension) &&
-            (extension !== ".msl" || target === "metal" || target === "all")),
-        binaries: binaryFormats.filter(format => target === "all" || (format.kind === "dxil" ? target === "d3d12" : target === "vulkan")),
+        tint: compiledShaderArtifactExtensions.filter(
+            (extension) =>
+                !binaryFormats.some(
+                    (format) => format.extension === extension,
+                ) &&
+                (extension !== ".msl" ||
+                    target === "metal" ||
+                    target === "all"),
+        ),
+        binaries: binaryFormats.filter(
+            (format) =>
+                target === "all" ||
+                (format.kind === "dxil"
+                    ? target === "d3d12"
+                    : target === "vulkan"),
+        ),
     };
 }
 
@@ -68,28 +143,62 @@ function shaderCompilerIdentity(): string {
     const entry = fileURLToPath(import.meta.url);
     const directory = dirname(entry);
     const closure = repositoryModuleClosure([entry], directory);
-    if (!closure) throw new Error("Cannot resolve the offline shader compiler's import closure.");
-    return hashEntries(closure.map(({ path, source }) =>
-        `${relative(directory, path).replaceAll("\\", "/")}:${createHash("sha256").update(source).digest("hex")}`).sort());
+    if (!closure)
+        throw new Error(
+            "Cannot resolve the offline shader compiler's import closure.",
+        );
+    return hashEntries(
+        closure
+            .map(
+                ({ path, source }) =>
+                    `${relative(directory, path).replaceAll("\\", "/")}:${createHash("sha256").update(source).digest("hex")}`,
+            )
+            .sort(),
+    );
 }
 
 function filesIn(directory: string): string[] {
-    return readdirSync(directory, { withFileTypes: true }).filter(entry => entry.isFile()).map(entry => entry.name).sort();
+    return readdirSync(directory, { withFileTypes: true })
+        .filter((entry) => entry.isFile())
+        .map((entry) => entry.name)
+        .sort();
 }
 
-export function generatedShaderDirectories(root: string, scene?: string): string[] {
+export function generatedShaderDirectories(
+    root: string,
+    scene?: string,
+): string[] {
     const generated = resolve(root, "generated");
-    const directories = scene === undefined
-        ? (existsSync(generated) ? readdirSync(generated, { withFileTypes: true }).filter(entry => entry.isDirectory()).map(entry => entry.name) : [])
-        : [scene];
-    return directories.map(name => join(generated, name, "upstream", "shaders")).filter(existsSync);
+    const directories =
+        scene === undefined
+            ? existsSync(generated)
+                ? readdirSync(generated, { withFileTypes: true })
+                      .filter((entry) => entry.isDirectory())
+                      .map((entry) => entry.name)
+                : []
+            : [scene];
+    return directories
+        .map((name) => join(generated, name, "upstream", "shaders"))
+        .filter(existsSync);
 }
 
-function runCompiler(executable: string, args: readonly string[], environment: NodeJS.ProcessEnv, source = args[0]): { stdout: string; stderr: string } {
-    const result = spawnSync(executable, args, { encoding: "utf8", env: environment, windowsHide: true, maxBuffer: 16 * 1024 * 1024 });
+function runCompiler(
+    executable: string,
+    args: readonly string[],
+    environment: NodeJS.ProcessEnv,
+    source = args[0],
+): { stdout: string; stderr: string } {
+    const result = spawnSync(executable, args, {
+        encoding: "utf8",
+        env: environment,
+        windowsHide: true,
+        maxBuffer: 16 * 1024 * 1024,
+    });
     if (result.error) throw result.error;
     if (result.status !== 0) {
-        throw new Error(`${basename(executable)} failed (${result.status ?? result.signal}) for ${source}.\n${result.stderr}${result.stdout}`);
+        throw new Error(
+            `${basename(executable)} failed (${result.status ?? result.signal}) for ${source}.\n${result.stderr}${result.stdout}`,
+        );
     }
     return result;
 }
@@ -101,9 +210,15 @@ function lines(text: string): string[] {
     return result;
 }
 
-function reflectionText(source: string, stdout: string, stderr: string): string {
+function reflectionText(
+    source: string,
+    stdout: string,
+    stderr: string,
+): string {
     const escaped = source.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    return [...lines(stderr), ...lines(stdout)].join(EOL).replace(new RegExp(`^${escaped}(?=:\\d+:\\d+ )`, "gm"), "source.wgsl");
+    return [...lines(stderr), ...lines(stdout)]
+        .join(EOL)
+        .replace(new RegExp(`^${escaped}(?=:\\d+:\\d+ )`, "gm"), "source.wgsl");
 }
 
 function cacheArtifact(path: string, bytes: Uint8Array): void {
@@ -116,71 +231,163 @@ function cacheArtifact(path: string, bytes: Uint8Array): void {
     }
 }
 
-function readValidBinary(path: string, format: BinaryFormat): Buffer | undefined {
+function readValidBinary(
+    path: string,
+    format: BinaryFormat,
+): Buffer | undefined {
     if (!existsSync(path)) return undefined;
     const bytes = readFileSync(path);
-    return format.magic.every((byte, index) => bytes[index] === byte) ? bytes : undefined;
+    return format.magic.every((byte, index) => bytes[index] === byte)
+        ? bytes
+        : undefined;
 }
 
-function directoryDigests(directory: string, stages: ReadonlyMap<string, OfflineShaderStage>): { input: string; output: string } {
+function directoryDigests(
+    directory: string,
+    stages: ReadonlyMap<string, OfflineShaderStage>,
+): { input: string; output: string } {
     const inputs: string[] = [];
     const outputs: string[] = [];
     for (const name of filesIn(directory)) {
-        const legacyHlsl = name.endsWith(".hlsl") && !stages.has(name.slice(0, -".hlsl".length));
-        const selected = !legacyHlsl && isCompiledShaderOutput(name) ? outputs : inputs;
+        const legacyHlsl =
+            name.endsWith(".hlsl") &&
+            !stages.has(name.slice(0, -".hlsl".length));
+        const selected =
+            !legacyHlsl && isCompiledShaderOutput(name) ? outputs : inputs;
         selected.push(`${name}:${contentDigest(join(directory, name))}`);
     }
     return { input: hashEntries(inputs), output: hashEntries(outputs) };
 }
 
-function directoryIsCurrent(path: string, input: string, output: string): boolean {
+function directoryIsCurrent(
+    path: string,
+    input: string,
+    output: string,
+): boolean {
     if (!existsSync(path)) return false;
     let record: unknown;
-    try { record = JSON.parse(readFileSync(path, "utf8")); } catch { return false; }
-    return typeof record === "object" && record !== null && "version" in record && record.version === 1 &&
-        "input" in record && record.input === input && "output" in record && record.output === output;
+    try {
+        record = JSON.parse(readFileSync(path, "utf8"));
+    } catch {
+        return false;
+    }
+    return (
+        typeof record === "object" &&
+        record !== null &&
+        "version" in record &&
+        record.version === 1 &&
+        "input" in record &&
+        record.input === input &&
+        "output" in record &&
+        record.output === output
+    );
 }
 
 /** Content caches serve stages; each directory records its complete input and output bytes. */
-export function compileOfflineShaders(options: ShaderCompilationOptions): ShaderCompilationResult {
+export function compileOfflineShaders(
+    options: ShaderCompilationOptions,
+): ShaderCompilationResult {
     const root = resolve(options.repositoryRoot ?? process.cwd());
     const environment = options.environment ?? process.env;
-    const target = options.target ?? hostOfflineShaderTarget(process.platform, environment.BBLITE_SHADER_TARGET);
+    const target =
+        options.target ??
+        hostOfflineShaderTarget(
+            process.platform,
+            environment.BBLITE_SHADER_TARGET,
+        );
     const formats = offlineShaderFormats(target);
-    const tools = options.tools ?? discoverDevelopmentTools({ cwd: root, environment });
-    const directories = [...new Set(options.directories.map(directory => resolve(directory)))].sort();
-    if (directories.length === 0) throw new Error("No generated shader directories found. Generate a scene first.");
+    const tools =
+        options.tools ?? discoverDevelopmentTools({ cwd: root, environment });
+    const directories = [
+        ...new Set(options.directories.map((directory) => resolve(directory))),
+    ].sort();
+    if (directories.length === 0)
+        throw new Error(
+            "No generated shader directories found. Generate a scene first.",
+        );
     const needsDxc = formats.binaries.length > 0;
-    if (needsDxc && (!tools.dxc || !existsSync(tools.dxc))) throw new Error(`DXC not found for target ${target}; install tools/shader-compiler or set DXC_PATH.`);
-    const dxcFiles = needsDxc && tools.dxc
-        ? [tools.dxc, ...["dxcompiler.dll", "dxil.dll", "libdxcompiler.so", "libdxil.so"].map(name => join(dirname(tools.dxc!), name))].filter(existsSync).sort() : [];
-    const compilerHash = sha256(dxcFiles.map(path => `${basename(path)}:${digestUpper(path)}`).join("|"));
-    const tintHash = tools.tint && existsSync(tools.tint) ? digestUpper(tools.tint) : "";
+    if (needsDxc && (!tools.dxc || !existsSync(tools.dxc)))
+        throw new Error(
+            `DXC not found for target ${target}; install tools/shader-compiler or set DXC_PATH.`,
+        );
+    const dxcFiles =
+        needsDxc && tools.dxc
+            ? [
+                  tools.dxc,
+                  ...[
+                      "dxcompiler.dll",
+                      "dxil.dll",
+                      "libdxcompiler.so",
+                      "libdxil.so",
+                  ].map((name) => join(dirname(tools.dxc!), name)),
+              ]
+                  .filter(existsSync)
+                  .sort()
+            : [];
+    const compilerHash = sha256(
+        dxcFiles
+            .map((path) => `${basename(path)}:${digestUpper(path)}`)
+            .join("|"),
+    );
+    const tintHash =
+        tools.tint && existsSync(tools.tint) ? digestUpper(tools.tint) : "";
     const dxcHash = needsDxc && tools.dxc ? digestUpper(tools.dxc) : "";
     const implementationHash = shaderCompilerIdentity();
     const pinPath = join(root, "upstream", "tint.json");
     const pinHash = existsSync(pinPath) ? contentDigest(pinPath) : "missing";
-    const sharedInput = hashEntries([target, compilerHash, tintHash, implementationHash, pinHash]);
+    const sharedInput = hashEntries([
+        target,
+        compilerHash,
+        tintHash,
+        implementationHash,
+        pinHash,
+    ]);
     const cacheRoot = join(root, "artifacts", "shader-cache");
     mkdirSync(cacheRoot, { recursive: true });
-    const result: ShaderCompilationResult = { compiled: 0, reused: 0, tintCompiled: 0, tintReused: 0, directoriesCompiled: 0, directoriesReused: 0 };
+    const result: ShaderCompilationResult = {
+        compiled: 0,
+        reused: 0,
+        tintCompiled: 0,
+        tintReused: 0,
+        directoriesCompiled: 0,
+        directoriesReused: 0,
+    };
 
     for (const directory of directories) {
         const stages = readShaderComposition(directory);
         const current = directoryDigests(directory, stages);
         const input = hashEntries([sharedInput, current.input]);
-        const checkpointPath = join(cacheRoot, "directories", `${sha256(directory)}.json`);
-        if (!options.cold && directoryIsCurrent(checkpointPath, input, current.output)) {
+        const checkpointPath = join(
+            cacheRoot,
+            "directories",
+            `${sha256(directory)}.json`,
+        );
+        if (
+            !options.cold &&
+            directoryIsCurrent(checkpointPath, input, current.output)
+        ) {
             result.directoriesReused++;
             continue;
         }
         const tree = new GeneratedTree(directory);
-        const selectedExtensions = new Set([...formats.tint, ...formats.binaries.map(format => format.extension)]);
+        const selectedExtensions = new Set([
+            ...formats.tint,
+            ...formats.binaries.map((format) => format.extension),
+        ]);
         for (const name of filesIn(directory)) {
-            const extension = compiledShaderArtifactExtensions.find(extension => name.endsWith(extension));
-            if (extension && (!selectedExtensions.has(extension) || name.endsWith(".vert.demote.spv"))) rmSync(join(directory, name));
+            const extension = compiledShaderArtifactExtensions.find(
+                (extension) => name.endsWith(extension),
+            );
+            if (
+                extension &&
+                (!selectedExtensions.has(extension) ||
+                    name.endsWith(".vert.demote.spv"))
+            )
+                rmSync(join(directory, name));
         }
-        const nativeSources = filesIn(directory).filter(name => name.endsWith(".native.wgsl"));
+        const nativeSources = filesIn(directory).filter((name) =>
+            name.endsWith(".native.wgsl"),
+        );
         const bySource = new Map<string, OfflineShaderStage[]>();
         for (const stage of stages.values()) {
             const sourceStages = bySource.get(stage.sourceName) ?? [];
@@ -190,17 +397,33 @@ export function compileOfflineShaders(options: ShaderCompilationOptions): Shader
         for (const name of nativeSources) {
             const source = join(directory, name);
             const sourceStages = bySource.get(name);
-            if (!sourceStages) throw new Error(`${source} is not declared in composition.json.`);
-            if (!tools.tint || !tintHash) throw new Error("Reached WGSL requires pinned Tint; run tools/build-tint.ps1 or set TINT_PATH.");
+            if (!sourceStages)
+                throw new Error(
+                    `${source} is not declared in composition.json.`,
+                );
+            if (!tools.tint || !tintHash)
+                throw new Error(
+                    "Reached WGSL requires pinned Tint; run tools/build-tint.ps1 or set TINT_PATH.",
+                );
             let wgsl: string | undefined;
             let uniformAdaptation: SdlUniformAdaptation | undefined;
             for (const stage of sourceStages) {
                 const vertex = stage.stem.endsWith(".vert");
                 const constants = shaderStageConstants(stage);
-                const key = sha256(`tint:${tintHash}|script:${implementationHash}|entry:${stage.entryPoint}|pinned:${stage.pinnedBindings}|vertex:${vertex}|constants:${constants}|formats:${formats.tint.join(",")}|wgsl:${digestUpper(source)}`);
+                const key = sha256(
+                    `tint:${tintHash}|script:${implementationHash}|entry:${stage.entryPoint}|pinned:${stage.pinnedBindings}|vertex:${vertex}|constants:${constants}|formats:${formats.tint.join(",")}|wgsl:${digestUpper(source)}`,
+                );
                 const cacheBase = join(cacheRoot, `tint-${key}`);
-                if (formats.tint.every(extension => existsSync(`${cacheBase}${extension}`))) {
-                    for (const extension of formats.tint) tree.write(`${stage.stem}${extension}`, readFileSync(`${cacheBase}${extension}`));
+                if (
+                    formats.tint.every((extension) =>
+                        existsSync(`${cacheBase}${extension}`),
+                    )
+                ) {
+                    for (const extension of formats.tint)
+                        tree.write(
+                            `${stage.stem}${extension}`,
+                            readFileSync(`${cacheBase}${extension}`),
+                        );
                     result.tintReused++;
                     continue;
                 }
@@ -208,70 +431,192 @@ export function compileOfflineShaders(options: ShaderCompilationOptions): Shader
                 const pendingHlsl = `${outputBase}.pending-hlsl`;
                 const pendingMsl = `${outputBase}.pending-msl`;
                 const pendingWgsl = `${outputBase}.pending-sdl.wgsl`;
-                const stageArgs = ["--entry-point", stage.entryPoint, ...(constants ? ["--overrides", constants] : [])];
+                const stageArgs = [
+                    "--entry-point",
+                    stage.entryPoint,
+                    ...(constants ? ["--overrides", constants] : []),
+                ];
                 try {
                     if (wgsl === undefined) {
                         wgsl = readFileSync(source, "utf8");
                         uniformAdaptation = prepareSdlUniformAdaptation(wgsl);
                     }
-                    const reflection = runCompiler(tools.tint, [source, ...stageArgs, "--format", "hlsl", "--output-name", pendingHlsl, "--dump-inspector-bindings", "true"], environment);
-                    const reflected = reflectionText(source, reflection.stdout, reflection.stderr);
-                    if (!stage.pinnedBindings) assertReflectedBindings(wgsl, reflected, source);
+                    const reflection = runCompiler(
+                        tools.tint,
+                        [
+                            source,
+                            ...stageArgs,
+                            "--format",
+                            "hlsl",
+                            "--output-name",
+                            pendingHlsl,
+                            "--dump-inspector-bindings",
+                            "true",
+                        ],
+                        environment,
+                    );
+                    const reflected = reflectionText(
+                        source,
+                        reflection.stdout,
+                        reflection.stderr,
+                    );
+                    if (!stage.pinnedBindings)
+                        assertReflectedBindings(wgsl, reflected, source);
                     let sdlSource = source;
                     let hlsl = readFileSync(pendingHlsl, "utf8");
-                    const adapted = sdlUniformSource(uniformAdaptation, hlsl, source);
+                    const adapted = sdlUniformSource(
+                        uniformAdaptation,
+                        hlsl,
+                        source,
+                    );
                     if (adapted !== undefined) {
                         sdlSource = pendingWgsl;
                         writeFileSync(sdlSource, `${adapted}${EOL}`);
-                        runCompiler(tools.tint, [sdlSource, ...stageArgs, "--format", "hlsl", "--output-name", pendingHlsl], environment);
+                        runCompiler(
+                            tools.tint,
+                            [
+                                sdlSource,
+                                ...stageArgs,
+                                "--format",
+                                "hlsl",
+                                "--output-name",
+                                pendingHlsl,
+                            ],
+                            environment,
+                        );
                         hlsl = readFileSync(pendingHlsl, "utf8");
-                        assertUniformBufferCap(hlsl, `${source} (after SDL uniform adaptation)`);
+                        assertUniformBufferCap(
+                            hlsl,
+                            `${source} (after SDL uniform adaptation)`,
+                        );
                     }
-                    const normalized = stage.pinnedBindings ? remapPinnedVariantRegisters(hlsl, vertex) : normalizeTintHlslBindings(hlsl);
+                    const normalized = stage.pinnedBindings
+                        ? remapPinnedVariantRegisters(hlsl, vertex)
+                        : normalizeTintHlslBindings(hlsl);
                     const slots = shaderStageSlots(normalized);
                     tree.write(`${stage.stem}.hlsl`, `${normalized}${EOL}`);
-                    tree.write(`${stage.stem}.slots`, `${slots.map(slot => `${slot.kind}${slot.index} ${slot.name}`).join(EOL)}${EOL}`);
-                    tree.write(`${stage.stem}.tint-reflection.txt`, `${reflected}${EOL}`);
+                    tree.write(
+                        `${stage.stem}.slots`,
+                        `${slots.map((slot) => `${slot.kind}${slot.index} ${slot.name}`).join(EOL)}${EOL}`,
+                    );
+                    tree.write(
+                        `${stage.stem}.tint-reflection.txt`,
+                        `${reflected}${EOL}`,
+                    );
                     if (formats.tint.includes(".msl")) {
-                        runCompiler(tools.tint, [sdlSource, ...stageArgs, "--format", "msl", "--output-name", pendingMsl], environment);
-                        tree.write(`${stage.stem}.msl`, sdlMslSource(readFileSync(pendingMsl, "utf8"), normalized, slots));
+                        runCompiler(
+                            tools.tint,
+                            [
+                                sdlSource,
+                                ...stageArgs,
+                                "--format",
+                                "msl",
+                                "--output-name",
+                                pendingMsl,
+                            ],
+                            environment,
+                        );
+                        tree.write(
+                            `${stage.stem}.msl`,
+                            sdlMslSource(
+                                readFileSync(pendingMsl, "utf8"),
+                                normalized,
+                                slots,
+                            ),
+                        );
                     }
-                    for (const extension of formats.tint) cacheArtifact(`${cacheBase}${extension}`, readFileSync(`${outputBase}${extension}`));
+                    for (const extension of formats.tint)
+                        cacheArtifact(
+                            `${cacheBase}${extension}`,
+                            readFileSync(`${outputBase}${extension}`),
+                        );
                     result.tintCompiled++;
                 } finally {
-                    for (const temporary of [pendingHlsl, pendingMsl, pendingWgsl]) rmSync(temporary, { force: true });
+                    for (const temporary of [
+                        pendingHlsl,
+                        pendingMsl,
+                        pendingWgsl,
+                    ])
+                        rmSync(temporary, { force: true });
                 }
             }
         }
-        for (const name of filesIn(directory).filter(name => name.endsWith(".hlsl"))) {
+        for (const name of filesIn(directory).filter((name) =>
+            name.endsWith(".hlsl"),
+        )) {
             const source = join(directory, name);
             const stem = name.slice(0, -".hlsl".length);
             const profile = stem.endsWith(".vert") ? "vs_6_0" : "ps_6_0";
             const entryPoint = stages.get(stem)?.entryPoint ?? "main";
             const hlsl = readFileSync(source, "utf8");
             assertUniformBufferCap(hlsl, source);
-            const spirvSource = formats.binaries.some(format => format.kind === "spirv") ? sdlSpirvSource(hlsl, stem.endsWith(".vert")) : "";
+            const spirvSource = formats.binaries.some(
+                (format) => format.kind === "spirv",
+            )
+                ? sdlSpirvSource(hlsl, stem.endsWith(".vert"))
+                : "";
             const spirvDigest = sha256(spirvSource);
             let compiled = false;
             for (const format of formats.binaries) {
-                if (format.extension === ".demote.spv" && stem.endsWith(".vert")) continue;
-                if (!tools.dxc) throw new Error("DXC is required for binary shader formats.");
-                const key = sha256(`${compilerHash}|${format.kind}|${profile}|${entryPoint}|${format.flags.join(",")}|${format.kind === "spirv" ? spirvDigest : digestUpper(source)}`);
+                if (
+                    format.extension === ".demote.spv" &&
+                    stem.endsWith(".vert")
+                )
+                    continue;
+                if (!tools.dxc)
+                    throw new Error(
+                        "DXC is required for binary shader formats.",
+                    );
+                const key = sha256(
+                    `${compilerHash}|${format.kind}|${profile}|${entryPoint}|${format.flags.join(",")}|${format.kind === "spirv" ? spirvDigest : digestUpper(source)}`,
+                );
                 const cachePath = join(cacheRoot, `${key}${format.extension}`);
                 let binary = readValidBinary(cachePath, format);
                 if (!binary) {
                     const temporary = `${cachePath}.${process.pid}-${randomUUID()}.tmp`;
                     const adaptedSource = `${temporary}.hlsl`;
                     try {
-                        if (format.kind === "spirv") writeFileSync(adaptedSource, spirvSource);
-                        const args = format.kind === "dxil" ? ["-T", profile, "-E", entryPoint, ...format.flags] : [...format.flags, "-T", profile, "-E", entryPoint];
-                        runCompiler(tools.dxc, [...args, "-Fo", temporary, format.kind === "spirv" ? adaptedSource : source], environment, source);
+                        if (format.kind === "spirv")
+                            writeFileSync(adaptedSource, spirvSource);
+                        const args =
+                            format.kind === "dxil"
+                                ? [
+                                      "-T",
+                                      profile,
+                                      "-E",
+                                      entryPoint,
+                                      ...format.flags,
+                                  ]
+                                : [
+                                      ...format.flags,
+                                      "-T",
+                                      profile,
+                                      "-E",
+                                      entryPoint,
+                                  ];
+                        runCompiler(
+                            tools.dxc,
+                            [
+                                ...args,
+                                "-Fo",
+                                temporary,
+                                format.kind === "spirv"
+                                    ? adaptedSource
+                                    : source,
+                            ],
+                            environment,
+                            source,
+                        );
                         binary = readValidBinary(temporary, format);
-                        if (!binary) throw new Error(`${format.kind} compiler produced an invalid binary for ${source}.`);
+                        if (!binary)
+                            throw new Error(
+                                `${format.kind} compiler produced an invalid binary for ${source}.`,
+                            );
                         renameSync(temporary, cachePath);
                     } finally {
                         rmSync(temporary, { force: true });
-                        if (format.kind === "spirv") rmSync(adaptedSource, { force: true });
+                        if (format.kind === "spirv")
+                            rmSync(adaptedSource, { force: true });
                     }
                     compiled = true;
                 }
@@ -285,41 +630,82 @@ export function compileOfflineShaders(options: ShaderCompilationOptions): Shader
         let tintCommit: string | undefined;
         if (nativeSources.length > 0) {
             const pin: unknown = JSON.parse(readFileSync(pinPath, "utf8"));
-            if (typeof pin !== "object" || pin === null || !("commit" in pin) || typeof pin.commit !== "string") throw new Error(`${pinPath} must declare a Tint commit.`);
+            if (
+                typeof pin !== "object" ||
+                pin === null ||
+                !("commit" in pin) ||
+                typeof pin.commit !== "string"
+            )
+                throw new Error(`${pinPath} must declare a Tint commit.`);
             tintCommit = pin.commit;
         }
-        const record = { backend: nativeSources.length > 0 ? "tint-wgsl" : "dxc-hlsl", target,
-            ...(tintCommit === undefined ? {} : { tintCommit, tintSha256: tintHash }),
-            ...(needsDxc ? { dxcCompilerSha256: dxcHash } : {}) };
-        tree.write("shader-compiler.json", `${JSON.stringify(record, null, 2).replaceAll("\n", EOL)}${EOL}`);
-        writeJsonRecord(checkpointPath, { version: 1, input, output: directoryDigests(directory, stages).output });
+        const record = {
+            backend: nativeSources.length > 0 ? "tint-wgsl" : "dxc-hlsl",
+            target,
+            ...(tintCommit === undefined
+                ? {}
+                : { tintCommit, tintSha256: tintHash }),
+            ...(needsDxc ? { dxcCompilerSha256: dxcHash } : {}),
+        };
+        tree.write(
+            "shader-compiler.json",
+            `${JSON.stringify(record, null, 2).replaceAll("\n", EOL)}${EOL}`,
+        );
+        writeJsonRecord(checkpointPath, {
+            version: 1,
+            input,
+            output: directoryDigests(directory, stages).output,
+        });
         result.directoriesCompiled++;
     }
     return result;
 }
 
-export function formatShaderCompilation(result: ShaderCompilationResult): string {
-    return `Shader directories: ${result.directoriesCompiled} compiled, ${result.directoriesReused} unchanged.\n` +
+export function formatShaderCompilation(
+    result: ShaderCompilationResult,
+): string {
+    return (
+        `Shader directories: ${result.directoriesCompiled} compiled, ${result.directoriesReused} unchanged.\n` +
         `Tint stages: ${result.tintCompiled} transpiled, ${result.tintReused} replayed from artifacts/shader-cache.\n` +
-        `DXC stages: ${result.compiled} compiled, ${result.reused} replayed from artifacts/shader-cache.`;
+        `DXC stages: ${result.compiled} compiled, ${result.reused} replayed from artifacts/shader-cache.`
+    );
 }
 
 if (isMainModule(import.meta.url)) {
     try {
-        const flags = parseFlags(process.argv.slice(2), {
-            value: ["--scene", "--target", "--dxc", "--tint"], boolean: ["--cold"],
-        }, "shaders");
+        const flags = parseFlags(
+            process.argv.slice(2),
+            {
+                value: ["--scene", "--target", "--dxc", "--tint"],
+                boolean: ["--cold"],
+            },
+            "shaders",
+        );
         const environment = { ...process.env };
-        for (const [flag, variable] of [["--dxc", "DXC_PATH"], ["--tint", "TINT_PATH"]] as const) {
+        for (const [flag, variable] of [
+            ["--dxc", "DXC_PATH"],
+            ["--tint", "TINT_PATH"],
+        ] as const) {
             const value = flags.values.get(flag);
             if (value !== undefined) environment[variable] = value;
         }
-        console.log(formatShaderCompilation(compileOfflineShaders({
-            directories: generatedShaderDirectories(process.cwd(), flags.values.get("--scene")),
-            target: hostOfflineShaderTarget(process.platform, flags.values.get("--target") ?? environment.BBLITE_SHADER_TARGET),
-            environment,
-            cold: flags.flags.has("--cold"),
-        })));
+        console.log(
+            formatShaderCompilation(
+                compileOfflineShaders({
+                    directories: generatedShaderDirectories(
+                        process.cwd(),
+                        flags.values.get("--scene"),
+                    ),
+                    target: hostOfflineShaderTarget(
+                        process.platform,
+                        flags.values.get("--target") ??
+                            environment.BBLITE_SHADER_TARGET,
+                    ),
+                    environment,
+                    cold: flags.flags.has("--cold"),
+                }),
+            ),
+        );
     } catch (error) {
         console.error(error instanceof Error ? error.message : String(error));
         process.exitCode = 1;

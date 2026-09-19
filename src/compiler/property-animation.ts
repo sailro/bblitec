@@ -20,36 +20,36 @@ import ts from "typescript";
 import type { Value } from "./types.js";
 import { renderClosure } from "./closure-captures.js";
 
-export interface PropertyAnimationContext
-    extends Pick<LoweringServices,
-        | "sourceFile"
-        | "expectObjectLiteral"
-        | "expectStaticArrayLiteral"
-        | "objectProperty"
-        | "resolveStaticExpression"
-        | "compileNumber"
-        | "compileBoolean"
-        | "compileStaticString"
-        | "cppString"
-        | "fail"
-    > {}
+export interface PropertyAnimationContext extends Pick<
+    LoweringServices,
+    | "sourceFile"
+    | "expectObjectLiteral"
+    | "expectStaticArrayLiteral"
+    | "objectProperty"
+    | "resolveStaticExpression"
+    | "compileNumber"
+    | "compileBoolean"
+    | "compileStaticString"
+    | "cppString"
+    | "fail"
+> {}
 
-interface PropertyAnimationTargetContext
-    extends Pick<LoweringServices,
-        | "dataTypes"
-        | "fail"
-        | "allocateTemporaryCppName"
-        | "captureManagedClosureLines"
-        | "withRecordScopes"
-        | "compileRecordSetterValue"
-        | "callbackIdentity"
-        | "requireDefaultEngine"
-        | "emit"
-        | "useNativeValue"
-        | "registerNativeBinding"
-        | "cppString"
-        | "materializeEscapingValue"
-    > {}
+interface PropertyAnimationTargetContext extends Pick<
+    LoweringServices,
+    | "dataTypes"
+    | "fail"
+    | "allocateTemporaryCppName"
+    | "captureManagedClosureLines"
+    | "withRecordScopes"
+    | "compileRecordSetterValue"
+    | "callbackIdentity"
+    | "requireDefaultEngine"
+    | "emit"
+    | "useNativeValue"
+    | "registerNativeBinding"
+    | "cppString"
+    | "materializeEscapingValue"
+> {}
 
 /** Callback writers bound to the owner resolved when the group is created. */
 export class PropertyAnimationTargetLowerer {
@@ -71,13 +71,30 @@ export class PropertyAnimationTargetLowerer {
             let owner = target;
             for (const segment of segments) {
                 if (owner.dataType?.kind === "struct") {
-                    const field = context.dataTypes.structField(owner.dataType.name, segment, node);
-                    if (!context.dataTypes.isReferenceStruct(owner.dataType.name)) {
-                        context.fail(node, `Property animation path '${path}' requires shared object ownership.`);
+                    const field = context.dataTypes.structField(
+                        owner.dataType.name,
+                        segment,
+                        node,
+                    );
+                    if (
+                        !context.dataTypes.isReferenceStruct(
+                            owner.dataType.name,
+                        )
+                    ) {
+                        context.fail(
+                            node,
+                            `Property animation path '${path}' requires shared object ownership.`,
+                        );
                     }
                     context.useNativeValue(target);
-                    context.emit(`if (!${owner.cpp}) throw std::runtime_error(${context.cppString(`Property animation path '${path}' requires an object owner.`)});`);
-                    owner = { kind: "data", cpp: `${owner.cpp}->${field.name}`, dataType: field.type };
+                    context.emit(
+                        `if (!${owner.cpp}) throw std::runtime_error(${context.cppString(`Property animation path '${path}' requires an object owner.`)});`,
+                    );
+                    owner = {
+                        kind: "data",
+                        cpp: `${owner.cpp}->${field.name}`,
+                        dataType: field.type,
+                    };
                     continue;
                 }
                 const next =
@@ -94,37 +111,84 @@ export class PropertyAnimationTargetLowerer {
             }
             if (owner.dataType?.kind === "struct") {
                 if (!context.dataTypes.isReferenceStruct(owner.dataType.name)) {
-                    context.fail(node, `Property animation path '${path}' requires shared object ownership.`);
+                    context.fail(
+                        node,
+                        `Property animation path '${path}' requires shared object ownership.`,
+                    );
                 }
-                const field = context.dataTypes.structField(owner.dataType.name, property, node);
+                const field = context.dataTypes.structField(
+                    owner.dataType.name,
+                    property,
+                    node,
+                );
                 if (field.type.kind !== "number" || field.readOnly) {
-                    context.fail(node, `Property animation path '${path}' must end at a mutable numeric data field.`);
+                    context.fail(
+                        node,
+                        `Property animation path '${path}' must end at a mutable numeric data field.`,
+                    );
                 }
                 if (resolvePropertyAnimationPath(path)?.stride !== 1) {
-                    context.fail(node, `Property animation path '${path}' requires a scalar track for a numeric data field.`);
+                    context.fail(
+                        node,
+                        `Property animation path '${path}' requires a scalar track for a numeric data field.`,
+                    );
                 }
-                const captured = context.allocateTemporaryCppName("property_animation_owner");
+                const captured = context.allocateTemporaryCppName(
+                    "property_animation_owner",
+                );
                 context.useNativeValue(target);
-                context.emit({ kind: "declaration", type: "const auto", name: captured, initializer: owner.cpp });
-                context.emit(`if (!${captured}) throw std::runtime_error(${context.cppString(`Property animation path '${path}' requires an object owner.`)});`);
+                context.emit({
+                    kind: "declaration",
+                    type: "const auto",
+                    name: captured,
+                    initializer: owner.cpp,
+                });
+                context.emit(
+                    `if (!${captured}) throw std::runtime_error(${context.cppString(`Property animation path '${path}' requires an object owner.`)});`,
+                );
                 const binding = context.registerNativeBinding(captured);
-                return this.scalarTarget(context, property,
-                    { kind: "data", cpp: captured, dataType: owner.dataType,
-                      nativeCaptures: [binding] },
-                    `${captured}->${field.name}`, `${captured}.get()`);
+                return this.scalarTarget(
+                    context,
+                    property,
+                    {
+                        kind: "data",
+                        cpp: captured,
+                        dataType: owner.dataType,
+                        nativeCaptures: [binding],
+                    },
+                    `${captured}->${field.name}`,
+                    `${captured}.get()`,
+                );
             }
-            if (owner.kind === "record" && owner.recordProperties?.[property]?.kind === "number" &&
-                !owner.recordSetters?.[property]) {
+            if (
+                owner.kind === "record" &&
+                owner.recordProperties?.[property]?.kind === "number" &&
+                !owner.recordSetters?.[property]
+            ) {
                 if (resolvePropertyAnimationPath(path)?.stride !== 1) {
-                    context.fail(node, `Property animation path '${path}' requires a scalar track for a numeric data field.`);
+                    context.fail(
+                        node,
+                        `Property animation path '${path}' requires a scalar track for a numeric data field.`,
+                    );
                 }
-                const retained = context.materializeEscapingValue(owner, "property_animation_owner");
+                const retained = context.materializeEscapingValue(
+                    owner,
+                    "property_animation_owner",
+                );
                 const field = retained.recordProperties?.[property];
                 if (!field?.sharedRecordScalar || !field.sharedStorageCpp) {
-                    context.fail(node, `Property animation path '${path}' has no retained scalar storage.`);
+                    context.fail(
+                        node,
+                        `Property animation path '${path}' has no retained scalar storage.`,
+                    );
                 }
-                return this.scalarTarget(context, property, field,
-                    field.cpp, `${field.sharedStorageCpp}.get()`);
+                return this.scalarTarget(
+                    context,
+                    property,
+                    field,
+                    field.cpp,
+                    `${field.sharedStorageCpp}.get()`,
+                );
             }
             const setter =
                 owner.kind === "record"
@@ -137,23 +201,18 @@ export class PropertyAnimationTargetLowerer {
                 );
             }
             const identity = context.callbackIdentity(setter, owner);
-            const argument =
-                context.allocateTemporaryCppName("property_animation_value");
-            const closure =
-                context.captureManagedClosureLines(() =>
-                    context.withRecordScopes(owner, () =>
-                        context.compileRecordSetterValue(
-                            owner,
-                            setter,
-                            node,
-                            {
-                                kind: "number",
-                                cpp: `static_cast<double>(${argument})`,
-                                dataType: { kind: "number" },
-                            },
-                        ),
-                    ),
-                );
+            const argument = context.allocateTemporaryCppName(
+                "property_animation_value",
+            );
+            const closure = context.captureManagedClosureLines(() =>
+                context.withRecordScopes(owner, () =>
+                    context.compileRecordSetterValue(owner, setter, node, {
+                        kind: "number",
+                        cpp: `static_cast<double>(${argument})`,
+                        dataType: { kind: "number" },
+                    }),
+                ),
+            );
             return (
                 `bbl::PropertyAnimationTarget{` +
                 `bbl::PropertyAnimationTargetKind::callback, ` +
@@ -173,13 +232,17 @@ export class PropertyAnimationTargetLowerer {
         fieldCpp: string,
         identityCpp: string,
     ): string {
-        const argument = context.allocateTemporaryCppName("property_animation_value");
+        const argument = context.allocateTemporaryCppName(
+            "property_animation_value",
+        );
         const closure = context.captureManagedClosureLines(() => {
             context.useNativeValue(retained);
             context.emit(`${fieldCpp} = static_cast<double>(${argument});`);
         });
-        return `bbl::PropertyAnimationTarget{bbl::PropertyAnimationTargetKind::callback, 0u, ` +
-            `${renderClosure(closure, `float ${argument}`)}, ${identityCpp}, ${context.cppString(property)}}`;
+        return (
+            `bbl::PropertyAnimationTarget{bbl::PropertyAnimationTargetKind::callback, 0u, ` +
+            `${renderClosure(closure, `float ${argument}`)}, ${identityCpp}, ${context.cppString(property)}}`
+        );
     }
 }
 
@@ -289,9 +352,7 @@ const propertyAnimationComponents = ["x", "y", "z", "w"] as const;
  * per component — and a lane whose two halves disagreed would compile a
  * path the generated switch has no arm for.
  */
-export function laneComponents(
-    lane: PropertyAnimationLane,
-): readonly string[] {
+export function laneComponents(lane: PropertyAnimationLane): readonly string[] {
     return lane.components === 1
         ? []
         : propertyAnimationComponents.slice(0, lane.components);
@@ -328,7 +389,12 @@ function resolvePropertyAnimationPath(
     }
     const separator = path.lastIndexOf(".");
     if (separator < 0 && /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(path)) {
-        return { lane: propertyAnimationLanes.get("__record_scalar__")!, component: "whole_lane", stride: 1, quaternion: false };
+        return {
+            lane: propertyAnimationLanes.get("__record_scalar__")!,
+            component: "whole_lane",
+            stride: 1,
+            quaternion: false,
+        };
     }
     if (separator < 0) return undefined;
     const lane = propertyAnimationLanes.get(path.slice(0, separator));
@@ -341,18 +407,13 @@ function resolvePropertyAnimationPath(
         if (
             segments.length < 2 ||
             segments.some(
-                (segment) =>
-                    !/^[A-Za-z_$][A-Za-z0-9_$]*$/.test(
-                        segment,
-                    ),
+                (segment) => !/^[A-Za-z_$][A-Za-z0-9_$]*$/.test(segment),
             )
         ) {
             return undefined;
         }
         return {
-            lane: propertyAnimationLanes.get(
-                "__record_scalar__",
-            )!,
+            lane: propertyAnimationLanes.get("__record_scalar__")!,
             component: "whole_lane",
             stride: 1,
             quaternion: false,
@@ -391,10 +452,7 @@ export function compilePropertyAnimationClip(
         );
     }
     let frameRate = optionsExpression
-        ? compilePropertyAnimationFrameRate(
-              context,
-              optionsExpression,
-          )
+        ? compilePropertyAnimationFrameRate(context, optionsExpression)
         : undefined;
     if (!frameRate) {
         const trackFrameRates = tracks.elements
@@ -404,18 +462,9 @@ export function compilePropertyAnimationClip(
                     "frameRate",
                 ),
             )
-            .filter(
-                (
-                    value,
-                ): value is ts.Expression =>
-                    value !== undefined,
-            )
-            .map((value) =>
-                context.compileNumber(value),
-            );
-        const distinct = [
-            ...new EmissionSet(trackFrameRates),
-        ];
+            .filter((value): value is ts.Expression => value !== undefined)
+            .map((value) => context.compileNumber(value));
+        const distinct = [...new EmissionSet(trackFrameRates)];
         if (distinct.length > 1) {
             context.fail(
                 tracks,
@@ -474,8 +523,10 @@ export function compilePropertyAnimationClip(
                     "component(s) wide; the pinned slerp reads four.",
             );
         }
-        const interpolationExpression =
-            context.objectProperty(track, "interpolation");
+        const interpolationExpression = context.objectProperty(
+            track,
+            "interpolation",
+        );
         const interpolation = interpolationExpression
             ? context.compileStaticString(interpolationExpression)
             : "linear";
@@ -485,8 +536,10 @@ export function compilePropertyAnimationClip(
                 `Unsupported property animation interpolation '${interpolation}'.`,
             );
         }
-        const trackFrameRateExpression =
-            context.objectProperty(track, "frameRate");
+        const trackFrameRateExpression = context.objectProperty(
+            track,
+            "frameRate",
+        );
         const trackFrameRate = trackFrameRateExpression
             ? context.compileNumber(trackFrameRateExpression)
             : frameRate;
@@ -544,9 +597,7 @@ function compilePropertyAnimationFrameRate(
 ): string {
     const options = context.expectObjectLiteral(expression);
     const frameRate = context.objectProperty(options, "frameRate");
-    return frameRate
-        ? context.compileNumber(frameRate)
-        : "60.0f";
+    return frameRate ? context.compileNumber(frameRate) : "60.0f";
 }
 
 function compilePropertyAnimationKeyValue(
@@ -558,9 +609,9 @@ function compilePropertyAnimationKeyValue(
     const values =
         components === 1
             ? [context.compileNumber(resolved)]
-            : context.expectStaticArrayLiteral(resolved).elements.map(
-                  (element) => context.compileNumber(element),
-              );
+            : context
+                  .expectStaticArrayLiteral(resolved)
+                  .elements.map((element) => context.compileNumber(element));
     if (values.length !== components) {
         context.fail(
             resolved,
@@ -611,13 +662,13 @@ export function compilePropertyAnimationGroupOptions(
     const from = fromTime
         ? context.compileNumber(fromTime)
         : fromFrame
-            ? `(${context.compileNumber(fromFrame)} / ${frameRate})`
-            : "0.0f";
+          ? `(${context.compileNumber(fromFrame)} / ${frameRate})`
+          : "0.0f";
     const to = toTime
         ? context.compileNumber(toTime)
         : toFrame
-            ? `(${context.compileNumber(toFrame)} / ${frameRate})`
-            : duration;
+          ? `(${context.compileNumber(toFrame)} / ${frameRate})`
+          : duration;
     const speedRatio = context.objectProperty(options, "speedRatio");
     const loop = context.objectProperty(options, "loop");
     return `bbl::PropertyAnimationGroupOptions{${from}, ${to}, ${speedRatio ? context.compileNumber(speedRatio) : "1.0f"}, ${loop ? context.compileBoolean(loop) : "true"}}`;

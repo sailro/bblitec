@@ -3,7 +3,10 @@ import { LoweringContext } from "../lowering/context.js";
 import { CompressedTextureLowerer } from "../lowering/compressed-texture-lowerer.js";
 import { sharedUpstreamStore } from "../upstream-source.js";
 
-const compiledFeatures = new Set(["texture-compression-bc", "texture-compression-astc"]);
+const compiledFeatures = new Set([
+    "texture-compression-bc",
+    "texture-compression-astc",
+]);
 
 /**
  * One lowerer per process. The pin does not change between compiles, and
@@ -29,8 +32,8 @@ export function compressedTextureUrls(
     suffixes: readonly string[],
 ): string[] {
     const compressed = compressedTextureLowerer();
-    const supported = suffixes.filter(
-        (suffix) => compiledFeatures.has(compressed.suffixFeature(suffix) ?? ""),
+    const supported = suffixes.filter((suffix) =>
+        compiledFeatures.has(compressed.suffixFeature(suffix) ?? ""),
     );
-    return supported.map(suffix => compressed.rewriteUrl(baseUrl, suffix));
+    return supported.map((suffix) => compressed.rewriteUrl(baseUrl, suffix));
 }

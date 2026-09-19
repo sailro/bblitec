@@ -92,23 +92,9 @@ function baseBranch(root: string): string {
 export function workHash(root: string): SimplifyWork {
     const base = baseBranch(root);
     const hash = createHash("sha256");
-    const reviewedPaths = [
-        "--",
-        ".",
-        `:(exclude)${reviewDirectory}/**`,
-    ];
-    const committed = gitText(
-        root,
-        "diff",
-        `${base}...HEAD`,
-        ...reviewedPaths,
-    );
-    const working = gitText(
-        root,
-        "diff",
-        "HEAD",
-        ...reviewedPaths,
-    );
+    const reviewedPaths = ["--", ".", `:(exclude)${reviewDirectory}/**`];
+    const committed = gitText(root, "diff", `${base}...HEAD`, ...reviewedPaths);
+    const working = gitText(root, "diff", "HEAD", ...reviewedPaths);
     hash.update(committed).update(working);
     const untracked = gitText(
         root,
@@ -152,7 +138,12 @@ export function validateRecord(record: unknown): string[] {
     const problems: string[] = [];
     const entry = record as Partial<SimplifyRecord> | null;
     const angles = entry?.angles;
-    const requiredAngles = ["reuse", "simplification", "efficiency", "altitude"];
+    const requiredAngles = [
+        "reuse",
+        "simplification",
+        "efficiency",
+        "altitude",
+    ];
     if (
         !Array.isArray(angles) ||
         angles.length !== requiredAngles.length ||
@@ -188,8 +179,8 @@ export function validateRecord(record: unknown): string[] {
             problems.push(
                 `${where} was not applied, so \`blockedBy\` must say what ` +
                     "genuinely blocks it -- a capability that does not exist " +
-                    "yet, or a measurement nobody has taken. \"Outside the " +
-                    "scope of this change\" is not a blocker.",
+                    'yet, or a measurement nobody has taken. "Outside the ' +
+                    'scope of this change" is not a blocker.',
             );
         }
         if (

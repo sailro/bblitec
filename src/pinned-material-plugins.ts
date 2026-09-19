@@ -158,9 +158,8 @@ function pinnedPlugin(manifest: MaterialPluginManifest): PinnedPlugin {
     return {
         name: manifest.name,
         getCustomCode(shaderType) {
-            const code = shaderType === "fragment"
-                ? manifest.fragment
-                : manifest.vertex;
+            const code =
+                shaderType === "fragment" ? manifest.fragment : manifest.vertex;
             return code ?? null;
         },
         ...(samplers ? { getSamplers: () => samplers } : {}),
@@ -277,7 +276,10 @@ async function registerPluginBridges(
             importPinnedModule<{
                 _getStdExtsSorted: () => readonly {
                     _id: string;
-                    _frag: (features: number, meshFeatures: number) => {
+                    _frag: (
+                        features: number,
+                        meshFeatures: number,
+                    ) => {
                         _bindings?: readonly PinnedBindingDecl[];
                     };
                 }[];
@@ -369,11 +371,11 @@ async function registerPluginBridges(
         // bind by an index the record never filled. Comparing the pairs the
         // scene declared against the ones the pin composed is what makes
         // the generated table's ordinal the pin's own position.
-        const declared = standardMaterialPlugins[position]!.flatMap(
-            (plugin) =>
-                (plugin.samplers ?? []).map(
-                    ({ texture, sampler }) => ({ texture, sampler }),
-                ),
+        const declared = standardMaterialPlugins[position]!.flatMap((plugin) =>
+            (plugin.samplers ?? []).map(({ texture, sampler }) => ({
+                texture,
+                sampler,
+            })),
         );
         if (JSON.stringify(bindings) !== JSON.stringify(declared)) {
             throw new Error(
@@ -400,16 +402,19 @@ function standardPluginFragmentBindings(
     flags: {
         _getStdExtsSorted: () => readonly {
             _id: string;
-            _frag: (features: number, meshFeatures: number) => {
+            _frag: (
+                features: number,
+                meshFeatures: number,
+            ) => {
                 _bindings?: readonly PinnedBindingDecl[];
             };
         }[];
     },
     shift: number,
 ): (index: number) => readonly MaterialPluginSamplerManifest[] {
-    const ext = flags._getStdExtsSorted().find(
-        (candidate) => candidate._id === "plugin",
-    );
+    const ext = flags
+        ._getStdExtsSorted()
+        .find((candidate) => candidate._id === "plugin");
     if (!ext) {
         throw new Error(
             "The pinned Standard plugin bridge did not register an " +
@@ -497,5 +502,5 @@ export async function standardPluginFeatureBits(
 export async function standardPluginBindingTable(): Promise<
     readonly (readonly MaterialPluginSamplerManifest[])[]
 > {
-    return (await bridges ?? []).map((list) => list.bindings);
+    return ((await bridges) ?? []).map((list) => list.bindings);
 }

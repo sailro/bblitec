@@ -75,9 +75,7 @@ function refuses(body: string, message: string, search?: string): void {
             assert.ok(error instanceof CompileError);
             assert.match(
                 error.message,
-                new RegExp(
-                    message.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"),
-                ),
+                new RegExp(message.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")),
             );
             return true;
         },
@@ -99,7 +97,10 @@ test("a scene freezes itself: setTimeout defers, stopEngine stops", () => {
     );
     // The zero-delay timeout is a deferred callback the conductor drains,
     // and the engine stop inside it survives; the canvas write does not.
-    assert.match(main, /bbl::defer_callback\(v_engine, bbl::js::make_closure\(std::tuple\{std::ref\(v_engine\)\}, \[\]\(\[\[maybe_unused\]\] decltype\(std::tuple\{[^}\n]*\}\)& \w+\) \{/);
+    assert.match(
+        main,
+        /bbl::defer_callback\(v_engine, bbl::js::make_closure\(std::tuple\{std::ref\(v_engine\)\}, \[\]\(\[\[maybe_unused\]\] decltype\(std::tuple\{[^}\n]*\}\)& \w+\) \{/,
+    );
     assert.match(main, /bbl::stop_engine\(v_engine\)/);
     assert.doesNotMatch(main, /captureReady/);
     // The step the capture is pinned at is the query's own answer: the

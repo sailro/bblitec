@@ -24,10 +24,7 @@ test("names every way a browser capture stops being evidence", () => {
     const captureDirectory = resolve(".cache", "staleness-capture");
     mkdirSync(".cache", { recursive: true });
     mkdirSync(captureDirectory, { recursive: true });
-    writeFileSync(
-        sourcePath,
-        "export const probe = 1;\n",
-    );
+    writeFileSync(sourcePath, "export const probe = 1;\n");
     try {
         const scene = resolveScene(sourcePath);
 
@@ -121,10 +118,7 @@ test("names every way a browser capture stops being evidence", () => {
             pin: capturePin(),
             goldenIdentity: "not-checked",
         });
-        writeFileSync(
-            sourcePath,
-            "export const probe = 2;\n",
-        );
+        writeFileSync(sourcePath, "export const probe = 2;\n");
         assert.match(
             browserCaptureStaleness(scene, captureDirectory, {}) ?? "",
             /captured from a different scene module/,

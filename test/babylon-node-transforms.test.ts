@@ -9,47 +9,113 @@ import { pinnedWorldTransformHeader } from "../src/lowering/pinned-world-transfo
 import { LoweringContext } from "../src/lowering/context.js";
 import { importPinnedModuleFetching } from "../src/pinned-shader-composer.js";
 import { doctoredContext } from "./doctored-store.js";
-import { cppFunction, nativeFixtureVcpkgRoot, optionalNativeFixtureTools, runNativeFixtureCompiler } from "./native-fixture.js";
+import {
+    cppFunction,
+    nativeFixtureVcpkgRoot,
+    optionalNativeFixtureTools,
+    runNativeFixtureCompiler,
+} from "./native-fixture.js";
 
-test("Babylon mesh and container transforms preserve source defaults and world composition", async t => {
+test("Babylon mesh and container transforms preserve source defaults and world composition", async (t) => {
     const native = optionalNativeFixtureTools();
-    if (!native) { t.skip("Native fixture compiler unavailable."); return; }
+    if (!native) {
+        t.skip("Native fixture compiler unavailable.");
+        return;
+    }
     const inputs = [
-        {}, { position: null, rotation: null, scaling: null },
-        { position: [16777217, -.1234567890123, .7], rotation: [.37, -.71, 1.19], scaling: [2.5, -1, .25] },
-        { position: [5, 7], rotation: [.125], scaling: [0, .5] },
+        {},
+        { position: null, rotation: null, scaling: null },
+        {
+            position: [16777217, -0.1234567890123, 0.7],
+            rotation: [0.37, -0.71, 1.19],
+            scaling: [2.5, -1, 0.25],
+        },
+        { position: [5, 7], rotation: [0.125], scaling: [0, 0.5] },
     ];
-    const document = { meshes: inputs.flatMap((input, index) => [
-        { ...input, id: `m${index}`, name: `m${index}`, positions: [0, 0, 0, 1, 0, 0, 0, 1, 0], normals: [0, 0, 1, 0, 0, 1, 0, 0, 1], indices: [0, 1, 2] },
-        { ...input, id: `c${index}`, name: `c${index}` },
-    ]) };
+    const document = {
+        meshes: inputs.flatMap((input, index) => [
+            {
+                ...input,
+                id: `m${index}`,
+                name: `m${index}`,
+                positions: [0, 0, 0, 1, 0, 0, 0, 1, 0],
+                normals: [0, 0, 1, 0, 0, 1, 0, 0, 1],
+                indices: [0, 1, 2],
+            },
+            { ...input, id: `c${index}`, name: `c${index}` },
+        ]),
+    };
     const imported = await importPinnedModuleFetching<{
-        loadBabylon(engine: object, url: string, options: object): Promise<{ entities: Array<{
-            name: string; position: { x: number; y: number; z: number }; worldMatrix: Float32Array;
-        }> }>;
-    }>("loader-babylon/load-babylon.js", () => Buffer.from(JSON.stringify(document)));
+        loadBabylon(
+            engine: object,
+            url: string,
+            options: object,
+        ): Promise<{
+            entities: Array<{
+                name: string;
+                position: { x: number; y: number; z: number };
+                worldMatrix: Float32Array;
+            }>;
+        }>;
+    }>("loader-babylon/load-babylon.js", () =>
+        Buffer.from(JSON.stringify(document)),
+    );
     let expected: Record<string, { position: number[]; world: number[] }>;
     try {
-        const loaded = await imported.module.loadBabylon({ _device: { createBuffer({ size }: { size: number }) {
-            const bytes = new ArrayBuffer(size); return { getMappedRange: () => bytes, unmap() {} };
-        } } }, "https://fixture/transforms.babylon", { loadTextures: false });
-        expected = Object.fromEntries(loaded.entities.map(node => [node.name, {
-            position: [node.position.x, node.position.y, node.position.z], world: [...node.worldMatrix],
-        }]));
+        const loaded = await imported.module.loadBabylon(
+            {
+                _device: {
+                    createBuffer({ size }: { size: number }) {
+                        const bytes = new ArrayBuffer(size);
+                        return { getMappedRange: () => bytes, unmap() {} };
+                    },
+                },
+            },
+            "https://fixture/transforms.babylon",
+            { loadTextures: false },
+        );
+        expected = Object.fromEntries(
+            loaded.entities.map((node) => [
+                node.name,
+                {
+                    position: [
+                        node.position.x,
+                        node.position.y,
+                        node.position.z,
+                    ],
+                    world: [...node.worldMatrix],
+                },
+            ]),
+        );
         assert.equal(Object.keys(expected).length, 8);
-    } finally { imported.release(); }
+    } finally {
+        imported.release();
+    }
     const context = new LoweringContext();
     const loader = new BabylonLowerer(context).lowerLoaderAdapter().source;
-    const changed = cppFunction(lowerBabylonNodeTransforms(doctoredContext("src/loader-babylon/load-babylon.ts",
-        "md.scaling?.[2] ?? 1\n                    );", "md.scaling?.[2] ?? 2\n                    );")),
-        "upstream::TrsLanes babylon_mesh_transform(").replace("babylon_mesh_transform(", "changed_mesh_transform(");
+    const changed = cppFunction(
+        lowerBabylonNodeTransforms(
+            doctoredContext(
+                "src/loader-babylon/load-babylon.ts",
+                "md.scaling?.[2] ?? 1\n                    );",
+                "md.scaling?.[2] ?? 2\n                    );",
+            ),
+        ),
+        "upstream::TrsLanes babylon_mesh_transform(",
+    ).replace("babylon_mesh_transform(", "changed_mesh_transform(");
     const directory = resolve("artifacts/test-babylon-node-transforms");
     mkdirSync(directory, { recursive: true });
-    writeFileSync(join(directory, "world.hpp"), pinnedWorldTransformHeader(context));
+    writeFileSync(
+        join(directory, "world.hpp"),
+        pinnedWorldTransformHeader(context),
+    );
     writeFileSync(join(directory, "inputs.json"), JSON.stringify(inputs));
     writeFileSync(join(directory, "expected.json"), JSON.stringify(expected));
-    const source = join(directory, "check.cpp"), executable = join(directory, "check.exe");
-    writeFileSync(source, `#include "world.hpp"
+    const source = join(directory, "check.cpp"),
+        executable = join(directory, "check.exe");
+    writeFileSync(
+        source,
+        `#include "world.hpp"
 #include <nlohmann/json.hpp>
 #include <cassert>
 #include <fstream>
@@ -77,8 +143,22 @@ int main() {
         }
     }
     assert(changed_mesh_transform(Json::object()).scaling.z==2);
-}`);
-    runNativeFixtureCompiler(native, ["/nologo", "/std:c++20", "/W4", "/WX", "/EHsc", "/O2", `/Fo:${directory}/`, `/Fe:${executable}`,
-        "/I", "native/include", "/I", join(nativeFixtureVcpkgRoot, "include"), source]);
+}`,
+    );
+    runNativeFixtureCompiler(native, [
+        "/nologo",
+        "/std:c++20",
+        "/W4",
+        "/WX",
+        "/EHsc",
+        "/O2",
+        `/Fo:${directory}/`,
+        `/Fe:${executable}`,
+        "/I",
+        "native/include",
+        "/I",
+        join(nativeFixtureVcpkgRoot, "include"),
+        source,
+    ]);
     execFileSync(executable, [], { cwd: directory, stdio: "pipe" });
 });

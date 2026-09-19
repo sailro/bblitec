@@ -71,20 +71,13 @@ export function readPinnedBlendTable(
             const state = descriptor
                 ? blendState(context, descriptor, key)
                 : undefined;
-            const depthMode = optionalProperty(
-                context,
-                literal,
-                "_depthMode",
-            );
+            const depthMode = optionalProperty(context, literal, "_depthMode");
             rows.push({
                 exportName: binding.name.text,
                 enabled: state !== undefined,
                 ...(depthMode
                     ? {
-                          depthMode: context.stringValue(
-                              depthMode,
-                              file,
-                          ),
+                          depthMode: context.stringValue(depthMode, file),
                       }
                     : {}),
                 ...(state
@@ -94,11 +87,7 @@ export function readPinnedBlendTable(
                       }
                     : {}),
                 premultipliedOpacity: Boolean(
-                    optionalProperty(
-                        context,
-                        literal,
-                        "_premultipliedOpacity",
-                    ),
+                    optionalProperty(context, literal, "_premultipliedOpacity"),
                 ),
             });
         }
@@ -151,10 +140,7 @@ export function blendSide(
         `blend '${key}' ${side}`,
     );
     const factor = (field: string): string =>
-        context.stringValue(
-            context.propertyInitializer(value, field),
-            file,
-        );
+        context.stringValue(context.propertyInitializer(value, field), file);
     if (factor("operation") !== "add") {
         context.contractError(
             value,
@@ -244,10 +230,7 @@ export function blendFactoriesCpp(
  * `_key` — which upstream documents as a pipeline-cache discriminator, free
  * to change on its own — is what keeps them from agreeing by coincidence.
  */
-export function blendFactorySymbol(
-    family: string,
-    exportName: string,
-): string {
+export function blendFactorySymbol(family: string, exportName: string): string {
     const suffix = exportName.slice(`${family}Blend`.length);
     return `${family}_blend_${suffix.toLowerCase()}`;
 }
@@ -296,4 +279,3 @@ export function nativeBlendFactor(factor: string): string {
     }
     return mapped;
 }
-

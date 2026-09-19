@@ -24,7 +24,9 @@ function dependencyNames(value: unknown, location: string): string[] {
             Array.isArray(entry) ||
             !("name" in entry)
         ) {
-            assert.fail(`${location}[${index}] must be a name or a named object.`);
+            assert.fail(
+                `${location}[${index}] must be a name or a named object.`,
+            );
         }
         const { name } = entry;
         if (typeof name !== "string") {
@@ -89,7 +91,10 @@ test("packager ships a third-party notice for every linkable dependency", () => 
     // PAL font/control compatibility code retains its upstream notices.
     for (const name of ["Skia", "Chromium"]) {
         names.add(name);
-        assert.match(readFileSync(`native/notices/${name}.txt`, "utf8"), /Redistribution and use/);
+        assert.match(
+            readFileSync(`native/notices/${name}.txt`, "utf8"),
+            /Redistribution and use/,
+        );
     }
 
     const script = readFileSync("tools/package-demo.ps1", "utf8");
@@ -105,7 +110,9 @@ test("packager ships a third-party notice for every linkable dependency", () => 
         end > begin,
         "tools/package-demo.ps1 must close its notice table with the end-of-notices marker comment",
     );
-    const region = script.slice(begin, end) + readFileSync("tools/image-codecs.psm1", "utf8");
+    const region =
+        script.slice(begin, end) +
+        readFileSync("tools/image-codecs.psm1", "utf8");
 
     for (const name of [...names].sort()) {
         if (NOTICE_EXEMPT.has(name)) continue;

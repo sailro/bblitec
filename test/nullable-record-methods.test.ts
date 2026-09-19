@@ -1,12 +1,15 @@
 import assert from "node:assert/strict";
-import {execFileSync} from "node:child_process";
-import {mkdirSync, writeFileSync} from "node:fs";
-import {join, resolve} from "node:path";
+import { execFileSync } from "node:child_process";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { join, resolve } from "node:path";
 import test from "node:test";
-import {compileSource} from "../src/compiler.js";
-import {optionalNativeFixtureTools, runNativeFixtureCompiler} from "./native-fixture.js";
+import { compileSource } from "../src/compiler.js";
+import {
+    optionalNativeFixtureTools,
+    runNativeFixtureCompiler,
+} from "./native-fixture.js";
 
-test("nullable method records preserve receiver, callback and argument evaluation", t => {
+test("nullable method records preserve receiver, callback and argument evaluation", (t) => {
     const result = compileSource(`
         interface Sink { write(value: string): void; read(): string; erase?(key: string): void; }
         let value = "";
@@ -37,12 +40,34 @@ test("nullable method records preserve receiver, callback and argument evaluatio
         if (removals !== 1 || sink.erase !== undefined) throw new Error("optional method snapshot");
     `);
     const tools = optionalNativeFixtureTools(false);
-    if (!tools) { t.skip("Native fixture compiler unavailable."); return; }
+    if (!tools) {
+        t.skip("Native fixture compiler unavailable.");
+        return;
+    }
     const directory = resolve("artifacts/nullable-record-methods");
-    mkdirSync(directory, {recursive:true});
-    const cpp = join(directory, "check.cpp"), executable = join(directory, "check.exe");
+    mkdirSync(directory, { recursive: true });
+    const cpp = join(directory, "check.cpp"),
+        executable = join(directory, "check.exe");
     writeFileSync(cpp, result.cpp);
-    runNativeFixtureCompiler(tools, ["/nologo", "/std:c++20", "/W4", "/WX", "/EHsc", "/MD",
-        "/I", "native/include", `/Fo:${directory}/`, `/Fe:${executable}`, cpp]);
-    assert.equal(execFileSync(executable, {encoding:"utf8", timeout:10000, stdio:"pipe"}), "");
+    runNativeFixtureCompiler(tools, [
+        "/nologo",
+        "/std:c++20",
+        "/W4",
+        "/WX",
+        "/EHsc",
+        "/MD",
+        "/I",
+        "native/include",
+        `/Fo:${directory}/`,
+        `/Fe:${executable}`,
+        cpp,
+    ]);
+    assert.equal(
+        execFileSync(executable, {
+            encoding: "utf8",
+            timeout: 10000,
+            stdio: "pipe",
+        }),
+        "",
+    );
 });

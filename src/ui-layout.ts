@@ -7,29 +7,68 @@ const basis = `(?:auto|${length})`;
 const direction = "(?:row|row-reverse|column|column-reverse)";
 const wrap = "(?:nowrap|wrap|wrap-reverse)";
 const logicalSpacingValues = new Map<string, RegExp>();
-for (const [family, value] of [["padding", length], ["margin", `(?:auto|${signedLength})`]]) {
+for (const [family, value] of [
+    ["padding", length],
+    ["margin", `(?:auto|${signedLength})`],
+]) {
     for (const axis of ["inline", "block"]) {
-        logicalSpacingValues.set(`${family}-${axis}`, new RegExp(`^${value}(?:\\s+${value})?$`));
-        for (const edge of ["start", "end"]) logicalSpacingValues.set(`${family}-${axis}-${edge}`, new RegExp(`^${value}$`));
+        logicalSpacingValues.set(
+            `${family}-${axis}`,
+            new RegExp(`^${value}(?:\\s+${value})?$`),
+        );
+        for (const edge of ["start", "end"])
+            logicalSpacingValues.set(
+                `${family}-${axis}-${edge}`,
+                new RegExp(`^${value}$`),
+            );
     }
 }
-export const uiLogicalSpacingProperties: readonly string[] = [...logicalSpacingValues.keys()];
+export const uiLogicalSpacingProperties: readonly string[] = [
+    ...logicalSpacingValues.keys(),
+];
 
 /** Values whose layout is represented by the pinned flex and box formatters. */
 const layoutValues: ReadonlyMap<string, RegExp> = new Map([
     ...logicalSpacingValues,
-    ["align-content", /^(?:start|end|flex-start|flex-end|center|space-between|space-around|space-evenly|stretch)$/],
-    ["align-self", /^(?:auto|start|end|flex-start|flex-end|center|baseline|stretch)$/],
-    ["flex", new RegExp(`^(?:none|initial|auto|${number}(?:\\s+${number})?(?:\\s+${basis})?|${length})$`)],
+    [
+        "align-content",
+        /^(?:start|end|flex-start|flex-end|center|space-between|space-around|space-evenly|stretch)$/,
+    ],
+    [
+        "align-self",
+        /^(?:auto|start|end|flex-start|flex-end|center|baseline|stretch)$/,
+    ],
+    [
+        "flex",
+        new RegExp(
+            `^(?:none|initial|auto|${number}(?:\\s+${number})?(?:\\s+${basis})?|${length})$`,
+        ),
+    ],
     ["flex-basis", new RegExp(`^${basis}$`)],
     ["flex-grow", new RegExp(`^${number}$`)],
     ["flex-shrink", new RegExp(`^${number}$`)],
     ["flex-wrap", new RegExp(`^${wrap}$`)],
-    ["flex-flow", new RegExp(`^(?:${direction}(?:\\s+${wrap})?|${wrap}(?:\\s+${direction})?)$`)],
-    ...["row-gap", "column-gap", "padding-top", "padding-right", "padding-bottom", "padding-left"]
-        .map((property): [string, RegExp] => [property, new RegExp(`^${length}$`)]),
-    ...["margin-left", "margin-right"]
-        .map((property): [string, RegExp] => [property, new RegExp(`^(?:auto|${signedLength})$`)]),
+    [
+        "flex-flow",
+        new RegExp(
+            `^(?:${direction}(?:\\s+${wrap})?|${wrap}(?:\\s+${direction})?)$`,
+        ),
+    ],
+    ...[
+        "row-gap",
+        "column-gap",
+        "padding-top",
+        "padding-right",
+        "padding-bottom",
+        "padding-left",
+    ].map((property): [string, RegExp] => [
+        property,
+        new RegExp(`^${length}$`),
+    ]),
+    ...["margin-left", "margin-right"].map((property): [string, RegExp] => [
+        property,
+        new RegExp(`^(?:auto|${signedLength})$`),
+    ]),
 ]);
 
 /** Property membership is independent of value validation. */
@@ -38,10 +77,17 @@ export function isUiLayoutProperty(property: string): boolean {
 }
 
 /** Undefined denotes properties reviewed elsewhere. */
-export function supportedUiLayoutValue(property: string, value: string): boolean | undefined {
+export function supportedUiLayoutValue(
+    property: string,
+    value: string,
+): boolean | undefined {
     const pattern = layoutValues.get(property);
     if (!pattern) return undefined;
     const text = value.trim().toLowerCase();
-    return pattern.test(text) && [...text.matchAll(/[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?/g)]
-        .every(match => Number.isFinite(Math.fround(Number(match[0]))));
+    return (
+        pattern.test(text) &&
+        [...text.matchAll(/[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?/g)].every(
+            (match) => Number.isFinite(Math.fround(Number(match[0]))),
+        )
+    );
 }

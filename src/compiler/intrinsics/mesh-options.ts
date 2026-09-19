@@ -24,17 +24,19 @@ import {
 } from "../option-helpers.js";
 
 export interface MeshOptionContext
-    extends ObjectValidationContext,
-    PositiveIntegerContext,
-    Pick<LoweringServices,
-        | "unwrap"
-        | "compileValue"
-        | "expectObjectLiteral"
-        | "expectStaticArrayLiteral"
-        | "objectProperty"
-        | "compileNumber"
-        | "pinValueToTemporary"
-    > {}
+    extends
+        ObjectValidationContext,
+        PositiveIntegerContext,
+        Pick<
+            LoweringServices,
+            | "unwrap"
+            | "compileValue"
+            | "expectObjectLiteral"
+            | "expectStaticArrayLiteral"
+            | "objectProperty"
+            | "compileNumber"
+            | "pinValueToTemporary"
+        > {}
 
 /**
  * The option names each builder accepts, spelled once.
@@ -45,12 +47,7 @@ export interface MeshOptionContext
  * an option that silently stops reaching the geometry. A pinned builder
  * that grows one therefore has one list to move.
  */
-export const BOX_OPTION_NAMES = [
-    "size",
-    "width",
-    "height",
-    "depth",
-] as const;
+export const BOX_OPTION_NAMES = ["size", "width", "height", "depth"] as const;
 
 export const SPHERE_OPTION_NAMES = [
     "segments",
@@ -72,7 +69,10 @@ export function compileBoxOptions(
     const number = (value: ts.Expression): string => {
         const cpp = context.compileNumber(value, precision);
         if (precision === "float") return cpp;
-        return context.pinValueToTemporary({ kind: "number", cpp }, "box_dimension").cpp;
+        return context.pinValueToTemporary(
+            { kind: "number", cpp },
+            "box_dimension",
+        ).cpp;
     };
     if (ts.isObjectLiteralExpression(unwrapped)) {
         validateObjectProperties(
@@ -84,15 +84,38 @@ export function compileBoxOptions(
         if (precision === "double") {
             const values = new EmissionMap<string, string>();
             for (const property of unwrapped.properties) {
-                if (!ts.isPropertyAssignment(property) && !ts.isShorthandPropertyAssignment(property)) {
-                    context.fail(property, "Box data options require named numeric fields.");
+                if (
+                    !ts.isPropertyAssignment(property) &&
+                    !ts.isShorthandPropertyAssignment(property)
+                ) {
+                    context.fail(
+                        property,
+                        "Box data options require named numeric fields.",
+                    );
                 }
-                const name = ts.isIdentifier(property.name) || ts.isStringLiteral(property.name)
-                    ? property.name.text : context.fail(property, "Box data options require named numeric fields.");
-                values.set(name, number(ts.isPropertyAssignment(property) ? property.initializer : property.name));
+                const name =
+                    ts.isIdentifier(property.name) ||
+                    ts.isStringLiteral(property.name)
+                        ? property.name.text
+                        : context.fail(
+                              property,
+                              "Box data options require named numeric fields.",
+                          );
+                values.set(
+                    name,
+                    number(
+                        ts.isPropertyAssignment(property)
+                            ? property.initializer
+                            : property.name,
+                    ),
+                );
             }
             const size = values.get("size") ?? "1.0";
-            return [values.get("width") ?? size, values.get("height") ?? size, values.get("depth") ?? size];
+            return [
+                values.get("width") ?? size,
+                values.get("height") ?? size,
+                values.get("depth") ?? size,
+            ];
         }
         const size = context.objectProperty(unwrapped, "size");
         const width = context.objectProperty(unwrapped, "width");
@@ -140,19 +163,13 @@ export function compileGroundOptions(
     );
     const width = context.objectProperty(object, "width");
     const height = context.objectProperty(object, "height");
-    const subdivisions = context.objectProperty(
-        object,
-        "subdivisions",
-    );
+    const subdivisions = context.objectProperty(object, "subdivisions");
     const uvScale = context.objectProperty(object, "uvScale");
     let compiledUvScale: [string, string] = ["1.0f", "1.0f"];
     if (uvScale) {
         const values = context.expectStaticArrayLiteral(uvScale);
         if (values.elements.length !== 2) {
-            context.fail(
-                values,
-                "Ground uvScale requires [uScale, vScale].",
-            );
+            context.fail(values, "Ground uvScale requires [uScale, vScale].");
         }
         compiledUvScale = [
             context.compileNumber(values.elements[0]!),
@@ -162,9 +179,7 @@ export function compileGroundOptions(
     return [
         width ? context.compileNumber(width, "double") : "1.0",
         height ? context.compileNumber(height, "double") : "1.0",
-        subdivisions
-            ? compilePositiveInteger(context, subdivisions)
-            : "1u",
+        subdivisions ? compilePositiveInteger(context, subdivisions) : "1u",
         compiledUvScale[0],
         compiledUvScale[1],
     ];
@@ -224,10 +239,7 @@ export function compileSphereOptions(
     const unwrapped = context.unwrap(expression);
     if (!ts.isObjectLiteralExpression(unwrapped)) {
         const record = context.compileValue(unwrapped);
-        if (
-            record.kind !== "record" ||
-            !record.recordProperties
-        ) {
+        if (record.kind !== "record" || !record.recordProperties) {
             context.fail(
                 unwrapped,
                 "Expected sphere options as an object literal or static record.",
@@ -236,9 +248,7 @@ export function compileSphereOptions(
         const supported: ReadonlySet<string> = new EmissionSet(
             SPHERE_OPTION_NAMES,
         );
-        for (const name of Object.keys(
-            record.recordProperties,
-        )) {
+        for (const name of Object.keys(record.recordProperties)) {
             if (!supported.has(name)) {
                 context.fail(
                     unwrapped,
@@ -246,12 +256,8 @@ export function compileSphereOptions(
                 );
             }
         }
-        const number = (
-            name: string,
-            fallback: string,
-        ): string => {
-            const value =
-                record.recordProperties?.[name];
+        const number = (name: string, fallback: string): string => {
+            const value = record.recordProperties?.[name];
             if (!value) {
                 return fallback;
             }
@@ -271,19 +277,13 @@ export function compileSphereOptions(
                 ? doubleLiteral(value.staticNumber)
                 : `static_cast<double>(${value.cpp})`;
         };
-        const diameter = number(
-            "diameter",
-            "1.0",
-        );
-        const segments =
-            record.recordProperties.segments;
+        const diameter = number("diameter", "1.0");
+        const segments = record.recordProperties.segments;
         if (
             segments &&
             (segments.kind !== "number" ||
                 segments.staticNumber === undefined ||
-                !Number.isInteger(
-                    segments.staticNumber,
-                ) ||
+                !Number.isInteger(segments.staticNumber) ||
                 segments.staticNumber <= 0)
         ) {
             context.fail(
@@ -292,9 +292,7 @@ export function compileSphereOptions(
             );
         }
         return [
-            segments
-                ? `${segments.staticNumber}u`
-                : "32u",
+            segments ? `${segments.staticNumber}u` : "32u",
             number("diameterX", diameter),
             number("diameterY", diameter),
             number("diameterZ", diameter),
@@ -349,8 +347,6 @@ export function compileTorusOptions(
     return [
         diameter ? context.compileNumber(diameter, "double") : "1.0",
         thickness ? context.compileNumber(thickness, "double") : "0.5",
-        tessellation
-            ? compilePositiveInteger(context, tessellation)
-            : "16u",
+        tessellation ? compilePositiveInteger(context, tessellation) : "16u",
     ];
 }

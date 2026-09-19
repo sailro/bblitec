@@ -1,5 +1,11 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+    mkdirSync,
+    mkdtempSync,
+    readFileSync,
+    rmSync,
+    writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
@@ -8,7 +14,11 @@ import {
     geometryTaskPaths,
 } from "../src/geometry-output-diagnostics.js";
 import { writeSeekMeta } from "../src/tooling/artifacts.js";
-import { defaultExecutable, resolveNativeExecutable, withEnvironment } from "../src/tooling/native-run.js";
+import {
+    defaultExecutable,
+    resolveNativeExecutable,
+    withEnvironment,
+} from "../src/tooling/native-run.js";
 import { compiledBuildDirectory } from "../src/build-options.js";
 
 test("measured runs select coexisting backend builds without modifying their payloads", async () => {
@@ -21,11 +31,22 @@ test("measured runs select coexisting backend builds without modifying their pay
                 mkdirSync(build);
                 writeFileSync(defaultExecutable(build), backend);
             }
-            for (const backend of ["SDL_GPU", "DAWN", "BOTH", "SDL_GPU"] as const) {
+            for (const backend of [
+                "SDL_GPU",
+                "DAWN",
+                "BOTH",
+                "SDL_GPU",
+            ] as const) {
                 await withEnvironment("BBLITE_BACKEND", backend, async () => {
-                    const executable = resolveNativeExecutable(undefined, directory);
+                    const executable = resolveNativeExecutable(
+                        undefined,
+                        directory,
+                    );
                     assert.equal(readFileSync(executable, "utf8"), backend);
-                    assert.equal(resolveNativeExecutable("explicit/exe", directory), resolve("explicit/exe"));
+                    assert.equal(
+                        resolveNativeExecutable("explicit/exe", directory),
+                        resolve("explicit/exe"),
+                    );
                 });
             }
         });
@@ -124,10 +145,7 @@ test("the executable chain is explicit, then BBLITE_NATIVE_EXE, then the build",
         );
         // The ambient override wins over the scene's own build.
         assert.equal(
-            resolveNativeExecutable(
-                undefined,
-                "native/build-scene145-release",
-            ),
+            resolveNativeExecutable(undefined, "native/build-scene145-release"),
             resolve("elsewhere", "bblite_native.exe"),
         );
         // Without either, the scene's Release build answers.
@@ -137,9 +155,7 @@ test("the executable chain is explicit, then BBLITE_NATIVE_EXE, then the build",
             "native/build-scene145-release",
         );
         assert.ok(
-            fallback.includes(
-                join("native", "build-scene145-release"),
-            ),
+            fallback.includes(join("native", "build-scene145-release")),
             `default resolves into the build directory (got ${fallback})`,
         );
     } finally {

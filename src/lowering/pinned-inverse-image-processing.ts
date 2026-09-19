@@ -102,10 +102,7 @@ export function pinnedInverseImageProcessingHeader(
     assertForwardCurveScale(context, scale);
     const calls = new Map([
         ...pinnedNumericMathCalls(),
-        [
-            "clamp01",
-            (args: readonly string[]) => `clamp01(${args.join(", ")})`,
-        ],
+        ["clamp01", (args: readonly string[]) => `clamp01(${args.join(", ")})`],
     ]);
     const clamp = lowerPinnedFunction(
         context,
@@ -131,7 +128,9 @@ export function pinnedInverseImageProcessingHeader(
             calls,
         },
     );
-    return pinnedHeader(["<algorithm>","<cmath>","<cstdint>"], `
+    return pinnedHeader(
+        ["<algorithm>", "<cmath>", "<cstdint>"],
+        `
 ${clamp}
 
 /**
@@ -144,5 +143,6 @@ ${clamp}
  * curve the composed stages state in WGSL.
  */
 ${inverse}
-`);
+`,
+    );
 }

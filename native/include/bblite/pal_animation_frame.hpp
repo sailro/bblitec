@@ -7,11 +7,14 @@ namespace bbl::pal {
 /** A Window's repaint clock, shared with its dedicated workers. It retains
  * only weak native inboxes, never realm callbacks or JavaScript state. */
 class AnimationFrameSource {
-  public:
+public:
     void subscribe(const std::shared_ptr<EventLoop::Inbox>& inbox) {
-        if (!inbox) throw std::invalid_argument("Animation frames require a realm inbox.");
+        if (!inbox)
+            throw std::invalid_argument("Animation frames require a realm inbox.");
         std::lock_guard lock(mutex_);
-        for (const auto& subscriber : subscribers_) if (subscriber.lock() == inbox) return;
+        for (const auto& subscriber : subscribers_)
+            if (subscriber.lock() == inbox)
+                return;
         subscribers_.push_back(inbox);
     }
     void tick(EventLoop::Clock::time_point timestamp) {
@@ -24,7 +27,8 @@ class AnimationFrameSource {
             return true;
         });
     }
-  private:
+
+private:
     std::mutex mutex_;
     std::vector<std::weak_ptr<EventLoop::Inbox>> subscribers_;
 };

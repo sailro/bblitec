@@ -10,13 +10,16 @@ static int samplers = 0;
 static int buffers = 0;
 template <typename T> T fake() { return reinterpret_cast<T>(std::uintptr_t{1}); }
 void SDL_ReleaseGPUTexture(SDL_GPUDevice* device, SDL_GPUTexture* texture) {
-    assert(device && texture); --textures;
+    assert(device && texture);
+    --textures;
 }
 void SDL_ReleaseGPUSampler(SDL_GPUDevice* device, SDL_GPUSampler* sampler) {
-    assert(device && sampler); --samplers;
+    assert(device && sampler);
+    --samplers;
 }
 void SDL_ReleaseGPUBuffer(SDL_GPUDevice* device, SDL_GPUBuffer* buffer) {
-    assert(device && buffer); --buffers;
+    assert(device && buffer);
+    --buffers;
 }
 
 int main() {
@@ -26,23 +29,29 @@ int main() {
         try {
             auto material = std::make_unique<SdlSampledTextures>(fake<SDL_GPUDevice*>());
             for (int allocation = 0; allocation < 6; ++allocation) {
-                if (allocation % 2 == 0) material->bindings.emplace_back();
+                if (allocation % 2 == 0)
+                    material->bindings.emplace_back();
                 auto& binding = material->bindings.back();
-                if (allocation == failure) throw std::runtime_error("GPU allocation failed");
+                if (allocation == failure)
+                    throw std::runtime_error("GPU allocation failed");
                 if (allocation % 2 == 0) {
-                    binding.texture = fake<SDL_GPUTexture*>(); ++textures;
+                    binding.texture = fake<SDL_GPUTexture*>();
+                    ++textures;
                 } else {
-                    binding.sampler = fake<SDL_GPUSampler*>(); ++samplers;
+                    binding.sampler = fake<SDL_GPUSampler*>();
+                    ++samplers;
                 }
             }
-        } catch (const std::runtime_error&) {}
+        } catch (const std::runtime_error&) {
+        }
         assert(textures == 0 && samplers == 0);
     }
     {
         std::vector<std::unique_ptr<SdlSampledTextures>> cache;
         auto material = std::make_unique<SdlSampledTextures>(fake<SDL_GPUDevice*>());
         material->bindings.push_back({fake<SDL_GPUTexture*>(), fake<SDL_GPUSampler*>()});
-        ++textures; ++samplers;
+        ++textures;
+        ++samplers;
         cache.push_back(std::move(material));
         assert(!material && textures == 1 && samplers == 1);
         cache.front()->clear();
@@ -56,7 +65,8 @@ int main() {
         atlas.rgba_width = atlas.rgba_height = 1;
         int uploads = 0;
         const auto upload = [&] {
-            ++uploads; ++textures;
+            ++uploads;
+            ++textures;
             return OwnedSdlTexture{fake<SDL_GPUTexture*>(), {fake<SDL_GPUDevice*>()}};
         };
         const auto acquire = [&](const bbl::TextureData& source, bool srgb = false) {
@@ -78,14 +88,22 @@ int main() {
         auto flip_image = acquire(flipped);
         assert(flip_image != first);
         SdlSampledTextures a{fake<SDL_GPUDevice*>()}, b{fake<SDL_GPUDevice*>()};
-        a.append_shared_texture(first).sampler = fake<SDL_GPUSampler*>(); ++samplers;
+        a.append_shared_texture(first).sampler = fake<SDL_GPUSampler*>();
+        ++samplers;
         // A generated/CSM slot can sit between shared image bindings.
-        a.bindings.push_back({fake<SDL_GPUTexture*>(), nullptr}); ++textures;
+        a.bindings.push_back({fake<SDL_GPUTexture*>(), nullptr});
+        ++textures;
         a.append_shared_texture(first);
-        b.append_shared_texture(second).sampler = fake<SDL_GPUSampler*>(); ++samplers;
-        first.reset(); second.reset(); srgb.reset(); changed.reset(); flip_image.reset();
+        b.append_shared_texture(second).sampler = fake<SDL_GPUSampler*>();
+        ++samplers;
+        first.reset();
+        second.reset();
+        srgb.reset();
+        changed.reset();
+        flip_image.reset();
         assert(textures == 2);
-        a.clear(); a.clear();
+        a.clear();
+        a.clear();
         assert(textures == 1 && samplers == 1);
         b.clear();
         assert(textures == 0 && samplers == 0);
@@ -99,28 +117,33 @@ int main() {
         premultiplied.premultiply_alpha = !atlas.premultiply_alpha;
         assert(acquire(premultiplied) != fresh);
         bbl::TextureData blocks;
-        blocks.compressed.storage = std::make_shared<const std::vector<std::uint8_t>>(16, std::uint8_t{0});
+        blocks.compressed.storage =
+            std::make_shared<const std::vector<std::uint8_t>>(16, std::uint8_t{0});
         blocks.compressed.format = "bc1-rgba-unorm";
         blocks.compressed.width = blocks.compressed.height = 4;
         blocks.compressed.block_width = blocks.compressed.block_height = 4;
         blocks.compressed.block_bytes = 8;
-        blocks.compressed.mips.push_back({4, 4, std::span<const std::uint8_t>(*blocks.compressed.storage).first(8)});
+        blocks.compressed.mips.push_back(
+            {4, 4, std::span<const std::uint8_t>(*blocks.compressed.storage).first(8)});
         auto compressed = acquire(blocks);
         auto other_blocks = blocks;
         assert(acquire(other_blocks) == compressed);
-        other_blocks.compressed.mips[0].bytes = std::span<const std::uint8_t>(*blocks.compressed.storage).subspan(8);
+        other_blocks.compressed.mips[0].bytes =
+            std::span<const std::uint8_t>(*blocks.compressed.storage).subspan(8);
         assert(acquire(other_blocks) != compressed);
         other_blocks = blocks;
         other_blocks.compressed.format = "bc1-rgba-unorm-srgb";
         assert(acquire(other_blocks) != compressed);
         auto variants = blocks;
-        variants.compressed_alternatives = std::make_shared<const std::vector<bbl::CompressedTexture>>(
-            std::vector<bbl::CompressedTexture>{other_blocks.compressed});
+        variants.compressed_alternatives =
+            std::make_shared<const std::vector<bbl::CompressedTexture>>(
+                std::vector<bbl::CompressedTexture>{other_blocks.compressed});
         auto variant_image = acquire(variants);
         assert(variant_image != compressed);
         auto variant_alias = variants;
         assert(acquire(variant_alias) == variant_image);
-        variant_alias.compressed_alternatives = std::make_shared<const std::vector<bbl::CompressedTexture>>();
+        variant_alias.compressed_alternatives =
+            std::make_shared<const std::vector<bbl::CompressedTexture>>();
         assert(acquire(variant_alias) != variant_image);
     }
     assert(textures == 0 && samplers == 0);
@@ -130,6 +153,7 @@ int main() {
         auto second = std::move(first);
         assert(!first && second);
         throw std::runtime_error("second geometry upload failed");
-    } catch (const std::runtime_error&) {}
+    } catch (const std::runtime_error&) {
+    }
     assert(buffers == 0);
 }

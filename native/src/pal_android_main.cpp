@@ -31,7 +31,7 @@ std::string android_time_zone() {
     env->DeleteLocalRef(type);
     return result;
 }
-}
+} // namespace bbl::js
 
 namespace {
 class AndroidLog final : public std::streambuf {
@@ -40,16 +40,21 @@ class AndroidLog final : public std::streambuf {
     std::streamsize xsputn(const char* text, std::streamsize length) override {
         const std::lock_guard lock(mutex_);
         for (std::streamsize index = 0; index < length; ++index) {
-            if (text[index] == '\n') write_line();
-            else line_ += text[index];
+            if (text[index] == '\n')
+                write_line();
+            else
+                line_ += text[index];
         }
         return length;
     }
     int overflow(int character) override {
-        if (character == traits_type::eof()) return traits_type::not_eof(character);
+        if (character == traits_type::eof())
+            return traits_type::not_eof(character);
         const std::lock_guard lock(mutex_);
-        if (character == '\n') write_line();
-        else line_ += static_cast<char>(character);
+        if (character == '\n')
+            write_line();
+        else
+            line_ += static_cast<char>(character);
         return character;
     }
     // cerr is unit-buffered: flushing each insertion would split trace records.
@@ -60,11 +65,12 @@ class AndroidLog final : public std::streambuf {
             line_.clear();
         }
     }
-  public:
+
+public:
     ~AndroidLog() override { write_line(); }
 };
 
-}
+} // namespace
 
 extern "C" __attribute__((visibility("default"))) int SDL_main(int argc, char** argv) {
     AndroidLog log;
@@ -75,13 +81,14 @@ extern "C" __attribute__((visibility("default"))) int SDL_main(int argc, char** 
     try {
         const bool dawn = bbl::pal::use_dawn_backend();
         __android_log_print(ANDROID_LOG_INFO, "bblite", "GPU backend: %s run=%s",
-            dawn ? "dawn" : "sdl_gpu", run_id ? run_id : "interactive");
+                            dawn ? "dawn" : "sdl_gpu", run_id ? run_id : "interactive");
         result = bbl::pal::run_generated_entry(bblite_generated_main, argc, argv);
     } catch (const std::exception& error) {
         std::cerr << "Babylon Lite native error: " << error.what() << '\n';
     }
     std::cout.rdbuf(output);
     std::cerr.rdbuf(errors);
-    __android_log_print(ANDROID_LOG_INFO, "bblite", "Native exit: %d run=%s", result, run_id ? run_id : "interactive");
+    __android_log_print(ANDROID_LOG_INFO, "bblite", "Native exit: %d run=%s", result,
+                        run_id ? run_id : "interactive");
     return result;
 }

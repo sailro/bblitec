@@ -20,7 +20,7 @@
 namespace bbl {
 struct Engine;
 struct EngineOptions;
-}
+} // namespace bbl
 
 namespace bbl::pal {
 
@@ -66,29 +66,19 @@ void write_local_storage(const std::string& key, const std::string& value);
 void remove_local_storage(const std::string& key);
 // Synchronous selection and publication; false is cancellation. Validation
 // runs on the caller's realm before committing or handing bytes to a provider.
-bool save_file(
-    Engine& engine,
-    const FileDialogOptions& options,
-    std::span<const std::uint8_t> bytes,
-    const std::function<void()>& validate = {});
-bool save_file(
-    Engine& engine,
-    const FileDialogOptions& options,
-    std::string_view text,
-    const std::function<void()>& validate = {});
-std::optional<SelectedFileSnapshot> choose_open_file(
-    Engine& engine,
-    const FileDialogOptions& options);
+bool save_file(Engine& engine, const FileDialogOptions& options,
+               std::span<const std::uint8_t> bytes, const std::function<void()>& validate = {});
+bool save_file(Engine& engine, const FileDialogOptions& options, std::string_view text,
+               const std::function<void()>& validate = {});
+std::optional<SelectedFileSnapshot> choose_open_file(Engine& engine,
+                                                     const FileDialogOptions& options);
 /**
  * File contents selected for opening are returned above as a bounded immutable
  * snapshot. Writes stage beside the destination and replace it atomically.
  */
-void write_selected_file_atomically(
-    const std::string& path,
-    const std::vector<std::uint8_t>& bytes);
-void write_selected_file_atomically(
-    const std::string& path,
-    std::string_view text);
+void write_selected_file_atomically(const std::string& path,
+                                    const std::vector<std::uint8_t>& bytes);
+void write_selected_file_atomically(const std::string& path, std::string_view text);
 double monotonic_milliseconds();
 // Browser-facing `performance.now()`. In ordinary runs this is the same
 // monotonic clock; fixed-delta captures advance it deterministically.

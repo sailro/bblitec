@@ -4,7 +4,10 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import test from "node:test";
 import { compileSource } from "../src/compiler.js";
-import { optionalNativeFixtureTools, runNativeFixtureCompiler } from "./native-fixture.js";
+import {
+    optionalNativeFixtureTools,
+    runNativeFixtureCompiler,
+} from "./native-fixture.js";
 
 // The nest-aware unroll budget (`MAX_STATIC_UNROLL_PRODUCT`) and the
 // handle-table capture-and-fold arm retain generation-owned effects. Plain
@@ -12,7 +15,11 @@ import { optionalNativeFixtureTools, runNativeFixtureCompiler } from "./native-f
 // body-cost policy serves counted and for-of loops. These fixtures stay below
 // the separate compilation-wide hard limit and observe every resulting value.
 
-function countedDataNest(bounds: readonly [number, number, number], element: string, expected: readonly number[]): string {
+function countedDataNest(
+    bounds: readonly [number, number, number],
+    element: string,
+    expected: readonly number[],
+): string {
     return `
         import { createEngine } from "@babylonjs/lite";
         async function main() {
@@ -36,10 +43,22 @@ function countedDataNest(bounds: readonly [number, number, number], element: str
     `;
 }
 
-const uniformNest = countedDataNest([16, 16, 4], "1", Array<number>(1024).fill(1));
-const indexedNest = countedDataNest([8, 8, 8], "x * 100 + y * 10 + z",
-    Array.from({ length: 512 }, (_, index) =>
-        Math.floor(index / 64) * 100 + (Math.floor(index / 8) % 8) * 10 + index % 8));
+const uniformNest = countedDataNest(
+    [16, 16, 4],
+    "1",
+    Array<number>(1024).fill(1),
+);
+const indexedNest = countedDataNest(
+    [8, 8, 8],
+    "x * 100 + y * 10 + z",
+    Array.from(
+        { length: 512 },
+        (_, index) =>
+            Math.floor(index / 64) * 100 +
+            (Math.floor(index / 8) % 8) * 10 +
+            (index % 8),
+    ),
+);
 
 /** A scene growing a tuple of bound box handles, with a caller-shaped tail. */
 function meshTupleScene(count: number, tail: string): string {
@@ -57,8 +76,10 @@ function meshTupleScene(count: number, tail: string): string {
             const engine = await createEngine({});
             const scene = createSceneContext(engine);
             const meshes: Mesh[] = [];
-            ${Array.from({ length: count }, (_, index) =>
-                `const box${index} = createBox(engine); meshes.push(box${index});`,
+            ${Array.from(
+                { length: count },
+                (_, index) =>
+                    `const box${index} = createBox(engine); meshes.push(box${index});`,
             ).join("\n")}
             ${tail}
         }
@@ -78,14 +99,8 @@ test("folds a large handle-tuple for...of into a static table and one native loo
     );
 
     // One body, not three hundred.
-    assert.equal(
-        result.cpp.match(/\.rotation\.y \+= 0\.01f;/g)?.length,
-        1,
-    );
-    assert.equal(
-        result.cpp.match(/mark_mesh_runtime_transform/g)?.length,
-        1,
-    );
+    assert.equal(result.cpp.match(/\.rotation\.y \+= 0\.01f;/g)?.length, 1);
+    assert.equal(result.cpp.match(/mark_mesh_runtime_transform/g)?.length, 1);
     // The table holds the bound handle locals and the loop walks it.
     assert.match(
         result.cpp,
@@ -110,10 +125,7 @@ test("regenerating the folded scene twice is deterministic", () => {
             }
         });`,
     );
-    assert.equal(
-        compileSource(source).cpp,
-        compileSource(source).cpp,
-    );
+    assert.equal(compileSource(source).cpp, compileSource(source).cpp);
 });
 
 test("creation calls are pinned once before folding their handle list", () => {
@@ -140,10 +152,7 @@ test("creation calls are pinned once before folding their handle list", () => {
     `);
 
     assert.match(result.cpp, /v_bblite_handle_table_/);
-    assert.equal(
-        result.cpp.match(/\.rotation\.y \+= 0\.01f;/g)?.length,
-        1,
-    );
+    assert.equal(result.cpp.match(/\.rotation\.y \+= 0\.01f;/g)?.length, 1);
 });
 
 test("folded scene membership retains every generation-time registration", () => {
@@ -157,10 +166,7 @@ test("folded scene membership retains every generation-time registration", () =>
     );
 
     assert.match(result.cpp, /v_bblite_handle_table_/);
-    assert.equal(
-        result.cpp.match(/bbl::add_to_scene\(v_scene, /g)?.length,
-        1,
-    );
+    assert.equal(result.cpp.match(/bbl::add_to_scene\(v_scene, /g)?.length, 1);
 });
 
 test("folded bodies keep iteration-local scalar bindings", () => {
@@ -179,10 +185,7 @@ test("folded bodies keep iteration-local scalar bindings", () => {
 
     assert.match(result.cpp, /v_bblite_handle_table_/);
     assert.doesNotMatch(result.cpp, /v_bblite_repeat_index_/);
-    assert.equal(
-        result.cpp.match(/\.rotation\.y \+= /g)?.length,
-        1,
-    );
+    assert.equal(result.cpp.match(/\.rotation\.y \+= /g)?.length, 1);
 });
 
 test("a uniform numeric nest uses one native body before static expansion", () => {
@@ -257,22 +260,34 @@ test("a numeric nest computes each ordered index value in its native loops", () 
 });
 
 const nativeTools = optionalNativeFixtureTools(false);
-test("folded handle walks construct once and preserve registration and callback order", { skip: !nativeTools }, () => {
-    const output = resolve("artifacts/static-unroll-handles-check");
-    mkdirSync(output, { recursive: true });
-    const tail = `for (const mesh of meshes) addToScene(scene, mesh);
+test(
+    "folded handle walks construct once and preserve registration and callback order",
+    { skip: !nativeTools },
+    () => {
+        const output = resolve("artifacts/static-unroll-handles-check");
+        mkdirSync(output, { recursive: true });
+        const tail = `for (const mesh of meshes) addToScene(scene, mesh);
         onBeforeRender(scene, () => { for (const mesh of meshes) {
             let spin = 0.01; spin += 0.02; mesh.rotation.y += spin;
         } });`;
-    for (const variant of ["bound", "direct", "rebound"]) {
-        let source = meshTupleScene(16, tail);
-        if (variant === "direct") source = source.replace(/const box\d+ = createBox\(engine\); meshes.push\(box\d+\);/g,
-            "meshes.push(createBox(engine));");
-        if (variant === "rebound") source = source.replace(/const box(\d+) = createBox\(engine\); meshes.push\(box\d+\);/g,
-            (_, index: string) => `${index === "0" ? "let " : ""}selected = createBox(engine); meshes.push(selected);`);
-        const result = compileSource(source);
-        writeFileSync(join(output, "program.hpp"), result.cpp);
-        writeFileSync(join(output, "check.cpp"), `
+        for (const variant of ["bound", "direct", "rebound"]) {
+            let source = meshTupleScene(16, tail);
+            if (variant === "direct")
+                source = source.replace(
+                    /const box\d+ = createBox\(engine\); meshes.push\(box\d+\);/g,
+                    "meshes.push(createBox(engine));",
+                );
+            if (variant === "rebound")
+                source = source.replace(
+                    /const box(\d+) = createBox\(engine\); meshes.push\(box\d+\);/g,
+                    (_, index: string) =>
+                        `${index === "0" ? "let " : ""}selected = createBox(engine); meshes.push(selected);`,
+                );
+            const result = compileSource(source);
+            writeFileSync(join(output, "program.hpp"), result.cpp);
+            writeFileSync(
+                join(output, "check.cpp"),
+                `
             #define main generated_main
             #include "program.hpp"
             #undef main
@@ -298,20 +313,38 @@ test("folded handle walks construct once and preserve registration and callback 
             }
             }
             int main() { assert(generated_main() == 0); assert(created == 16 && registered == 16 && updated == 32); }
-        `);
-        const executable = join(output, "check.exe");
-        runNativeFixtureCompiler(nativeTools!, ["/nologo", "/std:c++20", "/W4", "/WX", "/permissive-", "/EHsc",
-            "/I", "native/include", `/Fo:${output}\\`, `/Fe:${executable}`, join(output, "check.cpp")]);
-        execFileSync(executable, { stdio: "pipe" });
-    }
-});
+        `,
+            );
+            const executable = join(output, "check.exe");
+            runNativeFixtureCompiler(nativeTools!, [
+                "/nologo",
+                "/std:c++20",
+                "/W4",
+                "/WX",
+                "/permissive-",
+                "/EHsc",
+                "/I",
+                "native/include",
+                `/Fo:${output}\\`,
+                `/Fe:${executable}`,
+                join(output, "check.cpp"),
+            ]);
+            execFileSync(executable, { stdio: "pipe" });
+        }
+    },
+);
 
-test("native numeric nests preserve all 1024 uniform and 512 indexed values in order", { skip: !nativeTools }, () => {
-    const output = resolve("artifacts/static-unroll-data-check");
-    mkdirSync(output, { recursive: true });
-    const source = join(output, "check.cpp");
-    const executable = join(output, "check.exe");
-    writeFileSync(source, `
+test(
+    "native numeric nests preserve all 1024 uniform and 512 indexed values in order",
+    { skip: !nativeTools },
+    () => {
+        const output = resolve("artifacts/static-unroll-data-check");
+        mkdirSync(output, { recursive: true });
+        const source = join(output, "check.cpp");
+        const executable = join(output, "check.exe");
+        writeFileSync(
+            source,
+            `
         #define main uniform_nest
         ${compileSource(uniformNest).cpp}
         #undef main
@@ -320,8 +353,26 @@ test("native numeric nests preserve all 1024 uniform and 512 indexed values in o
         #undef main
         namespace bbl { Engine create_engine(EngineOptions options) { Engine engine; engine.options = options; return engine; } }
         int main() { return uniform_nest() || indexed_nest(); }
-    `);
-    runNativeFixtureCompiler(nativeTools!, ["/nologo", "/std:c++20", "/W4", "/WX", "/permissive-", "/EHsc", "/MD", "/O2", "/Gy",
-        "/I", "native/include", `/Fo:${output}\\`, `/Fe:${executable}`, source, "/link", "/OPT:REF"]);
-    execFileSync(executable, { stdio: "pipe" });
-});
+    `,
+        );
+        runNativeFixtureCompiler(nativeTools!, [
+            "/nologo",
+            "/std:c++20",
+            "/W4",
+            "/WX",
+            "/permissive-",
+            "/EHsc",
+            "/MD",
+            "/O2",
+            "/Gy",
+            "/I",
+            "native/include",
+            `/Fo:${output}\\`,
+            `/Fe:${executable}`,
+            source,
+            "/link",
+            "/OPT:REF",
+        ]);
+        execFileSync(executable, { stdio: "pipe" });
+    },
+);

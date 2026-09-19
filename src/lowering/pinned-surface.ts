@@ -21,7 +21,9 @@ const surfaceModule = "src/engine/surface.ts";
  * Both arms of the pinned MSAA selection, with the same read and shape
  * assertion the render plan used to make.
  */
-function pinnedSampleCounts(context: LoweringContext): readonly [number, number] {
+function pinnedSampleCounts(
+    context: LoweringContext,
+): readonly [number, number] {
     const { file, declaration } = context.functionDeclaration(
         surfaceModule,
         "_buildSurface",
@@ -51,8 +53,7 @@ export function pinnedSurfaceHeader(
     context: LoweringContext,
     sampleCount: 1 | 4 = 4,
 ): string {
-    const [singleSampleCount, defaultSampleCount] =
-        pinnedSampleCounts(context);
+    const [singleSampleCount, defaultSampleCount] = pinnedSampleCounts(context);
     if (
         sampleCount !== singleSampleCount &&
         sampleCount !== defaultSampleCount

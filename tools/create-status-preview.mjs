@@ -6,13 +6,17 @@ import { PNG } from "pngjs";
 
 const [, , inputArgument, outputArgument] = process.argv;
 if (!inputArgument || !outputArgument) {
-    throw new Error("Usage: node tools/create-status-preview.mjs <input.png> <output.png>");
+    throw new Error(
+        "Usage: node tools/create-status-preview.mjs <input.png> <output.png>",
+    );
 }
 
 const input = PNG.sync.read(readFileSync(resolve(inputArgument)));
 const scale = 4;
 if (input.width % scale !== 0 || input.height % scale !== 0) {
-    throw new Error(`${input.width}x${input.height} is not divisible by ${scale}.`);
+    throw new Error(
+        `${input.width}x${input.height} is not divisible by ${scale}.`,
+    );
 }
 const output = new PNG({
     width: input.width / scale,

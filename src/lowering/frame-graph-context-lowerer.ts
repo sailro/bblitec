@@ -16,8 +16,7 @@ export class FrameGraphContextLowerer {
     public lower(): LoweredSource {
         return {
             modulePath,
-            symbolName:
-                "createFrameGraphContext,registerFrameGraphContext",
+            symbolName: "createFrameGraphContext,registerFrameGraphContext",
             header: "",
             source: `// ${this.context.provenance(
                 modulePath,

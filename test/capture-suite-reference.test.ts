@@ -1,10 +1,5 @@
 import assert from "node:assert/strict";
-import {
-    mkdirSync,
-    mkdtempSync,
-    rmSync,
-    writeFileSync,
-} from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import test from "node:test";
 import {
@@ -27,21 +22,34 @@ test("captures full page UI unless canvas-only attribution is requested", () => 
 
 test("device-local capture sizes the host without changing canonical viewport defaults", async () => {
     for (const viewport of [undefined, { width: 667, height: 375 }]) {
-        const server = createSuiteSceneServer("export {};", viewport ? { viewport } : {});
+        const server = createSuiteSceneServer(
+            "export {};",
+            viewport ? { viewport } : {},
+        );
         try {
-            await new Promise<void>(done => server.listen(0, "127.0.0.1", done));
+            await new Promise<void>((done) =>
+                server.listen(0, "127.0.0.1", done),
+            );
             const address = server.address();
             assert.ok(address && typeof address !== "string");
-            const html = await (await fetch(`http://127.0.0.1:${address.port}/scene.html`)).text();
+            const html = await (
+                await fetch(`http://127.0.0.1:${address.port}/scene.html`)
+            ).text();
             const { width, height } = viewport ?? { width: 1280, height: 720 };
             assert.ok(html.includes(`width:${width}px;height:${height}px`));
             assert.ok(html.includes(`width="${width}" height="${height}"`));
         } finally {
-            await new Promise<void>(done => server.close(() => done()));
+            await new Promise<void>((done) => server.close(() => done()));
         }
     }
     for (const width of [0, -1, 1.5, NaN]) {
-        assert.throws(() => createSuiteSceneServer("", { viewport: { width, height: 375 } }), /positive integer/);
+        assert.throws(
+            () =>
+                createSuiteSceneServer("", {
+                    viewport: { width, height: 375 },
+                }),
+            /positive integer/,
+        );
     }
 });
 
@@ -52,10 +60,12 @@ test("device-local capture sizes the host without changing canonical viewport de
 // of a retained-UI application. The end-to-end proof stays with
 // `scene -- capture <application>`'s byte-identity line; this pins the
 // derivation itself, browser-free.
-function applicationScene(options: {
-    referenceFrame?: number;
-    nativeEnvironment?: Record<string, string>;
-} = {}): SceneDefinition {
+function applicationScene(
+    options: {
+        referenceFrame?: number;
+        nativeEnvironment?: Record<string, string>;
+    } = {},
+): SceneDefinition {
     return {
         id: "app",
         name: "App",
@@ -92,18 +102,9 @@ test("derives the instrumented capture's fixed frame exactly as the golden captu
     const application = applicationScene({
         nativeEnvironment: { BBLITE_SCREENSHOT_FRAME: "181" },
     });
-    assert.equal(
-        goldenFixedFrame(application, true),
-        181,
-    );
-    assert.equal(
-        goldenFixedFrame(application, false),
-        undefined,
-    );
-    assert.equal(
-        goldenFixedFrame(application, false),
-        undefined,
-    );
+    assert.equal(goldenFixedFrame(application, true), 181);
+    assert.equal(goldenFixedFrame(application, false), undefined);
+    assert.equal(goldenFixedFrame(application, false), undefined);
     // A non-positive or non-numeric native frame derives nothing.
     assert.equal(
         goldenFixedFrame(
@@ -137,7 +138,14 @@ test("serves the host UI bootstrap ahead of the scene module script", async () =
                     focusVisible: true,
                     style: "outline: 2px solid cyan",
                 },
-                {kind:"class",primary:"compact",maxWidth:800,reducedMotion:true,containerMaxWidth:320,style:"width:40px"},
+                {
+                    kind: "class",
+                    primary: "compact",
+                    maxWidth: 800,
+                    reducedMotion: true,
+                    containerMaxWidth: 320,
+                    style: "width:40px",
+                },
             ],
             elements: [
                 {
@@ -149,15 +157,11 @@ test("serves the host UI bootstrap ahead of the scene module script", async () =
         },
     });
     try {
-        await new Promise<void>((done) =>
-            server.listen(0, "127.0.0.1", done),
-        );
+        await new Promise<void>((done) => server.listen(0, "127.0.0.1", done));
         const address = server.address();
         assert.ok(address && typeof address !== "string");
         const html = await (
-            await fetch(
-                `http://127.0.0.1:${address.port}/scene.html`,
-            )
+            await fetch(`http://127.0.0.1:${address.port}/scene.html`)
         ).text();
         const bootstrapIndex = html.indexOf("const hostStyleSheet");
         const moduleIndex = html.indexOf('<script type="module"');
@@ -171,14 +175,14 @@ test("serves the host UI bootstrap ahead of the scene module script", async () =
             "host UI must be served ahead of the scene module",
         );
         assert.match(html, /\.hud\{color: red\}/);
-        assert.match(html, /@media\(max-width:800px\)\{@media\(prefers-reduced-motion:reduce\)\{@container\(max-width:320px\)\{\.compact\{width:40px\}\}\}\}/);
+        assert.match(
+            html,
+            /@media\(max-width:800px\)\{@media\(prefers-reduced-motion:reduce\)\{@container\(max-width:320px\)\{\.compact\{width:40px\}\}\}\}/,
+        );
         // Legacy classStyles and generic selector flags share the same
         // normalized sheet. Dropping focus-visible paints every button as
         // selected in the reference.
-        assert.match(
-            html,
-            /\.entry:focus-visible\{outline: 2px solid cyan\}/,
-        );
+        assert.match(html, /\.entry:focus-visible\{outline: 2px solid cyan\}/);
     } finally {
         await new Promise<void>((done) => server.close(() => done()));
     }
@@ -199,11 +203,7 @@ test("preserves the reference query when navigating to the suite scene", async (
         },
     } as unknown as Parameters<typeof gotoScenePage>[0];
 
-    await gotoScenePage(
-        page,
-        "http://127.0.0.1:4173",
-        "?seekTime=1.25",
-    );
+    await gotoScenePage(page, "http://127.0.0.1:4173", "?seekTime=1.25");
 
     assert.deepEqual(navigations, [
         {
@@ -233,10 +233,7 @@ test("maps an unbundled nested demo asset URL to its bundle-relative file", () =
 
 test("maps a nested module asset URL to the bundle directory", () => {
     const root = mkdtempSync(resolve(".capture-suite-flat-"));
-    const asset = resolve(
-        root,
-        "lab/lite/src/demos/librequake/maps/item.bsp",
-    );
+    const asset = resolve(root, "lab/lite/src/demos/librequake/maps/item.bsp");
     try {
         mkdirSync(resolve(asset, ".."), { recursive: true });
         writeFileSync(asset, "asset");
@@ -275,73 +272,62 @@ test("builds a registration-ordered fixed browser RAF clock", () => {
     assert.match(script, /frame - engineStartFrame/);
     assert.match(script, /fixedEngineStarting/);
     assert.match(script, /queueMicrotask\(\(\) =>/);
-    assert.throws(() => fixedAnimationFrameScript(0), /Invalid fixed animation frame/);
-    assert.throws(() => fixedAnimationFrameScript(1.5), /Invalid fixed animation frame/);
+    assert.throws(
+        () => fixedAnimationFrameScript(0),
+        /Invalid fixed animation frame/,
+    );
+    assert.throws(
+        () => fixedAnimationFrameScript(1.5),
+        /Invalid fixed animation frame/,
+    );
 });
 
 test("serves entry modules from their source-relative URL", async () => {
-    const root = mkdtempSync(
-        resolve(".capture-suite-reference-"),
-    );
+    const root = mkdtempSync(resolve(".capture-suite-reference-"));
     const entry = resolve(root, "nested", "entry.ts");
     const helper = resolve(root, "nested", "helper.ts");
     mkdirSync(resolve(root, "nested"));
     writeFileSync(entry, 'import "./helper.js";\n');
     writeFileSync(helper, "export const value: number = 1;\n");
 
-    const server = createSuiteSceneServer(
-        'import "./helper.js";\n',
-        { sourcePath: entry },
-    );
+    const server = createSuiteSceneServer('import "./helper.js";\n', {
+        sourcePath: entry,
+    });
     try {
-        await new Promise<void>((done) =>
-            server.listen(0, "127.0.0.1", done),
-        );
+        await new Promise<void>((done) => server.listen(0, "127.0.0.1", done));
         const address = server.address();
-        assert.ok(
-            address && typeof address !== "string",
-        );
+        assert.ok(address && typeof address !== "string");
         const base = `http://127.0.0.1:${address.port}`;
-        const html = await (
-            await fetch(`${base}/scene.html`)
-        ).text();
+        const html = await (await fetch(`${base}/scene.html`)).text();
         const entryPath = `/${root
             .slice(resolve(".").length + 1)
             .replaceAll("\\", "/")}/nested/entry.js`;
         assert.match(
             html,
             new RegExp(
-                `src="${entryPath.replace(
-                    /[.*+?^${}()|[\]\\]/g,
-                    "\\$&",
-                )}"`,
+                `src="${entryPath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}"`,
             ),
         );
-        const entryResponse = await fetch(
-            `${base}${entryPath}`,
-        );
+        const entryResponse = await fetch(`${base}${entryPath}`);
         assert.equal(entryResponse.status, 200);
         const helperResponse = await fetch(
-            `${base}${entryPath.replace(
-                /entry\.js$/,
-                "helper.js",
-            )}`,
+            `${base}${entryPath.replace(/entry\.js$/, "helper.js")}`,
         );
         assert.equal(helperResponse.status, 200);
-        assert.match(
-            await helperResponse.text(),
-            /export const value = 1/,
-        );
+        assert.match(await helperResponse.text(), /export const value = 1/);
         // Literal Worker(new URL("./helper.ts", import.meta.url)) keeps its
         // extension. Serve executable JavaScript at that URL too.
-        const workerResponse = await fetch(`${base}${entryPath.replace(/entry\.js$/, "helper.ts")}`);
+        const workerResponse = await fetch(
+            `${base}${entryPath.replace(/entry\.js$/, "helper.ts")}`,
+        );
         assert.equal(workerResponse.status, 200);
-        assert.match(workerResponse.headers.get("content-type") ?? "", /javascript/);
+        assert.match(
+            workerResponse.headers.get("content-type") ?? "",
+            /javascript/,
+        );
         assert.match(await workerResponse.text(), /export const value = 1/);
     } finally {
-        await new Promise<void>((done) =>
-            server.close(() => done()),
-        );
+        await new Promise<void>((done) => server.close(() => done()));
         rmSync(root, { recursive: true, force: true });
     }
 });

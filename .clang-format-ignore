@@ -1,0 +1,11 @@
+artifacts/**
+.cache/**
+corpus/**
+examples/**
+generated/**
+node_modules/**
+reference/**
+upstream/**
+native/build*/**
+native/vcpkg-overlay-ports/**
+native/vcpkg_installed/**

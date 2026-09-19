@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
-import { pathToFileURL } from "node:url";
 import { LoweringContext } from "../src/lowering/context.js";
 import {
     HOOK_NAMES,
@@ -12,6 +11,7 @@ import {
     SLOT_NAMES,
 } from "../src/lowering/node-particle-live-lowerer.js";
 import { findRepositoryRoot } from "../src/upstream-source.js";
+import { importPinnedModule } from "../src/pinned-shader-composer.js";
 
 /**
  * The live node-particle lowering over the demo's own graph.
@@ -45,32 +45,49 @@ async function lowerDemoGraph(): Promise<{
     systemBlock.capacity = 600;
     systemBlock.blendMode = 0;
     systemBlock.updateSpeed = 0.0167;
-    const emitRate = (systemBlock.inputs as Array<Record<string, unknown>>).find(
-        (input) => input.name === "emitRate",
-    )!;
+    const emitRate = (
+        systemBlock.inputs as Array<Record<string, unknown>>
+    ).find((input) => input.name === "emitRate")!;
     emitRate.value = 90;
 
-    const lib = join(root, "node_modules/@babylonjs/lite/lib");
-    const load = async (path: string): Promise<Record<string, Function>> =>
-        (await import(pathToFileURL(join(lib, path)).href)) as Record<string, Function>;
-    const { parseNodeParticleSource } = await load("particle/node/npe-parser.js");
-    const { buildNodeParticleSet } = await load("particle/node/npe-build.js");
-    const { createTranslationMat4 } = await load("math/create-translation-mat4.js");
-    const graph = parseNodeParticleSource!(document) as {
-        blocks: Map<number, LiveGraph["blocks"][number]>;
-        systemBlockIds: number[];
-    };
+    const { parseNodeParticleSource } = await importPinnedModule<{
+        parseNodeParticleSource(
+            this: void,
+            document: object,
+        ): {
+            blocks: Map<number, LiveGraph["blocks"][number]>;
+            systemBlockIds: number[];
+        };
+    }>("particle/node/npe-parser.js");
+    const { buildNodeParticleSet } = await importPinnedModule<{
+        buildNodeParticleSet(
+            this: void,
+            engine: object,
+            scene: object,
+            graph: object,
+            options: { emitter: { x: number; y: number; z: number } },
+        ): Promise<{ systems: Array<Record<string, unknown>> }>;
+    }>("particle/node/npe-build.js");
+    const { createTranslationMat4 } = await importPinnedModule<{
+        createTranslationMat4(
+            this: void,
+            x: number,
+            y: number,
+            z: number,
+        ): Float32Array;
+    }>("math/create-translation-mat4.js");
+    const graph = parseNodeParticleSource(document);
     const visits: number[] = [];
     const recording = new Map(graph.blocks);
-    const plain = Map.prototype.get.bind(recording);
+    const plain = recording.get.bind(recording);
     recording.get = (key: number) => {
         visits.push(key);
         return plain(key);
     };
     graph.blocks = recording;
-    const set = (await buildNodeParticleSet!({}, {}, graph, {
+    const set = await buildNodeParticleSet({}, {}, graph, {
         emitter: { x: 0, y: 0, z: 0 },
-    })) as { systems: Array<Record<string, unknown>> };
+    });
     const system = set.systems[0]!;
     const systemId = graph.systemBlockIds[0]!;
     const slots = Object.fromEntries(
@@ -92,7 +109,7 @@ async function lowerDemoGraph(): Promise<{
         slots,
         hooks,
         emitter: [0, 0, 0],
-        emitterWorldMatrix: Array.from(createTranslationMat4!(0, 0, 0) as Float32Array),
+        emitterWorldMatrix: Array.from(createTranslationMat4(0, 0, 0)),
         visitOrder: visits,
     };
     const liveGraph: LiveGraph = {
@@ -109,10 +126,16 @@ const demo = lowerDemoGraph();
 test("the live lowering derives the executed pin's own build", async () => {
     const { facts } = await demo;
     assert.equal(facts.updateSteps, 2);
-    assert.deepEqual(
-        Object.values(facts.slots),
-        [true, true, true, true, true, true, true, true],
-    );
+    assert.deepEqual(Object.values(facts.slots), [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+    ]);
     assert.ok(Object.values(facts.hooks).every((installed) => !installed));
 });
 
@@ -129,13 +152,21 @@ test("the simulation loop keeps the pin's creation order and emission count", as
         "create_color",
         "create_color_dead",
     ].map((slot) => createNew.indexOf(`${slot}(state, i)`));
-    assert.ok(order.every((index, position) => index > (order[position - 1] ?? -1)));
+    assert.ok(
+        order.every((index, position) => index > (order[position - 1] ?? -1)),
+    );
     // `emission >> 0` is ECMAScript ToInt32, not a C++ cast.
     assert.match(source, /bbl::js::shift_right\(emission, 0\.0\)/);
     // Absent hooks fold away rather than emitting a null test.
-    assert.doesNotMatch(source, /_prepareFrame|_emitRateGetter|_writeColorDead/);
+    assert.doesNotMatch(
+        source,
+        /_prepareFrame|_emitRateGetter|_writeColorDead/,
+    );
     // The two update steps in graph order: colour before position.
-    assert.match(source, /update_steps = \{\s*&update_step_35,\s*&update_step_40\}/);
+    assert.match(
+        source,
+        /update_steps = \{\s*&update_step_35,\s*&update_step_40\}/,
+    );
 });
 
 test("per-particle closures are lowered with their shapes folded", async () => {
@@ -151,17 +182,29 @@ test("per-particle closures are lowered with their shapes folded", async () => {
     assert.match(source, /bbl::js::random_js\(\)/);
     // A colour math block: the shape test folded to the Color4 arm, the
     // operation a constant argument of the pin's own apply.
-    assert.match(source, /state\.b32_color4\.a = npe_apply\(0\.0, a\.a, b\.a\);/);
+    assert.match(
+        source,
+        /state\.b32_color4\.a = npe_apply\(0\.0, a\.a, b\.a\);/,
+    );
     // The box shape draws each component through randomRange and transforms
     // by the emitter matrix the executed pin composed.
     assert.match(source, /npe_random_range\(minX, maxBox\.x\)/);
-    assert.match(source, /npe_transform_coordinates_to_ref\(rx, ry, rz, emitter_world_matrix, state\.b27_scratch\)/);
+    assert.match(
+        source,
+        /npe_transform_coordinates_to_ref\(rx, ry, rz, emitter_world_matrix, state\.b27_scratch\)/,
+    );
     // A stored vector draw takes the shape the body assigns, not the
     // number the pin initialises the cell with.
     assert.match(source, /Vec2d b14_stored\{\};/);
     // Typed-array stores round at the pin's widths: f32 columns, f64 age.
-    assert.match(source, /state\.pos_x\[static_cast<std::size_t>\(i\)\] = static_cast<float>\(v\.x\);/);
-    assert.match(source, /state\.age\[static_cast<std::size_t>\(i\)\] = \(previousAge \+ stepSpeed\);/);
+    assert.match(
+        source,
+        /state\.pos_x\[static_cast<std::size_t>\(i\)\] = static_cast<float>\(v\.x\);/,
+    );
+    assert.match(
+        source,
+        /state\.age\[static_cast<std::size_t>\(i\)\] = \(previousAge \+ stepSpeed\);/,
+    );
 });
 
 test("a graph variant the lowering does not cover refuses by name", async () => {
@@ -173,7 +216,11 @@ test("a graph variant the lowering does not cover refuses by name", async () => 
                 className: "SystemBlock",
                 name: "system",
                 inputs: [
-                    { name: "emitRate", targetBlockId: 2, targetConnectionName: "output" },
+                    {
+                        name: "emitRate",
+                        targetBlockId: 2,
+                        targetConnectionName: "output",
+                    },
                 ],
                 serialized: { capacity: 4 },
             },

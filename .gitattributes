@@ -6,8 +6,12 @@
 *.spv binary
 *.h text eol=lf
 *.hpp text eol=lf
+*.js text eol=lf
 *.json text eol=lf
+*.m text eol=lf
 *.md text eol=lf
+*.mjs text eol=lf
+*.mm text eol=lf
 # A unified diff writes a context line for a blank source line as a bare
 # newline, so a CRLF checkout turns it into a line holding one carriage
 # return -- which `git apply` reads as neither context nor content and

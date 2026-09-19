@@ -40,8 +40,7 @@ import {
  */
 const corpusGraph = (scene: number): Promise<Record<string, unknown>> =>
     executeModuleGraph({
-        modulePath:
-            `corpus/babylon-lite/lab/lite/src/shared/scene${scene}-nme.ts`,
+        modulePath: `corpus/babylon-lite/lab/lite/src/shared/scene${scene}-nme.ts`,
         exportName: `SCENE${scene}_NME_JSON`,
     });
 
@@ -101,10 +100,7 @@ test("transcribes MorphTargetsBlock storage bindings structurally", async () => 
         composed.wgsl,
         /@group\(1\)@binding\(3\)var<storage,read>morph/,
     );
-    assert.match(
-        composed.wgsl,
-        /@builtin\(vertex_index\)vertexIndex:u32/,
-    );
+    assert.match(composed.wgsl, /@builtin\(vertex_index\)vertexIndex:u32/);
 
     const variant = {
         index: 0,
@@ -112,10 +108,7 @@ test("transcribes MorphTargetsBlock storage bindings structurally", async () => 
         composed,
     };
     const header = inlineCpp(pinnedNodeVariantsHeader("test", [variant], []));
-    assert.equal(
-        nodeVariantsUseMorphStorage([variant]),
-        true,
-    );
+    assert.equal(nodeVariantsUseMorphStorage([variant]), true);
     assert.match(header, /struct NodeVariantMorphBindings \{/);
     assert.match(header, /NodeVariantMorphBindings morph;/);
     assert.match(header, /std::uint32_t deltas_binding;/);
@@ -178,10 +171,7 @@ test("transcribes MorphTargetsBlock storage bindings structurally", async () => 
             ),
             "utf8",
         );
-        assert.match(
-            capabilities,
-            /#define BBLITE_GPU_MORPH_STORAGE 1/,
-        );
+        assert.match(capabilities, /#define BBLITE_GPU_MORPH_STORAGE 1/);
     } finally {
         rmSync(output, { recursive: true, force: true });
     }
@@ -191,18 +181,15 @@ test("both native node paths bind per-mesh morph storage and its fallback", () =
     const sdl = readFileSync("native/src/pal_sdl_gpu.cpp", "utf8");
     const drawNode = cppFunction(sdl, "void draw_node_variant(");
     const resolverStart = drawNode.indexOf("const auto resolve_storage");
-    const resolverEnd = drawNode.indexOf(
-        "bind_stage_storage(",
-        resolverStart,
-    );
+    const resolverEnd = drawNode.indexOf("bind_stage_storage(", resolverStart);
     assert.ok(resolverStart >= 0 && resolverEnd > resolverStart);
     const resolver = drawNode.slice(resolverStart, resolverEnd);
+    assert.match(resolver, /morph_storage_buffer_for\(mesh, name\)/);
     assert.match(
-        resolver,
-        /morph_storage_buffer_for\(mesh, name\)/,
+        sdl,
+        /if \(name == "morphDeltas"\)\s+return mesh\.morph_deltas;/,
     );
-    assert.match(sdl, /if \(name == "morphDeltas"\) return mesh\.morph_deltas;/);
-    assert.match(sdl, /if \(name == "morph"\) return mesh\.morph_weights;/);
+    assert.match(sdl, /if \(name == "morph"\)\s+return mesh\.morph_weights;/);
     assert.match(sdl, /gpu_mesh\.morph_deltas = state\.empty_morph_deltas;/);
     assert.match(sdl, /gpu_mesh\.morph_weights = state\.empty_morph_weights;/);
 
@@ -233,15 +220,14 @@ test("carries the pin's alpha-combine state into the node variant", async () => 
     const graph = { ...(await corpusGraph(60)), forceAlphaBlending: true };
     const composed = await composeNodeMaterial(graph, "blended");
     assert.equal(composed.alphaBlending, true);
-    const header = inlineCpp(pinnedNodeVariantsHeader(
-        "test",
-        [{ index: 0, ...nodeVariantStageStems(0), composed }],
-        [],
-    ));
-    assert.match(
-        header,
-        /bool alpha_blending;/,
+    const header = inlineCpp(
+        pinnedNodeVariantsHeader(
+            "test",
+            [{ index: 0, ...nodeVariantStageStems(0), composed }],
+            [],
+        ),
     );
+    assert.match(header, /bool alpha_blending;/);
 });
 
 test("refuses a node alpha mode whose fixed-function state is not lowered", async () => {
@@ -279,14 +265,8 @@ test("both node backends apply alpha-combine blending without depth writes", () 
         dawn,
         /traits\.transparent && !shadow_pass && !caster && !geometry_view;/,
     );
-    assert.match(
-        dawn,
-        /blend = blend_state_from\(transparent_blend\);/,
-    );
-    assert.match(
-        dawn,
-        /depth_stencil\.depthWriteEnabled = transparent/,
-    );
+    assert.match(dawn, /blend = blend_state_from\(transparent_blend\);/);
+    assert.match(dawn, /depth_stencil\.depthWriteEnabled = transparent/);
 });
 
 test("emits the variant table and the pin's own mesh block", async () => {
@@ -294,11 +274,13 @@ test("emits the variant table and the pin's own mesh block", async () => {
         await corpusGraph(60),
         "scene60",
     );
-    const header = inlineCpp(pinnedNodeVariantsHeader(
-        "test",
-        [{ index: 0, ...nodeVariantStageStems(0), composed }],
-        [],
-    ));
+    const header = inlineCpp(
+        pinnedNodeVariantsHeader(
+            "test",
+            [{ index: 0, ...nodeVariantStageStems(0), composed }],
+            [],
+        ),
+    );
     assert.match(header, /node_variants_data\{\{/);
     assert.match(header, /"node-0\.vert", "node-0\.frag"/);
     // The mesh block is mirrored field for field, with the light-index array
@@ -324,18 +306,20 @@ test("refuses two graphs whose mesh blocks disagree", async () => {
     };
     assert.throws(
         () =>
-            inlineCpp(pinnedNodeVariantsHeader(
-                "test",
-                [
-                    { index: 0, ...nodeVariantStageStems(0), composed },
-                    {
-                        index: 1,
-                        ...nodeVariantStageStems(1),
-                        composed: widened,
-                    },
-                ],
-                [],
-            )),
+            inlineCpp(
+                pinnedNodeVariantsHeader(
+                    "test",
+                    [
+                        { index: 0, ...nodeVariantStageStems(0), composed },
+                        {
+                            index: 1,
+                            ...nodeVariantStageStems(1),
+                            composed: widened,
+                        },
+                    ],
+                    [],
+                ),
+            ),
         /mesh block/,
     );
 });

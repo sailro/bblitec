@@ -8,8 +8,7 @@
 namespace bbl::pal {
 
 /** Owns one API reference; raw construction and assignment adopt that reference. */
-template <typename Handle, auto Release, auto AddRef = nullptr>
-class DawnOwned {
+template <typename Handle, auto Release, auto AddRef = nullptr> class DawnOwned {
 public:
     DawnOwned() noexcept = default;
     explicit DawnOwned(Handle handle) noexcept : handle_(handle) {}
@@ -17,22 +16,31 @@ public:
     DawnOwned& operator=(const DawnOwned&) = delete;
     DawnOwned(DawnOwned&& other) noexcept : handle_(other.release()) {}
     DawnOwned& operator=(DawnOwned&& other) noexcept {
-        if (this != &other) reset(other.release());
+        if (this != &other)
+            reset(other.release());
         return *this;
     }
-    DawnOwned& operator=(Handle handle) noexcept { reset(handle); return *this; }
+    DawnOwned& operator=(Handle handle) noexcept {
+        reset(handle);
+        return *this;
+    }
     ~DawnOwned() { reset(); }
 
     [[nodiscard]] Handle get() const noexcept { return handle_; }
     operator Handle() const noexcept { return get(); }
     [[nodiscard]] Handle release() noexcept { return std::exchange(handle_, nullptr); }
-    [[nodiscard]] DawnOwned retain() const noexcept requires (AddRef != nullptr) {
-        if (handle_) AddRef(handle_);
+    [[nodiscard]] DawnOwned retain() const noexcept
+        requires(AddRef != nullptr)
+    {
+        if (handle_)
+            AddRef(handle_);
         return DawnOwned{handle_};
     }
     void reset(Handle handle = nullptr) noexcept {
-        if (auto previous = std::exchange(handle_, handle)) Release(previous);
+        if (auto previous = std::exchange(handle_, handle))
+            Release(previous);
     }
+
 private:
     Handle handle_ = nullptr;
 };
@@ -63,15 +71,17 @@ struct DawnSampledTexture {
 
 template <typename Handle>
 Handle require_dawn_resource(Handle handle, const char* label,
-    std::source_location site = std::source_location::current()) {
-    if (!handle) throw GpuTransportError(std::string(label) + " at " + site.file_name() + ":" + std::to_string(site.line()));
+                             std::source_location site = std::source_location::current()) {
+    if (!handle)
+        throw GpuTransportError(std::string(label) + " at " + site.file_name() + ":" +
+                                std::to_string(site.line()));
     return handle;
 }
 
-inline WGPUTextureView create_dawn_texture_view(
-    WGPUTexture texture, const WGPUTextureViewDescriptor* descriptor,
-    const char* label = "wgpuTextureCreateView",
-    std::source_location site = std::source_location::current()) {
+inline WGPUTextureView
+create_dawn_texture_view(WGPUTexture texture, const WGPUTextureViewDescriptor* descriptor,
+                         const char* label = "wgpuTextureCreateView",
+                         std::source_location site = std::source_location::current()) {
     require_dawn_resource(texture, "texture view source", site);
     return require_dawn_resource(wgpuTextureCreateView(texture, descriptor), label, site);
 }

@@ -4,7 +4,10 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import test from "node:test";
 import { compileSource } from "../src/compiler.js";
-import { optionalNativeFixtureTools, runNativeFixtureCompiler } from "./native-fixture.js";
+import {
+    optionalNativeFixtureTools,
+    runNativeFixtureCompiler,
+} from "./native-fixture.js";
 
 const source = `
     import { createEngine } from "@babylonjs/lite";
@@ -47,12 +50,18 @@ test("native platform reads share function and method bodies", () => {
 });
 
 const tools = optionalNativeFixtureTools(false);
-test("shared gamepad reads preserve live state, nullable arguments and closure updates", { skip: !tools }, () => {
-    const output = resolve("artifacts/shared-platform-handles-check");
-    mkdirSync(output, { recursive: true });
-    writeFileSync(join(output, "program.hpp"), compileSource(source).cpp);
-    const file = join(output, "check.cpp"), executable = join(output, "check.exe");
-    writeFileSync(file, `
+test(
+    "shared gamepad reads preserve live state, nullable arguments and closure updates",
+    { skip: !tools },
+    () => {
+        const output = resolve("artifacts/shared-platform-handles-check");
+        mkdirSync(output, { recursive: true });
+        writeFileSync(join(output, "program.hpp"), compileSource(source).cpp);
+        const file = join(output, "check.cpp"),
+            executable = join(output, "check.exe");
+        writeFileSync(
+            file,
+            `
         #define main generated_main
         #include "program.hpp"
         #undef main
@@ -79,8 +88,24 @@ test("shared gamepad reads preserve live state, nullable arguments and closure u
             }
         }
         int main() { assert(generated_main() == 0); assert(samples == 3); }
-    `);
-    runNativeFixtureCompiler(tools!, ["/nologo", "/std:c++20", "/W4", "/WX", "/permissive-", "/EHsc", "/MD",
-        `/Fo:${output}\\`, `/Fe:${executable}`, "/I", output, "/I", "native\\include", file]);
-    execFileSync(executable, { encoding: "utf8" });
-});
+    `,
+        );
+        runNativeFixtureCompiler(tools!, [
+            "/nologo",
+            "/std:c++20",
+            "/W4",
+            "/WX",
+            "/permissive-",
+            "/EHsc",
+            "/MD",
+            `/Fo:${output}\\`,
+            `/Fe:${executable}`,
+            "/I",
+            output,
+            "/I",
+            "native\\include",
+            file,
+        ]);
+        execFileSync(executable, { encoding: "utf8" });
+    },
+);

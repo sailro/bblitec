@@ -3,17 +3,34 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import test from "node:test";
-import { cppFunction, nativeFixtureVcpkgRoot, optionalNativeFixtureTools, runNativeFixtureCompiler } from "./native-fixture.js";
+import {
+    cppFunction,
+    nativeFixtureVcpkgRoot,
+    optionalNativeFixtureTools,
+    runNativeFixtureCompiler,
+} from "./native-fixture.js";
 
 const native = optionalNativeFixtureTools();
 
-test("Metal mip and UNORM clear transport preserves other backend and floating-format paths", { skip: !native }, () => {
-    const directory = resolve("artifacts/texture-mipmaps");
-    mkdirSync(directory, { recursive: true });
-    const source = join(directory, "check.cpp"), executable = join(directory, "check.exe");
-    const implementation = cppFunction(readFileSync("native/src/pal_sdl_gpu_shared.hpp", "utf8"), "inline void generate_texture_mipmaps(");
-    const clear = cppFunction(readFileSync("native/src/pal_sdl_gpu_shared.hpp", "utf8"), "inline SDL_FColor gpu_clear_color(");
-    writeFileSync(source, `#define SDL_STATIC_LIB
+test(
+    "Metal mip and UNORM clear transport preserves other backend and floating-format paths",
+    { skip: !native },
+    () => {
+        const directory = resolve("artifacts/texture-mipmaps");
+        mkdirSync(directory, { recursive: true });
+        const source = join(directory, "check.cpp"),
+            executable = join(directory, "check.exe");
+        const implementation = cppFunction(
+            readFileSync("native/src/pal_sdl_gpu_shared.hpp", "utf8"),
+            "inline void generate_texture_mipmaps(",
+        );
+        const clear = cppFunction(
+            readFileSync("native/src/pal_sdl_gpu_shared.hpp", "utf8"),
+            "inline SDL_FColor gpu_clear_color(",
+        );
+        writeFileSync(
+            source,
+            `#define SDL_STATIC_LIB
 #include <SDL3/SDL.h>
 #include <algorithm>
 #include <cassert>
@@ -72,9 +89,24 @@ int main() {
     generate_texture_mipmaps(&device, &command, &texture, 5, 3, 3);
     assert(generated == 2 && blits.size() == 4);
 }
-`);
-    runNativeFixtureCompiler(native!, ["/nologo", "/std:c++20", "/W4", "/WX", "/EHsc", "/MD",
-        `/Fo:${directory}/`, `/Fe:${executable}`, `/external:I${join(nativeFixtureVcpkgRoot, "include")}`,
-        "/external:W0", source]);
-    assert.equal(execFileSync(executable, { encoding: "utf8", windowsHide: true }), "");
-});
+`,
+        );
+        runNativeFixtureCompiler(native!, [
+            "/nologo",
+            "/std:c++20",
+            "/W4",
+            "/WX",
+            "/EHsc",
+            "/MD",
+            `/Fo:${directory}/`,
+            `/Fe:${executable}`,
+            `/external:I${join(nativeFixtureVcpkgRoot, "include")}`,
+            "/external:W0",
+            source,
+        ]);
+        assert.equal(
+            execFileSync(executable, { encoding: "utf8", windowsHide: true }),
+            "",
+        );
+    },
+);

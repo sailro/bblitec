@@ -1,8 +1,6 @@
 import ts from "typescript";
 import { LoweredSource, LoweringContext } from "./context.js";
-import {
-    type PinnedBinding,
-} from "./pinned-numeric-lowerer.js";
+import { type PinnedBinding } from "./pinned-numeric-lowerer.js";
 import {
     pinnedMathSpelling,
     pinnedNumericMathCalls,
@@ -56,7 +54,8 @@ export class LightLowerer {
             }
         }
         return vectors
-            .map((vector) => `
+            .map(
+                (vector) => `
 void set_${kind}_light_${vector}(
     Engine& engine,
     LightHandle light,
@@ -65,7 +64,8 @@ void set_${kind}_light_${vector}(
     record.${vector} = ${vector};
     refresh_${kind}_light_matrix(record);
 }
-`)
+`,
+            )
             .join("");
     }
 
@@ -84,14 +84,38 @@ void set_${kind}_light_${vector}(
      * writes — so the pinned factor reaches the output in one place.
      */
     public lowerSpotAngleSetter(): string {
-        const {file,declaration}=this.context.functionDeclaration("src/light/spot-light.ts","createSpotLight");
-        const expression=this.context.unwrapExpression(this.context.variableInitializer(declaration,"_cosHalfAngle"));
-        if(!ts.isCallExpression(expression)||this.context.propertyPath(expression.expression)?.join(".")!=="Math.cos"||expression.arguments.length!==1)
-            this.context.contractError(expression,"Expected source spot cone cosine.");
-        const product=this.context.unwrapExpression(expression.arguments[0]!);
-        if(!ts.isBinaryExpression(product)||product.operatorToken.kind!==ts.SyntaxKind.AsteriskToken||!ts.isIdentifier(product.left)||product.left.text!=="angle")
-            this.context.contractError(product,"Expected source spot cone angle scaling.");
-        return this.spotConeSetter(declaration,this.context.numericValue(product.right,file));
+        const { file, declaration } = this.context.functionDeclaration(
+            "src/light/spot-light.ts",
+            "createSpotLight",
+        );
+        const expression = this.context.unwrapExpression(
+            this.context.variableInitializer(declaration, "_cosHalfAngle"),
+        );
+        if (
+            !ts.isCallExpression(expression) ||
+            this.context.propertyPath(expression.expression)?.join(".") !==
+                "Math.cos" ||
+            expression.arguments.length !== 1
+        )
+            this.context.contractError(
+                expression,
+                "Expected source spot cone cosine.",
+            );
+        const product = this.context.unwrapExpression(expression.arguments[0]!);
+        if (
+            !ts.isBinaryExpression(product) ||
+            product.operatorToken.kind !== ts.SyntaxKind.AsteriskToken ||
+            !ts.isIdentifier(product.left) ||
+            product.left.text !== "angle"
+        )
+            this.context.contractError(
+                product,
+                "Expected source spot cone angle scaling.",
+            );
+        return this.spotConeSetter(
+            declaration,
+            this.context.numericValue(product.right, file),
+        );
     }
 
     private spotConeSetter(
@@ -103,11 +127,7 @@ void set_${kind}_light_${vector}(
             "defineProperty",
         );
         const name = install.arguments[1];
-        if (
-            !name ||
-            !ts.isStringLiteralLike(name) ||
-            name.text !== "angle"
-        ) {
+        if (!name || !ts.isStringLiteralLike(name) || name.text !== "angle") {
             this.context.contractError(
                 name ?? install,
                 "Expected the spot light to define an 'angle' accessor.",
@@ -166,9 +186,8 @@ void refresh_spot_light_cone(LightRecord& light, double angle) {
             );
             if (
                 ts.isNewExpression(initializer) &&
-                this.context
-                    .propertyPath(initializer.expression)
-                    ?.join(".") === "ObservableVec3"
+                this.context.propertyPath(initializer.expression)?.join(".") ===
+                    "ObservableVec3"
             ) {
                 observed.push(property.name.text);
             }
@@ -179,7 +198,10 @@ void refresh_spot_light_cone(LightRecord& light, double angle) {
     public lowerMatrix(): LoweredSource {
         const modulePath = "src/light/light-matrix.ts";
         const symbolName = "localMatrixFromDirection";
-        const { file, declaration } = this.context.functionDeclaration(modulePath, symbolName);
+        const { file, declaration } = this.context.functionDeclaration(
+            modulePath,
+            symbolName,
+        );
         // The pinned parameter list, in order. The emitted signature keeps
         // float parameters (the record fields the factories pass are f32),
         // so a pin that renames or reorders them regenerates rather than
@@ -205,7 +227,7 @@ void refresh_spot_light_cone(LightRecord& light, double angle) {
         const bindings = new Map<string, PinnedBinding>(
             ["dx", "dy", "dz", "px", "py", "pz"].map((name) => [
                 name,
-                { cpp: name, type: "scalar" } as PinnedBinding,
+                { cpp: name, type: "scalar" },
             ]),
         );
         // The two statements this port specializes instead of translating,
@@ -217,10 +239,7 @@ void refresh_spot_light_cone(LightRecord& light, double angle) {
         //  - `const m = out4 as unknown as Mat4Storage`: the storage view
         //    over the same array.
         const outBinding: PinnedBinding = { cpp: "out", type: "f32" };
-        bindings.set(
-            "out ?? (new F32(16) as unknown as Mat4)",
-            outBinding,
-        );
+        bindings.set("out ?? (new F32(16) as unknown as Mat4)", outBinding);
         bindings.set("out4 as unknown as Mat4Storage", outBinding);
 
         const body = lowerPinnedBody(file, declaration.body!.statements, {
@@ -246,7 +265,9 @@ void refresh_spot_light_cone(LightRecord& light, double angle) {
         return {
             modulePath,
             symbolName,
-            header: pinnedHeader(["<array>"], `
+            header: pinnedHeader(
+                ["<array>"],
+                `
 std::array<float, 16>& local_matrix_from_direction(
     float dx_f32,
     float dy_f32,
@@ -255,7 +276,8 @@ std::array<float, 16>& local_matrix_from_direction(
     float py_f32,
     float pz_f32,
     std::array<float, 16>& out);
-`),
+`,
+            ),
             source: `// ${this.context.provenance(modulePath, symbolName)}
 #include <bblite/js_data.hpp>
 #include <bblite/upstream/light_matrix.hpp>
@@ -291,12 +313,14 @@ ${body}
     public lowerFactory(): LoweredSource {
         const modulePath = "src/light/hemispheric.ts";
         const symbolName = "createHemisphericLight";
-        const defaults = this.extractHemisphericDefaults(modulePath, symbolName);
-        const { file, declaration } =
-            this.context.functionDeclaration(
-                modulePath,
-                symbolName,
-            );
+        const defaults = this.extractHemisphericDefaults(
+            modulePath,
+            symbolName,
+        );
+        const { file, declaration } = this.context.functionDeclaration(
+            modulePath,
+            symbolName,
+        );
         // The pinned local-matrix call anchors the emitted argument
         // list: a hemispheric light has no position, so the pin passes a
         // literal origin, and those components flow into the emitted
@@ -315,9 +339,7 @@ ${body}
             directionArguments.some(
                 (expected, index) =>
                     this.context
-                        .propertyPath(
-                            matrixCall.arguments[index]!,
-                        )
+                        .propertyPath(matrixCall.arguments[index]!)
                         ?.join(".") !== expected,
             )
         ) {
@@ -327,10 +349,7 @@ ${body}
             );
         }
         const origin = [3, 4, 5].map((index) =>
-            this.context.numericValue(
-                matrixCall.arguments[index]!,
-                file,
-            ),
+            this.context.numericValue(matrixCall.arguments[index]!, file),
         );
         return {
             modulePath,
@@ -473,11 +492,10 @@ ${this.lightVectorSetters(modulePath, symbolName, "point", ["position"])}
     public lowerDirectionalFactory(): LoweredSource {
         const modulePath = "src/light/directional-light.ts";
         const symbolName = "createDirectionalLight";
-        const { file, declaration } =
-            this.context.functionDeclaration(
-                modulePath,
-                symbolName,
-            );
+        const { file, declaration } = this.context.functionDeclaration(
+            modulePath,
+            symbolName,
+        );
         const defaults = this.extractPositionalLightDefaults(
             modulePath,
             symbolName,
@@ -503,13 +521,9 @@ ${this.lightVectorSetters(modulePath, symbolName, "point", ["position"])}
             declaration,
             "applyWorldMatrixAccessors",
         );
-        const positionInitializer =
-            this.context.unwrapExpression(
-                this.context.propertyInitializer(
-                    lightObject,
-                    "position",
-                ),
-            );
+        const positionInitializer = this.context.unwrapExpression(
+            this.context.propertyInitializer(lightObject, "position"),
+        );
         if (
             !ts.isNewExpression(positionInitializer) ||
             this.context
@@ -608,16 +622,12 @@ ${this.lightVectorSetters(modulePath, symbolName, "directional", ["position", "d
         // JavaScript-number calculation before the pinned Float32Array store
         // rounds the result once.
         const coneCosine = this.context.unwrapExpression(
-            this.context.variableInitializer(
-                declaration,
-                "_cosHalfAngle",
-            ),
+            this.context.variableInitializer(declaration, "_cosHalfAngle"),
         );
         if (
             !ts.isCallExpression(coneCosine) ||
-            this.context
-                .propertyPath(coneCosine.expression)
-                ?.join(".") !== "Math.cos" ||
+            this.context.propertyPath(coneCosine.expression)?.join(".") !==
+                "Math.cos" ||
             coneCosine.arguments.length !== 1
         ) {
             this.context.contractError(
@@ -630,8 +640,7 @@ ${this.lightVectorSetters(modulePath, symbolName, "directional", ["position", "d
         );
         if (
             !ts.isBinaryExpression(coneProduct) ||
-            coneProduct.operatorToken.kind !==
-                ts.SyntaxKind.AsteriskToken ||
+            coneProduct.operatorToken.kind !== ts.SyntaxKind.AsteriskToken ||
             !ts.isIdentifier(coneProduct.left) ||
             coneProduct.left.text !== "angle"
         ) {
@@ -735,39 +744,30 @@ void set_spot_light_angle(
         identity: ReadonlyMap<number, number>;
         translation: ReadonlyMap<string, number>;
     } {
-        const { file, declaration } =
-            this.context.functionDeclaration(
-                modulePath,
-                symbolName,
-            );
+        const { file, declaration } = this.context.functionDeclaration(
+            modulePath,
+            symbolName,
+        );
         const identity = new Map<number, number>();
         const translation = new Map<string, number>();
         const stores = this.context.findNodes(
             declaration,
             (node): node is ts.BinaryExpression =>
                 ts.isBinaryExpression(node) &&
-                node.operatorToken.kind ===
-                    ts.SyntaxKind.EqualsToken &&
+                node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
                 ts.isElementAccessExpression(node.left) &&
                 ts.isIdentifier(node.left.expression) &&
                 node.left.expression.text === "m",
         );
         for (const store of stores) {
-            const target =
-                store.left as ts.ElementAccessExpression;
-            if (
-                !ts.isNumericLiteral(
-                    target.argumentExpression,
-                )
-            ) {
+            const target = store.left as ts.ElementAccessExpression;
+            if (!ts.isNumericLiteral(target.argumentExpression)) {
                 this.context.contractError(
                     store,
                     "Expected a constant local-matrix index.",
                 );
             }
-            const index = Number(
-                target.argumentExpression.text,
-            );
+            const index = Number(target.argumentExpression.text);
             if (
                 identity.has(index) ||
                 [...translation.values()].includes(index)
@@ -777,12 +777,8 @@ void set_spot_light_angle(
                     `Local-matrix index ${index} is stored twice.`,
                 );
             }
-            const right = this.context.unwrapExpression(
-                store.right,
-            );
-            const path = this.context
-                .propertyPath(right)
-                ?.join(".");
+            const right = this.context.unwrapExpression(store.right);
+            const path = this.context.propertyPath(right)?.join(".");
             if (
                 path === "light.position.x" ||
                 path === "light.position.y" ||
@@ -798,21 +794,23 @@ void set_spot_light_angle(
                 translation.set(axis, index);
                 continue;
             }
-            identity.set(
-                index,
-                this.context.numericValue(right, file),
-            );
+            identity.set(index, this.context.numericValue(right, file));
         }
         return { identity, translation };
     }
 
-    private extractHemisphericDefaults(modulePath: string, symbolName: string): HemisphericDefaults {
-        const { file, declaration } = this.context.functionDeclaration(modulePath, symbolName);
-        const lightObject =
-            this.context.callObjectArgument(
-                declaration,
-                "applyWorldMatrixAccessors",
-            );
+    private extractHemisphericDefaults(
+        modulePath: string,
+        symbolName: string,
+    ): HemisphericDefaults {
+        const { file, declaration } = this.context.functionDeclaration(
+            modulePath,
+            symbolName,
+        );
+        const lightObject = this.context.callObjectArgument(
+            declaration,
+            "applyWorldMatrixAccessors",
+        );
         return {
             diffuseColor: this.context.numericTuple(
                 this.context.propertyInitializer(lightObject, "diffuseColor"),
@@ -835,21 +833,16 @@ void set_spot_light_angle(
         expectedType: "directional" | "point" | "spot",
         requireRange: boolean,
     ): PositionalLightDefaults {
-        const { file, declaration } =
-            this.context.functionDeclaration(
-                modulePath,
-                symbolName,
-            );
-        const lightObject =
-            this.context.callObjectArgument(
-                declaration,
-                "applyWorldMatrixAccessors",
-            );
+        const { file, declaration } = this.context.functionDeclaration(
+            modulePath,
+            symbolName,
+        );
+        const lightObject = this.context.callObjectArgument(
+            declaration,
+            "applyWorldMatrixAccessors",
+        );
         const lightType = this.context.stringValue(
-            this.context.propertyInitializer(
-                lightObject,
-                "lightType",
-            ),
+            this.context.propertyInitializer(lightObject, "lightType"),
             file,
         );
         if (lightType !== expectedType) {
@@ -862,32 +855,21 @@ void set_spot_light_angle(
                 ts.isPropertyAssignment(property) &&
                 ts.isIdentifier(property.name) &&
                 property.name.text === "range" &&
-                this.context.isNumberMaxValue(
-                    property.initializer,
-                ),
+                this.context.isNumberMaxValue(property.initializer),
         );
         if (requireRange && !range) {
-            throw new Error(
-                `Pinned ${expectedType} light range is missing.`,
-            );
+            throw new Error(`Pinned ${expectedType} light range is missing.`);
         }
         return {
             diffuseColor: this.context.numericTuple(
-                this.context.propertyInitializer(
-                    lightObject,
-                    "diffuse",
-                ),
+                this.context.propertyInitializer(lightObject, "diffuse"),
                 file,
             ),
             specularColor: this.context.numericTuple(
-                this.context.propertyInitializer(
-                    lightObject,
-                    "specular",
-                ),
+                this.context.propertyInitializer(lightObject, "specular"),
                 file,
             ),
             rangeIsUnbounded: range,
         };
     }
-
 }

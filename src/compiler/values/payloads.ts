@@ -10,9 +10,16 @@ interface GenerationValuePayloads {
     promise: { promiseResult?: Value; promiseType?: string };
     "text-font": { textFont?: { source: TextFontSource; bytes: Uint8Array } };
     "csg-solid": { csgSolid?: CsgSolidPlan };
-    "csg2-solid": { csg2Solid?: { readonly plan: Csg2SolidPlan; disposed: boolean } };
+    "csg2-solid": {
+        csg2Solid?: { readonly plan: Csg2SolidPlan; disposed: boolean };
+    };
     "executed-url": { executedUrl?: { module: string; exportName: string } };
-    "animation-group-mask": { animationGroupMask?: { readonly names: readonly string[]; readonly include: boolean } };
+    "animation-group-mask": {
+        animationGroupMask?: {
+            readonly names: readonly string[];
+            readonly include: boolean;
+        };
+    };
 }
 
 export type ValuePayloads = GenerationValuePayloads & ValueMetadataPayloads;
@@ -25,7 +32,11 @@ export const generationPayloadFields = {
     "csg2-solid": ["csg2Solid"],
     "executed-url": ["executedUrl"],
     "animation-group-mask": ["animationGroupMask"],
-} as const satisfies { [K in keyof GenerationValuePayloads]: readonly (keyof GenerationValuePayloads[K])[] };
+} as const satisfies {
+    [
+        K in keyof GenerationValuePayloads
+    ]: readonly (keyof GenerationValuePayloads[K])[];
+};
 
 export type GenerationPayloadKey = {
     [K in keyof GenerationValuePayloads]: keyof GenerationValuePayloads[K];

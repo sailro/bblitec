@@ -17,10 +17,16 @@ export interface NativeExpression {
 }
 
 export const nativeCompanionKeys = [
-    "engineCpp", "ownedEngineCpp", "optionalStorageCpp", "optionalFoundCpp", "truthinessCpp",
-    "audioMainBusCpp", "spriteLayerCpp", "dynamicAssetPathCpp",
+    "engineCpp",
+    "ownedEngineCpp",
+    "optionalStorageCpp",
+    "optionalFoundCpp",
+    "truthinessCpp",
+    "audioMainBusCpp",
+    "spriteLayerCpp",
+    "dynamicAssetPathCpp",
 ] as const;
-export type NativeCompanionKey = typeof nativeCompanionKeys[number];
+export type NativeCompanionKey = (typeof nativeCompanionKeys)[number];
 
 export interface CapturedClosure {
     lines: string[];
@@ -30,29 +36,77 @@ export interface CapturedClosure {
     localBindings: readonly string[];
 }
 
-export function renderClosure(closure: CapturedClosure, parameters: string, returnType?: string): string {
-    return `bbl::js::make_closure(${closure.initializer}, []([[maybe_unused]] decltype(${closure.initializer})& ${closure.environment}${parameters ? `, ${parameters}` : ""})${returnType ? ` -> ${returnType}` : ""} {\n` +
-        closure.lines.map((line) => `            ${line}`).join("\n") + "\n        })";
+export function renderClosure(
+    closure: CapturedClosure,
+    parameters: string,
+    returnType?: string,
+): string {
+    return (
+        `bbl::js::make_closure(${closure.initializer}, []([[maybe_unused]] decltype(${closure.initializer})& ${closure.environment}${parameters ? `, ${parameters}` : ""})${returnType ? ` -> ${returnType}` : ""} {\n` +
+        closure.lines.map((line) => `            ${line}`).join("\n") +
+        "\n        })"
+    );
 }
 
 /** A coroutine owns a copy of the environment even if its callback is cleared. */
-export function renderCoroutineInvocation(closure: CapturedClosure, returnType: string, parameters = "", args = "", environment = closure.initializer): string {
-    return `([]([[maybe_unused]] decltype(${closure.initializer}) ${closure.environment}${parameters ? `, ${parameters}` : ""}) -> ${returnType} {\n` +
-        closure.lines.join("\n") + `\n}(${environment}${args ? `, ${args}` : ""}))`;
+export function renderCoroutineInvocation(
+    closure: CapturedClosure,
+    returnType: string,
+    parameters = "",
+    args = "",
+    environment = closure.initializer,
+): string {
+    return (
+        `([]([[maybe_unused]] decltype(${closure.initializer}) ${closure.environment}${parameters ? `, ${parameters}` : ""}) -> ${returnType} {\n` +
+        closure.lines.join("\n") +
+        `\n}(${environment}${args ? `, ${args}` : ""}))`
+    );
 }
 
-export function renderAsyncClosure(closure: CapturedClosure, parameters: readonly {type: string; name: string}[], returnType: string, discard: boolean): string {
-    const declarations = parameters.map(parameter => `[[maybe_unused]] ${parameter.type} ${parameter.name}`).join(", ");
-    const invocation = renderCoroutineInvocation(closure, returnType, declarations,
-        parameters.map(parameter => `std::move(${parameter.name})`).join(", "), closure.environment);
-    return renderClosure({...closure, lines:[discard ? `static_cast<void>(${invocation});` : `return ${invocation};`]}, declarations, discard ? "void" : returnType);
+export function renderAsyncClosure(
+    closure: CapturedClosure,
+    parameters: readonly { type: string; name: string }[],
+    returnType: string,
+    discard: boolean,
+): string {
+    const declarations = parameters
+        .map(
+            (parameter) =>
+                `[[maybe_unused]] ${parameter.type} ${parameter.name}`,
+        )
+        .join(", ");
+    const invocation = renderCoroutineInvocation(
+        closure,
+        returnType,
+        declarations,
+        parameters
+            .map((parameter) => `std::move(${parameter.name})`)
+            .join(", "),
+        closure.environment,
+    );
+    return renderClosure(
+        {
+            ...closure,
+            lines: [
+                discard
+                    ? `static_cast<void>(${invocation});`
+                    : `return ${invocation};`,
+            ],
+        },
+        declarations,
+        discard ? "void" : returnType,
+    );
 }
 
 /** Named aliases preserve all companion expressions while the typed environment
  * exposes the actual owning captures, including mutable cells, to the GC. */
 export class ClosureCaptures {
     private readonly bindings = new EmissionSet<NativeCaptureBinding>();
-    constructor(readonly environment: string, readonly boundary: number, private readonly byReference: boolean | "entry" = false) {}
+    constructor(
+        readonly environment: string,
+        readonly boundary: number,
+        private readonly byReference: boolean | "entry" = false,
+    ) {}
 
     use(binding: NativeCaptureBinding): void {
         if (binding.sequence <= this.boundary) this.bindings.add(binding);
@@ -67,19 +121,32 @@ export class ClosureCaptures {
     }
 
     get initializer(): string {
-        return `std::tuple{${[...this.bindings].map((binding) =>
-            this.borrows(binding) ? `std::ref(${binding.name})` : binding.name).join(", ")}}`;
+        return `std::tuple{${[...this.bindings]
+            .map((binding) =>
+                this.borrows(binding)
+                    ? `std::ref(${binding.name})`
+                    : binding.name,
+            )
+            .join(", ")}}`;
     }
 
-    get nativeCaptures(): readonly NativeCaptureBinding[] { return [...this.bindings]; }
+    get nativeCaptures(): readonly NativeCaptureBinding[] {
+        return [...this.bindings];
+    }
 
     get declarations(): string[] {
-        return [...this.bindings].map((binding, index) =>
-            `auto& ${binding.name} = std::get<${index}>(${this.environment})${this.borrows(binding) ? ".get()" : ""};`);
+        return [...this.bindings].map(
+            (binding, index) =>
+                `auto& ${binding.name} = std::get<${index}>(${this.environment})${this.borrows(binding) ? ".get()" : ""};`,
+        );
     }
 
     private borrows(binding: NativeCaptureBinding): boolean {
-        return binding.borrowed || (binding.allowReference &&
-            (this.byReference === true || (this.byReference === "entry" && binding.entryLifetime)));
+        return (
+            binding.borrowed ||
+            (binding.allowReference &&
+                (this.byReference === true ||
+                    (this.byReference === "entry" && binding.entryLifetime)))
+        );
     }
 }

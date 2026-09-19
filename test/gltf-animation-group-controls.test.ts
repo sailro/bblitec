@@ -47,21 +47,18 @@ test("carries STEP and the non-triangle topologies into the glTF loader", () => 
     assert.match(exotic.source, /MeshTopology::points/);
     assert.match(exotic.source, /MeshTopology::lines/);
     assert.match(exotic.source, /MeshTopology::line_strip/);
-    assert.match(
-        exotic.source,
-        /Unsupported prepared glTF topology/,
-    );
+    assert.match(exotic.source, /Unsupported prepared glTF topology/);
     // A point or a line has no fragment quad for the pinned flat-normal
     // derivative to read, so a primitive without NORMAL refuses.
-    assert.match(
-        exotic.source,
-        /point or line primitive with no NORMAL/,
-    );
+    assert.match(exotic.source, /point or line primitive with no NORMAL/);
 
     const masked = lowerer.lowerLoaderAdapter({ animationMask: true });
     assert.ok(masked.source.includes(lowerGltfAnimationMask(context)));
     assert.match(masked.source, /animation_runtime->node_names/);
-    assert.match(masked.source, /gltf_sync_animation_mask\(clip,animation_runtime->node_names\)/);
+    assert.match(
+        masked.source,
+        /gltf_sync_animation_mask\(clip,animation_runtime->node_names\)/,
+    );
     // Speed and seek use the source controller clock, covered with source
     // mutations and paused/stopped/reverse playback in the native fixture.
     assert.ok(plain.source.includes(lowerGltfAnimationPlayback(context)));
@@ -75,14 +72,27 @@ test("the weighted mixer uses source channels and global manager membership", ()
     const blended = lowerer.lowerLoaderAdapter({
         animationBlending: true,
     });
-    assert.ok(blended.source.includes(lowerGltfWeightedAnimationRuntime(context)));
-    assert.ok(blended.source.includes(lowerGltfWeightedAnimationPasses(context)));
+    assert.ok(
+        blended.source.includes(lowerGltfWeightedAnimationRuntime(context)),
+    );
+    assert.ok(
+        blended.source.includes(lowerGltfWeightedAnimationPasses(context)),
+    );
     assert.match(blended.source, /manager\.ordered_groups/);
-    assert.match(blended.source, /gltf_update_weighted_animation_passes\(transport,delta_ms\)/);
+    assert.match(
+        blended.source,
+        /gltf_update_weighted_animation_passes\(transport,delta_ms\)/,
+    );
     // Clip channel order and manager traversal have source/native differential
     // fixtures; the loader binds those channels to each source-created pose.
-    assert.match(blended.source, /gltf_accumulate_weighted_group\(scratch,group,\*group\.pose,/);
-    assert.match(blended.source, /gltf_accumulate_additive_group\(scratch,group,\*group\.pose,/);
+    assert.match(
+        blended.source,
+        /gltf_accumulate_weighted_group\(scratch,group,\*group\.pose,/,
+    );
+    assert.match(
+        blended.source,
+        /gltf_accumulate_additive_group\(scratch,group,\*group\.pose,/,
+    );
     const plain = lowerer.lowerLoaderAdapter();
     assert.doesNotMatch(plain.source, /gltf_update_weighted_animation_passes/);
 });

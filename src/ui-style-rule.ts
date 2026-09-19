@@ -1,10 +1,18 @@
-import {parseUiSelectorSequence, uiSelectorSequenceIsConditional, uiSelectorSequenceTests, isUiSelectorState, type UiSelectorStep} from "./ui-selector.js";
-import type {UiGeneratedPart} from "./ui-generated-content.js";
+import {
+    parseUiSelectorSequence,
+    uiSelectorSequenceIsConditional,
+    uiSelectorSequenceTests,
+    isUiSelectorState,
+    type UiSelectorStep,
+} from "./ui-selector.js";
+import type { UiGeneratedPart } from "./ui-generated-content.js";
 
 /** The bounded selector forms shared by host-UI validation and projection. */
 const UI_STYLE_SELECTOR_DESCRIPTORS = {
     sequence: {
-        cpp: "Sequence", needsSecondary: false, needsTag: false,
+        cpp: "Sequence",
+        needsSecondary: false,
+        needsTag: false,
         css: (rule: UiStyleSelectorShape) => rule.primary,
     },
     class: {
@@ -44,7 +52,8 @@ const UI_STYLE_SELECTOR_DESCRIPTORS = {
         cpp: "TagChildClass",
         needsSecondary: false,
         needsTag: true,
-        css: (rule: UiStyleSelectorShape) => `${rule.tag ?? ""} > .${rule.primary}${rule.secondary ? `.${rule.secondary}` : ""}`,
+        css: (rule: UiStyleSelectorShape) =>
+            `${rule.tag ?? ""} > .${rule.primary}${rule.secondary ? `.${rule.secondary}` : ""}`,
     },
     "tag-attribute": {
         cpp: "TagAttribute",
@@ -75,14 +84,16 @@ const UI_SCROLLBAR_PARTS = {
 export type UiScrollbarPart = keyof typeof UI_SCROLLBAR_PARTS;
 
 export function isUiScrollbarPart(value: unknown): value is UiScrollbarPart {
-    return typeof value === "string" && Object.hasOwn(UI_SCROLLBAR_PARTS, value);
+    return (
+        typeof value === "string" && Object.hasOwn(UI_SCROLLBAR_PARTS, value)
+    );
 }
 
 export function uiScrollbarPartCpp(part: UiScrollbarPart | undefined): string {
     return part === undefined ? "None" : UI_SCROLLBAR_PARTS[part];
 }
 
-const UI_RANGE_PARTS = {thumb: "Thumb", track: "Track"} as const;
+const UI_RANGE_PARTS = { thumb: "Thumb", track: "Track" } as const;
 export type UiRangePart = keyof typeof UI_RANGE_PARTS;
 export function isUiRangePart(value: unknown): value is UiRangePart {
     return typeof value === "string" && Object.hasOwn(UI_RANGE_PARTS, value);
@@ -107,15 +118,35 @@ export interface UiStyleSelectorShape {
 }
 
 /** Interaction pseudo-classes contribute class specificity and depend on live input state. */
-export function uiStyleInteractionStateCount(rule: UiStyleSelectorShape): number {
-    return Number(rule.hover === true) + Number(rule.focusVisible === true) + Number(rule.active === true) +
-        (rule.kind === "sequence" ? [...uiSelectorSequenceTests(rule.sequence ?? parseUiSelectorSequence(rule.primary) ?? [])]
-            .filter(test => isUiSelectorState(test.kind)).length : 0);
+export function uiStyleInteractionStateCount(
+    rule: UiStyleSelectorShape,
+): number {
+    return (
+        Number(rule.hover === true) +
+        Number(rule.focusVisible === true) +
+        Number(rule.active === true) +
+        (rule.kind === "sequence"
+            ? [
+                  ...uiSelectorSequenceTests(
+                      rule.sequence ??
+                          parseUiSelectorSequence(rule.primary) ??
+                          [],
+                  ),
+              ].filter((test) => isUiSelectorState(test.kind)).length
+            : 0)
+    );
 }
 
-export function uiStyleRuleNeedsRuntimeMatch(rule: UiStyleSelectorShape): boolean {
-    return uiStyleInteractionStateCount(rule) > 0 || (rule.kind === "sequence" &&
-        uiSelectorSequenceIsConditional(rule.sequence ?? parseUiSelectorSequence(rule.primary) ?? []));
+export function uiStyleRuleNeedsRuntimeMatch(
+    rule: UiStyleSelectorShape,
+): boolean {
+    return (
+        uiStyleInteractionStateCount(rule) > 0 ||
+        (rule.kind === "sequence" &&
+            uiSelectorSequenceIsConditional(
+                rule.sequence ?? parseUiSelectorSequence(rule.primary) ?? [],
+            ))
+    );
 }
 
 /** A bounded structural selector imported from the browser host page. */
@@ -126,8 +157,16 @@ export interface NativeHostUiStyleRule extends UiStyleSelectorShape {
     style: string;
 }
 
-export function uiStyleRuleHasConditions(rule: { maxWidth?: number; reducedMotion?: boolean; containerMaxWidth?: number }): boolean {
-    return rule.maxWidth !== undefined || rule.reducedMotion !== undefined || rule.containerMaxWidth !== undefined;
+export function uiStyleRuleHasConditions(rule: {
+    maxWidth?: number;
+    reducedMotion?: boolean;
+    containerMaxWidth?: number;
+}): boolean {
+    return (
+        rule.maxWidth !== undefined ||
+        rule.reducedMotion !== undefined ||
+        rule.containerMaxWidth !== undefined
+    );
 }
 
 export function uiMotionPreferenceCpp(value: boolean | undefined): string {
@@ -163,9 +202,14 @@ export function uiStyleSelectorCppKind(kind: UiStyleSelectorKind): string {
 }
 
 export function uiStyleSelector(rule: UiStyleSelectorShape): string {
-    const base = uiStyleSelectorDescriptor(rule.kind).css(rule) +
-        (rule.scrollbar ? `::-webkit-scrollbar${rule.scrollbar === "scrollbar" ? "" : `-${rule.scrollbar}`}` : "") +
-        (rule.range ? `::-webkit-slider-${rule.range === "thumb" ? "thumb" : "runnable-track"}` : "");
+    const base =
+        uiStyleSelectorDescriptor(rule.kind).css(rule) +
+        (rule.scrollbar
+            ? `::-webkit-scrollbar${rule.scrollbar === "scrollbar" ? "" : `-${rule.scrollbar}`}`
+            : "") +
+        (rule.range
+            ? `::-webkit-slider-${rule.range === "thumb" ? "thumb" : "runnable-track"}`
+            : "");
     return (
         base +
         (rule.hover ? ":hover" : "") +

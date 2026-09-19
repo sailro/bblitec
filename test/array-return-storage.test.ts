@@ -4,7 +4,10 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import test from "node:test";
 import { compileSource } from "../src/compiler.js";
-import { optionalNativeFixtureTools, runNativeFixtureCompiler } from "./native-fixture.js";
+import {
+    optionalNativeFixtureTools,
+    runNativeFixtureCompiler,
+} from "./native-fixture.js";
 
 const source = `
     type Cell = readonly [number,number];
@@ -32,22 +35,48 @@ const source = `
         const second=append([[7,"z"]]);
         const repeated=append([[1,"a"],[2,"b"]]);
         if(first.start!==0 || first.end!==2 || second.start!==2 || second.end!==3 || repeated.start!==3 || repeated.end!==5 || gathered.join(",")!=="1a,2b,7z,1a,2b") throw new Error("constant arguments reused across calls");
+        const original = {value:7};
+        const records: {value:number}[] = [original];
+        const saved = records[0];
+        records.pop();
+        if (!saved || saved !== original || saved.value !== 7) throw new Error("saved reference presence changed with its array");
+        const holes = new Array<{value:number}>(2);
+        if (holes[0]) throw new Error("uninitialized reference slot is truthy");
     }
 `;
 
 test("native array signatures distinguish fresh results, stable table rows and returned aliases", () => {
-    const result=compileSource(source);
+    const result = compileSource(source);
     assert.match(result.cpp, /bbl::js::Span<const bbl::js::Tuple<2>> row\(/);
     assert.match(result.cpp, /copy\(bbl::js::Span<const double>/);
     assert.match(result.cpp, /identity\(const bbl::js::Array<double>&/);
 });
 
-const tools=optionalNativeFixtureTools(false);
-test("returned array storage remains valid and preserves source aliases in native execution", {skip:!tools}, () => {
-    const output=resolve("artifacts/array-return-storage"); mkdirSync(output,{recursive:true});
-    const file=join(output,"program.cpp"), executable=join(output,"check.exe");
-    writeFileSync(file,compileSource(source).cpp);
-    runNativeFixtureCompiler(tools!,["/nologo","/std:c++20","/W4","/WX","/permissive-","/EHsc","/MD","/O2",
-        `/Fo:${output}/`,`/Fe:${executable}`,"/I","native/include",file]);
-    assert.equal(execFileSync(executable,{encoding:"utf8"}),"");
-});
+const tools = optionalNativeFixtureTools(false);
+test(
+    "returned array storage remains valid and preserves source aliases in native execution",
+    { skip: !tools },
+    () => {
+        const output = resolve("artifacts/array-return-storage");
+        mkdirSync(output, { recursive: true });
+        const file = join(output, "program.cpp"),
+            executable = join(output, "check.exe");
+        writeFileSync(file, compileSource(source).cpp);
+        runNativeFixtureCompiler(tools!, [
+            "/nologo",
+            "/std:c++20",
+            "/W4",
+            "/WX",
+            "/permissive-",
+            "/EHsc",
+            "/MD",
+            "/O2",
+            `/Fo:${output}/`,
+            `/Fe:${executable}`,
+            "/I",
+            "native/include",
+            file,
+        ]);
+        assert.equal(execFileSync(executable, { encoding: "utf8" }), "");
+    },
+);

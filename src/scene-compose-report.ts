@@ -37,11 +37,7 @@ import {
 } from "./capture-instrumented.js";
 import type { SceneDefinition } from "./scene-registry.js";
 import { divergence } from "./render-diff.js";
-import {
-    asObject,
-    glbDocument,
-    type JsonObject,
-} from "./gltf-document.js";
+import { asObject, glbDocument, type JsonObject } from "./gltf-document.js";
 import {
     gltfLinearImageProcessing,
     materialSubjects,
@@ -57,9 +53,7 @@ import {
 /** The browser's PBR fragments, by capture file name. `--capture <dir>`
  *  reads a capture written somewhere other than
  *  `artifacts/capture/<scene>`. */
-function capturedFragments(
-    captureDirectory: string,
-): Map<string, string> {
+function capturedFragments(captureDirectory: string): Map<string, string> {
     const directory = captureShadersDirectory(captureDirectory);
     const fragments = new Map<string, string>();
     if (!existsSync(directory)) return fragments;
@@ -84,11 +78,13 @@ function sceneGlbDocument(scene: string): JsonObject | undefined {
 /** Whether the asset constructs base glTF materials worth comparing. */
 function sceneHasGltfMaterials(scene: string): boolean {
     const document = sceneGlbDocument(scene);
-    return document !== undefined && packagedGltfMeshPlan(document).materials.length > 0;
+    return (
+        document !== undefined &&
+        packagedGltfMeshPlan(document).materials.length > 0
+    );
 }
 
-const normalize = (text: string): string =>
-    text.replace(/\s+/g, " ").trim();
+const normalize = (text: string): string => text.replace(/\s+/g, " ").trim();
 
 /**
  * The scene-shaped half of the composer's input, as candidates rather than a
@@ -162,18 +158,13 @@ export async function runComposeReport(
     const outcome: ComposeOutcome = { matched: 0, gaps: 0 };
     for (const scene of selected) {
         const captureDirectory = resolvePath(
-            options.captureDirectory ??
-                defaultCaptureDirectory(scene.id),
+            options.captureDirectory ?? defaultCaptureDirectory(scene.id),
         );
         const wantSeek =
-            options.seekSeconds ??
-            scene.parity?.referenceTimeSeconds ??
-            null;
-        let staleness = browserCaptureStaleness(
-            scene,
-            captureDirectory,
-            { requireSeek: wantSeek },
-        );
+            options.seekSeconds ?? scene.parity?.referenceTimeSeconds ?? null;
+        let staleness = browserCaptureStaleness(scene, captureDirectory, {
+            requireSeek: wantSeek,
+        });
         // A scene with no glTF materials has nothing to compare a capture
         // against — capturing one for it would spend a browser launch on
         // a report that ends at "no glTF materials".
@@ -182,9 +173,7 @@ export async function runComposeReport(
             // The diagnosis rung earns fresh evidence itself, through
             // the same entry point `scene -- capture` runs.
             if (staleness !== "missing") {
-                console.log(
-                    `${scene.id}: capture ${staleness}; recapturing.`,
-                );
+                console.log(`${scene.id}: capture ${staleness}; recapturing.`);
             } else {
                 console.log(`${scene.id}: no capture; capturing.`);
             }
@@ -217,10 +206,7 @@ export async function runComposeReport(
         // survey sweep would scatter report files into capture
         // directories that do not exist.
         if (!all) {
-            const reportPath = join(
-                captureDirectory,
-                "compose-report.json",
-            );
+            const reportPath = join(captureDirectory, "compose-report.json");
             if (existsSync(captureDirectory)) {
                 writeReport(
                     reportPath,
@@ -279,7 +265,9 @@ async function reportScene(
     const materials = Array.isArray(document?.["materials"])
         ? (document["materials"] as JsonObject[])
         : [];
-    const materialCount = document ? packagedGltfMeshPlan(document).materials.length : 0;
+    const materialCount = document
+        ? packagedGltfMeshPlan(document).materials.length
+        : 0;
     const empty = {
         materials: materialCount,
         matched: 0,
@@ -305,8 +293,9 @@ async function reportScene(
     // materials constructed by the base loader, including its default.
     const subjects = (
         await materialSubjects(document as JsonObject, {
-            linearImageProcessing:
-                await gltfLinearImageProcessing(document as JsonObject),
+            linearImageProcessing: await gltfLinearImageProcessing(
+                document as JsonObject,
+            ),
         })
     ).filter((subject) => subject.index < materialCount);
 
@@ -327,14 +316,18 @@ async function reportScene(
     // material present, and whether the container held a spot decides which
     // extension takes it. Only swept when the capture shows a clustered
     // fragment, so no other scene composes three inputs per candidate.
-    const clusteredArms: readonly (Record<string, unknown> | undefined)[] =
-        [...captured.values()].some((body) =>
-                body.includes("clusteredLightParams")
-            )
-            ? [undefined, {}, { _hasSpots: true }]
-            : [undefined];
-    for (const { sourceIndex, name, input: baseInput, uv2Mask, meshFeatures }
-        of subjects) {
+    const clusteredArms: readonly (Record<string, unknown> | undefined)[] = [
+        ...captured.values(),
+    ].some((body) => body.includes("clusteredLightParams"))
+        ? [undefined, {}, { _hasSpots: true }]
+        : [undefined];
+    for (const {
+        sourceIndex,
+        name,
+        input: baseInput,
+        uv2Mask,
+        meshFeatures,
+    } of subjects) {
         const material = sourceIndex === -1 ? {} : materials[sourceIndex]!;
 
         let hit: { file: string; label: string } | undefined;
@@ -344,58 +337,60 @@ async function reportScene(
         let composable = false;
         let refusal: unknown;
         for (const candidate of candidates)
-        for (const clustered of clusteredArms) {
-            const input = clustered === undefined
-                ? baseInput
-                : { ...baseInput, _clusteredLightState: clustered };
-            // An arm this material cannot compose UNDER is not an answer to
-            // the question the sweep asks, and it is not a finding either:
-            // the pin's own `refraction` fragment declares a dependency on
-            // `ibl`, so a transmissive material composes only under the
-            // environment arms and `composeShader` throws on the rest.
-            //
-            // Only the PIN's refusal is skipped. `topoSort` throws a bare
-            // `Error()` with no message, and every refusal this port raises
-            // carries one — the composer's own dependency check and the
-            // plugin-index read both throw from inside this call — so a
-            // message is the discriminator. Without it the sweep that exists
-            // to detect drift would report `ok` for a material whose other
-            // thirty-one arms died of a port defect.
-            let variant;
-            try {
-                variant = await composePinnedPbrVariant(input, {
-                    ...candidate.options,
-                    meshFeatures,
-                    uv2Mask,
-                });
-            } catch (error) {
-                if (error instanceof Error && error.message !== "") throw error;
-                refusal ??= error;
-                continue;
-            }
-            composable = true;
-            const body = normalize(variant.fragmentWgsl);
-            // Keep the candidate that agrees with some capture for longest, not
-            // the first one composed: the reported divergence line is only a
-            // finding if it belongs to the nearest variant.
-            let reach = 0;
-            for (const [, text] of captured) {
-                const { line } = divergence(variant.fragmentWgsl, text);
-                if (line > reach) reach = line;
-            }
-            if (reach > closest) {
-                closest = reach;
-                composed = variant.fragmentWgsl;
-                key = `${variant.fragmentKey} (${candidate.label})`;
-            }
-            for (const [file, text] of captured) {
-                if (normalize(text) === body) {
-                    hit = { file, label: candidate.label };
-                    break;
+            for (const clustered of clusteredArms) {
+                const input =
+                    clustered === undefined
+                        ? baseInput
+                        : { ...baseInput, _clusteredLightState: clustered };
+                // An arm this material cannot compose UNDER is not an answer to
+                // the question the sweep asks, and it is not a finding either:
+                // the pin's own `refraction` fragment declares a dependency on
+                // `ibl`, so a transmissive material composes only under the
+                // environment arms and `composeShader` throws on the rest.
+                //
+                // Only the PIN's refusal is skipped. `topoSort` throws a bare
+                // `Error()` with no message, and every refusal this port raises
+                // carries one — the composer's own dependency check and the
+                // plugin-index read both throw from inside this call — so a
+                // message is the discriminator. Without it the sweep that exists
+                // to detect drift would report `ok` for a material whose other
+                // thirty-one arms died of a port defect.
+                let variant;
+                try {
+                    variant = await composePinnedPbrVariant(input, {
+                        ...candidate.options,
+                        meshFeatures,
+                        uv2Mask,
+                    });
+                } catch (error) {
+                    if (error instanceof Error && error.message !== "")
+                        throw error;
+                    refusal ??= error;
+                    continue;
                 }
+                composable = true;
+                const body = normalize(variant.fragmentWgsl);
+                // Keep the candidate that agrees with some capture for longest, not
+                // the first one composed: the reported divergence line is only a
+                // finding if it belongs to the nearest variant.
+                let reach = 0;
+                for (const [, text] of captured) {
+                    const { line } = divergence(variant.fragmentWgsl, text);
+                    if (line > reach) reach = line;
+                }
+                if (reach > closest) {
+                    closest = reach;
+                    composed = variant.fragmentWgsl;
+                    key = `${variant.fragmentKey} (${candidate.label})`;
+                }
+                for (const [file, text] of captured) {
+                    if (normalize(text) === body) {
+                        hit = { file, label: candidate.label };
+                        break;
+                    }
+                }
+                if (hit) break;
             }
-            if (hit) break;
-        }
 
         if (!composable) {
             gaps++;

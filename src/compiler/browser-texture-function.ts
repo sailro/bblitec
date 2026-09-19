@@ -1,10 +1,7 @@
 // Closed browser texture producers execute in Chromium; the bake records texture bytes and options.
 import { EmissionMap, EmissionWeakMap } from "./emission-transaction.js";
 import type { LoweringServices } from "./lowering-services.js";
-import {
-    dirname,
-    resolve,
-} from "node:path";
+import { dirname, resolve } from "node:path";
 import { imageCodecs } from "../image-codec-manifest.js";
 
 import ts from "typescript";
@@ -40,9 +37,7 @@ import {
     isBabylonModule,
 } from "./symbols.js";
 import { transpileCommonJs } from "../typescript-transpile.js";
-import type {
-    Value,
-} from "./types.js";
+import type { Value } from "./types.js";
 import {
     tryResolveFunctionDeclaration,
     writesThroughTrackedRoot,
@@ -51,7 +46,10 @@ import { rootIdentifier, argumentAt } from "./syntax.js";
 import { isDefaultLibraryIdentifier } from "./symbols.js";
 
 /** The two pinned factories a bounded browser texture function may reach. */
-const supportedFactories = ["createTexture2DFromPixels", "loadTexture2D"] as const;
+const supportedFactories = [
+    "createTexture2DFromPixels",
+    "loadTexture2D",
+] as const;
 
 type SupportedFactory = (typeof supportedFactories)[number];
 
@@ -97,7 +95,11 @@ interface BrowserTextureBake {
 
 /** Walk `node`'s value positions; type annotations are not executed. */
 function forEachValueNode(node: ts.Node, visit: (node: ts.Node) => void): void {
-    forEachAnalysisNode(node, visit, { includeRoot: false, types: "skip", skip: ts.isTypeAliasDeclaration });
+    forEachAnalysisNode(node, visit, {
+        includeRoot: false,
+        types: "skip",
+        skip: ts.isTypeAliasDeclaration,
+    });
 }
 
 /** Whether a value position under `node` satisfies `predicate`. */
@@ -105,7 +107,11 @@ export function containsValueNode(
     node: ts.Node,
     predicate: (child: ts.Node) => boolean,
 ): boolean {
-    return someAnalysisNode(node, predicate, { includeRoot: false, types: "skip", skip: ts.isTypeAliasDeclaration });
+    return someAnalysisNode(node, predicate, {
+        includeRoot: false,
+        types: "skip",
+        skip: ts.isTypeAliasDeclaration,
+    });
 }
 
 /**
@@ -190,15 +196,17 @@ export function browserTextureFunctionShape(
     });
     if (!closure) return undefined;
     if (factories === 0) return undefined;
-    if (!closure.some((member) => ownsCanvas(member, checker))) return undefined;
+    if (!closure.some((member) => ownsCanvas(member, checker)))
+        return undefined;
 
     const returns = returnShape(declaration);
     if (!returns) return undefined;
     return {
         name,
         sourceFile,
-        exported: (ts.getCombinedModifierFlags(declaration) &
-            ts.ModifierFlags.Export) !==
+        exported:
+            (ts.getCombinedModifierFlags(declaration) &
+                ts.ModifierFlags.Export) !==
             0,
         closure,
         returns,
@@ -243,13 +251,17 @@ export function sameFileClosure(
         forEachValueNode(closure[index]!, (node) => {
             if (rejected) return;
             if (
-                writesThroughTrackedRoot(node, (target) => {
-                    const root = rootIdentifier(target);
-                    return (
-                        root !== undefined &&
-                        namesModuleScopeBinding(checker, root)
-                    );
-                }, () => false)
+                writesThroughTrackedRoot(
+                    node,
+                    (target) => {
+                        const root = rootIdentifier(target);
+                        return (
+                            root !== undefined &&
+                            namesModuleScopeBinding(checker, root)
+                        );
+                    },
+                    () => false,
+                )
             ) {
                 rejected = true;
                 return;
@@ -322,9 +334,19 @@ function returnShape(
     declaration: ts.FunctionDeclaration,
 ): "value" | "record" | undefined {
     const returns: ts.ReturnStatement[] = [];
-    forEachAnalysisNode(declaration.body!, (node) => {
-        if (ts.isReturnStatement(node)) returns.push(node);
-    }, { includeRoot: false, skip: node => ts.isFunctionDeclaration(node) || ts.isFunctionExpression(node) || ts.isArrowFunction(node) });
+    forEachAnalysisNode(
+        declaration.body!,
+        (node) => {
+            if (ts.isReturnStatement(node)) returns.push(node);
+        },
+        {
+            includeRoot: false,
+            skip: (node) =>
+                ts.isFunctionDeclaration(node) ||
+                ts.isFunctionExpression(node) ||
+                ts.isArrowFunction(node),
+        },
+    );
     const returned = returns[0]?.expression;
     if (returns.length !== 1 || !returned) return undefined;
     if (!ts.isObjectLiteralExpression(returned)) return "value";
@@ -357,11 +379,13 @@ export function closureModules(
     entryPath: string,
     entryFunction: string,
     repositoryRoot: string,
-): {
-    entry: string;
-    modules: Record<string, ClosureModule>;
-    files: readonly RepositoryModuleFile[];
-} | undefined {
+):
+    | {
+          entry: string;
+          modules: Record<string, ClosureModule>;
+          files: readonly RepositoryModuleFile[];
+      }
+    | undefined {
     const files = repositoryModuleClosure([entryPath], repositoryRoot);
     if (!files) return undefined;
     const modules: Record<string, ClosureModule> = {};
@@ -481,8 +505,7 @@ export function bakeBrowserTextureFunction(
         shape.returns,
     ]);
     const memoEnabled =
-        run === runBrowserTextureFunctionInChromium &&
-        bakeReplayEnabled();
+        run === runBrowserTextureFunctionInChromium && bakeReplayEnabled();
     const producerMemo = memoEnabled
         ? producerBakes.get(shape.sourceFile)
         : undefined;
@@ -524,20 +547,16 @@ export function bakeBrowserTextureFunction(
         inputs,
     };
     const memoKey = memoEnabled ? bakeIdentity(key) : undefined;
-    const memoized =
-        memoKey === undefined ? undefined : memoizedBake(memoKey);
+    const memoized = memoKey === undefined ? undefined : memoizedBake(memoKey);
     if (memoized) return memoized;
     // An unresolvable closure bakes uncached — uncertain inputs mean bake,
     // never replay, exactly as the executed-module assets do.
-    const text = Buffer.from(
-        cachedBakeSync(key, bake),
-    ).toString("utf8");
+    const text = Buffer.from(cachedBakeSync(key, bake)).toString("utf8");
     const decoded = decodeBrowserTextureBake(shape, text);
     if (memoKey !== undefined) memoizeBake(memoKey, decoded);
     if (memoEnabled) {
         const sourceMemo =
-            producerMemo ??
-            new EmissionMap<string, BrowserTextureBake>();
+            producerMemo ?? new EmissionMap<string, BrowserTextureBake>();
         sourceMemo.set(producerKey, decoded);
         if (!producerMemo) {
             producerBakes.set(shape.sourceFile, sourceMemo);
@@ -556,9 +575,7 @@ export function decodeBrowserTextureBake(
         result?: Record<string, unknown>;
     };
     const refuse: (message: string) => never = (message) => {
-        throw new Error(
-            `Browser texture function '${shape.name}': ${message}`,
-        );
+        throw new Error(`Browser texture function '${shape.name}': ${message}`);
     };
     const textures = (payload.textures ?? []).map(
         (entry): BakedBrowserTexture => {
@@ -607,7 +624,9 @@ export function decodeBrowserTextureBake(
             }
             return {
                 factory,
-                image: new Uint8Array(Buffer.from(String(entry.image), "base64")),
+                image: new Uint8Array(
+                    Buffer.from(String(entry.image), "base64"),
+                ),
                 mediaType,
                 options,
             };
@@ -825,7 +844,8 @@ function runBrowserTextureFunctionInChromium(
     modules: Record<string, ClosureModule>,
     entry: string,
 ): string {
-    const harnessModule = new URL("../browser-harness.js", import.meta.url).href;
+    const harnessModule = new URL("../browser-harness.js", import.meta.url)
+        .href;
     const helper = `${pageBase64Script}globalThis.__bblBase64 = bblBase64;`;
     const script = `
         import { createServer } from "node:http";
@@ -881,19 +901,19 @@ export { pngDimensions } from "./asset-bytes-sync.js";
 // ── Lowering ─────────────────────────────────────────────────────────────────
 
 /** What the lowering reads off the compiler; the walk is a superset. */
-interface BrowserTextureCallContext
-    extends Pick<LoweringServices,
-        | "checker"
-        | "options"
-        | "browserTextureFunctions"
-        | "compileValue"
-        | "registerAsset"
-        | "allocateTemporaryCppName"
-        | "cppString"
-        | "reachFeature"
-        | "emit"
-        | "fail"
-    > {}
+interface BrowserTextureCallContext extends Pick<
+    LoweringServices,
+    | "checker"
+    | "options"
+    | "browserTextureFunctions"
+    | "compileValue"
+    | "registerAsset"
+    | "allocateTemporaryCppName"
+    | "cppString"
+    | "reachFeature"
+    | "emit"
+    | "fail"
+> {}
 
 const producerShapes = new EmissionWeakMap<
     ts.Node,
@@ -926,10 +946,7 @@ export function compileBrowserTextureFunctionCall(
 ): Value | undefined {
     const declaration = tryResolveFunctionDeclaration(context.checker, callee);
     const shape = declaration
-        ? cachedBrowserTextureFunctionShape(
-              context.checker,
-              declaration,
-          )
+        ? cachedBrowserTextureFunctionShape(context.checker, declaration)
         : undefined;
     if (!shape) return undefined;
     if (call.arguments.length !== 1) return undefined;

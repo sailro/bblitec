@@ -1,16 +1,20 @@
 import assert from "node:assert/strict";
-import {execFileSync} from "node:child_process";
-import {mkdirSync, writeFileSync} from "node:fs";
-import {join, resolve} from "node:path";
+import { execFileSync } from "node:child_process";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { join, resolve } from "node:path";
 import test from "node:test";
-import {compileSource} from "../src/compiler.js";
-import {optionalNativeFixtureTools, runNativeFixtureCompiler} from "./native-fixture.js";
+import { compileSource } from "../src/compiler.js";
+import {
+    optionalNativeFixtureTools,
+    runNativeFixtureCompiler,
+} from "./native-fixture.js";
 
-test("generic optional promise results retain identity, aliases and reaction order", t => {
-    const directory=resolve("artifacts/generic-optional-promise");
-    mkdirSync(directory,{recursive:true});
-    writeFileSync(join(directory,"worker.ts"),"self.close();");
-    const result=compileSource(`
+test("generic optional promise results retain identity, aliases and reaction order", (t) => {
+    const directory = resolve("artifacts/generic-optional-promise");
+    mkdirSync(directory, { recursive: true });
+    writeFileSync(join(directory, "worker.ts"), "self.close();");
+    const result = compileSource(
+        `
         const worker=new Worker(new URL("./worker.ts",import.meta.url),{type:"module"});worker.terminate();
         function maybe<T>(skip:boolean,run:()=>Promise<T>):Promise<T|undefined> {
             if(skip)return Promise.resolve(undefined);
@@ -46,19 +50,40 @@ test("generic optional promise results retain identity, aliases and reaction ord
             if(missingValue!==undefined||missingCalls!==1)throw new Error("specialized undefined result");
             globalThis.close();
         })();
-    `,{fileName:join(directory,"entry.ts")});
-    const tools=optionalNativeFixtureTools(false);
-    if(!tools){t.skip("Native fixture compiler unavailable.");return;}
-    const cpp=join(directory,"check.cpp"),executable=join(directory,"check.exe");
-    writeFileSync(cpp,result.cpp);
-    runNativeFixtureCompiler(tools,["/nologo","/std:c++20","/W4","/WX","/EHsc","/MD","/DBBLITE_WORKERS=1",
-        "/I","native/include",`/Fo:${directory}/`,`/Fe:${executable}`,cpp]);
-    assert.equal(execFileSync(executable,{encoding:"utf8",timeout:10000}),"");
+    `,
+        { fileName: join(directory, "entry.ts") },
+    );
+    const tools = optionalNativeFixtureTools(false);
+    if (!tools) {
+        t.skip("Native fixture compiler unavailable.");
+        return;
+    }
+    const cpp = join(directory, "check.cpp"),
+        executable = join(directory, "check.exe");
+    writeFileSync(cpp, result.cpp);
+    runNativeFixtureCompiler(tools, [
+        "/nologo",
+        "/std:c++20",
+        "/W4",
+        "/WX",
+        "/EHsc",
+        "/MD",
+        "/DBBLITE_WORKERS=1",
+        "/I",
+        "native/include",
+        `/Fo:${directory}/`,
+        `/Fe:${executable}`,
+        cpp,
+    ]);
+    assert.equal(
+        execFileSync(executable, { encoding: "utf8", timeout: 10000 }),
+        "",
+    );
 });
 
-test("stored callbacks preserve promise and synchronous void outcomes", t => {
+test("stored callbacks preserve promise and synchronous void outcomes", (t) => {
     const directory = resolve("artifacts/optional-promise");
-    mkdirSync(directory, {recursive:true});
+    mkdirSync(directory, { recursive: true });
     writeFileSync(join(directory, "worker.ts"), "self.close();");
     const source = `
         const worker = new Worker(new URL("./worker.ts", import.meta.url), {type:"module"});
@@ -92,12 +117,37 @@ test("stored callbacks preserve promise and synchronous void outcomes", t => {
             globalThis.close();
         }); });
     `;
-    const result = compileSource(source, {fileName:join(directory, "entry.ts")});
+    const result = compileSource(source, {
+        fileName: join(directory, "entry.ts"),
+    });
     const tools = optionalNativeFixtureTools(false);
-    if (!tools) { t.skip("Native fixture compiler unavailable."); return; }
-    const cpp = join(directory, "check.cpp"), executable = join(directory, "check.exe");
+    if (!tools) {
+        t.skip("Native fixture compiler unavailable.");
+        return;
+    }
+    const cpp = join(directory, "check.cpp"),
+        executable = join(directory, "check.exe");
     writeFileSync(cpp, result.cpp);
-    runNativeFixtureCompiler(tools, ["/nologo", "/std:c++20", "/W4", "/WX", "/EHsc", "/MD", "/DBBLITE_WORKERS=1",
-        "/I", "native/include", `/Fo:${directory}/`, `/Fe:${executable}`, cpp]);
-    assert.equal(execFileSync(executable, {encoding:"utf8", timeout:10000, stdio:"pipe"}), "");
+    runNativeFixtureCompiler(tools, [
+        "/nologo",
+        "/std:c++20",
+        "/W4",
+        "/WX",
+        "/EHsc",
+        "/MD",
+        "/DBBLITE_WORKERS=1",
+        "/I",
+        "native/include",
+        `/Fo:${directory}/`,
+        `/Fe:${executable}`,
+        cpp,
+    ]);
+    assert.equal(
+        execFileSync(executable, {
+            encoding: "utf8",
+            timeout: 10000,
+            stdio: "pipe",
+        }),
+        "",
+    );
 });

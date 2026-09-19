@@ -43,10 +43,7 @@ test("rewrites a generated file only when its bytes change", (t) => {
 
     tree.write("upstream/src/engine.cpp", "void engine() { }\n");
     assert.notEqual(statSync(path).mtimeMs, aged);
-    assert.equal(
-        readFileSync(path, "utf8"),
-        "void engine() { }\n",
-    );
+    assert.equal(readFileSync(path, "utf8"), "void engine() { }\n");
 });
 
 test("treats a truncated or unreadable file as a rewrite", (t) => {
@@ -110,10 +107,7 @@ test("keeps shader artifacts whose WGSL is still emitted", (t) => {
         "standard.frag.dxil",
         "shader-compiler.json",
     ]) {
-        writeFileSync(
-            resolve(root, "upstream/shaders", name),
-            name,
-        );
+        writeFileSync(resolve(root, "upstream/shaders", name), name);
     }
     tree.prune("upstream");
     for (const name of [
@@ -140,20 +134,13 @@ test("keeps shader artifacts whose WGSL is still emitted", (t) => {
         "@fragment fn mainFragment() {}\n",
     );
     next.prune("upstream");
+    assert.ok(existsSync(resolve(root, "upstream/shaders/pbr.frag.dxil")));
     assert.ok(
-        existsSync(resolve(root, "upstream/shaders/pbr.frag.dxil")),
+        !existsSync(resolve(root, "upstream/shaders/standard.frag.dxil")),
     );
     assert.ok(
         !existsSync(
-            resolve(root, "upstream/shaders/standard.frag.dxil"),
-        ),
-    );
-    assert.ok(
-        !existsSync(
-            resolve(
-                root,
-                "upstream/shaders/standard.frag.native.wgsl",
-            ),
+            resolve(root, "upstream/shaders/standard.frag.native.wgsl"),
         ),
     );
 });
@@ -163,16 +150,9 @@ test("keeps a file another stage owns when it is claimed", (t) => {
     t.after(() => rmSync(root, { recursive: true, force: true }));
 
     mkdirSync(resolve(root, "upstream"), { recursive: true });
-    writeFileSync(
-        resolve(root, "upstream/gltf-specialization.json"),
-        "[]\n",
-    );
+    writeFileSync(resolve(root, "upstream/gltf-specialization.json"), "[]\n");
     tree.write("upstream/src/engine.cpp", "void engine() {}\n");
     tree.keep("upstream/gltf-specialization.json");
     tree.prune("upstream");
-    assert.ok(
-        existsSync(
-            resolve(root, "upstream/gltf-specialization.json"),
-        ),
-    );
+    assert.ok(existsSync(resolve(root, "upstream/gltf-specialization.json")));
 });

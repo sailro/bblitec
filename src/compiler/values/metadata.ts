@@ -11,7 +11,7 @@ const nodeParticleMetadataFields = [
 
 /** Metadata admitted by each value family; native data retains transported fields. */
 const resourceMetadataFields = {
-    "regexp": ["regexpCaptureCount"],
+    regexp: ["regexpCaptureCount"],
     "static-fetch-response": ["packagedSources", "staticJson"],
     "environment-textures": ["environmentAsset"],
     "pbr-local-probe-set": ["localCubemap"],
@@ -29,7 +29,7 @@ const resourceMetadataFields = {
         "surfaceCanvas",
         "msaaSamples",
     ],
-    "callback": [
+    callback: [
         "intrinsicName",
         "hostFunction",
         "callbackDeclaration",
@@ -39,7 +39,7 @@ const resourceMetadataFields = {
         "callbackRecordOwner",
         "platformCallbackIdentity",
     ],
-    "record": [
+    record: [
         "nodeParticleProvider",
         "classDeclaration",
         "classTypeArguments",
@@ -60,8 +60,8 @@ const resourceMetadataFields = {
     ],
     "axis-drag-gizmo": ["recordProperties"],
     "plane-drag-gizmo": ["recordProperties"],
-    "tuple": ["tupleElements", "staticJson"],
-    "texture": [
+    tuple: ["tupleElements", "staticJson"],
+    texture: [
         "textureStorage",
         "csmReceiverGeneratorIndex",
         "textureFile",
@@ -73,8 +73,12 @@ const resourceMetadataFields = {
         "isDepthTexture",
     ],
     "render-texture": ["isDepthTexture", "renderTextureSource"],
-    "render-target-texture": ["isDepthTexture", "renderTextureSource", "renderTargetSignature"],
-    "material": [
+    "render-target-texture": [
+        "isDepthTexture",
+        "renderTextureSource",
+        "renderTargetSignature",
+    ],
+    material: [
         "scenePbrMaterialIndex",
         "shaderVariant",
         "sceneShaderVariant",
@@ -87,7 +91,7 @@ const resourceMetadataFields = {
         "nodeMaterialIndex",
         "sceneMaterialSlot",
     ],
-    "mesh": [
+    mesh: [
         "scenePbrMaterialIndex",
         "shaderVariant",
         "sceneShaderVariant",
@@ -100,13 +104,23 @@ const resourceMetadataFields = {
         "standardMaterialPluginIndex",
     ],
     "physics-viewer": ["shaderVariant"],
-    "scene-node": ["sceneMeshIndex", "sceneMeshProfileIndex", "runtimeMeshStreams", "directMorphCompatible"],
-    "transform-node": ["sceneMeshIndex", "sceneMeshProfileIndex", "runtimeMeshStreams", "directMorphCompatible"],
-    "light": ["lightIdentity", "lightKind"],
+    "scene-node": [
+        "sceneMeshIndex",
+        "sceneMeshProfileIndex",
+        "runtimeMeshStreams",
+        "directMorphCompatible",
+    ],
+    "transform-node": [
+        "sceneMeshIndex",
+        "sceneMeshProfileIndex",
+        "runtimeMeshStreams",
+        "directMorphCompatible",
+    ],
+    light: ["lightIdentity", "lightKind"],
     "shadow-generator": ["shadowGeneratorIndex"],
     "audio-engine": ["audioMainBusCpp", "audioMainBusOwnerCpp"],
     "audio-context": ["audioMainBusCpp", "audioMainBusOwnerCpp"],
-    "asset": ["asset", "assetKind", "assetRootState", "assetRootClone"],
+    asset: ["asset", "assetKind", "assetRootState", "assetRootClone"],
     "asset-root": ["asset", "assetKind", "assetRootState", "assetRootClone"],
     "asset-entity": ["asset", "assetKind", "assetRootState", "assetRootClone"],
     "splat-mesh": ["asset", "assetKind", "assetRootState", "assetRootClone"],
@@ -125,13 +139,30 @@ const resourceMetadataFields = {
         "animationTargetKind",
         "animationPaths",
     ],
-    "animation-clip": ["animationFrameRate", "animationDuration", "animationTargetKind", "animationPaths"],
+    "animation-clip": [
+        "animationFrameRate",
+        "animationDuration",
+        "animationTargetKind",
+        "animationPaths",
+    ],
     "handle-collection": ["handleCollection"],
     "text-vector": ["textTransform"],
-    "task": ["geometryTask", "postProcessTask", "postProcessComposite", "renderTask", "screenSpaceTask"],
+    task: [
+        "geometryTask",
+        "postProcessTask",
+        "postProcessComposite",
+        "renderTask",
+        "screenSpaceTask",
+    ],
     "render-target": ["renderTargetSignature"],
-    "camera": ["cameraProgram", "cameraKind"],
-    "scene": ["sceneCamera", "sceneEnvironmentState", "sceneTopologyState", "surfaceCanvas", "msaaSamples"],
+    camera: ["cameraProgram", "cameraKind"],
+    scene: [
+        "sceneCamera",
+        "sceneEnvironmentState",
+        "sceneTopologyState",
+        "surfaceCanvas",
+        "msaaSamples",
+    ],
     "frame-graph-context": [
         "sceneCamera",
         "sceneEnvironmentState",
@@ -139,41 +170,62 @@ const resourceMetadataFields = {
         "surfaceCanvas",
         "msaaSamples",
     ],
-    "sprite-custom-shader": ["spriteCustomTextures", "spriteCustomTextureNames", "spriteCustomShaderIndex"],
-    "billboard-custom-shader": ["spriteCustomTextures", "spriteCustomTextureNames", "spriteCustomShaderIndex"],
+    "sprite-custom-shader": [
+        "spriteCustomTextures",
+        "spriteCustomTextureNames",
+        "spriteCustomShaderIndex",
+    ],
+    "billboard-custom-shader": [
+        "spriteCustomTextures",
+        "spriteCustomTextureNames",
+        "spriteCustomShaderIndex",
+    ],
     "sprite-layer": [
         "spriteCustomTextures",
         "spriteCustomTextureNames",
         "spriteCustomShaderIndex",
         "spriteDepthMode",
     ],
-    "billboard-system": ["spriteCustomTextures", "spriteCustomTextureNames", "spriteCustomShaderIndex"],
+    "billboard-system": [
+        "spriteCustomTextures",
+        "spriteCustomTextureNames",
+        "spriteCustomShaderIndex",
+    ],
     "sprite-2d-handle": ["spriteLayerCpp"],
     "clustered-light-container": ["clusteredContainerState"],
-    "browser": ["browserValue"],
-    "surface": ["surfaceCanvas", "msaaSamples"],
-    "engine": ["surfaceCanvas", "msaaSamples"],
+    browser: ["browserValue"],
+    surface: ["surfaceCanvas", "msaaSamples"],
+    engine: ["surfaceCanvas", "msaaSamples"],
     "offscreen-canvas": ["surfaceCanvas", "msaaSamples"],
     "morph-targets": ["morphTarget"],
     "platform-mouse-event": ["platformEventBase"],
     "json-null": ["staticJson"],
-    "string": ["staticJson"],
-    "number": ["staticJson"],
-    "boolean": ["staticJson"],
+    string: ["staticJson"],
+    number: ["staticJson"],
+    boolean: ["staticJson"],
 } as const satisfies Partial<Record<ValueKind, readonly (keyof ValueFields)[]>>;
 
 export const valueMetadataFields = {
     ...resourceMetadataFields,
-    data: [...new Set(Object.values(resourceMetadataFields).flat()), "fetchedBytes"],
+    data: [
+        ...new Set(Object.values(resourceMetadataFields).flat()),
+        "fetchedBytes",
+    ],
 } as const satisfies Partial<Record<ValueKind, readonly (keyof ValueFields)[]>>;
 
 export type ValueMetadataPayloads = {
-    [K in keyof typeof valueMetadataFields]: Pick<ValueFields, typeof valueMetadataFields[K][number]>;
+    [K in keyof typeof valueMetadataFields]: Pick<
+        ValueFields,
+        (typeof valueMetadataFields)[K][number]
+    >;
 };
 
 export type ValueMetadataKey = keyof ValueMetadataPayloads["data"];
 
-export function metadataFieldsForKind(kind: ValueKind): readonly ValueMetadataKey[] {
-    const fields: Partial<Record<ValueKind, readonly ValueMetadataKey[]>> = valueMetadataFields;
+export function metadataFieldsForKind(
+    kind: ValueKind,
+): readonly ValueMetadataKey[] {
+    const fields: Partial<Record<ValueKind, readonly ValueMetadataKey[]>> =
+        valueMetadataFields;
     return fields[kind] ?? [];
 }

@@ -39,24 +39,22 @@ namespace bbl::pal::detail {
 
 class AudioDeviceSdl3 final : public lab::AudioDevice {
 public:
-    AudioDeviceSdl3(
-        const lab::AudioStreamConfig& input_config,
-        const lab::AudioStreamConfig& output_config)
-        : lab::AudioDevice(input_config, output_config)
-    {
+    AudioDeviceSdl3(const lab::AudioStreamConfig& input_config,
+                    const lab::AudioStreamConfig& output_config)
+        : lab::AudioDevice(input_config, output_config) {
         if (!stream_.initialized) {
             return;
         }
 
         SDL_AudioSpec spec{};
         spec.format = SDL_AUDIO_F32;
-        spec.channels = static_cast<int>(
-            _outConfig.desired_channels ? _outConfig.desired_channels : 2);
+        spec.channels =
+            static_cast<int>(_outConfig.desired_channels ? _outConfig.desired_channels : 2);
         spec.freq = static_cast<int>(
             _outConfig.desired_samplerate > 0.0f ? _outConfig.desired_samplerate : 48000.0f);
 
-        stream_.value = SDL_OpenAudioDeviceStream(
-            SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, &spec, &AudioDeviceSdl3::feed, this);
+        stream_.value = SDL_OpenAudioDeviceStream(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, &spec,
+                                                  &AudioDeviceSdl3::feed, this);
         if (!stream_.value) {
             return;
         }
@@ -76,51 +74,48 @@ public:
         // the scratch is sized from the device's own buffer size with
         // headroom and the callback clamps to it rather than growing.
         const int quantum = lab::AudioNode::ProcessingSizeInFrames;
-        render_bus_ = std::make_unique<lab::AudioBus>(
-            _outConfig.desired_channels, quantum, true);
+        render_bus_ = std::make_unique<lab::AudioBus>(_outConfig.desired_channels, quantum, true);
         render_bus_->setSampleRate(sample_rate_);
         if (_inConfig.desired_channels) {
-            input_bus_ = std::make_unique<lab::AudioBus>(
-                _inConfig.desired_channels, quantum, true);
+            input_bus_ = std::make_unique<lab::AudioBus>(_inConfig.desired_channels, quantum, true);
             input_bus_->setSampleRate(sample_rate_);
         }
 
         SDL_AudioSpec device_spec{};
         int device_frames = 0;
-        if (!SDL_GetAudioDeviceFormat(SDL_GetAudioStreamDevice(stream_.value),
-                                      &device_spec, &device_frames) ||
+        if (!SDL_GetAudioDeviceFormat(SDL_GetAudioStreamDevice(stream_.value), &device_spec,
+                                      &device_frames) ||
             device_frames <= 0) {
             device_frames = 4096;
         }
         // Four device buffers of headroom, and never less than a quantum:
         // SDL asks for at most one buffer at a time in practice, and a
         // request past the scratch is clipped rather than reallocated.
-        scratch_.assign(
-            static_cast<std::size_t>(std::max(device_frames * 4, quantum)) *
-                static_cast<std::size_t>(spec.channels),
-            0.0f);
+        scratch_.assign(static_cast<std::size_t>(std::max(device_frames * 4, quantum)) *
+                            static_cast<std::size_t>(spec.channels),
+                        0.0f);
     }
 
     /** Whether the SDL device came up at all; the PAL turns this into a throw. */
     bool opened() const { return stream_.value != nullptr; }
 
-    void start() override
-    {
-        if (!stream_.value) return;
-        if (!SDL_ResumeAudioStreamDevice(stream_.value)) return;
+    void start() override {
+        if (!stream_.value)
+            return;
+        if (!SDL_ResumeAudioStreamDevice(stream_.value))
+            return;
         running_ = true;
     }
 
-    void stop() override
-    {
-        if (stream_.value) SDL_PauseAudioStreamDevice(stream_.value);
+    void stop() override {
+        if (stream_.value)
+            SDL_PauseAudioStreamDevice(stream_.value);
         running_ = false;
     }
 
     bool isRunning() const override { return running_; }
 
-    void backendReinitialize() override
-    {
+    void backendReinitialize() override {
         stop();
         start();
     }
@@ -132,11 +127,11 @@ public:
      * unconsumed tail of a quantum carried across callbacks in
      * `remainder_` because SDL asks for arbitrary byte counts.
      */
-    int render(int requested_frames, void* output_buffer, void* /*input_buffer*/) override
-    {
+    int render(int requested_frames, void* output_buffer, void* /*input_buffer*/) override {
         const int quantum = lab::AudioNode::ProcessingSizeInFrames;
         int frames = requested_frames;
-        if (!render_bus_) return 0;
+        if (!render_bus_)
+            return 0;
 
         float* out = static_cast<float*>(output_buffer);
         const int channels = static_cast<int>(_outConfig.desired_channels);
@@ -146,10 +141,9 @@ public:
                 const int samples = std::min(remainder_, frames);
                 for (int channel = 0; channel < channels; ++channel) {
                     lab::AudioChannel* source = render_bus_->channel(channel);
-                    lab::VectorMath::vclip(
-                        source->data() + quantum - remainder_, /*src_stride*/ 1,
-                        &kLow, &kHigh,
-                        out + channel, /*dst_stride*/ channels, samples);
+                    lab::VectorMath::vclip(source->data() + quantum - remainder_, /*src_stride*/ 1,
+                                           &kLow, &kHigh, out + channel, /*dst_stride*/ channels,
+                                           samples);
                 }
                 out += channels * samples;
                 frames -= samples;
@@ -169,43 +163,44 @@ public:
                 sampling_info_.current_sample_frame / static_cast<double>(sample_rate_);
             sampling_info_.epoch[index] = std::chrono::high_resolution_clock::now();
 
-            _destinationNode->render(
-                sourceProvider(), input_bus_.get(), render_bus_.get(), quantum,
-                sampling_info_);
+            _destinationNode->render(sourceProvider(), input_bus_.get(), render_bus_.get(), quantum,
+                                     sampling_info_);
             remainder_ = quantum;
         }
         return requested_frames;
     }
 
 private:
-    static void SDLCALL feed(
-        void* userdata, SDL_AudioStream* stream, int additional_amount, int /*total*/)
-    {
+    static void SDLCALL feed(void* userdata, SDL_AudioStream* stream, int additional_amount,
+                             int /*total*/) {
         auto* self = static_cast<AudioDeviceSdl3*>(userdata);
-        if (!self || additional_amount <= 0) return;
+        if (!self || additional_amount <= 0)
+            return;
 
         const int channels = static_cast<int>(self->_outConfig.desired_channels);
-        if (channels <= 0) return;
+        if (channels <= 0)
+            return;
 
         int frames = additional_amount / (channels * static_cast<int>(sizeof(float)));
-        if (frames <= 0) return;
+        if (frames <= 0)
+            return;
 
         // Clamp rather than grow: allocating here would be an allocation
         // on the audio thread. A request past the scratch is served short,
         // and SDL asks again on the next callback.
-        const int capacity =
-            static_cast<int>(self->scratch_.size()) / channels;
+        const int capacity = static_cast<int>(self->scratch_.size()) / channels;
         frames = std::min(frames, capacity);
-        if (frames <= 0) return;
+        if (frames <= 0)
+            return;
 
         self->render(frames, self->scratch_.data(), nullptr);
         const bool submitted = SDL_PutAudioStreamData(
-            stream, self->scratch_.data(),
-            frames * channels * static_cast<int>(sizeof(float)));
+            stream, self->scratch_.data(), frames * channels * static_cast<int>(sizeof(float)));
         if (self->stream_.trace && submitted) {
             self->stream_.frames += static_cast<std::uint64_t>(frames);
             for (int sample = 0; sample < frames * channels; ++sample) {
-                self->stream_.peak = std::max(self->stream_.peak, std::abs(self->scratch_[static_cast<std::size_t>(sample)]));
+                self->stream_.peak = std::max(
+                    self->stream_.peak, std::abs(self->scratch_[static_cast<std::size_t>(sample)]));
             }
         }
     }
@@ -223,9 +218,13 @@ private:
         StreamOwner(const StreamOwner&) = delete;
         StreamOwner& operator=(const StreamOwner&) = delete;
         ~StreamOwner() {
-            if (value) SDL_DestroyAudioStream(value);
-            if (trace && value) std::cerr << "[bblite trace] audio playback frames=" << frames << " peak=" << peak << '\n';
-            if (initialized) SDL_QuitSubSystem(SDL_INIT_AUDIO);
+            if (value)
+                SDL_DestroyAudioStream(value);
+            if (trace && value)
+                std::cerr << "[bblite trace] audio playback frames=" << frames << " peak=" << peak
+                          << '\n';
+            if (initialized)
+                SDL_QuitSubSystem(SDL_INIT_AUDIO);
         }
     };
 

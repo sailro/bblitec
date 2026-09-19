@@ -23,26 +23,46 @@ export function emitShaderCppExpression(
 ): { components: string[]; declarations: string[] } {
     const declarations: string[] = [];
     const tables = new Map<string, string>();
-    if (options.minimumNormalizeLength !== undefined &&
-        (!Number.isFinite(Math.fround(options.minimumNormalizeLength)) || options.minimumNormalizeLength < 0)) {
-        throw new Error("WGSL normalization threshold must be a nonnegative finite f32 value.");
+    if (
+        options.minimumNormalizeLength !== undefined &&
+        (!Number.isFinite(Math.fround(options.minimumNormalizeLength)) ||
+            options.minimumNormalizeLength < 0)
+    ) {
+        throw new Error(
+            "WGSL normalization threshold must be a nonnegative finite f32 value.",
+        );
     }
     const abstract = (value: number, integer: boolean): ShaderCppScalar => {
         // Keep the bounded interpreter exact; wider abstract integers need a
         // BigInt path before they can be accepted (WGSL uses signed 64-bit).
-        if (!Number.isFinite(value) || (integer && !Number.isSafeInteger(value))) {
-            throw new Error("WGSL abstract constant is outside the supported exact range.");
+        if (
+            !Number.isFinite(value) ||
+            (integer && !Number.isSafeInteger(value))
+        ) {
+            throw new Error(
+                "WGSL abstract constant is outside the supported exact range.",
+            );
         }
-        return { cpp: floatLiteral(value), constant: true, abstract: { value, integer } };
+        return {
+            cpp: floatLiteral(value),
+            constant: true,
+            abstract: { value, integer },
+        };
     };
     const materialize = (value: ShaderCppScalar): ShaderCppScalar => {
         if (!value.abstract) return value;
-        if (!Number.isFinite(Math.fround(value.abstract.value))) throw new Error("WGSL constant cannot materialize as f32.");
+        if (!Number.isFinite(Math.fround(value.abstract.value)))
+            throw new Error("WGSL constant cannot materialize as f32.");
         return { cpp: floatLiteral(value.abstract.value), constant: true };
     };
-    const swizzle = (value: readonly ShaderCppScalar[], member: string): ShaderCppScalar[] => {
-        const alphabet = [...member].every(c => "xyzw".includes(c)) ? "xyzw" : "rgba";
-        return [...member].map(c => {
+    const swizzle = (
+        value: readonly ShaderCppScalar[],
+        member: string,
+    ): ShaderCppScalar[] => {
+        const alphabet = [...member].every((c) => "xyzw".includes(c))
+            ? "xyzw"
+            : "rgba";
+        return [...member].map((c) => {
             const lane = value[alphabet.indexOf(c)];
             if (!lane) throw new Error(`Unsupported WGSL swizzle '${member}'.`);
             return lane;
@@ -52,92 +72,179 @@ export function emitShaderCppExpression(
         values: readonly (readonly ShaderCppScalar[])[],
         scalar: (args: ShaderCppScalar[]) => ShaderCppScalar,
     ): ShaderCppScalar[] => {
-        const width = Math.max(...values.map(v => v.length));
-        if (values.some(v => v.length !== 1 && v.length !== width)) throw new Error("Incompatible WGSL vector dimensions.");
-        return Array.from({ length: width }, (_, i) => scalar(values.map(v => v[v.length === 1 ? 0 : i]!)));
+        const width = Math.max(...values.map((v) => v.length));
+        if (values.some((v) => v.length !== 1 && v.length !== width))
+            throw new Error("Incompatible WGSL vector dimensions.");
+        return Array.from({ length: width }, (_, i) =>
+            scalar(values.map((v) => v[v.length === 1 ? 0 : i]!)),
+        );
     };
     const emit = (node: ShaderExpression): ShaderCppScalar[] => {
         switch (node.kind) {
             case "number": {
-                const value = Number(node.value.endsWith("f") ? node.value.slice(0, -1) : node.value);
-                if (!Number.isFinite(value)) throw new Error(`Unsupported float WGSL literal '${node.value}'.`);
-                return [node.value.endsWith("f")
-                    ? materialize(abstract(value, false))
-                    : abstract(value, !/[.eE]/.test(node.value))];
+                const value = Number(
+                    node.value.endsWith("f")
+                        ? node.value.slice(0, -1)
+                        : node.value,
+                );
+                if (!Number.isFinite(value))
+                    throw new Error(
+                        `Unsupported float WGSL literal '${node.value}'.`,
+                    );
+                return [
+                    node.value.endsWith("f")
+                        ? materialize(abstract(value, false))
+                        : abstract(value, !/[.eE]/.test(node.value)),
+                ];
             }
             case "path": {
                 const value = bindings.get(node.parts.join("."));
                 if (value) return [...value];
                 const root = bindings.get(node.parts[0]!);
-                if (!root || node.parts.length !== 2) throw new Error(`Unbound WGSL value '${node.parts.join(".")}'.`);
+                if (!root || node.parts.length !== 2)
+                    throw new Error(
+                        `Unbound WGSL value '${node.parts.join(".")}'.`,
+                    );
                 return swizzle(root, node.parts[1]!);
             }
-            case "member": return swizzle(emit(node.expression), node.member);
-            case "index": throw new Error("C++ shader projection does not support indexed values.");
+            case "member":
+                return swizzle(emit(node.expression), node.member);
+            case "index":
+                throw new Error(
+                    "C++ shader projection does not support indexed values.",
+                );
             case "construct": {
-                if (node.type === "mat4x4<f32>") throw new Error(`Unsupported C++ shader construction '${node.type}'.`);
+                if (node.type === "mat4x4<f32>")
+                    throw new Error(
+                        `Unsupported C++ shader construction '${node.type}'.`,
+                    );
                 const width = typeComponents(node.type);
                 const lanes = node.arguments.flatMap(emit).map(materialize);
-                if (lanes.length === 1) return Array.from({ length: width }, () => lanes[0]!);
-                if (lanes.length !== width) throw new Error("Invalid WGSL constructor dimensions.");
+                if (lanes.length === 1)
+                    return Array.from({ length: width }, () => lanes[0]!);
+                if (lanes.length !== width)
+                    throw new Error("Invalid WGSL constructor dimensions.");
                 return lanes;
             }
             case "binary": {
-                if (!["+", "-", "*", "/"].includes(node.operator)) throw new Error("C++ shader projection expects float arithmetic.");
-                return vectorize([emit(node.left), emit(node.right)], ([a, b]) => {
-                    if (a!.abstract && b!.abstract) {
-                        const lhs = a!.abstract.value, rhs = b!.abstract.value;
-                        const integer = a!.abstract.integer && b!.abstract.integer;
-                        let result: number;
-                        switch (node.operator) {
-                            case "+": result = lhs + rhs; break;
-                            case "-": result = lhs - rhs; break;
-                            case "*": result = lhs * rhs; break;
-                            case "/": result = integer ? Math.trunc(lhs / rhs) : lhs / rhs; break;
-                            default: throw new Error("Expected abstract arithmetic.");
+                if (!["+", "-", "*", "/"].includes(node.operator))
+                    throw new Error(
+                        "C++ shader projection expects float arithmetic.",
+                    );
+                return vectorize(
+                    [emit(node.left), emit(node.right)],
+                    ([a, b]) => {
+                        if (a!.abstract && b!.abstract) {
+                            const lhs = a!.abstract.value,
+                                rhs = b!.abstract.value;
+                            const integer =
+                                a!.abstract.integer && b!.abstract.integer;
+                            let result: number;
+                            switch (node.operator) {
+                                case "+":
+                                    result = lhs + rhs;
+                                    break;
+                                case "-":
+                                    result = lhs - rhs;
+                                    break;
+                                case "*":
+                                    result = lhs * rhs;
+                                    break;
+                                case "/":
+                                    result = integer
+                                        ? Math.trunc(lhs / rhs)
+                                        : lhs / rhs;
+                                    break;
+                                default:
+                                    throw new Error(
+                                        "Expected abstract arithmetic.",
+                                    );
+                            }
+                            return abstract(result, integer);
                         }
-                        return abstract(result, integer);
-                    }
-                    return { cpp: `(${materialize(a!).cpp} ${node.operator} ${materialize(b!).cpp})`, constant: !!a!.constant && !!b!.constant };
-                });
+                        return {
+                            cpp: `(${materialize(a!).cpp} ${node.operator} ${materialize(b!).cpp})`,
+                            constant: !!a!.constant && !!b!.constant,
+                        };
+                    },
+                );
             }
             case "call": {
                 if (node.name === "normalize") {
-                    if (node.arguments.length !== 1) throw new Error("WGSL normalize requires one vector argument.");
+                    if (node.arguments.length !== 1)
+                        throw new Error(
+                            "WGSL normalize requires one vector argument.",
+                        );
                     const lanes = emit(node.arguments[0]!).map(materialize);
-                    if (lanes.length < 2 || lanes.length > 4) throw new Error("WGSL normalize requires a two-, three- or four-lane vector.");
+                    if (lanes.length < 2 || lanes.length > 4)
+                        throw new Error(
+                            "WGSL normalize requires a two-, three- or four-lane vector.",
+                        );
                     const input = `shader_normalize_input_${declarations.length}`;
                     const length = `shader_normalize_length_${declarations.length}`;
-                    declarations.push(`const std::array<float, ${lanes.length}> ${input}{${lanes.map(lane => lane.cpp).join(", ")}};`);
-                    const squared = lanes.map((_, index) => `${input}[${index}] * ${input}[${index}]`)
+                    declarations.push(
+                        `const std::array<float, ${lanes.length}> ${input}{${lanes.map((lane) => lane.cpp).join(", ")}};`,
+                    );
+                    const squared = lanes
+                        .map(
+                            (_, index) =>
+                                `${input}[${index}] * ${input}[${index}]`,
+                        )
                         .reduce((sum, term) => `(${sum} + ${term})`);
-                    declarations.push(`const float ${length} = std::sqrt(${squared});`);
+                    declarations.push(
+                        `const float ${length} = std::sqrt(${squared});`,
+                    );
                     return lanes.map((_, index) => ({
-                        cpp: options.minimumNormalizeLength === undefined
-                            ? `(${input}[${index}] / ${length})`
-                            : `(${length} > ${floatLiteral(options.minimumNormalizeLength)} ? ${input}[${index}] / ${length} : 0.0f)`,
+                        cpp:
+                            options.minimumNormalizeLength === undefined
+                                ? `(${input}[${index}] / ${length})`
+                                : `(${length} > ${floatLiteral(options.minimumNormalizeLength)} ? ${input}[${index}] / ${length} : 0.0f)`,
                     }));
                 }
-                const arities: Readonly<Record<string, number>> = { pow: 2, max: 2, min: 2, sqrt: 1, abs: 1 };
-                if (arities[node.name] !== node.arguments.length) throw new Error(`Unsupported WGSL call '${node.name}'.`);
-                return vectorize(node.arguments.map(emit), args => {
-                    if (args.every(arg => arg.abstract)) {
-                        const values = args.map(arg => arg.abstract!.value);
-                        const integer = args.every(arg => arg.abstract!.integer);
+                const arities: Readonly<Record<string, number>> = {
+                    pow: 2,
+                    max: 2,
+                    min: 2,
+                    sqrt: 1,
+                    abs: 1,
+                };
+                if (arities[node.name] !== node.arguments.length)
+                    throw new Error(`Unsupported WGSL call '${node.name}'.`);
+                return vectorize(node.arguments.map(emit), (args) => {
+                    if (args.every((arg) => arg.abstract)) {
+                        const values = args.map((arg) => arg.abstract!.value);
+                        const integer = args.every(
+                            (arg) => arg.abstract!.integer,
+                        );
                         switch (node.name) {
-                            case "min": return abstract(Math.min(...values), integer);
-                            case "max": return abstract(Math.max(...values), integer);
-                            case "abs": return abstract(Math.abs(values[0]!), integer);
-                            default: throw new Error(`Unsupported abstract WGSL builtin '${node.name}'.`);
+                            case "min":
+                                return abstract(Math.min(...values), integer);
+                            case "max":
+                                return abstract(Math.max(...values), integer);
+                            case "abs":
+                                return abstract(Math.abs(values[0]!), integer);
+                            default:
+                                throw new Error(
+                                    `Unsupported abstract WGSL builtin '${node.name}'.`,
+                                );
                         }
                     }
                     args = args.map(materialize);
-                    const call = (values: readonly string[]): string => `${pinnedMathSpelling(node.name)}(${values.join(", ")})`;
-                    let cpp = call(args.map(a => a.cpp));
+                    const call = (values: readonly string[]): string =>
+                        `${pinnedMathSpelling(node.name)}(${values.join(", ")})`;
+                    let cpp = call(args.map((a) => a.cpp));
                     // Hoist expensive unary byte-domain work, preserving C++ f32
                     // evaluation. Tables are deduplicated across vector lanes.
-                    if (options.tabulateUnorm8 && node.name === "pow" && args[0]!.unorm8 && args.slice(1).every(a => a.constant)) {
-                        const body = call(["static_cast<float>(byte) / 255.0f", ...args.slice(1).map(a => a.cpp)]);
+                    if (
+                        options.tabulateUnorm8 &&
+                        node.name === "pow" &&
+                        args[0]!.unorm8 &&
+                        args.slice(1).every((a) => a.constant)
+                    ) {
+                        const body = call([
+                            "static_cast<float>(byte) / 255.0f",
+                            ...args.slice(1).map((a) => a.cpp),
+                        ]);
                         let name = tables.get(body);
                         if (!name) {
                             name = `shader_table_${tables.size}`;
@@ -150,10 +257,13 @@ export function emitShaderCppExpression(
                         }
                         cpp = `${name}[${args[0]!.unorm8}]`;
                     }
-                    return { cpp, constant: args.every(a => a.constant) };
+                    return { cpp, constant: args.every((a) => a.constant) };
                 });
             }
         }
     };
-    return { components: emit(expression).map(lane => materialize(lane).cpp), declarations };
+    return {
+        components: emit(expression).map((lane) => materialize(lane).cpp),
+        declarations,
+    };
 }

@@ -13,8 +13,8 @@ std::string asset_path(const std::string& path) { return path; }
 namespace pal {
 std::vector<std::uint8_t> read_binary_file(const std::string&) { return {}; }
 DecodedImage decode_image(const js::ArrayBuffer&) { return {128, 64, {}}; }
-}
-}
+} // namespace pal
+} // namespace bbl
 
 int main() {
     using namespace bbl;
@@ -40,7 +40,7 @@ int main() {
     assert(!node_particle_frozen_column(0, 0, "unobserved", 0).has_value());
     assert(!node_particle_frozen_column(0, 99, "age", 0).has_value());
     for (double index : {-1.0, 0.5, 3.0, std::numeric_limits<double>::infinity(),
-            std::numeric_limits<double>::quiet_NaN()}) {
+                         std::numeric_limits<double>::quiet_NaN()}) {
         assert(!node_particle_frozen_column(0, 0, "age", index).has_value());
     }
     int samples = 0;
@@ -52,7 +52,8 @@ int main() {
     for (int frame = 0; frame < 5; ++frame) {
         cells[0] = static_cast<std::uint16_t>(frame % 2);
         assert(alias[0] == cells[0]);
-        for (auto& callback : record.before_update) callback(1000.0 / 60.0);
+        for (auto& callback : record.before_update)
+            callback(1000.0 / 60.0);
         const auto& expected = frame % 2 == 0 ? expected_0 : expected_1;
         assert(std::equal(expected.begin(), expected.end(), layer.instance_data.begin()));
         assert(layer.saved_size[0] == expected[2] && layer.saved_size[1] == expected[3]);
@@ -80,12 +81,20 @@ int main() {
     assert(std::equal(expected_0.begin(), expected_0.end(), layer.instance_data.begin()));
     cells[0] = 2;
     bool refused = false;
-    try { record.before_update[0](0); } catch (const std::runtime_error&) { refused = true; }
+    try {
+        record.before_update[0](0);
+    } catch (const std::runtime_error&) {
+        refused = true;
+    }
     assert(refused);
     cells[0] = 0;
     add_sprite_2d(engine, record.layers[0], extra);
     refused = false;
-    try { record.before_update[0](0); } catch (const std::runtime_error&) { refused = true; }
+    try {
+        record.before_update[0](0);
+    } catch (const std::runtime_error&) {
+        refused = true;
+    }
     assert(refused);
 
     const auto exact_renderer = create_sprite_renderer(engine, {});

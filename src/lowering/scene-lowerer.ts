@@ -1,14 +1,12 @@
 import ts from "typescript";
 import { LoweredSource, LoweringContext } from "./context.js";
-import {
-  lowerMat4InvertCpp,
-} from "./pinned-function-lowerer.js";
+import { lowerMat4InvertCpp } from "./pinned-function-lowerer.js";
 import { lowerMat4DecomposeFull } from "./pinned-mat4-decompose.js";
 import { sceneNodeTransformsSource } from "./scene-node-transforms.js";
 import { PinnedNumericLowerer } from "./pinned-numeric-lowerer.js";
-import {lowerAssetSceneAttachment} from "./asset-scene-attachment.js";
-import {lowerMeshMaterialSetter} from "./mesh-material-setter.js";
-import {lowerPbrMaterialGroups} from "./pbr-material-groups.js";
+import { lowerAssetSceneAttachment } from "./asset-scene-attachment.js";
+import { lowerMeshMaterialSetter } from "./mesh-material-setter.js";
+import { lowerPbrMaterialGroups } from "./pbr-material-groups.js";
 
 const fogModulePath = "src/scene/scene-ubo-extras.ts";
 const fogName = "setFog";
@@ -17,590 +15,670 @@ const clipPlaneName = "setClipPlane";
 
 /** The arms of the scene core a scene reaches, each gating an emitted unit. */
 interface SceneCoreOptions {
-  fog?: boolean;
-  /** The scene reaches `setClipPlane`. */
-  clipPlane?: boolean;
-  /** The scene reaches `enableMirroredMeshes`. */
-  mirroredMeshes?: boolean;
-  parenting?: boolean;
-  visibility?: boolean;
-  geometryAccess?: boolean;
-  animationManagers?: boolean;
-  /** The scene baked a vertex animation texture (mesh:vat). */
-  vat?: boolean;
-  /** The scene reaches `createTransformNode`. */
-  transformNodes?: boolean;
-  /** A retained SceneNode union reaches a TRS read or write. */
-  sceneNodeTransforms?: boolean;
-  /** Retained text entities participate in scene disposal. */
-  text?: boolean;
-  /** Node materials capture texture slots in deferred scene groups. */
-  nodeMaterials?: boolean;
-  pbrSceneHooks?: boolean;
+    fog?: boolean;
+    /** The scene reaches `setClipPlane`. */
+    clipPlane?: boolean;
+    /** The scene reaches `enableMirroredMeshes`. */
+    mirroredMeshes?: boolean;
+    parenting?: boolean;
+    visibility?: boolean;
+    geometryAccess?: boolean;
+    animationManagers?: boolean;
+    /** The scene baked a vertex animation texture (mesh:vat). */
+    vat?: boolean;
+    /** The scene reaches `createTransformNode`. */
+    transformNodes?: boolean;
+    /** A retained SceneNode union reaches a TRS read or write. */
+    sceneNodeTransforms?: boolean;
+    /** Retained text entities participate in scene disposal. */
+    text?: boolean;
+    /** Node materials capture texture slots in deferred scene groups. */
+    nodeMaterials?: boolean;
+    pbrSceneHooks?: boolean;
 }
 
 export class SceneLowerer {
-  public constructor(private readonly context: LoweringContext) {}
+    public constructor(private readonly context: LoweringContext) {}
 
-  public lowerCore(options: SceneCoreOptions = {}): LoweredSource {
-    const modulePath = "src/scene/scene-core.ts";
-    const createName = "createSceneContext";
-    const addName = "addToScene";
-    const beforeName = "onBeforeRender";
-    const disposeName = "onSceneDispose";
-    const registerName = "registerScene";
-    const { file, declaration } = this.context.functionDeclaration(
-      modulePath,
-      createName,
-    );
-    const scene = this.context.objectInitializer(declaration, "ctxLocal");
-    const callbackDelta = new PinnedNumericLowerer(file, {
-      bindings: new Map([
-        ["ctx.fixedDeltaMs", { cpp: "scene.fixed_delta_ms", type: "scalar" }],
-        ["eng._currentDelta", { cpp: "engine_delta_ms", type: "scalar" }],
-      ]),
-      calls: new Map(),
-    }).expression(this.context.variableInitializer(declaration, "d"));
-    this.context.assertExpressionShape(
-      this.context.propertyInitializer(scene, "fog"), "null", "Pinned initial fog identity",
-    );
-    if (scene.properties.some((property) => property.name &&
-      this.context.propertyName(property.name) === "_envTextures")) {
-      this.context.contractError(scene, "Expected a new scene to have no environment texture object.");
-    }
-    const clearExpression = this.context.propertyInitializer(
-      scene,
-      "clearColor",
-    );
-    if (!ts.isObjectLiteralExpression(clearExpression)) {
-      throw new Error("Upstream scene clearColor is not an object literal.");
-    }
-    const clear = (name: string): number =>
-      this.context.numericValue(
-        this.context.propertyInitializer(clearExpression, name),
-        file,
-      );
-    const { declaration: addToScene } = this.context.functionDeclaration(
-      modulePath,
-      addName,
-    );
-    this.context.assertExpressionShape(
-      this.context.variableInitializer(addToScene, "kids"),
-      "(entity as unknown as SceneNode).children",
-      "Pinned addToScene child traversal",
-    );
-    const addChildrenLoops = this.context.findNodes(
-      addToScene,
-      (node): node is ts.ForOfStatement =>
-        ts.isForOfStatement(node) &&
-        this.context.propertyPath(node.expression)?.join(".") === "kids",
-    );
-    if (addChildrenLoops.length !== 1) {
-      this.context.contractError(
-        addToScene,
-        "Expected addToScene to walk its ordered children exactly once.",
-      );
-    }
-    const addChildrenLoop = addChildrenLoops[0]!;
-    const childParentWrites = this.context.findNodes(
-      addChildrenLoop.statement,
-      (node): node is ts.BinaryExpression =>
-        ts.isBinaryExpression(node) &&
-        node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
-        this.context.propertyPath(node.left)?.join(".") ===
-          "child.parent" &&
-        this.context.propertyPath(node.right)?.join(".") === "entity",
-    );
-    const childRecursiveAdds = this.context.findNodes(
-      addChildrenLoop.statement,
-      (node): node is ts.CallExpression =>
-        ts.isCallExpression(node) &&
-        ts.isIdentifier(node.expression) &&
-        node.expression.text === addName &&
-        node.arguments.length === 2 &&
-        this.context.propertyPath(node.arguments[0]!)?.join(".") ===
-          "scene" &&
-        this.context.propertyPath(node.arguments[1]!)?.join(".") ===
-          "child",
-    );
-    if (
-      childParentWrites.length !== 1 ||
-      childRecursiveAdds.length !== 1 ||
-      childParentWrites[0]!.end >= childRecursiveAdds[0]!.pos
-    ) {
-      this.context.contractError(
-        addChildrenLoop,
-        "Expected addToScene to set each child parent before recursing.",
-      );
-    }
-    const { declaration: createSceneNodeCore } =
-      this.context.functionDeclaration(
-        "src/scene/scene-node.ts",
-        "createSceneNodeCore",
-      );
-    const parentSetters = this.context.findNodes(
-      createSceneNodeCore,
-      (node): node is ts.SetAccessorDeclaration =>
-        ts.isSetAccessorDeclaration(node) &&
-        this.context.propertyName(node.name) === "parent",
-    );
-    const parentSetter = parentSetters[0];
-    if (
-      parentSetters.length !== 1 ||
-      !parentSetter?.body ||
-      parentSetter.body.statements.length !== 1 ||
-      !ts.isExpressionStatement(parentSetter.body.statements[0]!)
-    ) {
-      this.context.contractError(
-        createSceneNodeCore,
-        "Expected SceneNode.parent to be one direct world-state write.",
-      );
-    }
-    this.context.assertExpressionShape(
-      parentSetter.body.statements[0].expression,
-      "wm.parent = v",
-      "Pinned direct SceneNode parent write",
-    );
-    if (
-      this.context.hasNode(
-        parentSetter.body,
-        (node) =>
-          ts.isPropertyAccessExpression(node) &&
-          node.name.text === "children",
-      )
-    ) {
-      this.context.contractError(
-        parentSetter,
-        "A direct SceneNode.parent write must not mutate children.",
-      );
-    }
-    const transformNodeModulePath = "src/scene/transform-node.ts";
-    const { declaration: cloneTransformNode } =
-      this.context.functionDeclaration(
-        transformNodeModulePath,
-        "cloneTransformNode",
-      );
-    if (
-      !this.context.hasNode(
-        cloneTransformNode,
-        (node) =>
-          ts.isBinaryExpression(node) &&
-          node.operatorToken.kind === ts.SyntaxKind.InKeyword &&
-          ts.isStringLiteral(node.left) &&
-          node.left.text === "_gpu" &&
-          ts.isIdentifier(node.right) &&
-          node.right.text === "src",
-      ) ||
-      !this.context.hasNode(
-        cloneTransformNode,
-        (node) =>
-          ts.isForOfStatement(node) &&
-          this.context.propertyPath(node.expression)?.join(".") ===
-            "src.children",
-      ) ||
-      !this.context.hasCall(cloneTransformNode, "cloneTransformNode")
-    ) {
-      this.context.contractError(
-        cloneTransformNode,
-        "Expected cloneTransformNode to route meshes and recursively clone children.",
-      );
-    }
-    const cloneChildPushes = this.context.findNodes(
-      cloneTransformNode,
-      (node): node is ts.CallExpression =>
-        ts.isCallExpression(node) &&
-        this.context.propertyPath(node.expression)?.join(".") ===
-          "clone.children.push",
-    );
-    if (cloneChildPushes.length !== 2) {
-      this.context.contractError(
-        cloneTransformNode,
-        "Expected cloneTransformNode to append each cloned child to the traversal list.",
-      );
-    }
-    const { declaration: cloneMeshNode } = this.context.functionDeclaration(
-      transformNodeModulePath,
-      "cloneMeshNode",
-    );
-    this.context.assertExpressionShape(
-      this.context.variableInitializer(cloneMeshNode, "meshClone"),
-      `initMeshTransform({...mesh, name: mesh.name + "_clone", children: [], _gpu: mesh._gpu},
+    public lowerCore(options: SceneCoreOptions = {}): LoweredSource {
+        const modulePath = "src/scene/scene-core.ts";
+        const createName = "createSceneContext";
+        const addName = "addToScene";
+        const beforeName = "onBeforeRender";
+        const disposeName = "onSceneDispose";
+        const registerName = "registerScene";
+        const { file, declaration } = this.context.functionDeclaration(
+            modulePath,
+            createName,
+        );
+        const scene = this.context.objectInitializer(declaration, "ctxLocal");
+        const callbackDelta = new PinnedNumericLowerer(file, {
+            bindings: new Map([
+                [
+                    "ctx.fixedDeltaMs",
+                    { cpp: "scene.fixed_delta_ms", type: "scalar" },
+                ],
+                [
+                    "eng._currentDelta",
+                    { cpp: "engine_delta_ms", type: "scalar" },
+                ],
+            ]),
+            calls: new Map(),
+        }).expression(this.context.variableInitializer(declaration, "d"));
+        this.context.assertExpressionShape(
+            this.context.propertyInitializer(scene, "fog"),
+            "null",
+            "Pinned initial fog identity",
+        );
+        if (
+            scene.properties.some(
+                (property) =>
+                    property.name &&
+                    this.context.propertyName(property.name) === "_envTextures",
+            )
+        ) {
+            this.context.contractError(
+                scene,
+                "Expected a new scene to have no environment texture object.",
+            );
+        }
+        const clearExpression = this.context.propertyInitializer(
+            scene,
+            "clearColor",
+        );
+        if (!ts.isObjectLiteralExpression(clearExpression)) {
+            throw new Error(
+                "Upstream scene clearColor is not an object literal.",
+            );
+        }
+        const clear = (name: string): number =>
+            this.context.numericValue(
+                this.context.propertyInitializer(clearExpression, name),
+                file,
+            );
+        const { declaration: addToScene } = this.context.functionDeclaration(
+            modulePath,
+            addName,
+        );
+        this.context.assertExpressionShape(
+            this.context.variableInitializer(addToScene, "kids"),
+            "(entity as unknown as SceneNode).children",
+            "Pinned addToScene child traversal",
+        );
+        const addChildrenLoops = this.context.findNodes(
+            addToScene,
+            (node): node is ts.ForOfStatement =>
+                ts.isForOfStatement(node) &&
+                this.context.propertyPath(node.expression)?.join(".") ===
+                    "kids",
+        );
+        if (addChildrenLoops.length !== 1) {
+            this.context.contractError(
+                addToScene,
+                "Expected addToScene to walk its ordered children exactly once.",
+            );
+        }
+        const addChildrenLoop = addChildrenLoops[0]!;
+        const childParentWrites = this.context.findNodes(
+            addChildrenLoop.statement,
+            (node): node is ts.BinaryExpression =>
+                ts.isBinaryExpression(node) &&
+                node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+                this.context.propertyPath(node.left)?.join(".") ===
+                    "child.parent" &&
+                this.context.propertyPath(node.right)?.join(".") === "entity",
+        );
+        const childRecursiveAdds = this.context.findNodes(
+            addChildrenLoop.statement,
+            (node): node is ts.CallExpression =>
+                ts.isCallExpression(node) &&
+                ts.isIdentifier(node.expression) &&
+                node.expression.text === addName &&
+                node.arguments.length === 2 &&
+                this.context.propertyPath(node.arguments[0]!)?.join(".") ===
+                    "scene" &&
+                this.context.propertyPath(node.arguments[1]!)?.join(".") ===
+                    "child",
+        );
+        if (
+            childParentWrites.length !== 1 ||
+            childRecursiveAdds.length !== 1 ||
+            childParentWrites[0]!.end >= childRecursiveAdds[0]!.pos
+        ) {
+            this.context.contractError(
+                addChildrenLoop,
+                "Expected addToScene to set each child parent before recursing.",
+            );
+        }
+        const { declaration: createSceneNodeCore } =
+            this.context.functionDeclaration(
+                "src/scene/scene-node.ts",
+                "createSceneNodeCore",
+            );
+        const parentSetters = this.context.findNodes(
+            createSceneNodeCore,
+            (node): node is ts.SetAccessorDeclaration =>
+                ts.isSetAccessorDeclaration(node) &&
+                this.context.propertyName(node.name) === "parent",
+        );
+        const parentSetter = parentSetters[0];
+        if (
+            parentSetters.length !== 1 ||
+            !parentSetter?.body ||
+            parentSetter.body.statements.length !== 1 ||
+            !ts.isExpressionStatement(parentSetter.body.statements[0]!)
+        ) {
+            this.context.contractError(
+                createSceneNodeCore,
+                "Expected SceneNode.parent to be one direct world-state write.",
+            );
+        }
+        this.context.assertExpressionShape(
+            parentSetter.body.statements[0].expression,
+            "wm.parent = v",
+            "Pinned direct SceneNode parent write",
+        );
+        if (
+            this.context.hasNode(
+                parentSetter.body,
+                (node) =>
+                    ts.isPropertyAccessExpression(node) &&
+                    node.name.text === "children",
+            )
+        ) {
+            this.context.contractError(
+                parentSetter,
+                "A direct SceneNode.parent write must not mutate children.",
+            );
+        }
+        const transformNodeModulePath = "src/scene/transform-node.ts";
+        const { declaration: cloneTransformNode } =
+            this.context.functionDeclaration(
+                transformNodeModulePath,
+                "cloneTransformNode",
+            );
+        if (
+            !this.context.hasNode(
+                cloneTransformNode,
+                (node) =>
+                    ts.isBinaryExpression(node) &&
+                    node.operatorToken.kind === ts.SyntaxKind.InKeyword &&
+                    ts.isStringLiteral(node.left) &&
+                    node.left.text === "_gpu" &&
+                    ts.isIdentifier(node.right) &&
+                    node.right.text === "src",
+            ) ||
+            !this.context.hasNode(
+                cloneTransformNode,
+                (node) =>
+                    ts.isForOfStatement(node) &&
+                    this.context.propertyPath(node.expression)?.join(".") ===
+                        "src.children",
+            ) ||
+            !this.context.hasCall(cloneTransformNode, "cloneTransformNode")
+        ) {
+            this.context.contractError(
+                cloneTransformNode,
+                "Expected cloneTransformNode to route meshes and recursively clone children.",
+            );
+        }
+        const cloneChildPushes = this.context.findNodes(
+            cloneTransformNode,
+            (node): node is ts.CallExpression =>
+                ts.isCallExpression(node) &&
+                this.context.propertyPath(node.expression)?.join(".") ===
+                    "clone.children.push",
+        );
+        if (cloneChildPushes.length !== 2) {
+            this.context.contractError(
+                cloneTransformNode,
+                "Expected cloneTransformNode to append each cloned child to the traversal list.",
+            );
+        }
+        const { declaration: cloneMeshNode } = this.context.functionDeclaration(
+            transformNodeModulePath,
+            "cloneMeshNode",
+        );
+        this.context.assertExpressionShape(
+            this.context.variableInitializer(cloneMeshNode, "meshClone"),
+            `initMeshTransform({...mesh, name: mesh.name + "_clone", children: [], _gpu: mesh._gpu},
         mesh.position.x, mesh.position.y, mesh.position.z, 0, 0, 0,
         mesh.scaling.x, mesh.scaling.y, mesh.scaling.z)`,
-      "Mesh cloning starts a fresh transform state over shared geometry",
-    );
-    if (
-      !this.context.hasNode(
-        cloneMeshNode,
-        (node) =>
-          ts.isPropertyAssignment(node) &&
-          this.context.propertyName(node.name) === "_gpu" &&
-          this.context.propertyPath(node.initializer)?.join(".") ===
-            "mesh._gpu",
-      ) ||
-      !this.context.hasCall(cloneMeshNode, "retain")
-    ) {
-      this.context.contractError(
-        cloneMeshNode,
-        "Expected mesh clones to retain and share their GPU-backed resources.",
-      );
-    }
-    // The pinned clone naming: `mesh.name + "_clone"`. The suffix
-    // flows into the emitted record copy so a scene searching by name
-    // never matches a clone under the source's own name.
-    const cloneSuffixes = this.context
-      .findNodes(
-        cloneMeshNode,
-        (node): node is ts.BinaryExpression =>
-          ts.isBinaryExpression(node) &&
-          node.operatorToken.kind === ts.SyntaxKind.PlusToken &&
-          this.context.propertyPath(node.left)?.join(".") === "mesh.name" &&
-          ts.isStringLiteral(this.context.unwrapExpression(node.right)),
-      )
-      .map(
-        (concat) =>
-          (this.context.unwrapExpression(concat.right) as ts.StringLiteral)
-            .text,
-      );
-    if (cloneSuffixes.length !== 1) {
-      this.context.contractError(
-        cloneMeshNode,
-        "Expected one pinned clone-name suffix.",
-      );
-    }
-    const cloneSuffix = cloneSuffixes[0]!;
-    for (const property of ["entities", "_gpu", "material", "lightType"]) {
-      if (
-        !this.context.hasNode(
-          addToScene,
-          (node) =>
-            ts.isBinaryExpression(node) &&
-            node.operatorToken.kind === ts.SyntaxKind.InKeyword &&
-            ts.isStringLiteral(node.left) &&
-            node.left.text === property &&
-            ts.isIdentifier(node.right) &&
-            node.right.text === "entity",
-        )
-      ) {
-        this.context.contractError(
-          addToScene,
-          `Expected '${property}' entity routing.`,
+            "Mesh cloning starts a fresh transform state over shared geometry",
         );
-      }
-    }
-    const { declaration: onBeforeRender } = this.context.functionDeclaration(
-      modulePath,
-      beforeName,
-    );
-    if (
-      !this.context.hasNode(
-        onBeforeRender,
-        (node) =>
-          ts.isCallExpression(node) &&
-          ts.isPropertyAccessExpression(node.expression) &&
-          node.expression.name.text === "unshift" &&
-          ts.isPropertyAccessExpression(node.expression.expression) &&
-          node.expression.expression.name.text === "_beforeRender" &&
-          node.arguments.length === 1 &&
-          ts.isIdentifier(node.arguments[0]!) &&
-          node.arguments[0].text === "cb",
-      )
-    ) {
-      this.context.contractError(
-        onBeforeRender,
-        "Expected before-render callbacks to be prepended.",
-      );
-    }
-    const { declaration: onSceneDispose } = this.context.functionDeclaration(
-      modulePath,
-      disposeName,
-    );
-    if (
-      !this.context.hasNode(
-        onSceneDispose,
-        (node) =>
-          ts.isCallExpression(node) &&
-          ts.isPropertyAccessExpression(node.expression) &&
-          node.expression.name.text === "push" &&
-          ts.isPropertyAccessExpression(node.expression.expression) &&
-          node.expression.expression.name.text === "_disposables" &&
-          node.arguments.length === 1 &&
-          ts.isIdentifier(node.arguments[0]!) &&
-          node.arguments[0].text === "cb",
-      )
-    ) {
-      this.context.contractError(
-        onSceneDispose,
-        "Expected scene-disposal callbacks to be appended.",
-      );
-    }
-    const { declaration: registerScene } = this.context.functionDeclaration(
-      modulePath,
-      registerName,
-    );
-    if (!this.context.hasCall(registerScene, "isRenderingContextRegistered")) {
-      this.context.contractError(
-        registerScene,
-        "Expected idempotent rendering-context registration.",
-      );
-    }
-    const registrationGuard = registerScene.body!.statements.find(ts.isIfStatement);
-    if (!registrationGuard ||
-        !this.context.expressionMatchesShape(registrationGuard.expression, "isRenderingContextRegistered(surface, ctx)")) {
-      this.context.contractError(registerScene, "Expected the scene identity guard before deferred construction.");
-    }
-    const buildCall = this.context.findNodes(registerScene,
-      (node): node is ts.CallExpression => ts.isCallExpression(node) && node.expression.getText() === "buildScene")[0];
-    if (!buildCall || registrationGuard.end >= buildCall.pos) {
-      this.context.contractError(registerScene, "Scene registration must guard identity before building or publishing.");
-    }
-    const buildScene = this.context.functionDeclaration(modulePath, "buildScene").declaration;
-    const drain = this.context.findNodes(buildScene, (node): node is ts.WhileStatement => ts.isWhileStatement(node))[0];
-    if (!drain || !ts.isBlock(drain.statement)) {
-      this.context.contractError(buildScene, "Expected the repeated deferred scene drain.");
-    }
-    this.context.assertExpressionShape(drain.expression, "ctx._deferredBuilders.length", "Deferred drain condition");
-    this.context.assertStatementInventory(drain, drain.statement.statements, "buildScene", "snapshot deferred drain", ["variable statement", "expression statement"]);
-    this.context.assertExpressionShape(this.context.variableInitializer(drain, "builders"), "ctx._deferredBuilders.splice(0)", "Deferred drain snapshot");
-    this.context.expectShapeCount(drain, "Promise.all(builders.map((b) => b()))", "Ordered deferred builder invocation");
-    if (options.fog) {
-      const { declaration: setFog } = this.context.functionDeclaration(
-        fogModulePath,
-        fogName,
-      );
-      if (
-        !this.context.hasNode(
-          setFog,
-          (node) =>
-            ts.isBinaryExpression(node) &&
-            node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
-            this.context.propertyPath(node.left)?.join(".") === "scene.fog" &&
-            ts.isIdentifier(node.right) &&
-            node.right.text === "config",
-        )
-      ) {
-        this.context.contractError(
-          setFog,
-          "Expected setFog to store the fog config on the scene.",
-        );
-      }
-      if (
-        !this.context.hasCall(
-          setFog,
-          // 1.23 renamed this from `registerContributor`; the body
-          // is the same store-then-register pair.
-          "_registerSceneUboContributor",
-        )
-      ) {
-        this.context.contractError(
-          setFog,
-          "Expected setFog to register the fog scene-uniform contributor.",
-        );
-      }
-      // The fog UBO writer's field inventory, paired with the
-      // emitted `set_scene_fog` stores: the generated Scene
-      // carries exactly the fields the pinned writer consumes
-      // (mode, start, end, density, color), so a pin that grows
-      // the fog slice fails generation instead of rendering with a
-      // silently missing term. The writer's float offsets (80-86
-      // in the browser scene UBO) are deliberately NOT asserted:
-      // nothing in the generated tree uses them — fog reaches the
-      // native shaders through named uniform-struct fields packed
-      // by the renderer lowerer, and the WGSL component reads come
-      // from the pin's own WGSL_FOG, lifted verbatim by
-      // shader-builtins-utility.ts fogFactorWgsl(), so they track
-      // the pin without a copy here.
-      const { declaration: writeFogUbo } = this.context.functionDeclaration(
-        fogModulePath,
-        "writeFogUbo",
-      );
-      const fogReads = new Set<string>();
-      for (const access of this.context.findNodes(
-        writeFogUbo,
-        (node): node is ts.PropertyAccessExpression =>
-          ts.isPropertyAccessExpression(node),
-      )) {
-        const path = this.context.propertyPath(access);
-        if (path && path.length === 2 && path[0] === "fog") {
-          fogReads.add(path[1]!);
+        if (
+            !this.context.hasNode(
+                cloneMeshNode,
+                (node) =>
+                    ts.isPropertyAssignment(node) &&
+                    this.context.propertyName(node.name) === "_gpu" &&
+                    this.context.propertyPath(node.initializer)?.join(".") ===
+                        "mesh._gpu",
+            ) ||
+            !this.context.hasCall(cloneMeshNode, "retain")
+        ) {
+            this.context.contractError(
+                cloneMeshNode,
+                "Expected mesh clones to retain and share their GPU-backed resources.",
+            );
         }
-      }
-      const expectedFogFields = ["mode", "start", "end", "density", "color"];
-      if (
-        fogReads.size !== expectedFogFields.length ||
-        expectedFogFields.some((name) => !fogReads.has(name))
-      ) {
-        this.context.contractError(
-          writeFogUbo,
-          `Expected the fog UBO writer to consume exactly ` +
-            `{${expectedFogFields.join(", ")}}, found ` +
-            `{${[...fogReads].sort().join(", ")}}.`,
+        // The pinned clone naming: `mesh.name + "_clone"`. The suffix
+        // flows into the emitted record copy so a scene searching by name
+        // never matches a clone under the source's own name.
+        const cloneSuffixes = this.context
+            .findNodes(
+                cloneMeshNode,
+                (node): node is ts.BinaryExpression =>
+                    ts.isBinaryExpression(node) &&
+                    node.operatorToken.kind === ts.SyntaxKind.PlusToken &&
+                    this.context.propertyPath(node.left)?.join(".") ===
+                        "mesh.name" &&
+                    ts.isStringLiteral(
+                        this.context.unwrapExpression(node.right),
+                    ),
+            )
+            .map(
+                (concat) =>
+                    (
+                        this.context.unwrapExpression(
+                            concat.right,
+                        ) as ts.StringLiteral
+                    ).text,
+            );
+        if (cloneSuffixes.length !== 1) {
+            this.context.contractError(
+                cloneMeshNode,
+                "Expected one pinned clone-name suffix.",
+            );
+        }
+        const cloneSuffix = cloneSuffixes[0]!;
+        for (const property of ["entities", "_gpu", "material", "lightType"]) {
+            if (
+                !this.context.hasNode(
+                    addToScene,
+                    (node) =>
+                        ts.isBinaryExpression(node) &&
+                        node.operatorToken.kind === ts.SyntaxKind.InKeyword &&
+                        ts.isStringLiteral(node.left) &&
+                        node.left.text === property &&
+                        ts.isIdentifier(node.right) &&
+                        node.right.text === "entity",
+                )
+            ) {
+                this.context.contractError(
+                    addToScene,
+                    `Expected '${property}' entity routing.`,
+                );
+            }
+        }
+        const { declaration: onBeforeRender } =
+            this.context.functionDeclaration(modulePath, beforeName);
+        if (
+            !this.context.hasNode(
+                onBeforeRender,
+                (node) =>
+                    ts.isCallExpression(node) &&
+                    ts.isPropertyAccessExpression(node.expression) &&
+                    node.expression.name.text === "unshift" &&
+                    ts.isPropertyAccessExpression(node.expression.expression) &&
+                    node.expression.expression.name.text === "_beforeRender" &&
+                    node.arguments.length === 1 &&
+                    ts.isIdentifier(node.arguments[0]!) &&
+                    node.arguments[0].text === "cb",
+            )
+        ) {
+            this.context.contractError(
+                onBeforeRender,
+                "Expected before-render callbacks to be prepended.",
+            );
+        }
+        const { declaration: onSceneDispose } =
+            this.context.functionDeclaration(modulePath, disposeName);
+        if (
+            !this.context.hasNode(
+                onSceneDispose,
+                (node) =>
+                    ts.isCallExpression(node) &&
+                    ts.isPropertyAccessExpression(node.expression) &&
+                    node.expression.name.text === "push" &&
+                    ts.isPropertyAccessExpression(node.expression.expression) &&
+                    node.expression.expression.name.text === "_disposables" &&
+                    node.arguments.length === 1 &&
+                    ts.isIdentifier(node.arguments[0]!) &&
+                    node.arguments[0].text === "cb",
+            )
+        ) {
+            this.context.contractError(
+                onSceneDispose,
+                "Expected scene-disposal callbacks to be appended.",
+            );
+        }
+        const { declaration: registerScene } = this.context.functionDeclaration(
+            modulePath,
+            registerName,
         );
-      }
-    }
-    if (options.clipPlane) {
-      // `setClipPlane`, the fog setter's sibling in the same module: store
-      // the plane, then register the contributor that writes it. The store
-      // is what the emitted record mirrors, and the registration is what
-      // makes the lane reach the scene UBO at all.
-      const { declaration: setClipPlane } = this.context.functionDeclaration(
-        clipPlaneModulePath,
-        clipPlaneName,
-      );
-      if (
-        !this.context.hasNode(
-          setClipPlane,
-          (node) =>
-            ts.isBinaryExpression(node) &&
-            node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
-            this.context.propertyPath(node.left)?.join(".") ===
-              "scene.clipPlane" &&
-            ts.isIdentifier(node.right) &&
-            node.right.text === "plane",
-        )
-      ) {
-        this.context.contractError(
-          setClipPlane,
-          "Expected setClipPlane to store the plane on the scene.",
+        if (
+            !this.context.hasCall(registerScene, "isRenderingContextRegistered")
+        ) {
+            this.context.contractError(
+                registerScene,
+                "Expected idempotent rendering-context registration.",
+            );
+        }
+        const registrationGuard = registerScene.body!.statements.find(
+            ts.isIfStatement,
         );
-      }
-      if (
-        !this.context.hasCall(setClipPlane, "_registerSceneUboContributor")
-      ) {
-        this.context.contractError(
-          setClipPlane,
-          "Expected setClipPlane to register the clip-plane scene-uniform " +
-            "contributor.",
+        if (
+            !registrationGuard ||
+            !this.context.expressionMatchesShape(
+                registrationGuard.expression,
+                "isRenderingContextRegistered(surface, ctx)",
+            )
+        ) {
+            this.context.contractError(
+                registerScene,
+                "Expected the scene identity guard before deferred construction.",
+            );
+        }
+        const buildCall = this.context.findNodes(
+            registerScene,
+            (node): node is ts.CallExpression =>
+                ts.isCallExpression(node) &&
+                node.expression.getText() === "buildScene",
+        )[0];
+        if (!buildCall || registrationGuard.end >= buildCall.pos) {
+            this.context.contractError(
+                registerScene,
+                "Scene registration must guard identity before building or publishing.",
+            );
+        }
+        const buildScene = this.context.functionDeclaration(
+            modulePath,
+            "buildScene",
+        ).declaration;
+        const drain = this.context.findNodes(
+            buildScene,
+            (node): node is ts.WhileStatement => ts.isWhileStatement(node),
+        )[0];
+        if (!drain || !ts.isBlock(drain.statement)) {
+            this.context.contractError(
+                buildScene,
+                "Expected the repeated deferred scene drain.",
+            );
+        }
+        this.context.assertExpressionShape(
+            drain.expression,
+            "ctx._deferredBuilders.length",
+            "Deferred drain condition",
         );
-      }
-      // The writer's own lanes, asserted as the ORDER they are written in
-      // rather than by their float offsets: the native block is the pin's
-      // `SceneUniforms` mirrored from its WGSL declaration, so the offsets
-      // are already the pin's and what this has to hold is that the four
-      // components go in as `[0], [1], [2], [3]`. A pin that reordered or
-      // grew them refuses here instead of clipping against a permuted
-      // plane.
-      const { declaration: writeClipPlaneUbo } =
+        this.context.assertStatementInventory(
+            drain,
+            drain.statement.statements,
+            "buildScene",
+            "snapshot deferred drain",
+            ["variable statement", "expression statement"],
+        );
+        this.context.assertExpressionShape(
+            this.context.variableInitializer(drain, "builders"),
+            "ctx._deferredBuilders.splice(0)",
+            "Deferred drain snapshot",
+        );
+        this.context.expectShapeCount(
+            drain,
+            "Promise.all(builders.map((b) => b()))",
+            "Ordered deferred builder invocation",
+        );
+        if (options.fog) {
+            const { declaration: setFog } = this.context.functionDeclaration(
+                fogModulePath,
+                fogName,
+            );
+            if (
+                !this.context.hasNode(
+                    setFog,
+                    (node) =>
+                        ts.isBinaryExpression(node) &&
+                        node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+                        this.context.propertyPath(node.left)?.join(".") ===
+                            "scene.fog" &&
+                        ts.isIdentifier(node.right) &&
+                        node.right.text === "config",
+                )
+            ) {
+                this.context.contractError(
+                    setFog,
+                    "Expected setFog to store the fog config on the scene.",
+                );
+            }
+            if (
+                !this.context.hasCall(
+                    setFog,
+                    // 1.23 renamed this from `registerContributor`; the body
+                    // is the same store-then-register pair.
+                    "_registerSceneUboContributor",
+                )
+            ) {
+                this.context.contractError(
+                    setFog,
+                    "Expected setFog to register the fog scene-uniform contributor.",
+                );
+            }
+            // The fog UBO writer's field inventory, paired with the
+            // emitted `set_scene_fog` stores: the generated Scene
+            // carries exactly the fields the pinned writer consumes
+            // (mode, start, end, density, color), so a pin that grows
+            // the fog slice fails generation instead of rendering with a
+            // silently missing term. The writer's float offsets (80-86
+            // in the browser scene UBO) are deliberately NOT asserted:
+            // nothing in the generated tree uses them — fog reaches the
+            // native shaders through named uniform-struct fields packed
+            // by the renderer lowerer, and the WGSL component reads come
+            // from the pin's own WGSL_FOG, lifted verbatim by
+            // shader-builtins-utility.ts fogFactorWgsl(), so they track
+            // the pin without a copy here.
+            const { declaration: writeFogUbo } =
+                this.context.functionDeclaration(fogModulePath, "writeFogUbo");
+            const fogReads = new Set<string>();
+            for (const access of this.context.findNodes(
+                writeFogUbo,
+                (node): node is ts.PropertyAccessExpression =>
+                    ts.isPropertyAccessExpression(node),
+            )) {
+                const path = this.context.propertyPath(access);
+                if (path && path.length === 2 && path[0] === "fog") {
+                    fogReads.add(path[1]!);
+                }
+            }
+            const expectedFogFields = [
+                "mode",
+                "start",
+                "end",
+                "density",
+                "color",
+            ];
+            if (
+                fogReads.size !== expectedFogFields.length ||
+                expectedFogFields.some((name) => !fogReads.has(name))
+            ) {
+                this.context.contractError(
+                    writeFogUbo,
+                    `Expected the fog UBO writer to consume exactly ` +
+                        `{${expectedFogFields.join(", ")}}, found ` +
+                        `{${[...fogReads].sort().join(", ")}}.`,
+                );
+            }
+        }
+        if (options.clipPlane) {
+            // `setClipPlane`, the fog setter's sibling in the same module: store
+            // the plane, then register the contributor that writes it. The store
+            // is what the emitted record mirrors, and the registration is what
+            // makes the lane reach the scene UBO at all.
+            const { declaration: setClipPlane } =
+                this.context.functionDeclaration(
+                    clipPlaneModulePath,
+                    clipPlaneName,
+                );
+            if (
+                !this.context.hasNode(
+                    setClipPlane,
+                    (node) =>
+                        ts.isBinaryExpression(node) &&
+                        node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+                        this.context.propertyPath(node.left)?.join(".") ===
+                            "scene.clipPlane" &&
+                        ts.isIdentifier(node.right) &&
+                        node.right.text === "plane",
+                )
+            ) {
+                this.context.contractError(
+                    setClipPlane,
+                    "Expected setClipPlane to store the plane on the scene.",
+                );
+            }
+            if (
+                !this.context.hasCall(
+                    setClipPlane,
+                    "_registerSceneUboContributor",
+                )
+            ) {
+                this.context.contractError(
+                    setClipPlane,
+                    "Expected setClipPlane to register the clip-plane scene-uniform " +
+                        "contributor.",
+                );
+            }
+            // The writer's own lanes, asserted as the ORDER they are written in
+            // rather than by their float offsets: the native block is the pin's
+            // `SceneUniforms` mirrored from its WGSL declaration, so the offsets
+            // are already the pin's and what this has to hold is that the four
+            // components go in as `[0], [1], [2], [3]`. A pin that reordered or
+            // grew them refuses here instead of clipping against a permuted
+            // plane.
+            const { declaration: writeClipPlaneUbo } =
+                this.context.functionDeclaration(
+                    clipPlaneModulePath,
+                    "writeClipPlaneUbo",
+                );
+            const clipPlaneComponents: number[] = [];
+            for (const access of this.context.findNodes(
+                writeClipPlaneUbo,
+                (node): node is ts.ElementAccessExpression =>
+                    ts.isElementAccessExpression(node) &&
+                    ts.isIdentifier(node.expression) &&
+                    node.expression.text === "clipPlane",
+            )) {
+                const index = access.argumentExpression;
+                if (ts.isNumericLiteral(index)) {
+                    clipPlaneComponents.push(Number(index.text));
+                }
+            }
+            if (
+                clipPlaneComponents.length !== 4 ||
+                clipPlaneComponents.some((component, at) => component !== at)
+            ) {
+                this.context.contractError(
+                    writeClipPlaneUbo,
+                    "Expected the clip-plane UBO writer to consume the plane's four " +
+                        `components in order, found [${clipPlaneComponents.join(", ")}].`,
+                );
+            }
+        }
+        const value = (input: number): string =>
+            this.context.floatLiteral(input);
+        const meshDirtySource = this.meshDirtySource();
+        const visibilitySource = this.visibilitySource(options);
+        // src/scene/transform-node.ts createTransformNode and the
+        // ObservableVec3/ObservableQuat setters a scene writes on the node
+        // it made. Each setter is the field write plus the version bump a
+        // child re-bakes against, which is what `markLocalDirty` does
+        // upstream; the world itself is composed lazily in the render plan,
+        // as `createWorldMatrixState` composes it there.
+        const transformNodeSource = this.transformNodeSource(options);
+        // src/mesh/enable-mirrored-meshes.ts is one statement: it awaits
+        // the support module and installs it on the scene. The
+        // pipeline-side half of that install is a compile-time question
+        // here -- a scene that never opts in composes no winding
+        // resolution at all -- so what remains at run time is the flag the
+        // per-frame watcher reads.
+        const mirroredSource = this.mirroredSource(options);
+        const parentMatrixHelpers = options.parenting
+            ? [
+                  "using upstream::mat4_multiply_into;",
+                  lowerMat4InvertCpp(this.context),
+                  lowerMat4DecomposeFull(this.context),
+              ].join("\n\n")
+            : "";
+        const parentingSource = this.parentingSource(
+            options,
+            parentMatrixHelpers,
+        );
+        const geometryAccessSource = this.geometryAccessSource(options);
+        const fogSource = this.fogSource(options);
+        const clipPlaneSource = this.clipPlaneSource(options);
+        // The emitted removal is the pinned mesh arm — removeFromScene
+        // dispatches a mesh to removeMeshFromScene, whose scene-list
+        // splice plus mutation mark is what the native erase and
+        // membership bump mirror. Anchored on the splice pair itself
+        // rather than only on the dispatcher's existence, so a
+        // restructured mesh arm refuses generation instead of leaving the
+        // native erase mirroring a branch the pin no longer has.
         this.context.functionDeclaration(
-          clipPlaneModulePath,
-          "writeClipPlaneUbo",
+            "src/scene/scene-remove.ts",
+            "removeFromScene",
         );
-      const clipPlaneComponents: number[] = [];
-      for (const access of this.context.findNodes(
-        writeClipPlaneUbo,
-        (node): node is ts.ElementAccessExpression =>
-          ts.isElementAccessExpression(node) &&
-          ts.isIdentifier(node.expression) &&
-          node.expression.text === "clipPlane",
-      )) {
-        const index = access.argumentExpression;
-        if (ts.isNumericLiteral(index)) {
-          clipPlaneComponents.push(Number(index.text));
+        const { declaration: meshRemoval } = this.context.functionDeclaration(
+            "src/scene/scene-remove.ts",
+            "removeMeshFromScene",
+        );
+        const meshSplices = this.context.findNodes(
+            meshRemoval,
+            (node): node is ts.CallExpression =>
+                ts.isCallExpression(node) &&
+                this.context.propertyPath(node.expression)?.join(".") ===
+                    "scene.meshes.splice",
+        );
+        if (meshSplices.length !== 1) {
+            this.context.contractError(
+                meshRemoval,
+                "Pinned removeMeshFromScene no longer splices " +
+                    "scene.meshes exactly once.",
+            );
         }
-      }
-      if (
-        clipPlaneComponents.length !== 4 ||
-        clipPlaneComponents.some((component, at) => component !== at)
-      ) {
-        this.context.contractError(
-          writeClipPlaneUbo,
-          "Expected the clip-plane UBO writer to consume the plane's four " +
-            `components in order, found [${clipPlaneComponents.join(", ")}].`,
+        this.context.assertExpressionShape(
+            this.context.variableInitializer(meshRemoval, "mi2"),
+            "scene.meshes.indexOf(mesh)",
+            "Pinned mesh-removal index",
         );
-      }
-    }
-    const value = (input: number): string => this.context.floatLiteral(input);
-    const meshDirtySource = this.meshDirtySource();
-    const visibilitySource = this.visibilitySource(options);
-    // src/scene/transform-node.ts createTransformNode and the
-    // ObservableVec3/ObservableQuat setters a scene writes on the node
-    // it made. Each setter is the field write plus the version bump a
-    // child re-bakes against, which is what `markLocalDirty` does
-    // upstream; the world itself is composed lazily in the render plan,
-    // as `createWorldMatrixState` composes it there.
-    const transformNodeSource = this.transformNodeSource(options);
-    // src/mesh/enable-mirrored-meshes.ts is one statement: it awaits
-    // the support module and installs it on the scene. The
-    // pipeline-side half of that install is a compile-time question
-    // here -- a scene that never opts in composes no winding
-    // resolution at all -- so what remains at run time is the flag the
-    // per-frame watcher reads.
-    const mirroredSource = this.mirroredSource(options);
-    const parentMatrixHelpers = options.parenting
-      ? [
-          "using upstream::mat4_multiply_into;",
-          lowerMat4InvertCpp(this.context),
-          lowerMat4DecomposeFull(this.context),
-        ].join("\n\n")
-      : "";
-    const parentingSource = this.parentingSource(options, parentMatrixHelpers);
-    const geometryAccessSource = this.geometryAccessSource(options);
-    const fogSource = this.fogSource(options);
-    const clipPlaneSource = this.clipPlaneSource(options);
-    // The emitted removal is the pinned mesh arm — removeFromScene
-    // dispatches a mesh to removeMeshFromScene, whose scene-list
-    // splice plus mutation mark is what the native erase and
-    // membership bump mirror. Anchored on the splice pair itself
-    // rather than only on the dispatcher's existence, so a
-    // restructured mesh arm refuses generation instead of leaving the
-    // native erase mirroring a branch the pin no longer has.
-    this.context.functionDeclaration(
-      "src/scene/scene-remove.ts",
-      "removeFromScene",
-    );
-    const { declaration: meshRemoval } = this.context.functionDeclaration(
-      "src/scene/scene-remove.ts",
-      "removeMeshFromScene",
-    );
-    const meshSplices = this.context.findNodes(
-      meshRemoval,
-      (node): node is ts.CallExpression =>
-        ts.isCallExpression(node) &&
-        this.context.propertyPath(node.expression)?.join(".") ===
-          "scene.meshes.splice",
-    );
-    if (meshSplices.length !== 1) {
-      this.context.contractError(
-        meshRemoval,
-        "Pinned removeMeshFromScene no longer splices " +
-          "scene.meshes exactly once.",
-      );
-    }
-    this.context.assertExpressionShape(
-      this.context.variableInitializer(meshRemoval, "mi2"),
-      "scene.meshes.indexOf(mesh)",
-      "Pinned mesh-removal index",
-    );
-    // A manager created with this engine owns animation time for the
-    // groups attached to it, and a scene it drives has no other way to
-    // reach them: the measured seek walks the scene's seekers, so a
-    // registering scene contributes one per manager. Not a pinned
-    // step -- upstream seeks by calling goToFrame on the groups
-    // themselves, which is what this reproduces.
-    // A baked mesh has no animation group left to seek -- attachVat drops
-    // the live skeleton and stops every clip -- so its deterministic pose
-    // comes from the settings block instead. Registered here for the same
-    // reason the manager seeker is: the seek walks the scene's seekers,
-    // and register_scene is the first point that runs after every bake.
-    const vatSeek = this.vatSeek(options);
-    const managerSeek = this.managerSeek(options);
-    return {
-      modulePath,
-      symbolName: `${createName},${addName},cloneTransformNode,removeFromScene,${beforeName},${disposeName},${registerName}${options.fog ? `,${fogName}` : ""}${options.clipPlane ? `,${clipPlaneName}` : ""}`,
-      header: "",
-      source: `// ${this.context.provenance(modulePath, `${createName}, ${addName}, ${beforeName}, ${disposeName}, ${registerName}`, `${transformNodeModulePath}#cloneTransformNode, cloneMeshNode`)}
+        // A manager created with this engine owns animation time for the
+        // groups attached to it, and a scene it drives has no other way to
+        // reach them: the measured seek walks the scene's seekers, so a
+        // registering scene contributes one per manager. Not a pinned
+        // step -- upstream seeks by calling goToFrame on the groups
+        // themselves, which is what this reproduces.
+        // A baked mesh has no animation group left to seek -- attachVat drops
+        // the live skeleton and stops every clip -- so its deterministic pose
+        // comes from the settings block instead. Registered here for the same
+        // reason the manager seeker is: the seek walks the scene's seekers,
+        // and register_scene is the first point that runs after every bake.
+        const vatSeek = this.vatSeek(options);
+        const managerSeek = this.managerSeek(options);
+        return {
+            modulePath,
+            symbolName: `${createName},${addName},cloneTransformNode,removeFromScene,${beforeName},${disposeName},${registerName}${options.fog ? `,${fogName}` : ""}${options.clipPlane ? `,${clipPlaneName}` : ""}`,
+            header: "",
+            source: `// ${this.context.provenance(modulePath, `${createName}, ${addName}, ${beforeName}, ${disposeName}, ${registerName}`, `${transformNodeModulePath}#cloneTransformNode, cloneMeshNode`)}
 #include <bblite/runtime.hpp>
 ${options.text ? "#include <bblite/text.hpp>" : ""}
 #include <bblite/upstream/pinned_matrix.hpp>
 ${options.geometryAccess || options.parenting || options.pbrSceneHooks ? "#include <bblite/js_data.hpp>" : ""}
 ${
-  options.mirroredMeshes || options.geometryAccess || options.parenting
-    ? `// The mirrored-mesh watcher this scene installs calls the render
+    options.mirroredMeshes || options.geometryAccess || options.parenting
+        ? `// The mirrored-mesh watcher this scene installs calls the render
 // plan's own determinant pass; a scene that never opts in includes
 // neither. Geometry access and setParent also read the plan's emitted
 // world matrix.
 #include <bblite/upstream/renderer_plan.hpp>`
-    : ""
+        : ""
 }
 #include <algorithm>
 #include <array>
@@ -650,11 +728,11 @@ ${fogSource}${clipPlaneSource}${meshDirtySource}${visibilitySource}${transformNo
 ${options.sceneNodeTransforms ? sceneNodeTransformsSource(options.transformNodes === true) : ""}
 } // namespace bbl
 `,
-    };
-  }
+        };
+    }
 
-  private meshDirtySource(): string {
-    return `
+    private meshDirtySource(): string {
+        return `
 void mark_mesh_dirty(Engine& engine, MeshHandle mesh) {
     if (mesh.value >= engine.meshes.size()) return;
     MeshRecord& record = engine.meshes[mesh.value];
@@ -696,11 +774,11 @@ void mark_transform_node_runtime_transform(
     }
 }
 `;
-  }
+    }
 
-  private visibilitySource(options: SceneCoreOptions): string {
-    return options.visibility
-      ? `
+    private visibilitySource(options: SceneCoreOptions): string {
+        return options.visibility
+            ? `
 // ${this.context.provenance("src/scene/visibility.ts", "setSubtreeVisible")}
 namespace {
 // The cascade half: writes the subtree, reports whether any flag moved.
@@ -732,12 +810,12 @@ void set_mesh_visible(
     }
 }
 `
-      : "";
-  }
+            : "";
+    }
 
-  private transformNodeSource(options: SceneCoreOptions): string {
-    return options.transformNodes
-      ? `
+    private transformNodeSource(options: SceneCoreOptions): string {
+        return options.transformNodes
+            ? `
 // ${this.context.provenance("src/scene/transform-node.ts", "createTransformNode")}
 TransformNodeHandle create_transform_node(
     Engine& engine,
@@ -1011,12 +1089,12 @@ void add_to_scene(Scene& scene, TransformNodeHandle node) {
     add_transform_node_children(scene, node);
 }
 `
-      : "";
-  }
+            : "";
+    }
 
-  private mirroredSource(options: SceneCoreOptions): string {
-    return options.mirroredMeshes
-      ? `
+    private mirroredSource(options: SceneCoreOptions): string {
+        return options.mirroredMeshes
+            ? `
 // ${this.context.provenance("src/mesh/enable-mirrored-meshes.ts", "enableMirroredMeshes")}
 void enable_mirrored_meshes(Scene& scene) {
     require_scene_engine(scene);
@@ -1047,12 +1125,15 @@ void enable_mirrored_meshes(Scene& scene) {
     });
 }
 `
-      : "";
-  }
+            : "";
+    }
 
-  private parentingSource(options: SceneCoreOptions, parentMatrixHelpers: string): string {
-    return options.parenting
-      ? `
+    private parentingSource(
+        options: SceneCoreOptions,
+        parentMatrixHelpers: string,
+    ): string {
+        return options.parenting
+            ? `
 namespace {
 
 ${parentMatrixHelpers}
@@ -1586,12 +1667,12 @@ void remove_hierarchy_instance(
         engine, handle, static_cast<double>(last));
 }
 `
-      : "";
-  }
+            : "";
+    }
 
-  private geometryAccessSource(options: SceneCoreOptions): string {
-    return options.geometryAccess
-      ? `
+    private geometryAccessSource(options: SceneCoreOptions): string {
+        return options.geometryAccess
+            ? `
 // src/mesh/mesh.ts retained CPU arrays. The native geometry record retains
 // every lane the pin exposes, and these copies preserve typed-array value
 // semantics for scene code that only reads them.
@@ -1680,12 +1761,12 @@ js::Array<double> mesh_bound_max_array(
     return {bounds.x, bounds.y, bounds.z};
 }
 `
-      : "";
-  }
+            : "";
+    }
 
-  private fogSource(options: SceneCoreOptions): string {
-    return options.fog
-      ? `
+    private fogSource(options: SceneCoreOptions): string {
+        return options.fog
+            ? `
 // ${this.context.provenance(fogModulePath, `${fogName}, writeFogUbo`)}
 void set_scene_fog(
     Scene& scene,
@@ -1703,39 +1784,39 @@ void set_scene_fog(
     scene.fog_color = color;
 }
 `
-      : "";
-  }
+            : "";
+    }
 
-  private clipPlaneSource(options: SceneCoreOptions): string {
-    return options.clipPlane
-      ? `
+    private clipPlaneSource(options: SceneCoreOptions): string {
+        return options.clipPlane
+            ? `
 // ${this.context.provenance(
-          clipPlaneModulePath,
-          `${clipPlaneName}, writeClipPlaneUbo`,
-        )}
+                  clipPlaneModulePath,
+                  `${clipPlaneName}, writeClipPlaneUbo`,
+              )}
 void set_scene_clip_plane(Scene& scene, Vec4 plane) {
     require_scene_engine(scene);
     scene.clip_plane = plane;
 }
 `
-      : "";
-  }
+            : "";
+    }
 
-  private vatSeek(options: SceneCoreOptions): string {
-    return options.vat
-      ? `
+    private vatSeek(options: SceneCoreOptions): string {
+        return options.vat
+            ? `
     if (!scene.seeks_vat) {
         scene.seeks_vat = true;
         Engine* engine = scene.engine;
         scene.animation_seekers.push_back(
             [engine](float time) { seek_vat(*engine, time); });
     }`
-      : "";
-  }
+            : "";
+    }
 
-  private managerSeek(options: SceneCoreOptions): string {
-    return options.animationManagers
-      ? `
+    private managerSeek(options: SceneCoreOptions): string {
+        return options.animationManagers
+            ? `
     if (!scene.seeks_animation_managers) {
         scene.seeks_animation_managers = true;
         Engine* engine = scene.engine;
@@ -1751,17 +1832,16 @@ void set_scene_clip_plane(Scene& scene, Vec4 plane) {
                 }
             });
     }`
-      : "";
-  }
+            : "";
+    }
 
-
-  private sceneCreationSource(
-    callbackDelta: string,
-    value: (input: number) => string,
-    clear: (name: string) => number,
-    options: SceneCoreOptions,
-  ): string {
-    return `double scene_callback_delta(const Scene& scene, double engine_delta_ms) {
+    private sceneCreationSource(
+        callbackDelta: string,
+        value: (input: number) => string,
+        clear: (name: string) => number,
+        options: SceneCoreOptions,
+    ): string {
+        return `double scene_callback_delta(const Scene& scene, double engine_delta_ms) {
     return ${callbackDelta};
 }
 
@@ -1810,13 +1890,10 @@ Scene create_scene_context(Surface& surface) {
 }
 
 `;
-  }
+    }
 
-
-  private meshMembershipSource(
-    options: SceneCoreOptions,
-  ): string {
-    return `void add_to_scene(Scene& scene, MeshHandle mesh) {
+    private meshMembershipSource(options: SceneCoreOptions): string {
+        return `void add_to_scene(Scene& scene, MeshHandle mesh) {
     require_scene_engine(scene);
     if (mesh.value >= scene.engine->meshes.size()) {
         throw std::runtime_error(
@@ -1992,13 +2069,10 @@ void add_to_scene(Scene& scene, LightHandle light) {
 namespace {
 
 `;
-  }
+    }
 
-
-  private assetCloneSource(
-    cloneSuffix: string,
-  ): string {
-    return `AssetRecord& asset_record(Engine& engine, std::uint32_t asset) {
+    private assetCloneSource(cloneSuffix: string): string {
+        return `AssetRecord& asset_record(Engine& engine, std::uint32_t asset) {
     if (asset >= engine.assets.size()) {
         throw std::runtime_error("Invalid asset handle.");
     }
@@ -2139,13 +2213,10 @@ MeshHandle clone_mesh_node(Engine& engine, MeshHandle mesh) {
 }
 
 `;
-  }
+    }
 
-
-  private assetRootSource(
-
-  ): string {
-    return `void set_asset_root_position_component(
+    private assetRootSource(): string {
+        return `void set_asset_root_position_component(
     Engine& engine,
     AssetHandle asset,
     std::size_t component,
@@ -2310,13 +2381,10 @@ ${lowerAssetSceneAttachment(this.context)}
  * groups, so it follows the asset rather than the way it was added.
  */
 `;
-  }
+    }
 
-
-  private assetMembershipSource(
-    options: SceneCoreOptions,
-  ): string {
-    return `void add_asset_entities(Scene& scene, AssetHandle asset) {
+    private assetMembershipSource(options: SceneCoreOptions): string {
+        return `void add_asset_entities(Scene& scene, AssetHandle asset) {
     require_scene_engine(scene);
     const AssetRecord& record =
         asset_record(*scene.engine, asset.value);
@@ -2334,9 +2402,11 @@ void add_to_scene(Scene& scene, const SceneNodeHandle& node) {
             if constexpr (std::is_same_v<Handle, AssetHandle>) {
                 add_asset_entities(scene, concrete);
             } else if constexpr (std::is_same_v<Handle, TransformNodeHandle>) {
-                ${options.transformNodes
-                  ? "add_to_scene(scene, concrete);"
-                  : 'throw std::runtime_error("No transform-node factory is reached by this scene.");'}
+                ${
+                    options.transformNodes
+                        ? "add_to_scene(scene, concrete);"
+                        : 'throw std::runtime_error("No transform-node factory is reached by this scene.");'
+                }
             } else {
                 add_to_scene(scene, concrete);
             }
@@ -2345,13 +2415,10 @@ void add_to_scene(Scene& scene, const SceneNodeHandle& node) {
 }
 
 `;
-  }
+    }
 
-
-  private eventRegistrationSource(
-
-  ): string {
-    return `void on_before_render(
+    private eventRegistrationSource(): string {
+        return `void on_before_render(
     Scene& scene,
     js::Callback<void(float)> callback) {
     scene.before_render.insert(
@@ -2521,15 +2588,14 @@ void off_visibility_change(Engine& engine, std::size_t identity) {
 }
 
 `;
-  }
+    }
 
-
-  private sceneLifecycleSource(
-    managerSeek: string,
-    vatSeek: string,
-    options: SceneCoreOptions,
-  ): string {
-    return `void drain_scene_deferred_builders(Scene& scene) {
+    private sceneLifecycleSource(
+        managerSeek: string,
+        vatSeek: string,
+        options: SceneCoreOptions,
+    ): string {
+        return `void drain_scene_deferred_builders(Scene& scene) {
     while (!scene.deferred_builders.empty()) {
         auto builders = std::move(scene.deferred_builders);
         scene.deferred_builders.clear();
@@ -2573,8 +2639,12 @@ ${options.pbrSceneHooks ? "    finish_pbr_scene_build(scene);\n" : ""}\
         }
     }
     scene.material_family_mask = scene_material_families(scene);
-${options.text ? `    std::stable_sort(scene.state->text_renderables.begin(), scene.state->text_renderables.end(),
-        [](const auto& a, const auto& b) { return a->order < b->order; });\n` : ""}\
+${
+    options.text
+        ? `    std::stable_sort(scene.state->text_renderables.begin(), scene.state->text_renderables.end(),
+        [](const auto& a, const auto& b) { return a->order < b->order; });\n`
+        : ""
+}\
     scene.engine->registered_scenes.push_back(
         std::make_shared<Scene>(scene));
 }
@@ -2618,7 +2688,9 @@ ${options.text ? "    scene.state->text_renderables.clear();\n" : ""}\
     scene.animation_seekers.clear();
     scene.deferred_builders.clear();
 ${options.nodeMaterials ? "    scene.state->node_material_groups.clear();\n" : ""}\
-${options.pbrSceneHooks ? `    scene.state->pbr_material_group.reset();
+${
+    options.pbrSceneHooks
+        ? `    scene.state->pbr_material_group.reset();
     scene.state->source_material_groups.reset();
     scene.state->material_outputs.clear();
     scene.state->material_runtime_error = nullptr;
@@ -2627,7 +2699,9 @@ ${options.pbrSceneHooks ? `    scene.state->pbr_material_group.reset();
     scene.state->process_material_groups = nullptr;
     scene.state->enqueue_material_group = nullptr;
     scene.state->complete_material_group = nullptr;
-` : ""}\
+`
+        : ""
+}\
     scene.camera = {};
 }
 
@@ -2683,5 +2757,5 @@ ${options.pbrSceneHooks ? "    rebuild_pbr_material_group(scene, false, true);\n
 }
 
 `;
-  }
+    }
 }

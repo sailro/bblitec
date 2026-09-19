@@ -73,10 +73,7 @@ export class LinearDepthLowerer {
             linearDepthModule,
             "createLinearDepthMaterial",
         );
-        const initializer = this.context.variableInitializer(
-            declaration,
-            name,
-        );
+        const initializer = this.context.variableInitializer(declaration, name);
         if (
             !ts.isBinaryExpression(initializer) ||
             initializer.operatorToken.kind !==
@@ -205,10 +202,7 @@ export class LinearDepthLowerer {
         // port's convention -- the fold is legitimate only while the two
         // agree, and a ShaderMaterial's own compare is not carried through
         // lowering, so this is where that is checked.
-        const compare = this.context.propertyInitializer(
-            call,
-            "depthCompare",
-        );
+        const compare = this.context.propertyInitializer(call, "depthCompare");
         const named = this.context.stringValue(compare, this.file);
         const convention = pinnedReverseDepthCompare(this.context);
         if (named !== convention) {
@@ -227,9 +221,7 @@ export class LinearDepthLowerer {
      * read as bare names, then the one typed declaration carrying the
      * planes.
      */
-    private uniformList(
-        call: ts.ObjectLiteralExpression,
-    ): PinnedUniformList {
+    private uniformList(call: ts.ObjectLiteralExpression): PinnedUniformList {
         const uniforms = this.context.propertyInitializer(call, "uniforms");
         if (!ts.isArrayLiteralExpression(uniforms)) {
             this.context.contractError(

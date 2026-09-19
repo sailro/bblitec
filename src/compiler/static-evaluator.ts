@@ -36,11 +36,7 @@ import ts from "typescript";
 import type { Value } from "./types.js";
 import type { CompileError } from "./compile-error.js";
 import { numberConstant, numberConstantValue } from "./number-intrinsics.js";
-import {
-    isDataTuple,
-    tupleComponents,
-    type DataType,
-} from "./data-types.js";
+import { isDataTuple, tupleComponents, type DataType } from "./data-types.js";
 import {
     doubleLiteral as cppDoubleLiteral,
     floatLiteral as cppFloatLiteral,
@@ -66,34 +62,28 @@ import {
     mathMemberCall,
 } from "./math-intrinsics.js";
 
-type Fail = (node: ts.Node, message: string, reason?: CompileError["reason"]) => never;
+type Fail = (
+    node: ts.Node,
+    message: string,
+    reason?: CompileError["reason"],
+) => never;
 type Lookup = (identifier: ts.Identifier) => Value;
-type LookupOptional = (
-    identifier: ts.Identifier,
-) => Value | undefined;
+type LookupOptional = (identifier: ts.Identifier) => Value | undefined;
 type OnAwait = (expression: ts.AwaitExpression) => void;
-type ResolveSymbol = (
-    identifier: ts.Identifier,
-) => ts.Symbol | undefined;
+type ResolveSymbol = (identifier: ts.Identifier) => ts.Symbol | undefined;
 type ResolveProperty = (
     expression: ts.PropertyAccessExpression,
 ) => Value | undefined;
 type ResolveElement = (
     expression: ts.ElementAccessExpression,
 ) => Value | undefined;
-type ResolveCall = (
-    expression: ts.CallExpression,
-) => Value;
+type ResolveCall = (expression: ts.CallExpression) => Value;
 type ResolveValue = (expression: ts.Expression) => Value;
-type CompileCondition = (
-    expression: ts.Expression,
-) => string;
+type CompileCondition = (expression: ts.Expression) => string;
 type EvaluateBrowserValue = (
     expression: ts.Expression,
 ) => Value["browserValue"] | undefined;
-type IsBrowserOnlyExpression = (
-    expression: ts.Expression,
-) => boolean;
+type IsBrowserOnlyExpression = (expression: ts.Expression) => boolean;
 /**
  * A nullable the source guarded, as the value it narrowed to; unchanged
  * when it did not. `DataLowerer.narrowOptional` owns the rule.
@@ -108,10 +98,7 @@ type NarrowOptional = (
  * A plain-data tuple given a native home, as the name of the local it
  * landed in. `Compiler.bindDataTuple` owns the rule.
  */
-type BindDataTuple = (
-    value: Value,
-    arity: number,
-) => string;
+type BindDataTuple = (value: Value, arity: number) => string;
 
 const bitwiseFunctions = new EmissionMap<ts.SyntaxKind, string>([
     [ts.SyntaxKind.AmpersandToken, "bitwise_and"],
@@ -132,18 +119,14 @@ const bitwiseFunctions = new EmissionMap<ts.SyntaxKind, string>([
 function isNumericValue(value: Value | undefined): boolean {
     return (
         value?.kind === "number" ||
-        (value?.kind === "data" &&
-            value.dataType?.kind === "number") ||
+        (value?.kind === "data" && value.dataType?.kind === "number") ||
         isJsonValue(value)
     );
 }
 
 export class StaticEvaluator {
     public constructor(
-        private readonly staticConstants: ReadonlyMap<
-            ts.Symbol,
-            ts.Expression
-        >,
+        private readonly staticConstants: ReadonlyMap<ts.Symbol, ts.Expression>,
         private readonly checker: ts.TypeChecker,
         private readonly resolveSymbol: ResolveSymbol,
         private readonly resolveProperty: ResolveProperty,
@@ -153,7 +136,9 @@ export class StaticEvaluator {
         private readonly compileCondition: CompileCondition,
         private readonly evaluateBrowserValue: EvaluateBrowserValue,
         private readonly isBrowserOnlyExpression: IsBrowserOnlyExpression,
-        private readonly isDefaultLibraryIdentifier: (identifier: ts.Identifier) => boolean,
+        private readonly isDefaultLibraryIdentifier: (
+            identifier: ts.Identifier,
+        ) => boolean,
         private readonly narrowOptional: NarrowOptional,
         private readonly lookup: Lookup,
         private readonly lookupOptional: LookupOptional,
@@ -183,9 +168,7 @@ export class StaticEvaluator {
         // the same literal to a compile-time reader, so the binding is
         // followed before the shapes below are matched -- the same
         // resolution every other static sink already does.
-        const unwrapped = this.unwrap(
-            this.resolveStaticExpression(expression),
-        );
+        const unwrapped = this.unwrap(this.resolveStaticExpression(expression));
         // A record reaching a vector sink resolves the same three ways a
         // tuple does, so it takes the same dispatch: a navmesh query's
         // snapped point is handed to the next query by its local, and
@@ -201,16 +184,18 @@ export class StaticEvaluator {
         // scene 166 draws each component from a PRNG -- is a data tuple
         // rather than a compile-time one, so its lanes are read by index at
         // the sink's own width rather than folded.
-        const dataTuple = this.dataTupleComponents(unwrapped, resolved, precision);
+        const dataTuple = this.dataTupleComponents(
+            unwrapped,
+            resolved,
+            precision,
+        );
         if (dataTuple) {
             return `${type}{${dataTuple.join(", ")}}`;
         }
         const tuple = this.tupleElements(unwrapped, 3, resolved);
         if (tuple) {
             return `${type}{${tuple
-                .map((value) =>
-                    this.numberValue(value, unwrapped, precision),
-                )
+                .map((value) => this.numberValue(value, unwrapped, precision))
                 .join(", ")}}`;
         }
         if (
@@ -218,9 +203,7 @@ export class StaticEvaluator {
             unwrapped.elements.length === 3
         ) {
             return `${type}{${unwrapped.elements
-                .map((element) =>
-                    this.compileNumber(element, precision),
-                )
+                .map((element) => this.compileNumber(element, precision))
                 .join(", ")}}`;
         }
         if (ts.isObjectLiteralExpression(unwrapped)) {
@@ -232,11 +215,7 @@ export class StaticEvaluator {
                 unwrapped,
                 "y",
                 precision,
-            )}, ${this.requiredObjectNumber(
-                unwrapped,
-                "z",
-                precision,
-            )}}`;
+            )}, ${this.requiredObjectNumber(unwrapped, "z", precision)}}`;
         }
         this.fail(
             unwrapped,
@@ -257,10 +236,7 @@ export class StaticEvaluator {
         const lanes = ["x", "y", "z"].map((name) => {
             const lane = value.recordProperties?.[name];
             if (!lane || lane.kind !== "number") {
-                this.fail(
-                    node,
-                    `Vec3 record is missing numeric '${name}'.`,
-                );
+                this.fail(node, `Vec3 record is missing numeric '${name}'.`);
             }
             return this.castNumber(lane, precision);
         });
@@ -272,9 +248,7 @@ export class StaticEvaluator {
         const tuple = this.tupleElements(unwrapped, 2);
         if (tuple) {
             return `bbl::Vec2{${tuple
-                .map((value) =>
-                    this.numberValue(value, unwrapped),
-                )
+                .map((value) => this.numberValue(value, unwrapped))
                 .join(", ")}}`;
         }
         if (
@@ -293,9 +267,7 @@ export class StaticEvaluator {
         const tuple = this.tupleElements(unwrapped, 4);
         if (tuple) {
             return `bbl::Vec4{${tuple
-                .map((value) =>
-                    this.numberValue(value, unwrapped),
-                )
+                .map((value) => this.numberValue(value, unwrapped))
                 .join(", ")}}`;
         }
         if (
@@ -306,26 +278,19 @@ export class StaticEvaluator {
                 .map((element) => this.compileNumber(element))
                 .join(", ")}}`;
         }
-        this.fail(
-            unwrapped,
-            "Expected a Vec4 array [x, y, z, w].",
-        );
+        this.fail(unwrapped, "Expected a Vec4 array [x, y, z, w].");
     }
 
     public compileColor3(expression: ts.Expression): string {
         // Through the static resolver first, so a module-level constant
         // holding the colour reads as the literal it initializes to -- the
         // same step the Vec3 compiler beside this one already takes.
-        const unwrapped = this.unwrap(
-            this.resolveStaticExpression(expression),
-        );
+        const unwrapped = this.unwrap(this.resolveStaticExpression(expression));
         const resolved = this.vectorValue(expression, unwrapped);
         const tuple = this.tupleElements(unwrapped, 3, resolved);
         if (tuple) {
             return `bbl::Color3{${tuple
-                .map((value) =>
-                    this.numberValue(value, unwrapped),
-                )
+                .map((value) => this.numberValue(value, unwrapped))
                 .join(", ")}}`;
         }
         const data = this.dataTupleComponents(unwrapped, resolved);
@@ -353,10 +318,7 @@ export class StaticEvaluator {
             )}, ${this.requiredObjectNumber(
                 unwrapped,
                 "g",
-            )}, ${this.requiredObjectNumber(
-                unwrapped,
-                "b",
-            )}}`;
+            )}, ${this.requiredObjectNumber(unwrapped, "b")}}`;
         }
         this.fail(
             unwrapped,
@@ -368,9 +330,7 @@ export class StaticEvaluator {
         // Through the static resolver first, so a module-level constant
         // holding the colour reads as the literal it initializes to -- the
         // same step the Vec3 compiler beside this one already takes.
-        const unwrapped = this.unwrap(
-            this.resolveStaticExpression(expression),
-        );
+        const unwrapped = this.unwrap(this.resolveStaticExpression(expression));
         if (ts.isPropertyAccessExpression(unwrapped)) {
             const value = this.resolveProperty(unwrapped);
             if (value?.kind === "color4") {
@@ -380,9 +340,7 @@ export class StaticEvaluator {
         const tuple = this.tupleElements(unwrapped, 4);
         if (tuple) {
             return `bbl::Color4{${tuple
-                .map((value) =>
-                    this.numberValue(value, unwrapped),
-                )
+                .map((value) => this.numberValue(value, unwrapped))
                 .join(", ")}}`;
         }
         if (
@@ -403,10 +361,7 @@ export class StaticEvaluator {
             )}, ${this.requiredObjectNumber(
                 unwrapped,
                 "b",
-            )}, ${this.requiredObjectNumber(
-                unwrapped,
-                "a",
-            )}}`;
+            )}, ${this.requiredObjectNumber(unwrapped, "a")}}`;
         }
         this.fail(
             unwrapped,
@@ -416,8 +371,7 @@ export class StaticEvaluator {
 
     public compileBoolean(expression: ts.Expression): string {
         traceSourceNode(expression);
-        const unwrapped =
-            this.resolveStaticExpression(expression);
+        const unwrapped = this.resolveStaticExpression(expression);
         if (unwrapped.kind === ts.SyntaxKind.TrueKeyword) {
             return "true";
         }
@@ -426,8 +380,7 @@ export class StaticEvaluator {
         }
         if (
             ts.isPrefixUnaryExpression(unwrapped) &&
-            unwrapped.operator ===
-                ts.SyntaxKind.ExclamationToken
+            unwrapped.operator === ts.SyntaxKind.ExclamationToken
         ) {
             return `!(${this.compileBoolean(unwrapped.operand)})`;
         }
@@ -494,12 +447,20 @@ export class StaticEvaluator {
         precision: "float" | "double" = "float",
     ): string {
         traceSourceNode(expression);
-        const narrowNumeric = (value: Value, node: ts.Expression, assertedNonNull = false): Value => {
+        const narrowNumeric = (
+            value: Value,
+            node: ts.Expression,
+            assertedNonNull = false,
+        ): Value => {
             // A mutable tuple can hold a number where its declared fixed lane was
             // a string. TypeScript calls the guarded numeric branch never; native
             // storage still has the number member selected by the runtime guard.
-            const expected = (this.checker.getTypeAtLocation(node).flags & ts.TypeFlags.Never) !== 0
-                ? {kind: "number" as const} : undefined;
+            const expected =
+                (this.checker.getTypeAtLocation(node).flags &
+                    ts.TypeFlags.Never) !==
+                0
+                    ? { kind: "number" as const }
+                    : undefined;
             return this.narrowOptional(value, node, assertedNonNull, expected);
         };
         const castOptionalNumber = (
@@ -536,20 +497,19 @@ export class StaticEvaluator {
         const awaited = unwrapExpression(expression);
         if (ts.isAwaitExpression(awaited)) {
             const value = narrowNumeric(this.resolveValue(awaited), awaited);
-            if (value.kind !== "number" && !(value.kind === "data" && value.dataType?.kind === "number"))
+            if (
+                value.kind !== "number" &&
+                !(value.kind === "data" && value.dataType?.kind === "number")
+            )
                 this.fail(awaited, `Expected number, received ${value.kind}.`);
             return this.castNumber(value, precision);
         }
         const unwrapped = this.resolveStaticExpression(expression);
-        const browserValue = this.isBrowserOnlyExpression(
-            unwrapped,
-        )
+        const browserValue = this.isBrowserOnlyExpression(unwrapped)
             ? this.evaluateBrowserValue(unwrapped)
             : undefined;
         if (browserValue?.kind === "number") {
-            const type = precision === "float"
-                ? "float"
-                : "double";
+            const type = precision === "float" ? "float" : "double";
             if (Number.isNaN(browserValue.value)) {
                 return `std::numeric_limits<${type}>::quiet_NaN()`;
             }
@@ -577,12 +537,9 @@ export class StaticEvaluator {
         }
         if (
             ts.isIdentifier(unwrapped) &&
-            (unwrapped.text === "Infinity" ||
-                unwrapped.text === "NaN")
+            (unwrapped.text === "Infinity" || unwrapped.text === "NaN")
         ) {
-            const type = precision === "float"
-                ? "float"
-                : "double";
+            const type = precision === "float" ? "float" : "double";
             return unwrapped.text === "Infinity"
                 ? `std::numeric_limits<${type}>::infinity()`
                 : `std::numeric_limits<${type}>::quiet_NaN()`;
@@ -608,10 +565,7 @@ export class StaticEvaluator {
                     `Prefix numeric expression produced ${value.kind}.`,
                 );
             }
-            if (
-                unwrapped.operator ===
-                ts.SyntaxKind.TildeToken
-            ) {
+            if (unwrapped.operator === ts.SyntaxKind.TildeToken) {
                 const compiled = `bbl::js::bitwise_not(${this.compileNumber(
                     unwrapped.operand,
                     "double",
@@ -622,8 +576,7 @@ export class StaticEvaluator {
                     : compiled;
             }
             if (
-                unwrapped.operator !==
-                    ts.SyntaxKind.MinusToken &&
+                unwrapped.operator !== ts.SyntaxKind.MinusToken &&
                 unwrapped.operator !== ts.SyntaxKind.PlusToken
             ) {
                 this.fail(
@@ -632,23 +585,25 @@ export class StaticEvaluator {
                 );
             }
             const operator =
-                unwrapped.operator === ts.SyntaxKind.MinusToken
-                    ? "-"
-                    : "+";
+                unwrapped.operator === ts.SyntaxKind.MinusToken ? "-" : "+";
             const operand = this.resolveValue(unwrapped.operand);
-            if (operand.kind === "string" || (operand.kind === "data" && operand.dataType?.kind === "string")) {
+            if (
+                operand.kind === "string" ||
+                (operand.kind === "data" && operand.dataType?.kind === "string")
+            ) {
                 this.onJsData();
                 const converted = `bbl::js::number_from_string(${operand.cpp})`;
                 return `(${operator}${precision === "float" ? `static_cast<float>(${converted})` : converted})`;
             }
-            if (operand.kind !== "number") this.fail(unwrapped.operand, `Unary numeric input requires a number or string, received ${operand.kind}.`);
+            if (operand.kind !== "number")
+                this.fail(
+                    unwrapped.operand,
+                    `Unary numeric input requires a number or string, received ${operand.kind}.`,
+                );
             return `(${operator}${this.castNumber(operand, precision)})`;
         }
         if (ts.isBinaryExpression(unwrapped)) {
-            if (
-                unwrapped.operatorToken.kind ===
-                ts.SyntaxKind.EqualsToken
-            ) {
+            if (unwrapped.operatorToken.kind === ts.SyntaxKind.EqualsToken) {
                 const value = this.resolveValue(unwrapped);
                 if (value.kind === "number") {
                     return this.castNumber(value, precision);
@@ -670,7 +625,11 @@ export class StaticEvaluator {
                 // run-time arms; a rung added to the value dispatch
                 // reaches numeric positions without a second copy here.
                 const value = this.resolveValue(unwrapped);
-                if (value.kind === "number" || value.dataType?.kind === "number" || isJsonValue(value)) {
+                if (
+                    value.kind === "number" ||
+                    value.dataType?.kind === "number" ||
+                    isJsonValue(value)
+                ) {
                     return this.castNumber(value, precision);
                 }
                 this.fail(
@@ -679,36 +638,24 @@ export class StaticEvaluator {
                         `received ${value.kind}.`,
                 );
             }
-            if (
-                unwrapped.operatorToken.kind ===
-                ts.SyntaxKind.BarBarToken
-            ) {
+            if (unwrapped.operatorToken.kind === ts.SyntaxKind.BarBarToken) {
                 // Numeric `a || b`: JavaScript falls through on 0 and NaN.
                 // Both operands evaluate eagerly (reached uses are pure).
                 const compiled = `bbl::js::or_number(${this.compileNumber(
                     unwrapped.left,
                     "double",
-                )}, ${this.compileNumber(
-                    unwrapped.right,
-                    "double",
-                )})`;
+                )}, ${this.compileNumber(unwrapped.right, "double")})`;
                 this.onJsData();
                 return precision === "float"
                     ? `static_cast<float>(${compiled})`
                     : compiled;
             }
-            if (
-                unwrapped.operatorToken.kind ===
-                ts.SyntaxKind.PercentToken
-            ) {
+            if (unwrapped.operatorToken.kind === ts.SyntaxKind.PercentToken) {
                 // JavaScript % keeps the dividend sign, exactly like fmod.
                 const compiled = `std::fmod(${this.compileNumber(
                     unwrapped.left,
                     "double",
-                )}, ${this.compileNumber(
-                    unwrapped.right,
-                    "double",
-                )})`;
+                )}, ${this.compileNumber(unwrapped.right, "double")})`;
                 return precision === "float"
                     ? `static_cast<float>(${compiled})`
                     : compiled;
@@ -720,10 +667,7 @@ export class StaticEvaluator {
                 const compiled = `std::pow(${this.compileNumber(
                     unwrapped.left,
                     "double",
-                )}, ${this.compileNumber(
-                    unwrapped.right,
-                    "double",
-                )})`;
+                )}, ${this.compileNumber(unwrapped.right, "double")})`;
                 return precision === "float"
                     ? `static_cast<float>(${compiled})`
                     : compiled;
@@ -735,10 +679,7 @@ export class StaticEvaluator {
                 const compiled = `bbl::js::${bitwiseFunction}(${this.compileNumber(
                     unwrapped.left,
                     "double",
-                )}, ${this.compileNumber(
-                    unwrapped.right,
-                    "double",
-                )})`;
+                )}, ${this.compileNumber(unwrapped.right, "double")})`;
                 this.onJsData();
                 return precision === "float"
                     ? `static_cast<float>(${compiled})`
@@ -756,10 +697,7 @@ export class StaticEvaluator {
             const compiled = `(${this.compileNumber(
                 unwrapped.left,
                 "double",
-            )} ${operator} ${this.compileNumber(
-                unwrapped.right,
-                "double",
-            )})`;
+            )} ${operator} ${this.compileNumber(unwrapped.right, "double")})`;
             return precision === "float"
                 ? `static_cast<float>(${compiled})`
                 : compiled;
@@ -767,20 +705,31 @@ export class StaticEvaluator {
         // The constants a float sink has a single-precision spelling for
         // are spelled that way; every other `Math` constant reads at
         // double width through the property arm below.
-        const mathConstant = mathMemberAccess(unwrapped, this.isDefaultLibraryIdentifier);
-        const numericConstant = numberConstant(unwrapped, this.isDefaultLibraryIdentifier);
+        const mathConstant = mathMemberAccess(
+            unwrapped,
+            this.isDefaultLibraryIdentifier,
+        );
+        const numericConstant = numberConstant(
+            unwrapped,
+            this.isDefaultLibraryIdentifier,
+        );
         if (numericConstant !== undefined) {
             const cpp = numberConstantValue(numericConstant).cpp;
             return precision === "float" ? `static_cast<float>(${cpp})` : cpp;
         }
-        const constant = mathConstant && MATH_CONSTANTS.get(mathConstant.name.text);
+        const constant =
+            mathConstant && MATH_CONSTANTS.get(mathConstant.name.text);
         if (constant?.floatCpp !== undefined) {
             return precision === "float"
                 ? constant.floatCpp
                 : cppDoubleLiteral(constant.value);
         }
-        const mathCall = mathMemberCall(unwrapped, this.isDefaultLibraryIdentifier);
-        const sqrt = mathCall?.name === "sqrt" ? MATH_MEMBERS.get("sqrt") : undefined;
+        const mathCall = mathMemberCall(
+            unwrapped,
+            this.isDefaultLibraryIdentifier,
+        );
+        const sqrt =
+            mathCall?.name === "sqrt" ? MATH_MEMBERS.get("sqrt") : undefined;
         if (mathCall && sqrt && mathCall.call.arguments.length === 1) {
             const compiled = sqrt.cpp([
                 this.compileNumber(argumentAt(mathCall.call, 0), "double"),
@@ -857,10 +806,7 @@ export class StaticEvaluator {
             if (optionalNumber !== undefined) {
                 return optionalNumber;
             }
-            if (
-                narrowed !== value &&
-                narrowed.dataType?.kind === "number"
-            ) {
+            if (narrowed !== value && narrowed.dataType?.kind === "number") {
                 return this.castNumber(narrowed, precision);
             }
             if (!isNumericValue(value)) {
@@ -887,13 +833,8 @@ export class StaticEvaluator {
      * explicit cast. Legacy engine-record numbers keep their own float
      * expressions untouched.
      */
-    public castNumber(
-        value: Value,
-        precision: "float" | "double",
-    ): string {
-        if (
-            isJsonValue(value)
-        ) {
+    public castNumber(value: Value, precision: "float" | "double"): string {
+        if (isJsonValue(value)) {
             // `Number(document)` at the sink, which is where JavaScript
             // coerces one: an absent property is NaN, exactly as reading
             // `undefined` into arithmetic is.
@@ -922,7 +863,9 @@ export class StaticEvaluator {
         ) {
             if (!Number.isFinite(value.staticNumber)) {
                 const cpp = numberConstantValue(value.staticNumber).cpp;
-                return precision === "float" ? `static_cast<float>(${cpp})` : cpp;
+                return precision === "float"
+                    ? `static_cast<float>(${cpp})`
+                    : cpp;
             }
             return precision === "float"
                 ? cppFloatLiteral(value.staticNumber)
@@ -940,9 +883,7 @@ export class StaticEvaluator {
      * numeric fall-through form above owns it, and no reached source writes
      * a logical `||` where a value is expected.
      */
-    public isComparisonExpression(
-        expression: ts.Expression,
-    ): boolean {
+    public isComparisonExpression(expression: ts.Expression): boolean {
         const unwrapped = this.unwrap(expression);
         return (
             ts.isBinaryExpression(unwrapped) &&
@@ -957,9 +898,7 @@ export class StaticEvaluator {
         );
     }
 
-    public isNumberExpression(
-        expression: ts.Expression,
-    ): boolean {
+    public isNumberExpression(expression: ts.Expression): boolean {
         const unwrapped = this.unwrap(expression);
         if (
             this.isComparisonExpression(unwrapped) ||
@@ -980,8 +919,7 @@ export class StaticEvaluator {
         return (
             ts.isNumericLiteral(unwrapped) ||
             (ts.isIdentifier(unwrapped) &&
-                (unwrapped.text === "Infinity" ||
-                    unwrapped.text === "NaN")) ||
+                (unwrapped.text === "Infinity" || unwrapped.text === "NaN")) ||
             (ts.isPrefixUnaryExpression(unwrapped) &&
                 (unwrapped.operator === ts.SyntaxKind.PlusToken ||
                     unwrapped.operator === ts.SyntaxKind.MinusToken ||
@@ -1014,20 +952,15 @@ export class StaticEvaluator {
         );
     }
 
-    public isBooleanExpression(
-        expression: ts.Expression,
-    ): boolean {
+    public isBooleanExpression(expression: ts.Expression): boolean {
         const unwrapped = this.unwrap(expression);
         const type = this.checker.getTypeAtLocation(unwrapped);
         const booleanType = (candidate: ts.Type): boolean =>
             (candidate.flags &
-                (ts.TypeFlags.Boolean |
-                    ts.TypeFlags.BooleanLiteral)) !==
+                (ts.TypeFlags.Boolean | ts.TypeFlags.BooleanLiteral)) !==
                 0 ||
             ((candidate.flags & ts.TypeFlags.Union) !== 0 &&
-                (candidate as ts.UnionType).types.every(
-                    booleanType,
-                ));
+                (candidate as ts.UnionType).types.every(booleanType));
         if (booleanType(type)) {
             return true;
         }
@@ -1044,8 +977,7 @@ export class StaticEvaluator {
             unwrapped.kind === ts.SyntaxKind.TrueKeyword ||
             unwrapped.kind === ts.SyntaxKind.FalseKeyword ||
             (ts.isPrefixUnaryExpression(unwrapped) &&
-                unwrapped.operator ===
-                    ts.SyntaxKind.ExclamationToken) ||
+                unwrapped.operator === ts.SyntaxKind.ExclamationToken) ||
             (ts.isBinaryExpression(unwrapped) &&
                 (unwrapped.operatorToken.kind ===
                     ts.SyntaxKind.AmpersandAmpersandToken ||
@@ -1071,27 +1003,20 @@ export class StaticEvaluator {
                     // The two members the fold reads, handed over
                     // explicitly because this evaluator keeps its
                     // condition compiler private.
-                    compileCondition: (node) =>
-                        this.compileCondition(node),
+                    compileCondition: (node) => this.compileCondition(node),
                     resolveStaticExpression: (node) =>
                         this.resolveStaticExpression(node),
                 },
                 expression,
             ) ?? this.resolveStaticExpression(expression);
         if (!ts.isArrayLiteralExpression(resolved)) {
-            this.fail(
-                resolved,
-                "Expected a static array literal.",
-            );
+            this.fail(resolved, "Expected a static array literal.");
         }
         return resolved;
     }
 
-    public compileStringLiteral(
-        expression: ts.Expression,
-    ): string {
-        const unwrapped =
-            this.resolveStaticExpression(expression);
+    public compileStringLiteral(expression: ts.Expression): string {
+        const unwrapped = this.resolveStaticExpression(expression);
         if (
             ts.isStringLiteral(unwrapped) ||
             ts.isNoSubstitutionTemplateLiteral(unwrapped)
@@ -1117,8 +1042,7 @@ export class StaticEvaluator {
         }
         if (
             ts.isBinaryExpression(unwrapped) &&
-            unwrapped.operatorToken.kind ===
-                ts.SyntaxKind.PlusToken
+            unwrapped.operatorToken.kind === ts.SyntaxKind.PlusToken
         ) {
             return (
                 this.compileStringLiteral(unwrapped.left) +
@@ -1128,9 +1052,7 @@ export class StaticEvaluator {
         if (ts.isTemplateExpression(unwrapped)) {
             let result = unwrapped.head.text;
             for (const span of unwrapped.templateSpans) {
-                const value = this.staticText(
-                    span.expression,
-                );
+                const value = this.staticText(span.expression);
                 result += value;
                 result += span.literal.text;
             }
@@ -1163,7 +1085,11 @@ export class StaticEvaluator {
                     .join(separator);
             }
         }
-        this.fail(unwrapped, "Expected a string literal.", "static-value-required");
+        this.fail(
+            unwrapped,
+            "Expected a string literal.",
+            "static-value-required",
+        );
     }
 
     /**
@@ -1195,9 +1121,9 @@ export class StaticEvaluator {
                 return expression.right;
             }
             if (
-                isJsonValue(value) || value.optionalFoundCpp !== undefined ||
-                (value.kind === "data" &&
-                    value.dataType?.kind === "optional")
+                isJsonValue(value) ||
+                value.optionalFoundCpp !== undefined ||
+                (value.kind === "data" && value.dataType?.kind === "optional")
             ) {
                 return undefined;
             }
@@ -1227,7 +1153,8 @@ export class StaticEvaluator {
                     return expression.right;
                 }
                 if (
-                    isJsonValue(property) || property.optionalFoundCpp !== undefined ||
+                    isJsonValue(property) ||
+                    property.optionalFoundCpp !== undefined ||
                     (property.kind === "data" &&
                         property.dataType?.kind === "optional")
                 ) {
@@ -1235,10 +1162,7 @@ export class StaticEvaluator {
                 }
                 return expression.left;
             }
-            if (
-                owner.recordGetters?.[name] ||
-                owner.recordMethods?.[name]
-            ) {
+            if (owner.recordGetters?.[name] || owner.recordMethods?.[name]) {
                 return expression.left;
             }
             if (owner.kind === "record") {
@@ -1330,9 +1254,7 @@ export class StaticEvaluator {
      * handed to an INTRINSIC cannot -- those declare no body to inline --
      * which is what makes `addAgent(crowd, spawn, params)` still foldable.
      */
-    private isWrittenThrough(
-        declaration: ts.VariableDeclaration,
-    ): boolean {
+    private isWrittenThrough(declaration: ts.VariableDeclaration): boolean {
         const symbol = ts.isIdentifier(declaration.name)
             ? this.checker.getSymbolAtLocation(declaration.name)
             : undefined;
@@ -1344,7 +1266,8 @@ export class StaticEvaluator {
             scope = scope.parent;
         }
         const namesBinding = (node: ts.Node): boolean =>
-            ts.isIdentifier(node) && this.checker.getSymbolAtLocation(node) === symbol;
+            ts.isIdentifier(node) &&
+            this.checker.getSymbolAtLocation(node) === symbol;
         const throughBinding = (node: ts.Node): boolean =>
             (ts.isPropertyAccessExpression(node) ||
                 ts.isElementAccessExpression(node)) &&
@@ -1354,14 +1277,11 @@ export class StaticEvaluator {
             const parent = node.parent;
             if (throughBinding(node)) {
                 const assigned =
-                    isAssignmentExpression(parent) &&
-                    parent.left === node;
+                    isAssignmentExpression(parent) && parent.left === node;
                 const stepped = isUpdateExpression(parent);
-                const deleted =
-                    ts.isDeleteExpression(parent);
+                const deleted = ts.isDeleteExpression(parent);
                 const called =
-                    ts.isCallExpression(parent) &&
-                    parent.expression === node;
+                    ts.isCallExpression(parent) && parent.expression === node;
                 if (assigned || stepped || deleted || called) {
                     return true;
                 }
@@ -1386,9 +1306,8 @@ export class StaticEvaluator {
      * body for the inliner to reach; anything declared in source does.
      */
     private callReachesABody(call: ts.CallExpression): boolean {
-        const declaration = this.checker
-            .getResolvedSignature(call)
-            ?.declaration;
+        const declaration =
+            this.checker.getResolvedSignature(call)?.declaration;
         return (
             declaration !== undefined &&
             !declaration.getSourceFile().isDeclarationFile
@@ -1402,8 +1321,7 @@ export class StaticEvaluator {
         const unwrapped = this.unwrap(expression);
         if (
             ts.isBinaryExpression(unwrapped) &&
-            unwrapped.operatorToken.kind ===
-                ts.SyntaxKind.QuestionQuestionToken
+            unwrapped.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken
         ) {
             // A static record settles the `??` here; anything else stays
             // unresolved so the value path can lower it over the data
@@ -1411,10 +1329,7 @@ export class StaticEvaluator {
             // number then fails as that position, naming what it needed.
             const resolved = this.tryResolveNullish(unwrapped);
             if (resolved) {
-                return this.resolveStaticExpression(
-                    resolved,
-                    resolving,
-                );
+                return this.resolveStaticExpression(resolved, resolving);
             }
             return unwrapped;
         }
@@ -1453,8 +1368,9 @@ export class StaticEvaluator {
         // a static table, which is how an indexed color table feeds a
         // Color3 sink. A non-tuple result leaves the caller's remaining
         // literal branches to run.
-        const value = resolved ?? (
-            ts.isIdentifier(expression) ||
+        const value =
+            resolved ??
+            (ts.isIdentifier(expression) ||
             ts.isElementAccessExpression(expression) ||
             ts.isPropertyAccessExpression(expression)
                 ? this.resolveValue(expression)
@@ -1463,10 +1379,7 @@ export class StaticEvaluator {
             return undefined;
         }
         if (value.tupleElements?.length !== length) {
-            this.fail(
-                expression,
-                `Expected a ${length}-element tuple.`,
-            );
+            this.fail(expression, `Expected a ${length}-element tuple.`);
         }
         return value.tupleElements;
     }
@@ -1493,10 +1406,7 @@ export class StaticEvaluator {
                 values.push(...spread.tupleElements);
                 continue;
             }
-            if (
-                spread.kind === "data" &&
-                spread.dataType?.kind === "tuple"
-            ) {
+            if (spread.kind === "data" && spread.dataType?.kind === "tuple") {
                 for (let index = 0; index < spread.dataType.arity; ++index) {
                     values.push({
                         kind: "number",
@@ -1520,9 +1430,16 @@ export class StaticEvaluator {
         return values;
     }
 
-    private vectorValue(expression: ts.Expression, unwrapped: ts.Expression): Value | undefined {
-        if (!ts.isCallExpression(unwrapped) && !ts.isIdentifier(unwrapped) &&
-            !ts.isElementAccessExpression(unwrapped) && !ts.isPropertyAccessExpression(unwrapped)) {
+    private vectorValue(
+        expression: ts.Expression,
+        unwrapped: ts.Expression,
+    ): Value | undefined {
+        if (
+            !ts.isCallExpression(unwrapped) &&
+            !ts.isIdentifier(unwrapped) &&
+            !ts.isElementAccessExpression(unwrapped) &&
+            !ts.isPropertyAccessExpression(unwrapped)
+        ) {
             return undefined;
         }
         return this.narrowOptional(this.resolveValue(unwrapped), expression);
@@ -1540,7 +1457,9 @@ export class StaticEvaluator {
             return undefined;
         }
         return tupleComponents(
-            ts.isIdentifier(expression) ? value.cpp : this.bindDataTuple(value, length),
+            ts.isIdentifier(expression)
+                ? value.cpp
+                : this.bindDataTuple(value, length),
             length,
             precision,
         );
@@ -1562,22 +1481,30 @@ export class StaticEvaluator {
 
     /** Fold current numeric facts without treating live canvas size as constant. */
     public staticNumberValue(expression: ts.Expression): number | undefined {
-        return staticNumberValue({
-            isDefaultLibraryIdentifier: this.isDefaultLibraryIdentifier,
-            resolveStaticExpression: (value: ts.Expression) => this.resolveStaticExpression(value),
-            lookup: (identifier: ts.Identifier) => this.lookup(identifier),
-            lookupOptional: (identifier: ts.Identifier) => this.lookupOptional(identifier),
-            fail: (node: ts.Node, message: string): never => this.fail(node, message),
-        }, expression);
+        return staticNumberValue(
+            {
+                isDefaultLibraryIdentifier: this.isDefaultLibraryIdentifier,
+                resolveStaticExpression: (value: ts.Expression) =>
+                    this.resolveStaticExpression(value),
+                lookup: (identifier: ts.Identifier) => this.lookup(identifier),
+                lookupOptional: (identifier: ts.Identifier) =>
+                    this.lookupOptional(identifier),
+                fail: (node: ts.Node, message: string): never =>
+                    this.fail(node, message),
+            },
+            expression,
+        );
     }
 
-    public staticTextValue(
-        expression: ts.Expression,
-    ): string | undefined {
-        const unwrapped =
-            this.resolveStaticExpression(expression);
+    public staticTextValue(expression: ts.Expression): string | undefined {
+        const unwrapped = this.resolveStaticExpression(expression);
         if (unwrapped.kind === ts.SyntaxKind.NullKeyword) return "null";
-        if (ts.isIdentifier(unwrapped) && unwrapped.text === "undefined" && !this.lookupOptional(unwrapped)) return "undefined";
+        if (
+            ts.isIdentifier(unwrapped) &&
+            unwrapped.text === "undefined" &&
+            !this.lookupOptional(unwrapped)
+        )
+            return "undefined";
         if (
             ts.isStringLiteral(unwrapped) ||
             ts.isNoSubstitutionTemplateLiteral(unwrapped)
@@ -1591,9 +1518,7 @@ export class StaticEvaluator {
         if (numeric !== undefined) return String(numeric);
         if (
             ts.isCallExpression(unwrapped) &&
-            ts.isPropertyAccessExpression(
-                unwrapped.expression,
-            ) &&
+            ts.isPropertyAccessExpression(unwrapped.expression) &&
             ["toFixed", "toPrecision", "toExponential"].includes(
                 unwrapped.expression.name.text,
             ) &&
@@ -1603,9 +1528,7 @@ export class StaticEvaluator {
                 unwrapped.expression.expression,
             );
             const digits = unwrapped.arguments[0]
-                ? this.staticNumberValue(
-                      unwrapped.arguments[0],
-                  )
+                ? this.staticNumberValue(unwrapped.arguments[0])
                 : undefined;
             const method = unwrapped.expression.name.text;
             if (number !== undefined && unwrapped.arguments.length === 0) {
@@ -1623,11 +1546,7 @@ export class StaticEvaluator {
                 if (method === "toFixed" && digits >= 0 && digits <= 100) {
                     return number.toFixed(digits);
                 }
-                if (
-                    method === "toPrecision" &&
-                    digits >= 1 &&
-                    digits <= 100
-                ) {
+                if (method === "toPrecision" && digits >= 1 && digits <= 100) {
                     return number.toPrecision(digits);
                 }
                 if (
@@ -1651,7 +1570,8 @@ export class StaticEvaluator {
             }
             if (
                 value?.kind === "number" &&
-                value.staticNumber !== undefined && !value.parameterBinding
+                value.staticNumber !== undefined &&
+                !value.parameterBinding
             ) {
                 return String(value.staticNumber);
             }
@@ -1659,9 +1579,7 @@ export class StaticEvaluator {
         return undefined;
     }
 
-    private staticText(
-        expression: ts.Expression,
-    ): string {
+    private staticText(expression: ts.Expression): string {
         const value = this.staticTextValue(expression);
         if (value !== undefined) return value;
         this.fail(
@@ -1686,9 +1604,7 @@ export class StaticEvaluator {
         return this.compileNumber(value, precision);
     }
 
-    public unwrap(
-        expression: ts.Expression,
-    ): ts.Expression {
+    public unwrap(expression: ts.Expression): ts.Expression {
         let current = expression;
         for (;;) {
             current = unwrapExpression(current, {
@@ -1716,5 +1632,4 @@ export class StaticEvaluator {
             return current;
         }
     }
-
 }

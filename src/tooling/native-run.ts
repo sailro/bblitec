@@ -61,14 +61,15 @@ export function enableGpuDebug(): void {
 }
 
 export function defaultExecutable(buildDirectory: string): string {
-    const name = process.platform === "win32"
-        ? "bblite_native.exe"
-        : "bblite_native";
+    const name =
+        process.platform === "win32" ? "bblite_native.exe" : "bblite_native";
     const candidates = [
         resolve(buildDirectory, name),
         resolve(buildDirectory, "Release", name),
     ];
-    return candidates.find((candidate) => existsSync(candidate)) ?? candidates[0]!;
+    return (
+        candidates.find((candidate) => existsSync(candidate)) ?? candidates[0]!
+    );
 }
 
 /**
@@ -119,10 +120,7 @@ export function verifyDeployedPayload(
         if (mismatches.length > 0) {
             const detail = mismatches
                 .slice(0, 5)
-                .map(
-                    (mismatch) =>
-                        `${mismatch.path} (${mismatch.reason})`,
-                )
+                .map((mismatch) => `${mismatch.path} (${mismatch.reason})`)
                 .join(", ");
             throw new Error(
                 `Stale ${label} beside ${executable}: ${mismatches.length} file(s) differ from ${source} ` +
@@ -143,10 +141,7 @@ export function verifyBuildIdentity(
             `The native executable did not report a build stamp. Rebuild it with 'scene -- process' so it carries one: ${executable}`,
         );
     }
-    const reported = readFileSync(
-        reportedStampPath,
-        "utf8",
-    ).trim();
+    const reported = readFileSync(reportedStampPath, "utf8").trim();
     if (reported !== expected) {
         throw new Error(
             `Stale native build: ${executable} was built from different sources ` +
@@ -187,18 +182,22 @@ export function spawnNativeMeasured(
         timeout: timeoutMs,
         env: { ...inherited, ...overrides },
     });
-    const tail = captureStderr && result.stderr ? `\n${result.stderr.slice(-2000)}` : "";
+    const tail =
+        captureStderr && result.stderr ? `\n${result.stderr.slice(-2000)}` : "";
     if (result.error) {
         throw new Error(
             `Native renderer did not complete: ${result.error.message}` +
-                (timeoutMs !== undefined && (result.error as NodeJS.ErrnoException).code === "ETIMEDOUT"
+                (timeoutMs !== undefined &&
+                (result.error as NodeJS.ErrnoException).code === "ETIMEDOUT"
                     ? ` (killed after ${timeoutMs} ms)`
                     : "") +
                 tail,
         );
     }
     if (result.status !== 0) {
-        throw new Error(`Native renderer exited with status ${result.status}.${tail}`);
+        throw new Error(
+            `Native renderer exited with status ${result.status}.${tail}`,
+        );
     }
     return captureStderr ? result.stderr : "";
 }

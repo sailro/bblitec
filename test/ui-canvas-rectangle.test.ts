@@ -4,7 +4,10 @@ import { mkdirSync } from "node:fs";
 import { join, resolve } from "node:path";
 import test from "node:test";
 import { compileSource } from "../src/compiler.js";
-import { optionalNativeFixtureTools, runNativeFixtureCompiler } from "./native-fixture.js";
+import {
+    optionalNativeFixtureTools,
+    runNativeFixtureCompiler,
+} from "./native-fixture.js";
 
 test("compiler retains dynamic Canvas2D rectangles between path operations", () => {
     const result = compileSource(`
@@ -22,9 +25,18 @@ test("compiler retains dynamic Canvas2D rectangles between path operations", () 
         context.stroke();
         document.body.appendChild(canvas);
     `);
-    assert.match(result.cpp, /ui_canvas_fill_rect\([^;]*ui_canvas_width[^;]*ui_canvas_height/);
-    assert.ok(result.cpp.indexOf("ui_canvas_line_to") < result.cpp.indexOf("ui_canvas_fill_rect"));
-    assert.ok(result.cpp.indexOf("ui_canvas_fill_rect") < result.cpp.indexOf("ui_canvas_stroke("));
+    assert.match(
+        result.cpp,
+        /ui_canvas_fill_rect\([^;]*ui_canvas_width[^;]*ui_canvas_height/,
+    );
+    assert.ok(
+        result.cpp.indexOf("ui_canvas_line_to") <
+            result.cpp.indexOf("ui_canvas_fill_rect"),
+    );
+    assert.ok(
+        result.cpp.indexOf("ui_canvas_fill_rect") <
+            result.cpp.indexOf("ui_canvas_stroke("),
+    );
 });
 
 const nativeTools = optionalNativeFixtureTools(false);
@@ -55,21 +67,43 @@ test("primary Canvas2D ownership refuses a second GPU engine in both source orde
         context.fillRect(0, 0, 20, 20);
     `;
     for (const body of [gpu + canvas, canvas + gpu]) {
-        assert.throws(() => compileSource(`
+        assert.throws(
+            () =>
+                compileSource(`
             import { createEngine } from "@babylonjs/lite";
             ${body}
-        `), /primary canvas already belongs to a Babylon engine|supports one engine per entry point/);
+        `),
+            /primary canvas already belongs to a Babylon engine|supports one engine per entry point/,
+        );
     }
 });
 
-test("Canvas2D rectangles preserve paths and have exact backing-pixel coverage", { skip: !nativeTools }, () => {
-    const output = resolve("artifacts/ui-canvas-rectangle-check");
-    mkdirSync(output, { recursive: true });
-    const executable = join(output, "ui-canvas-rectangle-check.exe");
-    runNativeFixtureCompiler(nativeTools!, [
-        "/nologo", "/std:c++20", "/W4", "/WX", "/permissive-", "/EHsc", "/DBBLITE_HAS_UI=1",
-        `/Fo:${output}\\`, `/Fe:${executable}`, "/I", "native/include", "/I", "native/src",
-        "test/fixtures/ui-canvas-rectangle-check.cpp",
-    ]);
-    assert.match(execFileSync(executable, [], { encoding: "utf8" }), /ui-canvas-rectangle-check: ok/);
-});
+test(
+    "Canvas2D rectangles preserve paths and have exact backing-pixel coverage",
+    { skip: !nativeTools },
+    () => {
+        const output = resolve("artifacts/ui-canvas-rectangle-check");
+        mkdirSync(output, { recursive: true });
+        const executable = join(output, "ui-canvas-rectangle-check.exe");
+        runNativeFixtureCompiler(nativeTools!, [
+            "/nologo",
+            "/std:c++20",
+            "/W4",
+            "/WX",
+            "/permissive-",
+            "/EHsc",
+            "/DBBLITE_HAS_UI=1",
+            `/Fo:${output}\\`,
+            `/Fe:${executable}`,
+            "/I",
+            "native/include",
+            "/I",
+            "native/src",
+            "test/fixtures/ui-canvas-rectangle-check.cpp",
+        ]);
+        assert.match(
+            execFileSync(executable, [], { encoding: "utf8" }),
+            /ui-canvas-rectangle-check: ok/,
+        );
+    },
+);

@@ -45,11 +45,7 @@ function gltfDataUrl(document: Record<string, unknown>): string {
     );
 }
 
-function compileWalk(
-    walk = exactWalk,
-    document = twoMeshDocument,
-    after = "",
-) {
+function compileWalk(walk = exactWalk, document = twoMeshDocument, after = "") {
     return compileSource(`
         import {
             createEngine,
@@ -80,8 +76,12 @@ function compileWalk(
 }
 
 function rejectedWalk(error: unknown): boolean {
-    return error instanceof CompileError &&
-        /callback conditions|'in' is decided|Compile-time data value does not match the expected data handle/.test(error.message);
+    return (
+        error instanceof CompileError &&
+        /callback conditions|'in' is decided|Compile-time data value does not match the expected data handle/.test(
+            error.message,
+        )
+    );
 }
 
 test("the recursive-visitor flatten retains pinned preorder", () => {
@@ -94,7 +94,10 @@ test("the recursive-visitor flatten retains pinned preorder", () => {
     );
     // Neither half of the folded pair survives: no native list is
     // declared for the empty `Mesh[]`, and the driver loop emits nothing.
-    assert.doesNotMatch(result.cpp, /std::vector<bbl::MeshHandle> [A-Za-z0-9_]*meshes/);
+    assert.doesNotMatch(
+        result.cpp,
+        /std::vector<bbl::MeshHandle> [A-Za-z0-9_]*meshes/,
+    );
     assert.doesNotMatch(result.cpp, /collect_meshes/);
     assert.equal(result.manifest.sceneMaterialCount, 2);
     assert.deepEqual(result.manifest.sceneMaterialGltfAssetsBefore, [1, 1]);
@@ -109,17 +112,17 @@ test("material construction counts node instances and primitives, not mesh defin
         ],
     });
     assert.equal(result.manifest.sceneMaterialCount, 4);
-    assert.equal(result.cpp.match(/bbl::create_standard_material\(/g)?.length, 1);
+    assert.equal(
+        result.cpp.match(/bbl::create_standard_material\(/g)?.length,
+        1,
+    );
     assert.match(result.cpp, /for \(const bbl::MeshHandle /);
 });
 
 test("a guard testing a field that is not the renderable one is refused", () => {
     const walk = exactWalk.replace('"_gpu" in node', '"_skeleton" in node');
 
-    assert.throws(
-        () => compileWalk(walk),
-        rejectedWalk,
-    );
+    assert.throws(() => compileWalk(walk), rejectedWalk);
 });
 
 test("a visitor that filters the children it descends into is refused", () => {
@@ -128,10 +131,7 @@ test("a visitor that filters the children it descends into is refused", () => {
         "            if (isMeshNode(child)) { collectMeshes(child, meshes); }",
     );
 
-    assert.throws(
-        () => compileWalk(walk),
-        rejectedWalk,
-    );
+    assert.throws(() => compileWalk(walk), rejectedWalk);
 });
 
 test("appending to the folded list refuses rather than growing the asset's", () => {
@@ -154,10 +154,7 @@ test("a visitor that collects a node twice is refused", () => {
         "        meshes.push(node);\n        meshes.push(node);",
     );
 
-    assert.throws(
-        () => compileWalk(walk),
-        rejectedWalk,
-    );
+    assert.throws(() => compileWalk(walk), rejectedWalk);
 });
 
 // A `.babylon` container is not one root: the pinned loader returns
@@ -233,20 +230,24 @@ test("a .babylon container's flatten answers with its own mesh list", () => {
 
 test("a parented .babylon flatten records its source walk", () => {
     const result = compileBabylonWalk({
-                ...flatBabylonDocument,
-                meshes: [
-                    ...flatBabylonDocument.meshes,
-                    {
-                        name: "jaw",
-                        id: "jaw",
-                        parentId: "skull",
-                        positions: [0, 0, 0, 1, 0, 0, 0, 1, 0],
-                        normals: [0, 0, 1, 0, 0, 1, 0, 0, 1],
-                        indices: [0, 1, 2],
-                    },
-                ],
-            });
-    assert.deepEqual(result.manifest.assets.find(asset => asset.kind === "babylon")?.meshWalks, [0]);
+        ...flatBabylonDocument,
+        meshes: [
+            ...flatBabylonDocument.meshes,
+            {
+                name: "jaw",
+                id: "jaw",
+                parentId: "skull",
+                positions: [0, 0, 0, 1, 0, 0, 0, 1, 0],
+                normals: [0, 0, 1, 0, 0, 1, 0, 0, 1],
+                indices: [0, 1, 2],
+            },
+        ],
+    });
+    assert.deepEqual(
+        result.manifest.assets.find((asset) => asset.kind === "babylon")
+            ?.meshWalks,
+        [0],
+    );
     assert.equal(result.manifest.meshWalks?.length, 1);
 });
 
@@ -255,8 +256,6 @@ test("loadBabylon refuses maxMeshes, which would shorten the container", () => {
         () => compileBabylonWalk(flatBabylonDocument, "{ maxMeshes: 1 }"),
         (error: unknown) =>
             error instanceof CompileError &&
-            /loadBabylon takes loadCamera and loadTextures/.test(
-                error.message,
-            ),
+            /loadBabylon takes loadCamera and loadTextures/.test(error.message),
     );
 });

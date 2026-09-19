@@ -34,16 +34,17 @@ const fixtureEntry = `
     import { addToScene, createBox, createEngine, createSceneContext, startEngine } from "@babylonjs/lite";
 `;
 
-function compileFixture(body: string, fileName = "test/browser-texture.ts"): CompileResult {
+function compileFixture(
+    body: string,
+    fileName = "test/browser-texture.ts",
+): CompileResult {
     return compileSource(`${fixtureEntry}${body}`, { fileName });
 }
 
 /** The fixture module's declarations, by name, through a real program. */
-function fixtureDeclarations(
-    module: "tiles" | "refusals",
-): {
+function fixtureDeclarations(module: "tiles" | "refusals"): {
     checker: ts.TypeChecker;
-    declaration(name: string): ts.FunctionDeclaration;
+    declaration(this: void, name: string): ts.FunctionDeclaration;
 } {
     const fileName = "test/browser-texture-shape.ts";
     const frontend = createCompilerProgram(
@@ -61,7 +62,7 @@ function fixtureDeclarations(
     assert.ok(source, `fixture module ${module}.ts was not loaded`);
     return {
         checker: frontend.checker,
-        declaration(name) {
+        declaration(this: void, name) {
             const found = source.statements.find(
                 (statement): statement is ts.FunctionDeclaration =>
                     ts.isFunctionDeclaration(statement) &&
@@ -84,10 +85,11 @@ test("accepts a canvas-owning producer and reports its closure", () => {
     assert.equal(pair.exported, true);
     // The canvas lives in a same-file helper, so the closure has to have
     // followed the call rather than looking only at the target's own body.
-    assert.deepEqual(
-        pair.closure.map((member) => member.name?.text).sort(),
-        ["createTilePair", "encodeTile", "rampBytes"],
-    );
+    assert.deepEqual(pair.closure.map((member) => member.name?.text).sort(), [
+        "createTilePair",
+        "encodeTile",
+        "rampBytes",
+    ]);
 
     // A non-exported target reached through a local helper: both the helper
     // and the producer itself match, and the helper is what a call site hits
@@ -110,7 +112,10 @@ test("accepts a canvas-owning producer and reports its closure", () => {
 test("declines every shape it cannot bound", () => {
     const { checker, declaration } = fixtureDeclarations("refusals");
     for (const [name, why] of [
-        ["createBoxBesideTexture", "reaches a pinned export beyond the two factories"],
+        [
+            "createBoxBesideTexture",
+            "reaches a pinned export beyond the two factories",
+        ],
         ["measureCanvas", "owns a canvas but reaches no texture factory"],
         ["loadTile", "reaches a texture factory but owns no canvas"],
         ["createCachedTile", "memoizes through module-level state"],
@@ -282,8 +287,8 @@ test("carries a produced pixels texture into the Standard diffuse slot", () => {
     assert.deepEqual(
         [...parsed.bytes],
         [
-            255, 255, 255, 255, 255, 255, 255, 255,
-            0x11, 0x22, 0x33, 255, 255, 255, 255, 255,
+            255, 255, 255, 255, 255, 255, 255, 255, 0x11, 0x22, 0x33, 255, 255,
+            255, 255, 255,
         ],
     );
 
@@ -367,7 +372,10 @@ test("refuses a driver result it cannot package", () => {
             /returned one texture where the source returns an object/,
         ],
         [
-            { textures: [pixelTexture], result: { kind: "record", properties: { a: 3 } } },
+            {
+                textures: [pixelTexture],
+                result: { kind: "record", properties: { a: 3 } },
+            },
             /returned 'a' as something other than a texture/,
         ],
         [
@@ -435,7 +443,9 @@ test("preserves the pinned Sandblox producers' bytes and options", () => {
     ): ts.FunctionDeclaration => {
         const source = frontend.program
             .getSourceFiles()
-            .find((candidate) => candidate.fileName.endsWith(`${corpus}/${module}`));
+            .find((candidate) =>
+                candidate.fileName.endsWith(`${corpus}/${module}`),
+            );
         assert.ok(source, `pinned Sandblox module ${module} was not loaded`);
         const found = source.statements.find(
             (statement): statement is ts.FunctionDeclaration =>
@@ -512,9 +522,14 @@ test("preserves the pinned Sandblox producers' bytes and options", () => {
     // The source paints the background white and rewrites its alpha to zero,
     // so the top-left texel of the FLIPPED buffer is transparent white and
     // the drawn ink is opaque somewhere.
-    assert.deepEqual([...faceTexture.pixels.subarray(0, 4)], [255, 255, 255, 0]);
+    assert.deepEqual(
+        [...faceTexture.pixels.subarray(0, 4)],
+        [255, 255, 255, 0],
+    );
     assert.ok(
-        faceTexture.pixels.some((byte, index) => index % 4 === 3 && byte === 255),
+        faceTexture.pixels.some(
+            (byte, index) => index % 4 === 3 && byte === 255,
+        ),
         "the rasterized face has no opaque texel",
     );
 });

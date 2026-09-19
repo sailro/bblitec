@@ -1,3 +1,4 @@
+import { createJavaScriptFunction } from "../src/typescript-transpile.js";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
@@ -9,7 +10,11 @@ import { LoweringContext } from "../src/lowering/context.js";
 import { EnvironmentLowerer } from "../src/lowering/environment-lowerer.js";
 import { SceneLowerer } from "../src/lowering/scene-lowerer.js";
 import { importPinnedModule } from "../src/pinned-shader-composer.js";
-import { cppFunction, optionalNativeFixtureTools, runNativeFixtureCompiler } from "./native-fixture.js";
+import {
+    cppFunction,
+    optionalNativeFixtureTools,
+    runNativeFixtureCompiler,
+} from "./native-fixture.js";
 
 const literal = `{mode: 0, density: .1, start: 0, end: 10, color: [.2, .3, .4]}`;
 const taa = `const target = createRenderTarget({format: engine.format, dFormat: "depth24plus-stencil8", size: engine, samples: 1});
@@ -26,78 +31,183 @@ function program(body: string): string {
 }
 
 test("TAA fog admits fresh config/color literals and refuses retained identity in either reach order", () => {
-    const fresh = compileSource(program(`${taa} setFog(scene, ${literal}); setFog(scene, ${literal});`));
+    const fresh = compileSource(
+        program(`${taa} setFog(scene, ${literal}); setFog(scene, ${literal});`),
+    );
     assert.equal(fresh.cpp.match(/bbl::set_scene_fog\(/g)?.length, 2);
     for (const call of [
         `const fog = ${literal}; setFog(scene, fog);`,
         `const color: [number, number, number] = [.2,.3,.4]; setFog(scene, {mode:0,density:.1,start:0,end:10,color});`,
     ]) {
-        assert.doesNotThrow(() => compileSource(program(call)), "Existing non-TAA spelling remains available.");
+        assert.doesNotThrow(
+            () => compileSource(program(call)),
+            "Existing non-TAA spelling remains available.",
+        );
         for (const body of [`${taa} ${call}`, `${call} ${taa}`]) {
-            assert.throws(() => compileSource(program(body)), /TAA requires setFog to receive a fresh inline config/);
+            assert.throws(
+                () => compileSource(program(body)),
+                /TAA requires setFog to receive a fresh inline config/,
+            );
         }
     }
-    assert.throws(() => compileSource(program(`${taa} const fog = ${literal}; const alias = fog; setFog(scene, alias);`)), /Expected an object literal/);
-    assert.throws(() => compileSource(program(`${taa} setFog(scene, null);`)), /Expected an object literal/);
-    assert.throws(() => compileSource(program(`${taa} scene.fog = null;`)), /Unsupported|not supported|Cannot assign/);
+    assert.throws(
+        () =>
+            compileSource(
+                program(
+                    `${taa} const fog = ${literal}; const alias = fog; setFog(scene, alias);`,
+                ),
+            ),
+        /Expected an object literal/,
+    );
+    assert.throws(
+        () => compileSource(program(`${taa} setFog(scene, null);`)),
+        /Expected an object literal/,
+    );
+    assert.throws(
+        () => compileSource(program(`${taa} scene.fog = null;`)),
+        /Unsupported|not supported|Cannot assign/,
+    );
 });
 
 test("scene object keys observe pin defaults, fresh fog, retained glTF setup and transactional environment publication", async (t) => {
     const native = optionalNativeFixtureTools(false);
-    if (!native) { t.skip("Native fixture compiler unavailable."); return; }
+    if (!native) {
+        t.skip("Native fixture compiler unavailable.");
+        return;
+    }
     const context = new LoweringContext();
-    const {createSceneContext} = await importPinnedModule<{createSceneContext(surface: object, options: object): Record<string, unknown>}>("scene/scene-core.js");
-    const {setFog} = await importPinnedModule<{setFog(scene: object, fog: unknown): void}>("scene/scene-ubo-extras.js");
-    const {assembleEnvironmentTextures} = await importPinnedModule<{
-        assembleEnvironmentTextures(...args: unknown[]): Record<string, unknown>;
+    const { createSceneContext } = await importPinnedModule<{
+        createSceneContext(
+            this: void,
+            surface: object,
+            options: object,
+        ): Record<string, unknown>;
+    }>("scene/scene-core.js");
+    const { setFog } = await importPinnedModule<{
+        setFog(this: void, scene: object, fog: unknown): void;
+    }>("scene/scene-ubo-extras.js");
+    const { assembleEnvironmentTextures } = await importPinnedModule<{
+        assembleEnvironmentTextures(
+            this: void,
+            ...args: unknown[]
+        ): Record<string, unknown>;
     }>("loader-env/env-helpers.js");
-    const engine = {_device: {createSampler: (descriptor: object) => descriptor}};
-    const scene = createSceneContext({engine}, {defaultRenderTask: false});
+    const engine = {
+        _device: { createSampler: (descriptor: object) => descriptor },
+    };
+    const scene = createSceneContext({ engine }, { defaultRenderTask: false });
     assert.equal(scene.fog, null);
     assert.equal(scene._envTextures, undefined);
-    const fogA = {mode:0,density:.1,start:0,end:10,color:[.2,.3,.4]};
+    const fogA = {
+        mode: 0,
+        density: 0.1,
+        start: 0,
+        end: 10,
+        color: [0.2, 0.3, 0.4],
+    };
     setFog(scene, fogA);
     assert.equal(scene.fog, fogA, "Mode zero still installs a fog object.");
-    fogA.density = .2;
+    fogA.density = 0.2;
     setFog(scene, fogA);
-    assert.equal(scene.fog, fogA, "Reusing a config preserves identity (compiler TAA refusal above).");
-    const fogB = {...fogA};
+    assert.equal(
+        scene.fog,
+        fogA,
+        "Reusing a config preserves identity (compiler TAA refusal above).",
+    );
+    const fogB = { ...fogA };
     setFog(scene, fogB);
     assert.notEqual(scene.fog, fogA);
     setFog(scene, null);
-    assert.equal(scene.fog, null, "The pin supports null; native source keeps that shape refused.");
+    assert.equal(
+        scene.fog,
+        null,
+        "The pin supports null; native source keeps that shape refused.",
+    );
 
-    const texture = {createView: () => ({}), destroy() {}};
+    const texture = { createView: () => ({}), destroy() {} };
     const harmonics = new Float32Array(27);
-    const environmentA = assembleEnvironmentTextures(texture, texture, harmonics, .8, engine);
-    const environmentB = assembleEnvironmentTextures(texture, texture, harmonics, .8, engine);
+    const environmentA = assembleEnvironmentTextures(
+        texture,
+        texture,
+        harmonics,
+        0.8,
+        engine,
+    );
+    const environmentB = assembleEnvironmentTextures(
+        texture,
+        texture,
+        harmonics,
+        0.8,
+        engine,
+    );
     assert.notEqual(environmentA, environmentB);
-    const ibl = context.sourceFile("src/loader-gltf/gltf-ext-lights-image-based.ts");
+    const ibl = context.sourceFile(
+        "src/loader-gltf/gltf-ext-lights-image-based.ts",
+    );
     const setupExpression = context.variableInitializer(ibl, "_sceneSetup");
-    const setupCode = ts.transpileModule(`const setup = ${setupExpression.getText(ibl)}; return setup;`, {
-        compilerOptions: {target: ts.ScriptTarget.ES2022},
-    }).outputText;
-    const makeSetup = new Function("textures", "envRotationY", "registerEnvSceneUniforms", "specularCube", "brdfLut", setupCode);
-    const setupA = makeSetup(environmentA, 0, () => {}, texture, texture) as (scene: Record<string, unknown>) => void;
-    setupA(scene); const installed = scene._envTextures;
-    setupA(scene); assert.equal(scene._envTextures, installed);
-    environmentA.lodGenerationScale = .7;
+    const setupCode = ts.transpileModule(
+        `const setup = ${setupExpression.getText(ibl)}; return setup;`,
+        {
+            compilerOptions: { target: ts.ScriptTarget.ES2022 },
+        },
+    ).outputText;
+    const makeSetup = createJavaScriptFunction(
+        "textures",
+        "envRotationY",
+        "registerEnvSceneUniforms",
+        "specularCube",
+        "brdfLut",
+        setupCode,
+    );
+    const setupA = makeSetup(environmentA, 0, () => {}, texture, texture) as (
+        scene: Record<string, unknown>,
+    ) => void;
+    setupA(scene);
+    const installed = scene._envTextures;
+    setupA(scene);
     assert.equal(scene._envTextures, installed);
-    const other = createSceneContext({engine}, {defaultRenderTask: false});
-    setupA(other); assert.equal(other._envTextures, installed);
-    const setupB = makeSetup(environmentB, 0, () => {}, texture, texture) as typeof setupA;
-    setupB(scene); assert.notEqual(scene._envTextures, installed);
+    environmentA.lodGenerationScale = 0.7;
+    assert.equal(scene._envTextures, installed);
+    const other = createSceneContext({ engine }, { defaultRenderTask: false });
+    setupA(other);
+    assert.equal(other._envTextures, installed);
+    const setupB = makeSetup(
+        environmentB,
+        0,
+        () => {},
+        texture,
+        texture,
+    ) as typeof setupA;
+    setupB(scene);
+    assert.notEqual(scene._envTextures, installed);
 
     const directory = resolve("artifacts/scene-uniform-identity-check");
-    mkdirSync(directory, {recursive:true});
+    mkdirSync(directory, { recursive: true });
     const environment = new EnvironmentLowerer(context);
-    writeFileSync(join(directory,"dds.cpp"), environment.lowerDdsLoaderAdapter().source);
-    writeFileSync(join(directory,"hdr.cpp"), environment.lowerHdrLoaderAdapter().source);
-    const envFunction = cppFunction(environment.lowerLoaderAdapter({loadEnvironment:true,ddsBackground:false}).source, "std::shared_ptr<const EnvironmentState> load_environment(");
-    const sceneSource = new SceneLowerer(context).lowerCore({fog:true}).source;
+    writeFileSync(
+        join(directory, "dds.cpp"),
+        environment.lowerDdsLoaderAdapter().source,
+    );
+    writeFileSync(
+        join(directory, "hdr.cpp"),
+        environment.lowerHdrLoaderAdapter().source,
+    );
+    const envFunction = cppFunction(
+        environment.lowerLoaderAdapter({
+            loadEnvironment: true,
+            ddsBackground: false,
+        }).source,
+        "std::shared_ptr<const EnvironmentState> load_environment(",
+    );
+    const sceneSource = new SceneLowerer(context).lowerCore({
+        fog: true,
+    }).source;
     const fogFunction = cppFunction(sceneSource, "void set_scene_fog(");
-    const sourcePath = join(directory,"check.cpp"), executable = join(directory,"check.exe");
-    writeFileSync(sourcePath, `#include <bblite/runtime.hpp>
+    const sourcePath = join(directory, "check.cpp"),
+        executable = join(directory, "check.exe");
+    writeFileSync(
+        sourcePath,
+        `#include <bblite/runtime.hpp>
 #include <bblite/pal.hpp>
 #include <cassert>
 #include <iostream>
@@ -170,9 +280,24 @@ int main() {
     assert(failed && scene.state->environment_identity == committed);
     std::cout << "scene-uniform-identity: ok\\n";
 }
-`);
-    runNativeFixtureCompiler(native, ["/nologo","/std:c++20","/W4","/WX","/EHsc","/MD",
-        `/I${resolve("native/include")}`, `/Fo:${directory}\\`, `/Fe:${executable}`,
-        sourcePath, join(directory,"dds.cpp"), join(directory,"hdr.cpp")]);
-    assert.match(execFileSync(executable,{encoding:"utf8"}), /scene-uniform-identity: ok/);
+`,
+    );
+    runNativeFixtureCompiler(native, [
+        "/nologo",
+        "/std:c++20",
+        "/W4",
+        "/WX",
+        "/EHsc",
+        "/MD",
+        `/I${resolve("native/include")}`,
+        `/Fo:${directory}\\`,
+        `/Fe:${executable}`,
+        sourcePath,
+        join(directory, "dds.cpp"),
+        join(directory, "hdr.cpp"),
+    ]);
+    assert.match(
+        execFileSync(executable, { encoding: "utf8" }),
+        /scene-uniform-identity: ok/,
+    );
 });

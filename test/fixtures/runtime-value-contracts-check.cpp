@@ -11,7 +11,9 @@ static_assert(std::is_same_v<ts::ArrayBuffer, js::ArrayBuffer>);
 static_assert(std::is_same_v<ts::Uint8Array, js::U8Array>);
 static_assert(std::is_same_v<ts::DataView, js::DataView>);
 
-struct Point { double x, y, z; };
+struct Point {
+    double x, y, z;
+};
 
 int main() {
     const Sprite2DLayerRecord layer;
@@ -33,12 +35,14 @@ int main() {
 
     const std::vector<Point> points{{1.25, 2.5, 3.75}, {-4, -5, -6}};
     std::vector<js::Ref<Point>> references;
-    for (const auto& point : points) references.push_back(js::make_ref<Point>(point));
+    for (const auto& point : points)
+        references.push_back(js::make_ref<Point>(point));
     const auto direct = vec3_path(points);
     const auto indirect = vec3_path(references);
     assert(direct.size() == 2 && indirect.size() == 2);
     for (std::size_t i = 0; i < direct.size(); ++i) {
-        assert(direct[i].x == indirect[i].x && direct[i].y == indirect[i].y && direct[i].z == indirect[i].z);
+        assert(direct[i].x == indirect[i].x && direct[i].y == indirect[i].y &&
+               direct[i].z == indirect[i].z);
     }
     references[0]->x = 9;
     assert(vec3_path(references)[0].x == 9 && vec3_path(points)[0].x == 1.25);
@@ -61,9 +65,8 @@ int main() {
     const auto nodes = js::managed_node_count();
     {
         Scene scene;
-        scene.disposables.push_back(js::make_closure(std::tuple{scene}, [](auto& captures) {
-            std::get<0>(captures).disposed = true;
-        }));
+        scene.disposables.push_back(js::make_closure(
+            std::tuple{scene}, [](auto& captures) { std::get<0>(captures).disposed = true; }));
         assert(js::collect_cycles() == 0);
         scene.disposables.front()();
         assert(scene.disposed);
@@ -104,8 +107,10 @@ int main() {
         }
         auto live = keys.back();
         keys.clear();
-        for (int i = 0; i < 9; ++i) assert(map.get(live.weak_identity()));
-        for (std::size_t i = 0; i + 1 < weak_values.size(); ++i) assert(weak_values[i].expired());
+        for (int i = 0; i < 9; ++i)
+            assert(map.get(live.weak_identity()));
+        for (std::size_t i = 0; i + 1 < weak_values.size(); ++i)
+            assert(weak_values[i].expired());
         assert(!weak_values.back().expired());
         live = {};
         js::collect_cycles();

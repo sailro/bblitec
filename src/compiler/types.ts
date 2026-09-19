@@ -1,29 +1,38 @@
-import { metadataFieldsForKind, type ValueMetadataKey } from "./values/metadata.js";
+import {
+    metadataFieldsForKind,
+    type ValueMetadataKey,
+} from "./values/metadata.js";
 import type { Value } from "./values/model.js";
 export type { Value } from "./values/model.js";
-export { nativeDataMetadata, valueForKind, withNativeMetadata } from "./values/model.js";
+export {
+    nativeDataMetadata,
+    valueForKind,
+    withNativeMetadata,
+} from "./values/model.js";
 import { EmissionSet } from "./emission-transaction.js";
 import type ts from "typescript";
-import type { NativeCaptureBinding, NativeCompanionKey, NativeExpression } from "./closure-captures.js";
-import type { CompileAdaptation } from "../fidelity.js";
-import type {AssetDecoderConfiguration} from "../asset-decoders.js";
 import type {
-  NodeParticleBakeRequest,
-  NodeParticleBuilder,
-  NodeParticleCamera,
-  NodeParticleGraphSource,
-  NodeParticleColumn,
-  NodeParticleFrozenBufferRequest,
-  NodeParticleRegistration,
-  NodeParticleSetRequest,
-  NodeParticleSprite2DRequest,
-  NodeParticleStep,
+    NativeCaptureBinding,
+    NativeCompanionKey,
+    NativeExpression,
+} from "./closure-captures.js";
+import type { CompileAdaptation } from "../fidelity.js";
+import type { AssetDecoderConfiguration } from "../asset-decoders.js";
+import type {
+    NodeParticleBakeRequest,
+    NodeParticleBuilder,
+    NodeParticleCamera,
+    NodeParticleGraphSource,
+    NodeParticleColumn,
+    NodeParticleFrozenBufferRequest,
+    NodeParticleRegistration,
+    NodeParticleSetRequest,
+    NodeParticleSprite2DRequest,
+    NodeParticleStep,
 } from "../pinned-node-particle.js";
 import type { MaterialPluginManifest } from "../pinned-material-plugins.js";
 import type { PinnedStandardMaterialInput } from "../pinned-standard-variants.js";
-import type {
-  NativeHostUiStyleSource,
-} from "../ui-style-rule.js";
+import type { NativeHostUiStyleSource } from "../ui-style-rule.js";
 import type { DataType, TypedArrayKind } from "./data-types.js";
 import type { SceneNodeTransformDescriptor } from "../scene-node-transform-descriptor.js";
 import type { CompiledTextData } from "../pinned-text-data.js";
@@ -33,10 +42,10 @@ import type { DeploymentOptions } from "./deployment.js";
 
 /** A static host-page element projected beside scene-created retained UI. */
 export interface NativeHostUiElement {
-  tag: string;
-  text?: string;
-  attributes?: Record<string, string>;
-  children?: NativeHostUiElement[];
+    tag: string;
+    text?: string;
+    attributes?: Record<string, string>;
+    children?: NativeHostUiElement[];
 }
 
 /**
@@ -44,159 +53,159 @@ export interface NativeHostUiElement {
  * This is deliberately a retained-tree companion, not an HTML/CSS parser.
  */
 export interface NativeHostUi extends NativeHostUiStyleSource {
-  /**
-   * The audited companion file the elements came from, recorded as
-   * `ui:rml`'s activation site: a companion-only scene has no reaching
-   * call in its own source, so the attribution must name this file.
-  */
-  sourcePath: string;
-  elements: NativeHostUiElement[];
+    /**
+     * The audited companion file the elements came from, recorded as
+     * `ui:rml`'s activation site: a companion-only scene has no reaching
+     * call in its own source, so the attribution must name this file.
+     */
+    sourcePath: string;
+    elements: NativeHostUiElement[];
 }
 
 export interface CompileOptions extends DeploymentOptions {
-  fileName?: string;
-  title?: string;
-  width?: number;
-  height?: number;
-  /**
-   * The query string the scene's reference pose is captured at
-   * (`"?seekTime=0"`). `window.location.search` folds to it, so a scene
-   * that branches on a query parameter takes the same branch natively
-   * that the reference page takes. Empty when the pin serves the scene
-   * bare, which is every scene that does not read the query.
-   */
-  search?: string;
-  /** Optional audited host-page UI companion for a registered native scene. */
-  nativeHostUi?: NativeHostUi;
+    fileName?: string;
+    title?: string;
+    width?: number;
+    height?: number;
+    /**
+     * The query string the scene's reference pose is captured at
+     * (`"?seekTime=0"`). `window.location.search` folds to it, so a scene
+     * that branches on a query parameter takes the same branch natively
+     * that the reference page takes. Empty when the pin serves the scene
+     * bare, which is every scene that does not read the query.
+     */
+    search?: string;
+    /** Optional audited host-page UI companion for a registered native scene. */
+    nativeHostUi?: NativeHostUi;
 }
 
 export interface CompileManifest {
-  assetDecoders?: AssetDecoderConfiguration;
-  source: string;
-  /**
-   * Every local file this generation read, as sorted forward-slash
-   * paths relative to the repository root: the entry and the modules it
-   * imports (the compiler's half), plus the host-UI companion and any
-   * local asset the CLI materialized. `scene -- compile` hashes exactly
-   * these to prove a scene's inputs unchanged and skip regenerating it, so
-   * a read that is not listed here is a read the skip cannot see.
-   */
-  inputs: string[];
-  features: string[];
-  /** The explicit surface sample count, absent when the pin's default applies. */
-  engineMsaaSamples?: 1 | 4;
-  /**
-   * feature -> "file:line" of the first scene-source call site that
-   * reached it, keyed and ordered like `features` but kept as a
-   * parallel record so consumers of the array are untouched. The
-   * compiler's walk is a single deterministic pass (entry statements
-   * in document order, sub-expressions depth-first), so first-reach
-   * wins and regeneration is stable. Features that are reached
-   * without a source node (the seeded "core") and features the CLI
-   * asset-join adds after compilation carry no entry. One site is not
-   * a call site: `ui:rml` reached only by a host-page companion names
-   * the companion JSON file, since no scene line exists to name.
-   */
-  featureSites: Record<string, string>;
-  runtimeSources: string[];
-  generatedSources: string[];
-  assets: CompileAsset[];
-  shaderVariants: string[];
-  customShaderPrograms: CompiledShaderProgram[];
-  /** Every node-material graph the scene parsed, in reach order. */
-  nodeMaterials: CompiledNodeMaterial[];
-  /** Ordered collectors projected separately from native document-order meshes. */
-  meshWalks?: CompiledMeshWalk[];
-  /** The scene's node-particle program, summarized. */
-  nodeParticles?: NodeParticleManifest;
-  /** Static pinned shaper output, without a native text-renderer activation. */
-  textData?: CompiledTextData[];
-  /**
-   * The pinned tone-mapping export the scene assigned, when it assigned one.
-   * Absent means the pin's own default, which is what `pbr-renderable.ts`
-   * resolves an unset `imageProcessing.toneMapping` to.
-   */
-  toneMapping?: string;
-  /** The sprite-family custom fragment shaders scene code built. */
-  spriteCustomShaders: SpriteCustomShaderManifest[];
-  /** Every `createEffectWrapper` the scene built, in reach order. */
-  effects: EffectManifest[];
-  /** Whether a standalone SpriteRenderer needs the pure-2D vertex stage. */
-  pureSpriteVertex: boolean;
-  /**
-   * Whether any layer or system draws with the stock program. A scene whose
-   * every one opts into a custom shader never loads it, so it is not
-   * composed, compiled or deployed.
-   */
-  plainSpriteLayer: boolean;
-  plainBillboardSystem: boolean;
-  geometryOutputTasks: GeometryOutputTaskManifest[];
-  postProcessTasks: PostProcessTaskManifest[];
-  postProcessComposites: PostProcessCompositeManifest[];
-  screenSpaceTasks: ScreenSpaceTaskManifest[];
-  adaptations: CompileAdaptation[];
-  scenePbrMaterials: ScenePbrMaterialManifest[];
-  /**
-   * The `GsShaderFragment` plugins a `loadSplat` call passed, in the order
-   * it wrote them — which is the order the pin's own splicer concatenates
-   * two plugins sharing a slot in.
-   */
-  splatFragments: SplatFragmentManifest[];
-  /**
-   * The distinct `MaterialPlugin` lists a STANDARD material carries, in
-   * the order the first material carrying each was assigned one.
-   *
-   * The position is the identity: the pin's Standard bridge numbers a
-   * signature from one in the order `registerStdPlugins` first sees it,
-   * and it sees only Standard materials (it filters on `_buildGroup`). So
-   * the generated material record carries `position + 1`, composition
-   * hands the pin the same lists in the same order, and it refuses if the
-   * pin disagreed (`src/pinned-material-plugins.ts`).
-   *
-   * A PBR material's plugins ride `scenePbrMaterials` instead: its bridge
-   * numbers them itself during feature derivation, and a PBR draw
-   * resolves its variant by material index, so no index travels.
-   */
-  standardMaterialPlugins: MaterialPluginManifest[][];
-  /** Actual Standard material states observed for each plugin signature. */
-  standardMaterialPluginInputs: PinnedStandardMaterialInput[][];
-  /** A Standard assignment targets a mesh without a scene composition profile. */
-  standardMaterialUnknownMesh?: true;
-  /** Scene-material record count; physical creation count when no runtime profiles exist. */
-  sceneMaterialCount: number;
-  /** glTF load count at each scene material creation, across all families. */
-  sceneMaterialGltfAssetsBefore?: number[];
-  /** These material rows are native call-site profiles, not physical counts. */
-  runtimeMaterialProfiles?: number[];
-  sceneMeshes: SceneMeshManifest[];
-  /** Scene-code lights added outside a repeating/deferred callback, in
-   *  scene order. When `dynamicSceneLights` is false this is the complete
-   *  light topology and shader composition must not widen it. */
-  sceneLightKinds: LightKind[];
-  /** A callback can add lights at run time, so the static list above is
-   *  then only a lower bound and composition must retain compatible arms. */
-  dynamicSceneLights: boolean;
-  /** A reached assignment to `toneMappingEnabled` makes both states
-   *  potentially reachable. Without one, environment loading fixes the
-   *  state and composition emits only that arm. */
-  mutableToneMappingEnabled: boolean;
-  /** Every shadow generator a scene built, in reach order. */
-  shadowGenerators: ShadowGeneratorManifest[];
-  /** The `sceneMeshes` entries `mesh.receiveShadows = true` marked. */
-  shadowReceiverMeshes: number[];
-  /** A runtime handle collection may mark imported or otherwise dynamic
-   *  meshes as receivers, so composition must retain both receiver states. */
-  dynamicShadowReceivers: boolean;
-  /**
-   * The clustered light field this scene added, if it added one.
-   *
-   * `addClusteredLightContainer` stamps `_clusteredLightState` onto every
-   * material present, which is what each clustered extension's `detect`
-   * reads -- so composition needs to know the scene reached it, and whether
-   * a spot was ever created, since that decides which of the two extensions
-   * takes the material and with it the data layout the fragment reads.
-   */
-  clusteredLights?: { hasSpots: boolean };
+    assetDecoders?: AssetDecoderConfiguration;
+    source: string;
+    /**
+     * Every local file this generation read, as sorted forward-slash
+     * paths relative to the repository root: the entry and the modules it
+     * imports (the compiler's half), plus the host-UI companion and any
+     * local asset the CLI materialized. `scene -- compile` hashes exactly
+     * these to prove a scene's inputs unchanged and skip regenerating it, so
+     * a read that is not listed here is a read the skip cannot see.
+     */
+    inputs: string[];
+    features: string[];
+    /** The explicit surface sample count, absent when the pin's default applies. */
+    engineMsaaSamples?: 1 | 4;
+    /**
+     * feature -> "file:line" of the first scene-source call site that
+     * reached it, keyed and ordered like `features` but kept as a
+     * parallel record so consumers of the array are untouched. The
+     * compiler's walk is a single deterministic pass (entry statements
+     * in document order, sub-expressions depth-first), so first-reach
+     * wins and regeneration is stable. Features that are reached
+     * without a source node (the seeded "core") and features the CLI
+     * asset-join adds after compilation carry no entry. One site is not
+     * a call site: `ui:rml` reached only by a host-page companion names
+     * the companion JSON file, since no scene line exists to name.
+     */
+    featureSites: Record<string, string>;
+    runtimeSources: string[];
+    generatedSources: string[];
+    assets: CompileAsset[];
+    shaderVariants: string[];
+    customShaderPrograms: CompiledShaderProgram[];
+    /** Every node-material graph the scene parsed, in reach order. */
+    nodeMaterials: CompiledNodeMaterial[];
+    /** Ordered collectors projected separately from native document-order meshes. */
+    meshWalks?: CompiledMeshWalk[];
+    /** The scene's node-particle program, summarized. */
+    nodeParticles?: NodeParticleManifest;
+    /** Static pinned shaper output, without a native text-renderer activation. */
+    textData?: CompiledTextData[];
+    /**
+     * The pinned tone-mapping export the scene assigned, when it assigned one.
+     * Absent means the pin's own default, which is what `pbr-renderable.ts`
+     * resolves an unset `imageProcessing.toneMapping` to.
+     */
+    toneMapping?: string;
+    /** The sprite-family custom fragment shaders scene code built. */
+    spriteCustomShaders: SpriteCustomShaderManifest[];
+    /** Every `createEffectWrapper` the scene built, in reach order. */
+    effects: EffectManifest[];
+    /** Whether a standalone SpriteRenderer needs the pure-2D vertex stage. */
+    pureSpriteVertex: boolean;
+    /**
+     * Whether any layer or system draws with the stock program. A scene whose
+     * every one opts into a custom shader never loads it, so it is not
+     * composed, compiled or deployed.
+     */
+    plainSpriteLayer: boolean;
+    plainBillboardSystem: boolean;
+    geometryOutputTasks: GeometryOutputTaskManifest[];
+    postProcessTasks: PostProcessTaskManifest[];
+    postProcessComposites: PostProcessCompositeManifest[];
+    screenSpaceTasks: ScreenSpaceTaskManifest[];
+    adaptations: CompileAdaptation[];
+    scenePbrMaterials: ScenePbrMaterialManifest[];
+    /**
+     * The `GsShaderFragment` plugins a `loadSplat` call passed, in the order
+     * it wrote them — which is the order the pin's own splicer concatenates
+     * two plugins sharing a slot in.
+     */
+    splatFragments: SplatFragmentManifest[];
+    /**
+     * The distinct `MaterialPlugin` lists a STANDARD material carries, in
+     * the order the first material carrying each was assigned one.
+     *
+     * The position is the identity: the pin's Standard bridge numbers a
+     * signature from one in the order `registerStdPlugins` first sees it,
+     * and it sees only Standard materials (it filters on `_buildGroup`). So
+     * the generated material record carries `position + 1`, composition
+     * hands the pin the same lists in the same order, and it refuses if the
+     * pin disagreed (`src/pinned-material-plugins.ts`).
+     *
+     * A PBR material's plugins ride `scenePbrMaterials` instead: its bridge
+     * numbers them itself during feature derivation, and a PBR draw
+     * resolves its variant by material index, so no index travels.
+     */
+    standardMaterialPlugins: MaterialPluginManifest[][];
+    /** Actual Standard material states observed for each plugin signature. */
+    standardMaterialPluginInputs: PinnedStandardMaterialInput[][];
+    /** A Standard assignment targets a mesh without a scene composition profile. */
+    standardMaterialUnknownMesh?: true;
+    /** Scene-material record count; physical creation count when no runtime profiles exist. */
+    sceneMaterialCount: number;
+    /** glTF load count at each scene material creation, across all families. */
+    sceneMaterialGltfAssetsBefore?: number[];
+    /** These material rows are native call-site profiles, not physical counts. */
+    runtimeMaterialProfiles?: number[];
+    sceneMeshes: SceneMeshManifest[];
+    /** Scene-code lights added outside a repeating/deferred callback, in
+     *  scene order. When `dynamicSceneLights` is false this is the complete
+     *  light topology and shader composition must not widen it. */
+    sceneLightKinds: LightKind[];
+    /** A callback can add lights at run time, so the static list above is
+     *  then only a lower bound and composition must retain compatible arms. */
+    dynamicSceneLights: boolean;
+    /** A reached assignment to `toneMappingEnabled` makes both states
+     *  potentially reachable. Without one, environment loading fixes the
+     *  state and composition emits only that arm. */
+    mutableToneMappingEnabled: boolean;
+    /** Every shadow generator a scene built, in reach order. */
+    shadowGenerators: ShadowGeneratorManifest[];
+    /** The `sceneMeshes` entries `mesh.receiveShadows = true` marked. */
+    shadowReceiverMeshes: number[];
+    /** A runtime handle collection may mark imported or otherwise dynamic
+     *  meshes as receivers, so composition must retain both receiver states. */
+    dynamicShadowReceivers: boolean;
+    /**
+     * The clustered light field this scene added, if it added one.
+     *
+     * `addClusteredLightContainer` stamps `_clusteredLightState` onto every
+     * material present, which is what each clustered extension's `detect`
+     * reads -- so composition needs to know the scene reached it, and whether
+     * a spot was ever created, since that decides which of the two extensions
+     * takes the material and with it the data layout the fragment reads.
+     */
+    clusteredLights?: { hasSpots: boolean };
 }
 
 /**
@@ -209,13 +218,13 @@ export interface CompileManifest {
  * records take.
  */
 export type SplatFragmentManifest =
-  | { kind: "pinned"; exportName: string }
-  | {
-      kind: "scene";
-      id: string;
-      helperFunctions?: string;
-      fragmentSlots: { slot: string; code: string }[];
-    };
+    | { kind: "pinned"; exportName: string }
+    | {
+          kind: "scene";
+          id: string;
+          helperFunctions?: string;
+          fragmentSlots: { slot: string; code: string }[];
+      };
 
 /**
  * One `create*ShadowGenerator` call, in reach order.
@@ -228,82 +237,79 @@ export type SplatFragmentManifest =
 /** One mesh `setShadowTaskCasterMeshes` named, and what it carries. */
 /** Which mesh a generator casts from, before its material is resolved. */
 export interface ShadowCasterMeshManifest {
-  /** Its `sceneMeshes` row. */
-  meshIndex: number;
+    /** Its `sceneMeshes` row. */
+    meshIndex: number;
 }
 
 export interface ShadowCasterManifest extends ShadowCasterMeshManifest {
-  /**
-   * Its `scenePbrMaterials` row, or `null` for a material of another
-   * family -- which still takes a runtime handle.
-   */
-  pbrMaterial: number | null;
-  /**
-   * Its composed node graph, or `null` for a material of another family.
-   *
-   * A node caster's ESM view is a second MODULE compiled from the same
-   * graph rather than a variant of another material, so the caster names
-   * the graph and composition asks the pin for that module.
-   */
-  nodeMaterial: number | null;
+    /**
+     * Its `scenePbrMaterials` row, or `null` for a material of another
+     * family -- which still takes a runtime handle.
+     */
+    pbrMaterial: number | null;
+    /**
+     * Its composed node graph, or `null` for a material of another family.
+     *
+     * A node caster's ESM view is a second MODULE compiled from the same
+     * graph rather than a variant of another material, so the caster names
+     * the graph and composition asks the pin for that module.
+     */
+    nodeMaterial: number | null;
 }
 
 export interface ShadowGeneratorManifest {
-  /**
-   * The pinned filter. Composition maps it onto the receiver fragment's
-   * own `shadowType` — so a generator family added here without a
-   * receiver arm refuses at composition rather than composing a
-   * neighbour's.
-   */
-  kind:
-    | "pcf-spot"
-    | "pcf-directional"
-    | "csm-directional"
-    | "esm-directional";
-  /**
-   * Which `scene.lights` slot the owning light occupies. The pinned
-   * receiver fragment suffixes every varying and binding with it, so a
-   * light added at a different position composes a different fragment.
-   */
-  lightIndex: number;
-  /**
-   * The three ESM options that decide generated artifacts rather than
-   * run-time values, for the generators that carry them.
-   *
-   * `createShadowBlurFragmentWGSL` folds `blurKernel` into the tap offsets
-   * and weights it emits, and `mapSize`/`blurScale` size four textures and
-   * the texel step the blur walks — so all three decide shader TEXT or a
-   * GPU resource and have to reach generation.
-   */
-  esm?: {
-    mapSize?: number;
-    blurKernel?: number;
-    blurScale?: number;
-  };
-  /**
-   * One entry per mesh `setShadowTaskCasterMeshes` named, in the order it
-   * named them.
-   *
-   * `registerSceneWithShadowSupport` builds one caster material VIEW per
-   * caster at run time and appends it to `engine.materials`, so these are
-   * material creations generation never sees at a call site. Every caster
-   * takes a handle; only a scene-code PBR one needs a composed row, since
-   * a PBR view resolves its variant by material HANDLE and a handle the
-   * table never named resolves nothing. The Standard family keys on
-   * feature bits and reads `no_color` off the record instead.
-   *
-   * The mesh row rides along because the view composes over that mesh's
-   * own attribute set and no other: a caster view is drawn on its casters
-   * and nowhere else, which is the same narrowing the pin gets for free
-   * by composing per renderable.
-   */
-  casters: ShadowCasterManifest[];
-  /**
-   * At least one caster travels through a runtime mesh array. Composition
-   * therefore closes the pass over source material families/mesh feature
-   * sets rather than pretending one creation-site row is one mesh handle.
-   */
-  dynamicCasters?: true;
+    /**
+     * The pinned filter. Composition maps it onto the receiver fragment's
+     * own `shadowType` — so a generator family added here without a
+     * receiver arm refuses at composition rather than composing a
+     * neighbour's.
+     */
+    kind:
+        "pcf-spot" | "pcf-directional" | "csm-directional" | "esm-directional";
+    /**
+     * Which `scene.lights` slot the owning light occupies. The pinned
+     * receiver fragment suffixes every varying and binding with it, so a
+     * light added at a different position composes a different fragment.
+     */
+    lightIndex: number;
+    /**
+     * The three ESM options that decide generated artifacts rather than
+     * run-time values, for the generators that carry them.
+     *
+     * `createShadowBlurFragmentWGSL` folds `blurKernel` into the tap offsets
+     * and weights it emits, and `mapSize`/`blurScale` size four textures and
+     * the texel step the blur walks — so all three decide shader TEXT or a
+     * GPU resource and have to reach generation.
+     */
+    esm?: {
+        mapSize?: number;
+        blurKernel?: number;
+        blurScale?: number;
+    };
+    /**
+     * One entry per mesh `setShadowTaskCasterMeshes` named, in the order it
+     * named them.
+     *
+     * `registerSceneWithShadowSupport` builds one caster material VIEW per
+     * caster at run time and appends it to `engine.materials`, so these are
+     * material creations generation never sees at a call site. Every caster
+     * takes a handle; only a scene-code PBR one needs a composed row, since
+     * a PBR view resolves its variant by material HANDLE and a handle the
+     * table never named resolves nothing. The Standard family keys on
+     * feature bits and reads `no_color` off the record instead.
+     *
+     * The mesh row rides along because the view composes over that mesh's
+     * own attribute set and no other: a caster view is drawn on its casters
+     * and nowhere else, which is the same narrowing the pin gets for free
+     * by composing per renderable.
+     */
+    casters: ShadowCasterManifest[];
+    /**
+     * At least one caster travels through a runtime mesh array. Composition
+     * therefore closes the pass over source material families/mesh feature
+     * sets rather than pretending one creation-site row is one mesh handle.
+     */
+    dynamicCasters?: true;
 }
 
 /**
@@ -321,20 +327,20 @@ export interface ShadowGeneratorManifest {
  * group 0 holds and this manifest is that descriptor, read once.
  */
 export interface EffectBindingManifest {
-  /** The descriptor's own `name`, or "" when it declared none. */
-  name: string;
-  binding: number;
-  kind: "uniform" | "texture" | "sampler";
-  /** `uniformByteLength` after the pin's align4; 0 for the other kinds. */
-  uniformBytes: number;
-  /**
-   * For a sampler: which texture slot it samples through, as a position in
-   * the declared texture list rather than as a binding number. The pin
-   * resolves `textureBinding` against its slots and falls back to the first
-   * one, so both the lookup and the fallback happen here and each backend
-   * indexes its uploaded textures directly. -1 on the other kinds.
-   */
-  texture: number;
+    /** The descriptor's own `name`, or "" when it declared none. */
+    name: string;
+    binding: number;
+    kind: "uniform" | "texture" | "sampler";
+    /** `uniformByteLength` after the pin's align4; 0 for the other kinds. */
+    uniformBytes: number;
+    /**
+     * For a sampler: which texture slot it samples through, as a position in
+     * the declared texture list rather than as a binding number. The pin
+     * resolves `textureBinding` against its slots and falls back to the first
+     * one, so both the lookup and the fallback happen here and each backend
+     * indexes its uploaded textures directly. -1 on the other kinds.
+     */
+    texture: number;
 }
 
 /**
@@ -347,22 +353,22 @@ export interface EffectBindingManifest {
  * restating.
  */
 export interface EffectManifest {
-  /** Which pinned API owns this wrapper's fullscreen-pass contract. */
-  family: "effect" | "uniform-effect";
-  name: string;
-  fragment: string;
-  bindings: EffectBindingManifest[];
+    /** Which pinned API owns this wrapper's fullscreen-pass contract. */
+    family: "effect" | "uniform-effect";
+    name: string;
+    fragment: string;
+    bindings: EffectBindingManifest[];
 }
 
 export interface SpriteCustomShaderManifest {
-  family: "sprite" | "billboard";
-  fragment: string;
-  /**
-   * The identifiers the caller's WGSL samples the extra textures through,
-   * in binding order. The pin splices each into a `<name>Tex` /
-   * `<name>Samp` pair ahead of the fx block.
-   */
-  extraTextures: string[];
+    family: "sprite" | "billboard";
+    fragment: string;
+    /**
+     * The identifiers the caller's WGSL samples the extra textures through,
+     * in binding order. The pin splices each into a `<name>Tex` /
+     * `<name>Samp` pair ahead of the fx block.
+     */
+    extraTextures: string[];
 }
 
 /**
@@ -372,83 +378,83 @@ export interface SpriteCustomShaderManifest {
  * explicitly rather than deriving their row from a physical mesh handle.
  */
 export interface SceneMeshManifest {
-  kind: string;
-  gltfAssetsBefore: number;
-  /** A call-site attribute profile instantiated zero or more times natively. */
-  runtimeInstances?: true;
-  /** This creation site is assigned a scene-code Standard material. */
-  standardMaterial?: true;
-  /** The 1-based Standard plugin signature assigned to this mesh. */
-  standardMaterialPluginIndex?: number;
-  /** A material read from an asset mesh can be assigned to this row. */
-  assetPbrMaterial?: true;
-  /**
-   * The container a PROVEN whole-list flatten is walking, on the member it
-   * bound and on what is read off that member.
-   *
-   * A loaded material has no compile-time identity of its own, so a setter
-   * reaching one can only name the document its container composes. That is
-   * sound only when the loop is known to reach every renderable, which is
-   * why this rides the flatten walk's own binding and not the generic
-   * collection loop: `getContainerMeshes(a)` bound to a variable, or
-   * `a.meshes ?? []`, iterate the same handles without that proof.
-   */
-  assetWholeMeshList?: CompileAsset;
-  /** For `from-data` meshes: which optional streams the call passes, in
-   *  the pin's own argument order (uvs, uv2s, tangents, colors). */
-  hasUv2?: boolean;
-  hasTangents?: boolean;
-  hasColors?: boolean;
-  /**
-   * `mesh.skeleton = createSkeleton(...)` reached this row.
-   *
-   * The pin's `_computeMeshFeatures` reads the mesh's own `skeleton` for
-   * MSH_HAS_SKELETON. A glTF primitive answers it from its node's `skin`,
-   * which is why `pinnedMeshFeaturesFromPrimitive` takes it as an option;
-   * a scene-code mesh has no primitive, so the assignment records it here
-   * and the compose pipeline executes the mesh predicate on that shape.
-   */
-  skinned?: true;
-  /** A definite scene-code `mesh.morphTargets` attachment on this row. */
-  morphTargets?: true;
-  /**
-   * At least one of those streams was handed a value the data model holds
-   * as `Float32Array | undefined`, so which attributes this mesh carries is
-   * a RUN-time answer.
-   *
-   * The three flags above then say only what generation could settle, which
-   * is not enough to compose a Standard or PBR variant for the mesh — those
-   * key on the attribute set. The node family needs no such key (its
-   * `MeshAttributeExistsBlock` reads a per-mesh uniform lane), so the
-   * refusal sits at the material assignment, where the pairing is known.
-   */
-  runtimeStreams?: true;
-  /** Whether this exact mesh reaches thin instancing before rendering, or
-   *  can acquire it later from a callback. */
-  thinInstances?: "always" | "possible";
-  /**
-   * Whether an `enableThinInstanceGpuCulling` that can turn the pin's
-   * `_gpuCullingEnabled` ON has already been lowered for this mesh. A
-   * statically-`false` opt-in on a mesh without one is the pin's own
-   * idempotent early return, so it lowers to nothing.
-   */
-  thinInstanceGpuCulling?: true;
-  /** Whether the mesh also carries the per-instance RGBA stream. */
-  thinInstanceColors?: true;
-  /**
-   * The scene-local shader variant this mesh was assigned, by name.
-   *
-   * The pin decides a ShaderMaterial's instanced form mostly from the MESH:
-   * `hasColor` is `!!ti.colors && material._tic != 0`, so the mesh's stream
-   * decides and the material only opts out (a key this port refuses, so the
-   * mesh decides outright). Either way it cannot be settled where the
-   * material is created -- that precedes both the assignment and the
-   * instances -- so the pair is recorded and settled once, after the entry,
-   * in either source order.
-   */
-  shaderVariant?: string;
-  /** Scene-local programs selected dynamically for this composition row. */
-  shaderVariants?: readonly string[];
+    kind: string;
+    gltfAssetsBefore: number;
+    /** A call-site attribute profile instantiated zero or more times natively. */
+    runtimeInstances?: true;
+    /** This creation site is assigned a scene-code Standard material. */
+    standardMaterial?: true;
+    /** The 1-based Standard plugin signature assigned to this mesh. */
+    standardMaterialPluginIndex?: number;
+    /** A material read from an asset mesh can be assigned to this row. */
+    assetPbrMaterial?: true;
+    /**
+     * The container a PROVEN whole-list flatten is walking, on the member it
+     * bound and on what is read off that member.
+     *
+     * A loaded material has no compile-time identity of its own, so a setter
+     * reaching one can only name the document its container composes. That is
+     * sound only when the loop is known to reach every renderable, which is
+     * why this rides the flatten walk's own binding and not the generic
+     * collection loop: `getContainerMeshes(a)` bound to a variable, or
+     * `a.meshes ?? []`, iterate the same handles without that proof.
+     */
+    assetWholeMeshList?: CompileAsset;
+    /** For `from-data` meshes: which optional streams the call passes, in
+     *  the pin's own argument order (uvs, uv2s, tangents, colors). */
+    hasUv2?: boolean;
+    hasTangents?: boolean;
+    hasColors?: boolean;
+    /**
+     * `mesh.skeleton = createSkeleton(...)` reached this row.
+     *
+     * The pin's `_computeMeshFeatures` reads the mesh's own `skeleton` for
+     * MSH_HAS_SKELETON. A glTF primitive answers it from its node's `skin`,
+     * which is why `pinnedMeshFeaturesFromPrimitive` takes it as an option;
+     * a scene-code mesh has no primitive, so the assignment records it here
+     * and the compose pipeline executes the mesh predicate on that shape.
+     */
+    skinned?: true;
+    /** A definite scene-code `mesh.morphTargets` attachment on this row. */
+    morphTargets?: true;
+    /**
+     * At least one of those streams was handed a value the data model holds
+     * as `Float32Array | undefined`, so which attributes this mesh carries is
+     * a RUN-time answer.
+     *
+     * The three flags above then say only what generation could settle, which
+     * is not enough to compose a Standard or PBR variant for the mesh — those
+     * key on the attribute set. The node family needs no such key (its
+     * `MeshAttributeExistsBlock` reads a per-mesh uniform lane), so the
+     * refusal sits at the material assignment, where the pairing is known.
+     */
+    runtimeStreams?: true;
+    /** Whether this exact mesh reaches thin instancing before rendering, or
+     *  can acquire it later from a callback. */
+    thinInstances?: "always" | "possible";
+    /**
+     * Whether an `enableThinInstanceGpuCulling` that can turn the pin's
+     * `_gpuCullingEnabled` ON has already been lowered for this mesh. A
+     * statically-`false` opt-in on a mesh without one is the pin's own
+     * idempotent early return, so it lowers to nothing.
+     */
+    thinInstanceGpuCulling?: true;
+    /** Whether the mesh also carries the per-instance RGBA stream. */
+    thinInstanceColors?: true;
+    /**
+     * The scene-local shader variant this mesh was assigned, by name.
+     *
+     * The pin decides a ShaderMaterial's instanced form mostly from the MESH:
+     * `hasColor` is `!!ti.colors && material._tic != 0`, so the mesh's stream
+     * decides and the material only opts out (a key this port refuses, so the
+     * mesh decides outright). Either way it cannot be settled where the
+     * material is created -- that precedes both the assignment and the
+     * instances -- so the pair is recorded and settled once, after the entry,
+     * in either source order.
+     */
+    shaderVariant?: string;
+    /** Scene-local programs selected dynamically for this composition row. */
+    shaderVariants?: readonly string[];
 }
 
 /**
@@ -463,31 +469,31 @@ export interface SceneMeshManifest {
  *  computes at runtime stay in emitted C++ and are absent here, so composition
  *  replays the pinned writer's own defaults instead of inventing a number. */
 export interface ScenePbrSheenManifest {
-  isEnabled: boolean;
-  color?: readonly [number, number, number];
-  roughness?: number;
-  intensity?: number;
-  hasTexture: boolean;
-  albedoScaling: boolean;
+    isEnabled: boolean;
+    color?: readonly [number, number, number];
+    roughness?: number;
+    intensity?: number;
+    hasTexture: boolean;
+    albedoScaling: boolean;
 }
 
 /** The `setPbrClearCoat` options a scene stamps on a material. Runtime-computed
  *  numbers are absent for the same pinned-default convention as anisotropy. */
 export interface ScenePbrClearCoatManifest {
-  isEnabled: boolean;
-  intensity?: number;
-  roughness?: number;
-  indexOfRefraction?: number;
+    isEnabled: boolean;
+    intensity?: number;
+    roughness?: number;
+    indexOfRefraction?: number;
 }
 
 /** The `setPbrIridescence` options a scene stamps on a material. Runtime-
  *  computed numbers are absent for the pinned writer to default. */
 export interface ScenePbrIridescenceManifest {
-  isEnabled: boolean;
-  intensity?: number;
-  indexOfRefraction?: number;
-  minimumThickness?: number;
-  maximumThickness?: number;
+    isEnabled: boolean;
+    intensity?: number;
+    indexOfRefraction?: number;
+    minimumThickness?: number;
+    maximumThickness?: number;
 }
 
 /**
@@ -503,12 +509,12 @@ export interface ScenePbrIridescenceManifest {
  * compose which fragment.
  */
 export type SceneMeshNamePredicate =
-  | { kind: "always" }
-  | { kind: "equals"; value: string }
-  | { kind: "startsWith"; value: string }
-  | { kind: "not"; operand: SceneMeshNamePredicate }
-  | { kind: "and"; operands: readonly SceneMeshNamePredicate[] }
-  | { kind: "or"; operands: readonly SceneMeshNamePredicate[] };
+    | { kind: "always" }
+    | { kind: "equals"; value: string }
+    | { kind: "startsWith"; value: string }
+    | { kind: "not"; operand: SceneMeshNamePredicate }
+    | { kind: "and"; operands: readonly SceneMeshNamePredicate[] }
+    | { kind: "or"; operands: readonly SceneMeshNamePredicate[] };
 
 /**
  * The `setPbrLightmap` call a scene stamped on a material.
@@ -521,31 +527,31 @@ export type SceneMeshNamePredicate =
  * it rides the record rather than this manifest.
  */
 export interface ScenePbrLightmapManifest {
-  /** 0 = TEXCOORD_0, 1 = TEXCOORD_1; the pin's own `?? 1` already applied. */
-  coordIndex: 0 | 1;
-  /** `useLightmapAsShadowmap`: multiply the shaded colour instead of adding. */
-  useAsShadowmap: boolean;
-  /** `gammaLightmap`: decode the sample from sRGB before composition. */
-  gamma: boolean;
-  /**
-   * The `Texture2D` halves the extension's own V-flip test reads:
-   * `!!tex.invertY !== (tex.uAng === Math.PI)`. Both are folded at the
-   * write sites rather than at the setter, because a scene writes `uAng`
-   * on the texture object and the pin reads it back here.
-   */
-  textureInvertY: boolean;
-  textureUAng: number;
+    /** 0 = TEXCOORD_0, 1 = TEXCOORD_1; the pin's own `?? 1` already applied. */
+    coordIndex: 0 | 1;
+    /** `useLightmapAsShadowmap`: multiply the shaded colour instead of adding. */
+    useAsShadowmap: boolean;
+    /** `gammaLightmap`: decode the sample from sRGB before composition. */
+    gamma: boolean;
+    /**
+     * The `Texture2D` halves the extension's own V-flip test reads:
+     * `!!tex.invertY !== (tex.uAng === Math.PI)`. Both are folded at the
+     * write sites rather than at the setter, because a scene writes `uAng`
+     * on the texture object and the pin reads it back here.
+     */
+    textureInvertY: boolean;
+    textureUAng: number;
 }
 
 /** The reached `setPbrSubsurface` translucency slice. Texture presence is
  *  enough for composition; the static values feed the pin's own UBO writer. */
 export interface ScenePbrSubsurfaceManifest {
-  intensity: number;
-  color: readonly [number, number, number];
-  diffusionDistance: readonly [number, number, number];
-  hasThicknessTexture: boolean;
-  minimumThickness: number;
-  maximumThickness: number;
+    intensity: number;
+    color: readonly [number, number, number];
+    diffusionDistance: readonly [number, number, number];
+    hasThicknessTexture: boolean;
+    minimumThickness: number;
+    maximumThickness: number;
 }
 
 /**
@@ -554,11 +560,11 @@ export interface ScenePbrSubsurfaceManifest {
  * A texture carries the extension's second feature bit and is refused.
  */
 export interface ScenePbrAnisotropyManifest {
-  isEnabled: boolean;
-  /** Absent where the scene computes it; the composition then replays the
-   *  pin's own default, as its writer's `?? 1.0` would. */
-  intensity?: number;
-  direction: readonly [number, number];
+    isEnabled: boolean;
+    /** Absent where the scene computes it; the composition then replays the
+     *  pin's own default, as its writer's `?? 1.0` would. */
+    intensity?: number;
+    direction: readonly [number, number];
 }
 
 /**
@@ -567,134 +573,138 @@ export interface ScenePbrAnisotropyManifest {
  * an empty setter call is therefore distinct from no call.
  */
 export interface ScenePbrMetallicReflectanceManifest {
-  /** Whether the setter supplied a colour. The exact tuple is optional:
-   *  mapped materials compose from texture presence alone, while their
-   *  runtime colour expression is preserved in emitted C++. */
-  hasColor: boolean;
-  color?: readonly [number, number, number];
-  hasMetallicTexture: boolean;
-  hasReflectanceTexture: boolean;
-  useOnlyMetallicFromTexture?: boolean;
+    /** Whether the setter supplied a colour. The exact tuple is optional:
+     *  mapped materials compose from texture presence alone, while their
+     *  runtime colour expression is preserved in emitted C++. */
+    hasColor: boolean;
+    color?: readonly [number, number, number];
+    hasMetallicTexture: boolean;
+    hasReflectanceTexture: boolean;
+    useOnlyMetallicFromTexture?: boolean;
 }
 
 export interface ScenePbrMaterialManifest {
-  localCubemapCandidates?: number;
-  /**
-   * How many scene-code materials of any family the program had created
-   * when this one was, so the runtime handle is
-   * glTF-materials + this. Standard, grid and shader materials share the
-   * same handle sequence.
-   */
-  materialsBefore: number;
-  /** The source material slot for a no-colour/ESM view. */
-  sourceMaterialsBefore?: number;
-  /** Stamped by the pin's `setPbrUnlit`: `mat._unlit = true`. */
-  unlit?: boolean;
-  /** Stamped by the pin's `setPbrSkybox`: `mat._skyboxMode = true`. */
-  skyboxMode?: boolean;
-  /** A `createPbrNoColorMaterialView` of the scene material before it:
-   *  the same record with the pin's `PBR2_NO_COLOR_OUTPUT` bit, drawn by
-   *  the depth-only render tasks. */
-  noColorView?: boolean;
-  /** The ESM caster's view: the no-colour view's sibling bit. */
-  esmShadowView?: boolean;
-  /**
-   * The attribute sets this material's variants compose over, when they
-   * are fewer than the scene's.
-   *
-   * A scene-code material can be assigned to any renderable, so by
-   * default the composition covers every distinct set in the scene. A
-   * shadow caster's no-colour view is the exception: it is drawn on its
-   * own caster and nowhere else, so composing it against the scene's
-   * whole product deploys stage pairs no draw can select.
-   */
-  meshFeatureSets?: readonly number[];
-  /** Exact scene-mesh creation rows this material can be assigned to.
-   *  Composition converts them to the pin's attribute masks. */
-  sceneMeshIndices?: readonly number[];
-  /** At least one assignment targets a mesh whose identity is not static,
-   *  so the exact rows above cannot close the material's mesh space. */
-  unknownSceneMesh?: true;
-  /** Stamped by the pin's own setter shape: `mat._sheen = sheen`. */
-  sheen?: ScenePbrSheenManifest;
-  /** Stamped by the pin's own setter shape: `mat._clearCoat = clearCoat`. */
-  clearCoat?: ScenePbrClearCoatManifest;
-  /** Stamped by the pin's own setter shape: `mat._iridescence = iridescence`. */
-  iridescence?: ScenePbrIridescenceManifest;
-  /** Stamped by `setPbrLightmap`: the texture, its blend and its UV set. */
-  lightmap?: ScenePbrLightmapManifest;
-  /** Stamped by `setPbrSubsurface`: `mat._subsurface = subsurface`. */
-  subsurface?: ScenePbrSubsurfaceManifest;
-  /** Stamped by the pin's own setter shape: `mat._anisotropy = anisotropy`. */
-  anisotropy?: ScenePbrAnisotropyManifest;
-  /** Stamped by the pin's `setPbrMetallicReflectance` setter. */
-  metallicReflectance?: ScenePbrMetallicReflectanceManifest;
-  /**
-   * Whether `setPbrEmissive` stamped the pin's `_emissiveColor` field. Its
-   * presence is the composition input; the channel values remain runtime
-   * data and need not be statically known.
-   */
-  hasEmissiveColor?: true;
-  /** The exact linear RGB channels when generation can also settle them. */
-  emissiveColor?: readonly number[];
-  /**
-   * How many glTF assets the program had loaded when this material was
-   * created. The runtime keys the variant table by material handle, which
-   * is creation order, so a scene material created after every load simply
-   * appends to the assets' materials; one created before a load would
-   * interleave, which no reached scene does.
-   */
-  gltfAssetsBefore: number;
-  hasBaseColorTexture: boolean;
-  /**
-   * Present only when scene code authored the option. The pin composes the
-   * base-color-factor UBO field from property presence, including when the
-   * value happens to be neutral white.
-   */
-  baseColorFactor?: readonly [number, number, number, number];
-  /** Present array whose contents remain runtime UBO data. */
-  baseColorFactorRuntime?: true;
-  hasOrmTexture: boolean;
-  metallicFactor: number;
-  roughnessFactor: number;
-  directIntensity: number;
-  environmentIntensity: number;
-  alpha: number;
-  /** Explicit `alphaBlend: true`; alpha below one is derived separately. */
-  alphaBlend?: true;
-  reflectance: number;
-  /** A non-default value for the pin's `occlusionStrength ?? 1.0`. */
-  occlusionStrength?: number;
-  /** A non-default internal `_metallicF0Factor ?? 1.0` creation value. */
-  metallicF0Factor?: number;
-  /** The pin's opt-in geometric-normal derivative roughness floor. */
-  enableSpecularAA?: boolean;
-  /**
-   * Present only when the scene turned the pin's default-true
-   * `usePhysicalLightFalloff` off, which is the shape `_writeMaterialData`
-   * reads (`=== false ? 0 : 1`). It selects a punctual arm at run time and
-   * composes nothing, so it rides the manifest for the record rather than
-   * for the composer.
-   */
-  usePhysicalLightFalloff?: false;
-  /**
-   * `material.plugins = [...]`, folded. The pin's PBR bridge reads the
-   * list off the material in its own `detect`, so the composed input
-   * carries the plugins themselves rather than an index.
-   */
-  plugins?: readonly MaterialPluginManifest[];
-  /**
-   * Stamped by the pin's `setPbrGammaAlbedo`: `mat._gammaAlbedo = true`,
-   * which the gamma extension's `detect` turns into
-   * `PBR_HAS_GAMMA_ALBEDO` and the base template's decode slot turns into
-   * `pow(baseColorSample.rgb, 2.2)`.
-   */
-  gammaAlbedo?: boolean;
-  shadowOnly?: { color: readonly [number, number, number]; opacity: number; falloff: number };
-  doubleSided: boolean;
-  transmission: number;
-  ior: number;
-  thickness: number;
+    localCubemapCandidates?: number;
+    /**
+     * How many scene-code materials of any family the program had created
+     * when this one was, so the runtime handle is
+     * glTF-materials + this. Standard, grid and shader materials share the
+     * same handle sequence.
+     */
+    materialsBefore: number;
+    /** The source material slot for a no-colour/ESM view. */
+    sourceMaterialsBefore?: number;
+    /** Stamped by the pin's `setPbrUnlit`: `mat._unlit = true`. */
+    unlit?: boolean;
+    /** Stamped by the pin's `setPbrSkybox`: `mat._skyboxMode = true`. */
+    skyboxMode?: boolean;
+    /** A `createPbrNoColorMaterialView` of the scene material before it:
+     *  the same record with the pin's `PBR2_NO_COLOR_OUTPUT` bit, drawn by
+     *  the depth-only render tasks. */
+    noColorView?: boolean;
+    /** The ESM caster's view: the no-colour view's sibling bit. */
+    esmShadowView?: boolean;
+    /**
+     * The attribute sets this material's variants compose over, when they
+     * are fewer than the scene's.
+     *
+     * A scene-code material can be assigned to any renderable, so by
+     * default the composition covers every distinct set in the scene. A
+     * shadow caster's no-colour view is the exception: it is drawn on its
+     * own caster and nowhere else, so composing it against the scene's
+     * whole product deploys stage pairs no draw can select.
+     */
+    meshFeatureSets?: readonly number[];
+    /** Exact scene-mesh creation rows this material can be assigned to.
+     *  Composition converts them to the pin's attribute masks. */
+    sceneMeshIndices?: readonly number[];
+    /** At least one assignment targets a mesh whose identity is not static,
+     *  so the exact rows above cannot close the material's mesh space. */
+    unknownSceneMesh?: true;
+    /** Stamped by the pin's own setter shape: `mat._sheen = sheen`. */
+    sheen?: ScenePbrSheenManifest;
+    /** Stamped by the pin's own setter shape: `mat._clearCoat = clearCoat`. */
+    clearCoat?: ScenePbrClearCoatManifest;
+    /** Stamped by the pin's own setter shape: `mat._iridescence = iridescence`. */
+    iridescence?: ScenePbrIridescenceManifest;
+    /** Stamped by `setPbrLightmap`: the texture, its blend and its UV set. */
+    lightmap?: ScenePbrLightmapManifest;
+    /** Stamped by `setPbrSubsurface`: `mat._subsurface = subsurface`. */
+    subsurface?: ScenePbrSubsurfaceManifest;
+    /** Stamped by the pin's own setter shape: `mat._anisotropy = anisotropy`. */
+    anisotropy?: ScenePbrAnisotropyManifest;
+    /** Stamped by the pin's `setPbrMetallicReflectance` setter. */
+    metallicReflectance?: ScenePbrMetallicReflectanceManifest;
+    /**
+     * Whether `setPbrEmissive` stamped the pin's `_emissiveColor` field. Its
+     * presence is the composition input; the channel values remain runtime
+     * data and need not be statically known.
+     */
+    hasEmissiveColor?: true;
+    /** The exact linear RGB channels when generation can also settle them. */
+    emissiveColor?: readonly number[];
+    /**
+     * How many glTF assets the program had loaded when this material was
+     * created. The runtime keys the variant table by material handle, which
+     * is creation order, so a scene material created after every load simply
+     * appends to the assets' materials; one created before a load would
+     * interleave, which no reached scene does.
+     */
+    gltfAssetsBefore: number;
+    hasBaseColorTexture: boolean;
+    /**
+     * Present only when scene code authored the option. The pin composes the
+     * base-color-factor UBO field from property presence, including when the
+     * value happens to be neutral white.
+     */
+    baseColorFactor?: readonly [number, number, number, number];
+    /** Present array whose contents remain runtime UBO data. */
+    baseColorFactorRuntime?: true;
+    hasOrmTexture: boolean;
+    metallicFactor: number;
+    roughnessFactor: number;
+    directIntensity: number;
+    environmentIntensity: number;
+    alpha: number;
+    /** Explicit `alphaBlend: true`; alpha below one is derived separately. */
+    alphaBlend?: true;
+    reflectance: number;
+    /** A non-default value for the pin's `occlusionStrength ?? 1.0`. */
+    occlusionStrength?: number;
+    /** A non-default internal `_metallicF0Factor ?? 1.0` creation value. */
+    metallicF0Factor?: number;
+    /** The pin's opt-in geometric-normal derivative roughness floor. */
+    enableSpecularAA?: boolean;
+    /**
+     * Present only when the scene turned the pin's default-true
+     * `usePhysicalLightFalloff` off, which is the shape `_writeMaterialData`
+     * reads (`=== false ? 0 : 1`). It selects a punctual arm at run time and
+     * composes nothing, so it rides the manifest for the record rather than
+     * for the composer.
+     */
+    usePhysicalLightFalloff?: false;
+    /**
+     * `material.plugins = [...]`, folded. The pin's PBR bridge reads the
+     * list off the material in its own `detect`, so the composed input
+     * carries the plugins themselves rather than an index.
+     */
+    plugins?: readonly MaterialPluginManifest[];
+    /**
+     * Stamped by the pin's `setPbrGammaAlbedo`: `mat._gammaAlbedo = true`,
+     * which the gamma extension's `detect` turns into
+     * `PBR_HAS_GAMMA_ALBEDO` and the base template's decode slot turns into
+     * `pow(baseColorSample.rgb, 2.2)`.
+     */
+    gammaAlbedo?: boolean;
+    shadowOnly?: {
+        color: readonly [number, number, number];
+        opacity: number;
+        falloff: number;
+    };
+    doubleSided: boolean;
+    transmission: number;
+    ior: number;
+    thickness: number;
 }
 
 /**
@@ -705,80 +715,80 @@ export interface ScenePbrMaterialManifest {
  * uniform defaults the pinned createShaderMaterial applies at creation.
  */
 export interface CompiledShaderProgram {
-  name: string;
-  vertexSource: string;
-  fragmentSource: string;
-  attributes: string[];
-  uniforms: string[];
-  uniformDefaults: CompiledShaderUniformDefault[];
-  /**
-   * The `samplers` list: each name reaches WGSL as the pin's own
-   * `<name>` / `<name>Sampler` texture-and-sampler pair, and
-   * `setShaderTexture` binds by the index it has here.
-   */
-  samplers: string[];
-  /** The normalized sampler shapes parallel to `samplers`. */
-  samplerDeclarations: CompiledShaderSampler[];
-  /** Read-only storage bindings in declaration order. */
-  storageBuffers: CompiledShaderStorageBuffer[];
-  /**
-   * The `defines` map, normalized into the pin's own sorted
-   * `ShaderDefine[]`. Each becomes a module-scope WGSL `const` in both
-   * stages' prelude, which is why it is part of the program's identity
-   * rather than per-draw state: the pin keys its pipeline cache on the
-   * define set too, and nothing at run time can change one.
-   */
-  defines: CompiledShaderDefine[];
-  needAlphaBlending: boolean;
-  /** The pin's fixed-function blend equation when alpha blending is enabled. */
-  blendMode: "alpha" | "additive";
-  needAlphaTesting: boolean;
-  backFaceCulling: boolean;
-  depthWrite: boolean;
-  /** Explicit material compare; absent uses the pinned pass convention. */
-  depthCompare?: string;
-  /**
-   * The pin's own `_topology`, absent where it resolves
-   * `material._topology ?? "triangle-list"`. A line material is the one
-   * reached program that names one, and it names the primitive the
-   * pipeline is built at rather than anything about the program's text.
-   */
-  topology?: "line-list";
-  /**
-   * `useThinInstances`: the material draws through the mesh's
-   * thin-instance matrices, which the pin's own thin-instance module
-   * appends to its `VertexInput` as four lanes the vertex stage reads.
-   */
-  useThinInstances?: boolean;
-  /**
-   * `useThinInstanceColors`: the material binds the mesh's per-instance
-   * RGBA stream and its vertex stage reads `input.instanceColor`. Part of
-   * the program's identity, because the attribute is declared in the
-   * prelude the stage compiles against.
-   */
-  useThinInstanceColors?: boolean;
+    name: string;
+    vertexSource: string;
+    fragmentSource: string;
+    attributes: string[];
+    uniforms: string[];
+    uniformDefaults: CompiledShaderUniformDefault[];
+    /**
+     * The `samplers` list: each name reaches WGSL as the pin's own
+     * `<name>` / `<name>Sampler` texture-and-sampler pair, and
+     * `setShaderTexture` binds by the index it has here.
+     */
+    samplers: string[];
+    /** The normalized sampler shapes parallel to `samplers`. */
+    samplerDeclarations: CompiledShaderSampler[];
+    /** Read-only storage bindings in declaration order. */
+    storageBuffers: CompiledShaderStorageBuffer[];
+    /**
+     * The `defines` map, normalized into the pin's own sorted
+     * `ShaderDefine[]`. Each becomes a module-scope WGSL `const` in both
+     * stages' prelude, which is why it is part of the program's identity
+     * rather than per-draw state: the pin keys its pipeline cache on the
+     * define set too, and nothing at run time can change one.
+     */
+    defines: CompiledShaderDefine[];
+    needAlphaBlending: boolean;
+    /** The pin's fixed-function blend equation when alpha blending is enabled. */
+    blendMode: "alpha" | "additive";
+    needAlphaTesting: boolean;
+    backFaceCulling: boolean;
+    depthWrite: boolean;
+    /** Explicit material compare; absent uses the pinned pass convention. */
+    depthCompare?: string;
+    /**
+     * The pin's own `_topology`, absent where it resolves
+     * `material._topology ?? "triangle-list"`. A line material is the one
+     * reached program that names one, and it names the primitive the
+     * pipeline is built at rather than anything about the program's text.
+     */
+    topology?: "line-list";
+    /**
+     * `useThinInstances`: the material draws through the mesh's
+     * thin-instance matrices, which the pin's own thin-instance module
+     * appends to its `VertexInput` as four lanes the vertex stage reads.
+     */
+    useThinInstances?: boolean;
+    /**
+     * `useThinInstanceColors`: the material binds the mesh's per-instance
+     * RGBA stream and its vertex stage reads `input.instanceColor`. Part of
+     * the program's identity, because the attribute is declared in the
+     * prelude the stage compiles against.
+     */
+    useThinInstanceColors?: boolean;
 }
 
 export interface CompiledShaderSampler {
-  name: string;
-  sampleType: "float" | "unfilterable-float" | "depth";
-  viewDimension: "2d" | "2d-array";
-  comparison: boolean;
+    name: string;
+    sampleType: "float" | "unfilterable-float" | "depth";
+    viewDimension: "2d" | "2d-array";
+    comparison: boolean;
 }
 
 export interface CompiledShaderStorageBuffer {
-  name: string;
-  type: string;
+    name: string;
+    type: string;
 }
 
 export interface CompiledShaderDefine {
-  name: string;
-  value: boolean | number;
+    name: string;
+    value: boolean | number;
 }
 
 export interface CompiledShaderUniformDefault {
-  name: string;
-  values: number[];
+    name: string;
+    values: number[];
 }
 
 /**
@@ -803,64 +813,64 @@ export interface CompiledShaderUniformDefault {
  * Standard and PBR receivers key their composition by.
  */
 export interface NodeShadowLight {
-  lightIndex: number;
-  /**
-   * Its `shadowGenerators` row.
-   *
-   * The FILTER is not carried: `pinnedShadowFilter` reads it off the
-   * pinned factory the row's kind names, and composition asks it there --
-   * so a generator family added without a receiver arm fails by name
-   * instead of being classified here as the one it is not.
-   */
-  generatorIndex: number;
+    lightIndex: number;
+    /**
+     * Its `shadowGenerators` row.
+     *
+     * The FILTER is not carried: `pinnedShadowFilter` reads it off the
+     * pinned factory the row's kind names, and composition asks it there --
+     * so a generator family added without a receiver arm fails by name
+     * instead of being classified here as the one it is not.
+     */
+    generatorIndex: number;
 }
 
 /** One arm of a statically validated custom node-material block loader. */
 export interface NodeMaterialBlockEmitter {
-  /** The serialized graph class name the loader switch matches. */
-  className: string;
-  /** Pinned-package `lib`-relative module exporting `emitter`. */
-  module: string;
+    /** The serialized graph class name the loader switch matches. */
+    className: string;
+    /** Pinned-package `lib`-relative module exporting `emitter`. */
+    module: string;
 }
 
 export type CompiledNodeMaterial = {
-  /**
-   * The binding names the scene supplied textures for.
-   *
-   * The names are the graph's own, so they belong to the graph rather
-   * than to the call: composition checks this set against the bindings
-   * the pin's own compiler declared, which is the check upstream makes
-   * at the first render instead.
-   */
-  textureNames: readonly string[];
-  /**
-   * The shadow generators the call named, as the pin reads them.
-   *
-   * `parseNodeMaterialFromSnippet` takes `shadowGenerators` plus the
-   * `scene.lights` index of each one's light, and reads nothing off a
-   * generator but its `_shadowType` — so what travels is that filter
-   * and the index, which is also what the composed fragment names its
-   * bindings and varyings by. Empty for a material that receives no
-   * shadow, which composes exactly what it always did.
-   */
-  shadowLights: readonly NodeShadowLight[];
-  /**
-   * The exact closed class-to-emitter map a scene-supplied blockLoader
-   * declares. With neither loader field set, composition uses the pin's
-   * default registry.
-   */
-  blockEmitters?: readonly NodeMaterialBlockEmitter[];
-  /** Execute the pin's geometry-aware loader, including its registry delegation. */
-  pinnedBlockLoader?: "geometry";
+    /**
+     * The binding names the scene supplied textures for.
+     *
+     * The names are the graph's own, so they belong to the graph rather
+     * than to the call: composition checks this set against the bindings
+     * the pin's own compiler declared, which is the check upstream makes
+     * at the first render instead.
+     */
+    textureNames: readonly string[];
+    /**
+     * The shadow generators the call named, as the pin reads them.
+     *
+     * `parseNodeMaterialFromSnippet` takes `shadowGenerators` plus the
+     * `scene.lights` index of each one's light, and reads nothing off a
+     * generator but its `_shadowType` — so what travels is that filter
+     * and the index, which is also what the composed fragment names its
+     * bindings and varyings by. Empty for a material that receives no
+     * shadow, which composes exactly what it always did.
+     */
+    shadowLights: readonly NodeShadowLight[];
+    /**
+     * The exact closed class-to-emitter map a scene-supplied blockLoader
+     * declares. With neither loader field set, composition uses the pin's
+     * default registry.
+     */
+    blockEmitters?: readonly NodeMaterialBlockEmitter[];
+    /** Execute the pin's geometry-aware loader, including its registry delegation. */
+    pinnedBlockLoader?: "geometry";
 } & (
-  | { kind: "literal"; graph: Record<string, unknown> }
-  | {
-      kind: "module";
-      /** Repository-relative path of the module that builds the graph. */
-      module: string;
-      /** The exported binding whose value is the graph. */
-      exportName: string;
-    }
+    | { kind: "literal"; graph: Record<string, unknown> }
+    | {
+          kind: "module";
+          /** Repository-relative path of the module that builds the graph. */
+          module: string;
+          /** The exported binding whose value is the graph. */
+          exportName: string;
+      }
 );
 
 /**
@@ -879,13 +889,13 @@ export type CompiledNodeMaterial = {
  * sampler literals it passed, in the pin's own spelling.
  */
 export interface PixelsTextureSource {
-  /** `pixels:<module>#<export>`, the executed-module asset source. */
-  source: string;
-  /** The packaged asset's output name, as a native string literal. */
-  asset: string;
-  width: number;
-  height: number;
-  options: Record<string, string>;
+    /** `pixels:<module>#<export>`, the executed-module asset source. */
+    source: string;
+    /** The packaged asset's output name, as a native string literal. */
+    asset: string;
+    width: number;
+    height: number;
+    options: Record<string, string>;
 }
 
 /**
@@ -897,30 +907,30 @@ export interface PixelsTextureSource {
  * and the builder writes the call against its own parameter.
  */
 interface NodeParticleTextureAssignment extends PixelsTextureSource {
-  set: number;
-  system: number;
+    set: number;
+    system: number;
 }
 
 export interface CompiledNodeParticles extends Omit<
-  NodeParticleBakeRequest,
-  "sets" | "billboards" | "registrations"
+    NodeParticleBakeRequest,
+    "sets" | "billboards" | "registrations"
 > {
-  /** A reached wrapper emits its sampling callback even before a set is built. */
-  nativeProvider?: true;
-  sets: NodeParticleSetRequest[];
-  billboards: Array<{
-    set: number;
-    system: number;
-    /** Whether a `syncParticleBillboard` already wrote this one. */
-    synced?: boolean;
-  }>;
-  registrations: NodeParticleRegistration[];
-  /** Every `system.texture = ...` the scene wrote, in reach order. */
-  textures: NodeParticleTextureAssignment[];
-  /** Every pure-2D bridge registration, in reach order. */
-  sprite2d: NodeParticleSprite2DRequest[];
-  steps: NodeParticleStep[];
-  buffers: NodeParticleFrozenBufferRequest[];
+    /** A reached wrapper emits its sampling callback even before a set is built. */
+    nativeProvider?: true;
+    sets: NodeParticleSetRequest[];
+    billboards: Array<{
+        set: number;
+        system: number;
+        /** Whether a `syncParticleBillboard` already wrote this one. */
+        synced?: boolean;
+    }>;
+    registrations: NodeParticleRegistration[];
+    /** Every `system.texture = ...` the scene wrote, in reach order. */
+    textures: NodeParticleTextureAssignment[];
+    /** Every pure-2D bridge registration, in reach order. */
+    sprite2d: NodeParticleSprite2DRequest[];
+    steps: NodeParticleStep[];
+    buffers: NodeParticleFrozenBufferRequest[];
 }
 
 /**
@@ -929,138 +939,138 @@ export interface CompiledNodeParticles extends Omit<
  * the materialized asset whose document names the members.
  */
 export interface HandleCollectionInfo {
-  /** The property name as the source writes it (`animationGroups`). */
-  property: string;
-  /** The generated temporary's label, so emitted names stay stable. */
-  temporaryLabel: string;
-  /** The native vector expression the runtime loop iterates. */
-  containerCpp: string;
-  /** The element handle kind an iteration binds. */
-  elementKind: ValueKind;
-  /** The element's native type (`bbl::AnimationGroupHandle`). */
-  elementCppType: string;
-  engineCpp: string;
-  /**
-   * The materialized asset the collection came from. Present exactly for
-   * a loaded container's own collection; a scene-owned collection has no
-   * generation-known member list and keeps every operation runtime.
-   */
-  asset?: CompileAsset;
+    /** The property name as the source writes it (`animationGroups`). */
+    property: string;
+    /** The generated temporary's label, so emitted names stay stable. */
+    temporaryLabel: string;
+    /** The native vector expression the runtime loop iterates. */
+    containerCpp: string;
+    /** The element handle kind an iteration binds. */
+    elementKind: ValueKind;
+    /** The element's native type (`bbl::AnimationGroupHandle`). */
+    elementCppType: string;
+    engineCpp: string;
+    /**
+     * The materialized asset the collection came from. Present exactly for
+     * a loaded container's own collection; a scene-owned collection has no
+     * generation-known member list and keeps every operation runtime.
+     */
+    asset?: CompileAsset;
 }
 
 export interface CompileAsset {
-  /** Decoder setup from the realm that loads this asset. */
-  assetDecoders?: AssetDecoderConfiguration;
-  /** Indices into CompileManifest.meshWalks demanded for this asset. */
-  meshWalks?: number[];
-  /** Texture-loading modes reached by this Babylon asset's call sites. */
-  babylonTextureModes?: boolean[];
-  /** At least one definite load follows enableGltfCameras. */
-  gltfCameras?: boolean;
-  source: string;
-  output: string;
-  kind:
-    | "babylon"
-    | "dds-environment"
-    | "environment"
-    | "gltf"
-    | "hdr-environment"
-    // The two asset kinds whose source is scene-adjacent TypeScript run
-    // at compile time rather than a URL fetched and repacked: the
-    // sprite-atlas module draws its pixels with canvas2D, and a pixels
-    // module computes a texture's bytes outright.
-    | "sprite-atlas"
-    | "pixels"
-    // A Gaussian-splat container, packaged into the interchange row
-    // buffer the pin's own `.splat` files already are.
-    | "splat"
-    // The same interchange rows, out of the container `loadSPZ` reads.
-    // A separate kind because the pin has a separate loader for it and the
-    // call site is what selects one -- neither entry point sniffs the
-    // other's container -- and because that loader packages a rotation
-    // beside the rows.
-    | "spz"
-    // The same interchange rows again, out of the ZIP-of-WebPs container
-    // `loadSOG` reads. A third kind for the same two reasons the second is
-    // one: the call site selects the loader, and that loader packages a
-    // rotation beside the rows.
-    | "sog"
-    // A Basis Universal texture, transcoded by the pin's own loader at
-    // generation and packaged as a mip table with GPU blocks.
-    | "basis"
-    // Opaque bytes consumed by scene code through fetch().arrayBuffer().
-    // The compiler packages them unchanged and the native program reads
-    // the local payload synchronously through the PAL.
-    | "binary"
-    | "texture";
-  faceSize?: number;
-  /**
-   * The `KHR_materials_variants` name a scene's `selectVariant` chose on
-   * this asset. One static selection is the reached shape, so generation
-   * resolves which material each mapped primitive draws with instead of
-   * carrying the pin's run-time variant table.
-   */
-  selectedVariant?: string;
-  /**
-   * The `setPbrUnlit` a scene applied to this container's own materials,
-   * with the optional linear-RGB tint it passed.
-   *
-   * A loaded material has no scene-side record to stamp, so the fact is
-   * kept on the container: generation composes its materials from the
-   * document, and the unlit fragment is chosen there. The setter is
-   * accepted only over the container's whole flattened mesh list, which is
-   * what makes the fact the container's rather than one material's.
-   */
-  sceneUnlit?: { tint?: readonly [number, number, number] };
-  /**
-   * The `setPbrLightmap` a scene applied to this container's loaded
-   * materials from inside a mesh walk.
-   *
-   * Unlike `sceneUnlit` this is not container-wide: the reached walk
-   * selects its meshes by name, and a loaded material composes per glTF
-   * material index, so what travels is the walk's own predicate. The
-   * document is what evaluates it — generation knows every renderable's
-   * pinned mesh name and the material it draws with — so the selection is
-   * folded from the loop rather than guessed from the names.
-   */
-  sceneLightmap?: {
-    /** The walk's mesh-name filter, evaluated against the document. */
-    meshNamePredicate: SceneMeshNamePredicate;
-    /** Everything the pinned extension's `detect` reads. */
-    options: ScenePbrLightmapManifest;
-  };
-  /**
-   * How many `loadGltf` calls this record backs.
-   *
-   * Assets are keyed by source, so loading one URL twice yields two
-   * containers over one record. Anything generation stamps on the record
-   * therefore reaches both, which a per-container fact must refuse rather
-   * than silently widen.
-   */
-  containerCount?: number;
+    /** Decoder setup from the realm that loads this asset. */
+    assetDecoders?: AssetDecoderConfiguration;
+    /** Indices into CompileManifest.meshWalks demanded for this asset. */
+    meshWalks?: number[];
+    /** Texture-loading modes reached by this Babylon asset's call sites. */
+    babylonTextureModes?: boolean[];
+    /** At least one definite load follows enableGltfCameras. */
+    gltfCameras?: boolean;
+    source: string;
+    output: string;
+    kind:
+        | "babylon"
+        | "dds-environment"
+        | "environment"
+        | "gltf"
+        | "hdr-environment"
+        // The two asset kinds whose source is scene-adjacent TypeScript run
+        // at compile time rather than a URL fetched and repacked: the
+        // sprite-atlas module draws its pixels with canvas2D, and a pixels
+        // module computes a texture's bytes outright.
+        | "sprite-atlas"
+        | "pixels"
+        // A Gaussian-splat container, packaged into the interchange row
+        // buffer the pin's own `.splat` files already are.
+        | "splat"
+        // The same interchange rows, out of the container `loadSPZ` reads.
+        // A separate kind because the pin has a separate loader for it and the
+        // call site is what selects one -- neither entry point sniffs the
+        // other's container -- and because that loader packages a rotation
+        // beside the rows.
+        | "spz"
+        // The same interchange rows again, out of the ZIP-of-WebPs container
+        // `loadSOG` reads. A third kind for the same two reasons the second is
+        // one: the call site selects the loader, and that loader packages a
+        // rotation beside the rows.
+        | "sog"
+        // A Basis Universal texture, transcoded by the pin's own loader at
+        // generation and packaged as a mip table with GPU blocks.
+        | "basis"
+        // Opaque bytes consumed by scene code through fetch().arrayBuffer().
+        // The compiler packages them unchanged and the native program reads
+        // the local payload synchronously through the PAL.
+        | "binary"
+        | "texture";
+    faceSize?: number;
+    /**
+     * The `KHR_materials_variants` name a scene's `selectVariant` chose on
+     * this asset. One static selection is the reached shape, so generation
+     * resolves which material each mapped primitive draws with instead of
+     * carrying the pin's run-time variant table.
+     */
+    selectedVariant?: string;
+    /**
+     * The `setPbrUnlit` a scene applied to this container's own materials,
+     * with the optional linear-RGB tint it passed.
+     *
+     * A loaded material has no scene-side record to stamp, so the fact is
+     * kept on the container: generation composes its materials from the
+     * document, and the unlit fragment is chosen there. The setter is
+     * accepted only over the container's whole flattened mesh list, which is
+     * what makes the fact the container's rather than one material's.
+     */
+    sceneUnlit?: { tint?: readonly [number, number, number] };
+    /**
+     * The `setPbrLightmap` a scene applied to this container's loaded
+     * materials from inside a mesh walk.
+     *
+     * Unlike `sceneUnlit` this is not container-wide: the reached walk
+     * selects its meshes by name, and a loaded material composes per glTF
+     * material index, so what travels is the walk's own predicate. The
+     * document is what evaluates it — generation knows every renderable's
+     * pinned mesh name and the material it draws with — so the selection is
+     * folded from the loop rather than guessed from the names.
+     */
+    sceneLightmap?: {
+        /** The walk's mesh-name filter, evaluated against the document. */
+        meshNamePredicate: SceneMeshNamePredicate;
+        /** Everything the pinned extension's `detect` reads. */
+        options: ScenePbrLightmapManifest;
+    };
+    /**
+     * How many `loadGltf` calls this record backs.
+     *
+     * Assets are keyed by source, so loading one URL twice yields two
+     * containers over one record. Anything generation stamps on the record
+     * therefore reaches both, which a per-container fact must refuse rather
+     * than silently widen.
+     */
+    containerCount?: number;
 }
 
 export type GeometryTextureTypeName =
-  | "IRRADIANCE"
-  | "WORLD_POSITION"
-  | "LOCAL_POSITION"
-  | "REFLECTIVITY"
-  | "VIEW_DEPTH"
-  | "NORMALIZED_VIEW_DEPTH"
-  | "SCREENSPACE_DEPTH"
-  | "VIEW_NORMAL"
-  | "WORLD_NORMAL"
-  | "ALBEDO"
-  | "LINEAR_VELOCITY";
+    | "IRRADIANCE"
+    | "WORLD_POSITION"
+    | "LOCAL_POSITION"
+    | "REFLECTIVITY"
+    | "VIEW_DEPTH"
+    | "NORMALIZED_VIEW_DEPTH"
+    | "SCREENSPACE_DEPTH"
+    | "VIEW_NORMAL"
+    | "WORLD_NORMAL"
+    | "ALBEDO"
+    | "LINEAR_VELOCITY";
 
 export type ShaderMaterialVariantName = "alpha-card" | "circular-cutout";
 
 export type LightKind = "directional" | "hemispheric" | "point" | "spot";
 
 export interface GeometryOutputTaskManifest {
-  shaderIndex: number;
-  attachments: GeometryTextureTypeName[];
-  emitColor: boolean;
+    shaderIndex: number;
+    attachments: GeometryTextureTypeName[];
+    emitColor: boolean;
 }
 
 /**
@@ -1068,37 +1078,37 @@ export interface GeometryOutputTaskManifest {
  * options are the `{x, y}` pair the pinned configs are written with.
  */
 export type PostProcessOptionValue =
-  | number
-  | boolean
-  /**
-   * A string setting a composite forwards to the pass it ends on --
-   * `sourceSamplingMode` is the reached one. The framework consumes it
-   * for an ordinary pass, but from a composite's side it is config the
-   * pin reads itself, so it travels to the factory unread.
-   */
-  | string
-  | { x: number; y: number }
-  /**
-   * A normalized viewport, which a composite reads itself and forwards to
-   * the pass it ends on -- SMAA presents into half the swapchain that way.
-   * It is a distinct shape rather than a wider vector because the pin's
-   * vector options carry exactly `x` and `y`, and reducing this one to
-   * those two silently moved a half-screen pass to a full-screen one.
-   */
-  | { x: number; y: number; width: number; height: number }
-  /**
-   * A member of one of the pin's own enums, unresolved. Scene code writes
-   * `DepthOfFieldBlurLevel.High` and what that is worth is the pin's to
-   * say, so the name travels to composition and the pinned module answers
-   * it -- the value is never restated here.
-   */
-  | { pinnedEnum: string; member: string }
-  /**
-   * A numeric triple, which only a screen-space task reads: the contact
-   * shadows' `tint`. It travels whole to the pin's own factory like every
-   * other setting.
-   */
-  | readonly number[];
+    | number
+    | boolean
+    /**
+     * A string setting a composite forwards to the pass it ends on --
+     * `sourceSamplingMode` is the reached one. The framework consumes it
+     * for an ordinary pass, but from a composite's side it is config the
+     * pin reads itself, so it travels to the factory unread.
+     */
+    | string
+    | { x: number; y: number }
+    /**
+     * A normalized viewport, which a composite reads itself and forwards to
+     * the pass it ends on -- SMAA presents into half the swapchain that way.
+     * It is a distinct shape rather than a wider vector because the pin's
+     * vector options carry exactly `x` and `y`, and reducing this one to
+     * those two silently moved a half-screen pass to a full-screen one.
+     */
+    | { x: number; y: number; width: number; height: number }
+    /**
+     * A member of one of the pin's own enums, unresolved. Scene code writes
+     * `DepthOfFieldBlurLevel.High` and what that is worth is the pin's to
+     * say, so the name travels to composition and the pinned module answers
+     * it -- the value is never restated here.
+     */
+    | { pinnedEnum: string; member: string }
+    /**
+     * A numeric triple, which only a screen-space task reads: the contact
+     * shadows' `tint`. It travels whole to the pin's own factory like every
+     * other setting.
+     */
+    | readonly number[];
 
 /**
  * One reached post-process pass, in reach order.
@@ -1117,25 +1127,25 @@ export type PostProcessOptionValue =
  * and emits the chain it built.
  */
 export interface PostProcessCompositeManifest {
-  /** Reach order, which is the generated factory's identity. */
-  compositeIndex: number;
-  /** The Babylon Lite entry point the task was created through. */
-  intrinsic: string;
-  /** Every option the composite reads, statically resolved. */
-  options: Record<string, PostProcessOptionValue>;
-  /** Whether the scene named a target, which a composite branches on. */
-  hasTarget: boolean;
+    /** Reach order, which is the generated factory's identity. */
+    compositeIndex: number;
+    /** The Babylon Lite entry point the task was created through. */
+    intrinsic: string;
+    /** Every option the composite reads, statically resolved. */
+    options: Record<string, PostProcessOptionValue>;
+    /** Whether the scene named a target, which a composite branches on. */
+    hasTarget: boolean;
 }
 
 export interface PostProcessTaskManifest {
-  shaderIndex: number;
-  /** The Babylon Lite entry point the pass was created through. */
-  intrinsic: string;
-  /**
-   * Every option the pass itself does not read, statically resolved and
-   * forwarded whole — the pin decides which of them its text branches on.
-   */
-  options: Record<string, PostProcessOptionValue>;
+    shaderIndex: number;
+    /** The Babylon Lite entry point the pass was created through. */
+    intrinsic: string;
+    /**
+     * Every option the pass itself does not read, statically resolved and
+     * forwarded whole — the pin decides which of them its text branches on.
+     */
+    options: Record<string, PostProcessOptionValue>;
 }
 
 /**
@@ -1147,399 +1157,399 @@ export interface PostProcessTaskManifest {
  * which is the generated factory's identity.
  */
 export interface ScreenSpaceTaskManifest {
-  taskIndex: number;
-  /** The Babylon Lite entry point the task was created through. */
-  intrinsic: string;
-  /** The scene's own name for the task, when it gave one. */
-  name?: string;
-  /** Every setting the scene wrote, statically resolved and forwarded whole. */
-  options: Record<string, PostProcessOptionValue>;
-  /** Whether the scene named a composite target. */
-  hasTarget: boolean;
-  /** Whether the scene named a depth source apart from the colour source. */
-  hasDepthTexture: boolean;
+    taskIndex: number;
+    /** The Babylon Lite entry point the task was created through. */
+    intrinsic: string;
+    /** The scene's own name for the task, when it gave one. */
+    name?: string;
+    /** Every setting the scene wrote, statically resolved and forwarded whole. */
+    options: Record<string, PostProcessOptionValue>;
+    /** Whether the scene named a composite target. */
+    hasTarget: boolean;
+    /** Whether the scene named a depth source apart from the colour source. */
+    hasDepthTexture: boolean;
 }
 
 export interface CompileResult {
-  cpp: string;
-  cmake: string;
-  manifest: CompileManifest;
-  /**
-   * Asset sources needed only while generation materializes the tree.
-   *
-   * A `data:` URL is the asset's whole payload, so recording it as the
-   * manifest source duplicates the bytes from the scene module into
-   * `manifest.json`. The manifest carries a content-addressed opaque source
-   * instead, and this in-process map keeps the materializer's lookup out of
-   * the generated tree. This is the same boundary as `nodeParticles` below:
-   * generation consumes the full value, while the manifest retains only
-   * the identity a reader needs.
-   */
-  assetPayloads: Map<string, string>;
-  /**
-   * The scene's node-particle program, when it built one.
-   *
-   * Compiler output rather than manifest content: it is the bake request
-   * generation replays, it is consumed in-process before anything is
-   * written, and it holds the whole graph document plus one record per
-   * simulation step -- 60 KB on a scene whose manifest is otherwise 5 KB.
-   * What the manifest carries instead is the summary below, which is what
-   * a reader of the tree actually wants.
-   */
-  nodeParticles?: CompiledNodeParticles;
+    cpp: string;
+    cmake: string;
+    manifest: CompileManifest;
+    /**
+     * Asset sources needed only while generation materializes the tree.
+     *
+     * A `data:` URL is the asset's whole payload, so recording it as the
+     * manifest source duplicates the bytes from the scene module into
+     * `manifest.json`. The manifest carries a content-addressed opaque source
+     * instead, and this in-process map keeps the materializer's lookup out of
+     * the generated tree. This is the same boundary as `nodeParticles` below:
+     * generation consumes the full value, while the manifest retains only
+     * the identity a reader needs.
+     */
+    assetPayloads: Map<string, string>;
+    /**
+     * The scene's node-particle program, when it built one.
+     *
+     * Compiler output rather than manifest content: it is the bake request
+     * generation replays, it is consumed in-process before anything is
+     * written, and it holds the whole graph document plus one record per
+     * simulation step -- 60 KB on a scene whose manifest is otherwise 5 KB.
+     * What the manifest carries instead is the summary below, which is what
+     * a reader of the tree actually wants.
+     */
+    nodeParticles?: CompiledNodeParticles;
 }
 
 /** What `manifest.json` records about a node-particle program. */
 export interface NodeParticleManifest {
-  sets: Array<{
-    builder: NodeParticleBuilder;
-    /**
-     * The document's identity: a factory's `module#export`, or the
-     * SHA-256 of a literal graph. The bytes themselves live in the
-     * corpus module the scene imported, and any change to them moves
-     * the baked state in `upstream/src/node_particles.cpp`.
-     */
-    graph: string;
-    emitter: readonly [number, number, number];
-    textureBaseUrl?: string;
-    /** Provider callbacks and authored simulation steps execute natively. */
-    native?: true;
-  }>;
-  /** How many generation-time `animateParticleSystem` calls the bake replays. */
-  steps: number;
-  /** Whether the program installs a deterministic seed before them. */
-  seeded: boolean;
-  billboards: Array<{ set: number; system: number }>;
+    sets: Array<{
+        builder: NodeParticleBuilder;
+        /**
+         * The document's identity: a factory's `module#export`, or the
+         * SHA-256 of a literal graph. The bytes themselves live in the
+         * corpus module the scene imported, and any change to them moves
+         * the baked state in `upstream/src/node_particles.cpp`.
+         */
+        graph: string;
+        emitter: readonly [number, number, number];
+        textureBaseUrl?: string;
+        /** Provider callbacks and authored simulation steps execute natively. */
+        native?: true;
+    }>;
+    /** How many generation-time `animateParticleSystem` calls the bake replays. */
+    steps: number;
+    /** Whether the program installs a deterministic seed before them. */
+    seeded: boolean;
+    billboards: Array<{ set: number; system: number }>;
 }
 
 export type ValueKind =
-  | "node-input"
-  | "text-font"
-  | "text-data"
-  | "text-renderable"
-  | "text-layer"
-  | "text-renderer"
-  | "text-run"
-  | "text-run-ref"
-  | "text-vector"
-  | "worker"
-  | "worker-scope"
-  | "worker-resize-observer"
-  | "worker-media-query"
-  | "worker-message-event"
-  | "worker-error-event"
-  | "offscreen-canvas"
-  | "promise"
-  | "animation-clip"
-  | "animation-group"
-  /** One graph a glTF container declares, read off its own list. */
-  | "flow-graph"
-  /** One attached KHR_interactivity runtime, read off its container's list. */
-  | "flow-graph-runtime"
-  /**
-   * The include/exclude target-name filter `createAnimationGroupMask`
-   * builds. Its two fields are both compile-time -- a constant array of
-   * names and one of the pin's two enum members -- so the value declares
-   * nothing native and the assignment to `group.mask` is what emits.
-   */
-  | "animation-group-mask"
-  | "animation-manager"
-  | "asset-entity"
-  | "asset-root"
-  | "asset"
-  | "boolean"
-  /** A bounded native Blob containing the source parts' concatenated bytes. */
-  | "blob"
-  | "browser"
-  /** An engine-owned opaque URL token referring to one live native Blob. */
-  | "object-url"
-  /** A one-selection snapshot returned by a retained file input. */
-  | "file-list"
-  /** A shared opaque handle to immutable bytes returned by the host picker. */
-  | "file"
-  /** A DOM element created by reached scene code and owned by the native UI IR. */
-  | "ui-element"
-  | "callback"
-  | "camera"
-  /**
-   * The `Math.random` function itself, saved by a scene that replaces it
-   * for a node-particle bake and puts it back afterwards. It emits
-   * nothing: the replacement parameterizes generation and the restore
-   * closes that window.
-   */
-  | "js-random"
-  /**
-   * The binding `registerNodeParticleSet2D*` returns: the hook and the
-   * layers it attached, which upstream owns and this port folds into the
-   * generated registrar. Every operation on it refuses at its own
-   * intrinsic, and the corpus only reports its state through the canvas
-   * dataset -- so a read of it erases with the instrumentation around it,
-   * and one that reaches anything else fails rather than compiling.
-   */
-  | "node-particle-2d-binding"
-  /**
-   * One bridge of a LIVE pure-2D binding (`binding.bridges[k]`): the
-   * mapping the generated registrar keeps for that system, whose `originPx`
-   * a scene moves per frame and whose `system.buffer.alive` it reads.
-   */
-  | "node-particle-2d-bridge"
-  /**
-   * `bridge.system.buffer` on a live bridge: the simulated buffer, whose
-   * one read is its live count.
-   */
-  | "node-particle-buffer"
-  | "node-particle-column"
-  /**
-   * `let x;` with no type: a name whose value is the compile-time record
-   * its first assignment binds (`let set; try { set = await build(...) }`).
-   * Nothing native exists until then, and a first assignment that is not
-   * such a record fails where the declaration would have.
-   */
-  | "pending-let"
-  /**
-   * The URL a zero-parameter module function produced from a canvas it
-   * drew at generation (`await createNpeSprite2DFlareUrl()`). It exists
-   * only as an argument to a node-particle graph factory, where the bake
-   * driver runs the same function in the same browser, and as the operand
-   * of the `URL.revokeObjectURL` that releases it, which erases.
-   */
-  | "executed-url"
-  /**
-   * A `CsgSolid`: the pinned BSP solid, which exists only at generation.
-   * The plan it carries is replayed against the pin's own modules when
-   * `createMeshFromCsg` turns it into geometry, so the value emits
-   * nothing native and every operation on one that is not a boolean or
-   * that conversion refuses by name.
-   */
-  | "csg-solid"
-  | "csg2-solid"
-  | "camera-ortho"
-  | "camera-world-matrix"
-  | "color4"
-  | "data"
-  | "engine"
-  | "environment-textures"
-  | "pbr-local-probe-set"
-  // A captured browser GPUDevice exists only so a structurally recognized
-  // thin-instance upload helper can be replaced as a unit. No generic raw
-  // device operation is part of the compiled surface.
-  | "gpu-device"
-  | "gpu-texture"
-  | "device-recovery"
-  | "gpu-environment"
-  | "static-fetch-response"
-  | "json-null"
-  | "light"
-  | "material"
-  | "mesh"
-  /** Runtime data view of the pinned SceneNode union. */
-  | "scene-node"
-  | "transform-node"
-  /** Engine-owned fixed-capacity thin-instance pool for an imported hierarchy. */
-  | "hierarchy-instance-pool"
-  | "gamepad"
-  | "gamepad-button"
-  | "storage-buffer"
-  /**
-   * `mesh.thinInstances` — the pin's own `ThinInstanceData`. It is a live
-   * view of the pool rather than a handle of its own: the only member the
-   * reached slice reads is `count`, which is `MeshRecord::instance_count`,
-   * so the value carries the mesh it was read from and nothing else.
-   */
-  | "thin-instance-pool"
-  | "morph-targets"
-  /**
-   * The baked vertex-animation texture `bakeVat` returns: the pin's
-   * `VatBakeResult`. It names a native bake record (the texture rows and
-   * the clip row map), which `attachVat` binds to the mesh that produced
-   * it.
-   */
-  | "vat-bake"
-  /**
-   * The `VatHandle` `attachVat` returns. Upstream it carries methods
-   * (`play`/`update`/`setInstances`), which is why it is a kind rather
-   * than plain data; natively it names the mesh whose `vat` record the
-   * methods write.
-   */
-  | "vat-handle"
-  /**
-   * `VatBakeResult.clips`: the bake's own clip row map. It names the bake
-   * rather than a value of its own, so a name lookup on it is the native
-   * row read below.
-   */
-  | "vat-clip-map"
-  /**
-   * One `VatClip` -- a clip's first row, frame count and native rate. The
-   * row map is filled by the bake, so this is a native record read rather
-   * than a generation-time constant: deciding the layout here would be a
-   * second implementation of the bake's own frame arithmetic.
-   */
-  | "vat-clip"
-  | "node-particle-graph"
-  | "node-particle-set"
-  | "node-particle-system"
-  | "number"
-  // The physics family. `physics-engine-module` is the `hknp` the pin
-  // takes as a parameter -- the WASM module a browser scene loads. It has
-  // no native representation at all: the solver is reached through the
-  // PAL, so the value exists only to be accepted by `createHavokWorld`
-  // and dropped, exactly as the tracking installers are accepted and emit
-  // nothing. Bodies and shapes are opaque native values that may travel
-  // through the demo's arrays and maps just like mesh handles do.
-  | "physics-engine-module"
-  // The clustered light field. The container is a native record and its
-  // lights are built by the emitted loop, as upstream builds them; only
-  // whether a spot was created is compile-time, because that decides which
-  // extension composes the fragment.
-  | "clustered-light-container"
-  | "clustered-light"
-  | "physics-world"
-  | "physics-viewer"
-  | "physics-aggregate"
-  | "physics-body"
-  | "physics-character-controller"
-  | "physics-character-observable"
-  | "physics-shape"
-  | "property-animation-group"
-  /** Callback-local platform keyboard data; it has no storable JS shape. */
-  | "platform-keyboard-event"
-  /** Callback-local platform mouse data; it has no storable JS shape. */
-  | "platform-mouse-event"
-  // The navigation plugin: the Detour surface behind the PAL, held the
-  // way `physics-world` holds the solver. A crowd is a second handle
-  // over the same seam, because the pin models it as one too --
-  // `NavCrowd` carries its plugin and its `dtCrowd`, and every agent
-  // call takes the crowd rather than the plugin.
-  | "navigation"
-  | "navigation-crowd"
-  // One obstacle a tile-cache navmesh holds. `ObstacleHandle` is opaque
-  // upstream too -- the only thing a scene does with one is hand it back
-  // to `removeObstacle` -- so it is a kind rather than a record.
-  | "navigation-obstacle"
-  // The Web Audio family. The seam is the pin's own: `src/audio/*.ts`
-  // reaches the browser through `AudioContext`/`GainNode`/`AudioParam`
-  // and nothing else, so those are the handles -- the same shape
-  // `physics-world` holds the solver behind. `audio-engine` is the Lite
-  // engine record; `audio-context` is the `BaseAudioContext` it hands
-  // back, which every reached demo builds its own graph on.
-  | "audio-engine"
-  | "audio-buffer"
-  | "audio-context"
-  | "audio-node"
-  | "audio-param"
-  | "media-stream"
-  | "media-stream-track"
-  | "render-target"
-  | "render-target-texture"
-  | "render-texture"
-  | "record"
-  | "regexp"
-  | "scene"
-  | "surface"
-  | "frame-graph-context"
-  | "sprite-atlas"
-  | "sprite-layer"
-  | "sprite-blend"
-  | "tone-mapping"
-  | "effect-wrapper"
-  | "effect-renderer"
-  /**
-   * A collection of engine handles known at generation: the loader's own
-   * `animationGroups`, bound to a local or passed into a reached user
-   * function. The members come from the materialized asset, so `.find`
-   * over one resolves at generation; iteration stays the same native
-   * loop the inline property read already emits. Constructed only at
-   * binding points — the inline expression shapes keep their existing
-   * emission byte for byte.
-   */
-  | "handle-collection"
-  | "sprite-custom-shader"
-  | "billboard-custom-shader"
-  | "billboard-system"
-  | "billboard-sprite"
-  | "sprite-2d-handle"
-  /**
-   * The `Sprite2DYSortState` `enableSprite2DYSort` returns. It carries the
-   * layer it was installed on, because the one field a scene reads off it
-   * (`enabled`) is a live question about that layer rather than a value
-   * settled when the state was created.
-   */
-  | "sprite-2d-y-sort"
-  | "sprite-animation-manager"
-  | "sprite-renderer"
-  | "splat-mesh"
-  /**
-   * A `GsShaderFragment` a `loadSplat` call passes: WGSL slots the pin's
-   * own splicer folds into the splat module at generation, so the value
-   * declares nothing native.
-   */
-  | "splat-fragment"
-  // The GPU picker holds the 1x1 attachments, the depth buffer and the
-  // staging buffers its readback maps, so it is a native handle for the
-  // same reason a shadow generator is.
-  | "gpu-picker"
-  // What a pick resolved to. Upstream `PickingInfo` is a mutable object
-  // the contributor's own `resolve` fills in; here it is a value, because
-  // nothing in the reached slice writes one back.
-  | "picking-info"
-  // `PickingInfo.pickedMesh`. Upstream it is whichever node was hit and
-  // both kinds carry a `name`; this port keeps meshes and clouds in
-  // separate collections, so the value is the tagged pair and `.name` is
-  // the one member the reached slice reads.
-  | "picked-node"
-  // The `ShadowGenerator` a filter factory returns. It holds GPU state
-  // (a depth map, a comparison sampler, two uniform buffers), so it is a
-  // native handle rather than a compile-time record -- but which lights
-  // and meshes it joins is generation's to resolve, since the composed
-  // receiver fragment is keyed by the scene's shadow-light slots.
-  | "shadow-generator"
-  // The opt-in bone-control pair: a `Skeleton` the loader built per glTF
-  // skin instance, and one `Bone` of it. Both are native handles because
-  // the bones and their overrides live on records the loader fills, and
-  // the bake reads them back.
-  | "skeleton"
-  | "bone"
-  // The `Skeleton` a scene builds itself with `createSkeleton`: the
-  // per-vertex joint and weight streams plus the bone palette, shared by
-  // every mesh assigned it. Its own kind rather than `skeleton` above,
-  // which is the loader-built bone-control handle over an asset's joint
-  // hierarchy -- one has bones to name, the other has matrices to upload.
-  | "scene-skeleton"
-  // The gizmo family. A `UtilityLayer` is the pin's second SceneContext
-  // over one engine -- the swapchain overlay both backends now record --
-  // so it is a native handle holding that scene. The two display gizmos
-  // are records because their per-frame follow reads live state: the
-  // attached camera's world matrix, the attached light's position and
-  // direction, and the utility scene's own camera for distance scaling.
-  | "utility-layer"
-  | "camera-gizmo"
-  | "light-gizmo"
-  // The four editing widgets. One native record serves all four -- what
-  // differs between them is the geometry the generated builder emits, not
-  // what the record holds -- but each keeps its own kind here, so one
-  // widget's attach call cannot be handed another's handle.
-  | "axis-drag-gizmo"
-  | "axis-scale-gizmo"
-  | "plane-drag-gizmo"
-  | "plane-rotation-gizmo"
-  | "pointer-drag"
-  // The three composites. One native record serves all three, because
-  // the pin's own composite is a list of sub-gizmos and its fan-outs; the
-  // kinds stay apart here so a rotation gizmo cannot be handed to the
-  // scale gizmo's coordinate-mode setter, which upstream's types forbid.
-  | "position-gizmo"
-  | "rotation-gizmo"
-  | "scale-gizmo"
-  // The bounding-box gizmo. Its own kind and its own record: the cage is
-  // 55 meshes laid out every frame from the attached node's bounds and
-  // world rotation, which is neither a follow over one root nor a list of
-  // sub-widgets.
-  | "bounding-box-gizmo"
-  | "string"
-  | "task"
-  | "texture"
-  | "tuple"
-  | "void";
+    | "node-input"
+    | "text-font"
+    | "text-data"
+    | "text-renderable"
+    | "text-layer"
+    | "text-renderer"
+    | "text-run"
+    | "text-run-ref"
+    | "text-vector"
+    | "worker"
+    | "worker-scope"
+    | "worker-resize-observer"
+    | "worker-media-query"
+    | "worker-message-event"
+    | "worker-error-event"
+    | "offscreen-canvas"
+    | "promise"
+    | "animation-clip"
+    | "animation-group"
+    /** One graph a glTF container declares, read off its own list. */
+    | "flow-graph"
+    /** One attached KHR_interactivity runtime, read off its container's list. */
+    | "flow-graph-runtime"
+    /**
+     * The include/exclude target-name filter `createAnimationGroupMask`
+     * builds. Its two fields are both compile-time -- a constant array of
+     * names and one of the pin's two enum members -- so the value declares
+     * nothing native and the assignment to `group.mask` is what emits.
+     */
+    | "animation-group-mask"
+    | "animation-manager"
+    | "asset-entity"
+    | "asset-root"
+    | "asset"
+    | "boolean"
+    /** A bounded native Blob containing the source parts' concatenated bytes. */
+    | "blob"
+    | "browser"
+    /** An engine-owned opaque URL token referring to one live native Blob. */
+    | "object-url"
+    /** A one-selection snapshot returned by a retained file input. */
+    | "file-list"
+    /** A shared opaque handle to immutable bytes returned by the host picker. */
+    | "file"
+    /** A DOM element created by reached scene code and owned by the native UI IR. */
+    | "ui-element"
+    | "callback"
+    | "camera"
+    /**
+     * The `Math.random` function itself, saved by a scene that replaces it
+     * for a node-particle bake and puts it back afterwards. It emits
+     * nothing: the replacement parameterizes generation and the restore
+     * closes that window.
+     */
+    | "js-random"
+    /**
+     * The binding `registerNodeParticleSet2D*` returns: the hook and the
+     * layers it attached, which upstream owns and this port folds into the
+     * generated registrar. Every operation on it refuses at its own
+     * intrinsic, and the corpus only reports its state through the canvas
+     * dataset -- so a read of it erases with the instrumentation around it,
+     * and one that reaches anything else fails rather than compiling.
+     */
+    | "node-particle-2d-binding"
+    /**
+     * One bridge of a LIVE pure-2D binding (`binding.bridges[k]`): the
+     * mapping the generated registrar keeps for that system, whose `originPx`
+     * a scene moves per frame and whose `system.buffer.alive` it reads.
+     */
+    | "node-particle-2d-bridge"
+    /**
+     * `bridge.system.buffer` on a live bridge: the simulated buffer, whose
+     * one read is its live count.
+     */
+    | "node-particle-buffer"
+    | "node-particle-column"
+    /**
+     * `let x;` with no type: a name whose value is the compile-time record
+     * its first assignment binds (`let set; try { set = await build(...) }`).
+     * Nothing native exists until then, and a first assignment that is not
+     * such a record fails where the declaration would have.
+     */
+    | "pending-let"
+    /**
+     * The URL a zero-parameter module function produced from a canvas it
+     * drew at generation (`await createNpeSprite2DFlareUrl()`). It exists
+     * only as an argument to a node-particle graph factory, where the bake
+     * driver runs the same function in the same browser, and as the operand
+     * of the `URL.revokeObjectURL` that releases it, which erases.
+     */
+    | "executed-url"
+    /**
+     * A `CsgSolid`: the pinned BSP solid, which exists only at generation.
+     * The plan it carries is replayed against the pin's own modules when
+     * `createMeshFromCsg` turns it into geometry, so the value emits
+     * nothing native and every operation on one that is not a boolean or
+     * that conversion refuses by name.
+     */
+    | "csg-solid"
+    | "csg2-solid"
+    | "camera-ortho"
+    | "camera-world-matrix"
+    | "color4"
+    | "data"
+    | "engine"
+    | "environment-textures"
+    | "pbr-local-probe-set"
+    // A captured browser GPUDevice exists only so a structurally recognized
+    // thin-instance upload helper can be replaced as a unit. No generic raw
+    // device operation is part of the compiled surface.
+    | "gpu-device"
+    | "gpu-texture"
+    | "device-recovery"
+    | "gpu-environment"
+    | "static-fetch-response"
+    | "json-null"
+    | "light"
+    | "material"
+    | "mesh"
+    /** Runtime data view of the pinned SceneNode union. */
+    | "scene-node"
+    | "transform-node"
+    /** Engine-owned fixed-capacity thin-instance pool for an imported hierarchy. */
+    | "hierarchy-instance-pool"
+    | "gamepad"
+    | "gamepad-button"
+    | "storage-buffer"
+    /**
+     * `mesh.thinInstances` — the pin's own `ThinInstanceData`. It is a live
+     * view of the pool rather than a handle of its own: the only member the
+     * reached slice reads is `count`, which is `MeshRecord::instance_count`,
+     * so the value carries the mesh it was read from and nothing else.
+     */
+    | "thin-instance-pool"
+    | "morph-targets"
+    /**
+     * The baked vertex-animation texture `bakeVat` returns: the pin's
+     * `VatBakeResult`. It names a native bake record (the texture rows and
+     * the clip row map), which `attachVat` binds to the mesh that produced
+     * it.
+     */
+    | "vat-bake"
+    /**
+     * The `VatHandle` `attachVat` returns. Upstream it carries methods
+     * (`play`/`update`/`setInstances`), which is why it is a kind rather
+     * than plain data; natively it names the mesh whose `vat` record the
+     * methods write.
+     */
+    | "vat-handle"
+    /**
+     * `VatBakeResult.clips`: the bake's own clip row map. It names the bake
+     * rather than a value of its own, so a name lookup on it is the native
+     * row read below.
+     */
+    | "vat-clip-map"
+    /**
+     * One `VatClip` -- a clip's first row, frame count and native rate. The
+     * row map is filled by the bake, so this is a native record read rather
+     * than a generation-time constant: deciding the layout here would be a
+     * second implementation of the bake's own frame arithmetic.
+     */
+    | "vat-clip"
+    | "node-particle-graph"
+    | "node-particle-set"
+    | "node-particle-system"
+    | "number"
+    // The physics family. `physics-engine-module` is the `hknp` the pin
+    // takes as a parameter -- the WASM module a browser scene loads. It has
+    // no native representation at all: the solver is reached through the
+    // PAL, so the value exists only to be accepted by `createHavokWorld`
+    // and dropped, exactly as the tracking installers are accepted and emit
+    // nothing. Bodies and shapes are opaque native values that may travel
+    // through the demo's arrays and maps just like mesh handles do.
+    | "physics-engine-module"
+    // The clustered light field. The container is a native record and its
+    // lights are built by the emitted loop, as upstream builds them; only
+    // whether a spot was created is compile-time, because that decides which
+    // extension composes the fragment.
+    | "clustered-light-container"
+    | "clustered-light"
+    | "physics-world"
+    | "physics-viewer"
+    | "physics-aggregate"
+    | "physics-body"
+    | "physics-character-controller"
+    | "physics-character-observable"
+    | "physics-shape"
+    | "property-animation-group"
+    /** Callback-local platform keyboard data; it has no storable JS shape. */
+    | "platform-keyboard-event"
+    /** Callback-local platform mouse data; it has no storable JS shape. */
+    | "platform-mouse-event"
+    // The navigation plugin: the Detour surface behind the PAL, held the
+    // way `physics-world` holds the solver. A crowd is a second handle
+    // over the same seam, because the pin models it as one too --
+    // `NavCrowd` carries its plugin and its `dtCrowd`, and every agent
+    // call takes the crowd rather than the plugin.
+    | "navigation"
+    | "navigation-crowd"
+    // One obstacle a tile-cache navmesh holds. `ObstacleHandle` is opaque
+    // upstream too -- the only thing a scene does with one is hand it back
+    // to `removeObstacle` -- so it is a kind rather than a record.
+    | "navigation-obstacle"
+    // The Web Audio family. The seam is the pin's own: `src/audio/*.ts`
+    // reaches the browser through `AudioContext`/`GainNode`/`AudioParam`
+    // and nothing else, so those are the handles -- the same shape
+    // `physics-world` holds the solver behind. `audio-engine` is the Lite
+    // engine record; `audio-context` is the `BaseAudioContext` it hands
+    // back, which every reached demo builds its own graph on.
+    | "audio-engine"
+    | "audio-buffer"
+    | "audio-context"
+    | "audio-node"
+    | "audio-param"
+    | "media-stream"
+    | "media-stream-track"
+    | "render-target"
+    | "render-target-texture"
+    | "render-texture"
+    | "record"
+    | "regexp"
+    | "scene"
+    | "surface"
+    | "frame-graph-context"
+    | "sprite-atlas"
+    | "sprite-layer"
+    | "sprite-blend"
+    | "tone-mapping"
+    | "effect-wrapper"
+    | "effect-renderer"
+    /**
+     * A collection of engine handles known at generation: the loader's own
+     * `animationGroups`, bound to a local or passed into a reached user
+     * function. The members come from the materialized asset, so `.find`
+     * over one resolves at generation; iteration stays the same native
+     * loop the inline property read already emits. Constructed only at
+     * binding points — the inline expression shapes keep their existing
+     * emission byte for byte.
+     */
+    | "handle-collection"
+    | "sprite-custom-shader"
+    | "billboard-custom-shader"
+    | "billboard-system"
+    | "billboard-sprite"
+    | "sprite-2d-handle"
+    /**
+     * The `Sprite2DYSortState` `enableSprite2DYSort` returns. It carries the
+     * layer it was installed on, because the one field a scene reads off it
+     * (`enabled`) is a live question about that layer rather than a value
+     * settled when the state was created.
+     */
+    | "sprite-2d-y-sort"
+    | "sprite-animation-manager"
+    | "sprite-renderer"
+    | "splat-mesh"
+    /**
+     * A `GsShaderFragment` a `loadSplat` call passes: WGSL slots the pin's
+     * own splicer folds into the splat module at generation, so the value
+     * declares nothing native.
+     */
+    | "splat-fragment"
+    // The GPU picker holds the 1x1 attachments, the depth buffer and the
+    // staging buffers its readback maps, so it is a native handle for the
+    // same reason a shadow generator is.
+    | "gpu-picker"
+    // What a pick resolved to. Upstream `PickingInfo` is a mutable object
+    // the contributor's own `resolve` fills in; here it is a value, because
+    // nothing in the reached slice writes one back.
+    | "picking-info"
+    // `PickingInfo.pickedMesh`. Upstream it is whichever node was hit and
+    // both kinds carry a `name`; this port keeps meshes and clouds in
+    // separate collections, so the value is the tagged pair and `.name` is
+    // the one member the reached slice reads.
+    | "picked-node"
+    // The `ShadowGenerator` a filter factory returns. It holds GPU state
+    // (a depth map, a comparison sampler, two uniform buffers), so it is a
+    // native handle rather than a compile-time record -- but which lights
+    // and meshes it joins is generation's to resolve, since the composed
+    // receiver fragment is keyed by the scene's shadow-light slots.
+    | "shadow-generator"
+    // The opt-in bone-control pair: a `Skeleton` the loader built per glTF
+    // skin instance, and one `Bone` of it. Both are native handles because
+    // the bones and their overrides live on records the loader fills, and
+    // the bake reads them back.
+    | "skeleton"
+    | "bone"
+    // The `Skeleton` a scene builds itself with `createSkeleton`: the
+    // per-vertex joint and weight streams plus the bone palette, shared by
+    // every mesh assigned it. Its own kind rather than `skeleton` above,
+    // which is the loader-built bone-control handle over an asset's joint
+    // hierarchy -- one has bones to name, the other has matrices to upload.
+    | "scene-skeleton"
+    // The gizmo family. A `UtilityLayer` is the pin's second SceneContext
+    // over one engine -- the swapchain overlay both backends now record --
+    // so it is a native handle holding that scene. The two display gizmos
+    // are records because their per-frame follow reads live state: the
+    // attached camera's world matrix, the attached light's position and
+    // direction, and the utility scene's own camera for distance scaling.
+    | "utility-layer"
+    | "camera-gizmo"
+    | "light-gizmo"
+    // The four editing widgets. One native record serves all four -- what
+    // differs between them is the geometry the generated builder emits, not
+    // what the record holds -- but each keeps its own kind here, so one
+    // widget's attach call cannot be handed another's handle.
+    | "axis-drag-gizmo"
+    | "axis-scale-gizmo"
+    | "plane-drag-gizmo"
+    | "plane-rotation-gizmo"
+    | "pointer-drag"
+    // The three composites. One native record serves all three, because
+    // the pin's own composite is a list of sub-gizmos and its fan-outs; the
+    // kinds stay apart here so a rotation gizmo cannot be handed to the
+    // scale gizmo's coordinate-mode setter, which upstream's types forbid.
+    | "position-gizmo"
+    | "rotation-gizmo"
+    | "scale-gizmo"
+    // The bounding-box gizmo. Its own kind and its own record: the cage is
+    // 55 meshes laid out every frame from the attached node's bounds and
+    // world rotation, which is neither a follow over one root nor a list of
+    // sub-widgets.
+    | "bounding-box-gizmo"
+    | "string"
+    | "task"
+    | "texture"
+    | "tuple"
+    | "void";
 
 /**
  * A value that exists only at generation: it binds a name, and declares
@@ -1567,53 +1577,53 @@ export type ValueKind =
  * reads it there too.
  */
 export interface ClusteredContainerState {
-  hasSpots: boolean;
-  /**
-   * Set once `addClusteredLightContainer` has built the GPU state. A light
-   * created after that point refuses, because the pin bakes both the light
-   * capacity and the point-versus-spot layout there and its own refresh
-   * throws rather than growing either.
-   */
-  frozen: boolean;
+    hasSpots: boolean;
+    /**
+     * Set once `addClusteredLightContainer` has built the GPU state. A light
+     * created after that point refuses, because the pin bakes both the light
+     * capacity and the point-versus-spot layout there and its own refresh
+     * throws rather than growing either.
+     */
+    frozen: boolean;
 }
 
 export function isCompileTimeOnlyValue(kind: ValueKind): boolean {
-  return (
-    kind === "text-font" ||
-    kind === "tuple" ||
-    kind === "record" ||
-    // A worker-global alias resolves to the current realm; it has no copyable
-    // native object and must not become a closure capture.
-    kind === "worker-scope" ||
-    kind === "static-fetch-response" ||
-    kind === "json-null" ||
-    kind === "morph-targets" ||
-    // The clip row map names the bake; the row itself is a native read.
-    kind === "vat-clip-map" ||
-    // A handle collection binds a name to the container the loader
-    // already owns; nothing native is declared for the binding itself.
-    kind === "handle-collection" ||
-    // A custom-shader descriptor is compile-time data: the program it
-    // names is composed at generation and the layer it is passed to
-    // carries only that it has one.
-    kind === "sprite-custom-shader" ||
-    kind === "billboard-custom-shader" ||
-    // A splat shader plugin is WGSL the pin splices at generation.
-    kind === "splat-fragment" ||
-    // The mask a group is about to be given: names and a mode, both
-    // known at generation.
-    kind === "animation-group-mask" ||
-    // A BSP solid. It never reaches the runtime: `createMeshFromCsg`
-    // replays the plan it carries against the pin's own modules and
-    // bakes the geometry, so the binding declares nothing native.
-    kind === "csg-solid" ||
-    kind === "csg2-solid" ||
-    // The solver module a physics scene loads. The pin hands it to
-    // `createHavokWorld`; a native build reaches its solver through
-    // the PAL, so the binding exists for that call to accept.
-    kind === "physics-engine-module" ||
-    isNodeParticleValue(kind)
-  );
+    return (
+        kind === "text-font" ||
+        kind === "tuple" ||
+        kind === "record" ||
+        // A worker-global alias resolves to the current realm; it has no copyable
+        // native object and must not become a closure capture.
+        kind === "worker-scope" ||
+        kind === "static-fetch-response" ||
+        kind === "json-null" ||
+        kind === "morph-targets" ||
+        // The clip row map names the bake; the row itself is a native read.
+        kind === "vat-clip-map" ||
+        // A handle collection binds a name to the container the loader
+        // already owns; nothing native is declared for the binding itself.
+        kind === "handle-collection" ||
+        // A custom-shader descriptor is compile-time data: the program it
+        // names is composed at generation and the layer it is passed to
+        // carries only that it has one.
+        kind === "sprite-custom-shader" ||
+        kind === "billboard-custom-shader" ||
+        // A splat shader plugin is WGSL the pin splices at generation.
+        kind === "splat-fragment" ||
+        // The mask a group is about to be given: names and a mode, both
+        // known at generation.
+        kind === "animation-group-mask" ||
+        // A BSP solid. It never reaches the runtime: `createMeshFromCsg`
+        // replays the plan it carries against the pin's own modules and
+        // bakes the geometry, so the binding declares nothing native.
+        kind === "csg-solid" ||
+        kind === "csg2-solid" ||
+        // The solver module a physics scene loads. The pin hands it to
+        // `createHavokWorld`; a native build reaches its solver through
+        // the PAL, so the binding exists for that call to accept.
+        kind === "physics-engine-module" ||
+        isNodeParticleValue(kind)
+    );
 }
 
 /**
@@ -1623,13 +1633,13 @@ export function isCompileTimeOnlyValue(kind: ValueKind): boolean {
  * generation. Both binding paths ask the same question, so they ask it here.
  */
 function isNodeParticleValue(kind: ValueKind): boolean {
-  return (
-    kind === "node-particle-graph" ||
-    kind === "node-particle-set" ||
-    kind === "node-particle-system" ||
-    kind === "node-particle-buffer" ||
-    kind === "node-particle-column"
-  );
+    return (
+        kind === "node-particle-graph" ||
+        kind === "node-particle-set" ||
+        kind === "node-particle-system" ||
+        kind === "node-particle-buffer" ||
+        kind === "node-particle-column"
+    );
 }
 
 /**
@@ -1641,33 +1651,33 @@ function isNodeParticleValue(kind: ValueKind): boolean {
  * shared object equal.
  */
 export function sameCompiledValue(left: Value, right: Value): boolean {
-  if (left === right) return true;
-  if (left.kind !== right.kind) return false;
-  if (left.kind === "text-font") return left.textFont === right.textFont;
-  if (left.recordProperties || right.recordProperties) {
-    return left.recordProperties === right.recordProperties;
-  }
-  return left.cpp === right.cpp;
+    if (left === right) return true;
+    if (left.kind !== right.kind) return false;
+    if (left.kind === "text-font") return left.textFont === right.textFont;
+    if (left.recordProperties || right.recordProperties) {
+        return left.recordProperties === right.recordProperties;
+    }
+    return left.cpp === right.cpp;
 }
 
 export type FrameCallbackSignature =
-  "delta" | "timestamp" | "interval" | "void";
+    "delta" | "timestamp" | "interval" | "void";
 
 /** One symbol binding in the compiler's lexical scope stack. */
 export interface VariableBinding {
-  name: string;
-  value: Value;
-  /** The native storage belongs to an application frame callback. */
-  frameLocal?: boolean;
-  /**
-   * Set where a nested callback pointed this handle at something else.
-   *
-   * The storage is shared, so after such a rebind this binding's `value`
-   * describes an identity the storage may no longer hold -- it depends on
-   * whether the callback ran. Reading it out here is refused rather than
-   * guessed.
-   */
-  reboundInNestedScope?: true;
+    name: string;
+    value: Value;
+    /** The native storage belongs to an application frame callback. */
+    frameLocal?: boolean;
+    /**
+     * Set where a nested callback pointed this handle at something else.
+     *
+     * The storage is shared, so after such a rebind this binding's `value`
+     * describes an identity the storage may no longer hold -- it depends on
+     * whether the callback ran. Reading it out here is refused rather than
+     * guessed.
+     */
+    reboundInNestedScope?: true;
 }
 
 /**
@@ -1679,12 +1689,12 @@ export interface VariableBinding {
  * treating Value object identity as resource identity.
  */
 interface LightIdentity {
-  /** Current `scene.lights` slot, absent while the light is not in the scene. */
-  sceneLightIndex?: number;
-  /** Generator assigned through `light.shadowGenerator`, when present. */
-  shadowGeneratorIndex?: number;
-  /** Candidate slots observed when this light is stored in an ordered data array. */
-  dataCollectionIndices?: Set<number>;
+    /** Current `scene.lights` slot, absent while the light is not in the scene. */
+    sceneLightIndex?: number;
+    /** Generator assigned through `light.shadowGenerator`, when present. */
+    shadowGeneratorIndex?: number;
+    /** Candidate slots observed when this light is stored in an ordered data array. */
+    dataCollectionIndices?: Set<number>;
 }
 
 /**
@@ -1696,100 +1706,148 @@ interface LightIdentity {
  * into one process-global index.
  */
 interface SceneTopologyState {
-  lights: Array<{ identity: LightIdentity; kind: LightKind }>;
+    lights: Array<{ identity: LightIdentity; kind: LightKind }>;
 }
 
 /** Collection size is independent of whether generation can name its elements. */
 export interface CollectionCardinality {
-  kind: "array" | "keyed";
-  count: number | undefined;
-  keys?: Set<string | number | boolean>;
-  createdIn: readonly object[];
-  varyingIn: Set<object>;
-  /** An untracked alias can mutate this collection without visiting its cell. */
-  untrackedAliases?: true;
+    kind: "array" | "keyed";
+    count: number | undefined;
+    keys?: Set<string | number | boolean>;
+    createdIn: readonly object[];
+    varyingIn: Set<object>;
+    /** An untracked alias can mutate this collection without visiting its cell. */
+    untrackedAliases?: true;
 }
 
 export interface DefaultRenderTaskEmission {
-  sceneCpp: string;
-  setup: string;
+    sceneCpp: string;
+    setup: string;
 }
 
 /** A runtime mesh element carries capabilities, never a prototype's identity. */
 export function runtimeMeshValue(value: Value): Value {
-  if (value.kind !== "mesh") return value;
-  return {
-    kind: "mesh",
-    cpp: value.cpp,
-    ...(value.engineCpp !== undefined ? { engineCpp: value.engineCpp } : {}),
-    ...(value.dataType ? { dataType: value.dataType } : {}),
-    ...(value.runtimeIteration ? { runtimeIteration: true } : {}),
-    ...(value.runtimeMeshStreams ? { runtimeMeshStreams: true } : {}),
-    ...(value.directMorphCompatible ? { directMorphCompatible: true } : {}),
-  };
+    if (value.kind !== "mesh") return value;
+    return {
+        kind: "mesh",
+        cpp: value.cpp,
+        ...(value.engineCpp !== undefined
+            ? { engineCpp: value.engineCpp }
+            : {}),
+        ...(value.dataType ? { dataType: value.dataType } : {}),
+        ...(value.runtimeIteration ? { runtimeIteration: true } : {}),
+        ...(value.runtimeMeshStreams ? { runtimeMeshStreams: true } : {}),
+        ...(value.directMorphCompatible ? { directMorphCompatible: true } : {}),
+    };
 }
 
 export interface AssetRootState {
-  reparented: boolean;
-  alternatives?: readonly AssetRootState[];
+    reparented: boolean;
+    alternatives?: readonly AssetRootState[];
 }
 
-export function assetRootMutationStates(value: Value): readonly AssetRootState[] {
-  const states = new Set<AssetRootState>();
-  const visit = (state: AssetRootState): void => {
-    if (states.has(state)) return;
-    states.add(state);
-    state.alternatives?.forEach(visit);
-  };
-  if (value.assetRootState) visit(value.assetRootState);
-  return [...states];
+export function assetRootMutationStates(
+    value: Value,
+): readonly AssetRootState[] {
+    const states = new Set<AssetRootState>();
+    const visit = (state: AssetRootState): void => {
+        if (states.has(state)) return;
+        states.add(state);
+        state.alternatives?.forEach(visit);
+    };
+    if (value.assetRootState) visit(value.assetRootState);
+    return [...states];
 }
 
 /** A generation-known string as a value: its C++ literal beside its text. */
-export function staticStringValue(text: string, cppString: (text: string) => string): Value {
-  return { kind: "string", cpp: cppString(text), staticString: text };
+export function staticStringValue(
+    text: string,
+    cppString: (text: string) => string,
+): Value {
+    return { kind: "string", cpp: cppString(text), staticString: text };
 }
 
 /** A string as the program sees it: a plain string value or a data leaf typed string. */
 export function isStringValue(value: Value): boolean {
-  return value.kind === "string" || (value.kind === "data" && value.dataType?.kind === "string");
+    return (
+        value.kind === "string" ||
+        (value.kind === "data" && value.dataType?.kind === "string")
+    );
 }
 
 /** A boolean-kinded value; a literal `true`/`false` spelling is static. */
 export function booleanValue(cpp: string): Value {
-  return {
-    kind: "boolean",
-    cpp,
-    ...(cpp === "true" || cpp === "false" ? { staticBoolean: cpp === "true" } : {}),
-    dataType: { kind: "boolean" },
-  };
+    return {
+        kind: "boolean",
+        cpp,
+        ...(cpp === "true" || cpp === "false"
+            ? { staticBoolean: cpp === "true" }
+            : {}),
+        dataType: { kind: "boolean" },
+    };
 }
 
 /** A runtime choice retains only facts shared by every possible resource. */
-export function commonResourceValue(value: Value, candidates: readonly Value[]): Value {
-  const common = { ...value };
-  for (const key of metadataFieldsForKind(value.kind)) {
-    if (candidates.some((candidate) => candidate[key] !== value[key])) delete common[key];
-  }
-  if (common.kind === "asset" || common.kind === "asset-root" || common.kind === "asset-entity" || common.kind === "splat-mesh") {
-    const kind = value.asset?.kind ?? value.assetKind;
-    if (kind && candidates.every(candidate => (candidate.asset?.kind ?? candidate.assetKind) === kind)) common.assetKind = kind;
-    if (!common.assetRootState && candidates.every(candidate => candidate.assetRootState)) {
-      common.assetRootState = { reparented: false, alternatives: [...new Set(candidates.flatMap(assetRootMutationStates))] };
+export function commonResourceValue(
+    value: Value,
+    candidates: readonly Value[],
+): Value {
+    const common = { ...value };
+    for (const key of metadataFieldsForKind(value.kind)) {
+        if (candidates.some((candidate) => candidate[key] !== value[key]))
+            delete common[key];
     }
-  }
-  if ((common.kind === "mesh" || common.kind === "transform-node" || common.kind === "scene-node") &&
-      candidates.some((candidate) => candidate.runtimeMeshStreams)) common.runtimeMeshStreams = true;
-  if (!candidates.every((candidate) => candidate.directMorphCompatible)) delete common.directMorphCompatible;
-  if (value.kind === "material") {
-    const variants = [...new EmissionSet(candidates.flatMap((candidate) => [
-      ...(candidate.sceneShaderVariant === undefined ? [] : [candidate.sceneShaderVariant]),
-      ...(candidate.possibleSceneShaderVariants ?? []),
-    ]))].sort();
-    if (variants.length > 0) common.possibleSceneShaderVariants = variants;
-    else delete common.possibleSceneShaderVariants;
-  }
-  return common;
+    if (
+        common.kind === "asset" ||
+        common.kind === "asset-root" ||
+        common.kind === "asset-entity" ||
+        common.kind === "splat-mesh"
+    ) {
+        const kind = value.asset?.kind ?? value.assetKind;
+        if (
+            kind &&
+            candidates.every(
+                (candidate) =>
+                    (candidate.asset?.kind ?? candidate.assetKind) === kind,
+            )
+        )
+            common.assetKind = kind;
+        if (
+            !common.assetRootState &&
+            candidates.every((candidate) => candidate.assetRootState)
+        ) {
+            common.assetRootState = {
+                reparented: false,
+                alternatives: [
+                    ...new Set(candidates.flatMap(assetRootMutationStates)),
+                ],
+            };
+        }
+    }
+    if (
+        (common.kind === "mesh" ||
+            common.kind === "transform-node" ||
+            common.kind === "scene-node") &&
+        candidates.some((candidate) => candidate.runtimeMeshStreams)
+    )
+        common.runtimeMeshStreams = true;
+    if (!candidates.every((candidate) => candidate.directMorphCompatible))
+        delete common.directMorphCompatible;
+    if (value.kind === "material") {
+        const variants = [
+            ...new EmissionSet(
+                candidates.flatMap((candidate) => [
+                    ...(candidate.sceneShaderVariant === undefined
+                        ? []
+                        : [candidate.sceneShaderVariant]),
+                    ...(candidate.possibleSceneShaderVariants ?? []),
+                ]),
+            ),
+        ].sort();
+        if (variants.length > 0) common.possibleSceneShaderVariants = variants;
+        else delete common.possibleSceneShaderVariants;
+    }
+    return common;
 }
 
 /** Storage, capture and expression facts shared by value kinds. */
@@ -1797,956 +1855,970 @@ export type ValueBase = Omit<ValueFields, ValueMetadataKey>;
 
 /** Field types for payloads; producers use the discriminated Value type. */
 export interface ValueFields {
-  /** Closed packaged candidates of a generation-time Response. */
-  packagedSources?: readonly string[];
-  /** A fresh response read; only that exact expression proves unchanged bytes. */
-  fetchedBytes?: { expression: ts.CallExpression; sources: readonly string[] };
-  ownedEngineCpp?: string;
-  cpp: string;
-  /** Owning cell for a mutable captured binding; cpp reads its current value. */
-  sharedStorageCpp?: string;
-  /** Native bindings still read by this value and its companion expressions. */
-  nativeCaptures?: readonly NativeCaptureBinding[];
-  /** Dependencies of delayed companion expressions, replaced with that field. */
-  nativeCompanionCaptures?: Partial<Record<NativeCompanionKey, readonly NativeCaptureBinding[]>>;
-  /** Generation-known tag for scene-created retained DOM elements. */
-  uiTag?: string;
-  /** Audited host lookup whose native storage is initialized after engine creation. */
-  uiHostId?: string;
-  /** This engine/surface/scene presents into a retained host canvas. */
-  surfaceCanvas?: true;
-  environmentAsset?: CompileAsset;
-  localCubemap?: {plan: LocalCubemapPlan; environments: Value[]};
-  /** The live DOMStringMap view returned by an element's `dataset`. */
-  uiDataset?: true;
-  /**
-   * Generation-known identity for one retained element construction site.
-   * Runtime loops may evaluate the site more than once, but every resulting
-   * element has the same statically-proven tag, classes, and child shape.
-   */
-  uiStaticId?: number;
-  /** Browser document.body carried through an inlined UI helper parameter. */
-  uiRoot?: true;
-  /** A retained UI element whose pixels come from the bounded Canvas2D IR. */
-  uiCanvas?: true;
-  /** The native presentation host's primary browser canvas. */
-  uiPrimaryCanvas?: true;
-  /**
-   * Generation identity of one created canvas element, carried unchanged
-   * into its 2D-context views and const bindings (whose `cpp` spellings
-   * differ): the key that ties statically-assigned backing sizes to the
-   * one canvas a `clearRect` must cover.
-   */
-  uiCanvasId?: number;
-  /** The 2D drawing-context view of the canvas handle in `cpp`. */
-  uiCanvasContext?: true;
-  /** A retained input whose source assigned the static type "file". */
-  uiFileInput?: true;
-  /**
-   * Exact members held by a native array at this point in the source walk.
-   * Runtime storage preserves JavaScript array semantics while this complete
-   * snapshot lets generation-only consumers iterate known handles or records.
-   * Any mutation generation cannot enumerate clears it.
-   */
-  staticElements?: Value[];
-  /** The sampled provider options retain callback identity and their initial matrix. */
-  nodeParticleProvider?: {
-    callbackCpp: string;
-    initialMatrixCpp: string;
-    emitter: readonly [number, number, number];
-    textureBaseUrl?: string;
-  };
-  /** Root binding whose static element snapshot this parameter alias shares. */
-  staticElementsOwner?: Value;
-  /** Shared by aliases even after their generation-known elements are withdrawn. */
-  collectionCardinality?: CollectionCardinality;
-  /** Representative metadata for a handle read from a runtime container. */
-  runtimeElementTemplate?: Value;
-  /**
-   * Keep this lookup nullable when it initializes a local even if
-   * TypeScript reports the binding itself as non-nullable.
-   *
-   * An open `Record<string | number, T>` has that checker shape, but an
-   * arbitrary JavaScript property can still be absent. Retaining the
-   * native nullable lets a later `!== undefined` test observe the miss
-   * before any use dereferences the value.
-   */
-  preserveUncheckedLookup?: true;
-  /**
-   * A reached user function was inlined and left this value as its
-   * result. If its call is used as a statement, C++ needs an explicit
-   * discard instead of a bare value expression.
-   */
-  requiresExplicitDiscard?: boolean;
-  dataType?: DataType;
-  /** The expression returns existing mutable storage, not a JS value copy. */
-  borrowedData?: true;
-  /** The C++ spelling is an lvalue that can bind to a mutable reference. */
-  nativeLvalue?: true;
-  /** The data expression is already a native std::vector, not a JS Array. */
-  nativeVectorData?: true;
-  /** The expression creates an owning data container at this read. */
-  freshData?: true;
-  dataStore?: TypedArrayKind | "numberindex";
-  /**
-   * Set on a value read out of a container of const elements (a span,
-   * including a materialized constant table). It cannot be bound by
-   * reference, and the source language would not let it be written
-   * through either.
-   */
-  readOnly?: boolean;
-  /** A pinned function retained as a compile-time alias of its intrinsic. */
-  intrinsicName?: string;
-  hostFunction?: "fetch" | "clipboard-write";
-  /** Known RegExp grammar determines the positional replacement callback arguments. */
-  regexpCaptureCount?: number;
-  callbackDeclaration?:
-    | ts.Identifier
-    | ts.FunctionDeclaration
-    | ts.ArrowFunction
-    | ts.FunctionExpression
-    | ts.MethodDeclaration;
-  /**
-   * Runtime parameter types for a locally specialized recursive function.
-   * An undefined entry is a compile-time argument captured by the lambda.
-   */
-  nativeCallbackParameterTypes?: readonly (DataType | undefined)[];
-  /** Captured values learned from calls within one recursive specialization. */
-  nativeCallbackStaticArguments?: (Value | undefined)[];
-  /** Undefined is also the native void return type. */
-  nativeCallbackReturnType?: DataType;
-  /** An owned promise's resolving function; cpp names its retained settlement state. */
-  nativePromiseSettlement?: {mode: "resolve" | "reject"; type: string; result: Value};
-  /** Scope-carrying record a function-valued property was read from. */
-  callbackRecordOwner?: Value;
-  /** The function/object expression is re-evaluated by emitted native code. */
-  repeatedCallbackEvaluation?: true;
-  /** Distinguishes one statically emitted evaluation of a function expression. */
-  callbackEvaluationIdentity?: object;
-  /** JavaScript function identity retained by a materialized native callback. */
-  platformCallbackIdentity?: number;
-  /** Constructed class identity, retained when an inlined return wraps Value. */
-  classDeclaration?: ts.ClassDeclaration;
-  /**
-   * What the class's own type parameters stand for on this instance.
-   *
-   * A generic class's method body is written against `P`, and the checker
-   * answers with `P` wherever it is asked at the declaration. Carrying the
-   * instantiation on the receiver lets the type mapper substitute it while
-   * that body is inlined, so `new Workspace<Part>()` resolves `P[]` to
-   * `Part[]` and `new Workspace<Other>()` does not collide with it.
-   */
-  classTypeArguments?: ReadonlyMap<ts.Symbol, ts.Type>;
-  /**
-   * The expression names a slot inside a shared class instance rather than
-   * a binding of its own.
-   *
-   * Construction uses it to tell the fields its layout stores from the ones
-   * it hoisted, and the hoisting proof reads the same mark.
-   */
-  classStoredField?: true;
-  /**
-   * The one constructor assignment the hoisting proof selected, already
-   * performed from the constructor argument the caller evaluated.
-   *
-   * The node itself is the mark, not a boolean: the field binding outlives
-   * the construction -- a method inlined on a stored instance reads it back
-   * out of the proven hoisted map -- so a boolean would make every later
-   * `this.x = ...` look like the write that already happened. Only this
-   * exact assignment is the one that did.
-   */
-  classHoistedAssignment?: ts.BinaryExpression;
-  /** The concrete native texture record produced by a texture factory. */
-  textureStorage?: "file" | "pixels" | "solid" | "render" | "stored";
-  /** Borrowed 2D-array depth view returned by getCsmReceiverTexture. */
-  csmReceiverGeneratorIndex?: number;
-  textureFile?: {
-    srgb: boolean;
-    /** Packaged source used only when source dimensions are reached. */
-    source?: string;
-    entryFileName?: string;
-  };
-  /** Statically decoded source dimensions for file-backed image textures. */
-  textureWidth?: number;
-  textureHeight?: number;
-  /**
-   * The pin's texture-OBJECT `invertY`, which is not `loadTexture2D`'s
-   * upload flip: `uploadCompressed` leaves it unset and `basis-loader.ts`
-   * sets it (texture-2d.ts / basis-loader.ts). Composition reads it —
-   * `lightmap-fragment.ts`'s `detect` folds it against `uAng` — so the
-   * producer states it rather than a consumer assuming a default.
-   */
-  textureObjectInvertY?: boolean;
-  /**
-   * The `Texture2D.uAng` a scene wrote on this texture before binding it.
-   *
-   * Upstream this is one number on one object, read at composition by the
-   * lightmap extension and at upload by the Standard UV transform. The
-   * write emits the record store either way; this is the same value at
-   * generation, for the composition half.
-   */
-  textureUvAng?: number;
-  /**
-   * Which `scenePbrMaterials` entry this value names. The pin's opt-in
-   * setters mutate the material object they are handed, so a setter has
-   * to reach the same record the creation did; the index is that object
-   * identity at compile time. It rides the material a
-   * `createPbrMaterial` returned, and a mesh a material was assigned
-   * to, which is how `setPbrSkybox(box.material)` resolves the record
-   * the assignment stored.
-   */
-  scenePbrMaterialIndex?: number;
-  /** This material was read from a mesh whose identity came from an asset. */
-  assetPbrMaterial?: true;
-  /**
-   * The container a PROVEN whole-list flatten is walking, on the member it
-   * bound and on what is read off that member.
-   *
-   * A loaded material has no compile-time identity of its own, so a setter
-   * reaching one can only name the document its container composes. That is
-   * sound only when the loop is known to reach every renderable, which is
-   * why this rides the flatten walk's own binding and not the generic
-   * collection loop: `getContainerMeshes(a)` bound to a variable, or
-   * `a.meshes ?? []`, iterate the same handles without that proof.
-   */
-  assetWholeMeshList?: CompileAsset;
-  /**
-   * A `createStandardMaterial` result, which is the family question
-   * `material.plugins` has to answer: the pin's Standard plugin bridge
-   * filters on `_buildGroup === standardGroupBuilder`, so a plugin on a
-   * grid, shader or node material composes nothing upstream and refuses
-   * here.
-   */
-  standardMaterial?: true;
-  /** The 1-based Standard plugin signature baked into this material. */
-  standardMaterialPluginIndex?: number;
-  /** Feature-bearing Standard properties accumulated on this material. */
-  standardMaterialInput?: PinnedStandardMaterialInput;
-  /**
-   * Native material fields whose source values are mutable JavaScript arrays.
-   *
-   * Babylon material objects retain those arrays by reference, so
-   * `markMaterialUboDirty(material)` must re-read their current components
-   * rather than keep the snapshot written by the original assignment. The
-   * map is shared by Value copies so a material stored in a class field keeps
-   * the bindings registered on its construction-site value.
-   */
-  materialUboArrayFields?: Map<string, NativeExpression>;
-  /**
-   * Which composed node graph a material value names.
-   *
-   * It rides a `parseNodeMaterialFromSnippet` result; the assignment that
-   * puts it on a mesh records the pair the caster list resolves against,
-   * so the mesh's own Value never carries it.
-   */
-  nodeMaterialIndex?: number;
-  /**
-   * Which `sceneMeshes` entry this mesh value names, so a scene-code
-   * mesh can be resolved to the runtime handle the composed variant
-   * tables are keyed by: the asset renderables come first, in load
-   * order, and the scene meshes follow in creation order.
-   */
-  sceneMeshIndex?: number;
-  /** A repeated native creation's profile, never a singleton mesh identity. */
-  sceneMeshProfileIndex?: number;
-  /**
-   * This `createMeshFromData` mesh was handed at least one optional
-   * attribute stream whose presence is a run-time answer, so the
-   * attribute set the Standard and PBR variant keys need is not
-   * generation-known. Carried on the value because the refusal belongs at
-   * the material assignment, which is where the pairing exists.
-   */
-  runtimeMeshStreams?: true;
-  /** Stable identity shared by every Value alias of one light handle. */
-  lightIdentity?: LightIdentity;
-  /**
-   * Which `shadowGenerators` entry this generator value names. A light's
-   * assigned generator lives on `lightIdentity` so aliases observe it too.
-   */
-  shadowGeneratorIndex?: number;
-  /**
-   * Set on a read whose value can differ between two evaluations of the
-   * same expression -- a clock, not a constant.
-   *
-   * `collectStaticConstants` registers every `const` initializer so a
-   * later use folds back to it, which is right for a literal and wrong
-   * for `ctx.currentTime`: `const now = ctx.currentTime` followed by two
-   * uses would call the clock twice and schedule against two different
-   * instants, where the source asked for one. A declaration bound to an
-   * impure value therefore stops being a static constant and its uses
-   * read the native local.
-   */
-  impure?: true;
-  /**
-   * `mainBus._in` under an audio engine -- the gain a sound source
-   * connects into. It rides the engine value because the pin reaches it
-   * through the engine object rather than by name.
-   */
-  audioMainBusCpp?: string;
-  /** Primary native storage whose main-bus companion is materialized beside it. */
-  audioMainBusOwnerCpp?: string;
-  /**
-   * The materialized asset an `asset` value was loaded from.
-   * `selectVariant` needs it the way the pin's own setter reaches
-   * `container.materialVariants`: through the object, not by name.
-   */
-  asset?: CompileAsset;
-  /**
-   * Compile-time state of one loaded glTF container's synthetic root.
-   *
-   * `CompileAsset` is keyed by source and can therefore back several native
-   * containers. Root mutation state must instead follow the handle value: an
-   * alias keeps this state, while another `loadGltf` call (even for the same
-   * source) receives a different one.
-   */
-  assetRootState?: AssetRootState;
-  /** Loader kind shared by a runtime selection of different asset sources. */
-  assetKind?: CompileAsset["kind"];
-  /**
-   * Set on the hierarchy `cloneTransformNode` returned for a glTF root.
-   * Both values use the asset handle as their native identity, but only
-   * the clone is an entity the source may add on its own: the original
-   * root is already owned by its container and adding it must not pull in
-   * the container-level animation/camera wiring a second time.
-   */
-  assetRootClone?: true;
-  /**
-   * The graph a `node-particle-graph` value carries, and — on a set, its
-   * systems and one of them — which recorded set it names. The program
-   * those calls append to is the scene's, not the value's, so only the
-   * index travels here.
-   */
-  nodeParticleGraph?: NodeParticleGraphSource;
-  /**
-   * What a `splat-fragment` value carries: the pinned export a scene
-   * imported, or the record it declared. Read at composition, where the
-   * pin's own splicer turns the list into one WGSL module.
-   */
-  splatFragment?: SplatFragmentManifest;
-  /** Which set, and which of its systems, in the manifest's own order. */
-  nodeParticleSetIndex?: number;
-  nodeParticleSystemIndex?: number;
-  /**
-   * For a pure-2D binding and its bridges: which
-   * `registerNodeParticleSet2D` request, and which bridge of it.
-   */
-  nodeParticleRequestIndex?: number;
-  nodeParticleBridgeIndex?: number;
-  /**
-   * The binding's systems are simulated natively every frame (lowered
-   * from the graph) rather than frozen at generation; its bridges and
-   * their systems and buffers carry the mark, since scene code reaches
-   * the generated registrar's mapping through them.
-   */
-  nodeParticleLive?: true;
-  nodeParticleColumn?: NodeParticleColumn;
-  /**
-   * For a `createTexture2DFromPixels` texture: what the bake driver needs
-   * to build the same texture in the browser. A particle system's texture
-   * is assigned in scene code, and the pin reads its width and height to
-   * partition the atlas, so the driver has to hold the real one.
-   */
-  pixelsTexture?: PixelsTextureSource;
-  /**
-   * Set on the `animation-group` a property clip produced. A glTF group
-   * is the engine handle its loader created, while
-   * `createPropertyAnimationGroup` returns the shared record the manager
-   * drives, and the two take different native entry points — so an
-   * operation serving one names the other with a source location instead
-   * of emitting C++ that would not compile. Absent means the handle form.
-   */
-  animationGroupSource?: "property";
-  /**
-   * For a handle that may be absent: the native boolean saying whether
-   * it is there. A search produces one — upstream's `find` returns
-   * `undefined` when nothing matched — and so does a record slot
-   * nothing filled, which carries `invalid_handle`. Either way the flag
-   * is what a scene's own guard reads, through `if`, `??` or a null
-   * comparison. A find the materialized asset resolved at generation
-   * carries the constant `"true"`, which is what folds the scene's own
-   * not-found guard away.
-   */
-  optionalFoundCpp?: string;
-  /** JavaScript truthiness when it differs from mere optional presence. */
-  truthinessCpp?: string;
-  /** An Error delivered by native device recovery, with the Error message contract. */
-  nativeError?: true;
-  /** Storage behind a nullable resource value whose `cpp` is its dereference. */
-  optionalStorageCpp?: string;
-  /**
-   * The borrowed DOM Event base view. It reuses the mouse-event Value kind so
-   * preventDefault follows the existing path, but exposes no typed mouse
-   * fields through an unsafe assertion.
-   */
-  platformEventBase?: true;
-  /** Native pointer token carrying JavaScript identity for a data object. */
-  objectIdentityCpp?: string;
-  /** Native DOM target discriminator for a represented global identity. */
-  domEventTargetCpp?: string;
-  /**
-   * For a `handle-collection` value: where the collection lives and, when
-   * it is asset-derived, which materialized asset decides its members.
-   */
-  handleCollection?: HandleCollectionInfo;
-  /**
-   * A generation-time identity for a handle whose collection slot is
-   * known — `<asset source>#animationGroups[<index>]`. Two values carrying
-   * identities compare by them, which is what lets `group === sadPose`
-   * fold per unrolled iteration; a value without one compares its native
-   * `.value` at run time instead.
-   */
-  handleIdentity?: string;
-  engineCpp?: string;
-  /** A text vector alias retains the shared renderable, not copied components. */
-  textTransform?: import("./text-surface.js").TextTransform;
-  /** A direct GPU readback belongs to the entry's single engine, including
-   * its lexical aliases. Data-transported results have a checked runtime
-   * owner instead and deliberately do not carry this compile-time fact. */
-  pickingEngineKnown?: true;
-  /** A node's observable transform object retains its owning handle. */
-  sceneNodeVector?: {
-    owner: Value & { engineCpp: string };
-    transform: SceneNodeTransformDescriptor;
-    bound?: true;
-  };
-  /** An observable camera vector retains its original camera handle. */
-  cameraVector?: {
-    owner: Value & { engineCpp: string };
-    field: "position" | "target" | "up_vector";
-    bound?: true;
-  };
-  geometryTask?: GeometryOutputTaskManifest;
-  /**
-   * Set on a `render-texture` or `render-target-texture` whose texture is
-   * a depth attachment rather than a colour one. Two things make one: a
-   * geometry task's own depth, which is what a render task's `depth` may
-   * bind, and a render target that declared no colour format, because
-   * `rtt.ts` then hands its depth attachment to samplers.
-   *
-   * This is the ASPECT -- what sampling it gives you. `renderTextureSource`
-   * is the separate question of who owns it.
-   */
-  isDepthTexture?: true;
-  /**
-   * Which native `RenderTextureSource` a render texture names. The
-   * compiler knows it at every construction site, so a slot that accepts
-   * only some of them refuses the rest by name with a location, rather
-   * than leaving a backend to fail a binding at run time.
-   */
-  renderTextureSource?:
-    "render-target" | "geometry" | "geometry-output" | "geometry-depth";
-  /**
-   * Which post-process pass a `task` value names. `outputTexture` reads it
-   * to resolve the internal target the pin's `prepareOutputTarget` creates,
-   * and a settable effect option resolves its parameter slot through it.
-   */
-  postProcessTask?: PostProcessTaskManifest;
-  /**
-   * Set instead when a `task` value names a composite. It records passes of
-   * its own, so it answers `updateUniforms` and `outputTexture` the same way
-   * -- but its parameters live on the passes the pin built, not on a slot a
-   * scene can name, so a setter on one is refused.
-   */
-  postProcessComposite?: PostProcessCompositeManifest;
-  /** Proven scene-render task factory result, including its constant aliases. */
-  renderTask?: true;
-  /** Proven target descriptor retained by aliases for pass-signature admission. */
-  renderTargetSignature?: { surfaceFormat: boolean; hasColor: boolean; depthFormat?: string; samples: number };
-  /**
-   * Set instead when a `task` value names a screen-space effect. Its
-   * `outputTexture` is whichever target its composite ends on, and its
-   * settings are live record fields a scene may write.
-   */
-  screenSpaceTask?: ScreenSpaceTaskManifest;
-  lightKind?: LightKind;
-  /**
-   * A camera's own construction, as static numbers, and the scene's
-   * reference to the camera it was assigned.
-   *
-   * One executed port reads the scene's camera rather than only the
-   * scene's own records: a node-particle graph's `UpdateFlowMapBlock`
-   * derives the view-projection at build, so the driver that runs that
-   * build has to hold the same camera. Everything in it is a literal the
-   * scene wrote, and a camera assembled any other way carries no program
-   * and refuses there.
-   */
-  cameraProgram?: NodeParticleCamera;
-  /** The camera value `scene.camera = ...` stored, by reference. */
-  sceneCamera?: Value;
-  /**
-   * The extra textures a custom-shader descriptor binds, as the native
-   * expressions that build them, in binding order. They ride the
-   * descriptor because that is what the layer or system is handed.
-   */
-  spriteCustomTextures?: string[];
-  /** The corresponding shader identifiers, in the same binding order. */
-  spriteCustomTextureNames?: string[];
-  /** One-based program index; zero is the stock sprite/billboard shader. */
-  spriteCustomShaderIndex?: number;
-  /**
-   * Generation-known depth mode for a 2D sprite-layer handle. This is handle
-   * metadata, not a materialized string value: `staticString` is reserved for
-   * actual compile-time strings and would otherwise change the native type of
-   * a sprite handle stored inside a data record or array.
-   */
-  spriteDepthMode?: "none" | "test" | "test-write";
-  shaderVariant?: string;
-  /**
-   * The same name, but only for a program `createShaderMaterial` built
-   * from the entry's own WGSL.
-   *
-   * The line and linear-depth families also carry `shaderVariant`, and
-   * both settle their own instanced form from their options -- the line
-   * family even names the permutation. Only a scene-local program leaves
-   * that to the mesh, so only it is marked here.
-   */
-  sceneShaderVariant?: string;
-  /** Possible scene-local programs, distinct from a singleton material identity. */
-  possibleSceneShaderVariants?: readonly string[];
-  /** Stable creation slot for a scene-owned material that escapes a scope. */
-  sceneMaterialSlot?: number;
-  animationFrameRate?: string;
-  animationDuration?: string;
-  /**
-   * Which object kind an `animation-clip` value's paths bind to. A
-   * pinned path is resolved against whatever object the group was
-   * created with, so the clip and the target have to agree; the closed
-   * path table decides which kind each one names.
-   */
-  animationTargetKind?: "mesh" | "camera" | "record";
-  /** Static property paths carried from a property-animation clip. */
-  animationPaths?: readonly string[];
-  staticNumber?: number;
-  /** Generation-known boolean retained across readonly scalar bindings. */
-  staticBoolean?: boolean;
-  /** Materialized mutable parameter; static caller facts cannot fold branches. */
-  parameterBinding?: boolean;
-  /** A local the emitter materialized as a native variable; reads go through it. */
-  nativeBinding?: true;
-  /** A value bound by a native runtime iteration, not a static unroll. */
-  runtimeIteration?: true;
-  staticString?: string;
-  /**
-   * The generation-known contents of a `string[]`, carried on the value the
-   * way `staticString` carries one string.
-   *
-   * A native string vector's elements are not recoverable from its
-   * spelling, and an inlined call's parameter binding keeps the value while
-   * dropping the argument expression — so a list of ids reaching a handle
-   * property through a scene's own helper has nowhere else to travel. Set
-   * only where the whole list resolves statically, so a present field is a
-   * complete list rather than a partial one.
-   */
-  staticStrings?: readonly string[];
-  /** Runtime path selected from a compiler-packaged closed asset directory. */
-  dynamicAssetPathCpp?: string;
-  /** Parsed payload carried only by a generation-time fetch response. */
-  staticJson?: unknown;
-  tupleElements?: Value[];
-  recordProperties?: Record<string, Value>;
+    /** Closed packaged candidates of a generation-time Response. */
+    packagedSources?: readonly string[];
+    /** A fresh response read; only that exact expression proves unchanged bytes. */
+    fetchedBytes?: {
+        expression: ts.CallExpression;
+        sources: readonly string[];
+    };
+    ownedEngineCpp?: string;
+    cpp: string;
+    /** Owning cell for a mutable captured binding; cpp reads its current value. */
+    sharedStorageCpp?: string;
+    /** Native bindings still read by this value and its companion expressions. */
+    nativeCaptures?: readonly NativeCaptureBinding[];
+    /** Dependencies of delayed companion expressions, replaced with that field. */
+    nativeCompanionCaptures?: Partial<
+        Record<NativeCompanionKey, readonly NativeCaptureBinding[]>
+    >;
+    /** Generation-known tag for scene-created retained DOM elements. */
+    uiTag?: string;
+    /** Audited host lookup whose native storage is initialized after engine creation. */
+    uiHostId?: string;
+    /** This engine/surface/scene presents into a retained host canvas. */
+    surfaceCanvas?: true;
+    environmentAsset?: CompileAsset;
+    localCubemap?: { plan: LocalCubemapPlan; environments: Value[] };
+    /** The live DOMStringMap view returned by an element's `dataset`. */
+    uiDataset?: true;
+    /**
+     * Generation-known identity for one retained element construction site.
+     * Runtime loops may evaluate the site more than once, but every resulting
+     * element has the same statically-proven tag, classes, and child shape.
+     */
+    uiStaticId?: number;
+    /** Browser document.body carried through an inlined UI helper parameter. */
+    uiRoot?: true;
+    /** A retained UI element whose pixels come from the bounded Canvas2D IR. */
+    uiCanvas?: true;
+    /** The native presentation host's primary browser canvas. */
+    uiPrimaryCanvas?: true;
+    /**
+     * Generation identity of one created canvas element, carried unchanged
+     * into its 2D-context views and const bindings (whose `cpp` spellings
+     * differ): the key that ties statically-assigned backing sizes to the
+     * one canvas a `clearRect` must cover.
+     */
+    uiCanvasId?: number;
+    /** The 2D drawing-context view of the canvas handle in `cpp`. */
+    uiCanvasContext?: true;
+    /** A retained input whose source assigned the static type "file". */
+    uiFileInput?: true;
+    /**
+     * Exact members held by a native array at this point in the source walk.
+     * Runtime storage preserves JavaScript array semantics while this complete
+     * snapshot lets generation-only consumers iterate known handles or records.
+     * Any mutation generation cannot enumerate clears it.
+     */
+    staticElements?: Value[];
+    /** The sampled provider options retain callback identity and their initial matrix. */
+    nodeParticleProvider?: {
+        callbackCpp: string;
+        initialMatrixCpp: string;
+        emitter: readonly [number, number, number];
+        textureBaseUrl?: string;
+    };
+    /** Root binding whose static element snapshot this parameter alias shares. */
+    staticElementsOwner?: Value;
+    /** Shared by aliases even after their generation-known elements are withdrawn. */
+    collectionCardinality?: CollectionCardinality;
+    /** Representative metadata for a handle read from a runtime container. */
+    runtimeElementTemplate?: Value;
+    /**
+     * Keep this lookup nullable when it initializes a local even if
+     * TypeScript reports the binding itself as non-nullable.
+     *
+     * An open `Record<string | number, T>` has that checker shape, but an
+     * arbitrary JavaScript property can still be absent. Retaining the
+     * native nullable lets a later `!== undefined` test observe the miss
+     * before any use dereferences the value.
+     */
+    preserveUncheckedLookup?: true;
+    /**
+     * A reached user function was inlined and left this value as its
+     * result. If its call is used as a statement, C++ needs an explicit
+     * discard instead of a bare value expression.
+     */
+    requiresExplicitDiscard?: boolean;
+    dataType?: DataType;
+    /** The expression returns existing mutable storage, not a JS value copy. */
+    borrowedData?: true;
+    /** The C++ spelling is an lvalue that can bind to a mutable reference. */
+    nativeLvalue?: true;
+    /** The data expression is already a native std::vector, not a JS Array. */
+    nativeVectorData?: true;
+    /** The expression creates an owning data container at this read. */
+    freshData?: true;
+    dataStore?: TypedArrayKind | "numberindex";
+    /**
+     * Set on a value read out of a container of const elements (a span,
+     * including a materialized constant table). It cannot be bound by
+     * reference, and the source language would not let it be written
+     * through either.
+     */
+    readOnly?: boolean;
+    /** A pinned function retained as a compile-time alias of its intrinsic. */
+    intrinsicName?: string;
+    hostFunction?: "fetch" | "clipboard-write";
+    /** Known RegExp grammar determines the positional replacement callback arguments. */
+    regexpCaptureCount?: number;
+    callbackDeclaration?:
+        | ts.Identifier
+        | ts.FunctionDeclaration
+        | ts.ArrowFunction
+        | ts.FunctionExpression
+        | ts.MethodDeclaration;
+    /**
+     * Runtime parameter types for a locally specialized recursive function.
+     * An undefined entry is a compile-time argument captured by the lambda.
+     */
+    nativeCallbackParameterTypes?: readonly (DataType | undefined)[];
+    /** Captured values learned from calls within one recursive specialization. */
+    nativeCallbackStaticArguments?: (Value | undefined)[];
+    /** Undefined is also the native void return type. */
+    nativeCallbackReturnType?: DataType;
+    /** An owned promise's resolving function; cpp names its retained settlement state. */
+    nativePromiseSettlement?: {
+        mode: "resolve" | "reject";
+        type: string;
+        result: Value;
+    };
+    /** Scope-carrying record a function-valued property was read from. */
+    callbackRecordOwner?: Value;
+    /** The function/object expression is re-evaluated by emitted native code. */
+    repeatedCallbackEvaluation?: true;
+    /** Distinguishes one statically emitted evaluation of a function expression. */
+    callbackEvaluationIdentity?: object;
+    /** JavaScript function identity retained by a materialized native callback. */
+    platformCallbackIdentity?: number;
+    /** Constructed class identity, retained when an inlined return wraps Value. */
+    classDeclaration?: ts.ClassDeclaration;
+    /**
+     * What the class's own type parameters stand for on this instance.
+     *
+     * A generic class's method body is written against `P`, and the checker
+     * answers with `P` wherever it is asked at the declaration. Carrying the
+     * instantiation on the receiver lets the type mapper substitute it while
+     * that body is inlined, so `new Workspace<Part>()` resolves `P[]` to
+     * `Part[]` and `new Workspace<Other>()` does not collide with it.
+     */
+    classTypeArguments?: ReadonlyMap<ts.Symbol, ts.Type>;
+    /**
+     * The expression names a slot inside a shared class instance rather than
+     * a binding of its own.
+     *
+     * Construction uses it to tell the fields its layout stores from the ones
+     * it hoisted, and the hoisting proof reads the same mark.
+     */
+    classStoredField?: true;
+    /**
+     * The one constructor assignment the hoisting proof selected, already
+     * performed from the constructor argument the caller evaluated.
+     *
+     * The node itself is the mark, not a boolean: the field binding outlives
+     * the construction -- a method inlined on a stored instance reads it back
+     * out of the proven hoisted map -- so a boolean would make every later
+     * `this.x = ...` look like the write that already happened. Only this
+     * exact assignment is the one that did.
+     */
+    classHoistedAssignment?: ts.BinaryExpression;
+    /** The concrete native texture record produced by a texture factory. */
+    textureStorage?: "file" | "pixels" | "solid" | "render" | "stored";
+    /** Borrowed 2D-array depth view returned by getCsmReceiverTexture. */
+    csmReceiverGeneratorIndex?: number;
+    textureFile?: {
+        srgb: boolean;
+        /** Packaged source used only when source dimensions are reached. */
+        source?: string;
+        entryFileName?: string;
+    };
+    /** Statically decoded source dimensions for file-backed image textures. */
+    textureWidth?: number;
+    textureHeight?: number;
+    /**
+     * The pin's texture-OBJECT `invertY`, which is not `loadTexture2D`'s
+     * upload flip: `uploadCompressed` leaves it unset and `basis-loader.ts`
+     * sets it (texture-2d.ts / basis-loader.ts). Composition reads it —
+     * `lightmap-fragment.ts`'s `detect` folds it against `uAng` — so the
+     * producer states it rather than a consumer assuming a default.
+     */
+    textureObjectInvertY?: boolean;
+    /**
+     * The `Texture2D.uAng` a scene wrote on this texture before binding it.
+     *
+     * Upstream this is one number on one object, read at composition by the
+     * lightmap extension and at upload by the Standard UV transform. The
+     * write emits the record store either way; this is the same value at
+     * generation, for the composition half.
+     */
+    textureUvAng?: number;
+    /**
+     * Which `scenePbrMaterials` entry this value names. The pin's opt-in
+     * setters mutate the material object they are handed, so a setter has
+     * to reach the same record the creation did; the index is that object
+     * identity at compile time. It rides the material a
+     * `createPbrMaterial` returned, and a mesh a material was assigned
+     * to, which is how `setPbrSkybox(box.material)` resolves the record
+     * the assignment stored.
+     */
+    scenePbrMaterialIndex?: number;
+    /** This material was read from a mesh whose identity came from an asset. */
+    assetPbrMaterial?: true;
+    /**
+     * The container a PROVEN whole-list flatten is walking, on the member it
+     * bound and on what is read off that member.
+     *
+     * A loaded material has no compile-time identity of its own, so a setter
+     * reaching one can only name the document its container composes. That is
+     * sound only when the loop is known to reach every renderable, which is
+     * why this rides the flatten walk's own binding and not the generic
+     * collection loop: `getContainerMeshes(a)` bound to a variable, or
+     * `a.meshes ?? []`, iterate the same handles without that proof.
+     */
+    assetWholeMeshList?: CompileAsset;
+    /**
+     * A `createStandardMaterial` result, which is the family question
+     * `material.plugins` has to answer: the pin's Standard plugin bridge
+     * filters on `_buildGroup === standardGroupBuilder`, so a plugin on a
+     * grid, shader or node material composes nothing upstream and refuses
+     * here.
+     */
+    standardMaterial?: true;
+    /** The 1-based Standard plugin signature baked into this material. */
+    standardMaterialPluginIndex?: number;
+    /** Feature-bearing Standard properties accumulated on this material. */
+    standardMaterialInput?: PinnedStandardMaterialInput;
+    /**
+     * Native material fields whose source values are mutable JavaScript arrays.
+     *
+     * Babylon material objects retain those arrays by reference, so
+     * `markMaterialUboDirty(material)` must re-read their current components
+     * rather than keep the snapshot written by the original assignment. The
+     * map is shared by Value copies so a material stored in a class field keeps
+     * the bindings registered on its construction-site value.
+     */
+    materialUboArrayFields?: Map<string, NativeExpression>;
+    /**
+     * Which composed node graph a material value names.
+     *
+     * It rides a `parseNodeMaterialFromSnippet` result; the assignment that
+     * puts it on a mesh records the pair the caster list resolves against,
+     * so the mesh's own Value never carries it.
+     */
+    nodeMaterialIndex?: number;
+    /**
+     * Which `sceneMeshes` entry this mesh value names, so a scene-code
+     * mesh can be resolved to the runtime handle the composed variant
+     * tables are keyed by: the asset renderables come first, in load
+     * order, and the scene meshes follow in creation order.
+     */
+    sceneMeshIndex?: number;
+    /** A repeated native creation's profile, never a singleton mesh identity. */
+    sceneMeshProfileIndex?: number;
+    /**
+     * This `createMeshFromData` mesh was handed at least one optional
+     * attribute stream whose presence is a run-time answer, so the
+     * attribute set the Standard and PBR variant keys need is not
+     * generation-known. Carried on the value because the refusal belongs at
+     * the material assignment, which is where the pairing exists.
+     */
+    runtimeMeshStreams?: true;
+    /** Stable identity shared by every Value alias of one light handle. */
+    lightIdentity?: LightIdentity;
+    /**
+     * Which `shadowGenerators` entry this generator value names. A light's
+     * assigned generator lives on `lightIdentity` so aliases observe it too.
+     */
+    shadowGeneratorIndex?: number;
+    /**
+     * Set on a read whose value can differ between two evaluations of the
+     * same expression -- a clock, not a constant.
+     *
+     * `collectStaticConstants` registers every `const` initializer so a
+     * later use folds back to it, which is right for a literal and wrong
+     * for `ctx.currentTime`: `const now = ctx.currentTime` followed by two
+     * uses would call the clock twice and schedule against two different
+     * instants, where the source asked for one. A declaration bound to an
+     * impure value therefore stops being a static constant and its uses
+     * read the native local.
+     */
+    impure?: true;
+    /**
+     * `mainBus._in` under an audio engine -- the gain a sound source
+     * connects into. It rides the engine value because the pin reaches it
+     * through the engine object rather than by name.
+     */
+    audioMainBusCpp?: string;
+    /** Primary native storage whose main-bus companion is materialized beside it. */
+    audioMainBusOwnerCpp?: string;
+    /**
+     * The materialized asset an `asset` value was loaded from.
+     * `selectVariant` needs it the way the pin's own setter reaches
+     * `container.materialVariants`: through the object, not by name.
+     */
+    asset?: CompileAsset;
+    /**
+     * Compile-time state of one loaded glTF container's synthetic root.
+     *
+     * `CompileAsset` is keyed by source and can therefore back several native
+     * containers. Root mutation state must instead follow the handle value: an
+     * alias keeps this state, while another `loadGltf` call (even for the same
+     * source) receives a different one.
+     */
+    assetRootState?: AssetRootState;
+    /** Loader kind shared by a runtime selection of different asset sources. */
+    assetKind?: CompileAsset["kind"];
+    /**
+     * Set on the hierarchy `cloneTransformNode` returned for a glTF root.
+     * Both values use the asset handle as their native identity, but only
+     * the clone is an entity the source may add on its own: the original
+     * root is already owned by its container and adding it must not pull in
+     * the container-level animation/camera wiring a second time.
+     */
+    assetRootClone?: true;
+    /**
+     * The graph a `node-particle-graph` value carries, and — on a set, its
+     * systems and one of them — which recorded set it names. The program
+     * those calls append to is the scene's, not the value's, so only the
+     * index travels here.
+     */
+    nodeParticleGraph?: NodeParticleGraphSource;
+    /**
+     * What a `splat-fragment` value carries: the pinned export a scene
+     * imported, or the record it declared. Read at composition, where the
+     * pin's own splicer turns the list into one WGSL module.
+     */
+    splatFragment?: SplatFragmentManifest;
+    /** Which set, and which of its systems, in the manifest's own order. */
+    nodeParticleSetIndex?: number;
+    nodeParticleSystemIndex?: number;
+    /**
+     * For a pure-2D binding and its bridges: which
+     * `registerNodeParticleSet2D` request, and which bridge of it.
+     */
+    nodeParticleRequestIndex?: number;
+    nodeParticleBridgeIndex?: number;
+    /**
+     * The binding's systems are simulated natively every frame (lowered
+     * from the graph) rather than frozen at generation; its bridges and
+     * their systems and buffers carry the mark, since scene code reaches
+     * the generated registrar's mapping through them.
+     */
+    nodeParticleLive?: true;
+    nodeParticleColumn?: NodeParticleColumn;
+    /**
+     * For a `createTexture2DFromPixels` texture: what the bake driver needs
+     * to build the same texture in the browser. A particle system's texture
+     * is assigned in scene code, and the pin reads its width and height to
+     * partition the atlas, so the driver has to hold the real one.
+     */
+    pixelsTexture?: PixelsTextureSource;
+    /**
+     * Set on the `animation-group` a property clip produced. A glTF group
+     * is the engine handle its loader created, while
+     * `createPropertyAnimationGroup` returns the shared record the manager
+     * drives, and the two take different native entry points — so an
+     * operation serving one names the other with a source location instead
+     * of emitting C++ that would not compile. Absent means the handle form.
+     */
+    animationGroupSource?: "property";
+    /**
+     * For a handle that may be absent: the native boolean saying whether
+     * it is there. A search produces one — upstream's `find` returns
+     * `undefined` when nothing matched — and so does a record slot
+     * nothing filled, which carries `invalid_handle`. Either way the flag
+     * is what a scene's own guard reads, through `if`, `??` or a null
+     * comparison. A find the materialized asset resolved at generation
+     * carries the constant `"true"`, which is what folds the scene's own
+     * not-found guard away.
+     */
+    optionalFoundCpp?: string;
+    /** JavaScript truthiness when it differs from mere optional presence. */
+    truthinessCpp?: string;
+    /** An Error delivered by native device recovery, with the Error message contract. */
+    nativeError?: true;
+    /** Storage behind a nullable resource value whose `cpp` is its dereference. */
+    optionalStorageCpp?: string;
+    /**
+     * The borrowed DOM Event base view. It reuses the mouse-event Value kind so
+     * preventDefault follows the existing path, but exposes no typed mouse
+     * fields through an unsafe assertion.
+     */
+    platformEventBase?: true;
+    /** Native pointer token carrying JavaScript identity for a data object. */
+    objectIdentityCpp?: string;
+    /** Native DOM target discriminator for a represented global identity. */
+    domEventTargetCpp?: string;
+    /**
+     * For a `handle-collection` value: where the collection lives and, when
+     * it is asset-derived, which materialized asset decides its members.
+     */
+    handleCollection?: HandleCollectionInfo;
+    /**
+     * A generation-time identity for a handle whose collection slot is
+     * known — `<asset source>#animationGroups[<index>]`. Two values carrying
+     * identities compare by them, which is what lets `group === sadPose`
+     * fold per unrolled iteration; a value without one compares its native
+     * `.value` at run time instead.
+     */
+    handleIdentity?: string;
+    engineCpp?: string;
+    /** A text vector alias retains the shared renderable, not copied components. */
+    textTransform?: import("./text-surface.js").TextTransform;
+    /** A direct GPU readback belongs to the entry's single engine, including
+     * its lexical aliases. Data-transported results have a checked runtime
+     * owner instead and deliberately do not carry this compile-time fact. */
+    pickingEngineKnown?: true;
+    /** A node's observable transform object retains its owning handle. */
+    sceneNodeVector?: {
+        owner: Value & { engineCpp: string };
+        transform: SceneNodeTransformDescriptor;
+        bound?: true;
+    };
+    /** An observable camera vector retains its original camera handle. */
+    cameraVector?: {
+        owner: Value & { engineCpp: string };
+        field: "position" | "target" | "up_vector";
+        bound?: true;
+    };
+    geometryTask?: GeometryOutputTaskManifest;
+    /**
+     * Set on a `render-texture` or `render-target-texture` whose texture is
+     * a depth attachment rather than a colour one. Two things make one: a
+     * geometry task's own depth, which is what a render task's `depth` may
+     * bind, and a render target that declared no colour format, because
+     * `rtt.ts` then hands its depth attachment to samplers.
+     *
+     * This is the ASPECT -- what sampling it gives you. `renderTextureSource`
+     * is the separate question of who owns it.
+     */
+    isDepthTexture?: true;
+    /**
+     * Which native `RenderTextureSource` a render texture names. The
+     * compiler knows it at every construction site, so a slot that accepts
+     * only some of them refuses the rest by name with a location, rather
+     * than leaving a backend to fail a binding at run time.
+     */
+    renderTextureSource?:
+        "render-target" | "geometry" | "geometry-output" | "geometry-depth";
+    /**
+     * Which post-process pass a `task` value names. `outputTexture` reads it
+     * to resolve the internal target the pin's `prepareOutputTarget` creates,
+     * and a settable effect option resolves its parameter slot through it.
+     */
+    postProcessTask?: PostProcessTaskManifest;
+    /**
+     * Set instead when a `task` value names a composite. It records passes of
+     * its own, so it answers `updateUniforms` and `outputTexture` the same way
+     * -- but its parameters live on the passes the pin built, not on a slot a
+     * scene can name, so a setter on one is refused.
+     */
+    postProcessComposite?: PostProcessCompositeManifest;
+    /** Proven scene-render task factory result, including its constant aliases. */
+    renderTask?: true;
+    /** Proven target descriptor retained by aliases for pass-signature admission. */
+    renderTargetSignature?: {
+        surfaceFormat: boolean;
+        hasColor: boolean;
+        depthFormat?: string;
+        samples: number;
+    };
+    /**
+     * Set instead when a `task` value names a screen-space effect. Its
+     * `outputTexture` is whichever target its composite ends on, and its
+     * settings are live record fields a scene may write.
+     */
+    screenSpaceTask?: ScreenSpaceTaskManifest;
+    lightKind?: LightKind;
+    /**
+     * A camera's own construction, as static numbers, and the scene's
+     * reference to the camera it was assigned.
+     *
+     * One executed port reads the scene's camera rather than only the
+     * scene's own records: a node-particle graph's `UpdateFlowMapBlock`
+     * derives the view-projection at build, so the driver that runs that
+     * build has to hold the same camera. Everything in it is a literal the
+     * scene wrote, and a camera assembled any other way carries no program
+     * and refuses there.
+     */
+    cameraProgram?: NodeParticleCamera;
+    /** The camera value `scene.camera = ...` stored, by reference. */
+    sceneCamera?: Value;
+    /**
+     * The extra textures a custom-shader descriptor binds, as the native
+     * expressions that build them, in binding order. They ride the
+     * descriptor because that is what the layer or system is handed.
+     */
+    spriteCustomTextures?: string[];
+    /** The corresponding shader identifiers, in the same binding order. */
+    spriteCustomTextureNames?: string[];
+    /** One-based program index; zero is the stock sprite/billboard shader. */
+    spriteCustomShaderIndex?: number;
+    /**
+     * Generation-known depth mode for a 2D sprite-layer handle. This is handle
+     * metadata, not a materialized string value: `staticString` is reserved for
+     * actual compile-time strings and would otherwise change the native type of
+     * a sprite handle stored inside a data record or array.
+     */
+    spriteDepthMode?: "none" | "test" | "test-write";
+    shaderVariant?: string;
+    /**
+     * The same name, but only for a program `createShaderMaterial` built
+     * from the entry's own WGSL.
+     *
+     * The line and linear-depth families also carry `shaderVariant`, and
+     * both settle their own instanced form from their options -- the line
+     * family even names the permutation. Only a scene-local program leaves
+     * that to the mesh, so only it is marked here.
+     */
+    sceneShaderVariant?: string;
+    /** Possible scene-local programs, distinct from a singleton material identity. */
+    possibleSceneShaderVariants?: readonly string[];
+    /** Stable creation slot for a scene-owned material that escapes a scope. */
+    sceneMaterialSlot?: number;
+    animationFrameRate?: string;
+    animationDuration?: string;
+    /**
+     * Which object kind an `animation-clip` value's paths bind to. A
+     * pinned path is resolved against whatever object the group was
+     * created with, so the clip and the target have to agree; the closed
+     * path table decides which kind each one names.
+     */
+    animationTargetKind?: "mesh" | "camera" | "record";
+    /** Static property paths carried from a property-animation clip. */
+    animationPaths?: readonly string[];
+    staticNumber?: number;
+    /** Generation-known boolean retained across readonly scalar bindings. */
+    staticBoolean?: boolean;
+    /** Materialized mutable parameter; static caller facts cannot fold branches. */
+    parameterBinding?: boolean;
+    /** A local the emitter materialized as a native variable; reads go through it. */
+    nativeBinding?: true;
+    /** A value bound by a native runtime iteration, not a static unroll. */
+    runtimeIteration?: true;
+    staticString?: string;
+    /**
+     * The generation-known contents of a `string[]`, carried on the value the
+     * way `staticString` carries one string.
+     *
+     * A native string vector's elements are not recoverable from its
+     * spelling, and an inlined call's parameter binding keeps the value while
+     * dropping the argument expression — so a list of ids reaching a handle
+     * property through a scene's own helper has nowhere else to travel. Set
+     * only where the whole list resolves statically, so a present field is a
+     * complete list rather than a partial one.
+     */
+    staticStrings?: readonly string[];
+    /** Runtime path selected from a compiler-packaged closed asset directory. */
+    dynamicAssetPathCpp?: string;
+    /** Parsed payload carried only by a generation-time fetch response. */
+    staticJson?: unknown;
+    tupleElements?: Value[];
+    recordProperties?: Record<string, Value>;
     /** Complete own-key order proven for a native record whose key set cannot change. */
-  recordOwnKeys?: readonly string[];
-  /** Module namespace exports are live bindings and cannot be written through this record. */
-  moduleNamespace?: true;
-  /** Fields alias an already-retained native object; escaping must preserve those field references. */
-  retainedNativeRecord?: true;
-  /**
-   * Record properties that carry a function: either an identifier
-   * naming a local one, or a function literal written in place. The
-   * node the literal wrote is kept so a call through the property
-   * resolves and inlines exactly as a direct call does — which for the
-   * identifier form is the same resolver a direct call uses, and for
-   * the literal form is the callback path a function-literal argument
-   * already takes.
-   */
-  recordMethods?: Record<
-    string,
-    | ts.Identifier
-    | ts.ArrowFunction
-    | ts.FunctionExpression
-    | ts.MethodDeclaration
-  >;
-  /**
-   * Record properties declared with `get`. The accessor is kept
-   * rather than its value, so each read re-evaluates it.
-   */
-  recordGetters?: Record<string, ts.GetAccessorDeclaration>;
-  /** Class or object properties declared with `set`; assignment evaluates the body. */
-  recordSetters?: Record<string, ts.SetAccessorDeclaration>;
-  /** Native map materialized for a runtime-valued record in one emitted scope. */
-  runtimeRecordCpp?: string;
-  /** Emission scope that owns `runtimeRecordCpp`; generated locals cannot cross it. */
-  runtimeRecordScope?: number;
-  /** Heap scalar shared by every closure that captures an escaping record. */
-  sharedRecordScalar?: true;
-  /** Heap container retained by an escaping compile-time record. */
-  sharedRecordContainer?: true;
-  /**
-   * The scope chain in force where a record carrying methods or
-   * getters was built. A record can outlive the scope its state
-   * lives in -- a factory returns it, and the frame loop calls it --
-   * so that scope travels with it and is restored while a method or
-   * getter of the record runs. This is the closure the source wrote.
-   */
-  recordScopes?: ReadonlyArray<Map<ts.Symbol, VariableBinding>>;
-  /** Generic substitutions captured alongside a callable's lexical variables. */
-  recordTypeArguments?: ReadonlyMap<ts.Symbol, ts.Type>;
-  /** Shared across compiler aliases of one native scene. */
-  sceneEnvironmentState?: {
-    rotationSet: boolean;
-    hasTexturedSkybox: boolean;
-  };
-  /** Shared across aliases of one native scene. */
-  sceneTopologyState?: SceneTopologyState;
-  /**
-   * Shared across compiler aliases of one clustered light container.
-   *
-   * The rows accumulate as scene code calls `createClusteredPointLight` /
-   * `createClusteredSpotLight`, and `addClusteredLightContainer` freezes
-   * them: the pin's own `buildClusteredLightGpuState` bakes the light
-   * capacity and the point-versus-spot data layout there and throws if
-   * either grows, so a light created afterwards refuses at generation
-   * rather than reaching a state that cannot hold it.
-   */
-  clusteredContainerState?: ClusteredContainerState;
-  /** The layer an `addSprite2D` handle lives in, which its animation
-   *  target names beside the sprite's own id. */
-  spriteLayerCpp?: string;
-  /** A synchronous application error event; its native payload cannot escape dispatch. */
-  nativeErrorEvent?: true;
-  /** A known absent receiver stopped this optional chain before member evaluation. */
-  optionalChainShortCircuited?: true;
-  browserValue?:
-    | { kind: "boolean"; value: boolean }
-    | { kind: "number"; value: number }
-    | { kind: "null" }
-    | { kind: "dom-rect" }
-    | { kind: "object"; primaryCanvas?: true }
-    | { kind: "search-params"; search: string }
-    | { kind: "string"; value: string };
-  cameraKind?: "arc-rotate" | "free" | "geospatial";
-  msaaSamples?: 1 | 4 | "runtime";
-  directMorphCompatible?: boolean;
-  morphTarget?: {
-    positionsCpp: string;
-    normalsCpp: string;
-    vertexCountCpp: string;
-    weightCpp: string;
-    meshCpp?: string;
-  };
+    recordOwnKeys?: readonly string[];
+    /** Module namespace exports are live bindings and cannot be written through this record. */
+    moduleNamespace?: true;
+    /** Fields alias an already-retained native object; escaping must preserve those field references. */
+    retainedNativeRecord?: true;
+    /**
+     * Record properties that carry a function: either an identifier
+     * naming a local one, or a function literal written in place. The
+     * node the literal wrote is kept so a call through the property
+     * resolves and inlines exactly as a direct call does — which for the
+     * identifier form is the same resolver a direct call uses, and for
+     * the literal form is the callback path a function-literal argument
+     * already takes.
+     */
+    recordMethods?: Record<
+        string,
+        | ts.Identifier
+        | ts.ArrowFunction
+        | ts.FunctionExpression
+        | ts.MethodDeclaration
+    >;
+    /**
+     * Record properties declared with `get`. The accessor is kept
+     * rather than its value, so each read re-evaluates it.
+     */
+    recordGetters?: Record<string, ts.GetAccessorDeclaration>;
+    /** Class or object properties declared with `set`; assignment evaluates the body. */
+    recordSetters?: Record<string, ts.SetAccessorDeclaration>;
+    /** Native map materialized for a runtime-valued record in one emitted scope. */
+    runtimeRecordCpp?: string;
+    /** Emission scope that owns `runtimeRecordCpp`; generated locals cannot cross it. */
+    runtimeRecordScope?: number;
+    /** Heap scalar shared by every closure that captures an escaping record. */
+    sharedRecordScalar?: true;
+    /** Heap container retained by an escaping compile-time record. */
+    sharedRecordContainer?: true;
+    /**
+     * The scope chain in force where a record carrying methods or
+     * getters was built. A record can outlive the scope its state
+     * lives in -- a factory returns it, and the frame loop calls it --
+     * so that scope travels with it and is restored while a method or
+     * getter of the record runs. This is the closure the source wrote.
+     */
+    recordScopes?: ReadonlyArray<Map<ts.Symbol, VariableBinding>>;
+    /** Generic substitutions captured alongside a callable's lexical variables. */
+    recordTypeArguments?: ReadonlyMap<ts.Symbol, ts.Type>;
+    /** Shared across compiler aliases of one native scene. */
+    sceneEnvironmentState?: {
+        rotationSet: boolean;
+        hasTexturedSkybox: boolean;
+    };
+    /** Shared across aliases of one native scene. */
+    sceneTopologyState?: SceneTopologyState;
+    /**
+     * Shared across compiler aliases of one clustered light container.
+     *
+     * The rows accumulate as scene code calls `createClusteredPointLight` /
+     * `createClusteredSpotLight`, and `addClusteredLightContainer` freezes
+     * them: the pin's own `buildClusteredLightGpuState` bakes the light
+     * capacity and the point-versus-spot data layout there and throws if
+     * either grows, so a light created afterwards refuses at generation
+     * rather than reaching a state that cannot hold it.
+     */
+    clusteredContainerState?: ClusteredContainerState;
+    /** The layer an `addSprite2D` handle lives in, which its animation
+     *  target names beside the sprite's own id. */
+    spriteLayerCpp?: string;
+    /** A synchronous application error event; its native payload cannot escape dispatch. */
+    nativeErrorEvent?: true;
+    /** A known absent receiver stopped this optional chain before member evaluation. */
+    optionalChainShortCircuited?: true;
+    browserValue?:
+        | { kind: "boolean"; value: boolean }
+        | { kind: "number"; value: number }
+        | { kind: "null" }
+        | { kind: "dom-rect" }
+        | { kind: "object"; primaryCanvas?: true }
+        | { kind: "search-params"; search: string }
+        | { kind: "string"; value: string };
+    cameraKind?: "arc-rotate" | "free" | "geospatial";
+    msaaSamples?: 1 | 4 | "runtime";
+    directMorphCompatible?: boolean;
+    morphTarget?: {
+        positionsCpp: string;
+        normalsCpp: string;
+        vertexCountCpp: string;
+        weightCpp: string;
+        meshCpp?: string;
+    };
 }
 
 export type Feature =
-  | "platform:http"
-  | "platform:packaged-fetch"
-  | "text:data"
-  | "text:layout"
-  | "text:weight"
-  | "text:renderable"
-  | "renderer:text"
-  | "animation:gltf-groups"
-  | "animation:property"
-  | "animation:property-blending"
-  | "animation:weight-fades"
-  | "animation:managed-groups"
-  | "animation:gltf-blending"
-  | "animation:gltf-additive"
-  | "animation:gltf-group-time"
-  | "animation:gltf-group-speed"
-  | "animation:gltf-group-mask"
-  | "background:ground"
-  | "background:dds-environment"
-  | "background:skybox"
-  | "core"
-  | "backend:sdl"
-  | "engine:device-recovery"
-  | "input:gamepad"
-  | "input:dom"
-  | "camera:arc-rotate"
-  | "camera:default"
-  | "camera:free"
-  | "camera:geospatial"
-  | "camera:orthographic"
-  | "camera:view-projection"
-  | "environment:ibl"
-  | "environment:env"
-  | "environment:hdr"
-  | "environment:dds"
-  | "light:hemispheric"
-  | "light:directional"
-  | "light:point"
-  | "light:spot"
-  // The clustered point/spot field: its own PAL translation unit, the
-  // three data textures and the params block the composed fragment reads.
-  // `light.includedOnlyMeshIds`: the per-mesh light set the pin keys by
-  // `Mesh.id`. It composes nothing and selects no translation unit — the
-  // pin's own selection is UBO data — so it exists to record that a scene
-  // reached the surface at all, and to tell composition that a mesh here
-  // can have no affecting light.
-  | "light:included-meshes"
-  | "light:clustered"
-  | "loader:babylon"
-  | "loader:gltf"
-  | "loader:gltf-variants"
-  | "loader:gltf-cameras"
-  | "loader:gltf-bone-control"
-  | "loader:splat"
-  | "loader:splat-bake"
-  | "loader:splat-data"
-  | "loader:splat-sh"
-  | "loader:splat-sog"
-  | "loader:splat-spz"
-  | "material:pbr"
-  | "material:source-texture-read"
-  | "material:clearcoat"
-  | "material:sheen"
-  | "material:sheen-albedo-scaling"
-  | "material:clearcoat-f0-remap"
-  | "material:pbr-gamma-albedo"
-  | "material:iridescence"
-  | "material:lightmap"
-  | "material:local-cubemap"
-  | "renderer:surface"
-  | "material:anisotropy"
-  | "material:metallic-reflectance"
-  | "material:tracking"
-  | "material:emissive"
-  | "material:no-color-view"
-  | "material:grid"
-  | "material:node"
-  | "material:node-inputs"
-  | "material:shader"
-  | "material:shader-storage"
-  | "material:standard"
-  | "material:standard-vertex-colors"
-  | "material:standard-skeleton"
-  | "material:standard-uv-offset"
-  | "mesh:vertex-alpha"
-  | "mesh:box"
-  | "mesh:csg"
-  | "mesh:csg2"
-  | "mesh:from-data"
-  | "mesh:update-positions"
-  | "mesh:ground"
-  | "mesh:ground-heightmap"
-  | "mesh:lines"
-  | "mesh:morph-targets"
-  | "mesh:transform-node"
-  | "mesh:mirrored"
-  | "mesh:plane"
-  | "mesh:sphere"
-  | "mesh:thin-instances"
-  | "mesh:thin-instance-colors"
-  | "mesh:thin-instances-dynamic"
-  | "mesh:thin-instance-gpu-culling"
-  | "mesh:cylinder"
-  | "mesh:capsule"
-  | "mesh:extrude"
-  | "mesh:polyhedron"
-  | "mesh:ribbon"
-  | "mesh:disc"
-  | "mesh:torus"
-  | "mesh:torus-knot"
-  | "mesh:tube"
-  | "mesh:parenting"
-  | "mesh:clone"
-  | "mesh:geometry-access"
-  | "mesh:visible"
-  | "mesh:pickable"
-  // Baked vertex animation. `bakeVat` is the pin's own opt-in trigger --
-  // the whole subsystem is a dynamic-import chunk behind it -- and the
-  // per-instance params texture rides its own bit because only a scene
-  // that also thin-instances the baked mesh allocates one.
-  | "mesh:vat"
-  | "mesh:vat-instances"
-  // A skeleton a scene authored in code rather than one the glTF loader
-  // built from a skin. `createSkeleton` is the pin's own resource factory
-  // and `mesh.skeleton = ...` is what puts the mesh on the skinned arm.
-  | "mesh:skeleton"
-  | "particle:node"
-  | "navigation:recast"
-  | "navigation:tile-cache"
-  | "navigation:crowd"
-  | "sprite:animation"
-  | "audio:engine"
-  | "audio:buffer-source"
-  | "audio:decoded-buffer"
-  | "audio:decode-wav"
-  | "audio:decode-wv"
-  | "audio:decode-mpc"
-  | "audio:decode-flac"
-  | "audio:decode-mp3"
-  | "audio:decode-opus"
-  | "audio:decode-ogg"
-  | "audio:oscillator"
-  | "audio:biquad-filter"
-  | "audio:stereo-panner"
-  | "physics:world"
-  | "physics:aggregate"
-  | "physics:queries"
-  | "physics:character-controller"
-  | "physics:container"
-  | "physics:viewer"
-  | "physics:constraints"
-  | "physics:heightfield"
-  | "physics:trigger"
-  | "physics:floating-origin"
-  | "physics:thin-instances"
-  | "scene:remove"
-  | "scene:node-transforms"
-  // `src/math/normalize-vec3.ts`, which a scene calls directly and the
-  // pin's detailed picking imports. Its own row because the header
-  // carrying the translated declaration is emitted only where one of the
-  // two reaches it.
-  | "math:normalize-vec3"
-  | "math:mat4-invert"
-  | "math:mat4-create"
-  // `src/math/create-quat-from-look-direction-rh.ts` and its rotation-basis helper,
-  // translated together only when scene code calls the public function.
-  | "math:look-direction"
-  // GPU picking. The pin's own split is by PIPELINE rather than by entry
-  // point: the simple pass, the advanced one and the detailed one are
-  // three modules behind one `pickAsync`, and this port reaches the
-  // simple one and the detailed one. The GS contributor rides the splat
-  // feature that already selected the cloud.
-  | "picking:gpu"
-  // The detailed pick pipeline: `picking/picking-detailed-pipeline.ts`
-  // plus `picking/detailed-picking.ts`. Its own row because the pin's own
-  // split is a separate module the picker dynamic-imports only when
-  // `enableDetailedPicking` armed the flag, and because it costs a third
-  // render attachment and a wider readback that a simple pick pays
-  // nothing for.
-  | "picking:detailed"
-  // The billboard pick contributor. Its own row because the pin's own
-  // split is one module per pickable entity type
-  // (`picking/billboard-pick-pipeline.ts`), lazily imported by the
-  // picker and reached only through the systems a scene registered --
-  // so a picking scene with no billboards composes none of it.
-  | "picking:billboard"
-  // The display-gizmo family. `gizmo:utility-layer` is the second
-  // SceneContext itself -- the swapchain overlay both backends record --
-  // and each gizmo is its own row because either can be reached without
-  // the other, exactly as the pin splits them into their own modules.
-  | "gizmo:utility-layer"
-  | "gizmo:camera"
-  | "gizmo:light"
-  // The editing widgets, one row each for the same reason: the pin gives
-  // each its own module, and a scene reaching one reaches none of the
-  // others.
-  | "gizmo:axis-drag"
-  | "gizmo:axis-scale"
-  | "gizmo:plane-drag"
-  | "gizmo:plane-rotation"
-  // The three composites. Each is a fan-out over the widgets above --
-  // upstream builds them from the same four factories -- so each row
-  // gates only the emitted assembly, and reaches the widget rows its own
-  // pinned body calls.
-  | "gizmo:position"
-  | "gizmo:pointer-drag"
-  | "gizmo:rotation"
-  | "gizmo:scale"
-  // The bounding-box gizmo: its own pinned module, its own cage, and the
-  // only widget in the family whose per-frame work reads the attached
-  // subtree's vertex bounds rather than one node's world translation.
-  | "gizmo:bounding-box"
-  // The shadow family, split the way upstream splits it: the filter's own
-  // resources and receiver composition (`shadow:pcf`), and the scene-owned
-  // frame-graph task that schedules them (`shadow:task`), which
-  // `registerSceneWithShadowSupport` is the only way to reach.
-  | "shadow:esm"
-  | "shadow:pcf"
-  | "shadow:pcf-directional"
-  | "shadow:csm"
-  | "shadow:task"
-  | "sprite:2d"
-  | "sprite:2d-depth-host"
-  | "sprite:2d-y-sort"
-  | "sprite:uv-scroll"
-  | "sprite:custom-shader"
-  | "material:standard-diffuse-render-texture"
-  | "material:standard-diffuse-pixels-texture"
-  | "material:standard-diffuse-solid-texture"
-  | "material:standard-uv-transform"
-  | "material:plugins"
-  | "material:plugin-index"
-  | "material:plugin-textures"
-  | "material:standard-emissive-render-texture"
-  | "material:standard-diffuse-file-texture"
-  | "material:standard-emissive-file-texture"
-  | "material:standard-lightmap"
-  | "texture:file"
-  | "texture:compressed"
-  | "texture:pixels"
-  | "sprite:billboard"
-  | "sprite:billboard-axis-locked"
-  | "sprite:billboard-cutout"
-  | "sprite:billboard-custom-shader"
-  | "renderer:sprite"
-  | "renderer:canvas"
-  | "renderer:effect"
-  | "frame-graph:resources"
-  | "renderer:frame-graph"
-  | "effect:wrapper"
-  | "effect:task"
-  | "renderer:scene"
-  | "renderer:transmission"
-  | "material:pbr-linear-image-processing"
-  | "renderer:fog"
-  | "renderer:clip-plane"
-  | "renderer:geometry-output"
-  | "renderer:post-process"
-  /**
-   * The pin's screen-space contact-shadow and global-illumination tasks:
-   * two dedicated pipelines over a depth-only view plus the ordinary
-   * post-process passes they build, which is why reaching one also reaches
-   * `renderer:post-process`.
-   */
-  | "renderer:screen-space"
-  /**
-   * A glTF asset carries `KHR_interactivity` graphs: the pin's flow-graph
-   * runtime, lowered per graph from its block definitions, plus the scene
-   * coordinator and the pointer bridge `enableFlowGraphPointerPicking`
-   * installs. Reached by the asset, as the pin's loader feature is.
-   */
-  | "flow-graph:interactivity"
-  | "renderer:high-precision-matrix"
-  | "renderer:floating-origin"
-  /**
-   * The bounded browser Blob/object-URL/download/file-input bridge. Its PAL
-   * translation unit owns dialogs and selected-path file IO.
-   */
-  | "browser:file"
-  // Scene-created DOM lowered to the retained UI IR and rendered by RmlUi.
-  | "ui:rml"
-  // The bounded inline svg/path/rect grammar rendered by RmlUi's SVG plugin.
-  | "ui:inline-svg"
-  | "background:image-skybox"
-  | "background:solid-skybox"
-  /**
-   * `JSON.stringify` and `JSON.parse` over the plain-data model: the
-   * generic JSON bridge and the generated codecs for the records it
-   * reaches. Brings the header-only JSON parser with it, so a scene that
-   * never writes or reads a document links nothing for it.
-   */
-  | "data:json"
-  | "data:locale"
-  /** Web Storage: the durable per-user key/value store behind `localStorage`. */
-  | "storage:local"
-  | "platform:workers"
-  | "platform:window";
+    | "platform:http"
+    | "platform:packaged-fetch"
+    | "text:data"
+    | "text:layout"
+    | "text:weight"
+    | "text:renderable"
+    | "renderer:text"
+    | "animation:gltf-groups"
+    | "animation:property"
+    | "animation:property-blending"
+    | "animation:weight-fades"
+    | "animation:managed-groups"
+    | "animation:gltf-blending"
+    | "animation:gltf-additive"
+    | "animation:gltf-group-time"
+    | "animation:gltf-group-speed"
+    | "animation:gltf-group-mask"
+    | "background:ground"
+    | "background:dds-environment"
+    | "background:skybox"
+    | "core"
+    | "backend:sdl"
+    | "engine:device-recovery"
+    | "input:gamepad"
+    | "input:dom"
+    | "camera:arc-rotate"
+    | "camera:default"
+    | "camera:free"
+    | "camera:geospatial"
+    | "camera:orthographic"
+    | "camera:view-projection"
+    | "environment:ibl"
+    | "environment:env"
+    | "environment:hdr"
+    | "environment:dds"
+    | "light:hemispheric"
+    | "light:directional"
+    | "light:point"
+    | "light:spot"
+    // The clustered point/spot field: its own PAL translation unit, the
+    // three data textures and the params block the composed fragment reads.
+    // `light.includedOnlyMeshIds`: the per-mesh light set the pin keys by
+    // `Mesh.id`. It composes nothing and selects no translation unit — the
+    // pin's own selection is UBO data — so it exists to record that a scene
+    // reached the surface at all, and to tell composition that a mesh here
+    // can have no affecting light.
+    | "light:included-meshes"
+    | "light:clustered"
+    | "loader:babylon"
+    | "loader:gltf"
+    | "loader:gltf-variants"
+    | "loader:gltf-cameras"
+    | "loader:gltf-bone-control"
+    | "loader:splat"
+    | "loader:splat-bake"
+    | "loader:splat-data"
+    | "loader:splat-sh"
+    | "loader:splat-sog"
+    | "loader:splat-spz"
+    | "material:pbr"
+    | "material:source-texture-read"
+    | "material:clearcoat"
+    | "material:sheen"
+    | "material:sheen-albedo-scaling"
+    | "material:clearcoat-f0-remap"
+    | "material:pbr-gamma-albedo"
+    | "material:iridescence"
+    | "material:lightmap"
+    | "material:local-cubemap"
+    | "renderer:surface"
+    | "material:anisotropy"
+    | "material:metallic-reflectance"
+    | "material:tracking"
+    | "material:emissive"
+    | "material:no-color-view"
+    | "material:grid"
+    | "material:node"
+    | "material:node-inputs"
+    | "material:shader"
+    | "material:shader-storage"
+    | "material:standard"
+    | "material:standard-vertex-colors"
+    | "material:standard-skeleton"
+    | "material:standard-uv-offset"
+    | "mesh:vertex-alpha"
+    | "mesh:box"
+    | "mesh:csg"
+    | "mesh:csg2"
+    | "mesh:from-data"
+    | "mesh:update-positions"
+    | "mesh:ground"
+    | "mesh:ground-heightmap"
+    | "mesh:lines"
+    | "mesh:morph-targets"
+    | "mesh:transform-node"
+    | "mesh:mirrored"
+    | "mesh:plane"
+    | "mesh:sphere"
+    | "mesh:thin-instances"
+    | "mesh:thin-instance-colors"
+    | "mesh:thin-instances-dynamic"
+    | "mesh:thin-instance-gpu-culling"
+    | "mesh:cylinder"
+    | "mesh:capsule"
+    | "mesh:extrude"
+    | "mesh:polyhedron"
+    | "mesh:ribbon"
+    | "mesh:disc"
+    | "mesh:torus"
+    | "mesh:torus-knot"
+    | "mesh:tube"
+    | "mesh:parenting"
+    | "mesh:clone"
+    | "mesh:geometry-access"
+    | "mesh:visible"
+    | "mesh:pickable"
+    // Baked vertex animation. `bakeVat` is the pin's own opt-in trigger --
+    // the whole subsystem is a dynamic-import chunk behind it -- and the
+    // per-instance params texture rides its own bit because only a scene
+    // that also thin-instances the baked mesh allocates one.
+    | "mesh:vat"
+    | "mesh:vat-instances"
+    // A skeleton a scene authored in code rather than one the glTF loader
+    // built from a skin. `createSkeleton` is the pin's own resource factory
+    // and `mesh.skeleton = ...` is what puts the mesh on the skinned arm.
+    | "mesh:skeleton"
+    | "particle:node"
+    | "navigation:recast"
+    | "navigation:tile-cache"
+    | "navigation:crowd"
+    | "sprite:animation"
+    | "audio:engine"
+    | "audio:buffer-source"
+    | "audio:decoded-buffer"
+    | "audio:decode-wav"
+    | "audio:decode-wv"
+    | "audio:decode-mpc"
+    | "audio:decode-flac"
+    | "audio:decode-mp3"
+    | "audio:decode-opus"
+    | "audio:decode-ogg"
+    | "audio:oscillator"
+    | "audio:biquad-filter"
+    | "audio:stereo-panner"
+    | "physics:world"
+    | "physics:aggregate"
+    | "physics:queries"
+    | "physics:character-controller"
+    | "physics:container"
+    | "physics:viewer"
+    | "physics:constraints"
+    | "physics:heightfield"
+    | "physics:trigger"
+    | "physics:floating-origin"
+    | "physics:thin-instances"
+    | "scene:remove"
+    | "scene:node-transforms"
+    // `src/math/normalize-vec3.ts`, which a scene calls directly and the
+    // pin's detailed picking imports. Its own row because the header
+    // carrying the translated declaration is emitted only where one of the
+    // two reaches it.
+    | "math:normalize-vec3"
+    | "math:mat4-invert"
+    | "math:mat4-create"
+    // `src/math/create-quat-from-look-direction-rh.ts` and its rotation-basis helper,
+    // translated together only when scene code calls the public function.
+    | "math:look-direction"
+    // GPU picking. The pin's own split is by PIPELINE rather than by entry
+    // point: the simple pass, the advanced one and the detailed one are
+    // three modules behind one `pickAsync`, and this port reaches the
+    // simple one and the detailed one. The GS contributor rides the splat
+    // feature that already selected the cloud.
+    | "picking:gpu"
+    // The detailed pick pipeline: `picking/picking-detailed-pipeline.ts`
+    // plus `picking/detailed-picking.ts`. Its own row because the pin's own
+    // split is a separate module the picker dynamic-imports only when
+    // `enableDetailedPicking` armed the flag, and because it costs a third
+    // render attachment and a wider readback that a simple pick pays
+    // nothing for.
+    | "picking:detailed"
+    // The billboard pick contributor. Its own row because the pin's own
+    // split is one module per pickable entity type
+    // (`picking/billboard-pick-pipeline.ts`), lazily imported by the
+    // picker and reached only through the systems a scene registered --
+    // so a picking scene with no billboards composes none of it.
+    | "picking:billboard"
+    // The display-gizmo family. `gizmo:utility-layer` is the second
+    // SceneContext itself -- the swapchain overlay both backends record --
+    // and each gizmo is its own row because either can be reached without
+    // the other, exactly as the pin splits them into their own modules.
+    | "gizmo:utility-layer"
+    | "gizmo:camera"
+    | "gizmo:light"
+    // The editing widgets, one row each for the same reason: the pin gives
+    // each its own module, and a scene reaching one reaches none of the
+    // others.
+    | "gizmo:axis-drag"
+    | "gizmo:axis-scale"
+    | "gizmo:plane-drag"
+    | "gizmo:plane-rotation"
+    // The three composites. Each is a fan-out over the widgets above --
+    // upstream builds them from the same four factories -- so each row
+    // gates only the emitted assembly, and reaches the widget rows its own
+    // pinned body calls.
+    | "gizmo:position"
+    | "gizmo:pointer-drag"
+    | "gizmo:rotation"
+    | "gizmo:scale"
+    // The bounding-box gizmo: its own pinned module, its own cage, and the
+    // only widget in the family whose per-frame work reads the attached
+    // subtree's vertex bounds rather than one node's world translation.
+    | "gizmo:bounding-box"
+    // The shadow family, split the way upstream splits it: the filter's own
+    // resources and receiver composition (`shadow:pcf`), and the scene-owned
+    // frame-graph task that schedules them (`shadow:task`), which
+    // `registerSceneWithShadowSupport` is the only way to reach.
+    | "shadow:esm"
+    | "shadow:pcf"
+    | "shadow:pcf-directional"
+    | "shadow:csm"
+    | "shadow:task"
+    | "sprite:2d"
+    | "sprite:2d-depth-host"
+    | "sprite:2d-y-sort"
+    | "sprite:uv-scroll"
+    | "sprite:custom-shader"
+    | "material:standard-diffuse-render-texture"
+    | "material:standard-diffuse-pixels-texture"
+    | "material:standard-diffuse-solid-texture"
+    | "material:standard-uv-transform"
+    | "material:plugins"
+    | "material:plugin-index"
+    | "material:plugin-textures"
+    | "material:standard-emissive-render-texture"
+    | "material:standard-diffuse-file-texture"
+    | "material:standard-emissive-file-texture"
+    | "material:standard-lightmap"
+    | "texture:file"
+    | "texture:compressed"
+    | "texture:pixels"
+    | "sprite:billboard"
+    | "sprite:billboard-axis-locked"
+    | "sprite:billboard-cutout"
+    | "sprite:billboard-custom-shader"
+    | "renderer:sprite"
+    | "renderer:canvas"
+    | "renderer:effect"
+    | "frame-graph:resources"
+    | "renderer:frame-graph"
+    | "effect:wrapper"
+    | "effect:task"
+    | "renderer:scene"
+    | "renderer:transmission"
+    | "material:pbr-linear-image-processing"
+    | "renderer:fog"
+    | "renderer:clip-plane"
+    | "renderer:geometry-output"
+    | "renderer:post-process"
+    /**
+     * The pin's screen-space contact-shadow and global-illumination tasks:
+     * two dedicated pipelines over a depth-only view plus the ordinary
+     * post-process passes they build, which is why reaching one also reaches
+     * `renderer:post-process`.
+     */
+    | "renderer:screen-space"
+    /**
+     * A glTF asset carries `KHR_interactivity` graphs: the pin's flow-graph
+     * runtime, lowered per graph from its block definitions, plus the scene
+     * coordinator and the pointer bridge `enableFlowGraphPointerPicking`
+     * installs. Reached by the asset, as the pin's loader feature is.
+     */
+    | "flow-graph:interactivity"
+    | "renderer:high-precision-matrix"
+    | "renderer:floating-origin"
+    /**
+     * The bounded browser Blob/object-URL/download/file-input bridge. Its PAL
+     * translation unit owns dialogs and selected-path file IO.
+     */
+    | "browser:file"
+    // Scene-created DOM lowered to the retained UI IR and rendered by RmlUi.
+    | "ui:rml"
+    // The bounded inline svg/path/rect grammar rendered by RmlUi's SVG plugin.
+    | "ui:inline-svg"
+    | "background:image-skybox"
+    | "background:solid-skybox"
+    /**
+     * `JSON.stringify` and `JSON.parse` over the plain-data model: the
+     * generic JSON bridge and the generated codecs for the records it
+     * reaches. Brings the header-only JSON parser with it, so a scene that
+     * never writes or reads a document links nothing for it.
+     */
+    | "data:json"
+    | "data:locale"
+    /** Web Storage: the durable per-user key/value store behind `localStorage`. */
+    | "storage:local"
+    | "platform:workers"
+    | "platform:window";
 
 export interface WorkerCompilation {
-  namespace: string | undefined;
-  register(node: ts.NewExpression): string | undefined;
-  declarations(): string;
+    namespace: string | undefined;
+    register(node: ts.NewExpression): string | undefined;
+    declarations(): string;
 }
 
 export interface ResolvedCompileOptions extends DeploymentOptions {
-  workers?: WorkerCompilation;
-  fileName: string;
-  title: string;
-  width: number;
-  height: number;
-  search: string;
-  nativeHostUi?: NativeHostUi;
+    workers?: WorkerCompilation;
+    fileName: string;
+    title: string;
+    width: number;
+    height: number;
+    search: string;
+    nativeHostUi?: NativeHostUi;
 }

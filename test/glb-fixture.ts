@@ -54,7 +54,10 @@ export function readGlbFixture(bytes: Uint8Array): {
     const glb = Buffer.from(bytes);
     const jsonLength = glb.readUInt32LE(12);
     const document = JSON.parse(
-        glb.subarray(20, 20 + jsonLength).toString("utf8").trim(),
+        glb
+            .subarray(20, 20 + jsonLength)
+            .toString("utf8")
+            .trim(),
     ) as Record<string, unknown>;
     const binaryHeader = 20 + jsonLength;
     const binaryLength = glb.readUInt32LE(binaryHeader);

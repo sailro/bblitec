@@ -121,11 +121,7 @@ function refusal(source: string): string {
  * The factory-bound half of the fold is only observable across calls: one
  * call binds its parameters once and nothing can collide with itself.
  */
-function twoMaterialScene(
-    first: string,
-    second: string,
-    before = "",
-): string {
+function twoMaterialScene(first: string, second: string, before = ""): string {
     return `
         import {
             addToScene,
@@ -168,14 +164,19 @@ function twoMaterialScene(
 
 /** Every native local the emitted entry body declares, in emission order. */
 function declaredLocals(cpp: string): string[] {
-    return [...cpp.matchAll(
-        /^\s*(?:\[\[maybe_unused\]\] )?(?:auto&&|auto&|auto|double|bool|std::string) (v_[A-Za-z0-9_]+) =/gm,
-    )].map((match) => match[1]!);
+    return [
+        ...cpp.matchAll(
+            /^\s*(?:\[\[maybe_unused\]\] )?(?:auto&&|auto&|auto|double|bool|std::string) (v_[A-Za-z0-9_]+) =/gm,
+        ),
+    ].map((match) => match[1]!);
 }
 
 test("folds a MaterialPlugin through a bounded local factory call", () => {
     const result = compileSource(
-        pluginScene("createPairPlugin({ a: stripe, b: tint })", factoryDeclaration),
+        pluginScene(
+            "createPairPlugin({ a: stripe, b: tint })",
+            factoryDeclaration,
+        ),
     );
 
     // The factory's parameter is bound to the call site's own record, so the
@@ -194,9 +195,7 @@ test("folds a MaterialPlugin through a bounded local factory call", () => {
     );
     // Both producers reach the one feature that gates the setter
     // translation unit's plugin arm and both backends' bind path.
-    assert.ok(
-        result.manifest.features.includes("material:plugin-textures"),
-    );
+    assert.ok(result.manifest.features.includes("material:plugin-textures"));
 });
 
 test("keeps optional mesh identity and Standard inputs for plugin composition", () => {
@@ -239,11 +238,15 @@ test("keeps optional mesh identity and Standard inputs for plugin composition", 
         }
     `);
 
-    assert.deepEqual(result.manifest.standardMaterialPluginInputs, [[{
-        diffuseTexture: {},
-        alpha: 0.5,
-        pluginIndex: 1,
-    }]]);
+    assert.deepEqual(result.manifest.standardMaterialPluginInputs, [
+        [
+            {
+                diffuseTexture: {},
+                alpha: 0.5,
+                pluginIndex: 1,
+            },
+        ],
+    ]);
     assert.equal(result.manifest.sceneMeshes[0]?.standardMaterial, true);
     assert.equal(
         result.manifest.sceneMeshes[0]?.standardMaterialPluginIndex,
@@ -253,7 +256,10 @@ test("keeps optional mesh identity and Standard inputs for plugin composition", 
 
 test("binds a plugin's textures in getSamplers order", () => {
     const result = compileSource(
-        pluginScene("createPairPlugin({ a: tint, b: stripe })", factoryDeclaration),
+        pluginScene(
+            "createPairPlugin({ a: tint, b: stripe })",
+            factoryDeclaration,
+        ),
     );
     const pixels = result.cpp.indexOf("add_material_plugin_pixels_texture");
     const file = result.cpp.indexOf("add_material_plugin_file_texture");
@@ -269,7 +275,10 @@ test("binds a plugin's textures in getSamplers order", () => {
 
 test("clears a material's plugin textures before appending them", () => {
     const result = compileSource(
-        pluginScene("createPairPlugin({ a: stripe, b: tint })", factoryDeclaration),
+        pluginScene(
+            "createPairPlugin({ a: stripe, b: tint })",
+            factoryDeclaration,
+        ),
     );
     const setter = result.cpp.indexOf("bbl::set_material_plugins(");
     const first = result.cpp.indexOf("bbl::add_material_plugin_");
@@ -282,7 +291,9 @@ test("clears a material's plugin textures before appending them", () => {
 
 test("refuses a plugin factory whose body is more than one return", () => {
     const message = refusal(
-        pluginScene("createPairPlugin({ a: stripe, b: tint })", `
+        pluginScene(
+            "createPairPlugin({ a: stripe, b: tint })",
+            `
             function createPairPlugin(pair: { a: Texture2D; b: Texture2D }): MaterialPlugin {
                 const name = "pair";
                 return {
@@ -293,7 +304,8 @@ test("refuses a plugin factory whose body is more than one return", () => {
                         : null,
                 };
             }
-        `),
+        `,
+        ),
     );
 
     assert.match(
@@ -304,7 +316,9 @@ test("refuses a plugin factory whose body is more than one return", () => {
 
 test("refuses a plugin factory reached through anything but an identifier", () => {
     const message = refusal(
-        pluginScene("factories.make(stripe)", `
+        pluginScene(
+            "factories.make(stripe)",
+            `
             const factories = {
                 make: (_t: Texture2D): MaterialPlugin => ({
                     name: "pair",
@@ -314,10 +328,14 @@ test("refuses a plugin factory reached through anything but an identifier", () =
                         : null,
                 }),
             };
-        `),
+        `,
+        ),
     );
 
-    assert.match(message, /A MaterialPlugin factory is named by a plain identifier/);
+    assert.match(
+        message,
+        /A MaterialPlugin factory is named by a plain identifier/,
+    );
 });
 
 test("refuses a sampler declaration missing half its pair", () => {
@@ -379,7 +397,10 @@ test("refuses a sampler type the pin does not default to", () => {
         }`),
     );
 
-    assert.match(message, /a non-filtering sampler is a bind-group layout entry of its own/);
+    assert.match(
+        message,
+        /a non-filtering sampler is a bind-group layout entry of its own/,
+    );
 });
 
 test("refuses a bindTextures list shorter than the declarations", () => {
@@ -399,7 +420,10 @@ test("refuses a bindTextures list shorter than the declarations", () => {
         }`),
     );
 
-    assert.match(message, /declares 2 sampler pair\(s\) and binds 1 texture\(s\)/);
+    assert.match(
+        message,
+        /declares 2 sampler pair\(s\) and binds 1 texture\(s\)/,
+    );
 });
 
 test("refuses getActiveTextures naming a different texture than bindTextures", () => {
@@ -496,10 +520,18 @@ test("refuses samplers on a PBR material's plugin", () => {
 test("keys two plugin lists apart by their sampler declarations", () => {
     const custom = { CUSTOM_FRAGMENT_UPDATE_ALPHA: "" };
     const one = materialPluginListKey([
-        { name: "p", fragment: custom, samplers: [{ texture: "oneT", sampler: "oneS" }] },
+        {
+            name: "p",
+            fragment: custom,
+            samplers: [{ texture: "oneT", sampler: "oneS" }],
+        },
     ]);
     const two = materialPluginListKey([
-        { name: "p", fragment: custom, samplers: [{ texture: "twoT", sampler: "twoS" }] },
+        {
+            name: "p",
+            fragment: custom,
+            samplers: [{ texture: "twoT", sampler: "twoS" }],
+        },
     ]);
     const none = materialPluginListKey([{ name: "p", fragment: custom }]);
 
@@ -513,9 +545,8 @@ test("keys two plugin lists apart by their sampler declarations", () => {
 test("composes the plugin's sampler declarations into the Standard fragment", async () => {
     const { enablePinnedMaterialPlugins, standardPluginBindingTable } =
         await import("../src/pinned-material-plugins.js");
-    const { composePinnedStandardVariant } = await import(
-        "../src/pinned-standard-variants.js"
-    );
+    const { composePinnedStandardVariant } =
+        await import("../src/pinned-standard-variants.js");
     const manifest = {
         name: "compose-probe",
         fragment: {
@@ -548,10 +579,12 @@ test("composes the plugin's sampler declarations into the Standard fragment", as
     );
     // And the table both backends resolve through is read back off the pin's
     // own composed fragment, in the same order.
-    assert.deepEqual(await standardPluginBindingTable(), [[
-        { texture: "probeT", sampler: "probeS" },
-        { texture: "otherT", sampler: "otherS" },
-    ]]);
+    assert.deepEqual(await standardPluginBindingTable(), [
+        [
+            { texture: "probeT", sampler: "probeS" },
+            { texture: "otherT", sampler: "otherS" },
+        ],
+    ]);
 });
 
 /** The support block with everything but the plugin bindings emptied. */
@@ -559,17 +592,16 @@ function supportBlock(
     pluginBindings: PinnedStandardSupportOptions["pluginBindings"],
     skeleton = false,
 ): string {
-    return inlineCpp(pinnedStandardSupportBlock(
-        new LoweringContext(sharedUpstreamStore()),
-        {
+    return inlineCpp(
+        pinnedStandardSupportBlock(new LoweringContext(sharedUpstreamStore()), {
             skeleton,
             selectors: [],
             uvTransform: false,
             plugins: pluginBindings !== undefined,
             renderableMeshFeatures: [],
             ...(pluginBindings ? { pluginBindings } : {}),
-        },
-    ));
+        }),
+    );
 }
 
 test("emits one plugin binding row per declaration, keyed by signature index", () => {
@@ -596,10 +628,7 @@ test("emits no plugin binding table for a scene whose plugins declare none", () 
 });
 
 test("both backends resolve a plugin binding through the generated table", () => {
-    const backends = [
-        "native/src/pal_dawn.cpp",
-        "native/src/pal_sdl_gpu.cpp",
-    ];
+    const backends = ["native/src/pal_dawn.cpp", "native/src/pal_sdl_gpu.cpp"];
     for (const path of backends) {
         const source = readFileSync(resolve(path), "utf8");
         // The same recorded metadata on both sides: the row is found by the
@@ -644,17 +673,20 @@ test("reads the pinned plugin sampler contract from the pin", () => {
     // from exactly these expressions, so a pin that renamed or retyped one
     // fails at generation rather than composing a binding this port cannot
     // bind.
-    const defaults = context.findNodes(
-        declaration,
-        (node): node is ts.BinaryExpression =>
-            ts.isBinaryExpression(node) &&
-            node.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken &&
-            ts.isPropertyAccessExpression(node.left) &&
-            ts.isStringLiteral(node.right),
-    ).map((node) => [
-        (node.left as ts.PropertyAccessExpression).name.text,
-        (node.right as ts.StringLiteral).text,
-    ]);
+    const defaults = context
+        .findNodes(
+            declaration,
+            (node): node is ts.BinaryExpression =>
+                ts.isBinaryExpression(node) &&
+                node.operatorToken.kind ===
+                    ts.SyntaxKind.QuestionQuestionToken &&
+                ts.isPropertyAccessExpression(node.left) &&
+                ts.isStringLiteral(node.right),
+        )
+        .map((node) => [
+            (node.left as ts.PropertyAccessExpression).name.text,
+            (node.right as ts.StringLiteral).text,
+        ]);
 
     assert.deepEqual(defaults, [
         ["textureType", "texture_2d<f32>"],
@@ -717,9 +749,11 @@ test("gives each factory call its own scope, so two calls do not collide", () =>
     );
     // Both calls still bound the call site's own textures, in their own
     // bindTextures order.
-    const bound = [...result.cpp.matchAll(
-        /bbl::add_material_plugin_(pixels|file)_texture\(/g,
-    )].map((match) => match[1]);
+    const bound = [
+        ...result.cpp.matchAll(
+            /bbl::add_material_plugin_(pixels|file)_texture\(/g,
+        ),
+    ].map((match) => match[1]);
     assert.deepEqual(bound, ["pixels", "file", "file", "pixels"]);
 });
 
@@ -935,8 +969,10 @@ test("keeps two plugins with distinct names, in the order the scene wrote them",
 
     // Distinct names still compose, and the record takes the two plugins'
     // textures in list order -- the order `bindPluginTextures` pushes them.
-    const bound = [...result.cpp.matchAll(
-        /bbl::add_material_plugin_(pixels|file)_texture\(/g,
-    )].map((match) => match[1]);
+    const bound = [
+        ...result.cpp.matchAll(
+            /bbl::add_material_plugin_(pixels|file)_texture\(/g,
+        ),
+    ].map((match) => match[1]);
     assert.deepEqual(bound, ["pixels", "file"]);
 });

@@ -82,7 +82,7 @@ test("takes a channel's texture from the same expression its feature bit does", 
     // which is what makes the pin's `texture?.x ?? default` reads fold.
     assert.match(
         source,
-        /channel 1: e \(_emissiveTexture\)[\s\S]*?\n        nullptr,/,
+        /channel 1: e \(_emissiveTexture\)[\s\S]*?\n {8}nullptr,/,
     );
     assert.match(
         source,
@@ -97,7 +97,11 @@ test("folds each row's UV set from the pin's own coordIndexKey", () => {
     assert.ok(source.includes("material.ambient_coord_index == 1"));
     assert.ok(source.includes("material.lightmap_coord_index == 1"));
     assert.equal(source.split(" == 1,").length - 1, 4);
-    assert.ok(source.includes(`material.lightmap_texture.uv_transform.u_ang == ${Math.PI}`));
+    assert.ok(
+        source.includes(
+            `material.lightmap_texture.uv_transform.u_ang == ${Math.PI}`,
+        ),
+    );
 });
 
 test("computes in double and rounds once, at the store", () => {
@@ -106,7 +110,7 @@ test("computes in double and rounds once, at the store", () => {
         source.indexOf("write_std_uv_transform_channel(\n    std::array"),
     );
     // Every local the pin binds is an f64, because a JS number is.
-    assert.ok(!/\n    const float /.test(body), "an intermediate rounds early");
+    assert.ok(!/\n {4}const float /.test(body), "an intermediate rounds early");
     for (const local of ["sx", "sy", "angle", "c", "s", "m00", "m11"]) {
         assert.ok(
             body.includes(`const double ${local} =`),

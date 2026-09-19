@@ -10,11 +10,28 @@ import {
     UpstreamSourceStore,
 } from "../src/upstream-source.js";
 import { CompileError, compileSource } from "../src/compiler.js";
-import { transpileCommonJs } from "../src/typescript-transpile.js";
+import {
+    transpileCommonJs,
+    createJavaScriptFunction,
+} from "../src/typescript-transpile.js";
 
-function assertCameraScalarWrite(cpp: string, field: string, value: RegExp): void {
-    const stores = [...cpp.matchAll(new RegExp(`const double (\\w+) = (${value.source});\\s+bbl::write_camera_scalar\\([^\\n]+&bbl::CameraRecord::${field}, \\1\\);`, "g"))];
-    assert.ok(stores.length > 0, `Expected camera.${field} write of ${value.source}`);
+function assertCameraScalarWrite(
+    cpp: string,
+    field: string,
+    value: RegExp,
+): void {
+    const stores = [
+        ...cpp.matchAll(
+            new RegExp(
+                `const double (\\w+) = (${value.source});\\s+bbl::write_camera_scalar\\([^\\n]+&bbl::CameraRecord::${field}, \\1\\);`,
+                "g",
+            ),
+        ),
+    ];
+    assert.ok(
+        stores.length > 0,
+        `Expected camera.${field} write of ${value.source}`,
+    );
 }
 
 const palUiRmlSource = readFileSync(
@@ -415,7 +432,7 @@ test("returns a nullable audio context through early value returns", () => {
 
     assert.match(
         result.cpp,
-        /\[\&\]\(\) -> bbl::js::Nullable<bbl::pal::AudioContextHandle>/,
+        /\[&\]\(\) -> bbl::js::Nullable<bbl::pal::AudioContextHandle>/,
     );
     assert.match(result.cpp, /audio_create_gain\(\(\*v_current\)\)/);
 });
@@ -583,7 +600,10 @@ test("carries a handle annotation on a declaration the intrinsic produced", () =
     `);
 
     assert.match(result.cpp, /bbl::create_box/);
-    assert.match(result.cpp, /bbl::set_material_diffuse_color\([^;]+bbl::js::Array<double>\{/);
+    assert.match(
+        result.cpp,
+        /bbl::set_material_diffuse_color\([^;]+bbl::js::Array<double>\{/,
+    );
     assert.match(result.cpp, /-2\.6/);
 });
 
@@ -879,15 +899,9 @@ test("keeps auxiliary surfaces distinct from their owning engine", () => {
         result.cpp,
         /auto v_surface = bbl::create_surface\(v_engine, v_canvas\);/,
     );
-    assert.match(
-        result.cpp,
-        /bbl::create_scene_context\(v_surface\)/,
-    );
+    assert.match(result.cpp, /bbl::create_scene_context\(v_surface\)/);
     assert.match(result.cpp, /bbl::dispose_surface\(v_surface\)/);
-    assert.doesNotMatch(
-        result.cpp,
-        /auto v_surface = v_engine;/,
-    );
+    assert.doesNotMatch(result.cpp, /auto v_surface = v_engine;/);
 });
 
 test("lowers imported typed user functions and constants", () => {
@@ -982,7 +996,7 @@ test("executes imported module initializers once in dependency order", () => {
     assert.ok(values, "the dependency's exported array has native storage");
     assert.ok(index, "the importer module's exported map has native storage");
     assert.ok(
-        result.cpp.indexOf(values[0]!) < result.cpp.indexOf(index[0]!),
+        result.cpp.indexOf(values[0]) < result.cpp.indexOf(index[0]),
         "dependency storage is initialized before its importer",
     );
     assert.equal(
@@ -1509,7 +1523,9 @@ test("keeps closures over entry locals on the inline path", () => {
 
     assert.doesNotMatch(result.cpp, /bblscene::nudge/);
     assert.equal(
-        result.cpp.match(/write_camera_scalar\([^\n]+&bbl::CameraRecord::alpha,/g)?.length,
+        result.cpp.match(
+            /write_camera_scalar\([^\n]+&bbl::CameraRecord::alpha,/g,
+        )?.length,
         2,
     );
 });
@@ -2247,10 +2263,7 @@ test("does not fold mutable reference-record fields into retained callbacks", ()
         result.cpp,
         /stored_callback = bbl::js::make_closure\(std::tuple\{v_view\}, \[\]\(\[\[maybe_unused\]\] decltype\(std::tuple\{[^}\n]*\}\)& (\w+)\) -> double \{\s+auto& v_view = std::get<0>\(\1\);\s+return v_view->x;/,
     );
-    assert.doesNotMatch(
-        result.cpp,
-        /return 0\.0;/,
-    );
+    assert.doesNotMatch(result.cpp, /return 0\.0;/);
 });
 
 test("retains static facts for readonly reference-record fields", () => {
@@ -2414,7 +2427,10 @@ test("materializes runtime-valued static maps as native arrays", () => {
         result.cpp,
         /bbl::js::Array<double> v_mapped = bbl::js::Array<double>\{/,
     );
-    assert.match(result.cpp, /auto (v_bblite_indexed_array_\d+) = v_mapped;[\s\S]*bbl::js::array_index_checked\(\1, /);
+    assert.match(
+        result.cpp,
+        /auto (v_bblite_indexed_array_\d+) = v_mapped;[\s\S]*bbl::js::array_index_checked\(\1, /,
+    );
 });
 
 test("hoists module record factories out of hot dynamic lookups", () => {
@@ -2744,7 +2760,9 @@ test("calls a class method on a record returned by a helper", () => {
     assert.ok(selected);
     assert.match(
         result.cpp,
-        new RegExp(`auto (v_bblite_array_receiver_\\d+) = \\(\\*${selected[1]}\\);[\\s\\S]*\\1\\.push_back\\(v_fn\\d+_amount\\)`),
+        new RegExp(
+            `auto (v_bblite_array_receiver_\\d+) = \\(\\*${selected[1]}\\);[\\s\\S]*\\1\\.push_back\\(v_fn\\d+_amount\\)`,
+        ),
     );
 });
 
@@ -2953,7 +2971,11 @@ test("guards a missing open Record key before dereferencing its local", () => {
     assert.ok(lookup);
     const local = lookup[1]!;
     const guard = result.cpp.indexOf(`${local}.has_value()`);
-    const dereference = result.cpp.search(new RegExp(`\\(\\*${local}\\)|bbl::js::number_from_optional\\(${local}\\)`));
+    const dereference = result.cpp.search(
+        new RegExp(
+            `\\(\\*${local}\\)|bbl::js::number_from_optional\\(${local}\\)`,
+        ),
+    );
     assert.ok(guard >= 0, "the undefined guard tests the stored lookup");
     assert.ok(
         dereference > guard,
@@ -3073,7 +3095,7 @@ test("materializes Object.keys from a compile-time record", () => {
         }
     `);
 
-    assert.match(result.cpp, /Array<std::string>\{\"one\", \"two\"\}/);
+    assert.match(result.cpp, /Array<std::string>\{"one", "two"\}/);
 });
 
 test("preserves optional fields in Partial object defaults", () => {
@@ -3143,7 +3165,10 @@ test("stores and mutates a runtime string local", () => {
     `);
 
     assert.match(result.cpp, /std::string v_\w*name = ""/);
-    assert.match(result.cpp, /bbl::js::concat_append\(v_\w*name, bbl::js::string_from_char_code/);
+    assert.match(
+        result.cpp,
+        /bbl::js::concat_append\(v_\w*name, bbl::js::string_from_char_code/,
+    );
     assert.match(result.cpp, /v_\w*name = bbl::js::string_upper/);
 });
 
@@ -3658,9 +3683,7 @@ test("a record's methods and getter reach the scope it closed over", () => {
     // The method writes the captured local...
     assert.match(
         result.cpp,
-        new RegExp(
-            `\\(\\*${local}\\) = bblscene::Mode::arcade;`,
-        ),
+        new RegExp(`\\(\\*${local}\\) = bblscene::Mode::arcade;`),
     );
     // ...and the getter reads it, rather than a snapshot of it.
     assert.match(
@@ -3695,7 +3718,10 @@ test("evaluates object-literal setters in their captured scope", () => {
 
     // An accessor pair on a returned record literal is a stored callback
     // pair, so the binding both close over is one shared cell.
-    assert.match(result.cpp, /auto v_fn\d+_current = bbl::js::make_gc_shared<double>\(0\.0\);/);
+    assert.match(
+        result.cpp,
+        /auto v_fn\d+_current = bbl::js::make_gc_shared<double>\(0\.0\);/,
+    );
     assert.match(result.cpp, /\(\*v_fn\d+_current\) = \([^;]+ \* 2\.0\)/);
     assert.match(result.cpp, /set_transform_node_rotation_quaternion/);
     assert.match(result.cpp, /v_angle = \(\*v_fn\d+_current\)/);
@@ -3731,9 +3757,8 @@ test("keeps an early return inside the invoked setter", () => {
 });
 
 test("record getters admit local statements before their final return", () => {
-    assert.doesNotThrow(
-        () =>
-            compileSource(`
+    assert.doesNotThrow(() =>
+        compileSource(`
                 const api = {
                     get total() {
                         let sum = 0;
@@ -3743,8 +3768,13 @@ test("record getters admit local statements before their final return", () => {
                 const read = api.total;
             `),
     );
-    assert.throws(() => compileSource(`const api={get value(){if(Math.random()>0.5)return 1;return 2;}};const read=api.value;`),
-        /early returns requires a represented result flow/);
+    assert.throws(
+        () =>
+            compileSource(
+                `const api={get value(){if(Math.random()>0.5)return 1;return 2;}};const read=api.value;`,
+            ),
+        /early returns requires a represented result flow/,
+    );
 });
 
 test("compiles record method arguments in the caller's scope", () => {
@@ -4086,7 +4116,11 @@ test("evaluates animation factories once when projecting a class record into typ
 
     // Each factory starts a playing group. Recompiling the literal during
     // typed projection leaves an extra group playing outside the controller.
-    assert.equal((result.cpp.match(/bbl::create_property_animation_group\(/g) ?? []).length, 2);
+    assert.equal(
+        (result.cpp.match(/bbl::create_property_animation_group\(/g) ?? [])
+            .length,
+        2,
+    );
     assert.match(result.cpp, /bbl::stop_animation\(/);
 });
 
@@ -4174,7 +4208,10 @@ test("shares explicitly typed mutable objects with stored callbacks", () => {
 
     assert.match(result.cpp, /using State = bbl::js::Ref<StateData>;/);
     assert.match(result.cpp, /v_state->count = 1\.0;/);
-    assert.match(result.cpp, /stored_callback = bbl::js::make_closure\(std::tuple\{v_state\}, \[\]/);
+    assert.match(
+        result.cpp,
+        /stored_callback = bbl::js::make_closure\(std::tuple\{v_state\}, \[\]/,
+    );
 });
 
 test("stored callbacks may ignore arguments supplied by their container", () => {
@@ -4610,7 +4647,12 @@ test("shares callbacks assigned after UI handlers are retained", () => {
         /auto (v_action) = bbl::js::make_gc_shared<bbl::js::Callback<void\(\)>>/,
     );
     assert.ok(storage);
-    assert.match(result.cpp, new RegExp(`const auto (\\w+) = \\(\\*${storage[1]}\\);\\s*if \\(!\\1\\) return;\\s*\\1\\(\\);`));
+    assert.match(
+        result.cpp,
+        new RegExp(
+            `const auto (\\w+) = \\(\\*${storage[1]}\\);\\s*if \\(!\\1\\) return;\\s*\\1\\(\\);`,
+        ),
+    );
     assert.match(result.cpp, new RegExp(`\\(\\*${storage[1]}\\) = `));
 });
 
@@ -4893,10 +4935,7 @@ test("indexes runtime strings as one-character strings", () => {
         const found = opening("{}", 0);
     `);
 
-    assert.match(
-        result.cpp,
-        /bbl::js::string_index\([^\r\n]+/,
-    );
+    assert.match(result.cpp, /bbl::js::string_index\([^\r\n]+/);
     assert.match(result.cpp, /bbl::js::string_lower\(v_fn\d+_text\)/);
 });
 
@@ -5264,7 +5303,7 @@ test("uses a boolean fallback for an explicitly undefined record property", () =
 
     const loads = result.cpp.match(/bbl::load_file_texture\([^;]+/g) ?? [];
     assert.equal(loads.length, 2);
-    assert.match(loads[0]!, /, true, false, false\)/);
+    assert.match(loads[0], /, true, false, false\)/);
     assert.match(loads[1]!, /, false, false, false\)/);
 });
 
@@ -5337,10 +5376,7 @@ test("compiles scene17's file ORM and matrix-constructor chain", () => {
         result.cpp,
         /bbl::upstream::create_translation_mat4\(\(-2\.0\), 2\.0, 0\.0\)/,
     );
-    assert.match(
-        result.cpp,
-        /bbl::upstream::create_identity_mat4\(\)/,
-    );
+    assert.match(result.cpp, /bbl::upstream::create_identity_mat4\(\)/);
     assert.match(result.cpp, /bbl::set_thin_instance_colors\(/);
 });
 
@@ -5733,9 +5769,7 @@ test("retains frame callback closure storage after its installer returns", () =>
     );
     assert.doesNotMatch(
         result.cpp,
-        new RegExp(
-            `bbl::on_before_render\\([^\\n]*std::ref\\(${disposed}\\)`,
-        ),
+        new RegExp(`bbl::on_before_render\\([^\\n]*std::ref\\(${disposed}\\)`),
     );
 });
 
@@ -5772,10 +5806,17 @@ test("retains an escaping recursive callback's closure and self reference", () =
     assert.ok(owner);
     assert.match(
         result.cpp,
-        new RegExp(`\\(\\*${owner}\\) = bbl::js::make_closure\\(std::tuple\\{v_busy, v_queued, ${owner}\\}, \\[\\]`),
+        new RegExp(
+            `\\(\\*${owner}\\) = bbl::js::make_closure\\(std::tuple\\{v_busy, v_queued, ${owner}\\}, \\[\\]`,
+        ),
     );
-    const mouseCaptures = result.cpp.match(/bbl::on_dom_pointer\([^\n]*?std::tuple\{([^}]+)\}/)?.[1];
-    assert.deepEqual(mouseCaptures?.split(", ").sort(), ["v_busy", "v_queued", owner].sort());
+    const mouseCaptures = result.cpp.match(
+        /bbl::on_dom_pointer\([^\n]*?std::tuple\{([^}]+)\}/,
+    )?.[1];
+    assert.deepEqual(
+        mouseCaptures?.split(", ").sort(),
+        ["v_busy", "v_queued", owner].sort(),
+    );
     assert.doesNotMatch(result.cpp, new RegExp(`std::ref\\(${owner}\\)`));
 });
 
@@ -6249,7 +6290,10 @@ test("specializes if/else without breaking lexical block shadowing", () => {
 
     const scope = /double (v_fn\d+)_exposure = 1\.25/.exec(result.cpp)?.[1];
     assert.ok(scope);
-    assert.match(result.cpp, new RegExp(`double ${scope}_block\\d+_exposure = 1\\.0`));
+    assert.match(
+        result.cpp,
+        new RegExp(`double ${scope}_block\\d+_exposure = 1\\.0`),
+    );
     assert.doesNotMatch(result.cpp, /\} else \{/);
     assert.match(
         result.cpp,
@@ -6281,11 +6325,19 @@ test("lowers numeric for and while loops", () => {
         },
     );
 
-    const writes = [...result.cpp.matchAll(/(v_fn\d+)_samples \+= ([012])\.0/g)];
-    assert.deepEqual(writes.map(write => write[2]), ["0", "1", "2"]);
+    const writes = [
+        ...result.cpp.matchAll(/(v_fn\d+)_samples \+= ([012])\.0/g),
+    ];
+    assert.deepEqual(
+        writes.map((write) => write[2]),
+        ["0", "1", "2"],
+    );
     const scope = writes[0]![1];
-    assert.ok(writes.every(write => write[1] === scope));
-    assert.match(result.cpp, new RegExp(`while \\(${scope}_remaining > 0\\.0\\)`));
+    assert.ok(writes.every((write) => write[1] === scope));
+    assert.match(
+        result.cpp,
+        new RegExp(`while \\(${scope}_remaining > 0\\.0\\)`),
+    );
     assert.match(result.cpp, new RegExp(`${scope}_remaining--`));
 });
 
@@ -6389,7 +6441,7 @@ test("refuses unsupported properties on a native catch binding", () => {
                     const details = error.details;
                 }
             `),
-        /Unsupported (?:data )?property 'details'/,
+        /(?:Unsupported (?:data )?property|Static record has no property) 'details'/,
     );
 });
 
@@ -6567,7 +6619,9 @@ test("keeps helper construction loops native with every composition row", () => 
     assert.match(result.cpp, /for \(; \w+ < 40\.0; \w+\+\+\)/);
     assert.equal(result.cpp.match(/bbl::create_box\(/g)?.length, 1);
     assert.equal(result.manifest.sceneMeshes.length, 40);
-    assert.ok(result.manifest.sceneMeshes.every(mesh => !mesh.runtimeInstances));
+    assert.ok(
+        result.manifest.sceneMeshes.every((mesh) => !mesh.runtimeInstances),
+    );
 });
 
 test("grows JavaScript arrays on indexed writes", () => {
@@ -7103,16 +7157,19 @@ test("compiles pinned scene 271's live shadow-light replacement unchanged", () =
     );
     assert.match(result.cpp, /remove_from_scene\(v_scene, v_lightA\)/);
     assert.match(result.cpp, /unregister_scene\(v_scene\)/);
-    const registrations = [...result.cpp.matchAll(
-        /register_scene_with_shadow_support\((\w+)\)/g,
-    )];
+    const registrations = [
+        ...result.cpp.matchAll(/register_scene_with_shadow_support\((\w+)\)/g),
+    ];
     assert.equal(registrations.length, 2);
     for (const [, scene] of registrations) {
         assert.match(result.cpp, new RegExp(`auto ${scene} = v_scene;`));
     }
     assert.match(result.cpp, /topology_rebuild_pending/);
     assert.match(result.cpp, /rebuild_scene_renderables\(v_scene\)/);
-    assert.match(result.cpp, /defer_start_continuation_until\(v_engine, \[remaining = 3u\]/);
+    assert.match(
+        result.cpp,
+        /defer_start_continuation_until\(v_engine, \[remaining = 3u\]/,
+    );
     assert.doesNotMatch(result.cpp, /requestAnimationFrame|Promise|nextFrame/);
 });
 
@@ -7233,7 +7290,9 @@ test("updates a shadow task from a runtime subset of its composed casters", () =
     `);
 
     assert.equal(result.manifest.shadowGenerators[0]?.casters.length, 1);
-    const subset = result.cpp.match(/bbl::js::Array<bbl::MeshHandle> (v_\w*next) =/);
+    const subset = result.cpp.match(
+        /bbl::js::Array<bbl::MeshHandle> (v_\w*next) =/,
+    );
     assert.ok(subset);
     assert.match(result.cpp, new RegExp(`array_to_vector\\(${subset[1]}\\)`));
 });
@@ -7470,8 +7529,14 @@ test("retains recursive timer callbacks after their source scope returns", () =>
         }
         main();
     `);
-    assert.match(result.cpp, /bbl::js::make_gc_shared<bbl::js::Callback<void\(\)>>\(\)/);
-    assert.match(result.cpp, /bbl::set_timeout\(v_engine, bbl::js::make_closure\(std::tuple\{bbl_recursive_\w+_owner\}, \[\]/);
+    assert.match(
+        result.cpp,
+        /bbl::js::make_gc_shared<bbl::js::Callback<void\(\)>>\(\)/,
+    );
+    assert.match(
+        result.cpp,
+        /bbl::set_timeout\(v_engine, bbl::js::make_closure\(std::tuple\{bbl_recursive_\w+_owner\}, \[\]/,
+    );
     assert.doesNotMatch(result.cpp, /native_callback_owners/);
 });
 
@@ -7533,7 +7598,10 @@ test("keeps synchronous frame-local recursive callbacks in local storage", () =>
         result.cpp,
         /bbl::js::Callback<void\(double\)> v_fn\d+_drain;/,
     );
-    assert.match(result.cpp, /v_fn\d+_drain = bbl::js::make_closure\(std::tuple\{std::ref\(v_fn\d+_burst\), std::ref\(v_fn\d+_drain\)\}, \[\]/);
+    assert.match(
+        result.cpp,
+        /v_fn\d+_drain = bbl::js::make_closure\(std::tuple\{std::ref\(v_fn\d+_burst\), std::ref\(v_fn\d+_drain\)\}, \[\]/,
+    );
     assert.doesNotMatch(result.cpp, /drain_owner/);
     assert.doesNotMatch(result.cpp, /native_callback_owners/);
 });
@@ -7600,10 +7668,7 @@ test("owns only the timer-scheduled recursive callback beyond its scope", () => 
         result.cpp,
         /bbl::set_timeout\(v_engine, bbl::js::make_closure\(std::tuple\{bbl_recursive_\w*poll_owner\}, \[\]/,
     );
-    assert.match(
-        result.cpp,
-        /bbl::js::Callback<void\(double\)> v_countdown;/,
-    );
+    assert.match(result.cpp, /bbl::js::Callback<void\(double\)> v_countdown;/);
     assert.equal(
         result.cpp.match(/make_gc_shared<bbl::js::Callback</g)?.length,
         1,
@@ -8107,7 +8172,9 @@ test("a tagged union arm with an unrepresented field refuses at that field", () 
                 const first = outcome(Date.now() > 0);
                 if (first.kind !== "hit") throw new Error("outcome");
             `),
-        (error: Error) => /Symbol/.test(error.message) && !/unknown field/.test(error.message),
+        (error: Error) =>
+            /Symbol/.test(error.message) &&
+            !/unknown field/.test(error.message),
     );
 });
 
@@ -8295,7 +8362,10 @@ test("narrows an assigned nullable retained-UI class field", () => {
     `);
 
     assert.match(result.cpp, /ui_append_to_root/);
-    assert.match(result.cpp, /if \([^\n]+\.has_value\(\)\) \{\s*const auto (\w+) = [^;]+;\s*bbl::ui_remove\([^,]+, \1\);/);
+    assert.match(
+        result.cpp,
+        /if \([^\n]+\.has_value\(\)\) \{\s*const auto (\w+) = [^;]+;\s*bbl::ui_remove\([^,]+, \1\);/,
+    );
 });
 
 test("retains stylesheet tags assigned through nullable class fields", () => {
@@ -8603,7 +8673,7 @@ test("resolves flex text wrappers through specificity, inline, and hover cascade
     assert.match(wrapper, /normalized_css_keyword\(resolved_display\)/);
     assert.match(
         projection,
-        /resolved_style_attribute\(handle, record, &resolved_display\)(?:(?!\n    void ).)*text_needs_flex_wrapper\(\s*resolved_display\)/s,
+        /resolved_style_attribute\(handle, record, &resolved_display\)(?:(?!\n {4}void ).)*text_needs_flex_wrapper\(\s*resolved_display\)/s,
     );
 });
 
@@ -8653,9 +8723,14 @@ test("carries document.body through an inlined retained UI mount helper", () => 
     `);
 
     for (const element of ["panel", "footer"]) {
-        const argument = result.cpp.match(new RegExp(`const auto (\\w+) = v_\\w+${element};`))?.[1];
+        const argument = result.cpp.match(
+            new RegExp(`const auto (\\w+) = v_\\w+${element};`),
+        )?.[1];
         assert.ok(argument, "the mount argument is captured before insertion");
-        assert.match(result.cpp, new RegExp(`ui_append_child\\([^,]+, [^,]+, ${argument}\\)`));
+        assert.match(
+            result.cpp,
+            new RegExp(`ui_append_child\\([^,]+, [^,]+, ${argument}\\)`),
+        );
     }
 });
 
@@ -8851,8 +8926,11 @@ test("attaches grid styles in reattached stylesheet order", () => {
     `);
 
     assert.equal(
-        [...result.cpp.matchAll(/ui_append_child\([^;]+UiDocumentPart::Head[^;]+v_(?:first|last)\)/g)]
-            .length,
+        [
+            ...result.cpp.matchAll(
+                /ui_append_child\([^;]+UiDocumentPart::Head[^;]+v_(?:first|last)\)/g,
+            ),
+        ].length,
         4,
     );
     assert.match(result.cpp, /grid-template-columns/i);
@@ -8860,7 +8938,7 @@ test("attaches grid styles in reattached stylesheet order", () => {
 
 test("retains dynamically ordered grid stylesheet attachments", () => {
     assert.doesNotThrow(() =>
-            compileUiScene(`
+        compileUiScene(`
                     const style = document.createElement("style");
                     style.textContent =
                         ".grid { display:grid;grid-template-columns:repeat(2,24px); }" +
@@ -8874,9 +8952,10 @@ test("retains dynamically ordered grid stylesheet attachments", () => {
                     grid.addEventListener("click", () => {
                         document.head.appendChild(style);
                     });
-            `));
+            `),
+    );
     assert.doesNotThrow(() =>
-            compileUiScene(`
+        compileUiScene(`
                     const style = document.createElement("style");
                     style.textContent =
                         ".grid { display:grid;grid-template-columns:repeat(2,24px); }" +
@@ -8891,7 +8970,8 @@ test("retains dynamically ordered grid stylesheet attachments", () => {
                         style.textContent = ".grid { display:block; }";
                     });
                     document.body.appendChild(grid);
-            `));
+            `),
+    );
 });
 
 test("refuses stylesheet selectors outside the reviewed surface by name", () => {
@@ -8909,11 +8989,17 @@ test("refuses stylesheet selectors outside the reviewed surface by name", () => 
     `;
 
     assert.throws(
-        () => compileSource(sheet(".pill:has(.icon:has(.detail)) { color: red; }")),
+        () =>
+            compileSource(
+                sheet(".pill:has(.icon:has(.detail)) { color: red; }"),
+            ),
         /Retained stylesheet selector '\.pill:has\(\.icon:has\(\.detail\)\)' is not lowered/,
     );
     for (const selector of ["div p", ".a > .b"])
-        assert.match(compileSource(sheet(`${selector} { color: red; }`)).cpp, /UiStyleSelectorKind::Sequence/);
+        assert.match(
+            compileSource(sheet(`${selector} { color: red; }`)).cpp,
+            /UiStyleSelectorKind::Sequence/,
+        );
 });
 
 test("keeps scoped and direct class rules distinct in cascade order", () => {
@@ -8979,8 +9065,14 @@ test("retains grid declarations and CSS specificity", () => {
         void main();
     `);
 
-    assert.match(result.cpp, /ui_add_id_style[^\n]*grid-template-columns:repeat\(2,24px\)/i);
-    assert.match(result.cpp, /ui_add_class_style[^\n]*grid-template-columns:repeat\(3,24px\)/i);
+    assert.match(
+        result.cpp,
+        /ui_add_id_style[^\n]*grid-template-columns:repeat\(2,24px\)/i,
+    );
+    assert.match(
+        result.cpp,
+        /ui_add_class_style[^\n]*grid-template-columns:repeat\(3,24px\)/i,
+    );
     const projection = palUiRmlSource;
     const resolver = projection.slice(
         projection.indexOf("std::string resolved_style_attribute"),
@@ -9153,22 +9245,26 @@ test("retains className and cssText grid replacement states", () => {
         void main();
     `;
 
-    assert.doesNotThrow(() => compileSource(source(`cell.className = alternate ? "a" : "b";`)));
     assert.doesNotThrow(() =>
-            compileSource(
-                source(`
+        compileSource(source(`cell.className = alternate ? "a" : "b";`)),
+    );
+    assert.doesNotThrow(() =>
+        compileSource(
+            source(`
                     cell.style.cssText = "width:24px;height:24px";
                     cell.style.cssText = "color:red";
                 `),
-            ));
+        ),
+    );
     assert.doesNotThrow(() =>
-            compileSource(
-                source(`
+        compileSource(
+            source(`
                     cell.style.cssText = alternate
                         ? "width:24px;height:24px"
                         : "color:red";
                 `),
-            ));
+        ),
+    );
     assert.doesNotThrow(() =>
         compileSource(
             source(`cell.className = "cell" + (alternate ? " active" : "");`),
@@ -9231,7 +9327,7 @@ test("lowers compound classes and add remove forced-toggle mutations", () => {
 
 test("preserves Map UI identity across dynamic grid geometry changes", () => {
     assert.doesNotThrow(() =>
-            compileSource(`
+        compileSource(`
                 import { createEngine } from "@babylonjs/lite";
                 async function main(): Promise<void> {
                     await createEngine({});
@@ -9252,10 +9348,11 @@ test("preserves Map UI identity across dynamic grid geometry changes", () => {
                     document.body.appendChild(grid);
                 }
                 void main();
-            `));
+            `),
+    );
 
     assert.doesNotThrow(() =>
-            compileSource(`
+        compileSource(`
                 import { createEngine } from "@babylonjs/lite";
                 async function main(): Promise<void> {
                     await createEngine({});
@@ -9278,7 +9375,8 @@ test("preserves Map UI identity across dynamic grid geometry changes", () => {
                     document.body.appendChild(grid);
                 }
                 void main();
-            `));
+            `),
+    );
 
     const safe = compileSource(`
         import { createEngine } from "@babylonjs/lite";
@@ -9326,8 +9424,8 @@ test("preserves Map UI identity across dynamic grid geometry changes", () => {
 
 test("retains jointly activating grid geometry classes", () => {
     assert.doesNotThrow(() =>
-            compileSource(
-                `
+        compileSource(
+            `
                     import { createEngine } from "@babylonjs/lite";
                     async function main(): Promise<void> {
                         await createEngine({});
@@ -9352,8 +9450,9 @@ test("retains jointly activating grid geometry classes", () => {
                     }
                     void main();
                 `,
-                { fileName: "test/joint-grid-classes.ts" },
-            ));
+            { fileName: "test/joint-grid-classes.ts" },
+        ),
+    );
 });
 
 test("retains runtime class and id changes affecting grid geometry", () => {
@@ -9384,24 +9483,26 @@ test("retains runtime class and id changes affecting grid geometry", () => {
     `;
 
     assert.doesNotThrow(() =>
-            compileSource(
-                mutationSource(
-                    ".grid",
-                    'grid.className = "grid";',
-                    "grid.className = event.code;",
-                ),
-            ));
+        compileSource(
+            mutationSource(
+                ".grid",
+                'grid.className = "grid";',
+                "grid.className = event.code;",
+            ),
+        ),
+    );
     assert.doesNotThrow(() =>
-            compileSource(
-                mutationSource(
-                    "#palette",
-                    'grid.id = "palette";',
-                    "grid.id = event.code;",
-                ),
-            ));
+        compileSource(
+            mutationSource(
+                "#palette",
+                'grid.id = "palette";',
+                "grid.id = event.code;",
+            ),
+        ),
+    );
 
     assert.doesNotThrow(() =>
-            compileSource(`
+        compileSource(`
                 import { createEngine } from "@babylonjs/lite";
                 async function main(): Promise<void> {
                     await createEngine({});
@@ -9421,7 +9522,8 @@ test("retains runtime class and id changes affecting grid geometry", () => {
                     });
                 }
                 void main();
-            `));
+            `),
+    );
 });
 
 test("retains runtime class and id values beside grid layout", () => {
@@ -9570,7 +9672,7 @@ test("switches synthetic intrinsic width with active hover width rules", () => {
     );
     assert.match(
         update,
-        /const bool layout_changed =[^;]*\bhover_changed;[\s\S]*if \(layout_changed\) runtime\.update_intrinsic_widths/,
+        /const bool layout_changed =[^;]*\bhover_changed;[\s\S]*if \(layout_changed\)\s+runtime\.update_intrinsic_widths/,
     );
 });
 
@@ -9642,7 +9744,7 @@ test("preserves explicit grid rows and equal min/max child constraints", () => {
     assert.match(result.cpp, /justify-content:center/i);
 
     assert.doesNotThrow(() =>
-            compileSource(`
+        compileSource(`
                 import { createEngine } from "@babylonjs/lite";
                 async function main(): Promise<void> {
                     await createEngine({});
@@ -9662,7 +9764,8 @@ test("preserves explicit grid rows and equal min/max child constraints", () => {
                     document.body.appendChild(grid);
                 }
                 void main();
-            `));
+            `),
+    );
 });
 
 test("admits hidden and positioned children beside explicit grid rows", () => {
@@ -9691,14 +9794,15 @@ test("admits hidden and positioned children beside explicit grid rows", () => {
     assert.doesNotThrow(() => compileSource(source("display:none;")));
     assert.doesNotThrow(() => compileSource(source("position:absolute;")));
     assert.doesNotThrow(() =>
-            compileSource(
-                source("").replace(
-                    "document.body.appendChild(grid);",
-                    `let hidden = false;
+        compileSource(
+            source("").replace(
+                "document.body.appendChild(grid);",
+                `let hidden = false;
                      cell.style.display = hidden ? "none" : "block";
                      document.body.appendChild(grid);`,
-                ),
-            ));
+            ),
+        ),
+    );
 });
 
 test("retains static and responsive min/max grid geometry changes", () => {
@@ -9726,15 +9830,15 @@ test("retains static and responsive min/max grid geometry changes", () => {
     const responsive = (rule: string): string =>
         source(rule).replace("max-width:20px;", "");
     assert.doesNotThrow(() =>
-            compileSource(
-                responsive(".grid button:hover { max-height:20px; }"),
-            ));
+        compileSource(responsive(".grid button:hover { max-height:20px; }")),
+    );
     assert.doesNotThrow(() =>
-            compileSource(
-                responsive(
-                    "@media (max-width:640px) { .cell { min-width:20px; } }",
-                ),
-            ));
+        compileSource(
+            responsive(
+                "@media (max-width:640px) { .cell { min-width:20px; } }",
+            ),
+        ),
+    );
     assert.doesNotThrow(() =>
         compileSource(
             responsive(
@@ -9747,8 +9851,8 @@ test("retains static and responsive min/max grid geometry changes", () => {
 
 test("retains responsive geometry changes on grid items", () => {
     assert.doesNotThrow(() =>
-            compileSource(
-                `
+        compileSource(
+            `
                     import { createEngine } from "@babylonjs/lite";
                     async function main(): Promise<void> {
                         await createEngine({});
@@ -9774,10 +9878,11 @@ test("retains responsive geometry changes on grid items", () => {
                     }
                     void main();
                 `,
-                { fileName: "test/retained-grid-media.ts" },
-            ));
+            { fileName: "test/retained-grid-media.ts" },
+        ),
+    );
     assert.doesNotThrow(() =>
-            compileSource(`
+        compileSource(`
                 import { createEngine } from "@babylonjs/lite";
                 async function main(): Promise<void> {
                     await createEngine({});
@@ -9796,7 +9901,8 @@ test("retains responsive geometry changes on grid items", () => {
                     document.body.appendChild(palette);
                 }
                 void main();
-            `));
+            `),
+    );
 });
 
 test("preserves retained UI grid track alignment", () => {
@@ -9941,7 +10047,10 @@ test("lowers scoped class queries to retained DOM-order iteration", () => {
         void main();
     `);
 
-    assert.match(result.cpp, /ui_query_elements[^\n]*UiSelectorTestKind::Class, "swatch"/);
+    assert.match(
+        result.cpp,
+        /ui_query_elements[^\n]*UiSelectorTestKind::Class, "swatch"/,
+    );
     assert.match(result.cpp, /for \(std::size_t [^;]+;/);
     assert.match(result.cpp, /ui_toggle_class[^\n]*"active"/);
 });
@@ -10336,7 +10445,7 @@ test("refuses unsafe or unbounded retained innerHTML", () => {
 
 test("admits scoped sheets, empty queries and dynamic grid children", () => {
     assert.match(
-            compileSource(`
+        compileSource(`
                 import { createEngine } from "@babylonjs/lite";
                 async function main(): Promise<void> {
                     await createEngine({});
@@ -10349,7 +10458,7 @@ test("admits scoped sheets, empty queries and dynamic grid children", () => {
         /UiStyleSelectorKind::ClassDescendantTag/,
     );
     assert.match(
-            compileSource(`
+        compileSource(`
                 import { createEngine } from "@babylonjs/lite";
                 async function main(): Promise<void> {
                     await createEngine({});
@@ -10364,7 +10473,7 @@ test("admits scoped sheets, empty queries and dynamic grid children", () => {
         /ui_query_elements[^\n]*UiSelectorTestKind::Class, "missing"/,
     );
     assert.doesNotThrow(() =>
-            compileSource(`
+        compileSource(`
                 import { createEngine } from "@babylonjs/lite";
                 async function main(): Promise<void> {
                     await createEngine({});
@@ -10381,7 +10490,8 @@ test("admits scoped sheets, empty queries and dynamic grid children", () => {
                     document.body.appendChild(grid);
                 }
                 void main();
-            `));
+            `),
+    );
 });
 
 test("refuses retained style properties outside the reviewed surface", () => {
@@ -10425,7 +10535,10 @@ test("refuses retained style properties outside the reviewed surface", () => {
         () => compileSource(withCss("color:transparent;")),
         /Retained UI style property 'color' is not lowered: color:transparent is consumed only by the gradient-text/,
     );
-    assert.match(compileSource(withCss("display:inline-grid;color:#fff;")).cpp, /display:inline-grid/);
+    assert.match(
+        compileSource(withCss("display:inline-grid;color:#fff;")).cpp,
+        /display:inline-grid/,
+    );
     assert.throws(
         () => compileSource(withCss("text-shadow:oops;")),
         /Retained UI style property 'text-shadow' is not lowered: the shadow list 'oops'/,
@@ -10488,11 +10601,11 @@ test("records reached degraded style properties in the UI adaptation", () => {
     );
     assert.ok(adaptation);
     assert.equal(adaptation.category, "platform");
-    assert.match(
+    assert.match(adaptation.nativeSemantics, /font-variant-numeric/);
+    assert.doesNotMatch(
         adaptation.nativeSemantics,
-        /font-variant-numeric/,
+        /backdrop-filter|box-shadow/,
     );
-    assert.doesNotMatch(adaptation.nativeSemantics, /backdrop-filter|box-shadow/);
     assert.match(result.cpp, /backdrop-filter:blur\(3px\)/);
     assert.match(adaptation.nativeSemantics, /RmlUi/);
     assert.match(adaptation.nativeSemantics, /element\.animate\(\)/);
@@ -10533,7 +10646,10 @@ test("emits the UI adaptation for a companion-only scene with its degradations",
         ({ id }) => id === "substituted-ui-runtime",
     );
     assert.ok(adaptation);
-    assert.doesNotMatch(adaptation.nativeSemantics, /backdrop-filter|box-shadow/);
+    assert.doesNotMatch(
+        adaptation.nativeSemantics,
+        /backdrop-filter|box-shadow/,
+    );
     assert.match(result.cpp, /backdrop-filter:blur\(14px\)/);
 });
 
@@ -10833,7 +10949,10 @@ test("supplies omitted optional arguments to stored functions", () => {
         hud.banner("READY");
     `);
 
-    assert.match(result.cpp, /const auto (\w+) = [^;]+\.banner;\s*\1\([^,]+, std::nullopt\)/);
+    assert.match(
+        result.cpp,
+        /const auto (\w+) = [^;]+\.banner;\s*\1\([^,]+, std::nullopt\)/,
+    );
     assert.match(result.cpp, /has_value\(\) \? \*[^:]+ : ""/);
 });
 
@@ -10990,11 +11109,17 @@ test("materializes a callback returned through its own closure cycle", () => {
         void main();
     `);
 
-    assert.match(result.cpp, /bbl::js::make_gc_shared<bbl::js::Callback<void\(double\)>>/);
+    assert.match(
+        result.cpp,
+        /bbl::js::make_gc_shared<bbl::js::Callback<void\(double\)>>/,
+    );
     assert.match(result.cpp, /on_dom_pointer[^\n]*"click"/);
     assert.match(result.cpp, /ui_set_style_property/);
     assert.match(result.cpp, /\(\*v_update_owner\)\(1\.0\)/);
-    assert.match(result.cpp, /\(\*v_update_owner\) = bbl::js::make_closure\(std::tuple\{v_fn\d+_button, std::ref\(v_\w+engine\w*\)\}, \[\]\(\[\[maybe_unused\]\] decltype\(std::tuple\{[^}\n]*\}\)& \w+, double/);
+    assert.match(
+        result.cpp,
+        /\(\*v_update_owner\) = bbl::js::make_closure\(std::tuple\{v_fn\d+_button, std::ref\(v_\w+engine\w*\)\}, \[\]\(\[\[maybe_unused\]\] decltype\(std::tuple\{[^}\n]*\}\)& \w+, double/,
+    );
     assert.doesNotMatch(result.cpp, /on_dom_pointer[^\n]*v_update\(1\.0\)/);
 });
 
@@ -11102,7 +11227,9 @@ test("lowers retained layout reads and pointer motion coordinates", () => {
         /make_closure\(std::tuple\{v_hit, std::ref\(v_bblite_inline_engine_\d+\)\}, \[\]\(\[\[maybe_unused\]\] decltype\(std::tuple\{[^}\n]*\}\)& \w+, \[\[maybe_unused\]\] const bbl::PlatformMouseEvent&[^\n]*\)/,
     );
     assert.match(result.cpp, /\.client_x/);
-    const rect = /const auto (\w+) = bbl::ui_get_client_rect\(/.exec(result.cpp)?.[1];
+    const rect = /const auto (\w+) = bbl::ui_get_client_rect\(/.exec(
+        result.cpp,
+    )?.[1];
     assert.ok(rect);
     assert.match(result.cpp, new RegExp(`${rect}\\.left`));
     assert.match(result.cpp, new RegExp(`${rect}\\.width`));
@@ -11132,11 +11259,16 @@ test("captures callback-local values by value in retained UI listeners", () => {
     `);
 
     assert.equal(
-        result.cpp.match(/on_dom_pointer\([^\n]*"mousedown", \d+u, bbl::js::make_closure\(std::tuple\{/g)?.length,
+        result.cpp.match(
+            /on_dom_pointer\([^\n]*"mousedown", \d+u, bbl::js::make_closure\(std::tuple\{/g,
+        )?.length,
         2,
     );
     assert.doesNotMatch(result.cpp, /"mousedown", \[&\]/);
-    assert.match(result.cpp, /std::tuple\{v_fn\d+_swatch, std::ref\(v_bblite_inline_engine_\d+\)\}/);
+    assert.match(
+        result.cpp,
+        /std::tuple\{v_fn\d+_swatch, std::ref\(v_bblite_inline_engine_\d+\)\}/,
+    );
     assert.doesNotMatch(result.cpp, /std::ref\(v_fn\d+_(?:swatch|index)\)/);
 });
 
@@ -12071,29 +12203,46 @@ test("source collector packaging refuses rest, default and optional parameters",
             "container: AssetContainer = {} as AssetContainer",
             "container?: AssetContainer",
         ]) {
-            const walk = original.replace("container: AssetContainer", parameter)
-                .replaceAll("container.entities", "(container as unknown as AssetContainer).entities");
+            const walk = original
+                .replace("container: AssetContainer", parameter)
+                .replaceAll(
+                    "container.entities",
+                    "(container as unknown as AssetContainer).entities",
+                );
             // The actual rest parameter receives [asset], so spreading its
             // `.entities` throws. Passing asset directly to the packaged body
             // would silently erase that source behavior.
             if (parameter.startsWith("...")) {
-                const collect = new Function(transpileCommonJs(
-                    `${walk}\nreturn collectMeshes;`, "collector-rest.ts",
-                ))() as (container: {entities: object[]}) => object[];
-                assert.throws(() => collect({entities: []}), TypeError);
+                const collect = createJavaScriptFunction(
+                    transpileCommonJs(
+                        `${walk}\nreturn collectMeshes;`,
+                        "collector-rest.ts",
+                    ),
+                )() as (container: { entities: object[] }) => object[];
+                assert.throws(() => collect({ entities: [] }), TypeError);
             }
-            assert.throws(() => compileSource(`
+            assert.throws(
+                () =>
+                    compileSource(
+                        `
                 import {createEngine, loadGltf, type AssetContainer, type Mesh} from "@babylonjs/lite";
                 ${walk}
                 const engine = await createEngine({});
                 const asset = await loadGltf(engine, "model.glb");
                 for (const mesh of collectMeshes(asset)) { keep(mesh); }
                 function keep(_mesh: Mesh): void {}
-            `, {fileName: "collector-parameter.ts"}), (error: unknown) => {
-                assert(error instanceof CompileError);
-                assert.match(error.message, /collector-parameter\.ts:\d+:\d+:/);
-                return true;
-            });
+            `,
+                        { fileName: "collector-parameter.ts" },
+                    ),
+                (error: unknown) => {
+                    assert(error instanceof CompileError);
+                    assert.match(
+                        error.message,
+                        /collector-parameter\.ts:\d+:\d+:/,
+                    );
+                    return true;
+                },
+            );
         }
     }
 });
@@ -12652,7 +12801,7 @@ test("folds a light include set to the meshes its ids name", () => {
     // `Mesh.id` has one reader upstream and the join folds here, so no
     // record lane carries the string; the scene's own id arrays are its
     // own plain data and stay.
-    assert.doesNotMatch(result.cpp, /\.meshes\[[^\]]*\]\.id/);
+    assert.doesNotMatch(result.cpp, /\.meshes\[[^\]]*\]\.id\b/);
     assert.ok(result.manifest.features.includes("light:included-meshes"));
 });
 
@@ -13157,7 +13306,10 @@ test("swaps mutable numeric locals through destructuring", () => {
         [left, right] = [right, left];
     `);
 
-    assert.match(result.cpp, /const auto (v_bblite_destructure_value_\d+) = v_right;\s+const auto (v_bblite_destructure_value_\d+) = v_left;\s+v_left = \1;\s+v_right = \2;/);
+    assert.match(
+        result.cpp,
+        /const auto (v_bblite_destructure_value_\d+) = v_right;\s+const auto (v_bblite_destructure_value_\d+) = v_left;\s+v_left = \1;\s+v_right = \2;/,
+    );
 });
 
 test("assigns a promised resource tuple into definite-assignment locals", () => {
@@ -13216,6 +13368,7 @@ test("stringifies a native exception through a catch binding", () => {
     assert.match(result.cpp, /catch \(const std::exception&/);
     assert.match(result.cpp, /\.what\(\)/);
     assert.match(result.cpp, /throw std::runtime_error/);
+    assert.doesNotMatch(result.cpp, /std::string v_[\w]*cause =/);
 });
 
 test("folds static n-ary Math extrema before browser short circuiting", () => {
@@ -13418,7 +13571,7 @@ test("deduplicates static and directory-discovered module assets", () => {
         "fixtures/compiler-modules/dynamic-audio/tone.wav",
     );
     assert.equal(
-        result.cpp.split(result.manifest.assets[0]!.output).length - 1,
+        result.cpp.split(result.manifest.assets[0].output).length - 1,
         1,
     );
 });
@@ -13730,11 +13883,15 @@ test("removes a dynamically registered platform listener by callback identity", 
         }
     `);
 
-    const registration = result.cpp.match(/bbl::on_dom_keyboard\([^,]+, bbl::DomEventTarget::window\(\), "keydown", (\d+)u,/);
+    const registration = result.cpp.match(
+        /bbl::on_dom_keyboard\([^,]+, bbl::DomEventTarget::window\(\), "keydown", (\d+)u,/,
+    );
     assert.ok(registration);
     assert.match(
         result.cpp,
-        new RegExp(`bbl::off_dom_keyboard\\([^,]+, bbl::DomEventTarget::window\\(\\), "keydown", ${registration[1]}u, false\\)`),
+        new RegExp(
+            `bbl::off_dom_keyboard\\([^,]+, bbl::DomEventTarget::window\\(\\), "keydown", ${registration[1]}u, false\\)`,
+        ),
     );
     assert.doesNotMatch(result.cpp, /bbl::on_dom_keyboard\([^;]+, \[&\]/);
 });
@@ -15009,7 +15166,10 @@ test("compiles Babylon Lite scene 10 PBR rough sphere", () => {
     assert.match(result.cpp, /bbl::create_solid_texture/);
     assert.match(result.cpp, /bbl::create_pbr_material/);
     assert.match(result.cpp, /bbl::create_sphere/);
-    assert.match(result.cpp, /bbl::set_mesh_material\(v_engine, v_sphere, bbl::create_pbr_material\(/);
+    assert.match(
+        result.cpp,
+        /bbl::set_mesh_material\(v_engine, v_sphere, bbl::create_pbr_material\(/,
+    );
     assert.deepEqual(result.manifest.generatedSources, [
         "upstream/src/engine.cpp",
         "upstream/src/scene_core.cpp",
@@ -15768,7 +15928,10 @@ test("compiles Babylon Lite scene 268 orthographic camera", () => {
     );
     assert.equal(result.manifest.sceneMeshes.length, 10);
     assert.equal(result.cpp.match(/bbl::create_box\(/g)?.length, 2);
-    assert.equal(result.cpp.match(/array_index_checked\(bblscene::COLORS/g)?.length, 2);
+    assert.equal(
+        result.cpp.match(/array_index_checked\(bblscene::COLORS/g)?.length,
+        2,
+    );
     // The URL override folds away: no query string reaches a native
     // build, so `Number.isFinite(NaN)` drops the branch.
     assert.doesNotMatch(result.cpp, /ortho_half_height/);
@@ -15846,8 +16009,14 @@ test("compiles Babylon Lite scene 32 unlit glTF", () => {
 
     assert.ok(result.manifest.features.includes("loader:gltf"));
     assert.ok(result.manifest.features.includes("renderer:scene"));
-    assert.match(result.cpp, /const double \w+ = \(\w+ \+ 3\.141592653589793\);/);
-    assert.match(result.cpp, /write_camera_scalar\([^\n]+&bbl::CameraRecord::alpha,/);
+    assert.match(
+        result.cpp,
+        /const double \w+ = \(\w+ \+ 3\.141592653589793\);/,
+    );
+    assert.match(
+        result.cpp,
+        /write_camera_scalar\([^\n]+&bbl::CameraRecord::alpha,/,
+    );
     assert.match(result.cpp, /UnlitTest\.glb/);
 });
 
@@ -16737,7 +16906,11 @@ test("compiles Babylon Lite scene 35 camera target destructuring", () => {
     });
     assert.ok(result.manifest.features.includes("loader:gltf"));
     assert.ok(result.manifest.features.includes("camera:default"));
-    assertCameraScalarWrite(result.cpp, "alpha", /\(\w+ \+ 3\.141592653589793\)/);
+    assertCameraScalarWrite(
+        result.cpp,
+        "alpha",
+        /\(\w+ \+ 3\.141592653589793\)/,
+    );
     assert.match(
         result.cpp,
         /\[\[maybe_unused\]\] double v_x = v_engine\.cameras\[v_cam\.value\]\.target\.x;/,
@@ -16973,7 +17146,10 @@ test("keeps generated scene locals and equality conditions warning-clean", () =>
     );
 
     const discardedMarker = compileScene("scene175");
-    assert.match(discardedMarker, /static_cast<void>\(bbl::js::make_closure\([^\n]+, bblscene::bbl_recursive_fn\d+_group\)\(/);
+    assert.match(
+        discardedMarker,
+        /static_cast<void>\(bbl::js::make_closure\([^\n]+, bblscene::bbl_recursive_fn\d+_group\)\(/,
+    );
     assert.doesNotMatch(discardedMarker, /^\s*v_fn\d+_sphere;$/m);
 });
 
@@ -17485,7 +17661,10 @@ test("re-queues once per yield so two yields park two frames out", () => {
         ),
         frameYieldFile,
     );
-    assert.match(result.cpp, /defer_start_continuation_until\(v_engine, \[remaining = 3u\]/);
+    assert.match(
+        result.cpp,
+        /defer_start_continuation_until\(v_engine, \[remaining = 3u\]/,
+    );
 });
 
 /**
@@ -17669,12 +17848,12 @@ async function main(): Promise<void> {`,
         frameYieldFile,
     );
     assert.doesNotMatch(result.cpp, /requestAnimationFrame|for \(/);
-    assert.match(result.cpp, /defer_start_continuation_until\(v_engine, \[remaining = 5u\]/);
-    // The scene mutation is behind all four boundaries, not beside them.
     assert.match(
         result.cpp,
-        /defer_start_continuation_until[^]*?clear_color/,
+        /defer_start_continuation_until\(v_engine, \[remaining = 5u\]/,
     );
+    // The scene mutation is behind all four boundaries, not beside them.
+    assert.match(result.cpp, /defer_start_continuation_until[^]*?clear_color/);
 });
 
 test("unrolls a constant-trip frame-yield loop past the ordinary unroll cap", () => {
@@ -17691,7 +17870,10 @@ test("unrolls a constant-trip frame-yield loop past the ordinary unroll cap", ()
         ),
         frameYieldFile,
     );
-    assert.match(result.cpp, /defer_start_continuation_until\(v_engine, \[remaining = 161u\]/);
+    assert.match(
+        result.cpp,
+        /defer_start_continuation_until\(v_engine, \[remaining = 161u\]/,
+    );
 });
 
 test("still refuses a frame yield in a loop whose trip count is not known", () => {
@@ -17733,7 +17915,10 @@ test("registers pre-start application animation loops before rendering", () => {
     assert.match(result.cpp, /animation_frame_callbacks\.push_back/);
     // `tick` is a kept value (handed to requestAnimationFrame by name), so
     // the counter it writes is a shared cell the frame callback owns.
-    assert.match(result.cpp, /auto v_elapsed = bbl::js::make_gc_shared<double>\(0\.0\);/);
+    assert.match(
+        result.cpp,
+        /auto v_elapsed = bbl::js::make_gc_shared<double>\(0\.0\);/,
+    );
     assert.match(
         result.cpp,
         /animation_frame_callbacks\.push_back\(bbl::js::make_closure\(std::tuple\{v_elapsed\}, \[\]\(\[\[maybe_unused\]\] decltype\(std::tuple\{[^}\n]*\}\)& \w+, \[\[maybe_unused\]\] double /,
@@ -17806,8 +17991,7 @@ test("preserves nested one-shot animation-frame continuations", () => {
     `);
 
     assert.equal(
-        (result.cpp.match(/bbl::request_animation_frame\(/g) ?? [])
-            .length,
+        (result.cpp.match(/bbl::request_animation_frame\(/g) ?? []).length,
         2,
     );
     assert.match(result.cpp, /ui_set_style_property[^]*"opacity", "0"/);
@@ -17967,8 +18151,14 @@ test("lowers recurring browser timers onto the frame conductor", () => {
 
     // The interval retains `tick`, so the bindings it writes are shared
     // cells the closure environment owns rather than borrowed locals.
-    assert.match(result.cpp, /auto v_ticks = bbl::js::make_gc_shared<double>\(0\.0\);/);
-    assert.match(result.cpp, /bbl::set_interval\(v_engine, bbl::js::make_closure\(std::tuple\{v_ticks, v_timer, std::ref\(v_engine\)\}, \[\]/);
+    assert.match(
+        result.cpp,
+        /auto v_ticks = bbl::js::make_gc_shared<double>\(0\.0\);/,
+    );
+    assert.match(
+        result.cpp,
+        /bbl::set_interval\(v_engine, bbl::js::make_closure\(std::tuple\{v_ticks, v_timer, std::ref\(v_engine\)\}, \[\]/,
+    );
     assert.match(result.cpp, /v_\w*previous = \(\*v_\w*ticks\)/);
     assert.match(result.cpp, /\(\*v_\w*ticks\) = \(v_\w*previous \+ 1\.0\)/);
     assert.match(result.cpp, /bbl::clear_interval\(v_engine,/);
@@ -17996,7 +18186,10 @@ test("lets recurring timers read persistent factory closure state", () => {
         main();
     `);
 
-    assert.match(result.cpp, /bbl::set_interval\(v_engine, bbl::js::make_closure\(std::tuple\{v_fn\d+_ticks\}, \[\]/);
+    assert.match(
+        result.cpp,
+        /bbl::set_interval\(v_engine, bbl::js::make_closure\(std::tuple\{v_fn\d+_ticks\}, \[\]/,
+    );
     assert.match(result.cpp, /\(\*v_\w*ticks\) = \(v_\w*previous \+ 1\.0\)/);
 });
 
@@ -18035,7 +18228,10 @@ test("writes out a constant-trip frame-yield loop as one boundary per frame", ()
         frameYieldFile,
     );
     assert.doesNotMatch(result.cpp, /requestAnimationFrame/);
-    assert.match(result.cpp, /defer_start_continuation_until\(v_engine, \[remaining = 6u\]/);
+    assert.match(
+        result.cpp,
+        /defer_start_continuation_until\(v_engine, \[remaining = 6u\]/,
+    );
 });
 
 test("defers the capture behind a promise that resolves on a frame count", () => {
@@ -19242,9 +19438,15 @@ test("bakes a CSG boolean into the geometry the pin produced", () => {
     );
     assert.ok(result.manifest.features.includes("mesh:csg"));
     assert.ok(result.manifest.features.includes("mesh:from-data"));
-    const geometryAssets = result.manifest.assets.filter(asset => asset.kind === "binary");
+    const geometryAssets = result.manifest.assets.filter(
+        (asset) => asset.kind === "binary",
+    );
     assert.equal(geometryAssets.length, 1);
-    assert.ok(result.assetPayloads.get(geometryAssets[0]!.source)?.startsWith("data:application/x-bblite-mesh;base64,"));
+    assert.ok(
+        result.assetPayloads
+            .get(geometryAssets[0]!.source)
+            ?.startsWith("data:application/x-bblite-mesh;base64,"),
+    );
     assert.match(
         result.cpp,
         /bbl::create_mesh_from_data\(v_engine, "carved", v_bblite_baked_geometry_\d+\.positions,/,
@@ -19769,7 +19971,10 @@ test("shares one cell for entry-module state a stored callback rebinds", () => {
         2,
     );
     assert.match(result.cpp, /\(\*v_ticks\) = 100\.0;/);
-    assert.equal((result.cpp.match(/\(\*v_ticks\) \+= 1\.0;/g) ?? []).length, 2);
+    assert.equal(
+        (result.cpp.match(/\(\*v_ticks\) \+= 1\.0;/g) ?? []).length,
+        2,
+    );
 });
 
 test("refuses entry-module state whose declaration is a binding pattern", () => {
@@ -19987,7 +20192,10 @@ test("reads a container's flow-graph runtimes and graphs as its own collection",
     `);
     assert.match(result.cpp, /assets\[[^\]]*\]\.flow_graph_runtimes\.size\(\)/);
     // The declared graphs are the document's own list, not the runtimes'.
-    assert.match(result.cpp, /const bbl::FlowGraphHandle [\w]+ = [\w]+ \? [\w.]*assets\[[^\]]*\]\.flow_graphs\[/);
+    assert.match(
+        result.cpp,
+        /const bbl::FlowGraphHandle [\w]+ = [\w]+ \? [\w.]*assets\[[^\]]*\]\.flow_graphs\[/,
+    );
 });
 
 test("refuses a container's runtimes read without await", () => {

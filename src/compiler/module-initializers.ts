@@ -15,9 +15,7 @@ import {
 } from "./syntax.js";
 
 /** Statements JavaScript executes while evaluating an imported module. */
-export function isModuleInitializerStatement(
-    statement: ts.Statement,
-): boolean {
+export function isModuleInitializerStatement(statement: ts.Statement): boolean {
     return !(
         ts.isImportDeclaration(statement) ||
         ts.isExportDeclaration(statement) ||
@@ -138,7 +136,9 @@ function collectMutatedContainerSymbols(
         } else if (ts.isDeleteExpression(node)) {
             recordThrough(node.expression);
         } else {
-            const target = mutatingCallTarget(node, (method) => writeReceiverMethods.has(method));
+            const target = mutatingCallTarget(node, (method) =>
+                writeReceiverMethods.has(method),
+            );
             if (target) record(target);
         }
     });
@@ -202,7 +202,9 @@ class ModuleInitializerPlanner {
     ) {}
 
     public plan(): ts.SourceFile[] {
-        const projectModules = this.runtimeModules().filter(file => file !== this.sourceFile);
+        const projectModules = this.runtimeModules().filter(
+            (file) => file !== this.sourceFile,
+        );
         const stateByModule = new EmissionMap(
             projectModules.map((file) => [
                 file,
@@ -210,9 +212,7 @@ class ModuleInitializerPlanner {
             ]),
         );
         const allState = new EmissionSet(
-            [...stateByModule.values()].flatMap((state) => [
-                ...state,
-            ]),
+            [...stateByModule.values()].flatMap((state) => [...state]),
         );
         const observedState = this.runtimeObservedModuleState(
             projectModules,
@@ -220,24 +220,15 @@ class ModuleInitializerPlanner {
         );
         const mutatingModules = new EmissionSet(
             projectModules.filter((file) =>
-                this.moduleHasObservableInitializer(
-                    file,
-                    observedState,
-                ),
+                this.moduleHasObservableInitializer(file, observedState),
             ),
         );
         const mutableStateModules = new EmissionSet(
             projectModules.filter((file) =>
-                this.moduleHasObservedMutableState(
-                    file,
-                    observedState,
-                ),
+                this.moduleHasObservedMutableState(file, observedState),
             ),
         );
-        if (
-            mutatingModules.size === 0 &&
-            mutableStateModules.size === 0
-        ) {
+        if (mutatingModules.size === 0 && mutableStateModules.size === 0) {
             return [];
         }
 
@@ -254,8 +245,8 @@ class ModuleInitializerPlanner {
             (file) =>
                 mutatingModules.has(file) ||
                 mutableStateModules.has(file) ||
-                [...(stateByModule.get(file) ?? [])].some(
-                    (symbol) => mutatedState.has(symbol),
+                [...(stateByModule.get(file) ?? [])].some((symbol) =>
+                    mutatedState.has(symbol),
                 ),
         );
     }
@@ -268,19 +259,31 @@ class ModuleInitializerPlanner {
         const ordered: ts.SourceFile[] = [];
         const visited = new Set<ts.SourceFile>();
         const visit = (file: ts.SourceFile): void => {
-            if (visited.has(file) || file.isDeclarationFile || this.program.isSourceFileFromExternalLibrary(file)) return;
+            if (
+                visited.has(file) ||
+                file.isDeclarationFile ||
+                this.program.isSourceFileFromExternalLibrary(file)
+            )
+                return;
             visited.add(file);
             for (const statement of file.statements) {
-                if ((!ts.isImportDeclaration(statement) && !ts.isExportDeclaration(statement)) ||
-                    !statement.moduleSpecifier || moduleImportKind(statement) === "type") continue;
-                const symbol = this.checker.getSymbolAtLocation(statement.moduleSpecifier);
+                if (
+                    (!ts.isImportDeclaration(statement) &&
+                        !ts.isExportDeclaration(statement)) ||
+                    !statement.moduleSpecifier ||
+                    moduleImportKind(statement) === "type"
+                )
+                    continue;
+                const symbol = this.checker.getSymbolAtLocation(
+                    statement.moduleSpecifier,
+                );
                 const dependency = symbol?.declarations?.find(ts.isSourceFile);
                 if (dependency) visit(dependency);
             }
             ordered.push(file);
         };
         visit(this.sourceFile);
-        return this.runtimeModuleCache = ordered;
+        return (this.runtimeModuleCache = ordered);
     }
 
     /**
@@ -368,23 +371,18 @@ class ModuleInitializerPlanner {
         // too: an exported registry the entry pushes to, or one the
         // module's own callable fills.
         const mutatedContainers =
-            subset === "mutable"
-                ? this.mutatedContainerSymbols()
-                : undefined;
+            subset === "mutable" ? this.mutatedContainerSymbols() : undefined;
         for (const statement of file.statements) {
             if (!ts.isVariableStatement(statement)) {
                 continue;
             }
             const isConst =
                 (statement.declarationList.flags & ts.NodeFlags.Const) !== 0;
-            for (const declaration of statement.declarationList
-                .declarations) {
+            for (const declaration of statement.declarationList.declarations) {
                 if (!ts.isIdentifier(declaration.name)) {
                     continue;
                 }
-                const symbol = this.symbols.valueSymbol(
-                    declaration.name,
-                );
+                const symbol = this.symbols.valueSymbol(declaration.name);
                 if (!symbol) {
                     continue;
                 }
@@ -427,51 +425,45 @@ class ModuleInitializerPlanner {
         const observed = new EmissionSet<ts.Symbol>();
         const projectFiles = new Set([this.sourceFile, ...projectModules]);
         const visitedFunctions = new Set<ts.Node>();
-        const visit = (root: ts.Node): void => forEachAnalysisNode(root, node => {
-            if (ts.isFunctionLike(node)) {
-                if (visitedFunctions.has(node)) return "skip";
-                visitedFunctions.add(node);
-            }
-            if (ts.isIdentifier(node)) {
-                const symbol = this.symbols.valueSymbol(node);
-                if (symbol && moduleState.has(symbol)) {
-                    observed.add(symbol);
+        const visit = (root: ts.Node): void =>
+            forEachAnalysisNode(root, (node) => {
+                if (ts.isFunctionLike(node)) {
+                    if (visitedFunctions.has(node)) return "skip";
+                    visitedFunctions.add(node);
                 }
-            }
-            if (ts.isCallExpression(node)) {
-                const called = this.calledFunction(node.expression);
-                if (called?.body && projectFiles.has(called.getSourceFile())) {
-                    visit(called);
+                if (ts.isIdentifier(node)) {
+                    const symbol = this.symbols.valueSymbol(node);
+                    if (symbol && moduleState.has(symbol)) {
+                        observed.add(symbol);
+                    }
                 }
-            }
-        });
+                if (ts.isCallExpression(node)) {
+                    const called = this.calledFunction(node.expression);
+                    if (
+                        called?.body &&
+                        projectFiles.has(called.getSourceFile())
+                    ) {
+                        visit(called);
+                    }
+                }
+            });
         visit(this.sourceFile);
         for (const file of projectModules) {
-            const moduleSymbol =
-                this.checker.getSymbolAtLocation(file);
+            const moduleSymbol = this.checker.getSymbolAtLocation(file);
             const exported = new EmissionSet(
                 moduleSymbol
                     ? this.checker
                           .getExportsOfModule(moduleSymbol)
                           .map((symbol) =>
-                              (symbol.flags &
-                                  ts.SymbolFlags.Alias) !==
-                              0
-                                  ? this.checker.getAliasedSymbol(
-                                        symbol,
-                                    )
+                              (symbol.flags & ts.SymbolFlags.Alias) !== 0
+                                  ? this.checker.getAliasedSymbol(symbol)
                                   : symbol,
                           )
                     : [],
             );
-            const isExported = (
-                name: ts.Identifier,
-            ): boolean => {
+            const isExported = (name: ts.Identifier): boolean => {
                 const symbol = this.symbols.valueSymbol(name);
-                return (
-                    symbol !== undefined &&
-                    exported.has(symbol)
-                );
+                return symbol !== undefined && exported.has(symbol);
             };
             for (const statement of file.statements) {
                 if (
@@ -494,14 +486,12 @@ class ModuleInitializerPlanner {
                 if (!ts.isVariableStatement(statement)) {
                     continue;
                 }
-                for (const declaration of statement
-                    .declarationList.declarations) {
+                for (const declaration of statement.declarationList
+                    .declarations) {
                     if (
                         ts.isIdentifier(declaration.name) &&
                         declaration.initializer &&
-                        ts.isFunctionLike(
-                            declaration.initializer,
-                        ) &&
+                        ts.isFunctionLike(declaration.initializer) &&
                         isExported(declaration.name)
                     ) {
                         visit(declaration.initializer);
@@ -514,19 +504,13 @@ class ModuleInitializerPlanner {
         while (observed.size !== previousSize) {
             previousSize = observed.size;
             for (const file of projectModules) {
-                if (
-                    !this.moduleHasObservableInitializer(
-                        file,
-                        observed,
-                    )
-                ) {
+                if (!this.moduleHasObservableInitializer(file, observed)) {
                     continue;
                 }
-                for (const symbol of
-                    this.moduleInitializerStateDependencies(
-                        file,
-                        moduleState,
-                    )) {
+                for (const symbol of this.moduleInitializerStateDependencies(
+                    file,
+                    moduleState,
+                )) {
                     observed.add(symbol);
                 }
             }
@@ -540,36 +524,34 @@ class ModuleInitializerPlanner {
         moduleState: ReadonlySet<ts.Symbol>,
     ): Set<ts.Symbol> {
         const dependencies = new EmissionSet<ts.Symbol>();
-        const activeFunctions = new EmissionSet<
-            ts.FunctionLikeDeclaration
-        >();
-        const visit = (root: ts.Node): void => forEachAnalysisNode(root, node => {
-            if (ts.isIdentifier(node)) {
-                const symbol = this.symbols.valueSymbol(node);
-                if (symbol && moduleState.has(symbol)) {
-                    dependencies.add(symbol);
-                }
-            }
-            if (ts.isCallExpression(node)) {
-                const called = this.calledFunction(
-                    node.expression,
-                );
-                if (
-                    called?.body &&
-                    !activeFunctions.has(called)
-                ) {
-                    activeFunctions.add(called);
-                    visit(called.body);
-                }
-            }
-        }, { functions: "skip" });
+        const activeFunctions = new EmissionSet<ts.FunctionLikeDeclaration>();
+        const visit = (root: ts.Node): void =>
+            forEachAnalysisNode(
+                root,
+                (node) => {
+                    if (ts.isIdentifier(node)) {
+                        const symbol = this.symbols.valueSymbol(node);
+                        if (symbol && moduleState.has(symbol)) {
+                            dependencies.add(symbol);
+                        }
+                    }
+                    if (ts.isCallExpression(node)) {
+                        const called = this.calledFunction(node.expression);
+                        if (called?.body && !activeFunctions.has(called)) {
+                            activeFunctions.add(called);
+                            visit(called.body);
+                        }
+                    }
+                },
+                { functions: "skip" },
+            );
         for (const statement of file.statements) {
             if (!isModuleInitializerStatement(statement)) {
                 continue;
             }
             if (ts.isVariableStatement(statement)) {
-                for (const declaration of statement
-                    .declarationList.declarations) {
+                for (const declaration of statement.declarationList
+                    .declarations) {
                     if (declaration.initializer) {
                         visit(declaration.initializer);
                     }
@@ -605,20 +587,20 @@ class ModuleInitializerPlanner {
         ) {
             current = current.expression;
         }
-        if (
-            ts.isArrowFunction(current) ||
-            ts.isFunctionExpression(current)
-        ) {
+        if (ts.isArrowFunction(current) || ts.isFunctionExpression(current)) {
             return current;
         }
-        if (!ts.isIdentifier(current) && !ts.isPropertyAccessExpression(current)) {
+        if (
+            !ts.isIdentifier(current) &&
+            !ts.isPropertyAccessExpression(current)
+        ) {
             return undefined;
         }
-        const name = ts.isPropertyAccessExpression(current) ? current.name : current;
+        const name = ts.isPropertyAccessExpression(current)
+            ? current.name
+            : current;
         if (!ts.isIdentifier(name)) return undefined;
-        const declaration = this.symbols
-            .valueSymbol(name)
-            ?.valueDeclaration;
+        const declaration = this.symbols.valueSymbol(name)?.valueDeclaration;
         if (declaration && ts.isFunctionLike(declaration)) {
             return declaration as ts.FunctionLikeDeclaration;
         }
@@ -626,69 +608,100 @@ class ModuleInitializerPlanner {
             ts.isVariableDeclaration(declaration) &&
             declaration.initializer &&
             ts.isFunctionLike(declaration.initializer)
-            ? (declaration.initializer as ts.FunctionLikeDeclaration)
+            ? declaration.initializer
             : undefined;
     }
 
-    private readonly initializerMutationCache = new Map<ts.SourceFile, ReadonlySet<ts.Symbol>>();
+    private readonly initializerMutationCache = new Map<
+        ts.SourceFile,
+        ReadonlySet<ts.Symbol>
+    >();
 
     /** One target-independent walk, reused as the observed-state set grows.
      * Alias origins are copied at the declaration, in the same preorder as
      * the eager call walk. Function bodies are entered only through calls.
      */
-    private moduleInitializerMutations(file: ts.SourceFile): ReadonlySet<ts.Symbol> {
+    private moduleInitializerMutations(
+        file: ts.SourceFile,
+    ): ReadonlySet<ts.Symbol> {
         const cached = this.initializerMutationCache.get(file);
         if (cached) return cached;
         const mutations = new Set<ts.Symbol>();
         const aliases = new Map<ts.Symbol, Set<ts.Symbol>>();
         const activeFunctions = new Set<ts.FunctionLikeDeclaration>();
-        const expressionSymbol = (expression: ts.Expression): ts.Symbol | undefined => {
+        const expressionSymbol = (
+            expression: ts.Expression,
+        ): ts.Symbol | undefined => {
             const identifier = rootIdentifier(expression);
             return identifier && this.symbols.valueSymbol(identifier);
         };
         const record = (expression: ts.Expression, through = false): void => {
             const symbol = expressionSymbol(expression);
-            if (!symbol || (through && !typeCanCarryReference(this.checker.getTypeAtLocation(expression)))) return;
-            mutations.add(symbol);
-            for (const origin of aliases.get(symbol) ?? []) mutations.add(origin);
-        };
-        const visit = (node: ts.Node): void => forEachAnalysisNode(node, (current) => {
             if (
-                ts.isVariableDeclaration(current) &&
-                ts.isIdentifier(current.name) &&
-                current.initializer
-            ) {
-                const origin = expressionSymbol(current.initializer);
-                const alias = this.symbols.valueSymbol(current.name);
-                if (origin && alias) {
-                    const origins = aliases.get(alias) ?? new Set<ts.Symbol>();
-                    origins.add(origin);
-                    for (const source of aliases.get(origin) ?? []) origins.add(source);
-                    aliases.set(alias, origins);
-                }
-            }
-            if (isAssignmentExpression(current)) {
-                assignmentTargets(current.left).forEach(target => record(target));
-            }
-            if (ts.isPostfixUnaryExpression(current) || ts.isPrefixUnaryExpression(current)) {
-                record(current.operand);
-            }
-            if (ts.isDeleteExpression(current)) {
-                record(current.expression);
-            }
-            if (ts.isCallExpression(current)) {
-                const callee = current.expression;
-                if (ts.isPropertyAccessExpression(callee) || ts.isElementAccessExpression(callee)) {
-                    record(callee.expression, true);
-                }
-                for (const argument of current.arguments) record(argument, true);
-                const called = this.calledFunction(callee);
-                if (called?.body && !activeFunctions.has(called)) {
-                    activeFunctions.add(called);
-                    visit(called.body);
-                }
-            }
-        }, { functions: "skip" });
+                !symbol ||
+                (through &&
+                    !typeCanCarryReference(
+                        this.checker.getTypeAtLocation(expression),
+                    ))
+            )
+                return;
+            mutations.add(symbol);
+            for (const origin of aliases.get(symbol) ?? [])
+                mutations.add(origin);
+        };
+        const visit = (node: ts.Node): void =>
+            forEachAnalysisNode(
+                node,
+                (current) => {
+                    if (
+                        ts.isVariableDeclaration(current) &&
+                        ts.isIdentifier(current.name) &&
+                        current.initializer
+                    ) {
+                        const origin = expressionSymbol(current.initializer);
+                        const alias = this.symbols.valueSymbol(current.name);
+                        if (origin && alias) {
+                            const origins =
+                                aliases.get(alias) ?? new Set<ts.Symbol>();
+                            origins.add(origin);
+                            for (const source of aliases.get(origin) ?? [])
+                                origins.add(source);
+                            aliases.set(alias, origins);
+                        }
+                    }
+                    if (isAssignmentExpression(current)) {
+                        assignmentTargets(current.left).forEach((target) =>
+                            record(target),
+                        );
+                    }
+                    if (
+                        ts.isPostfixUnaryExpression(current) ||
+                        ts.isPrefixUnaryExpression(current)
+                    ) {
+                        record(current.operand);
+                    }
+                    if (ts.isDeleteExpression(current)) {
+                        record(current.expression);
+                    }
+                    if (ts.isCallExpression(current)) {
+                        const callee = current.expression;
+                        if (
+                            ts.isPropertyAccessExpression(callee) ||
+                            ts.isElementAccessExpression(callee)
+                        ) {
+                            record(callee.expression, true);
+                        }
+                        for (const argument of current.arguments)
+                            record(argument, true);
+                        const called = this.calledFunction(callee);
+                        if (called?.body && !activeFunctions.has(called)) {
+                            activeFunctions.add(called);
+                            visit(called.body);
+                        }
+                    }
+                },
+                { functions: "skip" },
+            );
         visit(file);
         this.initializerMutationCache.set(file, mutations);
         return mutations;

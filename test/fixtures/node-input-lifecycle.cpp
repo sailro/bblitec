@@ -6,7 +6,9 @@
 #include "node_factory.hpp"
 #include "lifecycle.hpp"
 
-namespace bbl { Engine create_engine(EngineOptions) { return {}; } }
+namespace bbl {
+Engine create_engine(EngineOptions) { return {}; }
+} // namespace bbl
 
 int main() {
     assert(generated_main() == 0);
@@ -26,22 +28,26 @@ int main() {
         pixels.uv_invert_y = true;
         pixels.uv_transform.u_offset = .125;
         pixels.sampler.address_u = bbl::TextureAddressMode::mirror;
-        const auto b = bbl::create_node_material(engine, 0, {bbl::node_material_texture("albedo", pixels)});
+        const auto b =
+            bbl::create_node_material(engine, 0, {bbl::node_material_texture("albedo", pixels)});
         auto map = bbl::node_material_inputs(engine, a);
         retained = *map.get("albedo");
         const auto other = *bbl::node_material_inputs(engine, b).get("albedo");
         assert(retained != other && !bbl::node_input_texture(retained));
         assert(std::holds_alternative<bbl::PixelsTexture>(*bbl::node_input_texture(other)));
         assert(std::get<bbl::PixelsTexture>(*bbl::node_input_texture(other)).identity == 19);
-        engine.meshes.emplace_back(); engine.meshes.back().material = a;
+        engine.meshes.emplace_back();
+        engine.meshes.back().material = a;
         bbl::add_to_scene(scene, bbl::MeshHandle{0});
-        assert(scene.deferred_builders.size() == 1 && engine.materials[a.value].shader_textures.empty());
+        assert(scene.deferred_builders.size() == 1 &&
+               engine.materials[a.value].shader_textures.empty());
         const auto solid = bbl::create_solid_texture(engine, .2f, .4f, .6f, 1.f);
         bbl::set_node_input_texture(retained, bbl::solid_texture_file(solid));
         // Public-map replacement does not replace the pin's private binding slot.
         map.set("albedo", other);
         assert(*bbl::node_material_inputs(engine, a).get("albedo") == other);
-        engine.meshes.emplace_back(); engine.meshes.back().material = b;
+        engine.meshes.emplace_back();
+        engine.meshes.back().material = b;
         bbl::add_to_scene(scene, bbl::MeshHandle{1});
         assert(scene.deferred_builders.size() == 2);
         bbl::js::collect_cycles();
@@ -49,7 +55,8 @@ int main() {
         assert(engine.materials[a.value].shader_textures[0].identity == solid.identity);
         const auto& bound = engine.materials[b.value].shader_textures[0];
         assert(bound.identity == 19 && bound.srgb && bound.data.uv_invert_y);
-        assert(bound.data.uv_transform.u_offset == .125 && bound.data.sampler.address_u == bbl::TextureAddressMode::mirror);
+        assert(bound.data.uv_transform.u_offset == .125 &&
+               bound.data.sampler.address_u == bbl::TextureAddressMode::mirror);
         assert(bound.data.bytes.size() == 4 && bound.data.bytes[2] == 3);
         // Source-level late changes are fenced; the native slot still retains
         // the pin's already captured group when read independently.
@@ -70,13 +77,18 @@ int main() {
         auto scene = bbl::create_scene_context(engine);
         const auto missing = bbl::create_node_material(engine, 0, {});
         const auto solid = bbl::create_solid_texture(engine, .5f, .5f, .5f, 1.f);
-        const auto valid = bbl::create_node_material(engine, 0, {bbl::node_material_texture("albedo", solid)});
-        engine.meshes.emplace_back(); engine.meshes.back().material = missing;
+        const auto valid =
+            bbl::create_node_material(engine, 0, {bbl::node_material_texture("albedo", solid)});
+        engine.meshes.emplace_back();
+        engine.meshes.back().material = missing;
         bbl::add_to_scene(scene, bbl::MeshHandle{0});
-        engine.meshes.emplace_back(); engine.meshes.back().material = valid;
+        engine.meshes.emplace_back();
+        engine.meshes.back().material = valid;
         bbl::add_to_scene(scene, bbl::MeshHandle{1});
         bool threw = false;
-        try { bbl::register_scene(scene); } catch (const std::runtime_error& error) {
+        try {
+            bbl::register_scene(scene);
+        } catch (const std::runtime_error& error) {
             threw = std::string(error.what()).find("albedo") != std::string::npos;
         }
         assert(threw && engine.registered_scenes.empty());

@@ -1,36 +1,88 @@
 import assert from "node:assert/strict";
-import {execFileSync} from "node:child_process";
-import {mkdirSync,writeFileSync} from "node:fs";
-import {resolve} from "node:path";
+import { execFileSync } from "node:child_process";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { resolve } from "node:path";
 import test from "node:test";
-import {AnimationLowerer} from "../src/lowering/animation-lowerer.js";
-import {LoweringContext} from "../src/lowering/context.js";
-import {nativeFixtureVcpkgRoot,optionalNativeFixtureTools,runNativeFixtureCompiler} from "./native-fixture.js";
+import { AnimationLowerer } from "../src/lowering/animation-lowerer.js";
+import { LoweringContext } from "../src/lowering/context.js";
+import {
+    nativeFixtureVcpkgRoot,
+    optionalNativeFixtureTools,
+    runNativeFixtureCompiler,
+} from "./native-fixture.js";
 
-async function sourceResult():Promise<unknown>{
-    const pin=await import("@babylonjs/lite");
-    return [false,true].map(blending=>{
-        const manager=pin.createAnimationManager(),events:Array<[number,number]>=[];
-        const clip=pin.createPropertyAnimationClip("value",[{path:"value",keys:[{time:0,value:0},{time:1,value:8}]}]);
-        let added=false;
-        const add=(id:number)=>{
-            let value=0;
-            const target={get value(){return value;},set value(next:number){value=next;events.push([id,next]);
-                if(id===1&&!added){added=true;for(let child=2;child<22;child++)add(child);}}};
-            return pin.createPropertyAnimationGroup(manager,target,clip,{loop:false});
+async function sourceResult(): Promise<unknown> {
+    const pin = await import("@babylonjs/lite");
+    return [false, true].map((blending) => {
+        const manager = pin.createAnimationManager(),
+            events: Array<[number, number]> = [];
+        const clip = pin.createPropertyAnimationClip("value", [
+            {
+                path: "value",
+                keys: [
+                    { time: 0, value: 0 },
+                    { time: 1, value: 8 },
+                ],
+            },
+        ]);
+        let added = false;
+        const add = (id: number) => {
+            let value = 0;
+            const target = {
+                get value() {
+                    return value;
+                },
+                set value(next: number) {
+                    value = next;
+                    events.push([id, next]);
+                    if (id === 1 && !added) {
+                        added = true;
+                        for (let child = 2; child < 22; child++) add(child);
+                    }
+                },
+            };
+            return pin.createPropertyAnimationGroup(manager, target, clip, {
+                loop: false,
+            });
         };
-        const first=add(0);add(1);if(blending){pin.enablePropertyAnimationBlending(manager);pin.setAnimationWeight(first,0.5);}
-        pin.updateAnimationManager(manager,250);const a=events.splice(0);pin.updateAnimationManager(manager,250);
-        return [a,events];
+        const first = add(0);
+        add(1);
+        if (blending) {
+            pin.enablePropertyAnimationBlending(manager);
+            pin.setAnimationWeight(first, 0.5);
+        }
+        pin.updateAnimationManager(manager, 250);
+        const a = events.splice(0);
+        pin.updateAnimationManager(manager, 250);
+        return [a, events];
     });
 }
-test("native manager keeps registered group identities during callback growth and preserves source engine absence",async t=>{
-    const native=optionalNativeFixtureTools();if(!native){t.skip("Native fixture compiler unavailable.");return;}
-    const directory=resolve("artifacts/test-animation-manager-membership");mkdirSync(directory,{recursive:true});
-    const source=resolve(directory,"animation.cpp"),file=resolve(directory,"check.cpp"),executable=resolve(directory,"check.exe");
-    writeFileSync(source,new AnimationLowerer(new LoweringContext()).lowerPropertyAnimation({blending:true,managedGroups:true,gltfLoaderAvailable:false}).source);
-    writeFileSync(resolve(directory,"cases.json"),JSON.stringify(await sourceResult()));
-    writeFileSync(file,`#include <bblite/runtime.hpp>
+test("native manager keeps registered group identities during callback growth and preserves source engine absence", async (t) => {
+    const native = optionalNativeFixtureTools();
+    if (!native) {
+        t.skip("Native fixture compiler unavailable.");
+        return;
+    }
+    const directory = resolve("artifacts/test-animation-manager-membership");
+    mkdirSync(directory, { recursive: true });
+    const source = resolve(directory, "animation.cpp"),
+        file = resolve(directory, "check.cpp"),
+        executable = resolve(directory, "check.exe");
+    writeFileSync(
+        source,
+        new AnimationLowerer(new LoweringContext()).lowerPropertyAnimation({
+            blending: true,
+            managedGroups: true,
+            gltfLoaderAvailable: false,
+        }).source,
+    );
+    writeFileSync(
+        resolve(directory, "cases.json"),
+        JSON.stringify(await sourceResult()),
+    );
+    writeFileSync(
+        file,
+        `#include <bblite/runtime.hpp>
 #include <nlohmann/json.hpp>
 #include <cassert>
 #include <fstream>
@@ -65,7 +117,31 @@ int main(){using namespace bbl;Engine engine;Json expected;std::ifstream("cases.
     if(engine_flags!=std::vector<bool>{false,false,true})return 4;
     try{add_animation_groups(explicit_engine,engine,{{0}});return 5;}catch(const std::runtime_error& error){if(std::string(error.what())!=${JSON.stringify('AnimationGroup "gltf" is already attached to another AnimationManager')})return 6;}
 }
-`);
-    runNativeFixtureCompiler(native,["/nologo","/std:c++20","/W4","/WX","/permissive-","/EHsc","/MD","/O2","/Gy",`/Fo:${directory}/`,`/Fe:${executable}`,"/I",resolve("native/include"),"/I",resolve(nativeFixtureVcpkgRoot,"include"),source,file,"/link","/OPT:REF"]);
-    assert.equal(execFileSync(executable,{cwd:directory,encoding:"utf8"}),"");
+`,
+    );
+    runNativeFixtureCompiler(native, [
+        "/nologo",
+        "/std:c++20",
+        "/W4",
+        "/WX",
+        "/permissive-",
+        "/EHsc",
+        "/MD",
+        "/O2",
+        "/Gy",
+        `/Fo:${directory}/`,
+        `/Fe:${executable}`,
+        "/I",
+        resolve("native/include"),
+        "/I",
+        resolve(nativeFixtureVcpkgRoot, "include"),
+        source,
+        file,
+        "/link",
+        "/OPT:REF",
+    ]);
+    assert.equal(
+        execFileSync(executable, { cwd: directory, encoding: "utf8" }),
+        "",
+    );
 });

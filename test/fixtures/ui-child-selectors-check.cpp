@@ -2,10 +2,12 @@
 #include <cassert>
 
 namespace bbl::pal {
-std::string asset_path(std::string_view) { throw std::runtime_error("Unexpected fixture asset read"); }
+std::string asset_path(std::string_view) {
+    throw std::runtime_error("Unexpected fixture asset read");
+}
 std::string environment_variable(const char*) { return {}; }
 double performance_milliseconds() { return 0; }
-}
+} // namespace bbl::pal
 
 int main() {
     using namespace bbl;
@@ -16,13 +18,15 @@ int main() {
         Engine engine;
         const auto sheet = ui_create_element(engine, "style");
         const auto rule = [&](const char* tag, const char* style) {
-            ui_add_style_rule(engine, sheet, UiStyleSelectorKind::TagChildClass, "entry", "", tag, false, -1, style);
+            ui_add_style_rule(engine, sheet, UiStyleSelectorKind::TagChildClass, "entry", "", tag,
+                              false, -1, style);
         };
         rule("div", "background-color:#ff0000;");
         rule("span", "background-color:#00ff00;");
         rule("body", "background-color:#0000ff;");
         rule("html", "background-color:#ffff00;");
-        ui_add_style_rule(engine, sheet, UiStyleSelectorKind::TagChildClass, "entry", "active", "span", false, -1, "background-color:#00ffff;");
+        ui_add_style_rule(engine, sheet, UiStyleSelectorKind::TagChildClass, "entry", "active",
+                          "span", false, -1, "background-color:#00ffff;");
         // Later source order cannot overcome a parent tag's specificity.
         ui_add_class_style(engine, sheet, "entry", "background-color:#111111;");
         ui_add_class_style(engine, sheet, "other", "background-color:#222222;");
@@ -45,14 +49,20 @@ int main() {
         ui_append_to_root(engine, root);
         pal::UiRmlRuntime runtime(engine, window, 640, 480);
         auto* original = runtime.projected_elements.at(direct.value).element;
-        const auto color = [&](UiElementHandle handle, std::uint8_t red, std::uint8_t green, std::uint8_t blue) {
+        const auto color = [&](UiElementHandle handle, std::uint8_t red, std::uint8_t green,
+                               std::uint8_t blue) {
             pal::update_ui_rml_runtime(runtime, 640, 480);
             auto* element = runtime.projected_elements.at(handle.value).element;
-            const auto actual = element->GetProperty(Rml::PropertyId::BackgroundColor)->Get<Rml::Colourb>();
-            if (actual.red != red || actual.green != green || actual.blue != blue || actual.alpha != 255)
-                std::fprintf(stderr, "Element %u expected %u,%u,%u; actual %u,%u,%u,%u; parent %s\n", handle.value,
-                    red, green, blue, actual.red, actual.green, actual.blue, actual.alpha, element->GetParentNode()->GetTagName().c_str());
-            assert(actual.red == red && actual.green == green && actual.blue == blue && actual.alpha == 255);
+            const auto actual =
+                element->GetProperty(Rml::PropertyId::BackgroundColor)->Get<Rml::Colourb>();
+            if (actual.red != red || actual.green != green || actual.blue != blue ||
+                actual.alpha != 255)
+                std::fprintf(stderr,
+                             "Element %u expected %u,%u,%u; actual %u,%u,%u,%u; parent %s\n",
+                             handle.value, red, green, blue, actual.red, actual.green, actual.blue,
+                             actual.alpha, element->GetParentNode()->GetTagName().c_str());
+            assert(actual.red == red && actual.green == green && actual.blue == blue &&
+                   actual.alpha == 255);
         };
         color(direct, 255, 0, 0);
         color(nested, 17, 17, 17);

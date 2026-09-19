@@ -272,7 +272,11 @@ function fail(location: string, message: string): never {
     throw new Error(`${location}: ${message}`);
 }
 
-function refuseUnknown(record: Json, known: readonly string[], location: string): void {
+function refuseUnknown(
+    record: Json,
+    known: readonly string[],
+    location: string,
+): void {
     for (const key of Object.keys(record)) {
         if (!known.includes(key)) {
             fail(location, `unknown key '${key}' (known: ${known.join(", ")})`);
@@ -280,7 +284,11 @@ function refuseUnknown(record: Json, known: readonly string[], location: string)
     }
 }
 
-function optionalString(record: Json, key: string, location: string): string | undefined {
+function optionalString(
+    record: Json,
+    key: string,
+    location: string,
+): string | undefined {
     const value = record[key];
     if (value === undefined) return undefined;
     if (typeof value !== "string") fail(location, `'${key}' must be a string`);
@@ -289,11 +297,16 @@ function optionalString(record: Json, key: string, location: string): string | u
 
 function requiredString(record: Json, key: string, location: string): string {
     const value = optionalString(record, key, location);
-    if (value === undefined || value === "") fail(location, `'${key}' is required`);
+    if (value === undefined || value === "")
+        fail(location, `'${key}' is required`);
     return value;
 }
 
-function optionalNumber(record: Json, key: string, location: string): number | undefined {
+function optionalNumber(
+    record: Json,
+    key: string,
+    location: string,
+): number | undefined {
     const value = record[key];
     if (value === undefined) return undefined;
     if (typeof value !== "number" || !Number.isFinite(value)) {
@@ -302,10 +315,15 @@ function optionalNumber(record: Json, key: string, location: string): number | u
     return value;
 }
 
-function optionalBoolean(record: Json, key: string, location: string): boolean | undefined {
+function optionalBoolean(
+    record: Json,
+    key: string,
+    location: string,
+): boolean | undefined {
     const value = record[key];
     if (value === undefined) return undefined;
-    if (typeof value !== "boolean") fail(location, `'${key}' must be true or false`);
+    if (typeof value !== "boolean")
+        fail(location, `'${key}' must be true or false`);
     return value;
 }
 
@@ -316,26 +334,38 @@ function optionalStringRecord(
 ): Record<string, string> | undefined {
     const value = record[key];
     if (value === undefined) return undefined;
-    if (!isRecord(value) || !Object.values(value).every((entry) => typeof entry === "string")) {
+    if (
+        !isRecord(value) ||
+        !Object.values(value).every((entry) => typeof entry === "string")
+    ) {
         fail(location, `'${key}' must map names to strings`);
     }
     return value as Record<string, string>;
 }
 
-function optionalStringArray(record: Json, key: string, location: string): string[] | undefined {
+function optionalStringArray(
+    record: Json,
+    key: string,
+    location: string,
+): string[] | undefined {
     const value = record[key];
     if (value === undefined) return undefined;
-    if (!Array.isArray(value) || !value.every((entry) => typeof entry === "string")) {
+    if (
+        !Array.isArray(value) ||
+        !value.every((entry) => typeof entry === "string")
+    ) {
         fail(location, `'${key}' must be an array of strings`);
     }
-    return value as string[];
+    return value;
 }
 
 function pair(value: unknown, location: string, key: string): [number, number] {
     if (
         !Array.isArray(value) ||
         value.length !== 2 ||
-        !value.every((entry) => typeof entry === "number" && Number.isFinite(entry))
+        !value.every(
+            (entry) => typeof entry === "number" && Number.isFinite(entry),
+        )
     ) {
         fail(location, `'${key}' must be two numbers`);
     }
@@ -358,7 +388,11 @@ export function expandTape(tape: readonly string[]): string[] {
 
 function readPhase(value: unknown, location: string): CheckPhase {
     if (!isRecord(value)) fail(location, "must be an object");
-    refuseUnknown(value, ["id", "frame", "maxFrames", "tape", "env", "seek", "capture", "notes"], location);
+    refuseUnknown(
+        value,
+        ["id", "frame", "maxFrames", "tape", "env", "seek", "capture", "notes"],
+        location,
+    );
     const frame = optionalNumber(value, "frame", location);
     if (frame === undefined || !Number.isInteger(frame) || frame < 0) {
         fail(location, "'frame' must be a non-negative integer");
@@ -382,16 +416,58 @@ function readPhase(value: unknown, location: string): CheckPhase {
 }
 
 const EXPECTATION_KEYS: Record<CheckExpectation["kind"], readonly string[]> = {
-    "capture-path": ["kind", "phase", "path", "equals", "min", "max", "finite", "notes"],
+    "capture-path": [
+        "kind",
+        "phase",
+        "path",
+        "equals",
+        "min",
+        "max",
+        "finite",
+        "notes",
+    ],
     "capture-same": ["kind", "phase", "vs", "path", "notes"],
     "capture-differs": ["kind", "phase", "vs", "path", "notes"],
     "capture-compare": ["kind", "phase", "vs", "path", "op", "notes"],
     "camera-delta": ["kind", "phase", "vs", "key", "min", "max", "notes"],
-    "image-mad": ["kind", "phase", "vs", "min", "max", "maxDiff", "changedPixelsMin", "notes"],
+    "image-mad": [
+        "kind",
+        "phase",
+        "vs",
+        "min",
+        "max",
+        "maxDiff",
+        "changedPixelsMin",
+        "notes",
+    ],
     viewport: ["kind", "phase", "equals", "notes"],
-    "golden-mad": ["kind", "phase", "reference", "max", "foregroundMax", "background", "threshold", "notes"],
-    "backends-agree": ["kind", "phase", "paths", "imageMaxDiff", "imageMad", "notes"],
-    "log-match": ["kind", "phase", "pattern", "flags", "count", "absent", "notes"],
+    "golden-mad": [
+        "kind",
+        "phase",
+        "reference",
+        "max",
+        "foregroundMax",
+        "background",
+        "threshold",
+        "notes",
+    ],
+    "backends-agree": [
+        "kind",
+        "phase",
+        "paths",
+        "imageMaxDiff",
+        "imageMad",
+        "notes",
+    ],
+    "log-match": [
+        "kind",
+        "phase",
+        "pattern",
+        "flags",
+        "count",
+        "absent",
+        "notes",
+    ],
     plugin: ["kind", "module", "options", "notes"],
 };
 
@@ -399,12 +475,17 @@ function readExpectation(value: unknown, location: string): CheckExpectation {
     if (!isRecord(value)) fail(location, "must be an object");
     const kind = requiredString(value, "kind", location);
     if (!(kind in EXPECTATION_KEYS)) {
-        fail(location, `unknown expectation kind '${kind}' (known: ${Object.keys(EXPECTATION_KEYS).join(", ")})`);
+        fail(
+            location,
+            `unknown expectation kind '${kind}' (known: ${Object.keys(EXPECTATION_KEYS).join(", ")})`,
+        );
     }
     const known = EXPECTATION_KEYS[kind as CheckExpectation["kind"]];
     refuseUnknown(value, known, location);
     const notes = optionalString(value, "notes", location);
-    const withNotes = <T extends object>(expectation: T): T & { notes?: string } =>
+    const withNotes = <T extends object>(
+        expectation: T,
+    ): T & { notes?: string } =>
         notes === undefined ? expectation : { ...expectation, notes };
     const phase = (): string => requiredString(value, "phase", location);
     const min = optionalNumber(value, "min", location);
@@ -432,7 +513,8 @@ function readExpectation(value: unknown, location: string): CheckExpectation {
             });
         case "capture-compare": {
             const op = requiredString(value, "op", location);
-            if (![">", "<", ">=", "<="].includes(op)) fail(location, "'op' must be one of > < >= <=");
+            if (![">", "<", ">=", "<="].includes(op))
+                fail(location, "'op' must be one of > < >= <=");
             return withNotes({
                 kind: "capture-compare",
                 phase: phase(),
@@ -452,7 +534,11 @@ function readExpectation(value: unknown, location: string): CheckExpectation {
             });
         case "image-mad": {
             const maxDiff = optionalNumber(value, "maxDiff", location);
-            const changedPixelsMin = optionalNumber(value, "changedPixelsMin", location);
+            const changedPixelsMin = optionalNumber(
+                value,
+                "changedPixelsMin",
+                location,
+            );
             return withNotes({
                 kind: "image-mad",
                 phase: phase(),
@@ -471,7 +557,11 @@ function readExpectation(value: unknown, location: string): CheckExpectation {
             });
         case "golden-mad": {
             const reference = optionalString(value, "reference", location);
-            const foregroundMax = optionalNumber(value, "foregroundMax", location);
+            const foregroundMax = optionalNumber(
+                value,
+                "foregroundMax",
+                location,
+            );
             const threshold = optionalNumber(value, "threshold", location);
             const background = value.background;
             if (
@@ -497,7 +587,11 @@ function readExpectation(value: unknown, location: string): CheckExpectation {
         }
         case "backends-agree": {
             const paths = optionalStringArray(value, "paths", location);
-            const imageMaxDiff = optionalNumber(value, "imageMaxDiff", location);
+            const imageMaxDiff = optionalNumber(
+                value,
+                "imageMaxDiff",
+                location,
+            );
             const imageMad = optionalNumber(value, "imageMad", location);
             return withNotes({
                 kind: "backends-agree",
@@ -522,7 +616,8 @@ function readExpectation(value: unknown, location: string): CheckExpectation {
         }
         case "plugin": {
             const options = value.options;
-            if (options !== undefined && !isRecord(options)) fail(location, "'options' must be an object");
+            if (options !== undefined && !isRecord(options))
+                fail(location, "'options' must be an object");
             return withNotes({
                 kind: "plugin",
                 module: requiredString(value, "module", location),
@@ -533,14 +628,30 @@ function readExpectation(value: unknown, location: string): CheckExpectation {
 }
 
 const ACTION_KEYS = [
-    "click", "move", "down", "up", "drag", "steps", "wheel", "resize", "fill",
-    "style", "wait", "frames", "evaluate", "workerEvaluate", "as", "waitFor", "timeoutMs",
+    "click",
+    "move",
+    "down",
+    "up",
+    "drag",
+    "steps",
+    "wheel",
+    "resize",
+    "fill",
+    "style",
+    "wait",
+    "frames",
+    "evaluate",
+    "workerEvaluate",
+    "as",
+    "waitFor",
+    "timeoutMs",
 ] as const;
 
 function readAction(value: unknown, location: string): ObserveAction {
     if (!isRecord(value)) fail(location, "must be an object");
     refuseUnknown(value, ACTION_KEYS, location);
-    if ("click" in value) return { click: pair(value.click, location, "click") };
+    if ("click" in value)
+        return { click: pair(value.click, location, "click") };
     if ("move" in value) return { move: pair(value.move, location, "move") };
     if ("down" in value) return { down: true };
     if ("up" in value) return { up: true };
@@ -564,10 +675,12 @@ function readAction(value: unknown, location: string): ObserveAction {
         if (wheel === undefined) fail(location, "'wheel' must be a number");
         return { wheel };
     }
-    if ("resize" in value) return { resize: pair(value.resize, location, "resize") };
+    if ("resize" in value)
+        return { resize: pair(value.resize, location, "resize") };
     if ("fill" in value) {
         const fill = value.fill;
-        if (!isRecord(fill)) fail(location, "'fill' must be { selector, text }");
+        if (!isRecord(fill))
+            fail(location, "'fill' must be { selector, text }");
         refuseUnknown(fill, ["selector", "text"], `${location}.fill`);
         return {
             fill: {
@@ -576,10 +689,12 @@ function readAction(value: unknown, location: string): ObserveAction {
             },
         };
     }
-    if ("style" in value) return { style: requiredString(value, "style", location) };
+    if ("style" in value)
+        return { style: requiredString(value, "style", location) };
     if ("wait" in value) {
         const wait = optionalNumber(value, "wait", location);
-        if (wait === undefined) fail(location, "'wait' must be a number of milliseconds");
+        if (wait === undefined)
+            fail(location, "'wait' must be a number of milliseconds");
         return { wait };
     }
     if ("frames" in value) {
@@ -614,13 +729,28 @@ function readStep(value: unknown, location: string): ObserveStep {
     if (!isRecord(value)) fail(location, "must be an object");
     refuseUnknown(
         value,
-        ["id", "actions", "screenshot", "state", "settleFrames", "hideStyle", "startup", "notes"],
+        [
+            "id",
+            "actions",
+            "screenshot",
+            "state",
+            "settleFrames",
+            "hideStyle",
+            "startup",
+            "notes",
+        ],
         location,
     );
     const actions = value.actions;
-    if (actions !== undefined && !Array.isArray(actions)) fail(location, "'actions' must be an array");
+    if (actions !== undefined && !Array.isArray(actions))
+        fail(location, "'actions' must be an array");
     const screenshot = optionalString(value, "screenshot", location);
-    if (screenshot !== undefined && screenshot !== "page" && screenshot !== "canvas" && screenshot !== "none") {
+    if (
+        screenshot !== undefined &&
+        screenshot !== "page" &&
+        screenshot !== "canvas" &&
+        screenshot !== "none"
+    ) {
         fail(location, "'screenshot' must be 'page', 'canvas' or 'none'");
     }
     const state = optionalBoolean(value, "state", location);
@@ -629,7 +759,8 @@ function readStep(value: unknown, location: string): ObserveStep {
     const notes = optionalString(value, "notes", location);
     const startup = value.startup;
     if (startup !== undefined) {
-        if (!isRecord(startup)) fail(location, "'startup' must be { viewport }");
+        if (!isRecord(startup))
+            fail(location, "'startup' must be { viewport }");
         refuseUnknown(startup, ["viewport"], `${location}.startup`);
     }
     return {
@@ -649,7 +780,7 @@ function readStep(value: unknown, location: string): ObserveStep {
             ? {
                   startup: {
                       viewport: pair(
-                          (startup as Json).viewport,
+                          startup.viewport,
                           `${location}.startup`,
                           "viewport",
                       ),
@@ -664,20 +795,40 @@ function readObserve(value: unknown, location: string): ObserveSpec {
     if (!isRecord(value)) fail(location, "must be an object");
     refuseUnknown(
         value,
-        ["hooks", "initScriptFile", "state", "ready", "captureReady", "hostPage", "viewport", "headless", "captureFrames", "reloadEachStep", "golden", "steps", "notes"],
+        [
+            "hooks",
+            "initScriptFile",
+            "state",
+            "ready",
+            "captureReady",
+            "hostPage",
+            "viewport",
+            "headless",
+            "captureFrames",
+            "reloadEachStep",
+            "golden",
+            "steps",
+            "notes",
+        ],
         location,
     );
     const hooks = value.hooks;
-    if (hooks !== undefined && !Array.isArray(hooks)) fail(location, "'hooks' must be an array");
+    if (hooks !== undefined && !Array.isArray(hooks))
+        fail(location, "'hooks' must be an array");
     const steps = value.steps;
     if (!Array.isArray(steps)) fail(location, "'steps' must be an array");
     const captureFrames = value.captureFrames;
     if (
         captureFrames !== undefined &&
         (!Array.isArray(captureFrames) ||
-            !captureFrames.every((entry) => Number.isInteger(entry) && (entry as number) >= 0))
+            !captureFrames.every(
+                (entry) => Number.isInteger(entry) && (entry as number) >= 0,
+            ))
     ) {
-        fail(location, "'captureFrames' must be an array of non-negative integers");
+        fail(
+            location,
+            "'captureFrames' must be an array of non-negative integers",
+        );
     }
     const initScriptFile = optionalString(value, "initScriptFile", location);
     const state = optionalString(value, "state", location);
@@ -694,9 +845,17 @@ function readObserve(value: unknown, location: string): ObserveSpec {
                   hooks: (hooks as unknown[]).map((hook, index) => {
                       const where = `${location}.hooks[${index}]`;
                       if (!isRecord(hook)) fail(where, "must be an object");
-                      refuseUnknown(hook, ["marker", "inject", "position"], where);
+                      refuseUnknown(
+                          hook,
+                          ["marker", "inject", "position"],
+                          where,
+                      );
                       const position = optionalString(hook, "position", where);
-                      if (position !== undefined && position !== "before" && position !== "after") {
+                      if (
+                          position !== undefined &&
+                          position !== "before" &&
+                          position !== "after"
+                      ) {
                           fail(where, "'position' must be 'before' or 'after'");
                       }
                       return {
@@ -716,7 +875,9 @@ function readObserve(value: unknown, location: string): ObserveSpec {
             ? { viewport: pair(value.viewport, location, "viewport") }
             : {}),
         ...(headless !== undefined ? { headless } : {}),
-        ...(captureFrames !== undefined ? { captureFrames: captureFrames as number[] } : {}),
+        ...(captureFrames !== undefined
+            ? { captureFrames: captureFrames as number[] }
+            : {}),
         ...(reloadEachStep !== undefined ? { reloadEachStep } : {}),
         ...(golden !== undefined ? { golden } : {}),
         steps: (steps as unknown[]).map((step, index) =>
@@ -737,15 +898,37 @@ export function parseCheckSpec(text: string, location: string): CheckSpec {
     if (!isRecord(value)) fail(location, "must be a JSON object");
     refuseUnknown(
         value,
-        ["scene", "twin", "base", "env", "testPass", "gpuDebug", "timeoutMs", "minFrames", "capture", "logErrorPattern", "phases", "expect", "observe", "notes"],
+        [
+            "scene",
+            "twin",
+            "base",
+            "env",
+            "testPass",
+            "gpuDebug",
+            "timeoutMs",
+            "minFrames",
+            "capture",
+            "logErrorPattern",
+            "phases",
+            "expect",
+            "observe",
+            "notes",
+        ],
         location,
     );
     const base = optionalString(value, "base", location);
-    if (base !== undefined && !["registry", "adhoc", "fixed", "none"].includes(base)) {
+    if (
+        base !== undefined &&
+        !["registry", "adhoc", "fixed", "none"].includes(base)
+    ) {
         fail(location, "'base' must be registry, adhoc, fixed or none");
     }
     const phases = value.phases;
-    if (!Array.isArray(phases)) fail(location, "'phases' must be an array (empty for an offline check)");
+    if (!Array.isArray(phases))
+        fail(
+            location,
+            "'phases' must be an array (empty for an offline check)",
+        );
     const expect = value.expect;
     if (!Array.isArray(expect)) fail(location, "'expect' must be an array");
     const twin = optionalBoolean(value, "twin", location);
@@ -781,16 +964,31 @@ export function parseCheckSpec(text: string, location: string): CheckSpec {
     };
     const ids = new Set<string>();
     for (const phase of spec.phases) {
-        if (ids.has(phase.id)) fail(location, `phase '${phase.id}' is declared twice`);
+        if (ids.has(phase.id))
+            fail(location, `phase '${phase.id}' is declared twice`);
         ids.add(phase.id);
     }
     for (const [index, expectation] of spec.expect.entries()) {
         const where = `${location}.expect[${index}]`;
-        if ("phase" in expectation && expectation.phase !== "*" && !ids.has(expectation.phase)) {
-            fail(where, `names phase '${expectation.phase}', which is not declared`);
+        if (
+            "phase" in expectation &&
+            expectation.phase !== "*" &&
+            !ids.has(expectation.phase)
+        ) {
+            fail(
+                where,
+                `names phase '${expectation.phase}', which is not declared`,
+            );
         }
-        if ("vs" in expectation && expectation.kind !== "image-mad" && !ids.has(expectation.vs)) {
-            fail(where, `names phase '${expectation.vs}' (vs), which is not declared`);
+        if (
+            "vs" in expectation &&
+            expectation.kind !== "image-mad" &&
+            !ids.has(expectation.vs)
+        ) {
+            fail(
+                where,
+                `names phase '${expectation.vs}' (vs), which is not declared`,
+            );
         }
     }
     return spec;

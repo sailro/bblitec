@@ -20,7 +20,10 @@
  */
 import ts from "typescript";
 import { LoweringContext } from "./context.js";
-import { PinnedNumericLowerer, type PinnedBinding } from "./pinned-numeric-lowerer.js";
+import {
+    PinnedNumericLowerer,
+    type PinnedBinding,
+} from "./pinned-numeric-lowerer.js";
 import { pinnedNumericMathCalls } from "./pinned-operators.js";
 
 /**
@@ -57,19 +60,14 @@ function pinnedNumericExpression(
     file: ts.SourceFile,
     expression: ts.Expression,
     rename: ReadonlyMap<string, string>,
-    calls: ReadonlyMap<
-        string,
-        (args: readonly string[]) => string
-    > = new Map(),
+    calls: ReadonlyMap<string, (args: readonly string[]) => string> = new Map(),
 ): string {
     const lowerer = new PinnedNumericLowerer(file, {
         bindings: new Map(
-            [...rename].map(
-                ([name, cpp]): [string, PinnedBinding] => [
-                    name,
-                    { cpp, type: "scalar" },
-                ],
-            ),
+            [...rename].map(([name, cpp]): [string, PinnedBinding] => [
+                name,
+                { cpp, type: "scalar" },
+            ]),
         ),
         calls,
     });
@@ -137,10 +135,7 @@ export function pinnedTrsComposition(
             ([pinned, cpp]) =>
                 `        const double ${cpp} = ${pinnedNumericExpression(
                     euler.file,
-                    context.variableInitializer(
-                        euler.declaration,
-                        pinned,
-                    ),
+                    context.variableInitializer(euler.declaration, pinned),
                     rotationRename,
                     mathCalls,
                 )};\n`,
@@ -180,17 +175,7 @@ export function pinnedTrsComposition(
         "src/math/compose-mat4-into-buffer.ts",
         "composeMat4IntoBuffer",
     );
-    const productNames = [
-        "xx",
-        "yy",
-        "zz",
-        "xy",
-        "xz",
-        "yz",
-        "wx",
-        "wy",
-        "wz",
-    ];
+    const productNames = ["xx", "yy", "zz", "xy", "xz", "yz", "wx", "wy", "wz"];
     const quaternionRename = new Map<string, string>([
         ["qx", "qx"],
         ["qy", "qy"],
@@ -202,10 +187,7 @@ export function pinnedTrsComposition(
             (name) =>
                 `    const double ${name} = ${pinnedNumericExpression(
                     compose.file,
-                    context.variableInitializer(
-                        compose.declaration,
-                        name,
-                    ),
+                    context.variableInitializer(compose.declaration, name),
                     quaternionRename,
                 )};\n`,
         )
@@ -221,10 +203,7 @@ export function pinnedTrsComposition(
         ["ty", `${record}.position.y`],
         ["tz", `${record}.position.z`],
     ]);
-    const stores = context.pinnedElementStores(
-        compose.declaration,
-        "dst",
-    );
+    const stores = context.pinnedElementStores(compose.declaration, "dst");
     if (stores.length !== 16) {
         context.contractError(
             compose.declaration,

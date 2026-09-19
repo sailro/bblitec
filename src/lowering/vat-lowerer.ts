@@ -1,6 +1,6 @@
 import ts from "typescript";
 import { LoweredSource, LoweringContext } from "./context.js";
-import {lowerGltfVatBinding} from "./gltf/vat-binding.js";
+import { lowerGltfVatBinding } from "./gltf/vat-binding.js";
 
 const VAT_MODULE = "src/vat/vat-baker.ts";
 
@@ -35,12 +35,10 @@ export class VatLowerer {
             "variable statement",
             "return statement",
         ]);
-        const frameCountReturn = this.context
-            .findNodes(
-                clipFrameCount,
-                (node): node is ts.ReturnStatement =>
-                    ts.isReturnStatement(node),
-            )[0]?.expression;
+        const frameCountReturn = this.context.findNodes(
+            clipFrameCount,
+            (node): node is ts.ReturnStatement => ts.isReturnStatement(node),
+        )[0]?.expression;
         if (!frameCountReturn) {
             this.context.contractError(
                 clipFrameCount,
@@ -82,27 +80,48 @@ export class VatLowerer {
         // `attachVat`'s own initial write and `play`'s: params = (fromRow,
         // fromRow + frameCount - 1, offset ?? 0, fps ?? clip.fps).
         this.assertInventory(
-            this.context.functionDeclaration(VAT_MODULE, "attachVat").declaration,
+            this.context.functionDeclaration(VAT_MODULE, "attachVat")
+                .declaration,
             "attachVat",
             [
-                "variable statement", "if statement", "expression statement",
-                "variable statement", "variable statement", "variable statement",
-                "expression statement", "expression statement", "variable statement",
-                "expression statement", "if statement", "expression statement",
-                "variable statement", "variable statement", "variable statement",
-                "variable statement", "variable statement", "variable statement",
-                "expression statement", "return statement",
+                "variable statement",
+                "if statement",
+                "expression statement",
+                "variable statement",
+                "variable statement",
+                "variable statement",
+                "expression statement",
+                "expression statement",
+                "variable statement",
+                "expression statement",
+                "if statement",
+                "expression statement",
+                "variable statement",
+                "variable statement",
+                "variable statement",
+                "variable statement",
+                "variable statement",
+                "variable statement",
+                "expression statement",
+                "return statement",
             ],
         );
         // The per-clip bake loop `bake_vat` restates: the empty-clip refusal,
         // the palette read, the row block per clip, and the rows themselves.
         this.assertInventory(
-            this.context.functionDeclaration(VAT_MODULE, "prepareVatMany").declaration,
+            this.context.functionDeclaration(VAT_MODULE, "prepareVatMany")
+                .declaration,
             "prepareVatMany",
             [
-                "if statement", "variable statement", "other statement",
-                "expression statement", "variable statement", "variable statement",
-                "variable statement", "for statement", "return statement",
+                "if statement",
+                "variable statement",
+                "other statement",
+                "expression statement",
+                "variable statement",
+                "variable statement",
+                "variable statement",
+                "for statement",
+                "return statement",
             ],
         );
         this.assertInventory(
@@ -130,9 +149,9 @@ export class VatLowerer {
 namespace bbl {
 namespace {
 
-constexpr float kVatDefaultFrameRate = ${
-                this.context.floatLiteral(defaultFrameRate)
-            };
+constexpr float kVatDefaultFrameRate = ${this.context.floatLiteral(
+                defaultFrameRate,
+            )};
 
 ${lowerGltfVatBinding(this.context)}
 
@@ -326,7 +345,9 @@ void vat_update(
     vat.settings[4] = vat.time;
     vat.settings_version += 1;
 }
-${options.instances ? `
+${
+    options.instances
+        ? `
 void vat_set_instances(
     Engine& engine,
     VatHandle handle,
@@ -357,7 +378,9 @@ void vat_set_instances(
         static_cast<std::size_t>(vat.instance_texels) * 4u, 0.0f);
     vat.instance_version += 1;
 }
-` : ""}
+`
+        : ""
+}
 VatClipRow vat_clip_row(
     Engine& engine,
     VatBake baked,
@@ -385,8 +408,8 @@ void seek_vat(Engine& engine, float seconds) {
         record.vat.time = 0.0f;
         record.vat.settings[4] = 0.0f;
         record.vat.settings_version += 1;${
-                options.instances
-                    ? `
+            options.instances
+                ? `
         // The per-instance arm of the same freeze: each instance's own
         // offset becomes the seeked frame and its rate zero, so the
         // instanced variant reads the same static row the shared one
@@ -405,8 +428,8 @@ void seek_vat(Engine& engine, float seconds) {
         if (!record.vat.instance_params.empty()) {
             record.vat.instance_version += 1;
         }`
-                    : ""
-            }
+                : ""
+        }
     }
 }
 

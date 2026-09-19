@@ -1,39 +1,78 @@
 import assert from "node:assert/strict";
-import {mkdirSync, writeFileSync} from "node:fs";
-import {join, resolve} from "node:path";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { join, resolve } from "node:path";
 import test from "node:test";
-import {compileSource} from "../src/compiler.js";
-import {parseUiGeneratedContent} from "../src/ui-generated-content.js";
-import {stripUiCssComments} from "../src/ui-css-syntax.js";
-import {runRmlUiFixture} from "./native-fixture.js";
+import { compileSource } from "../src/compiler.js";
+import { parseUiGeneratedContent } from "../src/ui-generated-content.js";
+import { stripUiCssComments } from "../src/ui-css-syntax.js";
+import { runRmlUiFixture } from "./native-fixture.js";
 
 test("generated content parses literal lists and attribute text without interpreting markup", () => {
-    assert.deepEqual(parseUiGeneratedContent('"<b>{" attr(data-label) "}"'), {enabled:true, parts:[
-        {kind:"text", value:"<b>{"}, {kind:"attribute", value:"data-label"}, {kind:"text", value:"}"},
-    ]});
-    assert.deepEqual(parseUiGeneratedContent('"\\41 \\1f600\\0"'), {enabled:true,parts:[{kind:"text",value:"A😀�"}]});
-    assert.deepEqual(parseUiGeneratedContent('none'), {enabled:false,parts:[]});
-    assert.deepEqual(parseUiGeneratedContent('""'), {enabled:true,parts:[{kind:"text",value:""}]});
-    assert.equal(stripUiCssComments('.x{/* remove */content:"/* keep */"}'),'.x{content:"/* keep */"}');
-    for (const source of ['', '"unterminated', 'counter(item)', 'url(icon.png)', 'attr(data-label string)', '"a" !important'])
+    assert.deepEqual(parseUiGeneratedContent('"<b>{" attr(data-label) "}"'), {
+        enabled: true,
+        parts: [
+            { kind: "text", value: "<b>{" },
+            { kind: "attribute", value: "data-label" },
+            { kind: "text", value: "}" },
+        ],
+    });
+    assert.deepEqual(parseUiGeneratedContent('"\\41 \\1f600\\0"'), {
+        enabled: true,
+        parts: [{ kind: "text", value: "A😀�" }],
+    });
+    assert.deepEqual(parseUiGeneratedContent("none"), {
+        enabled: false,
+        parts: [],
+    });
+    assert.deepEqual(parseUiGeneratedContent('""'), {
+        enabled: true,
+        parts: [{ kind: "text", value: "" }],
+    });
+    assert.equal(
+        stripUiCssComments('.x{/* remove */content:"/* keep */"}'),
+        '.x{content:"/* keep */"}',
+    );
+    for (const source of [
+        "",
+        '"unterminated',
+        "counter(item)",
+        "url(icon.png)",
+        "attr(data-label string)",
+        '"a" !important',
+    ])
         assert.equal(parseUiGeneratedContent(source), undefined, source);
 });
 
 test("generated content refuses unrepresented functions and originating declarations", () => {
-    const compile = (css: string) => compileSource(`import {createEngine} from "@babylonjs/lite";
+    const compile = (css: string) =>
+        compileSource(`import {createEngine} from "@babylonjs/lite";
         await createEngine({}); const sheet=document.createElement("style");
         sheet.textContent=${JSON.stringify(css)}; document.head.appendChild(sheet);`);
-    for (const css of ['.item{content:"x"}', '.item::before{content:counter(item)}', '.item::before:hover{content:"x"}', '.item::before{content:"";outline:1px solid red}'])
+    for (const css of [
+        '.item{content:"x"}',
+        ".item::before{content:counter(item)}",
+        '.item::before:hover{content:"x"}',
+        '.item::before{content:"";outline:1px solid red}',
+    ])
         assert.throws(() => compile(css));
-    for (const css of ['input::placeholder{content:"x"}', 'input::placeholder{font-size:18px}', 'input::placeholder{background:red}'])
+    for (const css of [
+        'input::placeholder{content:"x"}',
+        "input::placeholder{font-size:18px}",
+        "input::placeholder{background:red}",
+    ])
         assert.throws(() => compile(css));
-    for (const css of ['::before{content:""}', '.panel ::before{content:"{"}', '.panel > ::after{content:"}"}', '.item:hover::after{color:red}'])
+    for (const css of [
+        '::before{content:""}',
+        '.panel ::before{content:"{"}',
+        '.panel > ::after{content:"}"}',
+        ".item:hover::after{color:red}",
+    ])
         assert.doesNotThrow(() => compile(css));
 });
 
-test("generated before and after boxes preserve content, cascade and authored child semantics", t => {
+test("generated before and after boxes preserve content, cascade and authored child semantics", (t) => {
     const directory = resolve("artifacts/ui-generated-content");
-    mkdirSync(directory, {recursive:true});
+    mkdirSync(directory, { recursive: true });
     writeFileSync(join(directory, "worker.ts"), "self.close();");
     const css = `
         .panel{display:block;width:240px}
@@ -58,7 +97,8 @@ test("generated before and after boxes preserve content, cascade and authored ch
         .hint:focus::placeholder{color:#654321}
         @media (max-width:500px){#item::before{content:"Narrow"}}
     `;
-    const result = compileSource(`
+    const result = compileSource(
+        `
         const worker = new Worker(new URL("./worker.ts", import.meta.url), {type:"module"}); worker.terminate();
         const sheet=document.createElement("style"); sheet.id="sheet"; sheet.textContent=${JSON.stringify(css)};
         document.head.appendChild(sheet);
@@ -71,9 +111,11 @@ test("generated before and after boxes preserve content, cascade and authored ch
         const note=document.createElement("textarea"); note.id="note"; note.className="hint";
         note.setAttribute("placeholder","Notes"); document.body.appendChild(note);
         globalThis.close();
-    `, {fileName:join(directory,"entry.ts")});
+    `,
+        { fileName: join(directory, "entry.ts") },
+    );
     assert.match(result.cpp, /UiGeneratedPart::Before/);
     assert.match(result.cpp, /UiContentPartKind::Attribute/);
-    writeFileSync(join(directory,"program.hpp"),result.cpp);
-    runRmlUiFixture(t,"ui-generated-content");
+    writeFileSync(join(directory, "program.hpp"), result.cpp);
+    runRmlUiFixture(t, "ui-generated-content");
 });

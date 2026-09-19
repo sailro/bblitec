@@ -4,15 +4,26 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { LoweringContext } from "../src/lowering/context.js";
 import { shadowFactorySource } from "../src/lowering/shadow-lowerer.js";
-import { cppFunction, optionalNativeFixtureTools, runNativeFixtureCompiler } from "./native-fixture.js";
+import {
+    cppFunction,
+    optionalNativeFixtureTools,
+    runNativeFixtureCompiler,
+} from "./native-fixture.js";
 
 const tools = optionalNativeFixtureTools(false);
 
-test("persistent shadow generators schedule their passes after scene replacement", { skip: !tools }, () => {
-    const source = shadowFactorySource(new LoweringContext(), ["shadow:csm"]).source;
-    const output = resolve("artifacts/shadow-registration-check");
-    mkdirSync(output, { recursive: true });
-    writeFileSync(join(output, "check.cpp"), `
+test(
+    "persistent shadow generators schedule their passes after scene replacement",
+    { skip: !tools },
+    () => {
+        const source = shadowFactorySource(new LoweringContext(), [
+            "shadow:csm",
+        ]).source;
+        const output = resolve("artifacts/shadow-registration-check");
+        mkdirSync(output, { recursive: true });
+        writeFileSync(
+            join(output, "check.cpp"),
+            `
 #include <algorithm>
 #include <cassert>
 #include <cstdint>
@@ -72,11 +83,20 @@ int main() {
     check(race);
     assert(registrations == 4);
 }
-`);
-    const executable = join(output, "check.exe");
-    runNativeFixtureCompiler(tools!, [
-        "/nologo", "/std:c++20", "/W4", "/WX", "/permissive-", "/EHsc",
-        `/Fo:${output}\\`, `/Fe:${executable}`, join(output, "check.cpp"),
-    ]);
-    execFileSync(executable, { stdio: "pipe" });
-});
+`,
+        );
+        const executable = join(output, "check.exe");
+        runNativeFixtureCompiler(tools!, [
+            "/nologo",
+            "/std:c++20",
+            "/W4",
+            "/WX",
+            "/permissive-",
+            "/EHsc",
+            `/Fo:${output}\\`,
+            `/Fe:${executable}`,
+            join(output, "check.cpp"),
+        ]);
+        execFileSync(executable, { stdio: "pipe" });
+    },
+);

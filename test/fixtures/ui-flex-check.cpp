@@ -2,10 +2,12 @@
 #include <cassert>
 
 namespace bbl::pal {
-std::string asset_path(std::string_view) { throw std::runtime_error("Unexpected fixture asset read"); }
+std::string asset_path(std::string_view) {
+    throw std::runtime_error("Unexpected fixture asset read");
+}
 std::string environment_variable(const char*) { return {}; }
 double performance_milliseconds() { return 0; }
-}
+} // namespace bbl::pal
 
 int main() {
     using namespace bbl;
@@ -15,7 +17,9 @@ int main() {
     {
         Engine engine;
         const auto panel = ui_create_element(engine, "div");
-        ui_set_attribute(engine, panel, "style", "display:flex;width:220px;height:120px;flex-flow:wrap row;align-content:start;align-items:start;column-gap:10px;row-gap:8px;");
+        ui_set_attribute(
+            engine, panel, "style",
+            "display:flex;width:220px;height:120px;flex-flow:wrap row;align-content:start;align-items:start;column-gap:10px;row-gap:8px;");
         std::vector<UiElementHandle> children;
         for (int i = 0; i < 3; ++i) {
             const auto child = ui_create_element(engine, "div");
@@ -26,15 +30,20 @@ int main() {
         ui_append_to_root(engine, panel);
         pal::UiRmlRuntime runtime(engine, window, 640, 480);
         const auto update = [&]() { pal::update_ui_rml_runtime(runtime, 640, 480); };
-        const auto element = [&](UiElementHandle handle) { return runtime.projected_elements.at(handle.value).element; };
+        const auto element = [&](UiElementHandle handle) {
+            return runtime.projected_elements.at(handle.value).element;
+        };
         const auto box = [&](size_t index, float x, float y, float width, float height) {
             update();
             auto* child = element(children.at(index));
-            const auto offset = child->GetAbsoluteOffset(Rml::BoxArea::Border) - element(panel)->GetAbsoluteOffset(Rml::BoxArea::Content);
+            const auto offset = child->GetAbsoluteOffset(Rml::BoxArea::Border) -
+                                element(panel)->GetAbsoluteOffset(Rml::BoxArea::Content);
             const auto size = child->GetBox().GetSize(Rml::BoxArea::Border);
             if (std::abs(offset.x - x) >= .1f || std::abs(offset.y - y) >= .1f ||
                 std::abs(size.x - width) >= .1f || std::abs(size.y - height) >= .1f)
-                std::fprintf(stderr, "Flex child %zu: actual %.2f %.2f %.2f %.2f; expected %.2f %.2f %.2f %.2f\n",
+                std::fprintf(
+                    stderr,
+                    "Flex child %zu: actual %.2f %.2f %.2f %.2f; expected %.2f %.2f %.2f %.2f\n",
                     index, offset.x, offset.y, size.x, size.y, x, y, width, height);
             assert(std::abs(offset.x - x) < .1f && std::abs(offset.y - y) < .1f);
             assert(std::abs(size.x - width) < .1f && std::abs(size.y - height) < .1f);
@@ -56,10 +65,13 @@ int main() {
         assert(element(panel)->GetComputedValues().flex_wrap() == Rml::Style::FlexWrap::Nowrap);
         ui_set_style_property(engine, panel, "flex-flow", "wrap");
         update();
-        assert(element(panel)->GetComputedValues().flex_direction() == Rml::Style::FlexDirection::Row);
+        assert(element(panel)->GetComputedValues().flex_direction() ==
+               Rml::Style::FlexDirection::Row);
 
         // A new declaration list resets the inline layout in authored order.
-        ui_set_attribute(engine, panel, "style", "display:flex;width:220px;height:100px;align-items:start;column-gap:10px;");
+        ui_set_attribute(
+            engine, panel, "style",
+            "display:flex;width:220px;height:100px;align-items:start;column-gap:10px;");
         ui_set_style_property(engine, panel, "flex-flow", "row-reverse nowrap");
         ui_set_style_property(engine, panel, "justify-content", "start");
         ui_set_style_property(engine, children[2], "display", "none");

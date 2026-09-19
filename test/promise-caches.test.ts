@@ -1,16 +1,20 @@
 import assert from "node:assert/strict";
-import {execFileSync} from "node:child_process";
-import {mkdirSync,writeFileSync} from "node:fs";
-import {join,resolve} from "node:path";
+import { execFileSync } from "node:child_process";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { join, resolve } from "node:path";
 import test from "node:test";
-import {compileSource} from "../src/compiler.js";
-import {optionalNativeFixtureTools,runNativeFixtureCompiler} from "./native-fixture.js";
+import { compileSource } from "../src/compiler.js";
+import {
+    optionalNativeFixtureTools,
+    runNativeFixtureCompiler,
+} from "./native-fixture.js";
 
-test("promise caches retain identity and async reactions own registration snapshots", t => {
-    const directory=resolve("artifacts/promise-caches");
-    mkdirSync(directory,{recursive:true});
-    writeFileSync(join(directory,"worker.ts"),"self.close();");
-    const result=compileSource(`
+test("promise caches retain identity and async reactions own registration snapshots", (t) => {
+    const directory = resolve("artifacts/promise-caches");
+    mkdirSync(directory, { recursive: true });
+    writeFileSync(join(directory, "worker.ts"), "self.close();");
+    const result = compileSource(
+        `
         const worker=new Worker(new URL("./worker.ts",import.meta.url),{type:"module"});
         worker.terminate();
         let starts=0;
@@ -70,12 +74,30 @@ test("promise caches retain identity and async reactions own registration snapsh
             if(selected!==undefined)throw new Error("clear local");
             globalThis.close();
         })();
-    `,{fileName:join(directory,"entry.ts")});
-    const tools=optionalNativeFixtureTools(false);
-    if(!tools){t.skip("Native fixture compiler unavailable.");return;}
-    const cpp=join(directory,"check.cpp"),exe=join(directory,"check.exe");
-    writeFileSync(cpp,result.cpp);
-    runNativeFixtureCompiler(tools,["/nologo","/std:c++20","/W4","/WX","/EHsc","/MD","/DBBLITE_WORKERS=1",
-        "/I","native/include",`/Fo:${directory}/`,`/Fe:${exe}`,cpp]);
-    assert.equal(execFileSync(exe,{encoding:"utf8",timeout:10000}),"");
+    `,
+        { fileName: join(directory, "entry.ts") },
+    );
+    const tools = optionalNativeFixtureTools(false);
+    if (!tools) {
+        t.skip("Native fixture compiler unavailable.");
+        return;
+    }
+    const cpp = join(directory, "check.cpp"),
+        exe = join(directory, "check.exe");
+    writeFileSync(cpp, result.cpp);
+    runNativeFixtureCompiler(tools, [
+        "/nologo",
+        "/std:c++20",
+        "/W4",
+        "/WX",
+        "/EHsc",
+        "/MD",
+        "/DBBLITE_WORKERS=1",
+        "/I",
+        "native/include",
+        `/Fo:${directory}/`,
+        `/Fe:${exe}`,
+        cpp,
+    ]);
+    assert.equal(execFileSync(exe, { encoding: "utf8", timeout: 10000 }), "");
 });

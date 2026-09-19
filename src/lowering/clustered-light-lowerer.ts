@@ -16,9 +16,7 @@ import {
     type PinnedFunctionParameter,
 } from "./pinned-function-lowerer.js";
 import { pinnedNumericMathCalls } from "./pinned-operators.js";
-import {
-    type PinnedBinding,
-} from "./pinned-numeric-lowerer.js";
+import { type PinnedBinding } from "./pinned-numeric-lowerer.js";
 import { lowerPinnedBody } from "./pinned-body-lowerer.js";
 
 export const clusteredModule = "src/light/clustered.ts";
@@ -129,10 +127,7 @@ export function clusteredConeWriter(context: LoweringContext): string {
                 "spot",
                 { cpp: "light", type: "scalar", absentCpp: "!light.spot" },
             ],
-            [
-                "spot.direction",
-                { cpp: "light.direction", type: "f64-buffer" },
-            ],
+            ["spot.direction", { cpp: "light.direction", type: "f64-buffer" }],
             ["spot.angle", { cpp: "light.angle", type: "scalar" }],
             ["Math.PI", { cpp: "std::numbers::pi", type: "scalar" }],
         ]),
@@ -207,14 +202,19 @@ export function clusteredSliceMapping(
         }
     });
 
-    return lowerPinnedBody(file, statements, {
-        bindings: new Map<string, PinnedBinding>([
-            ["farZ", { cpp: "far_plane", type: "scalar" }],
-            ["nearZ", { cpp: "near_plane", type: "scalar" }],
-            ["zSlices", { cpp: "slices", type: "scalar" }],
-        ]),
-        calls: pinnedNumericMathCalls(),
-    }, indent);
+    return lowerPinnedBody(
+        file,
+        statements,
+        {
+            bindings: new Map<string, PinnedBinding>([
+                ["farZ", { cpp: "far_plane", type: "scalar" }],
+                ["nearZ", { cpp: "near_plane", type: "scalar" }],
+                ["zSlices", { cpp: "slices", type: "scalar" }],
+            ]),
+            calls: pinnedNumericMathCalls(),
+        },
+        indent,
+    );
 }
 
 /**
@@ -309,17 +309,14 @@ const SCALAR_HELPERS: readonly ClusteredHelper[] = [
 ];
 
 /** Each helper's own C++ spelling, so a body may call its siblings. */
-function clusteredCalls(): Map<
-    string,
-    (args: readonly string[]) => string
-> {
+function clusteredCalls(): Map<string, (args: readonly string[]) => string> {
     return new Map<string, (args: readonly string[]) => string>([
         ...pinnedNumericMathCalls(),
         ...SCALAR_HELPERS.map(
-            ({ pinned, cpp }): [
-                string,
-                (args: readonly string[]) => string,
-            ] => [
+            ({
+                pinned,
+                cpp,
+            }): [string, (args: readonly string[]) => string] => [
                 pinned,
                 (args: readonly string[]) => `${cpp}(${args.join(", ")})`,
             ],
@@ -341,7 +338,7 @@ export function clusteredScalarHelpers(context: LoweringContext): string {
             returns: "double",
             inline: true,
             calls,
-        })
+        }),
     ).join("\n\n");
 }
 
@@ -394,8 +391,10 @@ export function clusteredProjectedBounds(context: LoweringContext): string {
                             ).declaration,
                         },
                     );
-                    return `std::array<double, 4>{${minX}, ${maxX}, ` +
-                        `${minY}, ${maxY}}`;
+                    return (
+                        `std::array<double, 4>{${minX}, ${maxX}, ` +
+                        `${minY}, ${maxY}}`
+                    );
                 },
             },
         },
@@ -414,9 +413,7 @@ export function clusteredProjectedBounds(context: LoweringContext): string {
  * reads back, so a pin that moves one has to move both sides together, and
  * folding is what makes it.
  */
-export function clusteredAddLightToClusters(
-    context: LoweringContext,
-): string {
+export function clusteredAddLightToClusters(context: LoweringContext): string {
     return lowerPinnedFunction(
         context,
         clusteredModule,

@@ -7,7 +7,11 @@ import { compileSource } from "../src/compiler.js";
 import { LoweringContext } from "../src/lowering/context.js";
 import { GizmoLowerer } from "../src/lowering/gizmo-lowerer.js";
 import { PickingLowerer } from "../src/lowering/picking-lowerer.js";
-import { nativeFixtureVcpkgRoot, optionalNativeFixtureTools, runNativeFixtureCompiler } from "./native-fixture.js";
+import {
+    nativeFixtureVcpkgRoot,
+    optionalNativeFixtureTools,
+    runNativeFixtureCompiler,
+} from "./native-fixture.js";
 
 test("editor proxy registers identity-preserving listeners and live drag predicates", () => {
     const cpp = compileSource(`
@@ -44,7 +48,12 @@ test("editor proxy registers identity-preserving listeners and live drag predica
 });
 
 test("pointer drag lowers pinned math, enlarged colliders and unregister cleanup", () => {
-    const source = new GizmoLowerer(new LoweringContext(), ["gizmo:axis-drag", "gizmo:plane-drag", "gizmo:position", "gizmo:pointer-drag"]).lower().source;
+    const source = new GizmoLowerer(new LoweringContext(), [
+        "gizmo:axis-drag",
+        "gizmo:plane-drag",
+        "gizmo:position",
+        "gizmo:pointer-drag",
+    ]).lower().source;
     assert.match(source, /Vec3d delta = Vec3d/);
     assert.match(source, /drag_axis_plane\(/);
     assert.match(source, /drag_local_delta\(/);
@@ -64,7 +73,10 @@ test("rotation factories reach host pointer input and lower their quaternion upd
         const gizmo = createRotationGizmo(engine, layer);
     `);
     assert(compiled.manifest.features.includes("gizmo:pointer-drag"));
-    const source = new GizmoLowerer(new LoweringContext(), compiled.manifest.features).lower().source;
+    const source = new GizmoLowerer(
+        new LoweringContext(),
+        compiled.manifest.features,
+    ).lower().source;
     assert.match(source, /rotation_drag = true/);
     assert.match(source, /const Vec3d a = Vec3d/);
     assert.match(source, /drag_local_rotation\(engine, node/);
@@ -104,7 +116,9 @@ test("returned canvas proxy keeps its dispatcher in orbit-control closures", () 
         });
     `).cpp;
     assert.doesNotMatch(cpp, /pointer_drag_state\(nullptr/);
-    const dispatcher = cpp.match(/auto (\w+) = bbl::create_pointer_drag_dispatcher/)!;
+    const dispatcher = cpp.match(
+        /auto (\w+) = bbl::create_pointer_drag_dispatcher/,
+    )!;
     assert.ok(dispatcher);
     assert.ok(cpp.includes(`pointer_drag_state(${dispatcher[1]}, 0u)`));
     assert.ok(cpp.includes(`pointer_drag_state(${dispatcher[1]}, 1u)`));
@@ -143,38 +157,80 @@ test("rebuild subscribers registered after construction remain a live loop", () 
 });
 
 test("overlay GPU picking uses the picker scene in both backends", () => {
-    const source = new PickingLowerer(new LoweringContext()).lower(false, false, true).source;
+    const source = new PickingLowerer(new LoweringContext()).lower(
+        false,
+        false,
+        true,
+    ).source;
     assert.match(source, /gpu_pickers\.back\(\)\.scene = scene.state/);
     assert.match(source, /void populate_pick_ray\(/);
-    for (const file of ["native/src/pal_sdl_gpu.cpp", "native/src/pal_dawn.cpp"]) {
+    for (const file of [
+        "native/src/pal_sdl_gpu.cpp",
+        "native/src/pal_dawn.cpp",
+    ]) {
         const backend = readFileSync(file, "utf8");
-        assert.match(backend, /picker_scene_index\(engine, picker, active_registered_scenes\)/);
+        assert.match(
+            backend,
+            /picker_scene_index\(engine, picker, active_registered_scenes\)/,
+        );
         assert.match(backend, /state\.overlay_meshes\[\*layer - 1\]/);
     }
 });
 
 test("cycling SDL picking depth discards the unused stencil attachment", () => {
     const backend = readFileSync("native/src/pal_sdl_gpu.cpp", "utf8");
-    const target = backend.match(/depth_target\.texture = state\.pick_targets\.depth;[\s\S]*?SDL_BeginGPURenderPass\(/)?.[0];
+    const target = backend.match(
+        /depth_target\.texture = state\.pick_targets\.depth;[\s\S]*?SDL_BeginGPURenderPass\(/,
+    )?.[0];
     assert.ok(target);
     assert.match(target, /depth_target\.cycle = true/);
     assert.match(target, /depth_target\.load_op = SDL_GPU_LOADOP_CLEAR/);
-    assert.match(target, /depth_target\.stencil_load_op = SDL_GPU_LOADOP_DONT_CARE/);
-    assert.match(target, /depth_target\.stencil_store_op = SDL_GPU_STOREOP_DONT_CARE/);
+    assert.match(
+        target,
+        /depth_target\.stencil_load_op = SDL_GPU_LOADOP_DONT_CARE/,
+    );
+    assert.match(
+        target,
+        /depth_target\.stencil_store_op = SDL_GPU_STOREOP_DONT_CARE/,
+    );
 });
 
 const nativeTools = optionalNativeFixtureTools();
-test("borrowed pointer identity and camera deferral survive drag and release", {
-    skip: !nativeTools || !existsSync("generated/antigravity-racer/upstream/include/bblite/upstream/camera_controls.hpp"),
-}, () => {
-    const output = resolve("artifacts/editor-pointer-check");
-    mkdirSync(output, { recursive: true });
-    const executable = join(output, "editor-pointer-check.exe");
-    runNativeFixtureCompiler(nativeTools!, [
-        "/nologo", "/std:c++20", "/W4", "/WX", "/permissive-", "/EHsc",
-        `/Fo:${output}\\`, `/Fe:${executable}`, "/I", "native/include", "/I", "native/src",
-        "/I", "generated/antigravity-racer/upstream/include", "/I", join(nativeFixtureVcpkgRoot, "include"),
-        "test/fixtures/js-callback/editor-pointer-check.cpp",
-    ]);
-    assert.match(execFileSync(executable, [], { encoding: "utf8" }), /editor-pointer-check: ok/);
-});
+test(
+    "borrowed pointer identity and camera deferral survive drag and release",
+    {
+        skip:
+            !nativeTools ||
+            !existsSync(
+                "generated/antigravity-racer/upstream/include/bblite/upstream/camera_controls.hpp",
+            ),
+    },
+    () => {
+        const output = resolve("artifacts/editor-pointer-check");
+        mkdirSync(output, { recursive: true });
+        const executable = join(output, "editor-pointer-check.exe");
+        runNativeFixtureCompiler(nativeTools!, [
+            "/nologo",
+            "/std:c++20",
+            "/W4",
+            "/WX",
+            "/permissive-",
+            "/EHsc",
+            `/Fo:${output}\\`,
+            `/Fe:${executable}`,
+            "/I",
+            "native/include",
+            "/I",
+            "native/src",
+            "/I",
+            "generated/antigravity-racer/upstream/include",
+            "/I",
+            join(nativeFixtureVcpkgRoot, "include"),
+            "test/fixtures/js-callback/editor-pointer-check.cpp",
+        ]);
+        assert.match(
+            execFileSync(executable, [], { encoding: "utf8" }),
+            /editor-pointer-check: ok/,
+        );
+    },
+);

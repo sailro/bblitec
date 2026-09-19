@@ -29,7 +29,8 @@ int main() {
     std::weak_ptr<int> discarded;
     for (int iteration = 0; iteration < 100000; ++iteration) {
         auto transient = registry.insert(std::make_shared<int>(iteration));
-        if (iteration == 0) reusable = transient.index;
+        if (iteration == 0)
+            reusable = transient.index;
         assert(transient.index == reusable);
         assert(registry.contains(retained.index, retained.ownership));
         assert(registry.contains(transient.index, transient.ownership));

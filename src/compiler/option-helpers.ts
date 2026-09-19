@@ -28,11 +28,10 @@ import {
     mathUnaryFold,
 } from "./math-intrinsics.js";
 
-export interface ObjectValidationContext
-    extends Pick<LoweringServices,
-        | "propertyName"
-        | "fail"
-    > {}
+export interface ObjectValidationContext extends Pick<
+    LoweringServices,
+    "propertyName" | "fail"
+> {}
 
 export function validateObjectProperties(
     context: ObjectValidationContext,
@@ -55,59 +54,47 @@ export function validateObjectProperties(
 }
 
 export interface PositiveIntegerContext
-    extends Pick<LoweringServices,
-        | "resolveStaticExpression"
-        | "lookup"
-        | "lookupOptional"
-        | "isDefaultLibraryIdentifier"
-        | "fail"
-    >,
-    Partial<Pick<LoweringServices,
-        | "staticCanvasSize"
-    >> {}
+    extends
+        Pick<
+            LoweringServices,
+            | "resolveStaticExpression"
+            | "lookup"
+            | "lookupOptional"
+            | "isDefaultLibraryIdentifier"
+            | "fail"
+        >,
+        Partial<Pick<LoweringServices, "staticCanvasSize">> {}
 
 export function compilePositiveInteger(
     context: PositiveIntegerContext,
     expression: ts.Expression,
 ): string {
-    const unwrapped = context.resolveStaticExpression(
-        expression,
-    );
+    const unwrapped = context.resolveStaticExpression(expression);
     if (
         ts.isPropertyAccessExpression(unwrapped) &&
         ts.isIdentifier(unwrapped.expression) &&
         unwrapped.name.text === "msaaSamples" &&
-        context.lookup(unwrapped.expression).kind ===
-            "engine"
+        context.lookup(unwrapped.expression).kind === "engine"
     ) {
-        const engine = context.lookup(
-            unwrapped.expression,
-        );
+        const engine = context.lookup(unwrapped.expression);
         return engineSampleCountCpp(engine);
     }
-    const value = compileStaticNumber(
-        context,
-        unwrapped,
-        "A count",
-    );
+    const value = compileStaticNumber(context, unwrapped, "A count");
     if (!Number.isInteger(value) || value <= 0) {
         context.fail(unwrapped, "Expected a positive integer literal.");
     }
     return `${value}u`;
 }
 
-export interface StaticBooleanContext
-    extends Pick<LoweringServices,
-        | "resolveStaticExpression"
-        | "compileBoolean"
-        | "fail"
-    > {}
+export interface StaticBooleanContext extends Pick<
+    LoweringServices,
+    "resolveStaticExpression" | "compileBoolean" | "fail"
+> {}
 
 interface StaticNumberSelectionContext
-    extends PositiveIntegerContext,
-    Pick<LoweringServices,
-        | "compileCondition"
-    > {}
+    extends
+        PositiveIntegerContext,
+        Pick<LoweringServices, "compileCondition"> {}
 
 /**
  * A static number after following any statically settled conditional arms.
@@ -135,11 +122,10 @@ export function selectedStaticNumberValue(
  * that folds. Undefined when a condition stays live, so each caller keeps
  * its own domain-specific refusal rather than inheriting a number's.
  */
-interface StaticSelectionContext
-    extends Pick<LoweringServices,
-        | "compileCondition"
-        | "resolveStaticExpression"
-    > {}
+interface StaticSelectionContext extends Pick<
+    LoweringServices,
+    "compileCondition" | "resolveStaticExpression"
+> {}
 
 export function selectedStaticExpression(
     context: StaticSelectionContext,
@@ -152,9 +138,7 @@ export function selectedStaticExpression(
             return undefined;
         }
         selected = context.resolveStaticExpression(
-            condition === "true"
-                ? selected.whenTrue
-                : selected.whenFalse,
+            condition === "true" ? selected.whenTrue : selected.whenFalse,
         );
     }
     return selected;
@@ -222,10 +206,10 @@ export function compileStaticNumber(
 export const notJson = Symbol("not a JSON literal");
 
 /** What reading a JSON literal out of the source needs. */
-export interface StaticJsonContext
-    extends Pick<LoweringServices,
-        | "resolveStaticExpression"
-    > {}
+export interface StaticJsonContext extends Pick<
+    LoweringServices,
+    "resolveStaticExpression"
+> {}
 
 /**
  * One JSON value out of the source, or `notJson`.
@@ -244,11 +228,12 @@ export function staticJsonValue(
         const value: Record<string, unknown> = {};
         for (const property of node.properties) {
             if (!ts.isPropertyAssignment(property)) return notJson;
-            const name = ts.isIdentifier(property.name) ||
-                    ts.isStringLiteral(property.name) ||
-                    ts.isNumericLiteral(property.name)
-                ? property.name.text
-                : undefined;
+            const name =
+                ts.isIdentifier(property.name) ||
+                ts.isStringLiteral(property.name) ||
+                ts.isNumericLiteral(property.name)
+                    ? property.name.text
+                    : undefined;
             if (name === undefined) return notJson;
             const member = staticJsonValue(context, property.initializer);
             if (member === notJson) return notJson;
@@ -379,20 +364,14 @@ export function staticNumberValue(
         // A constant tuple indexed by a constant -- the corpus writes its
         // colours that way (`PARTICLE_TINT[0]`).
         const target = context.resolveStaticExpression(node.expression);
-        const index = staticNumberValue(
-            context,
-            node.argumentExpression,
-        );
+        const index = staticNumberValue(context, node.argumentExpression);
         if (
             ts.isIdentifier(target) &&
             index !== undefined &&
             Number.isInteger(index)
         ) {
             const entry = staticTupleElements(context, target)?.[index];
-            if (
-                entry?.kind === "number" &&
-                entry.staticNumber !== undefined
-            ) {
+            if (entry?.kind === "number" && entry.staticNumber !== undefined) {
                 return entry.staticNumber;
             }
         }
@@ -422,7 +401,10 @@ export function staticNumberValue(
         if (call.arguments.length === 1) {
             const fold = mathUnaryFold(name);
             if (fold) {
-                const argument = staticNumberValue(context, argumentAt(call, 0));
+                const argument = staticNumberValue(
+                    context,
+                    argumentAt(call, 0),
+                );
                 return argument === undefined ? undefined : fold(argument);
             }
         }
@@ -490,7 +472,7 @@ export function staticNumberPair(
         return undefined;
     }
     const [x, y] = node.elements.map((element) =>
-        staticNumberValue(context, element)
+        staticNumberValue(context, element),
     );
     return x === undefined || y === undefined ? undefined : [x, y];
 }
@@ -502,7 +484,11 @@ export function staticTupleElements(
 ): readonly Value[] | undefined {
     if (!ts.isIdentifier(expression)) return undefined;
     const value = context.lookupOptional(expression);
-    return value?.tupleElements ?? value?.staticElementsOwner?.staticElements ?? value?.staticElements;
+    return (
+        value?.tupleElements ??
+        value?.staticElementsOwner?.staticElements ??
+        value?.staticElements
+    );
 }
 
 export function staticVec3Value(

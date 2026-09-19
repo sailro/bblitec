@@ -5,7 +5,11 @@ import { renameCppIdentifiers } from "./cpp-identifiers.js";
 export class SharedNativeFunctions {
     private readonly names = new EmissionMap<string, string>();
 
-    intern(name: string, definition: string, localBindings: ReadonlySet<string>): { name: string; added: boolean } {
+    intern(
+        name: string,
+        definition: string,
+        localBindings: ReadonlySet<string>,
+    ): { name: string; added: boolean } {
         const locals = new Map<string, string>();
         const key = renameCppIdentifiers(definition, (token, qualified) => {
             if (qualified) return undefined;

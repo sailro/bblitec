@@ -1,17 +1,21 @@
 import assert from "node:assert/strict";
-import {spawnSync} from "node:child_process";
-import {mkdirSync,writeFileSync} from "node:fs";
-import {join,resolve} from "node:path";
+import { spawnSync } from "node:child_process";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { join, resolve } from "node:path";
 import test from "node:test";
-import {runInNewContext} from "node:vm";
+import { runInNewContext } from "node:vm";
 import ts from "typescript";
-import {compileSource} from "../src/compiler.js";
-import {optionalNativeFixtureTools,runNativeFixtureCompiler} from "./native-fixture.js";
+import { compileSource } from "../src/compiler.js";
+import {
+    optionalNativeFixtureTools,
+    runNativeFixtureCompiler,
+} from "./native-fixture.js";
 
-test("promise constructors own escaping resolvers and races preserve settlement order", async t=>{
-    const directory=resolve("artifacts/promise-construction");mkdirSync(directory,{recursive:true});
-    writeFileSync(join(directory,"worker.ts"),"self.close();");
-    const body=`(async()=>{
+test("promise constructors own escaping resolvers and races preserve settlement order", async (t) => {
+    const directory = resolve("artifacts/promise-construction");
+    mkdirSync(directory, { recursive: true });
+    writeFileSync(join(directory, "worker.ts"), "self.close();");
+    const body = `(async()=>{
         let calls=0;
         const immediate=new Promise<number>(resolve=>{calls++;resolve(7);calls++;});
         if(calls!==2||await immediate!==7)throw new Error("synchronous executor");
@@ -51,19 +55,52 @@ test("promise constructors own escaping resolvers and races preserve settlement 
         await Promise.resolve();await Promise.resolve();if(emptySettled)throw new Error("empty race");
         globalThis.close();
     })();`;
-    let closed=false;
-    await runInNewContext(ts.transpile(body,{target:ts.ScriptTarget.ES2022}),{setTimeout,close:()=>{closed=true;}});
-    assert.equal(closed,true,"JavaScript oracle completed");
-    const prefix='const worker=new Worker(new URL("./worker.ts",import.meta.url),{type:"module"});worker.terminate();';
-    const result=compileSource(prefix+body,{fileName:join(directory,"entry.ts")});
-    const tools=optionalNativeFixtureTools(false);if(!tools){t.skip("Native fixture compiler unavailable.");return;}
-    const cpp=join(directory,"check.cpp"),exe=join(directory,"check.exe");
-    writeFileSync(cpp,`#define main generated_main\n${result.cpp}\n#undef main\n`+
-        `int main(){const auto baseline=bbl::js::managed_node_count();const int result=generated_main();`+
-        `bbl::js::collect_cycles();if(bbl::js::managed_node_count()!=baseline)throw std::runtime_error("promise construction ownership leak");return result;}\n`);
-    runNativeFixtureCompiler(tools,["/nologo","/std:c++20","/W4","/WX","/EHsc","/MD","/DBBLITE_WORKERS=1",
-        "/I","native/include",`/Fo:${directory}/`,`/Fe:${exe}`,cpp]);
-    const execution=spawnSync(exe,{encoding:"utf8",timeout:10000});
-    assert.equal(execution.stdout,"");assert.equal(execution.stderr,"");
-    assert.ifError(execution.error);assert.equal(execution.status,0);
+    let closed = false;
+    await runInNewContext(
+        ts.transpile(body, { target: ts.ScriptTarget.ES2022 }),
+        {
+            setTimeout,
+            close: () => {
+                closed = true;
+            },
+        },
+    );
+    assert.equal(closed, true, "JavaScript oracle completed");
+    const prefix =
+        'const worker=new Worker(new URL("./worker.ts",import.meta.url),{type:"module"});worker.terminate();';
+    const result = compileSource(prefix + body, {
+        fileName: join(directory, "entry.ts"),
+    });
+    const tools = optionalNativeFixtureTools(false);
+    if (!tools) {
+        t.skip("Native fixture compiler unavailable.");
+        return;
+    }
+    const cpp = join(directory, "check.cpp"),
+        exe = join(directory, "check.exe");
+    writeFileSync(
+        cpp,
+        `#define main generated_main\n${result.cpp}\n#undef main\n` +
+            `int main(){const auto baseline=bbl::js::managed_node_count();const int result=generated_main();` +
+            `bbl::js::collect_cycles();if(bbl::js::managed_node_count()!=baseline)throw std::runtime_error("promise construction ownership leak");return result;}\n`,
+    );
+    runNativeFixtureCompiler(tools, [
+        "/nologo",
+        "/std:c++20",
+        "/W4",
+        "/WX",
+        "/EHsc",
+        "/MD",
+        "/DBBLITE_WORKERS=1",
+        "/I",
+        "native/include",
+        `/Fo:${directory}/`,
+        `/Fe:${exe}`,
+        cpp,
+    ]);
+    const execution = spawnSync(exe, { encoding: "utf8", timeout: 10000 });
+    assert.equal(execution.stdout, "");
+    assert.equal(execution.stderr, "");
+    assert.ifError(execution.error);
+    assert.equal(execution.status, 0);
 });

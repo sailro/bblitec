@@ -92,11 +92,15 @@ function findNode(root: SceneNode, name: string): SceneNode | null {
 });
 
 test("resolves renamed descendant searches and their recursive references", () => {
-    const result = compileFindNode({
-        asset: { version: "2.0" },
-        nodes: [{ name: "Target", mesh: 0 }],
-        meshes: [{ primitives: [{}] }],
-    }, exactFindNode.replaceAll("findNode", "lookupDescendant"), "lookupDescendant");
+    const result = compileFindNode(
+        {
+            asset: { version: "2.0" },
+            nodes: [{ name: "Target", mesh: 0 }],
+            meshes: [{ primitives: [{}] }],
+        },
+        exactFindNode.replaceAll("findNode", "lookupDescendant"),
+        "lookupDescendant",
+    );
     assert.match(result.cpp, /asset_descendant_found/);
 });
 
@@ -130,7 +134,10 @@ function findNode(root: SceneNode, name: string): SceneNode | undefined {
             ),
         (error: unknown) => {
             assert.ok(error instanceof CompileError);
-            assert.match(error.message, /Unsupported property value 'root.name'/);
+            assert.match(
+                error.message,
+                /Unsupported property value 'root.name'/,
+            );
             return true;
         },
     );

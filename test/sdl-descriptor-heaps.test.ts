@@ -4,15 +4,22 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import test from "node:test";
 import { discoverDevelopmentTools } from "../src/development-tools.js";
-import { nativeFixtureVcpkgRoot, optionalNativeFixtureTools, runNativeFixtureCompiler } from "./native-fixture.js";
+import {
+    nativeFixtureVcpkgRoot,
+    optionalNativeFixtureTools,
+    runNativeFixtureCompiler,
+} from "./native-fixture.js";
 
 const nativeTools = optionalNativeFixtureTools();
 const dxc = discoverDevelopmentTools().dxc;
-test("SDL D3D12 descriptor rollover preserves graphics and compute tables", { skip: !nativeTools || !dxc }, () => {
-    const output = resolve("artifacts/test-sdl-descriptor-heaps");
-    mkdirSync(output, { recursive: true });
-    const shaders = {
-        vertex: `Texture2D<float4> tex : register(t0, space0);
+test(
+    "SDL D3D12 descriptor rollover preserves graphics and compute tables",
+    { skip: !nativeTools || !dxc },
+    () => {
+        const output = resolve("artifacts/test-sdl-descriptor-heaps");
+        mkdirSync(output, { recursive: true });
+        const shaders = {
+            vertex: `Texture2D<float4> tex : register(t0, space0);
 SamplerState samp : register(s0, space0);
 struct Out { float4 position : SV_Position; float4 color : TEXCOORD0; };
 Out main(uint id : SV_VertexID) {
@@ -20,13 +27,13 @@ Out main(uint id : SV_VertexID) {
     o.position = float4(p * 2 - 1, 0, 1);
     o.color = tex.SampleLevel(samp, float2(.5, .5), 0); return o;
 }`,
-        fragment: `Texture2D<float4> a : register(t0, space2);
+            fragment: `Texture2D<float4> a : register(t0, space2);
 Texture2D<float4> b : register(t1, space2);
 SamplerState sa : register(s0, space2); SamplerState sb : register(s1, space2);
 float4 main(float4 position : SV_Position, float4 color : TEXCOORD0) : SV_Target0 {
     return (color + a.Sample(sa, float2(.5, .5)) + b.Sample(sb, float2(.5, .5))) / 3;
 }`,
-        compute: `Texture2D<float4> a : register(t0, space0);
+            compute: `Texture2D<float4> a : register(t0, space0);
 Texture2D<float4> b : register(t1, space0); Texture2D<float4> c : register(t2, space0);
 Texture2D<float4> extra : register(t3, space0);
 SamplerState sa : register(s0, space0); SamplerState sb : register(s1, space0); SamplerState sc : register(s2, space0);
@@ -39,20 +46,64 @@ cbuffer Slot : register(b0, space2) { uint slot; };
     value = (value + extra.Load(int3(0,0,0))) / 2;
     image[uint2(slot,0)] = value; buffer[slot] = value;
 }`,
-    };
-    for (const [stage, source] of Object.entries(shaders)) {
-        const input = join(output, `${stage}.hlsl`);
-        writeFileSync(input, source);
-        execFileSync(dxc!, ["-T", `${stage === "vertex" ? "vs" : stage === "fragment" ? "ps" : "cs"}_6_0`,
-            "-E", "main", "-WX", "-Fo", join(output, `${stage}.dxil`), input], { stdio: "pipe" });
-    }
-    const executable = join(output, "check.exe");
-    runNativeFixtureCompiler(nativeTools!, ["/nologo", "/std:c++20", "/W4", "/WX", "/EHsc", "/MD", "/O2",
-        `/I${join(nativeFixtureVcpkgRoot, "include")}`, resolve("test/fixtures/sdl-descriptor-heaps-check.cpp"),
-        `/Fe:${executable}`, `/Fo:${join(output, "check.obj")}`, "/link", `/LIBPATH:${join(nativeFixtureVcpkgRoot, "lib")}`, "SDL3.lib"]);
-    for (const phase of ["graphics", "graphics-exact", "compute", "mixed"]) {
-        const result = execFileSync(executable, [output, phase], { encoding: "utf8", timeout: 30000, windowsHide: true,
-            env: { ...process.env, SDL_ASSERT: "always_ignore", PATH: `${join(nativeFixtureVcpkgRoot, "bin")};${process.env.PATH ?? ""}` } });
-        assert.match(result, new RegExp(`${phase}: 1100 operations preserved descriptor bindings`));
-    }
-});
+        };
+        for (const [stage, source] of Object.entries(shaders)) {
+            const input = join(output, `${stage}.hlsl`);
+            writeFileSync(input, source);
+            execFileSync(
+                dxc!,
+                [
+                    "-T",
+                    `${stage === "vertex" ? "vs" : stage === "fragment" ? "ps" : "cs"}_6_0`,
+                    "-E",
+                    "main",
+                    "-WX",
+                    "-Fo",
+                    join(output, `${stage}.dxil`),
+                    input,
+                ],
+                { stdio: "pipe" },
+            );
+        }
+        const executable = join(output, "check.exe");
+        runNativeFixtureCompiler(nativeTools!, [
+            "/nologo",
+            "/std:c++20",
+            "/W4",
+            "/WX",
+            "/EHsc",
+            "/MD",
+            "/O2",
+            `/I${join(nativeFixtureVcpkgRoot, "include")}`,
+            resolve("test/fixtures/sdl-descriptor-heaps-check.cpp"),
+            `/Fe:${executable}`,
+            `/Fo:${join(output, "check.obj")}`,
+            "/link",
+            `/LIBPATH:${join(nativeFixtureVcpkgRoot, "lib")}`,
+            "SDL3.lib",
+        ]);
+        for (const phase of [
+            "graphics",
+            "graphics-exact",
+            "compute",
+            "mixed",
+        ]) {
+            const result = execFileSync(executable, [output, phase], {
+                encoding: "utf8",
+                timeout: 30000,
+                windowsHide: true,
+                env: {
+                    ...process.env,
+                    SDL_ASSERT: "always_ignore",
+                    PATH: `${join(nativeFixtureVcpkgRoot, "bin")};${process.env.PATH ?? ""}`,
+                },
+            });
+            assert.match(
+                result,
+                new RegExp(
+                    `${phase}: 1100 operations preserved descriptor bindings`,
+                ),
+            );
+        }
+    },
+);

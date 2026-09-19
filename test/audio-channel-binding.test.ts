@@ -15,9 +15,9 @@ test("audio channel locals and aliases own shared typed-array views", () => {
         second[1] = channel[0];
     `);
 
-    const channelBindings = result.cpp.split("\n").filter((line) =>
-        line.includes(" = bbl::pal::audio_buffer_channel("),
-    );
+    const channelBindings = result.cpp
+        .split("\n")
+        .filter((line) => line.includes(" = bbl::pal::audio_buffer_channel("));
     assert.equal(channelBindings.length, 2);
     for (const binding of channelBindings) {
         // The PAL returns a shared view by value; a native reference cannot

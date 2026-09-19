@@ -75,15 +75,12 @@ export function parseExecutedModuleSource(
     source: string,
     repositoryRoot: string,
 ): ExecutedModuleSource {
-    const prefix = [
-        spriteAtlasSourcePrefix,
-        pixelsSourcePrefix,
-    ].find((candidate) => source.startsWith(candidate));
+    const prefix = [spriteAtlasSourcePrefix, pixelsSourcePrefix].find(
+        (candidate) => source.startsWith(candidate),
+    );
     const separator = source.lastIndexOf("#");
     if (!prefix || separator < 0) {
-        throw new Error(
-            `Malformed executed-module asset source '${source}'.`,
-        );
+        throw new Error(`Malformed executed-module asset source '${source}'.`);
     }
     return {
         modulePath: resolve(
@@ -113,9 +110,7 @@ async function evaluateModuleExport(
     // resolves if the module keeps its directory, and the suite server
     // already transpiles any repository `.ts` on demand.
     const root = resolve(".");
-    const relativePath = relative(root, source.modulePath)
-        .split(sep)
-        .join("/");
+    const relativePath = relative(root, source.modulePath).split(sep).join("/");
     if (relativePath.startsWith("..")) {
         throw new Error(
             `Executed module '${source.modulePath}' is outside the ` +
@@ -144,10 +139,7 @@ async function evaluateModuleExport(
             },
             async () =>
                 Buffer.from(
-                    await evaluateModuleExportInChromium(
-                        source,
-                        relativePath,
-                    ),
+                    await evaluateModuleExportInChromium(source, relativePath),
                     "utf8",
                 ),
         );
@@ -178,16 +170,12 @@ window.__runModuleExport = () =>
                 });
 `,
     );
-    const result: unknown = await runPageGlobal(
-        server,
-        "__runModuleExport",
-        {
-            serverName: `${relativePath} server`,
-            browserRequirement:
-                "Baking a scene module's own output requires Chrome or Edge.",
-            browserArgs: canvasBakeBrowserArgs,
-        },
-    );
+    const result: unknown = await runPageGlobal(server, "__runModuleExport", {
+        serverName: `${relativePath} server`,
+        browserRequirement:
+            "Baking a scene module's own output requires Chrome or Edge.",
+        browserArgs: canvasBakeBrowserArgs,
+    });
     if (typeof result !== "string") {
         throw new Error(
             `Module export ${source.exportName} did not return text.`,

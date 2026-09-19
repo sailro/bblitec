@@ -15,11 +15,20 @@ function sourceFiles(directory: string): string[] {
 test("contains no explicit TypeScript any", () => {
     const violations: string[] = [];
     for (const path of ["src", "test", "examples"].flatMap(sourceFiles)) {
-        const file = ts.createSourceFile(path, readFileSync(path, "utf8"), ts.ScriptTarget.Latest, true);
+        const file = ts.createSourceFile(
+            path,
+            readFileSync(path, "utf8"),
+            ts.ScriptTarget.Latest,
+            true,
+        );
         const visit = (node: ts.Node): void => {
             if (node.kind === ts.SyntaxKind.AnyKeyword) {
-                const position = file.getLineAndCharacterOfPosition(node.getStart(file));
-                violations.push(`${path}:${position.line + 1}:${position.character + 1}`);
+                const position = file.getLineAndCharacterOfPosition(
+                    node.getStart(file),
+                );
+                violations.push(
+                    `${path}:${position.line + 1}:${position.character + 1}`,
+                );
             }
             ts.forEachChild(node, visit);
         };

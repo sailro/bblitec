@@ -1,78 +1,421 @@
 /** Shared source-property to native-field transport for load and animation. */
 export const gltfMaterialPropertyFields = [
-    {"kind": "number", "owner": "props", "path": [], "key": "metallicFactor", "field": "metallic_factor"},
-    {"kind": "number", "owner": "props", "path": [], "key": "roughnessFactor", "field": "roughness_factor"},
-    {"kind": "number", "owner": "props", "path": [], "key": "reflectance", "field": "reflectance"},
-    {"kind": "number", "owner": "props", "path": [], "key": "normalTextureScale", "field": "normal_texture_scale"},
-    {"kind": "number", "owner": "props", "path": [], "key": "occlusionStrength", "field": "occlusion_strength"},
-    {"kind": "number", "owner": "props", "path": [], "key": "_alphaCutOff", "field": "alpha_cutoff"},
-    {"kind": "number", "owner": "props", "path": [], "key": "alpha", "field": "alpha"},
-    {"kind": "number", "owner": "props", "path": [], "key": "_metallicF0Factor", "field": "metallic_f0_factor"},
-    {"kind": "number", "owner": "props", "path": [], "key": "_specularWeight", "field": "specular_weight"},
-    {"kind": "number", "owner": "refraction", "path": ["_subsurface", "refraction"], "key": "indexOfRefraction", "field": "index_of_refraction"},
-    {"kind": "number", "owner": "refraction", "path": ["_subsurface", "refraction"], "key": "intensity", "field": "transmission_factor"},
-    {"kind": "number", "owner": "refraction", "path": ["_subsurface", "refraction"], "key": "dispersion", "field": "dispersion"},
-    {"kind": "number", "owner": "thickness", "path": ["_subsurface", "thickness"], "key": "max", "field": "thickness"},
-    {"kind": "number", "owner": "tint", "path": ["_subsurface", "tint"], "key": "atDistance", "field": "attenuation_distance"},
-    {"kind": "number", "owner": "translucency", "path": ["_subsurface", "translucency"], "key": "intensity", "field": "subsurface_intensity"},
-    {"kind": "number", "owner": "thickness", "path": ["_subsurface", "thickness"], "key": "min", "field": "subsurface_minimum_thickness"},
-    {"kind": "number", "owner": "thickness", "path": ["_subsurface", "thickness"], "key": "max", "field": "subsurface_maximum_thickness"},
-    {"kind": "number", "owner": "coat", "path": ["_clearCoat"], "key": "intensity", "field": "clearcoat_intensity"},
-    {"kind": "number", "owner": "coat", "path": ["_clearCoat"], "key": "roughness", "field": "clearcoat_roughness"},
-    {"kind": "number", "owner": "coat", "path": ["_clearCoat"], "key": "indexOfRefraction", "field": "clearcoat_index_of_refraction"},
-    {"kind": "number", "owner": "coat", "path": ["_clearCoat"], "key": "bumpTextureScale", "field": "clearcoat_normal_scale"},
-    {"kind": "number", "owner": "sheen", "path": ["_sheen"], "key": "intensity", "field": "sheen_intensity"},
-    {"kind": "number", "owner": "sheen", "path": ["_sheen"], "key": "roughness", "field": "sheen_roughness"},
-    {"kind": "number", "owner": "iri", "path": ["_iridescence"], "key": "intensity", "field": "iridescence_intensity"},
-    {"kind": "number", "owner": "iri", "path": ["_iridescence"], "key": "indexOfRefraction", "field": "iridescence_index_of_refraction"},
-    {"kind": "number", "owner": "iri", "path": ["_iridescence"], "key": "minimumThickness", "field": "iridescence_minimum_thickness"},
-    {"kind": "number", "owner": "iri", "path": ["_iridescence"], "key": "maximumThickness", "field": "iridescence_maximum_thickness"},
-    {"kind": "number", "owner": "anisotropy", "path": ["_anisotropy"], "key": "intensity", "field": "anisotropy_intensity"},
-    {"kind": "color", "owner": "props", "path": [], "key": "_unlitColor", "field": "unlit_color"},
-    {"kind": "color", "owner": "props", "path": [], "key": "_emissiveColor", "field": "emissive_factor"},
-    {"kind": "color", "owner": "props", "path": [], "key": "_metallicReflectanceColor", "field": "metallic_reflectance_color"},
-    {"kind": "color", "owner": "tint", "path": ["_subsurface", "tint"], "key": "color", "field": "attenuation_color"},
-    {"kind": "color", "owner": "translucency", "path": ["_subsurface", "translucency"], "key": "color", "field": "subsurface_color"},
-    {"kind": "color", "owner": "translucency", "path": ["_subsurface", "translucency"], "key": "diffusionDistance", "field": "subsurface_diffusion_distance"},
-    {"kind": "color", "owner": "sheen", "path": ["_sheen"], "key": "color", "field": "sheen_color"},
+    {
+        kind: "number",
+        owner: "props",
+        path: [],
+        key: "metallicFactor",
+        field: "metallic_factor",
+    },
+    {
+        kind: "number",
+        owner: "props",
+        path: [],
+        key: "roughnessFactor",
+        field: "roughness_factor",
+    },
+    {
+        kind: "number",
+        owner: "props",
+        path: [],
+        key: "reflectance",
+        field: "reflectance",
+    },
+    {
+        kind: "number",
+        owner: "props",
+        path: [],
+        key: "normalTextureScale",
+        field: "normal_texture_scale",
+    },
+    {
+        kind: "number",
+        owner: "props",
+        path: [],
+        key: "occlusionStrength",
+        field: "occlusion_strength",
+    },
+    {
+        kind: "number",
+        owner: "props",
+        path: [],
+        key: "_alphaCutOff",
+        field: "alpha_cutoff",
+    },
+    { kind: "number", owner: "props", path: [], key: "alpha", field: "alpha" },
+    {
+        kind: "number",
+        owner: "props",
+        path: [],
+        key: "_metallicF0Factor",
+        field: "metallic_f0_factor",
+    },
+    {
+        kind: "number",
+        owner: "props",
+        path: [],
+        key: "_specularWeight",
+        field: "specular_weight",
+    },
+    {
+        kind: "number",
+        owner: "refraction",
+        path: ["_subsurface", "refraction"],
+        key: "indexOfRefraction",
+        field: "index_of_refraction",
+    },
+    {
+        kind: "number",
+        owner: "refraction",
+        path: ["_subsurface", "refraction"],
+        key: "intensity",
+        field: "transmission_factor",
+    },
+    {
+        kind: "number",
+        owner: "refraction",
+        path: ["_subsurface", "refraction"],
+        key: "dispersion",
+        field: "dispersion",
+    },
+    {
+        kind: "number",
+        owner: "thickness",
+        path: ["_subsurface", "thickness"],
+        key: "max",
+        field: "thickness",
+    },
+    {
+        kind: "number",
+        owner: "tint",
+        path: ["_subsurface", "tint"],
+        key: "atDistance",
+        field: "attenuation_distance",
+    },
+    {
+        kind: "number",
+        owner: "translucency",
+        path: ["_subsurface", "translucency"],
+        key: "intensity",
+        field: "subsurface_intensity",
+    },
+    {
+        kind: "number",
+        owner: "thickness",
+        path: ["_subsurface", "thickness"],
+        key: "min",
+        field: "subsurface_minimum_thickness",
+    },
+    {
+        kind: "number",
+        owner: "thickness",
+        path: ["_subsurface", "thickness"],
+        key: "max",
+        field: "subsurface_maximum_thickness",
+    },
+    {
+        kind: "number",
+        owner: "coat",
+        path: ["_clearCoat"],
+        key: "intensity",
+        field: "clearcoat_intensity",
+    },
+    {
+        kind: "number",
+        owner: "coat",
+        path: ["_clearCoat"],
+        key: "roughness",
+        field: "clearcoat_roughness",
+    },
+    {
+        kind: "number",
+        owner: "coat",
+        path: ["_clearCoat"],
+        key: "indexOfRefraction",
+        field: "clearcoat_index_of_refraction",
+    },
+    {
+        kind: "number",
+        owner: "coat",
+        path: ["_clearCoat"],
+        key: "bumpTextureScale",
+        field: "clearcoat_normal_scale",
+    },
+    {
+        kind: "number",
+        owner: "sheen",
+        path: ["_sheen"],
+        key: "intensity",
+        field: "sheen_intensity",
+    },
+    {
+        kind: "number",
+        owner: "sheen",
+        path: ["_sheen"],
+        key: "roughness",
+        field: "sheen_roughness",
+    },
+    {
+        kind: "number",
+        owner: "iri",
+        path: ["_iridescence"],
+        key: "intensity",
+        field: "iridescence_intensity",
+    },
+    {
+        kind: "number",
+        owner: "iri",
+        path: ["_iridescence"],
+        key: "indexOfRefraction",
+        field: "iridescence_index_of_refraction",
+    },
+    {
+        kind: "number",
+        owner: "iri",
+        path: ["_iridescence"],
+        key: "minimumThickness",
+        field: "iridescence_minimum_thickness",
+    },
+    {
+        kind: "number",
+        owner: "iri",
+        path: ["_iridescence"],
+        key: "maximumThickness",
+        field: "iridescence_maximum_thickness",
+    },
+    {
+        kind: "number",
+        owner: "anisotropy",
+        path: ["_anisotropy"],
+        key: "intensity",
+        field: "anisotropy_intensity",
+    },
+    {
+        kind: "color",
+        owner: "props",
+        path: [],
+        key: "_unlitColor",
+        field: "unlit_color",
+    },
+    {
+        kind: "color",
+        owner: "props",
+        path: [],
+        key: "_emissiveColor",
+        field: "emissive_factor",
+    },
+    {
+        kind: "color",
+        owner: "props",
+        path: [],
+        key: "_metallicReflectanceColor",
+        field: "metallic_reflectance_color",
+    },
+    {
+        kind: "color",
+        owner: "tint",
+        path: ["_subsurface", "tint"],
+        key: "color",
+        field: "attenuation_color",
+    },
+    {
+        kind: "color",
+        owner: "translucency",
+        path: ["_subsurface", "translucency"],
+        key: "color",
+        field: "subsurface_color",
+    },
+    {
+        kind: "color",
+        owner: "translucency",
+        path: ["_subsurface", "translucency"],
+        key: "diffusionDistance",
+        field: "subsurface_diffusion_distance",
+    },
+    {
+        kind: "color",
+        owner: "sheen",
+        path: ["_sheen"],
+        key: "color",
+        field: "sheen_color",
+    },
 ] as const;
 
 function materialProperty(field: string): string {
-    const value = gltfMaterialPropertyFields.find(value => value.field === field);
+    const value = gltfMaterialPropertyFields.find(
+        (value) => value.field === field,
+    );
     if (!value) throw new Error(`Unknown glTF material field ${field}.`);
     return `gltf_pbr_${value.kind}(${value.owner}, "${value.key}", material.${value.field});`;
 }
 
 export const gltfMaterialTextureFields = [
-    {"owner": "props", "path": ["baseColorTexture"], "key": "baseColorTexture", "data": "base_color_texture", "transform": "base_color_transform", "srgb": true},
-    {"owner": "props", "path": ["ormTexture"], "key": "ormTexture", "data": "metallic_roughness_texture", "transform": "orm_transform", "srgb": false},
-    {"owner": "props", "path": ["normalTexture"], "key": "normalTexture", "data": "normal_texture", "transform": "normal_transform", "srgb": false},
-    {"owner": "props", "path": ["emissiveTexture"], "key": "emissiveTexture", "data": "emissive_texture", "transform": "emissive_transform", "srgb": true},
-    {"owner": "props", "path": ["_metallicReflectanceTexture"], "key": "_metallicReflectanceTexture", "data": "metallic_reflectance_texture", "transform": "metallic_reflectance_transform", "srgb": false},
-    {"owner": "props", "path": ["_reflectanceTexture"], "key": "_reflectanceTexture", "data": "reflectance_texture", "transform": "reflectance_transform", "srgb": false},
-    {"owner": "refraction", "path": ["_subsurface", "refraction", "texture"], "key": "texture", "data": "transmission_texture", "transform": "transmission_transform", "srgb": false},
-    {"owner": "thickness", "path": ["_subsurface", "thickness", "texture"], "key": "texture", "data": "thickness_texture", "transform": "thickness_transform", "srgb": false},
-    {"owner": "translucency", "path": ["_subsurface", "translucency", "colorTexture"], "key": "colorTexture", "data": "translucency_color_texture", "transform": "translucency_color_transform", "srgb": true},
-    {"owner": "translucency", "path": ["_subsurface", "translucency", "intensityTexture"], "key": "intensityTexture", "data": "translucency_intensity_texture", "transform": "translucency_intensity_transform", "srgb": false},
-    {"owner": "coat", "path": ["_clearCoat", "texture"], "key": "texture", "data": "clearcoat_texture", "transform": "clearcoat_transform", "srgb": false},
-    {"owner": "coat", "path": ["_clearCoat", "roughnessTexture"], "key": "roughnessTexture", "data": "clearcoat_roughness_texture", "transform": "clearcoat_roughness_transform", "srgb": false},
-    {"owner": "coat", "path": ["_clearCoat", "bumpTexture"], "key": "bumpTexture", "data": "clearcoat_normal_texture", "transform": "clearcoat_normal_transform", "srgb": false},
-    {"owner": "sheen", "path": ["_sheen", "texture"], "key": "texture", "data": "sheen_color_texture", "transform": "sheen_transform", "srgb": true},
-    {"owner": "sheen", "path": ["_sheen", "roughnessTexture"], "key": "roughnessTexture", "data": "sheen_roughness_texture", "transform": "sheen_roughness_transform", "srgb": false},
-    {"owner": "iri", "path": ["_iridescence", "texture"], "key": "texture", "data": "iridescence_texture", "transform": "iridescence_transform", "srgb": true},
-    {"owner": "iri", "path": ["_iridescence", "thicknessTexture"], "key": "thicknessTexture", "data": "iridescence_thickness_texture", "transform": "iridescence_thickness_transform", "srgb": true},
-    {"owner": "anisotropy", "path": ["_anisotropy", "texture"], "key": "texture", "data": "anisotropy_texture", "transform": "anisotropy_transform", "srgb": false},
-    {"owner": "props", "path": ["occlusionTexture"], "key": "occlusionTexture", "data": "occlusion_texture", "transform": "occlusion_transform", "srgb": false},
+    {
+        owner: "props",
+        path: ["baseColorTexture"],
+        key: "baseColorTexture",
+        data: "base_color_texture",
+        transform: "base_color_transform",
+        srgb: true,
+    },
+    {
+        owner: "props",
+        path: ["ormTexture"],
+        key: "ormTexture",
+        data: "metallic_roughness_texture",
+        transform: "orm_transform",
+        srgb: false,
+    },
+    {
+        owner: "props",
+        path: ["normalTexture"],
+        key: "normalTexture",
+        data: "normal_texture",
+        transform: "normal_transform",
+        srgb: false,
+    },
+    {
+        owner: "props",
+        path: ["emissiveTexture"],
+        key: "emissiveTexture",
+        data: "emissive_texture",
+        transform: "emissive_transform",
+        srgb: true,
+    },
+    {
+        owner: "props",
+        path: ["_metallicReflectanceTexture"],
+        key: "_metallicReflectanceTexture",
+        data: "metallic_reflectance_texture",
+        transform: "metallic_reflectance_transform",
+        srgb: false,
+    },
+    {
+        owner: "props",
+        path: ["_reflectanceTexture"],
+        key: "_reflectanceTexture",
+        data: "reflectance_texture",
+        transform: "reflectance_transform",
+        srgb: false,
+    },
+    {
+        owner: "refraction",
+        path: ["_subsurface", "refraction", "texture"],
+        key: "texture",
+        data: "transmission_texture",
+        transform: "transmission_transform",
+        srgb: false,
+    },
+    {
+        owner: "thickness",
+        path: ["_subsurface", "thickness", "texture"],
+        key: "texture",
+        data: "thickness_texture",
+        transform: "thickness_transform",
+        srgb: false,
+    },
+    {
+        owner: "translucency",
+        path: ["_subsurface", "translucency", "colorTexture"],
+        key: "colorTexture",
+        data: "translucency_color_texture",
+        transform: "translucency_color_transform",
+        srgb: true,
+    },
+    {
+        owner: "translucency",
+        path: ["_subsurface", "translucency", "intensityTexture"],
+        key: "intensityTexture",
+        data: "translucency_intensity_texture",
+        transform: "translucency_intensity_transform",
+        srgb: false,
+    },
+    {
+        owner: "coat",
+        path: ["_clearCoat", "texture"],
+        key: "texture",
+        data: "clearcoat_texture",
+        transform: "clearcoat_transform",
+        srgb: false,
+    },
+    {
+        owner: "coat",
+        path: ["_clearCoat", "roughnessTexture"],
+        key: "roughnessTexture",
+        data: "clearcoat_roughness_texture",
+        transform: "clearcoat_roughness_transform",
+        srgb: false,
+    },
+    {
+        owner: "coat",
+        path: ["_clearCoat", "bumpTexture"],
+        key: "bumpTexture",
+        data: "clearcoat_normal_texture",
+        transform: "clearcoat_normal_transform",
+        srgb: false,
+    },
+    {
+        owner: "sheen",
+        path: ["_sheen", "texture"],
+        key: "texture",
+        data: "sheen_color_texture",
+        transform: "sheen_transform",
+        srgb: true,
+    },
+    {
+        owner: "sheen",
+        path: ["_sheen", "roughnessTexture"],
+        key: "roughnessTexture",
+        data: "sheen_roughness_texture",
+        transform: "sheen_roughness_transform",
+        srgb: false,
+    },
+    {
+        owner: "iri",
+        path: ["_iridescence", "texture"],
+        key: "texture",
+        data: "iridescence_texture",
+        transform: "iridescence_transform",
+        srgb: true,
+    },
+    {
+        owner: "iri",
+        path: ["_iridescence", "thicknessTexture"],
+        key: "thicknessTexture",
+        data: "iridescence_thickness_texture",
+        transform: "iridescence_thickness_transform",
+        srgb: true,
+    },
+    {
+        owner: "anisotropy",
+        path: ["_anisotropy", "texture"],
+        key: "texture",
+        data: "anisotropy_texture",
+        transform: "anisotropy_transform",
+        srgb: false,
+    },
+    {
+        owner: "props",
+        path: ["occlusionTexture"],
+        key: "occlusionTexture",
+        data: "occlusion_texture",
+        transform: "occlusion_transform",
+        srgb: false,
+    },
 ] as const;
 
 function materialTexture(field: string): string {
-    const value = gltfMaterialTextureFields.find(value => value.transform === field);
+    const value = gltfMaterialTextureFields.find(
+        (value) => value.transform === field,
+    );
     if (!value) throw new Error(`Unknown glTF texture field ${field}.`);
     return `project_texture(${value.owner}, "${value.key}", material.${value.data}, material.${value.transform}, ${value.srgb});`;
 }
 
 /** Project source-built options and texture descriptors into native renderer storage. */
-export function gltfMaterialProjection(animationPointerMaterials: boolean): string {
+export function gltfMaterialProjection(
+    animationPointerMaterials: boolean,
+): string {
     return `void gltf_pbr_number(const GltfPbrValue& object, const char* key, float& field) {
     const auto value = object.get(key, true);
     if (!value.nullish()) field = static_cast<float>(value.number());
@@ -229,8 +572,12 @@ MaterialHandle load_material(
     material.unlit = props.get("_unlit").truthy();
     ${materialProperty("unlit_color")}
     material.emissive_factor = Color3{static_cast<float>(core._emissiveFactor[0]), static_cast<float>(core._emissiveFactor[1]), static_cast<float>(core._emissiveFactor[2])};
-${animationPointerMaterials ? `    material.emissive_base_factor = material.emissive_factor;
-    material.emissive_strength = static_cast<float>(gltf_pbr_emissive_strength(core, features));` : ""}
+${
+    animationPointerMaterials
+        ? `    material.emissive_base_factor = material.emissive_factor;
+    material.emissive_strength = static_cast<float>(gltf_pbr_emissive_strength(core, features));`
+        : ""
+}
     ${materialProperty("emissive_factor")}
     if (props.get("alphaBlend").truthy()) material.alpha_mode = MaterialAlphaMode::blend;
     else if (!props.get("_alphaCutOff").nullish()) material.alpha_mode = MaterialAlphaMode::mask;

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import {compileSource} from "../src/compiler.js";
+import { compileSource } from "../src/compiler.js";
 
 test("canvas rectangle reads use CSS extents while sprite coordinates use backing pixels", () => {
     const result = compileSource(`

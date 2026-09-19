@@ -1,30 +1,61 @@
 import assert from "node:assert/strict";
-import {execFileSync} from "node:child_process";
-import {mkdirSync, writeFileSync} from "node:fs";
-import {join, resolve} from "node:path";
+import { execFileSync } from "node:child_process";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { join, resolve } from "node:path";
 import test from "node:test";
-import {compileSource} from "../src/compiler.js";
-import {optionalNativeFixtureTools, runNativeFixtureCompiler} from "./native-fixture.js";
+import { compileSource } from "../src/compiler.js";
+import {
+    optionalNativeFixtureTools,
+    runNativeFixtureCompiler,
+} from "./native-fixture.js";
 
 /** A worker realm: the entry owns a worker, so every realm-sensitive lowering takes the worker path,
  *  and its event loop runs until the program closes it. */
-const workerRealm='const worker=new Worker(new URL("./worker.ts",import.meta.url),{type:"module"});worker.terminate();\n';
+const workerRealm =
+    'const worker=new Worker(new URL("./worker.ts",import.meta.url),{type:"module"});worker.terminate();\n';
 
-function nativeCheck(name:string, source:string, t:test.TestContext, workers=false):void {
-    const directory=resolve("artifacts/callback-values",name);
-    mkdirSync(directory,{recursive:true});
-    if(workers)writeFileSync(join(directory,"worker.ts"),"self.close();");
-    const compiled=compileSource(workers?workerRealm+source+"\nglobalThis.close();":source,{fileName:join(directory,"entry.ts")});
-    const native=optionalNativeFixtureTools(false);
-    if(!native){t.skip("Native fixture compiler unavailable.");return;}
-    const cpp=join(directory,"check.cpp"),exe=join(directory,"check.exe");
-    writeFileSync(cpp,compiled.cpp);
-    runNativeFixtureCompiler(native,["/nologo","/std:c++20","/W4","/WX","/EHsc","/MD",...(workers?["/DBBLITE_WORKERS=1"]:[]),
-        "/I","native/include",`/Fo:${directory}/`,`/Fe:${exe}`,cpp]);
-    assert.equal(execFileSync(exe,{encoding:"utf8",timeout:10000}),"");
+function nativeCheck(
+    name: string,
+    source: string,
+    t: test.TestContext,
+    workers = false,
+): void {
+    const directory = resolve("artifacts/callback-values", name);
+    mkdirSync(directory, { recursive: true });
+    if (workers) writeFileSync(join(directory, "worker.ts"), "self.close();");
+    const compiled = compileSource(
+        workers ? workerRealm + source + "\nglobalThis.close();" : source,
+        { fileName: join(directory, "entry.ts") },
+    );
+    const native = optionalNativeFixtureTools(false);
+    if (!native) {
+        t.skip("Native fixture compiler unavailable.");
+        return;
+    }
+    const cpp = join(directory, "check.cpp"),
+        exe = join(directory, "check.exe");
+    writeFileSync(cpp, compiled.cpp);
+    runNativeFixtureCompiler(native, [
+        "/nologo",
+        "/std:c++20",
+        "/W4",
+        "/WX",
+        "/EHsc",
+        "/MD",
+        ...(workers ? ["/DBBLITE_WORKERS=1"] : []),
+        "/I",
+        "native/include",
+        `/Fo:${directory}/`,
+        `/Fe:${exe}`,
+        cpp,
+    ]);
+    assert.equal(execFileSync(exe, { encoding: "utf8", timeout: 10000 }), "");
 }
 
-test("Math function values preserve defaults, storage, identity and fixed signatures", t => nativeCheck("math",`
+test("Math function values preserve defaults, storage, identity and fixed signatures", (t) =>
+    nativeCheck(
+        "math",
+        `
     function sample(next:()=>number=Math.random):number{return next();}
     const first=sample(),second=sample();
     if(first<0||first>=1||second<0||second>=1||first===second) throw new Error("random defaults");
@@ -47,9 +78,14 @@ test("Math function values preserve defaults, storage, identity and fixed signat
     if(values.filter(Math.abs).join(",")!=="-2,3,-4") throw new Error("numeric predicate");
     function local(){const Math={floor:(x:number)=>x+10};return Math.floor(2);}
     if(local()!==12) throw new Error("lexical shadow");
-`,t));
+`,
+        t,
+    ));
 
-test("forwarded array predicates preserve captured state, truthiness and short circuiting", t => nativeCheck("predicates",`
+test("forwarded array predicates preserve captured state, truthiness and short circuiting", (t) =>
+    nativeCheck(
+        "predicates",
+        `
     function some(fn:(x:number)=>boolean):boolean{return [1,2,3].some(fn);}
     function every(fn:(x:number)=>boolean):boolean{return [1,2,3].every(fn);}
     function filter(fn:(x:number)=>number):number[]{return [0,2,3].filter(fn);}
@@ -79,9 +115,14 @@ test("forwarded array predicates preserve captured state, truthiness and short c
     let inspected=0;
     if(!ranges.some(([first,last])=>{inspected++;return 9>=first&&9<=last;})||inspected!==2)
         throw new Error("tuple parameter binding");
-`,t));
+`,
+        t,
+    ));
 
-test("variadic Math callbacks retain identity, numeric edge cases and spread order", t => nativeCheck("variadic-math", `
+test("variadic Math callbacks retain identity, numeric edge cases and spread order", (t) =>
+    nativeCheck(
+        "variadic-math",
+        `
     const maximum = Math.max, minimum = Math.min, length = Math.hypot;
     if(maximum() !== -Infinity || minimum() !== Infinity || length() !== 0)
         throw new Error("empty numeric rest");
@@ -114,9 +155,14 @@ test("variadic Math callbacks retain identity, numeric edge cases and spread ord
     const changing = [1]; changing.push(2);
     function clear(): number { changing.length = 0; return 0; }
     if(Math.max(...changing) + clear() !== 2) throw new Error("spread read before later effects");
-`, t));
+`,
+        t,
+    ));
 
-test("stored rest parameters own fresh arrays and preserve prefix evaluation", t => nativeCheck("stored-rest", `
+test("stored rest parameters own fresh arrays and preserve prefix evaluation", (t) =>
+    nativeCheck(
+        "stored-rest",
+        `
     const callbacks: Array<(...values: number[]) => number> = [
         (...values: number[]) => { values.push(5); return values.reduce((sum, value) => sum + value, 0); }
     ];
@@ -139,12 +185,14 @@ test("stored rest parameters own fresh arrays and preserve prefix evaluation", t
     function edit(...values: Item[]): number { values[0].value = 9; values.pop(); return values.length; }
     if(edit(...items) !== 1 || items.length !== 2 || items[0].value !== 9)
         throw new Error("rest copy preserves element identity");
-`, t));
+`,
+        t,
+    ));
 
 /** A callback that names itself is materialized once; every sink shares that storage, adapted when the
  *  sink supplies more than the callback reads or reads less than it returns. The plain realm materializes
  *  a callback on a direct call, the worker realm on any self reference, so both realms run the same source. */
-const sharedStorage=`
+const sharedStorage = `
     const queue: Array<(time: number) => void> = [];
     let visits = 0;
     const poll = (): void => { visits++; if (visits < 3) queue.push(poll); };
@@ -166,16 +214,20 @@ const sharedStorage=`
     if (seen.join(",") !== "-1,1,2,3") throw new Error("supplied prefix, dropped extras and result");
 `;
 
-test("self-referential callbacks share their storage across sink signatures", t =>
+test("self-referential callbacks share their storage across sink signatures", (t) =>
     nativeCheck("shared-storage", sharedStorage, t));
 
-test("self-referential callbacks share their storage across sink signatures in a worker realm", t =>
+test("self-referential callbacks share their storage across sink signatures in a worker realm", (t) =>
     nativeCheck("shared-storage-worker", sharedStorage, t, true));
 
 test("a stored callback reaching a signature its storage cannot serve refuses instead of recursing", () => {
-    assert.throws(() => compileSource(`
+    assert.throws(
+        () =>
+            compileSource(`
         const steps: Array<() => void> = [];
         const walk = (step = 1): void => { if (step > 0) steps.push(walk); };
         walk(2);
-    `), /re-enters its own lowering/);
+    `),
+        /re-enters its own lowering/,
+    );
 });

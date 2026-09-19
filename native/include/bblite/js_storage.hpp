@@ -24,21 +24,17 @@
 
 namespace bbl::js {
 
-[[nodiscard]] inline Nullable<std::string> local_storage_get_item(
-    const std::string& key) {
+[[nodiscard]] inline Nullable<std::string> local_storage_get_item(const std::string& key) {
     std::optional<std::string> stored = pal::read_local_storage(key);
-    if (!stored) return Nullable<std::string>{};
+    if (!stored)
+        return Nullable<std::string>{};
     return Nullable<std::string>{std::move(*stored)};
 }
 
-inline void local_storage_set_item(
-    const std::string& key,
-    const std::string& value) {
+inline void local_storage_set_item(const std::string& key, const std::string& value) {
     pal::write_local_storage(key, value);
 }
 
-inline void local_storage_remove_item(const std::string& key) {
-    pal::remove_local_storage(key);
-}
+inline void local_storage_remove_item(const std::string& key) { pal::remove_local_storage(key); }
 
 } // namespace bbl::js

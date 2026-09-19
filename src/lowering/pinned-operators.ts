@@ -127,10 +127,9 @@ export function pinnedMathSpelling(name: string): string {
  * deduced arguments for its existing scalar width. Other semantics, including
  * Math.round and Math.hypot, are supplied by their dedicated helpers.
  */
-export function pinnedNumericMathCalls(templateArgument: "double" | "deduced" = "double"): Map<
-    string,
-    (args: readonly string[]) => string
-> {
+export function pinnedNumericMathCalls(
+    templateArgument: "double" | "deduced" = "double",
+): Map<string, (args: readonly string[]) => string> {
     return new Map(
         Object.entries(PINNED_MATH_FUNCTIONS).map(
             ([name, spelling]): [
@@ -138,7 +137,8 @@ export function pinnedNumericMathCalls(templateArgument: "double" | "deduced" = 
                 (args: readonly string[]) => string,
             ] => [
                 `Math.${name}`,
-                templateArgument === "double" && (name === "max" || name === "min")
+                templateArgument === "double" &&
+                (name === "max" || name === "min")
                     ? (args) => `${spelling}<double>(${args.join(", ")})`
                     : (args) => `${spelling}(${args.join(", ")})`,
             ],

@@ -135,10 +135,7 @@ function assertReverseZProjectionRows(context: LoweringContext): void {
             `Pinned ${writer.symbol} depth range`,
         );
         const rows = new Map(writer.rows);
-        for (const store of context.pinnedElementStores(
-            declaration,
-            "out",
-        )) {
+        for (const store of context.pinnedElementStores(declaration, "out")) {
             const index = context.numericValue(
                 store.left.argumentExpression,
                 file,
@@ -169,9 +166,7 @@ function assertReverseZProjectionRows(context: LoweringContext): void {
  * factory naming a compare of its own checks it against this instead of
  * against a spelling typed here.
  */
-export function pinnedReverseDepthCompare(
-    context: LoweringContext,
-): string {
+export function pinnedReverseDepthCompare(context: LoweringContext): string {
     const file = context.sourceFile(renderTargetModule);
     return context.stringValue(
         context.variableInitializer(file, "REVERSE_DEPTH_COMPARE"),

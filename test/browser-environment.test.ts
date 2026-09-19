@@ -4,9 +4,12 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { compileSource } from "../src/compiler.js";
-import { optionalNativeFixtureTools, runNativeFixtureCompiler } from "./native-fixture.js";
+import {
+    optionalNativeFixtureTools,
+    runNativeFixtureCompiler,
+} from "./native-fixture.js";
 
-test("local storage can be injected through nullable method records", async t => {
+test("local storage can be injected through nullable method records", async (t) => {
     const result = compileSource(`
         interface Store { getItem(key:string): string | null; setItem(key:string, value:string): void; }
         function settings(store: Store | null): () => void {
@@ -43,12 +46,18 @@ test("local storage can be injected through nullable method records", async t =>
     assert.match(result.cpp, /local_storage_set_item/);
     assert.ok(result.manifest.features.includes("storage:local"));
     const native = optionalNativeFixtureTools(false);
-    await t.test("injected methods perform native reads and writes", {skip: !native}, () => {
-        const directory = resolve("artifacts/injected-web-storage");
-        mkdirSync(directory, {recursive:true});
-        writeFileSync(join(directory, "program.hpp"), result.cpp);
-        const source = join(directory, "check.cpp"), executable = join(directory, "check.exe");
-        writeFileSync(source, `
+    await t.test(
+        "injected methods perform native reads and writes",
+        { skip: !native },
+        () => {
+            const directory = resolve("artifacts/injected-web-storage");
+            mkdirSync(directory, { recursive: true });
+            writeFileSync(join(directory, "program.hpp"), result.cpp);
+            const source = join(directory, "check.cpp"),
+                executable = join(directory, "check.exe");
+            writeFileSync(
+                source,
+                `
             #define main generated_main
             #include "program.hpp"
             #undef main
@@ -60,11 +69,25 @@ test("local storage can be injected through nullable method records", async t =>
                 void remove_local_storage(const std::string&) { saved.reset(); }
             }
             int main() { assert(generated_main() == 0); assert(saved == "default" && reads == 2 && writes == 2); }
-        `);
-        runNativeFixtureCompiler(native!, ["/nologo", "/std:c++20", "/W4", "/WX", "/permissive-", "/EHsc", "/MD",
-            `/Fo:${directory}/`, `/Fe:${executable}`, "/I", "native/include", source]);
-        execFileSync(executable, {stdio:"pipe"});
-    });
+        `,
+            );
+            runNativeFixtureCompiler(native!, [
+                "/nologo",
+                "/std:c++20",
+                "/W4",
+                "/WX",
+                "/permissive-",
+                "/EHsc",
+                "/MD",
+                `/Fo:${directory}/`,
+                `/Fe:${executable}`,
+                "/I",
+                "native/include",
+                source,
+            ]);
+            execFileSync(executable, { stdio: "pipe" });
+        },
+    );
 });
 
 test("optional browser recording detection preserves native absence and lexical shadows", () => {
@@ -73,16 +96,26 @@ test("optional browser recording detection preserves native absence and lexical 
         if (typeof window.MediaRecorder !== "undefined") throw new Error("recording present");
         if (typeof globalThis.MediaRecorder !== "undefined") throw new Error("recording present");
     `);
-    assert.doesNotMatch(guarded.cpp, /throw std::runtime_error\("recording present"\)/);
+    assert.doesNotMatch(
+        guarded.cpp,
+        /throw std::runtime_error\("recording present"\)/,
+    );
     const local = compileSource(`
         const MediaRecorder = 4;
         if (typeof MediaRecorder !== "number") throw new Error("local capability");
     `);
-    assert.doesNotMatch(local.cpp, /throw std::runtime_error\("local capability"\)/);
+    assert.doesNotMatch(
+        local.cpp,
+        /throw std::runtime_error\("local capability"\)/,
+    );
 });
 
 test("storage availability guards reach durable native reads", () => {
-    for (const storage of ["localStorage", "window.localStorage", "globalThis.localStorage"]) {
+    for (const storage of [
+        "localStorage",
+        "window.localStorage",
+        "globalThis.localStorage",
+    ]) {
         const result = compileSource(`
             const saved = typeof ${storage} !== "undefined" ? ${storage}.getItem("preferences") : null;
             if (saved) ${storage}.setItem("copy", saved);
@@ -93,7 +126,11 @@ test("storage availability guards reach durable native reads", () => {
 });
 
 test("navigator language reads the runtime system locale and respects lexical shadows", () => {
-    for (const navigator of ["navigator", "window.navigator", "globalThis.navigator"]) {
+    for (const navigator of [
+        "navigator",
+        "window.navigator",
+        "globalThis.navigator",
+    ]) {
         const result = compileSource(`
             const language = typeof ${navigator} !== "undefined" ? ${navigator}.language || "" : "";
             localStorage.setItem("language", language);
@@ -106,11 +143,14 @@ test("navigator language reads the runtime system locale and respects lexical sh
 });
 
 test("environment reports use native identification and configured deployment URLs", () => {
-    const result = compileSource(`
+    const result = compileSource(
+        `
         localStorage.setItem("agent", navigator.userAgent);
         localStorage.setItem("url", window.location.href);
         if (location.pathname !== "/app/" || location.href !== "https://example.test/app/?mode=test") throw new Error("deployment environment");
-    `, {siteUrl:"https://example.test/app/", search:"?mode=test"});
+    `,
+        { siteUrl: "https://example.test/app/", search: "?mode=test" },
+    );
     assert.match(result.cpp, /bblitec\/native/);
     assert.match(result.cpp, /https:\/\/example.test\/app\/\?mode=test/);
 });
@@ -146,7 +186,8 @@ test("performance aliases retain the native clock without a JavaScript heap", ()
 
 test("host location guards preserve query parameters and lexical shadows", () => {
     for (const host of ["location", "window.location", "globalThis.location"]) {
-        const result = compileSource(`
+        const result = compileSource(
+            `
             const query = typeof ${host} !== "undefined" ? new URLSearchParams(${host}.search) : null;
             if (query?.get("mode") !== "native") throw new Error("lost host query");
             function local(): string {
@@ -154,26 +195,32 @@ test("host location guards preserve query parameters and lexical shadows", () =>
                 return typeof location;
             }
             if (local() !== "string") throw new Error("shadowed location");
-        `, { search: "?mode=native" });
+        `,
+            { search: "?mode=native" },
+        );
         assert.doesNotMatch(result.cpp, /lost host query|shadowed location/);
     }
 });
 
 test("query-controlled optional records initialize only their selected branch", () => {
     for (const search of ["", "?diagnostics"]) {
-        const result = compileSource(`
+        const result = compileSource(
+            `
             const query = typeof location !== "undefined" ? new URLSearchParams(location.search) : null;
             interface Diagnostics { enabled: boolean; count: number; entries?: number[]; }
             const state: Diagnostics | null = query?.has("diagnostics") ? { enabled: false, count: 0 } : null;
             if (state) (globalThis as unknown as Record<string, unknown>).diagnostics = state;
-        `, { search });
+        `,
+            { search },
+        );
         assert.ok(result.cpp.includes("int main()"));
     }
 });
 
 test("query helpers fold nullish guards before numeric conversion", () => {
     for (const search of ["", "?weight=0.5"]) {
-        const result = compileSource(`
+        const result = compileSource(
+            `
             const query = new URLSearchParams(location.search);
             function weight(raw: string | null): number {
                 const n = raw != null && raw !== "" ? Number(raw) : NaN;
@@ -181,13 +228,16 @@ test("query helpers fold nullish guards before numeric conversion", () => {
             }
             const chosen = weight(query.get("weight"));
             if (chosen !== ${search ? "0.5" : "0.25"}) throw new Error("query weight");
-        `, { search });
+        `,
+            { search },
+        );
         assert.ok(result.cpp.includes("int main()"));
     }
 });
 
 test("query readers specialize caller-supplied keys and defaults", () => {
-    const result = compileSource(`
+    const result = compileSource(
+        `
         const query = typeof location !== "undefined" ? new URLSearchParams(location.search) : null;
         const numberOr = (key: string, fallback: number): number => {
             const raw = query ? query.get(key) : null;
@@ -198,6 +248,8 @@ test("query readers specialize caller-supplied keys and defaults", () => {
         const first = numberOr("weight", 2);
         const second = numberOr("missing", 3);
         if (first !== 0.5 || second !== 3) throw new Error("query key specialization");
-    `, { search: "?weight=0.5" });
+    `,
+        { search: "?weight=0.5" },
+    );
     assert.ok(result.cpp.includes("int main()"));
 });

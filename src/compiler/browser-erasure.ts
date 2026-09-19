@@ -1,4 +1,8 @@
-import { emissionArray, EmissionSet, EmissionMap } from "./emission-transaction.js";
+import {
+    emissionArray,
+    EmissionSet,
+    EmissionMap,
+} from "./emission-transaction.js";
 import type { LoweringServices } from "./lowering-services.js";
 import { deploymentUrl } from "./deployment.js";
 // Browser environment recognition and bounded erasure. Platform-backed
@@ -6,7 +10,11 @@ import { deploymentUrl } from "./deployment.js";
 // the configured search string. Unrepresented browser instrumentation is
 // handled separately from observable platform operations.
 import ts from "typescript";
-import { argumentAt, identifierText, isAssignmentExpression } from "./syntax.js";
+import {
+    argumentAt,
+    identifierText,
+    isAssignmentExpression,
+} from "./syntax.js";
 import { promiseExecutor } from "./promise-executor.js";
 import { mathUnaryFold } from "./math-intrinsics.js";
 import type { Value } from "./types.js";
@@ -39,8 +47,7 @@ export function isNumberParserCallee(
 ): boolean {
     if (ts.isIdentifier(callee)) {
         return (
-            callee.text === method &&
-            context.isDefaultLibraryIdentifier(callee)
+            callee.text === method && context.isDefaultLibraryIdentifier(callee)
         );
     }
     return (
@@ -96,28 +103,28 @@ export function hasNativeSpelling(
     return isPrimitiveBrowserValue(value) || value.kind === "search-params";
 }
 
-export interface BrowserErasureContext
-    extends Pick<LoweringServices,
-        | "isNativeWorkerExpression"
-        | "unwrap"
-        | "canvasSizeProperty"
-        | "isCanvasElement"
-        | "lookupOptional"
-        | "resolveThisField"
-        | "isDefaultLibraryIdentifier"
-        | "isBrowserDomValue"
-        | "isBrowserOnlyLocalCall"
-        | "isNativeUiHelperCall"
-        | "isNativeHostUiLookup"
-        | "isBrowserOnlyNullableClassFactoryCall"
-        | "isNativeUiValueExpression"
-        | "isNativeBrowserFileExpression"
-        | "platformDocumentHidden"
-        | "referenceSearch"
-        | "options"
-        | "constantInitializer"
-        | "moduleFunctionDeclaration"
-    > {}
+export interface BrowserErasureContext extends Pick<
+    LoweringServices,
+    | "isNativeWorkerExpression"
+    | "unwrap"
+    | "canvasSizeProperty"
+    | "isCanvasElement"
+    | "lookupOptional"
+    | "resolveThisField"
+    | "isDefaultLibraryIdentifier"
+    | "isBrowserDomValue"
+    | "isBrowserOnlyLocalCall"
+    | "isNativeUiHelperCall"
+    | "isNativeHostUiLookup"
+    | "isBrowserOnlyNullableClassFactoryCall"
+    | "isNativeUiValueExpression"
+    | "isNativeBrowserFileExpression"
+    | "platformDocumentHidden"
+    | "referenceSearch"
+    | "options"
+    | "constantInitializer"
+    | "moduleFunctionDeclaration"
+> {}
 
 /**
  * What walking a helper body produced: a value it returned, or the fact
@@ -165,7 +172,10 @@ export function browserGlobalNamed(
         : undefined;
 }
 
-export function browserEnvironmentPropertyValue(context: BrowserGlobalContext & Pick<LoweringServices, "options">, expression: ts.Expression): Value | undefined {
+export function browserEnvironmentPropertyValue(
+    context: BrowserGlobalContext & Pick<LoweringServices, "options">,
+    expression: ts.Expression,
+): Value | undefined {
     const unwrapped = context.unwrap(expression);
     if (!ts.isPropertyAccessExpression(unwrapped)) return undefined;
     const owner = browserEnvironmentValue(context, unwrapped.expression);
@@ -175,65 +185,141 @@ export function browserEnvironmentPropertyValue(context: BrowserGlobalContext & 
 function nativeNavigatorProperties(realm: boolean): Record<string, Value> {
     const graphics = "bbl::pal::WorkerRealm::current().graphics_identity()";
     return {
-        language: {kind:"string", cpp:"bbl::preferred_language()"},
+        language: { kind: "string", cpp: "bbl::preferred_language()" },
         userAgent: staticStringValue("bblitec/native", stringLiteral),
-        platform: {kind:"string", cpp:"bbl::native_platform()"},
-        hardwareConcurrency: {kind:"number", cpp:"bbl::logical_processor_count()"},
-        onLine: {kind:"boolean", cpp:"true", staticBoolean:true},
-        userAgentData: {kind:"json-null", cpp:"std::nullopt"},
-        deviceMemory: {kind:"json-null", cpp:"std::nullopt"},
-        gpu: realm ? {kind:"record", cpp:graphics, objectIdentityCpp:graphics,
-            optionalFoundCpp:`(${graphics} != nullptr)`, truthinessCpp:`(${graphics} != nullptr)`, recordProperties:{}}
-            : {kind:"json-null", cpp:"std::nullopt"},
-        clipboard: {kind:"record", cpp:"", truthinessCpp:"true", recordProperties:{
-            writeText: {kind:"callback", cpp:"", hostFunction:"clipboard-write"},
-        }},
+        platform: { kind: "string", cpp: "bbl::native_platform()" },
+        hardwareConcurrency: {
+            kind: "number",
+            cpp: "bbl::logical_processor_count()",
+        },
+        onLine: { kind: "boolean", cpp: "true", staticBoolean: true },
+        userAgentData: { kind: "json-null", cpp: "std::nullopt" },
+        deviceMemory: { kind: "json-null", cpp: "std::nullopt" },
+        gpu: realm
+            ? {
+                  kind: "record",
+                  cpp: graphics,
+                  objectIdentityCpp: graphics,
+                  optionalFoundCpp: `(${graphics} != nullptr)`,
+                  truthinessCpp: `(${graphics} != nullptr)`,
+                  recordProperties: {},
+              }
+            : { kind: "json-null", cpp: "std::nullopt" },
+        clipboard: {
+            kind: "record",
+            cpp: "",
+            truthinessCpp: "true",
+            recordProperties: {
+                writeText: {
+                    kind: "callback",
+                    cpp: "",
+                    hostFunction: "clipboard-write",
+                },
+            },
+        },
     };
 }
 
 /** Native environment properties can travel through an aliased host object. */
-export function browserEnvironmentValue(context: BrowserGlobalContext & Pick<LoweringServices, "options">, expression: ts.Expression): Value | undefined {
+export function browserEnvironmentValue(
+    context: BrowserGlobalContext & Pick<LoweringServices, "options">,
+    expression: ts.Expression,
+): Value | undefined {
     const global = browserGlobalNamed(context, expression)?.text;
-    if (global === "performance") return {
-        kind: "record", cpp: "", truthinessCpp: "true", objectIdentityCpp: "bbl::native_performance_identity()",
-        recordProperties: {
-            memory: { kind: "json-null", cpp: "std::nullopt" },
-            now: { kind: "data", cpp: "bbl::pal::performance_milliseconds", dataType: {kind:"function", parameters:[], result:{kind:"number"}} },
-        },
-    };
+    if (global === "performance")
+        return {
+            kind: "record",
+            cpp: "",
+            truthinessCpp: "true",
+            objectIdentityCpp: "bbl::native_performance_identity()",
+            recordProperties: {
+                memory: { kind: "json-null", cpp: "std::nullopt" },
+                now: {
+                    kind: "data",
+                    cpp: "bbl::pal::performance_milliseconds",
+                    dataType: {
+                        kind: "function",
+                        parameters: [],
+                        result: { kind: "number" },
+                    },
+                },
+            },
+        };
     if (global !== "navigator") return undefined;
-    return {kind:"record", cpp:"", truthinessCpp:"true", objectIdentityCpp:"bbl::native_navigator_identity()", recordProperties:nativeNavigatorProperties(!!context.options.workers)};
+    return {
+        kind: "record",
+        cpp: "",
+        truthinessCpp: "true",
+        objectIdentityCpp: "bbl::native_navigator_identity()",
+        recordProperties: nativeNavigatorProperties(!!context.options.workers),
+    };
 }
 
-export function browserDeploymentValue(context: BrowserGlobalContext & Pick<LoweringServices, "options">, expression: ts.Expression): string | boolean | null | undefined {
+export function browserDeploymentValue(
+    context: BrowserGlobalContext & Pick<LoweringServices, "options">,
+    expression: ts.Expression,
+): string | boolean | null | undefined {
     const unwrapped = context.unwrap(expression);
     if (!ts.isPropertyAccessExpression(unwrapped)) return undefined;
-    if (browserGlobalNamed(context, unwrapped.expression)?.text === "location" &&
-        ["origin", "href", "pathname", "search", "hash", "host", "hostname", "port", "protocol"].includes(unwrapped.name.text)) {
+    if (
+        browserGlobalNamed(context, unwrapped.expression)?.text ===
+            "location" &&
+        [
+            "origin",
+            "href",
+            "pathname",
+            "search",
+            "hash",
+            "host",
+            "hostname",
+            "port",
+            "protocol",
+        ].includes(unwrapped.name.text)
+    ) {
         const url = deploymentUrl(context.options);
         url.search = context.options.search;
-        return url[unwrapped.name.text as "origin" | "href" | "pathname" | "search" | "hash" | "host" | "hostname" | "port" | "protocol"];
+        return url[
+            unwrapped.name.text as
+                | "origin"
+                | "href"
+                | "pathname"
+                | "search"
+                | "hash"
+                | "host"
+                | "hostname"
+                | "port"
+                | "protocol"
+        ];
     }
     const env = unwrapped.expression;
-    if (ts.isPropertyAccessExpression(env) && env.name.text === "env" &&
-        ts.isMetaProperty(env.expression) && env.expression.keywordToken === ts.SyntaxKind.ImportKeyword &&
-        env.expression.name.text === "meta") {
+    if (
+        ts.isPropertyAccessExpression(env) &&
+        env.name.text === "env" &&
+        ts.isMetaProperty(env.expression) &&
+        env.expression.keywordToken === ts.SyntaxKind.ImportKeyword &&
+        env.expression.name.text === "meta"
+    ) {
         switch (unwrapped.name.text) {
-            case "BASE_URL": return deploymentUrl(context.options).pathname;
-            case "MODE": return "production";
-            case "PROD": return true;
-            case "DEV": case "SSR": return false;
+            case "BASE_URL":
+                return deploymentUrl(context.options).pathname;
+            case "MODE":
+                return "production";
+            case "PROD":
+                return true;
+            case "DEV":
+            case "SSR":
+                return false;
         }
         const values = context.options.environment;
-        return values && Object.hasOwn(values, unwrapped.name.text) ? values[unwrapped.name.text]! : null;
+        return values && Object.hasOwn(values, unwrapped.name.text)
+            ? values[unwrapped.name.text]!
+            : null;
     }
     return undefined;
 }
 
 export class BrowserErasure {
-    public constructor(
-        private readonly context: BrowserErasureContext,
-    ) {}
+    public constructor(private readonly context: BrowserErasureContext) {}
 
     /**
      * Helper bodies currently being evaluated, innermost last, each with
@@ -302,9 +388,7 @@ export class BrowserErasure {
      * the same global recognizer as every other host object, so
      * `window.localStorage` and a lexical shadow answer correctly.
      */
-    private isWebStorageExpression(
-        expression: ts.Expression,
-    ): boolean {
+    private isWebStorageExpression(expression: ts.Expression): boolean {
         const unwrapped = this.context.unwrap(expression);
         if (this.browserGlobalNamed(unwrapped)?.text === "localStorage") {
             return true;
@@ -339,19 +423,16 @@ export class BrowserErasure {
      * the call rather than being rounded to the next frame, which would
      * be a different scene.
      */
-    public isDeferredCallbackCall(
-        call: ts.CallExpression,
-    ): boolean {
-        return (
-            this.browserGlobalNamed(call.expression)?.text === "setTimeout"
-        );
+    public isDeferredCallbackCall(call: ts.CallExpression): boolean {
+        return this.browserGlobalNamed(call.expression)?.text === "setTimeout";
     }
 
     public isBrowserOnlyExpression(expression: ts.Expression): boolean {
         if (this.context.isNativeWorkerExpression(expression)) return false;
         const unwrapped = this.context.unwrap(expression);
         if (this.context.isNativeUiValueExpression(unwrapped)) return false;
-        if (browserDeploymentValue(this.context, unwrapped) !== undefined) return false;
+        if (browserDeploymentValue(this.context, unwrapped) !== undefined)
+            return false;
         // Scene-created DOM is not a browser object in the native program: it
         // is the input syntax for the retained UI IR. Keep this deliberately
         // narrower than general DOM support. Host-page lookups and arbitrary
@@ -375,8 +456,7 @@ export class BrowserErasure {
             ts.isPropertyAccessExpression(unwrapped) &&
             unwrapped.name.text === "url" &&
             ts.isMetaProperty(unwrapped.expression) &&
-            unwrapped.expression.keywordToken ===
-                ts.SyntaxKind.ImportKeyword &&
+            unwrapped.expression.keywordToken === ts.SyntaxKind.ImportKeyword &&
             unwrapped.expression.name.text === "meta"
         ) {
             return true;
@@ -398,15 +478,17 @@ export class BrowserErasure {
         if (this.isWebStorageExpression(unwrapped)) {
             return false;
         }
-        if (browserEnvironmentPropertyValue(this.context, unwrapped) || browserEnvironmentValue(this.context, unwrapped)) return false;
+        if (
+            browserEnvironmentPropertyValue(this.context, unwrapped) ||
+            browserEnvironmentValue(this.context, unwrapped)
+        )
+            return false;
         if (
             ts.isPropertyAccessExpression(unwrapped) &&
             unwrapped.name.text === "hidden" &&
             ts.isIdentifier(unwrapped.expression) &&
             unwrapped.expression.text === "document" &&
-            this.context.isDefaultLibraryIdentifier(
-                unwrapped.expression,
-            ) &&
+            this.context.isDefaultLibraryIdentifier(unwrapped.expression) &&
             this.context.platformDocumentHidden() !== undefined
         ) {
             return false;
@@ -422,9 +504,7 @@ export class BrowserErasure {
             unwrapped.arguments.length === 0 &&
             ts.isPropertyAccessExpression(unwrapped.expression) &&
             unwrapped.expression.name.text === "focus" &&
-            this.context.isCanvasElement(
-                unwrapped.expression.expression,
-            )
+            this.context.isCanvasElement(unwrapped.expression.expression)
         ) {
             return false;
         }
@@ -464,8 +544,7 @@ export class BrowserErasure {
                 unwrapped.name.text === "top" ||
                 unwrapped.name.text === "width" ||
                 unwrapped.name.text === "height") &&
-            this.evaluateBrowserValue(unwrapped.expression)?.kind ===
-                "dom-rect"
+            this.evaluateBrowserValue(unwrapped.expression)?.kind === "dom-rect"
         ) {
             // Native has no CSS offset around its render surface; its size is
             // the live engine surface. All four reached DOMRect coordinates
@@ -512,9 +591,7 @@ export class BrowserErasure {
             ts.isNewExpression(unwrapped) &&
             ts.isIdentifier(unwrapped.expression) &&
             unwrapped.expression.text === "URLSearchParams" &&
-            this.context.isDefaultLibraryIdentifier(
-                unwrapped.expression,
-            )
+            this.context.isDefaultLibraryIdentifier(unwrapped.expression)
         ) {
             return this.evaluateBrowserValue(unwrapped) !== undefined;
         }
@@ -544,16 +621,10 @@ export class BrowserErasure {
                 : this.browserOperandsTaint(operands, unwrapped);
         }
         if (ts.isPrefixUnaryExpression(unwrapped)) {
-            return this.isBrowserOnlyExpression(
-                unwrapped.operand,
-            );
+            return this.isBrowserOnlyExpression(unwrapped.operand);
         }
         if (ts.isCallExpression(unwrapped)) {
-            if (
-                this.context.isBrowserOnlyNullableClassFactoryCall(
-                    unwrapped,
-                )
-            ) {
+            if (this.context.isBrowserOnlyNullableClassFactoryCall(unwrapped)) {
                 return true;
             }
             if (
@@ -565,19 +636,16 @@ export class BrowserErasure {
             ) {
                 return true;
             }
-            const browserArgument =
-                unwrapped.arguments.some((argument) =>
-                    this.isBrowserOnlyExpression(argument),
-                );
+            const browserArgument = unwrapped.arguments.some((argument) =>
+                this.isBrowserOnlyExpression(argument),
+            );
             // `Number(x)` joins `isNaN` and `parseFloat` as a conversion
             // over a browser-derived value: it is how every physics scene
             // reads the step its capture is pinned at
             // (`Number(params.get("captureFrame"))`).
             if (
                 (ts.isIdentifier(unwrapped.expression) &&
-                    ["isNaN", "Number"].includes(
-                        unwrapped.expression.text,
-                    ) &&
+                    ["isNaN", "Number"].includes(unwrapped.expression.text) &&
                     this.context.isDefaultLibraryIdentifier(
                         unwrapped.expression,
                     )) ||
@@ -585,22 +653,14 @@ export class BrowserErasure {
                 // bare global, so which spelling a scene wrote cannot
                 // decide whether the query value it reads stays browser
                 // state.
-                isParseFloatCallee(
-                    unwrapped.expression,
-                    this.context,
-                )
+                isParseFloatCallee(unwrapped.expression, this.context)
             ) {
                 return browserArgument;
             }
             if (
-                ts.isPropertyAccessExpression(
-                    unwrapped.expression,
-                ) &&
-                ts.isIdentifier(
-                    unwrapped.expression.expression,
-                ) &&
-                unwrapped.expression.expression.text ===
-                    "Number" &&
+                ts.isPropertyAccessExpression(unwrapped.expression) &&
+                ts.isIdentifier(unwrapped.expression.expression) &&
+                unwrapped.expression.expression.text === "Number" &&
                 unwrapped.expression.name.text === "isFinite" &&
                 this.context.isDefaultLibraryIdentifier(
                     unwrapped.expression.expression,
@@ -631,36 +691,46 @@ export class BrowserErasure {
                     unwrapped.arguments.some(
                         (argument) =>
                             this.isBrowserOnlyExpression(argument) &&
-                            this.evaluateBrowserValue(argument) ===
-                                undefined,
+                            this.evaluateBrowserValue(argument) === undefined,
                     )
                 );
             }
             // Last, because it is the only arm that reads a body rather
             // than a shape: a module helper whose whole body the query
             // answers is that answer, wherever the scene calls it.
-            return (
-                this.evaluateBrowserHelperCall(unwrapped) !== undefined
-            );
+            return this.evaluateBrowserHelperCall(unwrapped) !== undefined;
         }
         return false;
     }
 
     public isPrimaryCanvas2DContextCall(
         call: ts.CallExpression,
-        evaluate = (expression: ts.Expression) => this.evaluateBrowserValue(expression),
+        evaluate = (expression: ts.Expression) =>
+            this.evaluateBrowserValue(expression),
     ): boolean {
         const callee = this.context.unwrap(call.expression);
-        if (!ts.isPropertyAccessExpression(callee) ||
-            callee.name.text !== "getContext" || call.arguments.length !== 1) return false;
+        if (
+            !ts.isPropertyAccessExpression(callee) ||
+            callee.name.text !== "getContext" ||
+            call.arguments.length !== 1
+        )
+            return false;
         const canvas = evaluate(callee.expression);
         const context = evaluate(argumentAt(call, 0));
-        return canvas?.kind === "object" && !!canvas.primaryCanvas &&
-            context?.kind === "string" && context.value === "2d";
+        return (
+            canvas?.kind === "object" &&
+            !!canvas.primaryCanvas &&
+            context?.kind === "string" &&
+            context.value === "2d"
+        );
     }
 
     private isNativeUiCall(call: ts.CallExpression): boolean {
-        if (this.context.isNativeHostUiLookup(call) || this.isPrimaryCanvas2DContextCall(call)) return true;
+        if (
+            this.context.isNativeHostUiLookup(call) ||
+            this.isPrimaryCanvas2DContextCall(call)
+        )
+            return true;
         const callee = this.context.unwrap(call.expression);
         if (!ts.isPropertyAccessExpression(callee)) return false;
 
@@ -676,9 +746,10 @@ export class BrowserErasure {
         if (this.isNativeDomBridge(callee.expression)) return true;
 
         return (
-            (callee.name.text === "append" || (callee.name.text === "appendChild" &&
-            call.arguments.length === 1 &&
-            this.isNativeDomBridge(argumentAt(call, 0)))) &&
+            (callee.name.text === "append" ||
+                (callee.name.text === "appendChild" &&
+                    call.arguments.length === 1 &&
+                    this.isNativeDomBridge(argumentAt(call, 0)))) &&
             ts.isPropertyAccessExpression(callee.expression) &&
             (callee.expression.name.text === "body" ||
                 callee.expression.name.text === "head") &&
@@ -690,16 +761,18 @@ export class BrowserErasure {
         );
     }
 
-    private isNativeDomBridge(
-        expression: ts.Expression,
-    ): boolean {
+    private isNativeDomBridge(expression: ts.Expression): boolean {
         const owner = (node: ts.Expression): Value | undefined => {
             const unwrapped = this.context.unwrap(node);
-            if (ts.isCallExpression(unwrapped) && this.context.isNativeHostUiLookup(unwrapped)) {
-                return {kind:"ui-element", cpp:""};
+            if (
+                ts.isCallExpression(unwrapped) &&
+                this.context.isNativeHostUiLookup(unwrapped)
+            ) {
+                return { kind: "ui-element", cpp: "" };
             }
             if (
-                (ts.isElementAccessExpression(unwrapped) || ts.isPropertyAccessExpression(unwrapped)) &&
+                (ts.isElementAccessExpression(unwrapped) ||
+                    ts.isPropertyAccessExpression(unwrapped)) &&
                 this.context.isNativeUiValueExpression(unwrapped)
             ) {
                 return { kind: "ui-element", cpp: "" };
@@ -709,33 +782,26 @@ export class BrowserErasure {
             }
             if (
                 ts.isPropertyAccessExpression(unwrapped) &&
-                unwrapped.expression.kind ===
-                    ts.SyntaxKind.ThisKeyword
+                unwrapped.expression.kind === ts.SyntaxKind.ThisKeyword
             ) {
-                return this.context.resolveThisField(
-                    unwrapped.name.text,
-                );
+                return this.context.resolveThisField(unwrapped.name.text);
             }
-            if (ts.isPropertyAccessExpression(unwrapped) || ts.isElementAccessExpression(unwrapped)) {
+            if (
+                ts.isPropertyAccessExpression(unwrapped) ||
+                ts.isElementAccessExpression(unwrapped)
+            ) {
                 return owner(unwrapped.expression);
             }
             if (
                 ts.isCallExpression(unwrapped) &&
-                ts.isPropertyAccessExpression(
-                    unwrapped.expression,
-                )
+                ts.isPropertyAccessExpression(unwrapped.expression)
             ) {
-                return owner(
-                    unwrapped.expression.expression,
-                );
+                return owner(unwrapped.expression.expression);
             }
             return undefined;
         };
         const value = owner(expression);
-        return (
-            value !== undefined &&
-            NATIVE_DOM_BRIDGE_KINDS.has(value.kind)
-        );
+        return value !== undefined && NATIVE_DOM_BRIDGE_KINDS.has(value.kind);
     }
 
     private isPlatformTimeCall(
@@ -825,8 +891,7 @@ export class BrowserErasure {
     public evaluateBrowserCondition(
         expression: ts.Expression,
     ): boolean | undefined {
-        const value =
-            this.evaluateBrowserValue(expression);
+        const value = this.evaluateBrowserValue(expression);
         return this.browserTruthy(value);
     }
 
@@ -835,15 +900,29 @@ export class BrowserErasure {
     ): Value["browserValue"] | undefined {
         const unwrapped = this.context.unwrap(expression);
         const deployed = browserDeploymentValue(this.context, unwrapped);
-        if (deployed === null) return {kind:"null"};
-        if (typeof deployed === "boolean") return {kind:"boolean", value:deployed};
+        if (deployed === null) return { kind: "null" };
+        if (typeof deployed === "boolean")
+            return { kind: "boolean", value: deployed };
         if (deployed !== undefined) return { kind: "string", value: deployed };
         if (ts.isTypeOfExpression(unwrapped)) {
-            const global = this.browserGlobalNamed(this.context.unwrap(unwrapped.expression));
+            const global = this.browserGlobalNamed(
+                this.context.unwrap(unwrapped.expression),
+            );
             // Native has no browser recording pipeline; authored capability
             // guards can select their own unavailable-recording path.
-            if (global?.text === "MediaRecorder") return {kind:"string", value:"undefined"};
-            if (global && ["location", "window", "globalThis", "document", "localStorage", "navigator"].includes(global.text)) {
+            if (global?.text === "MediaRecorder")
+                return { kind: "string", value: "undefined" };
+            if (
+                global &&
+                [
+                    "location",
+                    "window",
+                    "globalThis",
+                    "document",
+                    "localStorage",
+                    "navigator",
+                ].includes(global.text)
+            ) {
                 return { kind: "string", value: "object" };
             }
         }
@@ -888,13 +967,22 @@ export class BrowserErasure {
                 // Inlining can bind a module constant before a browser
                 // helper evaluates it. Its native binding still carries
                 // the same immutable value; mutable parameters do not.
-                if (!bound.parameterBinding && bound.staticNumber !== undefined) {
+                if (
+                    !bound.parameterBinding &&
+                    bound.staticNumber !== undefined
+                ) {
                     return { kind: "number", value: bound.staticNumber };
                 }
-                if (!bound.parameterBinding && bound.staticString !== undefined) {
+                if (
+                    !bound.parameterBinding &&
+                    bound.staticString !== undefined
+                ) {
                     return { kind: "string", value: bound.staticString };
                 }
-                if (!bound.parameterBinding && bound.staticBoolean !== undefined) {
+                if (
+                    !bound.parameterBinding &&
+                    bound.staticBoolean !== undefined
+                ) {
                     return { kind: "boolean", value: bound.staticBoolean };
                 }
                 return undefined;
@@ -922,9 +1010,7 @@ export class BrowserErasure {
             ts.isNewExpression(unwrapped) &&
             ts.isIdentifier(unwrapped.expression) &&
             unwrapped.expression.text === "URLSearchParams" &&
-            this.context.isDefaultLibraryIdentifier(
-                unwrapped.expression,
-            )
+            this.context.isDefaultLibraryIdentifier(unwrapped.expression)
         ) {
             const argument = unwrapped.arguments?.[0];
             const over = argument
@@ -973,13 +1059,11 @@ export class BrowserErasure {
             ts.isCallExpression(unwrapped.expression) &&
             ts.isPropertyAccessExpression(unwrapped.expression.expression) &&
             unwrapped.expression.expression.name.text === "matchMedia" &&
-            this.browserGlobalNamed(
-                unwrapped.expression.expression.expression,
-            )?.text === "window" &&
+            this.browserGlobalNamed(unwrapped.expression.expression.expression)
+                ?.text === "window" &&
             unwrapped.expression.arguments.length === 1 &&
-            this.evaluateBrowserValue(
-                argumentAt(unwrapped.expression, 0),
-            )?.kind === "string"
+            this.evaluateBrowserValue(argumentAt(unwrapped.expression, 0))
+                ?.kind === "string"
         ) {
             // The native executable is an SDL desktop surface with mouse
             // hover and a fine pointer. A coarse/no-hover media query is the
@@ -987,9 +1071,7 @@ export class BrowserErasure {
             return { kind: "boolean", value: false };
         }
         if (ts.isPrefixUnaryExpression(unwrapped)) {
-            const operand = this.evaluateBrowserValue(
-                unwrapped.operand,
-            );
+            const operand = this.evaluateBrowserValue(unwrapped.operand);
             if (
                 (unwrapped.operator === ts.SyntaxKind.PlusToken ||
                     unwrapped.operator === ts.SyntaxKind.MinusToken) &&
@@ -1003,10 +1085,7 @@ export class BrowserErasure {
                             : operand.value,
                 };
             }
-            if (
-                unwrapped.operator !==
-                ts.SyntaxKind.ExclamationToken
-            ) {
+            if (unwrapped.operator !== ts.SyntaxKind.ExclamationToken) {
                 return undefined;
             }
             const truthy = this.browserTruthy(operand);
@@ -1015,9 +1094,7 @@ export class BrowserErasure {
                 : { kind: "boolean", value: !truthy };
         }
         if (ts.isBinaryExpression(unwrapped)) {
-            const left = this.evaluateBrowserValue(
-                unwrapped.left,
-            );
+            const left = this.evaluateBrowserValue(unwrapped.left);
             if (
                 unwrapped.operatorToken.kind ===
                 ts.SyntaxKind.AmpersandAmpersandToken
@@ -1029,23 +1106,16 @@ export class BrowserErasure {
                     return left;
                 }
                 return truthy
-                    ? this.evaluateBrowserValue(
-                          unwrapped.right,
-                      )
+                    ? this.evaluateBrowserValue(unwrapped.right)
                     : undefined;
             }
-            if (
-                unwrapped.operatorToken.kind ===
-                ts.SyntaxKind.BarBarToken
-            ) {
+            if (unwrapped.operatorToken.kind === ts.SyntaxKind.BarBarToken) {
                 const truthy = this.browserTruthy(left);
                 if (truthy === true) {
                     return left;
                 }
                 return truthy === false
-                    ? this.evaluateBrowserValue(
-                          unwrapped.right,
-                      )
+                    ? this.evaluateBrowserValue(unwrapped.right)
                     : undefined;
             }
             if (
@@ -1062,9 +1132,7 @@ export class BrowserErasure {
                     return undefined;
                 }
                 return left.kind === "null"
-                    ? this.evaluateBrowserValue(
-                          unwrapped.right,
-                      )
+                    ? this.evaluateBrowserValue(unwrapped.right)
                     : left;
             }
             const numeric = new EmissionMap<
@@ -1078,9 +1146,7 @@ export class BrowserErasure {
                 [ts.SyntaxKind.PercentToken, (a, b) => a % b],
             ]).get(unwrapped.operatorToken.kind);
             if (numeric) {
-                const right = this.evaluateBrowserValue(
-                    unwrapped.right,
-                );
+                const right = this.evaluateBrowserValue(unwrapped.right);
                 if (left?.kind !== "number" || right?.kind !== "number") {
                     return undefined;
                 }
@@ -1089,12 +1155,28 @@ export class BrowserErasure {
                     value: numeric(left.value, right.value),
                 };
             }
-            if (unwrapped.operatorToken.kind === ts.SyntaxKind.EqualsEqualsToken ||
-                unwrapped.operatorToken.kind === ts.SyntaxKind.ExclamationEqualsToken) {
+            if (
+                unwrapped.operatorToken.kind ===
+                    ts.SyntaxKind.EqualsEqualsToken ||
+                unwrapped.operatorToken.kind ===
+                    ts.SyntaxKind.ExclamationEqualsToken
+            ) {
                 const right = this.evaluateBrowserValue(unwrapped.right);
-                if (!left || !right || (left.kind !== "null" && right.kind !== "null")) return undefined;
+                if (
+                    !left ||
+                    !right ||
+                    (left.kind !== "null" && right.kind !== "null")
+                )
+                    return undefined;
                 const equal = left.kind === "null" && right.kind === "null";
-                return { kind: "boolean", value: unwrapped.operatorToken.kind === ts.SyntaxKind.EqualsEqualsToken ? equal : !equal };
+                return {
+                    kind: "boolean",
+                    value:
+                        unwrapped.operatorToken.kind ===
+                        ts.SyntaxKind.EqualsEqualsToken
+                            ? equal
+                            : !equal,
+                };
             }
             // A browser-derived value compared against a literal is how the
             // corpus reads an opt-out switch: `params.get("noise") !== "off"`
@@ -1107,9 +1189,7 @@ export class BrowserErasure {
                 unwrapped.operatorToken.kind ===
                     ts.SyntaxKind.ExclamationEqualsEqualsToken
             ) {
-                const right = this.evaluateBrowserValue(
-                    unwrapped.right,
-                );
+                const right = this.evaluateBrowserValue(unwrapped.right);
                 const equal = strictlyEqualBrowserValues(left, right);
                 if (equal === undefined) return undefined;
                 return {
@@ -1125,13 +1205,9 @@ export class BrowserErasure {
             // names a pose from one that only asks to freeze. Both sides
             // are numbers by the time the query has folded, so the
             // comparison is the ordinary numeric one.
-            const relational = relationalOperator(
-                unwrapped.operatorToken.kind,
-            );
+            const relational = relationalOperator(unwrapped.operatorToken.kind);
             if (relational) {
-                const right = this.evaluateBrowserValue(
-                    unwrapped.right,
-                );
+                const right = this.evaluateBrowserValue(unwrapped.right);
                 if (left?.kind !== "number" || right?.kind !== "number") {
                     return undefined;
                 }
@@ -1143,38 +1219,25 @@ export class BrowserErasure {
             return undefined;
         }
         if (ts.isCallExpression(unwrapped)) {
-            if (
-                this.context.isBrowserOnlyNullableClassFactoryCall(
-                    unwrapped,
-                )
-            ) {
+            if (this.context.isBrowserOnlyNullableClassFactoryCall(unwrapped)) {
                 // A native build has no instance of a DOM-only class. Model
                 // the erased nullable factory as its absent branch so guards
                 // over the result remain deterministic.
                 return { kind: "null" };
             }
-            if (
-                ts.isPropertyAccessExpression(
-                    unwrapped.expression,
-                )
-            ) {
+            if (ts.isPropertyAccessExpression(unwrapped.expression)) {
                 if (
-                    ts.isIdentifier(
-                        unwrapped.expression.expression,
-                    ) &&
-                    unwrapped.expression.expression.text ===
-                        "document" &&
-                    unwrapped.expression.name.text ===
-                        "getElementById" &&
+                    ts.isIdentifier(unwrapped.expression.expression) &&
+                    unwrapped.expression.expression.text === "document" &&
+                    unwrapped.expression.name.text === "getElementById" &&
                     this.context.isDefaultLibraryIdentifier(
                         unwrapped.expression.expression,
                     ) &&
                     unwrapped.arguments.length === 1
                 ) {
-                    const elementId =
-                        this.evaluateBrowserValue(
-                            argumentAt(unwrapped, 0),
-                        );
+                    const elementId = this.evaluateBrowserValue(
+                        argumentAt(unwrapped, 0),
+                    );
                     if (
                         elementId?.kind !== "string" ||
                         elementId.value !== "renderCanvas"
@@ -1222,11 +1285,17 @@ export class BrowserErasure {
                     const parameters = new URLSearchParams(owner.search);
                     if (method === "has") {
                         const valueArgument = unwrapped.arguments[1];
-                        const value = valueArgument ? this.evaluateBrowserValue(valueArgument) : undefined;
-                        if (valueArgument && value?.kind !== "string") return undefined;
+                        const value = valueArgument
+                            ? this.evaluateBrowserValue(valueArgument)
+                            : undefined;
+                        if (valueArgument && value?.kind !== "string")
+                            return undefined;
                         return {
                             kind: "boolean",
-                            value: value?.kind === "string" ? parameters.has(key.value, value.value) : parameters.has(key.value),
+                            value:
+                                value?.kind === "string"
+                                    ? parameters.has(key.value, value.value)
+                                    : parameters.has(key.value),
                         };
                     }
                     const found = parameters.get(key.value);
@@ -1236,20 +1305,13 @@ export class BrowserErasure {
                 }
             }
             if (
-                isParseFloatCallee(
-                    unwrapped.expression,
-                    this.context,
-                ) &&
+                isParseFloatCallee(unwrapped.expression, this.context) &&
                 unwrapped.arguments.length === 1
             ) {
-                const argument =
-                    this.evaluateBrowserValue(
-                        argumentAt(unwrapped, 0),
-                    );
-                const text =
-                    argument?.kind === "string"
-                        ? argument.value
-                        : "";
+                const argument = this.evaluateBrowserValue(
+                    argumentAt(unwrapped, 0),
+                );
+                const text = argument?.kind === "string" ? argument.value : "";
                 return {
                     kind: "number",
                     value: Number.parseFloat(text),
@@ -1259,14 +1321,11 @@ export class BrowserErasure {
                 ts.isIdentifier(unwrapped.expression) &&
                 unwrapped.expression.text === "Number" &&
                 unwrapped.arguments.length === 1 &&
-                this.context.isDefaultLibraryIdentifier(
-                    unwrapped.expression,
-                )
+                this.context.isDefaultLibraryIdentifier(unwrapped.expression)
             ) {
-                const argument =
-                    this.evaluateBrowserValue(
-                        argumentAt(unwrapped, 0),
-                    );
+                const argument = this.evaluateBrowserValue(
+                    argumentAt(unwrapped, 0),
+                );
                 // Only the kinds JavaScript converts to a NUMBER fold; an
                 // opaque browser object or the search-params record does
                 // not, and is listed by what it IS rather than by what it
@@ -1295,47 +1354,34 @@ export class BrowserErasure {
             if (
                 ts.isIdentifier(unwrapped.expression) &&
                 unwrapped.expression.text === "isNaN" &&
-                this.context.isDefaultLibraryIdentifier(
-                    unwrapped.expression,
-                )
+                this.context.isDefaultLibraryIdentifier(unwrapped.expression)
             ) {
-                const argument =
-                    this.evaluateBrowserValue(
-                        argumentAt(unwrapped, 0),
-                    );
+                const argument = this.evaluateBrowserValue(
+                    argumentAt(unwrapped, 0),
+                );
                 return argument?.kind === "number"
                     ? {
                           kind: "boolean",
-                          value: Number.isNaN(
-                              argument.value,
-                          ),
+                          value: Number.isNaN(argument.value),
                       }
                     : undefined;
             }
             if (
-                ts.isPropertyAccessExpression(
-                    unwrapped.expression,
-                ) &&
-                ts.isIdentifier(
-                    unwrapped.expression.expression,
-                ) &&
-                unwrapped.expression.expression.text ===
-                    "Number" &&
+                ts.isPropertyAccessExpression(unwrapped.expression) &&
+                ts.isIdentifier(unwrapped.expression.expression) &&
+                unwrapped.expression.expression.text === "Number" &&
                 unwrapped.expression.name.text === "isFinite" &&
                 this.context.isDefaultLibraryIdentifier(
                     unwrapped.expression.expression,
                 )
             ) {
-                const argument =
-                    this.evaluateBrowserValue(
-                        argumentAt(unwrapped, 0),
-                    );
+                const argument = this.evaluateBrowserValue(
+                    argumentAt(unwrapped, 0),
+                );
                 return argument?.kind === "number"
                     ? {
                           kind: "boolean",
-                          value: Number.isFinite(
-                              argument.value,
-                          ),
+                          value: Number.isFinite(argument.value),
                       }
                     : undefined;
             }
@@ -1368,8 +1414,7 @@ export class BrowserErasure {
                     ? { kind: "number", value: fold(argument.value) }
                     : undefined;
             }
-            const helper =
-                this.evaluateBrowserHelperCall(unwrapped);
+            const helper = this.evaluateBrowserHelperCall(unwrapped);
             if (helper !== undefined) return helper;
         }
         // A conditional selects between two values the same way `&&` and
@@ -1402,10 +1447,7 @@ export class BrowserErasure {
             case "null":
                 return false;
             case "number":
-                return (
-                    value.value !== 0 &&
-                    !Number.isNaN(value.value)
-                );
+                return value.value !== 0 && !Number.isNaN(value.value);
             case "object":
             case "dom-rect":
             case "search-params":
@@ -1452,16 +1494,14 @@ export class BrowserErasure {
         if (call.arguments.length !== 0) return undefined;
         const callee = this.context.unwrap(call.expression);
         if (!ts.isIdentifier(callee)) return undefined;
-        const declaration =
-            this.context.moduleFunctionDeclaration(callee);
+        const declaration = this.context.moduleFunctionDeclaration(callee);
         const body = declaration?.body;
         if (
             !body ||
             declaration.parameters.length !== 0 ||
             declaration.asteriskToken !== undefined ||
             declaration.modifiers?.some(
-                (modifier) =>
-                    modifier.kind === ts.SyntaxKind.AsyncKeyword,
+                (modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword,
             ) ||
             this.helperBodies.some((frame) => frame.body === body)
         ) {
@@ -1474,9 +1514,7 @@ export class BrowserErasure {
         let result: Value["browserValue"] | undefined;
         try {
             if (this.readsBrowserState(body)) {
-                const outcome = this.evaluateBrowserStatements(
-                    body.statements,
-                );
+                const outcome = this.evaluateBrowserStatements(body.statements);
                 result = outcome?.returned ? outcome.value : undefined;
             }
         } finally {
@@ -1533,8 +1571,8 @@ export class BrowserErasure {
         for (const statement of statements) {
             if (ts.isVariableStatement(statement)) {
                 if (
-                    (statement.declarationList.flags &
-                        ts.NodeFlags.Const) === 0
+                    (statement.declarationList.flags & ts.NodeFlags.Const) ===
+                    0
                 ) {
                     return undefined;
                 }
@@ -1601,15 +1639,10 @@ export class BrowserErasure {
     private helperBinding(
         identifier: ts.Identifier,
     ): Value["browserValue"] | undefined {
-        for (
-            let index = this.helperBodies.length - 1;
-            index >= 0;
-            index--
-        ) {
+        for (let index = this.helperBodies.length - 1; index >= 0; index--) {
             const frame = this.helperBodies[index]!;
             if (
-                identifier.getSourceFile() ===
-                    frame.body.getSourceFile() &&
+                identifier.getSourceFile() === frame.body.getSourceFile() &&
                 identifier.pos >= frame.body.pos &&
                 identifier.end <= frame.body.end
             ) {
@@ -1649,8 +1682,10 @@ export class BrowserErasure {
     private promiseExecutor(
         expression: ts.Expression,
     ): { resolveName: string; body: ts.ConciseBody } | undefined {
-        const head = promiseExecutor(this.context.unwrap(expression),
-            identifier => this.context.isDefaultLibraryIdentifier(identifier));
+        const head = promiseExecutor(
+            this.context.unwrap(expression),
+            (identifier) => this.context.isDefaultLibraryIdentifier(identifier),
+        );
         if (!head) return undefined;
         return {
             resolveName: head.resolve.text,
@@ -1662,9 +1697,7 @@ export class BrowserErasure {
         const executor = this.promiseExecutor(expression);
         if (!executor) return false;
         const resolveName = executor.resolveName;
-        const raf = this.context.unwrap(
-            executor.body as ts.Expression,
-        );
+        const raf = this.context.unwrap(executor.body as ts.Expression);
         if (
             !ts.isCallExpression(raf) ||
             !this.isDefaultRequestAnimationFrameCall(raf) ||
@@ -1673,15 +1706,10 @@ export class BrowserErasure {
             return false;
         }
         const callback = argumentAt(raf, 0);
-        if (
-            !ts.isArrowFunction(callback) ||
-            callback.parameters.length !== 0
-        ) {
+        if (!ts.isArrowFunction(callback) || callback.parameters.length !== 0) {
             return false;
         }
-        const resolveCall = this.context.unwrap(
-            callback.body as ts.Expression,
-        );
+        const resolveCall = this.context.unwrap(callback.body as ts.Expression);
         return (
             ts.isCallExpression(resolveCall) &&
             ts.isIdentifier(resolveCall.expression) &&
@@ -1707,14 +1735,10 @@ export class BrowserErasure {
      * Any third callback, callback body, argument, or different Promise
      * executor remains outside the contract and keeps refusing.
      */
-    public isBoundedNestedFrameYield(
-        expression: ts.Expression,
-    ): boolean {
+    public isBoundedNestedFrameYield(expression: ts.Expression): boolean {
         const executor = this.promiseExecutor(expression);
         if (!executor) return false;
-        const outer = this.context.unwrap(
-            executor.body as ts.Expression,
-        );
+        const outer = this.context.unwrap(executor.body as ts.Expression);
         if (
             !ts.isCallExpression(outer) ||
             !this.isDefaultRequestAnimationFrameCall(outer) ||
@@ -1723,15 +1747,10 @@ export class BrowserErasure {
             return false;
         }
         const callback = argumentAt(outer, 0);
-        if (
-            !ts.isArrowFunction(callback) ||
-            callback.parameters.length !== 0
-        ) {
+        if (!ts.isArrowFunction(callback) || callback.parameters.length !== 0) {
             return false;
         }
-        const inner = this.context.unwrap(
-            callback.body as ts.Expression,
-        );
+        const inner = this.context.unwrap(callback.body as ts.Expression);
         return (
             ts.isCallExpression(inner) &&
             this.isDefaultRequestAnimationFrameCall(inner) &&
@@ -1883,8 +1902,7 @@ export class BrowserErasure {
         if (
             !assignment ||
             !ts.isBinaryExpression(assignment) ||
-            assignment.operatorToken.kind !==
-                ts.SyntaxKind.EqualsToken ||
+            assignment.operatorToken.kind !== ts.SyntaxKind.EqualsToken ||
             !ts.isIdentifier(assignment.left)
         ) {
             return undefined;
@@ -1901,7 +1919,9 @@ export class BrowserErasure {
             ts.isPropertyAccessExpression(call.expression) &&
             ts.isIdentifier(call.expression.expression) &&
             call.expression.expression.text === "Object" &&
-            this.context.isDefaultLibraryIdentifier(call.expression.expression) &&
+            this.context.isDefaultLibraryIdentifier(
+                call.expression.expression,
+            ) &&
             // Writing into a browser object instruments the page; writing
             // into the scene's own data is an ordinary store.
             (call.expression.name.text === "assign" ||
@@ -1910,13 +1930,9 @@ export class BrowserErasure {
             this.isBrowserOnlyExpression(call.arguments[0]);
         const deviceEvent =
             ts.isPropertyAccessExpression(call.expression) &&
-            call.expression.name.text ===
-                "addEventListener" &&
-            ts.isPropertyAccessExpression(
-                call.expression.expression,
-            ) &&
-            call.expression.expression.name.text ===
-                "_device";
+            call.expression.name.text === "addEventListener" &&
+            ts.isPropertyAccessExpression(call.expression.expression) &&
+            call.expression.expression.name.text === "_device";
         return objectInstrumentation || deviceEvent;
     }
 }

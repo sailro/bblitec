@@ -13,11 +13,9 @@ import { composeNodeMaterial } from "../src/pinned-node-material.js";
 import { pinnedNodeVariantsHeader } from "../src/pinned-node-material-cpp.js";
 
 const scene83 = "corpus/babylon-lite/lab/lite/src/lite/scene83.ts";
-const scene83Graph =
-    "corpus/babylon-lite/lab/lite/src/shared/scene83-nme.ts";
+const scene83Graph = "corpus/babylon-lite/lab/lite/src/shared/scene83-nme.ts";
 const scene72 = "corpus/babylon-lite/lab/lite/src/lite/scene72.ts";
-const scene72Graph =
-    "corpus/babylon-lite/lab/lite/src/shared/scene72-nme.ts";
+const scene72Graph = "corpus/babylon-lite/lab/lite/src/shared/scene72-nme.ts";
 const scene72Compression =
     "corpus/babylon-lite/lab/lite/src/shared/nme-compression.ts";
 
@@ -54,8 +52,14 @@ test("recognizes the pinned geometry loader by import symbol and keeps its graph
             `import { loadNodeBlockEmitterWithGeometry as ${name} } from "babylon-lite";`,
             name,
         );
-        assert.equal(result.manifest.nodeMaterials[0]!.pinnedBlockLoader, "geometry");
-        assert.equal(result.manifest.nodeMaterials[0]!.blockEmitters, undefined);
+        assert.equal(
+            result.manifest.nodeMaterials[0]!.pinnedBlockLoader,
+            "geometry",
+        );
+        assert.equal(
+            result.manifest.nodeMaterials[0]!.blockEmitters,
+            undefined,
+        );
     }
     const result = compileSource(`
         import { createEngine, parseNodeMaterialFromSnippet,
@@ -69,16 +73,31 @@ test("recognizes the pinned geometry loader by import symbol and keeps its graph
         }
         main();
     `);
-    assert.deepEqual(result.manifest.nodeMaterials.map((material) => material.pinnedBlockLoader),
-        [undefined, "geometry"]);
-    assert.deepEqual([...result.cpp.matchAll(/create_node_material\([^,]+, (\d+)u,/g)]
-        .map((match) => Number(match[1])), [0, 1, 1]);
+    assert.deepEqual(
+        result.manifest.nodeMaterials.map(
+            (material) => material.pinnedBlockLoader,
+        ),
+        [undefined, "geometry"],
+    );
+    assert.deepEqual(
+        [...result.cpp.matchAll(/create_node_material\([^,]+, (\d+)u,/g)].map(
+            (match) => Number(match[1]),
+        ),
+        [0, 1, 1],
+    );
 
-    assert.throws(() => compileLoader(`
+    assert.throws(
+        () =>
+            compileLoader(
+                `
         async function loadNodeBlockEmitterWithGeometry(className: string): Promise<unknown> {
             return className;
         }
-    `, "loadNodeBlockEmitterWithGeometry"), /one closed switch statement/);
+    `,
+                "loadNodeBlockEmitterWithGeometry",
+            ),
+        /one closed switch statement/,
+    );
     for (const declaration of [
         'import type { loadNodeBlockEmitterWithGeometry as loadBlock } from "babylon-lite";',
         'import { type loadNodeBlockEmitterWithGeometry as loadBlock } from "babylon-lite";',
@@ -95,51 +114,114 @@ test("executes pinned geometry delegation while preserving ordinary graphs and l
     const options = { pinnedBlockLoader: "geometry" } as const;
     const composed = await composeNodeMaterial(graph, "scene149-loader", {
         ...options,
-        geometryTasks: [{ index: 0, attachments: ["WORLD_POSITION", "VIEW_NORMAL", "ALBEDO"], emitColor: false }],
+        geometryTasks: [
+            {
+                index: 0,
+                attachments: ["WORLD_POSITION", "VIEW_NORMAL", "ALBEDO"],
+                emitColor: false,
+            },
+        ],
     });
-    assert.deepEqual(composed.textures.map(({ name }) => name), ["albedo"]);
+    assert.deepEqual(
+        composed.textures.map(({ name }) => name),
+        ["albedo"],
+    );
     assert.deepEqual(composed.inputs, [{ name: "albedo", type: "texture2d" }]);
-    const inputHeader = inlineCpp(pinnedNodeVariantsHeader("input metadata", [0, 1].map((index) => ({
-        index, vertexStem: `node-${index}.vert`, fragmentStem: `node-${index}.frag`, composed,
-    })), []));
-    assert.match(inputHeader, /std::array<NodeVariantInput, 2> node_variant_inputs/);
+    const inputHeader = inlineCpp(
+        pinnedNodeVariantsHeader(
+            "input metadata",
+            [0, 1].map((index) => ({
+                index,
+                vertexStem: `node-${index}.vert`,
+                fragmentStem: `node-${index}.frag`,
+                composed,
+            })),
+            [],
+        ),
+    );
+    assert.match(
+        inputHeader,
+        /std::array<NodeVariantInput, 2> node_variant_inputs/,
+    );
     assert.match(inputHeader, /\{0, "albedo", "texture2d"\}/);
     assert.match(inputHeader, /\{1, "albedo", "texture2d"\}/);
     assert.equal(composed.geometryViews[0]!.colorTargetCount, 3);
-    assert.deepEqual(composed.geometryViews[0]!.attributes.map(({ name }) => name),
-        ["position", "normal", "uv"]);
-    await assert.rejects(() => composeNodeMaterial(graph, "scene149-default"),
-        /no emitter registered for block "GeometryTextureOutputBlock"/);
+    assert.deepEqual(
+        composed.geometryViews[0]!.attributes.map(({ name }) => name),
+        ["position", "normal", "uv"],
+    );
+    await assert.rejects(
+        () => composeNodeMaterial(graph, "scene149-default"),
+        /no emitter registered for block "GeometryTextureOutputBlock"/,
+    );
 
     const ordinary = await executeModuleGraph({
         modulePath: "corpus/babylon-lite/lab/lite/src/shared/scene60-nme.ts",
         exportName: "SCENE60_NME_JSON",
     });
-    assert.deepEqual(await composeNodeMaterial(ordinary, "ordinary", options),
-        await composeNodeMaterial(ordinary, "ordinary"));
-    await assert.rejects(() => composeNodeMaterial({
-        blocks: [{ id: 1, customType: "BABYLON.MissingEmitterBlock", inputs: [], outputs: [] }],
-    }, "missing-emitter", options), /no emitter registered for block "MissingEmitterBlock"/);
+    assert.deepEqual(
+        await composeNodeMaterial(ordinary, "ordinary", options),
+        await composeNodeMaterial(ordinary, "ordinary"),
+    );
+    await assert.rejects(
+        () =>
+            composeNodeMaterial(
+                {
+                    blocks: [
+                        {
+                            id: 1,
+                            customType: "BABYLON.MissingEmitterBlock",
+                            inputs: [],
+                            outputs: [],
+                        },
+                    ],
+                },
+                "missing-emitter",
+                options,
+            ),
+        /no emitter registered for block "MissingEmitterBlock"/,
+    );
     const local = await composeNodeMaterial(graph, "scene149-local", {
         ...options,
-        geometryTasks: [{ index: 0, attachments: ["LOCAL_POSITION"], emitColor: false }],
+        geometryTasks: [
+            { index: 0, attachments: ["LOCAL_POSITION"], emitColor: false },
+        ],
     });
-    assert.deepEqual(local.geometryViews[0]!.attributes.map(({ name }) => name),
-        ["position", "normal", "uv"]);
-    await assert.rejects(() => composeNodeMaterial(graph, "scene149-color-refusal", {
-        ...options,
-        geometryTasks: [{ index: 0, attachments: ["ALBEDO"], emitColor: true }],
-    }), /refuses `emitColor`/);
-    await assert.rejects(() => composeNodeMaterial(ordinary, "conflicting-loaders", {
-        ...options,
-        blockEmitters: [{ className: "InputBlock", module: "material/node/blocks/input-block.js" }],
-    }), /cannot combine pinned and closed block loaders/);
+    assert.deepEqual(
+        local.geometryViews[0]!.attributes.map(({ name }) => name),
+        ["position", "normal", "uv"],
+    );
+    await assert.rejects(
+        () =>
+            composeNodeMaterial(graph, "scene149-color-refusal", {
+                ...options,
+                geometryTasks: [
+                    { index: 0, attachments: ["ALBEDO"], emitColor: true },
+                ],
+            }),
+        /refuses `emitColor`/,
+    );
+    await assert.rejects(
+        () =>
+            composeNodeMaterial(ordinary, "conflicting-loaders", {
+                ...options,
+                blockEmitters: [
+                    {
+                        className: "InputBlock",
+                        module: "material/node/blocks/input-block.js",
+                    },
+                ],
+            }),
+        /cannot combine pinned and closed block loaders/,
+    );
 });
 
-function compressedJsonHelpers(options: {
-    decoderExtra?: string;
-    restorerReturn?: string;
-} = {}): string {
+function compressedJsonHelpers(
+    options: {
+        decoderExtra?: string;
+        restorerReturn?: string;
+    } = {},
+): string {
     return `
         async function decodeCompressed(
             encoded: string,
@@ -201,10 +283,9 @@ test("restores and compiles Scene 83's exact closed emitter loader", () => {
         "9bf427136bf5482d5e1dc611788efedb24240351",
     );
 
-    const result = compileSource(
-        readFileSync(resolve(scene83), "utf8"),
-        { fileName: scene83 },
-    );
+    const result = compileSource(readFileSync(resolve(scene83), "utf8"), {
+        fileName: scene83,
+    });
     const material = result.manifest.nodeMaterials[0]!;
     assert.equal(material.kind, "module");
     assert.equal(material.blockEmitters?.length, 20);
@@ -223,10 +304,7 @@ test("restores and compiles Scene 83's exact closed emitter loader", () => {
         },
     ]);
     assert.deepEqual(material.textureNames, ["AoDepth", "PositionSample"]);
-    assert.match(
-        result.cpp,
-        /node_material_texture\("AoDepth", v_aoDepth\)/,
-    );
+    assert.match(result.cpp, /node_material_texture\("AoDepth", v_aoDepth\)/);
     assert.match(
         result.cpp,
         /node_material_texture\("PositionSample", v_positionTex\)/,
@@ -247,10 +325,9 @@ test("restores Scene 72's exact compressed graph, textures, and emitter loader",
         "f0d913a4d04733361c82d271f6a1e4eeb97e5e61",
     );
 
-    const result = compileSource(
-        readFileSync(resolve(scene72), "utf8"),
-        { fileName: scene72 },
-    );
+    const result = compileSource(readFileSync(resolve(scene72), "utf8"), {
+        fileName: scene72,
+    });
     const material = result.manifest.nodeMaterials[0]!;
     assert.equal(material.kind, "literal");
     assert.equal(material.graph.alphaMode, 2);
@@ -283,8 +360,14 @@ test("restores Scene 72's exact compressed graph, textures, and emitter loader",
             className: "FragmentOutputBlock",
             module: "material/node/blocks/fragment-output.js",
         },
-        { className: "InputBlock", module: "material/node/blocks/input-block.js" },
-        { className: "LerpBlock", module: "material/node/blocks/lerp-block.js" },
+        {
+            className: "InputBlock",
+            module: "material/node/blocks/input-block.js",
+        },
+        {
+            className: "LerpBlock",
+            module: "material/node/blocks/lerp-block.js",
+        },
         {
             className: "MultiplyBlock",
             module: "material/node/blocks/multiply-block.js",
@@ -305,7 +388,10 @@ test("restores Scene 72's exact compressed graph, textures, and emitter loader",
             className: "RefractionBlock",
             module: "material/node/blocks/refraction-block.js",
         },
-        { className: "SheenBlock", module: "material/node/blocks/sheen-block.js" },
+        {
+            className: "SheenBlock",
+            module: "material/node/blocks/sheen-block.js",
+        },
         {
             className: "SubSurfaceBlock",
             module: "material/node/blocks/subsurface-block.js",
@@ -363,9 +449,11 @@ test("restores Scene 72's exact compressed graph, textures, and emitter loader",
 test("rejects a compressed JSON decoder with an extra observable statement", () => {
     assert.throws(
         () =>
-            compileSource(compressedJsonHelpers({
-                decoderExtra: 'console.log("decoding", encoded);',
-            })),
+            compileSource(
+                compressedJsonHelpers({
+                    decoderExtra: 'console.log("decoding", encoded);',
+                }),
+            ),
         /Immediate promise then requires an inline callback/,
     );
 });
@@ -373,29 +461,28 @@ test("rejects a compressed JSON decoder with an extra observable statement", () 
 test("rejects a compressed JSON restorer that returns a different value", () => {
     assert.throws(
         () =>
-            compileSource(compressedJsonHelpers({
-                restorerReturn: "{ ...json }",
-            })),
+            compileSource(
+                compressedJsonHelpers({
+                    restorerReturn: "{ ...json }",
+                }),
+            ),
         /Immediate promise then requires an inline callback/,
     );
 });
 
 test("composes Scene 83 with only its supplied pinned emitters", async () => {
-    const compiled = compileSource(
-        readFileSync(resolve(scene83), "utf8"),
-        { fileName: scene83 },
-    ).manifest.nodeMaterials[0]!;
+    const compiled = compileSource(readFileSync(resolve(scene83), "utf8"), {
+        fileName: scene83,
+    }).manifest.nodeMaterials[0]!;
     assert.equal(compiled.kind, "module");
     assert.ok(compiled.blockEmitters);
     const graph = await executeModuleGraph({
         modulePath: resolve(scene83Graph),
         exportName: "SCENE83_NME_JSON",
     });
-    const composed = await composeNodeMaterial(
-        graph,
-        "scene83",
-        { blockEmitters: compiled.blockEmitters },
-    );
+    const composed = await composeNodeMaterial(graph, "scene83", {
+        blockEmitters: compiled.blockEmitters,
+    });
 
     // AoDepth is reached from the output graph. PositionSample is
     // disconnected, so upstream loads its emitter but declares no binding
@@ -415,11 +502,9 @@ test("composes Scene 83 with only its supplied pinned emitters", async () => {
     assert.equal(withoutDerivative.length, 19);
     await assert.rejects(
         () =>
-            composeNodeMaterial(
-                graph,
-                "scene83-without-derivative",
-                { blockEmitters: withoutDerivative },
-            ),
+            composeNodeMaterial(graph, "scene83-without-derivative", {
+                blockEmitters: withoutDerivative,
+            }),
         /custom block loader has no emitter for block "DerivativeBlock"/,
     );
 });
@@ -442,10 +527,7 @@ test("normalizes a solid node texture to the pinned 1x1 file contract", () => {
         shared,
         /data\.bytes\.assign\(\s*texture\.texel\.begin\(\),\s*texture\.texel\.end\(\)\);/,
     );
-    assert.match(
-        shared,
-        /data\.rgba_width = 1;\s*data\.rgba_height = 1;/,
-    );
+    assert.match(shared, /data\.rgba_width = 1;\s*data\.rgba_height = 1;/);
     assert.match(
         shared,
         /data\.sampler\.min_filter = TextureFilter::linear;\s*data\.sampler\.mag_filter = TextureFilter::linear;/,
@@ -466,10 +548,7 @@ test("normalizes a solid node texture to the pinned 1x1 file contract", () => {
         source,
         /const SolidTexture& texture\) \{\s*return node_material_texture\(\s*std::move\(name\),\s*retained_solid_texture\(texture\)\);/,
     );
-    assert.match(
-        source,
-        /normalized\.width = 1;\s*normalized\.height = 1;/,
-    );
+    assert.match(source, /normalized\.width = 1;\s*normalized\.height = 1;/);
     assert.doesNotMatch(source, /normalized\.data\.sampler\.min_filter/);
 });
 

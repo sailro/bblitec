@@ -20,7 +20,8 @@ inline bool ui_text_needs_emoji_normalization(std::string_view text) {
         }
         const auto point = Rml::StringUtilities::ToCharacter(cursor, end);
         if (point == Rml::Character(0xFE0E) || point == Rml::Character(0xFE0F) ||
-            ui_default_emoji_presentation(static_cast<char32_t>(point))) return true;
+            ui_default_emoji_presentation(static_cast<char32_t>(point)))
+            return true;
         cursor = Rml::StringUtilities::SeekForwardUTF8(cursor + 1, end);
     }
     return false;
@@ -35,10 +36,12 @@ inline std::string ui_normalize_emoji_presentation(std::string markup) {
     char quote = 0;
     for (std::size_t offset = 0; offset < markup.size();) {
         const char current = markup[offset];
-        if (current == '<' && !in_tag) in_tag = true;
+        if (current == '<' && !in_tag)
+            in_tag = true;
         if (in_tag) {
             if (quote) {
-                if (current == quote) quote = 0;
+                if (current == quote)
+                    quote = 0;
             } else if (current == '\'' || current == '"') {
                 quote = current;
             } else if (current == '>') {
@@ -62,24 +65,29 @@ inline std::string ui_normalize_emoji_presentation(std::string markup) {
             Rml::StringUtilities::SeekForwardUTF8(begin + 1, end) - markup.data());
         const bool text_selector = source.substr(next, 3) == "\xEF\xB8\x8E";
         const bool emoji_selector = source.substr(next, 3) == "\xEF\xB8\x8F";
-        const bool emoji = emoji_selector ||
+        const bool emoji =
+            emoji_selector ||
             (!text_selector && ui_default_emoji_presentation(static_cast<char32_t>(point)));
         if (emoji || text_selector) {
-            constexpr std::string_view open = "<span style=\"font-family:bbl-emoji;line-height:0;\">";
+            constexpr std::string_view open =
+                "<span style=\"font-family:bbl-emoji;line-height:0;\">";
             constexpr std::string_view close = "</span>";
             if (!modified) {
                 result.reserve(markup.size() + open.size() + close.size());
                 modified = true;
             }
             result.append(source.substr(copied_until, offset - copied_until));
-            if (emoji) result += open;
+            if (emoji)
+                result += open;
             result.append(source.substr(offset, next - offset));
-            if (emoji) result += close;
+            if (emoji)
+                result += close;
             copied_until = next + (text_selector || emoji_selector ? 3 : 0);
         }
         offset = next + (text_selector || emoji_selector ? 3 : 0);
     }
-    if (!modified) return markup;
+    if (!modified)
+        return markup;
     result.append(source.substr(copied_until));
     return result;
 }

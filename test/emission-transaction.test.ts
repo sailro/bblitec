@@ -3,26 +3,44 @@ import test from "node:test";
 import ts from "typescript";
 import { compileSource } from "../src/compiler.js";
 import { DataLowerer } from "../src/compiler/data-lowering.js";
-import { emissionArray, EmissionMap, EmissionSet, EmissionTransaction, EmissionWeakMap, EmissionWeakSet } from "../src/compiler/emission-transaction.js";
+import {
+    emissionArray,
+    EmissionMap,
+    EmissionSet,
+    EmissionTransaction,
+    EmissionWeakMap,
+    EmissionWeakSet,
+} from "../src/compiler/emission-transaction.js";
 
 test("declined emission restores object graphs and shared identities in place", () => {
     const symbol = Symbol("nested");
-    const row = { count: 1 }, key = {};
-    const state = { next: 2, body: ["before"], rows: new Map([[key, row]]), marks: new Set([key]),
-        bytes: new Uint8Array([1, 2]), [symbol]: { enabled: true } };
-    const alias = state.rows, rowAlias = row;
-    new EmissionTransaction(state).run(() => {
-        state.next = 99;
-        state.body.push("declined");
-        state.rows.delete(key);
-        state.rows.set({}, { count: 8 });
-        row.count = 7;
-        state.marks.clear();
-        state.bytes[0] = 9;
-        state[symbol].enabled = false;
-        Object.assign(state, { leaked: true });
-        return undefined;
-    }, value => value !== undefined);
+    const row = { count: 1 },
+        key = {};
+    const state = {
+        next: 2,
+        body: ["before"],
+        rows: new Map([[key, row]]),
+        marks: new Set([key]),
+        bytes: new Uint8Array([1, 2]),
+        [symbol]: { enabled: true },
+    };
+    const alias = state.rows,
+        rowAlias = row;
+    new EmissionTransaction(state).run(
+        () => {
+            state.next = 99;
+            state.body.push("declined");
+            state.rows.delete(key);
+            state.rows.set({}, { count: 8 });
+            row.count = 7;
+            state.marks.clear();
+            state.bytes[0] = 9;
+            state[symbol].enabled = false;
+            Object.assign(state, { leaked: true });
+            return undefined;
+        },
+        (value) => value !== undefined,
+    );
     assert.equal(state.next, 2);
     assert.deepEqual(state.body, ["before"]);
     assert.equal(state.rows, alias);
@@ -38,35 +56,58 @@ test("nested commits remain reversible by their enclosing probe", () => {
     const state = { values: [1] };
     new EmissionTransaction(state).run(() => {
         state.values.push(2);
-        new EmissionTransaction(state).run(() => { state.values.push(3); return true; }, Boolean);
+        new EmissionTransaction(state).run(() => {
+            state.values.push(3);
+            return true;
+        }, Boolean);
         assert.deepEqual(state.values, [1, 2, 3]);
-        new EmissionTransaction(state).run(() => { state.values.length = 0; return false; }, Boolean);
+        new EmissionTransaction(state).run(() => {
+            state.values.length = 0;
+            return false;
+        }, Boolean);
         assert.deepEqual(state.values, [1, 2, 3]);
         return false;
     }, Boolean);
     assert.deepEqual(state.values, [1]);
-    new EmissionTransaction(state).run(() => { state.values.push(4); return true; }, Boolean);
+    new EmissionTransaction(state).run(() => {
+        state.values.push(4);
+        return true;
+    }, Boolean);
     assert.deepEqual(state.values, [1, 4]);
 });
 
 test("throwing probes and answer predicates restore state and release the transaction", () => {
     const state = { next: 0 };
-    assert.throws(() => new EmissionTransaction(state).run(() => {
-        state.next++;
-        throw new Error("probe");
-    }, Boolean), /probe/);
+    assert.throws(
+        () =>
+            new EmissionTransaction(state).run(() => {
+                state.next++;
+                throw new Error("probe");
+            }, Boolean),
+        /probe/,
+    );
     assert.equal(state.next, 0);
-    assert.throws(() => new EmissionTransaction(state).run(() => ++state.next, () => {
-        throw new Error("answer");
-    }), /answer/);
+    assert.throws(
+        () =>
+            new EmissionTransaction(state).run(
+                () => ++state.next,
+                () => {
+                    throw new Error("answer");
+                },
+            ),
+        /answer/,
+    );
     assert.equal(state.next, 0);
     new EmissionTransaction(state).run(() => ++state.next, Boolean);
     assert.equal(state.next, 1);
 });
 
 test("weak entries and mutations of cached values participate in nested transactions", () => {
-    const key = {}, added = {}, value = { count: 1 };
-    const map = new EmissionWeakMap([[key, value]]), set = new EmissionWeakSet([key]);
+    const key = {},
+        added = {},
+        value = { count: 1 };
+    const map = new EmissionWeakMap([[key, value]]),
+        set = new EmissionWeakSet([key]);
     new EmissionTransaction({}).run(() => {
         map.get(key)!.count++;
         map.set(added, { count: 3 });
@@ -88,8 +129,12 @@ test("weak entries and mutations of cached values participate in nested transact
 });
 
 test("strong collection rollback preserves iteration order and aliased values", () => {
-    const first = { count: 1 }, second = { count: 2 };
-    const map = new EmissionMap([["first", first], ["second", second]]);
+    const first = { count: 1 },
+        second = { count: 2 };
+    const map = new EmissionMap([
+        ["first", first],
+        ["second", second],
+    ]);
     const set = new EmissionSet([first, second]);
     new EmissionTransaction({ map, set }).run(() => {
         map.delete("first");
@@ -104,7 +149,11 @@ test("strong collection rollback preserves iteration order and aliased values", 
     assert.deepEqual([...set], [first, second]);
     assert.equal(second.count, 2);
     new EmissionTransaction({ map, set }).run(() => {
-        new EmissionTransaction({}).run(() => { map.clear(); set.clear(); return true; }, Boolean);
+        new EmissionTransaction({}).run(() => {
+            map.clear();
+            set.clear();
+            return true;
+        }, Boolean);
         return false;
     }, Boolean);
     assert.deepEqual([...map.keys()], ["first", "second"]);
@@ -112,7 +161,8 @@ test("strong collection rollback preserves iteration order and aliased values", 
 });
 
 test("array journals restore overwritten slots, holes, truncation and nested writes", () => {
-    const entry = { count: 1 }, entries = emissionArray([entry]);
+    const entry = { count: 1 },
+        entries = emissionArray([entry]);
     entries.length = 3;
     const expected = entries.slice();
     new EmissionTransaction({ entries }).run(() => {
@@ -134,7 +184,8 @@ test("array journals restore overwritten slots, holes, truncation and nested wri
 });
 
 test("binding an existing value inside a probe captures later writes through that alias", () => {
-    const value = { count: 1 }, cache = new EmissionMap([["existing", value]]);
+    const value = { count: 1 },
+        cache = new EmissionMap([["existing", value]]);
     new EmissionTransaction({ cache }).run(() => {
         const locals = new EmissionMap<string, { value: typeof value }>();
         locals.set("parameter", { value });
@@ -145,7 +196,12 @@ test("binding an existing value inside a probe captures later writes through tha
 });
 
 test("checker-owned inputs retain their caches while compiler state rolls back", () => {
-    const source = ts.createSourceFile("input.ts", "const x = 1;", ts.ScriptTarget.Latest, true);
+    const source = ts.createSourceFile(
+        "input.ts",
+        "const x = 1;",
+        ts.ScriptTarget.Latest,
+        true,
+    );
     const external = { cached: false };
     const state = { source, external, compiled: false };
     new EmissionTransaction(state, [external]).run(() => {
@@ -168,14 +224,23 @@ test("a declined resource-producing probe leaves generated code and composition 
         if (total !== 3) throw new Error("Unexpected sum");
     `;
     const expected = compileSource(source);
+    // eslint-disable-next-line @typescript-eslint/unbound-method -- Saved for .call(this, ...) and exact restoration.
     const original = DataLowerer.prototype.compileDataPath;
     let injected = false;
     DataLowerer.prototype.compileDataPath = function (expression, mode) {
-        if (!injected && ts.isIdentifier(expression) && expression.text === "values" &&
-            this.context.lookupOptional(expression)?.kind === "data") {
+        if (
+            !injected &&
+            ts.isIdentifier(expression) &&
+            expression.text === "values" &&
+            this.context.lookupOptional(expression)?.kind === "data"
+        ) {
             injected = true;
-            const declaration = this.context.sourceFile.statements.find(ts.isFunctionDeclaration);
-            const returned = declaration?.body?.statements.find(ts.isReturnStatement)?.expression;
+            const declaration = this.context.sourceFile.statements.find(
+                ts.isFunctionDeclaration,
+            );
+            const returned = declaration?.body?.statements.find(
+                ts.isReturnStatement,
+            )?.expression;
             assert.ok(returned);
             this.context.probeEmission(() => {
                 this.context.compileValue(returned);

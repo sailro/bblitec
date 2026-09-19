@@ -3,20 +3,37 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import test from "node:test";
-import { optionalNativeFixtureTools, runNativeFixtureCompiler } from "./native-fixture.js";
+import {
+    optionalNativeFixtureTools,
+    runNativeFixtureCompiler,
+} from "./native-fixture.js";
+import { jsonNumbers, jsonObject, jsonRecords } from "./json.js";
 
 const nativeTools = optionalNativeFixtureTools(false);
-test("temporal capture observes distinct clean/drawn storage and private state without executing writers", { skip: !nativeTools }, () => {
-    const directory = resolve("artifacts/temporal-capture-check");
-    mkdirSync(directory, { recursive: true });
-    const capture = readFileSync("native/src/pal_render_capture.hpp", "utf8").replaceAll("\r\n", "\n");
-    const writerStart = capture.indexOf("class JsonWriter {");
-    const writerEnd = capture.indexOf("\n};", writerStart) + 3;
-    const taskStart = capture.indexOf("inline void write_temporal_tasks(");
-    const taskEnd = capture.indexOf("\n}\n", taskStart) + 3;
-    assert(writerStart >= 0 && writerEnd > writerStart && taskStart >= 0 && taskEnd > taskStart);
-    const source = join(directory, "check.cpp");
-    writeFileSync(source, `#include <bblite/runtime.hpp>
+test(
+    "temporal capture observes distinct clean/drawn storage and private state without executing writers",
+    { skip: !nativeTools },
+    () => {
+        const directory = resolve("artifacts/temporal-capture-check");
+        mkdirSync(directory, { recursive: true });
+        const capture = readFileSync(
+            "native/src/pal_render_capture.hpp",
+            "utf8",
+        ).replaceAll("\r\n", "\n");
+        const writerStart = capture.indexOf("class JsonWriter {");
+        const writerEnd = capture.indexOf("\n};", writerStart) + 3;
+        const taskStart = capture.indexOf("inline void write_temporal_tasks(");
+        const taskEnd = capture.indexOf("\n}\n", taskStart) + 3;
+        assert(
+            writerStart >= 0 &&
+                writerEnd > writerStart &&
+                taskStart >= 0 &&
+                taskEnd > taskStart,
+        );
+        const source = join(directory, "check.cpp");
+        writeFileSync(
+            source,
+            `#include <bblite/runtime.hpp>
 #include <cassert>
 #include <bit>
 #include <cmath>
@@ -55,25 +72,51 @@ int main() {
     assert(source.scene_uniforms->cache.camera_key == 17 && composite.taa->execution_count == 161);
     assert(composite.taa->factor == .05 && composite.passes[0].params[0] == 1);
 }
-`);
-    const executable = join(directory, "check.exe");
-    runNativeFixtureCompiler(nativeTools!, ["/nologo", "/std:c++20", "/W4", "/WX", "/EHsc", "/MD",
-        "/I", "native/include", `/Fo:${directory}\\`, `/Fe:${executable}`, source]);
-    const records = JSON.parse(execFileSync(executable, { encoding: "utf8" }));
-    assert.equal(records.length, 2);
-    assert.equal(records[0].taskIndex, 1);
-    assert.deepEqual(records[0].clean.map(Math.fround), [1, Math.fround(.1), -0]);
-    assert.deepEqual(records[0].drawn.map(Math.fround), [2, Math.fround(.2), -0]);
-    const words = (values: number[]) => Array.from(new Uint32Array(new Float32Array(values).buffer));
-    assert.deepEqual(records[0].cleanWords, words([1, .1, -0]));
-    assert.deepEqual(records[0].drawnWords, words([2, .2, -0]));
-    assert.equal(records[0].cache.cameraKey, 17);
-    assert.equal(records[1].taskIndex, 2);
-    assert.equal(records[1].executions, 161);
-    assert.equal(records[1].factor, .05);
-    assert.equal(records[1].blendFactor, 1);
-    assert.equal(records[1].haltonIndex, 2);
-    assert.deepEqual(records[1].haltonWords, words([.5, .25]));
-    assert.deepEqual(records[1].jitterScratchWords, Array(16).fill(0));
-    assert.deepEqual(records[1].sourceTasks, [1]);
-});
+`,
+        );
+        const executable = join(directory, "check.exe");
+        runNativeFixtureCompiler(nativeTools!, [
+            "/nologo",
+            "/std:c++20",
+            "/W4",
+            "/WX",
+            "/EHsc",
+            "/MD",
+            "/I",
+            "native/include",
+            `/Fo:${directory}\\`,
+            `/Fe:${executable}`,
+            source,
+        ]);
+        const records = jsonRecords(
+            JSON.parse(execFileSync(executable, { encoding: "utf8" })),
+        );
+        assert.equal(records.length, 2);
+        const first = records[0]!,
+            second = records[1]!;
+        assert.equal(first.taskIndex, 1);
+        assert.deepEqual(jsonNumbers(first.clean).map(Math.fround), [
+            1,
+            Math.fround(0.1),
+            -0,
+        ]);
+        assert.deepEqual(jsonNumbers(first.drawn).map(Math.fround), [
+            2,
+            Math.fround(0.2),
+            -0,
+        ]);
+        const words = (values: number[]) =>
+            Array.from(new Uint32Array(new Float32Array(values).buffer));
+        assert.deepEqual(first.cleanWords, words([1, 0.1, -0]));
+        assert.deepEqual(first.drawnWords, words([2, 0.2, -0]));
+        assert.equal(jsonObject(first.cache).cameraKey, 17);
+        assert.equal(second.taskIndex, 2);
+        assert.equal(second.executions, 161);
+        assert.equal(second.factor, 0.05);
+        assert.equal(second.blendFactor, 1);
+        assert.equal(second.haltonIndex, 2);
+        assert.deepEqual(second.haltonWords, words([0.5, 0.25]));
+        assert.deepEqual(second.jitterScratchWords, Array(16).fill(0));
+        assert.deepEqual(second.sourceTasks, [1]);
+    },
+);

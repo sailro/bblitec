@@ -6,11 +6,16 @@ import test from "node:test";
 import { runInNewContext } from "node:vm";
 import ts from "typescript";
 import { compileSource } from "../src/compiler.js";
-import { optionalNativeFixtureTools, runNativeFixtureCompiler } from "./native-fixture.js";
+import {
+    optionalNativeFixtureTools,
+    runNativeFixtureCompiler,
+} from "./native-fixture.js";
 
 const native = optionalNativeFixtureTools(false);
 
-check("optional string unions widen through chained lazy fallbacks without losing absence", `
+check(
+    "optional string unions widen through chained lazy fallbacks without losing absence",
+    `
     type Mode="quiet"|"balanced"|"vivid";
     type Choice=Mode|"custom"|"";
     let automatic:Mode|undefined;
@@ -24,9 +29,12 @@ check("optional string unions widen through chained lazy fallbacks without losin
     if(select("custom")!=="custom"||select("")!==""||calls!==2)throw new Error("lazy optional fallback");
     automatic=undefined;
     if(select(null)!=="balanced"||text()!==undefined||calls!==3)throw new Error("cleared optional");
-`);
+`,
+);
 
-check("pop and shift consume temporary arrays once and preserve shared receivers", `
+check(
+    "pop and shift consume temporary arrays once and preserve shared receivers",
+    `
     const texts:string[]=["a,b,c"];
     let calls=0;
     function source():string {calls++;return texts[0]!;}
@@ -36,9 +44,12 @@ check("pop and shift consume temporary arrays once and preserve shared receivers
     const alias=values;
     if(values.pop()!=="last"||alias.length!==2||alias.shift()!=="first"||values[0]!=="middle")
         throw new Error("shared receiver mutations");
-`);
+`,
+);
 
-check("array find adapts retained elements to the selected result storage", `
+check(
+    "array find adapts retained elements to the selected result storage",
+    `
     const names=["left","right"] as const;
     const weights:Record<typeof names[number],number>={left:1,right:2};
     function selected(weight:number) {return names.find(name=>weights[name]===weight);}
@@ -53,9 +64,12 @@ check("array find adapts retained elements to the selected result storage", `
     if(!found||found!==rows[1])throw new Error("found record identity");
     found.value=7;
     if(rows[1]!.value!==7)throw new Error("found record alias");
-`);
+`,
+);
 
-check("generic recursive returns preserve synchronous type parameters", `
+check(
+    "generic recursive returns preserve synchronous type parameters",
+    `
     function retain<T>(value:T,depth:number):T {return depth>0?retain(value,depth-1):value;}
     if(retain(3,2)!==3 || retain("value",2)!=="value") throw new Error("generic scalar");
     const source:number[]=[1,2];
@@ -65,17 +79,24 @@ check("generic recursive returns preserve synchronous type parameters", `
     const row=rows[0]!;
     const record=retain(row,2);record.size=4;
     if(row.size!==4) throw new Error("generic record alias");
-`);
+`,
+);
 
 test("generic recursive records refuse an unowned alias boundary", () => {
-    assert.throws(() => compileSource(`
+    assert.throws(
+        () =>
+            compileSource(`
         function retain<T>(value:T,depth:number):T {return depth>0?retain(value,depth-1):value;}
         const source={size:1};const result=retain(source,2);result.size=4;
         if(source.size!==4)throw new Error("alias");
-    `), /Generic recursive record returns require owned object storage/);
+    `),
+        /Generic recursive record returns require owned object storage/,
+    );
 });
 
-check("collection queries accept strings outside a stored literal union", `
+check(
+    "collection queries accept strings outside a stored literal union",
+    `
     type Key="first"|"second";
     type Query=Key|"outside";
     const set=new Set<Key>(["first","second"]);
@@ -104,30 +125,54 @@ check("collection queries accept strings outside a stored literal union", `
     if(values.lastIndexOf("outside" as Key,from())!==-1||fromReads!==1)throw new Error("missing query still evaluates fromIndex");
     const records:Array<{size:number}>=[{size:1}];
     if(records.indexOf(records[0]!)!==0||records.indexOf(records[4]!)!==-1)throw new Error("record query identity and absence");
-`);
+`,
+);
 
 function check(name: string, source: string): void {
-    test(name, async t => {
-        runInNewContext(ts.transpileModule(source, {
-            compilerOptions: { target: ts.ScriptTarget.ESNext, module: ts.ModuleKind.None },
-        }).outputText);
+    test(name, async (t) => {
+        runInNewContext(
+            ts.transpileModule(source, {
+                compilerOptions: {
+                    target: ts.ScriptTarget.ESNext,
+                    module: ts.ModuleKind.None,
+                },
+            }).outputText,
+        );
         const result = compileSource(source, { fileName: `${name}.ts` });
-        await t.test("generated C++ executes the same assertions", { skip: !native }, () => {
-            const directory = resolve("artifacts/core-library", name);
-            mkdirSync(directory, { recursive: true });
-            const cpp = join(directory, "check.cpp");
-            const exe = join(directory, "check.exe");
-            writeFileSync(cpp, result.cpp);
-            runNativeFixtureCompiler(native!, [
-                "/nologo", "/std:c++20", "/W4", "/WX", "/permissive-", "/EHsc", "/MD", "/fp:precise", "/utf-8",
-                "/I", "native/include", `/Fo:${directory}/`, `/Fe:${exe}`, cpp,
-            ]);
-            execFileSync(exe, { stdio: "pipe" });
-        });
+        await t.test(
+            "generated C++ executes the same assertions",
+            { skip: !native },
+            () => {
+                const directory = resolve("artifacts/core-library", name);
+                mkdirSync(directory, { recursive: true });
+                const cpp = join(directory, "check.cpp");
+                const exe = join(directory, "check.exe");
+                writeFileSync(cpp, result.cpp);
+                runNativeFixtureCompiler(native!, [
+                    "/nologo",
+                    "/std:c++20",
+                    "/W4",
+                    "/WX",
+                    "/permissive-",
+                    "/EHsc",
+                    "/MD",
+                    "/fp:precise",
+                    "/utf-8",
+                    "/I",
+                    "native/include",
+                    `/Fo:${directory}/`,
+                    `/Fe:${exe}`,
+                    cpp,
+                ]);
+                execFileSync(exe, { stdio: "pipe" });
+            },
+        );
     });
 }
 
-check("regexp-match-results", `
+check(
+    "regexp-match-results",
+    `
     const global = /([a-z]+)([0-9]+)/g;
     const alias = global;
     global.lastIndex = 20;
@@ -153,9 +198,12 @@ check("regexp-match-results", `
     const units = '😀'.match(/./g);
     if(!units || units.length !== 2 || units[0]!.charCodeAt(0) !== 0xd83d || units[1]!.charCodeAt(0) !== 0xde00)
         throw new Error('global matches preserve UTF16 captures');
-`);
+`,
+);
 
-check("regexp-replacement-callbacks", `
+check(
+    "regexp-replacement-callbacks",
+    `
     function edit(text:string):string {
         return text.replace(/([a-z]+)([0-9]+)/g, (match:string, word:string, digits:string, offset:number, original:string) => {
             if(original !== text || match !== word+digits) throw new Error('callback arguments');
@@ -243,9 +291,12 @@ check("regexp-replacement-callbacks", `
     const sharedAlias = shared;
     if(!shared.test('😀') || sharedAlias.lastIndex !== 1 || !sharedAlias.test('😀') || shared.lastIndex !== 2 || shared.test('😀'))
         throw new Error('exec shares UTF16 state');
-`);
+`,
+);
 
-check("math-and-number", `
+check(
+    "math-and-number",
+    `
     function verify(x: number): void {
         if (Math.abs(Math.acos(x) - 1.0471975511965979) > 1e-14) throw new Error("acos");
         if (Math.abs(Math.asin(x) - 0.5235987755982989) > 1e-14) throw new Error("asin");
@@ -273,9 +324,12 @@ check("math-and-number", `
     }
     optional(2);
     optional(undefined);
-`);
+`,
+);
 
-check("array-values", `
+check(
+    "array-values",
+    `
     function verify(xs: number[]): void {
         if (xs.at(-1) !== 3 || xs.at(-4) !== 1 || xs.at(4) !== undefined) throw new Error("at");
         if (xs.at(NaN) !== 1 || xs.at(-Infinity) !== undefined) throw new Error("at bounds");
@@ -294,16 +348,21 @@ check("array-values", `
     }
     const input: number[] = [1, 2, 2, 3];
     verify(input);
-`);
+`,
+);
 
 test("library globals respect local bindings", () => {
-    assert.doesNotThrow(() => compileSource(`
+    assert.doesNotThrow(() =>
+        compileSource(`
         const Number = { isInteger: (value: number) => value > 10, EPSILON: 2 };
         if (Number.isInteger(Number.EPSILON)) throw new Error("shadow");
-    `));
+    `),
+    );
 });
 
-check("string-values", `
+check(
+    "string-values",
+    `
     function verify(s: string): void {
         if (s.replace("a", "z") !== "zbaba" || s.replaceAll("a", "z") !== "zbzbz") throw new Error("replace");
         if (s.replaceAll("", "-") !== "-a-b-a-b-a-") throw new Error("empty pattern");
@@ -338,9 +397,12 @@ check("string-values", `
         if (String.fromCharCode(55357, 56832) !== s || String.fromCharCode(233).codePointAt(0) !== 233) throw new Error("constructed Unicode");
     }
     surrogates("😀");
-`);
+`,
+);
 
-check("collections-and-array-factories", `
+check(
+    "collections-and-array-factories",
+    `
     const map = new Map<string, number>([["a", 1], ["b", 2], ["a", 3]]);
     if (map.size !== 2 || map.get("a") !== 3) throw new Error("map initialization");
     const seen: string[] = [];
@@ -371,9 +433,12 @@ check("collections-and-array-factories", `
     const objects = new Map<string, { value: number }>([["a", object]]);
     objects.forEach(value => { value.value += 1; });
     if (object.value !== 2) throw new Error("Map retains object identity");
-`);
+`,
+);
 
-check("flat-map", `
+check(
+    "flat-map",
+    `
     const input: number[] = [1, 2, 3];
     const result = input.flatMap((value, index, source) => {
         if (index === 0) source.push(4);
@@ -393,9 +458,12 @@ check("flat-map", `
         return [value];
     });
     if (oldValues.join() !== "1,2") throw new Error("flatMap value snapshot");
-`);
+`,
+);
 
-check("library-evaluation-order", `
+check(
+    "library-evaluation-order",
+    `
     let calls = 0;
     function next(): number { calls += 1; return calls; }
     const ordered = Array.of(next(), next());
@@ -420,14 +488,22 @@ check("library-evaluation-order", `
     const retained = objects.splice(0, 1);
     retained[0].value = 3;
     if (object.value !== 3 || objects.length !== 0) throw new Error("removed object identity");
-`);
+`,
+);
 
 test("unsupported library overloads refuse explicitly", () => {
     for (const [source, message] of [
         ["const xs: number[] = []; xs.at(1, 2);", /Array.at expects/],
         ["const xs = new Map<string, number>([42]);", /key\/value pairs/],
-        ["const xs = new Set<number>(); xs.forEach(() => {}, {});", /no thisArg/],
+        [
+            "const xs = new Set<number>(); xs.forEach(() => {}, {});",
+            /no thisArg/,
+        ],
         ['"x".replaceAll(/x/g, "y");', /requires a string pattern/],
-        ["Array.from({ length: 2, 0: 9 }, (_, i) => i);", /additional properties/],
-    ] as const) assert.throws(() => compileSource(source), message);
+        [
+            "Array.from({ length: 2, 0: 9 }, (_, i) => i);",
+            /additional properties/,
+        ],
+    ] as const)
+        assert.throws(() => compileSource(source), message);
 });

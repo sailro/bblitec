@@ -13,50 +13,153 @@ import { importPinnedModuleFetching } from "../src/pinned-shader-composer.js";
 import { babylonRenderableCount } from "../src/pinned-standard-variants.js";
 import { packageBabylonMeshWalks } from "../src/babylon-mesh-walks.js";
 import { GLTF_MESH_WALKS, type JsonObject } from "../src/gltf-document.js";
-import { cppFunction, nativeFixtureVcpkgRoot, optionalNativeFixtureTools, runNativeFixtureCompiler } from "./native-fixture.js";
+import {
+    cppFunction,
+    nativeFixtureVcpkgRoot,
+    optionalNativeFixtureTools,
+    runNativeFixtureCompiler,
+} from "./native-fixture.js";
 import { doctoredContext } from "./doctored-store.js";
 
-test("the complete Babylon loader preserves parent chains, split meshes and root traversal", async t => {
+test("the complete Babylon loader preserves parent chains, split meshes and root traversal", async (t) => {
     const native = optionalNativeFixtureTools();
-    if (!native) { t.skip("Native fixture compiler unavailable."); return; }
-    const geometry = { positions: [0, 0, 0, 1, 0, 0, 0, 1, 0], normals: [0, 0, 1, 0, 0, 1, 0, 0, 1], indices: [0, 1, 2, 0, 2, 1] };
-    const mesh = (id: string, properties: object = {}) => ({ id, name: id, ...geometry, ...properties });
-    const document = { meshes: [
-        mesh("leaf", { parentId: "mid", position: [1, 2, 3], rotation: [.1, -.2, .3] }),
-        mesh("split", { position: [-2, 0, 0], subMeshes: [0, 1].map(materialIndex => ({ materialIndex, indexStart: materialIndex * 3, indexCount: 3 })) }),
-        mesh("split-child", { parentId: "split", position: [0, 4, 0] }),
-        { id: "mid", name: "mid", parentId: "root", rotation: [.2, .3, .4], scaling: [-1, 2, .5] },
-        mesh("root", { position: [2, 3, 4], localMatrix: [2, 0, 0, 0, 0, -3, 0, 0, 0, 0, .5, 0, 4, 5, 6, 1] }),
-        mesh("orphan", { parentId: "missing", position: [0, 0, 7], isVisible: null }),
-        mesh("hidden", { isVisible: false }),
-        mesh("visible-child", { parentId: "hidden" }),
-        { id: "container-root", name: "container-root", position: [9, 0, 0] },
-        mesh("nested", { parentId: "container-root", position: [0, 5, 0] }),
-        { id: "empty-container", name: "empty-container" },
-        mesh("empty-submeshes", { subMeshes: [] }),
-        mesh("empty-parent-child", { parentId: "empty-submeshes" }),
-    ] };
-    interface PinNode { name: string; worldMatrix: Float32Array; children: PinNode[]; _gpu?: object; _cpuPositions?: Float32Array; _cpuNormals?: Float32Array }
+    if (!native) {
+        t.skip("Native fixture compiler unavailable.");
+        return;
+    }
+    const geometry = {
+        positions: [0, 0, 0, 1, 0, 0, 0, 1, 0],
+        normals: [0, 0, 1, 0, 0, 1, 0, 0, 1],
+        indices: [0, 1, 2, 0, 2, 1],
+    };
+    const mesh = (id: string, properties: object = {}) => ({
+        id,
+        name: id,
+        ...geometry,
+        ...properties,
+    });
+    const document = {
+        meshes: [
+            mesh("leaf", {
+                parentId: "mid",
+                position: [1, 2, 3],
+                rotation: [0.1, -0.2, 0.3],
+            }),
+            mesh("split", {
+                position: [-2, 0, 0],
+                subMeshes: [0, 1].map((materialIndex) => ({
+                    materialIndex,
+                    indexStart: materialIndex * 3,
+                    indexCount: 3,
+                })),
+            }),
+            mesh("split-child", { parentId: "split", position: [0, 4, 0] }),
+            {
+                id: "mid",
+                name: "mid",
+                parentId: "root",
+                rotation: [0.2, 0.3, 0.4],
+                scaling: [-1, 2, 0.5],
+            },
+            mesh("root", {
+                position: [2, 3, 4],
+                localMatrix: [
+                    2, 0, 0, 0, 0, -3, 0, 0, 0, 0, 0.5, 0, 4, 5, 6, 1,
+                ],
+            }),
+            mesh("orphan", {
+                parentId: "missing",
+                position: [0, 0, 7],
+                isVisible: null,
+            }),
+            mesh("hidden", { isVisible: false }),
+            mesh("visible-child", { parentId: "hidden" }),
+            {
+                id: "container-root",
+                name: "container-root",
+                position: [9, 0, 0],
+            },
+            mesh("nested", { parentId: "container-root", position: [0, 5, 0] }),
+            { id: "empty-container", name: "empty-container" },
+            mesh("empty-submeshes", { subMeshes: [] }),
+            mesh("empty-parent-child", { parentId: "empty-submeshes" }),
+        ],
+    };
+    interface PinNode {
+        name: string;
+        worldMatrix: Float32Array;
+        children: PinNode[];
+        _gpu?: object;
+        _cpuPositions?: Float32Array;
+        _cpuNormals?: Float32Array;
+    }
     const imported = await importPinnedModuleFetching<{
-        loadBabylon(engine: object, url: string, options: object): Promise<{ entities: PinNode[] }>;
-    }>("loader-babylon/load-babylon.js", () => Buffer.from(JSON.stringify(document)));
-    const expected: Array<{ name: string; world: number[]; positions: number[]; normals: number[] }> = [];
+        loadBabylon(
+            engine: object,
+            url: string,
+            options: object,
+        ): Promise<{ entities: PinNode[] }>;
+    }>("loader-babylon/load-babylon.js", () =>
+        Buffer.from(JSON.stringify(document)),
+    );
+    const expected: Array<{
+        name: string;
+        world: number[];
+        positions: number[];
+        normals: number[];
+    }> = [];
     try {
-        const loaded = await imported.module.loadBabylon({ _device: { createBuffer({ size }: { size: number }) {
-            const bytes = new ArrayBuffer(size); return { getMappedRange: () => bytes, unmap() {} };
-        } } }, "https://fixture/hierarchy.babylon", { loadTextures: false });
+        const loaded = await imported.module.loadBabylon(
+            {
+                _device: {
+                    createBuffer({ size }: { size: number }) {
+                        const bytes = new ArrayBuffer(size);
+                        return { getMappedRange: () => bytes, unmap() {} };
+                    },
+                },
+            },
+            "https://fixture/hierarchy.babylon",
+            { loadTextures: false },
+        );
         const walk = (node: PinNode): void => {
-            if (node._gpu) expected.push({ name: node.name, world: [...node.worldMatrix], positions: [...node._cpuPositions!], normals: [...node._cpuNormals!] });
+            if (node._gpu)
+                expected.push({
+                    name: node.name,
+                    world: [...node.worldMatrix],
+                    positions: [...node._cpuPositions!],
+                    normals: [...node._cpuNormals!],
+                });
             for (const child of node.children) walk(child);
         };
         loaded.entities.forEach(walk);
-        assert.deepEqual(expected.map(mesh => mesh.name), ["split_sub0", "split-child", "split_sub1", "root", "leaf", "orphan", "visible-child", "empty-parent-child", "nested"]);
-        assert.equal(babylonRenderableCount(JSON.stringify(document)), expected.length);
-    } finally { imported.release(); }
+        assert.deepEqual(
+            expected.map((mesh) => mesh.name),
+            [
+                "split_sub0",
+                "split-child",
+                "split_sub1",
+                "root",
+                "leaf",
+                "orphan",
+                "visible-child",
+                "empty-parent-child",
+                "nested",
+            ],
+        );
+        assert.equal(
+            babylonRenderableCount(JSON.stringify(document)),
+            expected.length,
+        );
+    } finally {
+        imported.release();
+    }
     const packed: JsonObject = structuredClone(document);
     await packageBabylonMeshWalks(packed, [
         { kind: "preorder" },
-        { kind: "source", parameter: "container", body: `{
+        {
+            kind: "source",
+            parameter: "container",
+            body: `{
             const pending = [...container.entities], meshes = [];
             while (pending.length) {
                 const node = pending.shift();
@@ -64,8 +167,12 @@ test("the complete Babylon loader preserves parent chains, split meshes and root
                 if (node.children) pending.push(...node.children);
             }
             return meshes;
-        }` },
-        { kind: "source", parameter: "container", body: `{
+        }`,
+        },
+        {
+            kind: "source",
+            parameter: "container",
+            body: `{
             const pending = [...container.entities], meshes = [];
             while (pending.length) {
                 const node = pending.pop();
@@ -73,27 +180,53 @@ test("the complete Babylon loader preserves parent chains, split meshes and root
                 if (node.children) pending.push(...node.children);
             }
             return meshes;
-        }` },
+        }`,
+        },
     ]);
     const walks = packed[GLTF_MESH_WALKS] as number[][];
-    assert.deepEqual(walks[0], expected.map((_mesh, index) => index));
+    assert.deepEqual(
+        walks[0],
+        expected.map((_mesh, index) => index),
+    );
     assert.notDeepEqual(walks[0], walks[1]);
     assert.notDeepEqual(walks[1], walks[2]);
     const context = new LoweringContext();
     const directory = resolve("artifacts/test-babylon-hierarchy");
     const include = join(directory, "include");
     mkdirSync(join(include, "bblite/upstream"), { recursive: true });
-    writeFileSync(join(include, "bblite/upstream/pinned_world_transform.hpp"), pinnedWorldTransformHeader(context));
+    writeFileSync(
+        join(include, "bblite/upstream/pinned_world_transform.hpp"),
+        pinnedWorldTransformHeader(context),
+    );
     writeFileSync(join(directory, "source.json"), JSON.stringify(packed));
     writeFileSync(join(directory, "expected.json"), JSON.stringify(expected));
-    writeFileSync(join(directory, "containers.json"), JSON.stringify({ meshes: [{ id: "container", name: "container" }] }));
-    const source = join(directory, "check.cpp"), executable = join(directory, "check.exe");
-    const fileTexture = cppFunction(new FactoryLowerer(context).lowerFileTextureFactory().source, "FileTexture load_file_texture(");
-    const changedName = lowerBabylonMeshConstruction(doctoredContext("src/loader-babylon/load-babylon.ts",
-        "subMeshes.length > 1", "subMeshes.length > 0")).replace("construct_babylon_meshes(", "construct_changed_names(");
-    const changedVisibility = lowerBabylonMeshConstruction(doctoredContext("src/loader-babylon/load-babylon.ts",
-        "md.isVisible === false", "md.isVisible === true")).replace("construct_babylon_meshes(", "construct_changed_visibility(");
-    writeFileSync(source, `#include <bblite/pal_image.hpp>
+    writeFileSync(
+        join(directory, "containers.json"),
+        JSON.stringify({ meshes: [{ id: "container", name: "container" }] }),
+    );
+    const source = join(directory, "check.cpp"),
+        executable = join(directory, "check.exe");
+    const fileTexture = cppFunction(
+        new FactoryLowerer(context).lowerFileTextureFactory().source,
+        "FileTexture load_file_texture(",
+    );
+    const changedName = lowerBabylonMeshConstruction(
+        doctoredContext(
+            "src/loader-babylon/load-babylon.ts",
+            "subMeshes.length > 1",
+            "subMeshes.length > 0",
+        ),
+    ).replace("construct_babylon_meshes(", "construct_changed_names(");
+    const changedVisibility = lowerBabylonMeshConstruction(
+        doctoredContext(
+            "src/loader-babylon/load-babylon.ts",
+            "md.isVisible === false",
+            "md.isVisible === true",
+        ),
+    ).replace("construct_babylon_meshes(", "construct_changed_visibility(");
+    writeFileSync(
+        source,
+        `#include <bblite/pal_image.hpp>
 #include <fstream>
 #include <cassert>
 ${new LightLowerer(context).lowerPointFactory().source}
@@ -173,8 +306,24 @@ int main() {
             assert(std::all_of(changed.meshes.begin(),changed.meshes.end(),[](const auto& mesh){return mesh.name.find("_sub")!=std::string::npos;}));
         }
     }
-}`);
-    runNativeFixtureCompiler(native, ["/nologo", "/std:c++20", "/W4", "/WX", "/EHsc", "/O2", `/Fo:${directory}/`, `/Fe:${executable}`,
-        "/I", include, "/I", "native/include", "/I", join(nativeFixtureVcpkgRoot, "include"), source]);
+}`,
+    );
+    runNativeFixtureCompiler(native, [
+        "/nologo",
+        "/std:c++20",
+        "/W4",
+        "/WX",
+        "/EHsc",
+        "/O2",
+        `/Fo:${directory}/`,
+        `/Fe:${executable}`,
+        "/I",
+        include,
+        "/I",
+        "native/include",
+        "/I",
+        join(nativeFixtureVcpkgRoot, "include"),
+        source,
+    ]);
     execFileSync(executable, [], { cwd: directory, stdio: "pipe" });
 });

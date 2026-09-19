@@ -46,9 +46,7 @@ export function pushAtlasHandleCpp(): string {
  * The statements that fill `atlas.frames`, given `cell_w` and `cell_h`
  * doubles already in scope and an `atlas` whose width and height are set.
  */
-export function gridSpriteAtlasFramesCpp(
-    context: LoweringContext,
-): string {
+export function gridSpriteAtlasFramesCpp(context: LoweringContext): string {
     assertGridRule(context);
     return `    const double margin = 0.0;
     const double spacing = 0.0;

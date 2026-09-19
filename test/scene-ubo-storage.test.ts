@@ -6,45 +6,97 @@ import test from "node:test";
 import { LoweringContext } from "../src/lowering/context.js";
 import { SceneUboLowerer } from "../src/lowering/scene-ubo-lowerer.js";
 import { importPinnedModule } from "../src/pinned-shader-composer.js";
-import { optionalNativeFixtureTools, runNativeFixtureCompiler } from "./native-fixture.js";
+import {
+    optionalNativeFixtureTools,
+    runNativeFixtureCompiler,
+} from "./native-fixture.js";
 
 test("pinned task storage owns zeroed clean scratch and independent retained jitter sequences", async (t) => {
     const native = optionalNativeFixtureTools(false);
-    if (!native) { t.skip("Native fixture compiler unavailable."); return; }
+    if (!native) {
+        t.skip("Native fixture compiler unavailable.");
+        return;
+    }
     const { createRenderTask } = await importPinnedModule<{
-        createRenderTask(config: object, engine: object, scene: object): {
-            scene: object; _suData: Float32Array; _sceneUBO: { size: number }; _sceneUboCacheKey: unknown[];
+        createRenderTask(
+            this: void,
+            config: object,
+            engine: object,
+            scene: object,
+        ): {
+            scene: object;
+            _suData: Float32Array;
+            _sceneUBO: { size: number };
+            _sceneUboCacheKey: unknown[];
         };
     }>("frame-graph/render-task.js");
     const { createTaaPostProcessTask } = await importPinnedModule<{
-        createTaaPostProcessTask(config: object, engine: object, scene: object): {
-            samples: number; _halton: Float32Array; _jitterScratch: Float32Array;
+        createTaaPostProcessTask(
+            this: void,
+            config: object,
+            engine: object,
+            scene: object,
+        ): {
+            samples: number;
+            _halton: Float32Array;
+            _jitterScratch: Float32Array;
         };
     }>("post-process/taa.js");
     const scene = { lights: [], _disposables: [] };
-    const target = { _width: 64, _height: 32, _descriptor: { format: "rgba8unorm", size: { width: 64, height: 32 } } };
-    const engine = { scRT: target, _device: {
-        createBindGroupLayout: (descriptor: object) => descriptor,
-        createBindGroup: (descriptor: object) => descriptor,
-        createBuffer: (descriptor: object) => descriptor,
-        queue: { writeBuffer() { /* Initial lights upload is outside the source UBO. */ } },
-    } };
-    const source = createRenderTask({ rt: target, name: "source" }, engine, scene);
+    const target = {
+        _width: 64,
+        _height: 32,
+        _descriptor: { format: "rgba8unorm", size: { width: 64, height: 32 } },
+    };
+    const engine = {
+        scRT: target,
+        _device: {
+            createBindGroupLayout: (descriptor: object) => descriptor,
+            createBindGroup: (descriptor: object) => descriptor,
+            createBuffer: (descriptor: object) => descriptor,
+            queue: {
+                writeBuffer() {
+                    /* Initial lights upload is outside the source UBO. */
+                },
+            },
+        },
+    };
+    const source = createRenderTask(
+        { rt: target, name: "source" },
+        engine,
+        scene,
+    );
     assert.equal(source.scene, scene);
     assert.equal(source._sceneUBO.size, source._suData.byteLength);
     assert.deepEqual(source._sceneUboCacheKey, []);
     assert.ok(source._suData.every((value) => value === 0));
     const configs = [{}, { samples: 1 }, { samples: 3.9 }, { samples: -2 }];
-    const states = configs.map((config) => createTaaPostProcessTask({ ...config, sourceTexture: target, sourceRenderTask: source }, engine, scene));
-    assert.deepEqual(states.map((state) => state.samples), [8, 1, 3, 1]);
-    for (const state of states) assert.deepEqual([...state._jitterScratch], Array(16).fill(0));
+    const states = configs.map((config) =>
+        createTaaPostProcessTask(
+            { ...config, sourceTexture: target, sourceRenderTask: source },
+            engine,
+            scene,
+        ),
+    );
+    assert.deepEqual(
+        states.map((state) => state.samples),
+        [8, 1, 3, 1],
+    );
+    for (const state of states)
+        assert.deepEqual([...state._jitterScratch], Array(16).fill(0));
     assert.notEqual(states[1]!._halton, states[3]!._halton);
     const directory = resolve("artifacts/scene-ubo-storage-check");
     mkdirSync(directory, { recursive: true });
     const lowerer = new SceneUboLowerer(new LoweringContext());
-    const sourcePath = join(directory, "check.cpp"), executable = join(directory, "check.exe");
-    writeFileSync(join(directory, "storage.hpp"), `#include <bblite/runtime.hpp>\n${lowerer.jitterHeader()}\n${lowerer.storageHeader()}`);
-    writeFileSync(sourcePath, `#include "storage.hpp"
+    const sourcePath = join(directory, "check.cpp"),
+        executable = join(directory, "check.exe");
+    writeFileSync(
+        join(directory, "storage.hpp"),
+        `#include <bblite/runtime.hpp>\n${lowerer.jitterHeader()}\n${lowerer.storageHeader()}`,
+    );
+    writeFileSync(
+        sourcePath,
+        `#include "storage.hpp"
 #include <cassert>
 #include <fstream>
 int main(int argc, char** argv) {
@@ -76,11 +128,29 @@ int main(int argc, char** argv) {
         for (const float value : state.jitter_scratch) assert(value == 0.0f);
     }
 }
-`);
-    runNativeFixtureCompiler(native, ["/nologo", "/std:c++20", "/W4", "/WX", "/EHsc", "/MD",
-        `/I${resolve("native/include")}`, `/Fo:${directory}\\`, `/Fe:${executable}`, sourcePath]);
+`,
+    );
+    runNativeFixtureCompiler(native, [
+        "/nologo",
+        "/std:c++20",
+        "/W4",
+        "/WX",
+        "/EHsc",
+        "/MD",
+        `/I${resolve("native/include")}`,
+        `/Fo:${directory}\\`,
+        `/Fe:${executable}`,
+        sourcePath,
+    ]);
     const output = join(directory, "native.bin");
     execFileSync(executable, [output]);
-    const expected = Buffer.concat(states.map((state) => Buffer.from(new Uint8Array(state._halton.buffer))));
-    assert.ok(readFileSync(output).equals(expected), "Native Halton sequence bytes differ from the pin.");
+    const expected = Buffer.concat(
+        states.map((state) =>
+            Buffer.from(new Uint8Array(state._halton.buffer)),
+        ),
+    );
+    assert.ok(
+        readFileSync(output).equals(expected),
+        "Native Halton sequence bytes differ from the pin.",
+    );
 });

@@ -4,7 +4,10 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import test from "node:test";
 import { compileSource } from "../src/compiler.js";
-import { optionalNativeFixtureTools, runNativeFixtureCompiler } from "./native-fixture.js";
+import {
+    optionalNativeFixtureTools,
+    runNativeFixtureCompiler,
+} from "./native-fixture.js";
 
 const source = `
     import { createEngine, startEngine } from "@babylonjs/lite";
@@ -28,22 +31,39 @@ test("startEngine finally cleanup belongs to the continuation completion", () =>
 });
 
 test("finally blocks explicitly refuse an additional suspended frame boundary", () => {
-    assert.throws(() => compileSource(source.replace(
-        "if (cleanups !== 0)",
-        "await new Promise<void>(resolve => requestAnimationFrame(() => resolve())); if (cleanups !== 0)",
-    )), /finally block spanning startEngine cannot also span a later frame yield/);
+    assert.throws(
+        () =>
+            compileSource(
+                source.replace(
+                    "if (cleanups !== 0)",
+                    "await new Promise<void>(resolve => requestAnimationFrame(() => resolve())); if (cleanups !== 0)",
+                ),
+            ),
+        /finally block spanning startEngine cannot also span a later frame yield/,
+    );
 });
 
 test("engine-spanning finally erases browser helper cleanup and retains native writes", () => {
     for (const nativeCleanup of ["", "cleanups++;"]) {
-        const result = compileSource(source
-            .replace('async function main()', 'import { installBrowserHelper } from "./fixtures/compiler-modules/browser-helper.js"; async function main()')
-            .replace("let cleanups = 0;", 'let cleanups = 0; const canvas = document.getElementById("renderCanvas") as HTMLCanvasElement; const progress = installBrowserHelper(canvas, { estimatedBytes: 42 });')
-            .replace("cleanups++;", `progress.done(); ${nativeCleanup}`),
-        { fileName: "test/compiler-multi-file-entry.ts" });
+        const result = compileSource(
+            source
+                .replace(
+                    "async function main()",
+                    'import { installBrowserHelper } from "./fixtures/compiler-modules/browser-helper.js"; async function main()',
+                )
+                .replace(
+                    "let cleanups = 0;",
+                    'let cleanups = 0; const canvas = document.getElementById("renderCanvas") as HTMLCanvasElement; const progress = installBrowserHelper(canvas, { estimatedBytes: 42 });',
+                )
+                .replace("cleanups++;", `progress.done(); ${nativeCleanup}`),
+            { fileName: "test/compiler-multi-file-entry.ts" },
+        );
         assert.doesNotMatch(result.cpp, /globalThis|fetch|dataset|progress/);
         assert.match(result.cpp, /defer_start_continuation/);
-        assert.equal(/finally_completion_\d+\.run\(\)/.test(result.cpp), nativeCleanup.length > 0);
+        assert.equal(
+            /finally_completion_\d+\.run\(\)/.test(result.cpp),
+            nativeCleanup.length > 0,
+        );
     }
 });
 
@@ -53,22 +73,41 @@ test("engine-spanning finally refuses direct and indirect cleanup exceptions", (
         'const fail = (): void => { throw new Error("cleanup"); }; fail();',
         'const fail = (): number => { throw new Error("cleanup"); }; const value = { get current(): number { return fail(); } }; cleanups += value.current;',
         'const fail = (): number => { throw new Error("cleanup"); }; const value = { get current(): number { return fail(); } }; const key = "current"; cleanups += value[key];',
-        'performance.now();',
+        "performance.now();",
         'const canvas = document.getElementById("renderCanvas") as HTMLCanvasElement; canvas.focus();',
     ]) {
-        assert.throws(() => compileSource(source.replace("cleanups++;", cleanup)),
-            /finally block spanning startEngine requires non-throwing cleanup/);
+        assert.throws(
+            () => compileSource(source.replace("cleanups++;", cleanup)),
+            /finally block spanning startEngine requires non-throwing cleanup/,
+        );
     }
 });
 
 const nativeTools = optionalNativeFixtureTools(false);
-test("native continuation runs finally at completion and scope guards run only once", { skip: !nativeTools }, () => {
-    const output = resolve("artifacts/engine-finally-check");
-    mkdirSync(output, { recursive: true });
-    writeFileSync(join(output, "finally.hpp"), compileSource(source).cpp);
-    const executable = join(output, "check.exe");
-    runNativeFixtureCompiler(nativeTools!, ["/nologo", "/std:c++20", "/W4", "/WX", "/permissive-", "/EHsc", "/MD",
-        `/Fo:${output}\\`, `/Fe:${executable}`, "/I", "native\\include", "/I", output,
-        "test/fixtures/engine-finally-check.cpp"]);
-    execFileSync(executable, { encoding: "utf8" });
-});
+test(
+    "native continuation runs finally at completion and scope guards run only once",
+    { skip: !nativeTools },
+    () => {
+        const output = resolve("artifacts/engine-finally-check");
+        mkdirSync(output, { recursive: true });
+        writeFileSync(join(output, "finally.hpp"), compileSource(source).cpp);
+        const executable = join(output, "check.exe");
+        runNativeFixtureCompiler(nativeTools!, [
+            "/nologo",
+            "/std:c++20",
+            "/W4",
+            "/WX",
+            "/permissive-",
+            "/EHsc",
+            "/MD",
+            `/Fo:${output}\\`,
+            `/Fe:${executable}`,
+            "/I",
+            "native\\include",
+            "/I",
+            output,
+            "test/fixtures/engine-finally-check.cpp",
+        ]);
+        execFileSync(executable, { encoding: "utf8" });
+    },
+);

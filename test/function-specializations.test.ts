@@ -6,7 +6,10 @@ import test from "node:test";
 import { compileSource } from "../src/compiler.js";
 import { FunctionSpecializations } from "../src/compiler/function-specializations.js";
 import { discoverWindowsBuildTools } from "../src/development-tools.js";
-import { optionalNativeFixtureTools, runNativeFixtureCompiler } from "./native-fixture.js";
+import {
+    optionalNativeFixtureTools,
+    runNativeFixtureCompiler,
+} from "./native-fixture.js";
 
 const controls = `
     import { createEngine, createBox, createStandardMaterial, loadTexture2D, markMaterialUboDirty, type Mesh } from "@babylonjs/lite";
@@ -181,19 +184,40 @@ test("specialization snapshots distinguish changed facts, aliases and scopes", (
     assert.equal(before, cache.key(scope, [{ ...metadata }]));
     metadata.sceneMeshIndex = 2;
     assert.notEqual(before, cache.key(scope, [metadata]));
-    assert.notEqual(cache.key(scope, [metadata]), cache.key({ ...scope, emission: 1 }, [metadata]));
-    assert.notEqual(cache.key(scope, [metadata]), cache.key({ ...scope, block: 1 }, [metadata]));
-    assert.notEqual(cache.key(scope, [metadata]), cache.key({ ...scope, continuation: 1 }, [metadata]));
-    assert.notEqual(cache.key(scope, [metadata, metadata]), cache.key(scope, [metadata, { ...metadata }]));
+    assert.notEqual(
+        cache.key(scope, [metadata]),
+        cache.key({ ...scope, emission: 1 }, [metadata]),
+    );
+    assert.notEqual(
+        cache.key(scope, [metadata]),
+        cache.key({ ...scope, block: 1 }, [metadata]),
+    );
+    assert.notEqual(
+        cache.key(scope, [metadata]),
+        cache.key({ ...scope, continuation: 1 }, [metadata]),
+    );
+    assert.notEqual(
+        cache.key(scope, [metadata, metadata]),
+        cache.key(scope, [metadata, { ...metadata }]),
+    );
     assert.notEqual(cache.key(scope, [0]), cache.key(scope, [-0]));
-    assert.notEqual(cache.key(scope, [Symbol("same")]), cache.key(scope, [Symbol("same")]));
-    assert.notEqual(cache.key(scope, [new Uint8Array([1])]), cache.key(scope, [new Int8Array([1])]));
+    assert.notEqual(
+        cache.key(scope, [Symbol("same")]),
+        cache.key(scope, [Symbol("same")]),
+    );
+    assert.notEqual(
+        cache.key(scope, [new Uint8Array([1])]),
+        cache.key(scope, [new Int8Array([1])]),
+    );
     const buffer = new Uint8Array([1]).buffer;
     const original = cache.key(scope, [buffer]);
     new Uint8Array(buffer)[0] = 2;
     assert.notEqual(original, cache.key(scope, [buffer]));
     const key = Symbol("metadata");
-    assert.notEqual(cache.key(scope, [{ [key]: 1 }]), cache.key(scope, [{ [key]: 2 }]));
+    assert.notEqual(
+        cache.key(scope, [{ [key]: 1 }]),
+        cache.key(scope, [{ [key]: 2 }]),
+    );
 });
 
 test("escaping recursive groups share their traced callable within one scope", () => {
@@ -210,17 +234,34 @@ test("escaping recursive groups share their traced callable within one scope", (
             poll();
         }
     `);
-    assert.equal(result.cpp.match(/make_gc_shared<bbl::js::Callback<void\(\)>>/g)?.length, 1);
+    assert.equal(
+        result.cpp.match(/make_gc_shared<bbl::js::Callback<void\(\)>>/g)
+            ?.length,
+        1,
+    );
 });
 
 const native = optionalNativeFixtureTools(false);
 for (const compiler of ["msvc", "clangcl"] as const) {
-    test(`reused recursive groups retain live captures, receivers and sibling lifetimes (${compiler})`, { skip: !native }, () => {
-        const tools = compiler === "msvc" ? native! : discoverWindowsBuildTools(compiler);
-        const output = resolve("artifacts/function-specializations-check", compiler);
-        mkdirSync(output, { recursive: true });
-        const source = join(output, "check.cpp"), executable = join(output, "check.exe");
-        writeFileSync(source, compileSource(controls).cpp + `
+    test(
+        `reused recursive groups retain live captures, receivers and sibling lifetimes (${compiler})`,
+        { skip: !native },
+        () => {
+            const tools =
+                compiler === "msvc"
+                    ? native!
+                    : discoverWindowsBuildTools(compiler);
+            const output = resolve(
+                "artifacts/function-specializations-check",
+                compiler,
+            );
+            mkdirSync(output, { recursive: true });
+            const source = join(output, "check.cpp"),
+                executable = join(output, "check.exe");
+            writeFileSync(
+                source,
+                compileSource(controls).cpp +
+                    `
         namespace bbl {
             Engine create_engine(EngineOptions) { return {}; }
             MeshHandle create_box(Engine& engine, BoxOptions) { engine.meshes.emplace_back(); return {static_cast<std::uint32_t>(engine.meshes.size() - 1)}; }
@@ -233,9 +274,23 @@ for (const compiler of ["msvc", "clangcl"] as const) {
                     throw std::runtime_error("retained material array upload");
             }
         }
-        `);
-        runNativeFixtureCompiler(tools, ["/nologo", "/std:c++20", "/W4", "/WX", "/permissive-", "/EHsc", "/MD",
-            `/Fo:${output}\\`, `/Fe:${executable}`, "/I", "native\\include", source]);
-        execFileSync(executable, { encoding: "utf8" });
-    });
+        `,
+            );
+            runNativeFixtureCompiler(tools, [
+                "/nologo",
+                "/std:c++20",
+                "/W4",
+                "/WX",
+                "/permissive-",
+                "/EHsc",
+                "/MD",
+                `/Fo:${output}\\`,
+                `/Fe:${executable}`,
+                "/I",
+                "native\\include",
+                source,
+            ]);
+            execFileSync(executable, { encoding: "utf8" });
+        },
+    );
 }

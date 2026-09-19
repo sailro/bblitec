@@ -1,4 +1,7 @@
-import { someAnalysisNode, findAnalysisNodeWithState } from "./analysis-walk.js";
+import {
+    someAnalysisNode,
+    findAnalysisNodeWithState,
+} from "./analysis-walk.js";
 import { EmissionSet, EmissionMap } from "./emission-transaction.js";
 import type { LoweringServices } from "./lowering-services.js";
 import ts from "typescript";
@@ -6,10 +9,7 @@ import { CompileError } from "./compile-error.js";
 import { unwrapExpression } from "./syntax.js";
 import { emitReachableStatements } from "./loop-control.js";
 import { arrayReturnStorage } from "./array-return-storage.js";
-import {
-    cppIdentifier,
-    cppIdentifierPattern,
-} from "../cpp-literals.js";
+import { cppIdentifier, cppIdentifierPattern } from "../cpp-literals.js";
 import { isDefaultLibraryIdentifier } from "./symbols.js";
 import {
     dataTypesEqual,
@@ -25,39 +25,39 @@ import {
     type SupportedFunction,
 } from "./user-functions.js";
 
-export interface NativeFunctionContext
-    extends Pick<LoweringServices,
-        | "canReplaySharedCallEffects"
-        | "checker"
-        | "dataTypes"
-        | "dataLowerer"
-        | "sourceFiles"
-        | "lookupIdentifierValue"
-        | "knownValueWithoutEvaluation"
-        | "compileValue"
-        | "probeEmission"
-        | "useNativeValue"
-        | "compileNumber"
-        | "compileCondition"
-        | "emitStatement"
-        | "statementTerminatesAfterLowering"
-        | "defineVariable"
-        | "pushScope"
-        | "popScope"
-        | "allocateUserFunctionPrefix"
-        | "cppLocalName"
-        | "captureEmittedLines"
-        | "registerNativeFunction"
-        | "beginNativeFunctionBody"
-        | "endNativeFunctionBody"
-        | "reachJsData"
-        | "unwrap"
-        | "emit"
-        | "defineThis"
-        | "activeThis"
-        | "registerClassInstance"
-        | "fail"
-    > {}
+export interface NativeFunctionContext extends Pick<
+    LoweringServices,
+    | "canReplaySharedCallEffects"
+    | "checker"
+    | "dataTypes"
+    | "dataLowerer"
+    | "sourceFiles"
+    | "lookupIdentifierValue"
+    | "knownValueWithoutEvaluation"
+    | "compileValue"
+    | "probeEmission"
+    | "useNativeValue"
+    | "compileNumber"
+    | "compileCondition"
+    | "emitStatement"
+    | "statementTerminatesAfterLowering"
+    | "defineVariable"
+    | "pushScope"
+    | "popScope"
+    | "allocateUserFunctionPrefix"
+    | "cppLocalName"
+    | "captureEmittedLines"
+    | "registerNativeFunction"
+    | "beginNativeFunctionBody"
+    | "endNativeFunctionBody"
+    | "reachJsData"
+    | "unwrap"
+    | "emit"
+    | "defineThis"
+    | "activeThis"
+    | "registerClassInstance"
+    | "fail"
+> {}
 
 interface DataFunctionParameter {
     name: ts.Identifier;
@@ -114,26 +114,23 @@ interface MethodClosure {
  * differently from live native storage, so the method declines to the
  * inline path for that instance.
  */
-function valueIsPlainLeaf(
-    actual: Value,
-    expected: Value,
-): boolean {
-    const actualRecord = actual as unknown as Record<
-        string,
-        unknown
-    >;
-    const expectedRecord = expected as unknown as Record<
-        string,
-        unknown
-    >;
+function valueIsPlainLeaf(actual: Value, expected: Value): boolean {
+    const actualRecord = actual as unknown as Record<string, unknown>;
+    const expectedRecord = expected as unknown as Record<string, unknown>;
     const keys = new EmissionSet([
         ...Object.keys(actualRecord),
         ...Object.keys(expectedRecord),
     ]);
     for (const key of keys) {
-        if (key === "dataType" || key === "nativeLvalue" ||
-            key === "sharedStorageCpp" || key === "nativeCaptures" ||
-            key === "nativeCompanionCaptures" || key === "collectionCardinality") continue;
+        if (
+            key === "dataType" ||
+            key === "nativeLvalue" ||
+            key === "sharedStorageCpp" ||
+            key === "nativeCaptures" ||
+            key === "nativeCompanionCaptures" ||
+            key === "collectionCardinality"
+        )
+            continue;
         if (actualRecord[key] !== expectedRecord[key]) {
             return false;
         }
@@ -168,36 +165,22 @@ export function captureDataFunctionBody(
         beforeBody?: () => void;
     },
 ): { parameterDeclarations: string[]; lines: string[] } {
-    context.pushScope(
-        context.allocateUserFunctionPrefix(),
-    );
+    context.pushScope(context.allocateUserFunctionPrefix());
     try {
         const parameterDeclarations = [
             ...(channels?.bindLeading?.() ?? []),
             ...parameters.map((parameter) => {
-                const cppName = context.cppLocalName(
-                    parameter.name.text,
-                );
-                const cppType = context.dataTypes.cppType(
-                    parameter.type,
-                );
+                const cppName = context.cppLocalName(parameter.name.text);
+                const cppType = context.dataTypes.cppType(parameter.type);
                 context.defineVariable(parameter.name, {
-                    ...context.dataLowerer.leafValue(
-                        cppName,
-                        parameter.type,
-                    ),
-                    ...(parameter.readOnly
-                        ? { readOnly: true as const }
-                        : {}),
+                    ...context.dataLowerer.leafValue(cppName, parameter.type),
+                    ...(parameter.readOnly ? { readOnly: true as const } : {}),
                 });
                 if (
                     parameter.type.kind !== "number" &&
                     parameter.type.kind !== "boolean"
                 ) {
-                    context.dataLowerer.registerLocal(
-                        cppName,
-                        "owned",
-                    );
+                    context.dataLowerer.registerLocal(cppName, "owned");
                 }
                 return parameter.byReference
                     ? `${parameter.readOnly ? "const " : ""}${cppType}& ${cppName}`
@@ -210,8 +193,17 @@ export function captureDataFunctionBody(
             return {
                 parameterDeclarations,
                 lines: context.dataLowerer.captureStringIndexes(
-                    parameters.filter(parameter => parameter.type.kind === "string" && parameter.readOnly && !parameter.byReference)
-                        .map(parameter => ({ cpp: context.cppLocalName(parameter.name.text), declaration: parameter.name.parent.parent })),
+                    parameters
+                        .filter(
+                            (parameter) =>
+                                parameter.type.kind === "string" &&
+                                parameter.readOnly &&
+                                !parameter.byReference,
+                        )
+                        .map((parameter) => ({
+                            cpp: context.cppLocalName(parameter.name.text),
+                            declaration: parameter.name.parent.parent,
+                        })),
                     () => context.captureEmittedLines(emitBody),
                 ),
             };
@@ -242,20 +234,14 @@ export class NativeFunctionLowerer {
         ts.MethodDeclaration,
         NativeMethodSignature
     >();
-    private readonly rejectedMethods =
-        new EmissionSet<ts.MethodDeclaration>();
-    private readonly emitted =
-        new EmissionSet<SupportedFunction>();
-    private readonly active =
-        new EmissionSet<SupportedFunction>();
-    private readonly rejected =
-        new EmissionSet<SupportedFunction>();
+    private readonly rejectedMethods = new EmissionSet<ts.MethodDeclaration>();
+    private readonly emitted = new EmissionSet<SupportedFunction>();
+    private readonly active = new EmissionSet<SupportedFunction>();
+    private readonly rejected = new EmissionSet<SupportedFunction>();
     private readonly usedNames = new EmissionSet<string>();
     private readonly referenceStorageCache = new EmissionMap<string, boolean>();
 
-    public constructor(
-        private readonly context: NativeFunctionContext,
-    ) {}
+    public constructor(private readonly context: NativeFunctionContext) {}
 
     /**
      * Compiles a call to a local function through the native data-function
@@ -269,30 +255,42 @@ export class NativeFunctionLowerer {
         const declaration = resolveFunctionDeclaration(
             this.context.checker,
             callee,
-            (node, message) =>
-                this.context.fail(node, message),
+            (node, message) => this.context.fail(node, message),
         );
         if (!declaration) {
             return undefined;
         }
-        if (requiresDefaultParameterBinding(this.context.checker, declaration, call)) return undefined;
-        const signature = this.resolveSignature(
-            declaration,
-            callee,
-        );
+        if (
+            requiresDefaultParameterBinding(
+                this.context.checker,
+                declaration,
+                call,
+            )
+        )
+            return undefined;
+        const signature = this.resolveSignature(declaration, callee);
         if (!signature) {
             return undefined;
         }
-        if (signature.parameters.some((parameter, index) => parameter.type.kind === "union" &&
-            call.arguments[index] && (this.context.checker.getTypeAtLocation(call.arguments[index]!).flags &
-                (ts.TypeFlags.StringLiteral | ts.TypeFlags.NumberLiteral | ts.TypeFlags.BooleanLiteral)) !== 0)) {
+        if (
+            signature.parameters.some(
+                (parameter, index) =>
+                    parameter.type.kind === "union" &&
+                    call.arguments[index] &&
+                    (this.context.checker.getTypeAtLocation(
+                        call.arguments[index],
+                    ).flags &
+                        (ts.TypeFlags.StringLiteral |
+                            ts.TypeFlags.NumberLiteral |
+                            ts.TypeFlags.BooleanLiteral)) !==
+                        0,
+            )
+        ) {
             return undefined;
         }
         if (
             signature.returnType &&
-            this.context.dataTypes.carriesFunction(
-                signature.returnType,
-            )
+            this.context.dataTypes.carriesFunction(signature.returnType)
         ) {
             // A closure-bearing result can capture the entry engine and any
             // locals selected while the factory runs. Keep the factory
@@ -300,8 +298,11 @@ export class NativeFunctionLowerer {
             // entry engine binding nor JavaScript closure lifetime.
             return undefined;
         }
-        if (signature.returnType?.kind === "string" &&
-            signature.parameters.every(parameter => parameter.type.kind === "string") &&
+        if (
+            signature.returnType?.kind === "string" &&
+            signature.parameters.every(
+                (parameter) => parameter.type.kind === "string",
+            ) &&
             signature.parameters.every((parameter, index) => {
                 const argument =
                     call.arguments[index] ??
@@ -314,8 +315,12 @@ export class NativeFunctionLowerer {
                     const bound = this.context.lookupIdentifierValue(argument);
                     if (bound) return bound.staticString !== undefined;
                 }
-                return this.context.probeEmission(() =>
-                    this.context.compileValue(argument).staticString !== undefined, () => false);
+                return this.context.probeEmission(
+                    () =>
+                        this.context.compileValue(argument).staticString !==
+                        undefined,
+                    () => false,
+                );
             })
         ) {
             // Closed string transforms retain their facts at the call site.
@@ -327,45 +332,38 @@ export class NativeFunctionLowerer {
             // which is the inline lowerer's business.
             return undefined;
         }
-        if (
-            call.arguments.length >
-                signature.parameters.length
-        ) {
+        if (call.arguments.length > signature.parameters.length) {
             this.context.fail(
                 call,
                 `Function '${callee.text}' expects at most ${signature.parameters.length} plain arguments.`,
             );
         }
-        if (signature.parameters.some((parameter, index) =>
-            call.arguments[index] === undefined &&
-            ts.isParameter(parameter.name.parent) &&
-            parameter.name.parent.questionToken !== undefined &&
-            parameter.name.parent.initializer === undefined
-        )) {
+        if (
+            signature.parameters.some(
+                (parameter, index) =>
+                    call.arguments[index] === undefined &&
+                    ts.isParameter(parameter.name.parent) &&
+                    parameter.name.parent.questionToken !== undefined &&
+                    parameter.name.parent.initializer === undefined,
+            )
+        ) {
             // The inline path binds omitted optional parameters to undefined.
             // A native data parameter has no absent representation unless its
             // mapped type explicitly carries one.
             return undefined;
         }
         if (
-            signature.parameters.some(
-                (parameter, index) => {
-                    if (
-                        !parameter.byReference ||
-                        parameter.readOnly
-                    ) {
-                        return false;
-                    }
-                    const argument =
-                        call.arguments[index] ??
-                        (ts.isParameter(parameter.name.parent)
-                            ? parameter.name.parent.initializer
-                            : undefined);
-                    return argument
-                        ? !this.isAddressableArgument(argument)
-                        : false;
-                },
-            )
+            signature.parameters.some((parameter, index) => {
+                if (!parameter.byReference || parameter.readOnly) {
+                    return false;
+                }
+                const argument =
+                    call.arguments[index] ??
+                    (ts.isParameter(parameter.name.parent)
+                        ? parameter.name.parent.initializer
+                        : undefined);
+                return argument ? !this.isAddressableArgument(argument) : false;
+            })
         ) {
             // A conditional, constructor, or call result cannot bind to
             // the mutable native reference that preserves JavaScript
@@ -381,10 +379,7 @@ export class NativeFunctionLowerer {
                         ? parameter.name.parent.initializer
                         : undefined);
                 return argument
-                    ? !this.argumentPreservesObjectIdentity(
-                          argument,
-                          parameter,
-                      )
+                    ? !this.argumentPreservesObjectIdentity(argument, parameter)
                     : false;
             })
         ) {
@@ -395,58 +390,66 @@ export class NativeFunctionLowerer {
             return undefined;
         }
         const canSpecialize = signature.parameters.some((parameter, index) => {
-            const argument = call.arguments[index] ??
-                (ts.isParameter(parameter.name.parent) ? parameter.name.parent.initializer : undefined);
+            const argument =
+                call.arguments[index] ??
+                (ts.isParameter(parameter.name.parent)
+                    ? parameter.name.parent.initializer
+                    : undefined);
             if (!argument) return false;
             const expression = unwrapExpression(argument);
-            const value = ts.isIdentifier(expression) ? this.context.lookupIdentifierValue(expression) : undefined;
-            return !value || value.kind === "record" || value.kind === "tuple" ||
-                value.staticString !== undefined || value.staticNumber !== undefined || value.staticBoolean !== undefined;
+            const value = ts.isIdentifier(expression)
+                ? this.context.lookupIdentifierValue(expression)
+                : undefined;
+            return (
+                !value ||
+                value.kind === "record" ||
+                value.kind === "tuple" ||
+                value.staticString !== undefined ||
+                value.staticNumber !== undefined ||
+                value.staticBoolean !== undefined
+            );
         });
         if (!this.emitted.has(signature.declaration) && canSpecialize) {
             try {
                 this.context.probeEmission(() => {
-                    this.ensureEmitted(signature.declaration, () => this.emitDefinition(signature));
+                    this.ensureEmitted(signature.declaration, () =>
+                        this.emitDefinition(signature),
+                    );
                     return true;
                 });
             } catch (error) {
-                if (!(error instanceof CompileError) || error.reason !== "static-value-required") throw error;
+                if (
+                    !(error instanceof CompileError) ||
+                    error.reason !== "static-value-required"
+                )
+                    throw error;
                 // A body may need facts unavailable to generic parameters.
                 // Let specialization bind actual arguments before diagnosing it.
                 return undefined;
             }
         } else {
-            this.ensureEmitted(signature.declaration, () => this.emitDefinition(signature));
+            this.ensureEmitted(signature.declaration, () =>
+                this.emitDefinition(signature),
+            );
         }
-        const argumentsCpp = signature.parameters.map(
-            (parameter, index) => {
-                const argument = call.arguments[index];
-                if (!argument) {
-                    const initializer =
-                        parameter.name.parent &&
-                        ts.isParameter(
-                            parameter.name.parent,
-                        )
-                            ? parameter.name.parent
-                                  .initializer
-                            : undefined;
-                    if (!initializer) {
-                        this.context.fail(
-                            call,
-                            `Function '${callee.text}' requires argument '${parameter.name.text}'.`,
-                        );
-                    }
-                    return this.compileArgument(
-                        initializer,
-                        parameter,
+        const argumentsCpp = signature.parameters.map((parameter, index) => {
+            const argument = call.arguments[index];
+            if (!argument) {
+                const initializer =
+                    parameter.name.parent &&
+                    ts.isParameter(parameter.name.parent)
+                        ? parameter.name.parent.initializer
+                        : undefined;
+                if (!initializer) {
+                    this.context.fail(
+                        call,
+                        `Function '${callee.text}' requires argument '${parameter.name.text}'.`,
                     );
                 }
-                return this.compileArgument(
-                    argument,
-                    parameter,
-                );
-            },
-        );
+                return this.compileArgument(initializer, parameter);
+            }
+            return this.compileArgument(argument, parameter);
+        });
         const cpp = `bblscene::${signature.cppName}(${argumentsCpp.join(", ")})`;
         return this.callValue(cpp, signature.returnType);
     }
@@ -471,17 +474,14 @@ export class NativeFunctionLowerer {
         classDeclaration: ts.ClassDeclaration,
         instance: Value,
     ): Value | undefined {
-        if (requiresDefaultParameterBinding(this.context.checker, method, call)) return undefined;
-        const signature = this.resolveMethodSignature(
-            method,
-            classDeclaration,
-        );
+        if (requiresDefaultParameterBinding(this.context.checker, method, call))
+            return undefined;
+        const signature = this.resolveMethodSignature(method, classDeclaration);
         if (!signature) {
             return undefined;
         }
         if (
-            call.arguments.length >
-                signature.parameters.length ||
+            call.arguments.length > signature.parameters.length ||
             call.arguments.some(ts.isSpreadElement)
         ) {
             // The inline path owns the diagnostic for a malformed call.
@@ -494,26 +494,17 @@ export class NativeFunctionLowerer {
                     ? parameter.name.parent.initializer
                     : undefined),
         );
-        if (
-            argumentExpressions.some(
-                (argument) => argument === undefined,
-            )
-        ) {
+        if (argumentExpressions.some((argument) => argument === undefined)) {
             // An optional parameter without a default binds a null value
             // on the inline path; keep that shape there.
             return undefined;
         }
         if (
             signature.parameters.some((parameter, index) => {
-                if (
-                    !parameter.byReference ||
-                    parameter.readOnly
-                ) {
+                if (!parameter.byReference || parameter.readOnly) {
                     return false;
                 }
-                return !this.isAddressableArgument(
-                    argumentExpressions[index]!,
-                );
+                return !this.isAddressableArgument(argumentExpressions[index]!);
             })
         ) {
             return undefined;
@@ -529,22 +520,15 @@ export class NativeFunctionLowerer {
         ) {
             return undefined;
         }
-        const fieldArguments = this.instanceFieldArguments(
-            signature,
-            instance,
-        );
+        const fieldArguments = this.instanceFieldArguments(signature, instance);
         if (!fieldArguments) {
             return undefined;
         }
         this.ensureEmitted(signature.method, () =>
             this.emitMethodDefinition(signature),
         );
-        const argumentsCpp = signature.parameters.map(
-            (parameter, index) =>
-                this.compileArgument(
-                    argumentExpressions[index]!,
-                    parameter,
-                ),
+        const argumentsCpp = signature.parameters.map((parameter, index) =>
+            this.compileArgument(argumentExpressions[index]!, parameter),
         );
         const callCpp = `bblscene::${signature.cppName}(${[
             ...fieldArguments,
@@ -555,14 +539,15 @@ export class NativeFunctionLowerer {
             return { kind: "void", cpp: "" };
         }
         const result = `bbl_method_${this.context.allocateUserFunctionPrefix()}result`;
-        this.context.emit(
-            { kind: "declaration", type: "const auto", name: result, initializer: callCpp, attributes: "[[maybe_unused]] " },
-        );
+        this.context.emit({
+            kind: "declaration",
+            type: "const auto",
+            name: result,
+            initializer: callCpp,
+            attributes: "[[maybe_unused]] ",
+        });
         return {
-            ...this.context.dataLowerer.leafValue(
-                result,
-                signature.returnType,
-            ),
+            ...this.context.dataLowerer.leafValue(result, signature.returnType),
             requiresExplicitDiscard: true,
         };
     }
@@ -585,23 +570,22 @@ export class NativeFunctionLowerer {
             const bound = properties[field.name];
             if (
                 !bound ||
-                (!cppIdentifierPattern.test(bound.cpp) &&
-                    !bound.nativeLvalue)
+                (!cppIdentifierPattern.test(bound.cpp) && !bound.nativeLvalue)
             ) {
                 return undefined;
             }
-            const expected =
-                this.context.dataLowerer.leafValue(
-                    bound.cpp,
-                    field.type,
-                );
+            const expected = this.context.dataLowerer.leafValue(
+                bound.cpp,
+                field.type,
+            );
             if (!valueIsPlainLeaf(bound, expected)) {
                 return undefined;
             }
             this.context.useNativeValue(bound);
             fieldValues.push(bound);
         }
-        for (const value of fieldValues) this.context.dataLowerer.invalidateEscapingCollection(value);
+        for (const value of fieldValues)
+            this.context.dataLowerer.invalidateEscapingCollection(value);
         return fieldValues.map((value) => value.cpp);
     }
 
@@ -629,30 +613,36 @@ export class NativeFunctionLowerer {
         // Type annotations do not replace the representation of a parsed
         // object. Bind that actual value inline instead of materializing a
         // fixed native shape that would lose fields and object identity.
-        const represented = this.context.knownValueWithoutEvaluation(argument)?.dataType;
+        const represented =
+            this.context.knownValueWithoutEvaluation(argument)?.dataType;
         if (represented?.kind === "json" && parameter.type.kind !== "json") {
-            const target = parameter.type.kind === "optional" ? parameter.type.inner : parameter.type;
-            if (target.kind === "struct" || target.kind === "vector" || target.kind === "tuple" ||
-                target.kind === "map" || target.kind === "enummap") return false;
+            const target =
+                parameter.type.kind === "optional"
+                    ? parameter.type.inner
+                    : parameter.type;
+            if (
+                target.kind === "struct" ||
+                target.kind === "vector" ||
+                target.kind === "tuple" ||
+                target.kind === "map" ||
+                target.kind === "enummap"
+            )
+                return false;
         }
         if (parameter.type.kind !== "struct") {
             return true;
         }
-        const mutableReference =
-            parameter.byReference && !parameter.readOnly;
+        const mutableReference = parameter.byReference && !parameter.readOnly;
         if (
             !mutableReference &&
-            !this.context.dataTypes.isReferenceStruct(
-                parameter.type.name,
-            )
+            !this.context.dataTypes.isReferenceStruct(parameter.type.name)
         ) {
             return true;
         }
         const unwrapped = this.context.unwrap(argument);
         if (
             unwrapped.kind === ts.SyntaxKind.NullKeyword ||
-            (ts.isIdentifier(unwrapped) &&
-                unwrapped.text === "undefined")
+            (ts.isIdentifier(unwrapped) && unwrapped.text === "undefined")
         ) {
             return true;
         }
@@ -666,13 +656,10 @@ export class NativeFunctionLowerer {
         );
     }
 
-    private isAddressableArgument(
-        expression: ts.Expression,
-    ): boolean {
+    private isAddressableArgument(expression: ts.Expression): boolean {
         const unwrapped = this.context.unwrap(expression);
         if (ts.isIdentifier(unwrapped)) {
-            const bound =
-                this.context.lookupIdentifierValue(unwrapped);
+            const bound = this.context.lookupIdentifierValue(unwrapped);
             return !bound || bound.kind === "data";
         }
         return (
@@ -681,10 +668,7 @@ export class NativeFunctionLowerer {
         );
     }
 
-    private callValue(
-        cpp: string,
-        returnType: DataType | undefined,
-    ): Value {
+    private callValue(cpp: string, returnType: DataType | undefined): Value {
         if (!returnType) {
             return { kind: "void", cpp };
         }
@@ -704,23 +688,22 @@ export class NativeFunctionLowerer {
         }
         if (parameter.byReference) {
             if (parameter.readOnly) {
-                const rawPath =
-                    this.context.dataLowerer.compileDataPath(
-                        expression,
-                        "read",
-                    );
+                const rawPath = this.context.dataLowerer.compileDataPath(
+                    expression,
+                    "read",
+                );
                 const path = rawPath
                     ? this.context.dataLowerer.narrowOptional(
                           rawPath,
                           expression,
                       )
                     : undefined;
-                if (
-                    path?.dataType &&
-                    dataTypesEqual(path.dataType, dataType)
-                ) {
+                if (path?.dataType && dataTypesEqual(path.dataType, dataType)) {
                     // A readonly parameter may return or retain the tuple.
-                    if (dataType.kind === "tuple") this.context.dataLowerer.invalidateEscapingCollection(path);
+                    if (dataType.kind === "tuple")
+                        this.context.dataLowerer.invalidateEscapingCollection(
+                            path,
+                        );
                     return path.cpp;
                 }
                 return this.context.dataLowerer.compileForSink(
@@ -732,10 +715,8 @@ export class NativeFunctionLowerer {
             // passes native references. Read access suffices here because
             // callee writes intentionally alias the caller's object.
             const rawValue =
-                this.context.dataLowerer.compileDataPath(
-                    expression,
-                    "read",
-                ) ?? this.context.compileValue(expression);
+                this.context.dataLowerer.compileDataPath(expression, "read") ??
+                this.context.compileValue(expression);
             const value =
                 rawValue.kind === "data"
                     ? this.context.dataLowerer.narrowOptional(
@@ -760,10 +741,7 @@ export class NativeFunctionLowerer {
         // the parameter's -- correct for values, identity-severing for a
         // narrowed stored object. Both arms decline such calls before
         // reaching here (argumentPreservesObjectIdentity).
-        return this.context.dataLowerer.compileForSink(
-            expression,
-            dataType,
-        );
+        return this.context.dataLowerer.compileForSink(expression, dataType);
     }
 
     /**
@@ -799,23 +777,24 @@ export class NativeFunctionLowerer {
           }
         | undefined {
         const returnTsType =
-            this.context.checker.getReturnTypeOfSignature(
-                checkerSignature,
-            );
+            this.context.checker.getReturnTypeOfSignature(checkerSignature);
         let returnType: DataType | undefined;
         let arrayStorage: ReturnType<typeof arrayReturnStorage>;
-        if (
-            (returnTsType.flags & ts.TypeFlags.Void) ===
-            0
-        ) {
+        if ((returnTsType.flags & ts.TypeFlags.Void) === 0) {
             let mapped = this.context.dataTypes.fromTsType(
                 returnTsType,
                 declaration,
             );
             if (mapped && this.context.dataTypes.returnsArray(mapped)) {
-                arrayStorage = arrayReturnStorage(this.context.checker, declaration,
-                    root => this.context.dataLowerer.materializeStaticTable(root)?.dataType?.kind === "table");
-                if (arrayStorage !== "static") mapped = this.context.dataTypes.ownReturnedArray(mapped);
+                arrayStorage = arrayReturnStorage(
+                    this.context.checker,
+                    declaration,
+                    (root) =>
+                        this.context.dataLowerer.materializeStaticTable(root)
+                            ?.dataType?.kind === "table",
+                );
+                if (arrayStorage !== "static")
+                    mapped = this.context.dataTypes.ownReturnedArray(mapped);
             }
             if (
                 mapped?.kind === "struct" &&
@@ -823,27 +802,20 @@ export class NativeFunctionLowerer {
                 this.typeRequiresReferenceStorage(returnTsType, mapped.name)
             ) {
                 mapped =
-                    this.context.dataTypes.markStoredObjectReferences(
-                        mapped,
-                    );
+                    this.context.dataTypes.markStoredObjectReferences(mapped);
             }
             if (
                 !mapped ||
                 mapped.kind === "function" ||
                 this.context.dataTypes.carriesHandle(mapped) ||
                 (options.rejectCarriedFunctionReturn &&
-                    this.context.dataTypes.carriesFunction(
-                        mapped,
-                    ))
+                    this.context.dataTypes.carriesFunction(mapped))
             ) {
                 return undefined;
             }
             returnType =
-                options.markAllStructReturns &&
-                mapped.kind === "struct"
-                    ? this.context.dataTypes.markStoredObjectReferences(
-                          mapped,
-                      )
+                options.markAllStructReturns && mapped.kind === "struct"
+                    ? this.context.dataTypes.markStoredObjectReferences(mapped)
                     : mapped;
         }
         const parameters: DataFunctionParameter[] = [];
@@ -851,16 +823,25 @@ export class NativeFunctionLowerer {
             if (!ts.isIdentifier(parameter.name)) {
                 return undefined;
             }
-            const parameterTsType = this.context.checker.getTypeAtLocation(parameter);
-            let parameterType =
-                this.context.dataTypes.fromTsType(
-                    parameterTsType,
-                    parameter,
-                );
-            const freshMatchingArray = arrayStorage === "fresh" && parameterType?.kind === "span" &&
-                returnType?.kind === "vector" && dataTypesEqual(parameterType.element, returnType.element);
-            if (parameterType && this.context.dataTypes.returnsArray(returnType) && arrayStorage !== "static" && !freshMatchingArray) {
-                parameterType = this.context.dataTypes.ownReturnedArray(parameterType);
+            const parameterTsType =
+                this.context.checker.getTypeAtLocation(parameter);
+            let parameterType = this.context.dataTypes.fromTsType(
+                parameterTsType,
+                parameter,
+            );
+            const freshMatchingArray =
+                arrayStorage === "fresh" &&
+                parameterType?.kind === "span" &&
+                returnType?.kind === "vector" &&
+                dataTypesEqual(parameterType.element, returnType.element);
+            if (
+                parameterType &&
+                this.context.dataTypes.returnsArray(returnType) &&
+                arrayStorage !== "static" &&
+                !freshMatchingArray
+            ) {
+                parameterType =
+                    this.context.dataTypes.ownReturnedArray(parameterType);
             }
             if (
                 parameterType?.kind === "struct" &&
@@ -931,13 +912,14 @@ export class NativeFunctionLowerer {
             return undefined;
         }
         const checkerSignature =
-            this.context.checker.getSignatureFromDeclaration(
-                declaration,
-            );
+            this.context.checker.getSignatureFromDeclaration(declaration);
         if (!checkerSignature) {
             return undefined;
         }
-        if (declaration.body && this.context.canReplaySharedCallEffects(declaration.body)) {
+        if (
+            declaration.body &&
+            this.context.canReplaySharedCallEffects(declaration.body)
+        ) {
             this.rejected.add(declaration);
             return undefined;
         }
@@ -983,14 +965,10 @@ export class NativeFunctionLowerer {
         // A helper that hands back a resource handle touches the engine
         // to produce it, so it stays on the inline path where the engine
         // binding is in scope; the mapper declines it.
-        const mapped = this.mapDataSignature(
-            declaration,
-            checkerSignature,
-            {
-                rejectCarriedFunctionReturn: false,
-                markAllStructReturns: false,
-            },
-        );
+        const mapped = this.mapDataSignature(declaration, checkerSignature, {
+            rejectCarriedFunctionReturn: false,
+            markAllStructReturns: false,
+        });
         if (!mapped) {
             return undefined;
         }
@@ -1046,9 +1024,7 @@ export class NativeFunctionLowerer {
         if (
             classDeclaration.heritageClauses?.length ||
             classDeclaration.typeParameters?.length ||
-            classDeclaration.members.some(
-                ts.isSetAccessorDeclaration,
-            )
+            classDeclaration.members.some(ts.isSetAccessorDeclaration)
         ) {
             return reject();
         }
@@ -1058,18 +1034,16 @@ export class NativeFunctionLowerer {
         if (this.containsRetainedCallbackRegistration(method)) {
             return reject();
         }
-        const closure = this.collectMethodClosure(
-            method,
-            classDeclaration,
-        );
+        const closure = this.collectMethodClosure(method, classDeclaration);
         if (!closure) {
             return reject();
         }
-        for (const member of [
-            ...closure.methods,
-            ...closure.getters,
-        ]) {
-            if (member.body && this.context.canReplaySharedCallEffects(member.body)) return reject();
+        for (const member of [...closure.methods, ...closure.getters]) {
+            if (
+                member.body &&
+                this.context.canReplaySharedCallEffects(member.body)
+            )
+                return reject();
             if (
                 member !== method &&
                 !this.methodIsStructurallyEligible(member)
@@ -1102,10 +1076,9 @@ export class NativeFunctionLowerer {
             ) {
                 continue;
             }
-            const mappedFieldType =
-                this.context.dataLowerer.dataTypeAt(
-                    member.name,
-                );
+            const mappedFieldType = this.context.dataLowerer.dataTypeAt(
+                member.name,
+            );
             // Class fields own the JavaScript objects assigned to them even
             // when their declared surface is readonly. Match construction's
             // owning representation rather than exposing a Span channel to
@@ -1119,12 +1092,8 @@ export class NativeFunctionLowerer {
                 !fieldType ||
                 fieldType.kind === "function" ||
                 fieldType.kind === "handle" ||
-                this.context.dataTypes.carriesHandle(
-                    fieldType,
-                ) ||
-                this.context.dataTypes.carriesFunction(
-                    fieldType,
-                )
+                this.context.dataTypes.carriesHandle(fieldType) ||
+                this.context.dataTypes.carriesFunction(fieldType)
             ) {
                 return reject();
             }
@@ -1141,23 +1110,17 @@ export class NativeFunctionLowerer {
             return reject();
         }
         const checkerSignature =
-            this.context.checker.getSignatureFromDeclaration(
-                method,
-            );
+            this.context.checker.getSignatureFromDeclaration(method);
         if (!checkerSignature) {
             return reject();
         }
         // The class inline path marks every struct method return as a
         // stored object reference; the once-emitted arm must agree so
         // `->` versus `.` member access matches at every consumer.
-        const mapped = this.mapDataSignature(
-            method,
-            checkerSignature,
-            {
-                rejectCarriedFunctionReturn: true,
-                markAllStructReturns: true,
-            },
-        );
+        const mapped = this.mapDataSignature(method, checkerSignature, {
+            rejectCarriedFunctionReturn: true,
+            markAllStructReturns: true,
+        });
         if (!mapped) {
             return reject();
         }
@@ -1176,10 +1139,7 @@ export class NativeFunctionLowerer {
         ) {
             return reject();
         }
-        const getters: Record<
-            string,
-            ts.GetAccessorDeclaration
-        > = {};
+        const getters: Record<string, ts.GetAccessorDeclaration> = {};
         for (const member of classDeclaration.members) {
             if (
                 ts.isGetAccessorDeclaration(member) &&
@@ -1204,15 +1164,13 @@ export class NativeFunctionLowerer {
     }
 
     /** The plain synchronous method shape the once-emitted arm accepts. */
-    private methodIsStructurallyEligible(
-        member: EligibleMember,
-    ): boolean {
+    private methodIsStructurallyEligible(member: EligibleMember): boolean {
         if (ts.isGetAccessorDeclaration(member)) {
             const statements = member.body?.statements;
             return (
                 statements?.length === 1 &&
                 ts.isReturnStatement(statements[0]!) &&
-                statements[0]!.expression !== undefined
+                statements[0].expression !== undefined
             );
         }
         if (!ts.isMethodDeclaration(member)) {
@@ -1225,8 +1183,7 @@ export class NativeFunctionLowerer {
             member.asteriskToken !== undefined ||
             member.questionToken !== undefined ||
             member.typeParameters?.length ||
-            (ts.canHaveDecorators(member) &&
-                ts.getDecorators(member)?.length)
+            (ts.canHaveDecorators(member) && ts.getDecorators(member)?.length)
         ) {
             return false;
         }
@@ -1249,10 +1206,7 @@ export class NativeFunctionLowerer {
             }
             if (
                 parameter.initializer &&
-                this.defaultReferencesMethodState(
-                    parameter.initializer,
-                    member,
-                )
+                this.defaultReferencesMethodState(parameter.initializer, member)
             ) {
                 // The native arm compiles a default at the call site, in
                 // the caller's scope, where neither `this` nor a sibling
@@ -1276,20 +1230,14 @@ export class NativeFunctionLowerer {
                           )
                         : undefined,
                 )
-                .filter(
-                    (symbol): symbol is ts.Symbol =>
-                        symbol !== undefined,
-                ),
+                .filter((symbol): symbol is ts.Symbol => symbol !== undefined),
         );
         return someAnalysisNode(initializer, (node) => {
             if (node.kind === ts.SyntaxKind.ThisKeyword) {
                 return true;
             }
             if (ts.isIdentifier(node)) {
-                const symbol =
-                    this.context.checker.getSymbolAtLocation(
-                        node,
-                    );
+                const symbol = this.context.checker.getSymbolAtLocation(node);
                 if (symbol && parameterSymbols.has(symbol)) {
                     return true;
                 }
@@ -1351,122 +1299,112 @@ export class NativeFunctionLowerer {
             }
         }
         const methods = new EmissionSet<ts.MethodDeclaration>();
-        const getters =
-            new EmissionSet<ts.GetAccessorDeclaration>();
+        const getters = new EmissionSet<ts.GetAccessorDeclaration>();
         const fieldNames = new EmissionSet<string>();
         const pending: EligibleMember[] = [method];
         methods.add(method);
         let sound = true;
-        const localClassConstruction = (
-            node: ts.NewExpression,
-        ): boolean => {
-            const callee = this.context.unwrap(
-                node.expression,
-            );
+        const localClassConstruction = (node: ts.NewExpression): boolean => {
+            const callee = this.context.unwrap(node.expression);
             if (!ts.isIdentifier(callee)) return true;
-            const symbol =
-                this.context.checker.getSymbolAtLocation(
-                    callee,
-                );
+            const symbol = this.context.checker.getSymbolAtLocation(callee);
             const target =
-                symbol &&
-                (symbol.flags & ts.SymbolFlags.Alias) !== 0
-                    ? this.context.checker.getAliasedSymbol(
-                          symbol,
-                      )
+                symbol && (symbol.flags & ts.SymbolFlags.Alias) !== 0
+                    ? this.context.checker.getAliasedSymbol(symbol)
                     : symbol;
             return (target?.declarations ?? []).some(
                 (candidate) =>
                     ts.isClassDeclaration(candidate) &&
-                    !candidate.getSourceFile()
-                        .isDeclarationFile,
+                    !candidate.getSourceFile().isDeclarationFile,
             );
         };
-        const invalid = (root: ts.Node) => findAnalysisNodeWithState(root, false, (node, dynamicThis) => {
-            if (node.kind === ts.SyntaxKind.ThisKeyword) {
-                if (dynamicThis) {
-                    return true;
-                }
-                const access = node.parent;
-                if (
-                    !ts.isPropertyAccessExpression(access) ||
-                    access.expression !== node ||
-                    access.questionDotToken !== undefined ||
-                    !ts.isMemberName(access.name)
-                ) {
-                    return true;
-                }
-                const entry = membersByName.get(
-                    access.name.text,
-                );
-                if (!entry) {
-                    return true;
-                }
-                if (entry.kind === "method") {
-                    const invocation = access.parent;
-                    if (
-                        !ts.isCallExpression(invocation) ||
-                        invocation.expression !== access ||
-                        invocation.questionDotToken !==
-                            undefined
-                    ) {
-                        return true;
+        const invalid = (root: ts.Node) =>
+            findAnalysisNodeWithState(
+                root,
+                false,
+                (node, dynamicThis) => {
+                    if (node.kind === ts.SyntaxKind.ThisKeyword) {
+                        if (dynamicThis) {
+                            return true;
+                        }
+                        const access = node.parent;
+                        if (
+                            !ts.isPropertyAccessExpression(access) ||
+                            access.expression !== node ||
+                            access.questionDotToken !== undefined ||
+                            !ts.isMemberName(access.name)
+                        ) {
+                            return true;
+                        }
+                        const entry = membersByName.get(access.name.text);
+                        if (!entry) {
+                            return true;
+                        }
+                        if (entry.kind === "method") {
+                            const invocation = access.parent;
+                            if (
+                                !ts.isCallExpression(invocation) ||
+                                invocation.expression !== access ||
+                                invocation.questionDotToken !== undefined
+                            ) {
+                                return true;
+                            }
+                            if (!methods.has(entry.member)) {
+                                methods.add(entry.member);
+                                pending.push(entry.member);
+                            }
+                            return false;
+                        }
+                        if (entry.kind === "getter") {
+                            if (!getters.has(entry.member)) {
+                                getters.add(entry.member);
+                                pending.push(entry.member);
+                            }
+                            return false;
+                        }
+                        fieldNames.add(access.name.text);
+                        return false;
                     }
-                    if (!methods.has(entry.member)) {
-                        methods.add(entry.member);
-                        pending.push(entry.member);
+                    if (ts.isNewExpression(node)) {
+                        if (localClassConstruction(node)) {
+                            // Constructing a local class runs its constructor at
+                            // the emission site; the closure checks do not cover
+                            // that body, so it stays on the inline path.
+                            return true;
+                        }
+                    }
+                    if (ts.isCallExpression(node)) {
+                        const callee = this.context.unwrap(node.expression);
+                        if (
+                            ts.isPropertyAccessExpression(callee) &&
+                            callee.expression.kind !== ts.SyntaxKind.ThisKeyword
+                        ) {
+                            const called =
+                                this.context.checker.getResolvedSignature(
+                                    node,
+                                )?.declaration;
+                            if (
+                                called &&
+                                (ts.isMethodDeclaration(called) ||
+                                    ts.isGetAccessorDeclaration(called)) &&
+                                !called.getSourceFile().isDeclarationFile
+                            ) {
+                                // A method call on another instance needs that
+                                // instance's compile-time record, which a
+                                // namespace-scope body does not carry.
+                                return true;
+                            }
+                        }
                     }
                     return false;
-                }
-                if (entry.kind === "getter") {
-                    if (!getters.has(entry.member)) {
-                        getters.add(entry.member);
-                        pending.push(entry.member);
-                    }
-                    return false;
-                }
-                fieldNames.add(access.name.text);
-                return false;
-            }
-            if (ts.isNewExpression(node)) {
-                if (localClassConstruction(node)) {
-                    // Constructing a local class runs its constructor at
-                    // the emission site; the closure checks do not cover
-                    // that body, so it stays on the inline path.
-                    return true;
-                }
-            }
-            if (ts.isCallExpression(node)) {
-                const callee = this.context.unwrap(
-                    node.expression,
-                );
-                if (
-                    ts.isPropertyAccessExpression(callee) &&
-                    callee.expression.kind !==
-                        ts.SyntaxKind.ThisKeyword
-                ) {
-                    const called = this.context.checker
-                        .getResolvedSignature(node)
-                        ?.declaration;
-                    if (
-                        called &&
-                        (ts.isMethodDeclaration(called) ||
-                            ts.isGetAccessorDeclaration(
-                                called,
-                            )) &&
-                        !called.getSourceFile()
-                            .isDeclarationFile
-                    ) {
-                        // A method call on another instance needs that
-                        // instance's compile-time record, which a
-                        // namespace-scope body does not carry.
-                        return true;
-                    }
-                }
-            }
-            return false;
-        }, (node, dynamicThis) => dynamicThis || ts.isFunctionExpression(node) || ts.isFunctionDeclaration(node) ||
-            ts.isClassDeclaration(node) || ts.isClassExpression(node));
+                },
+                (node, dynamicThis) =>
+                    dynamicThis ||
+                    ts.isFunctionExpression(node) ||
+                    ts.isFunctionDeclaration(node) ||
+                    ts.isClassDeclaration(node) ||
+                    ts.isClassExpression(node),
+            );
         while (sound && pending.length > 0) {
             const member = pending.pop()!;
             if (!member.body) {
@@ -1488,9 +1426,7 @@ export class NativeFunctionLowerer {
      * and write lowers through the same data paths it takes today —
      * against the caller's own field local, through the reference.
      */
-    private emitMethodDefinition(
-        signature: NativeMethodSignature,
-    ): void {
+    private emitMethodDefinition(signature: NativeMethodSignature): void {
         this.context.reachJsData();
         const body = signature.method.body;
         if (!body || !ts.isBlock(body)) {
@@ -1500,9 +1436,7 @@ export class NativeFunctionLowerer {
             );
         }
         const returnCpp = signature.returnType
-            ? this.context.dataTypes.cppType(
-                  signature.returnType,
-              )
+            ? this.context.dataTypes.cppType(signature.returnType)
             : "void";
         const previousThis = this.context.activeThis();
         let captured: {
@@ -1510,8 +1444,7 @@ export class NativeFunctionLowerer {
             lines: string[];
         };
         try {
-            const fieldProperties: Record<string, Value> =
-                {};
+            const fieldProperties: Record<string, Value> = {};
             captured = captureDataFunctionBody(
                 this.context,
                 signature.parameters,
@@ -1522,10 +1455,9 @@ export class NativeFunctionLowerer {
                 {
                     bindLeading: () =>
                         signature.fields.map((field) => {
-                            const cppName =
-                                this.context.cppLocalName(
-                                    `this_${field.name}`,
-                                );
+                            const cppName = this.context.cppLocalName(
+                                `this_${field.name}`,
+                            );
                             fieldProperties[field.name] =
                                 this.context.dataLowerer.leafValue(
                                     cppName,
@@ -1562,11 +1494,7 @@ export class NativeFunctionLowerer {
         } finally {
             this.context.defineThis(previousThis);
         }
-        this.registerDataFunction(
-            signature.cppName,
-            returnCpp,
-            captured,
-        );
+        this.registerDataFunction(signature.cppName, returnCpp, captured);
     }
 
     private containsGenerationTimeFetch(
@@ -1578,30 +1506,34 @@ export class NativeFunctionLowerer {
         if (active.has(declaration)) return false;
         active.add(declaration);
 
-        const found = someAnalysisNode(declaration.body ?? declaration, (node) => {
-            if (ts.isCallExpression(node)) {
-                if (
-                    ts.isIdentifier(node.expression) &&
-                    node.expression.text === "fetch" &&
-                    isDefaultLibraryIdentifier(
-                        this.context.checker,
-                        node.expression,
-                    )
-                ) {
-                    return true;
+        const found = someAnalysisNode(
+            declaration.body ?? declaration,
+            (node) => {
+                if (ts.isCallExpression(node)) {
+                    if (
+                        ts.isIdentifier(node.expression) &&
+                        node.expression.text === "fetch" &&
+                        isDefaultLibraryIdentifier(
+                            this.context.checker,
+                            node.expression,
+                        )
+                    ) {
+                        return true;
+                    }
+                    const called =
+                        this.context.checker.getResolvedSignature(
+                            node,
+                        )?.declaration;
+                    if (
+                        isSupportedFunction(called) &&
+                        this.containsGenerationTimeFetch(called, active)
+                    ) {
+                        return true;
+                    }
                 }
-                const called = this.context.checker
-                    .getResolvedSignature(node)
-                    ?.declaration;
-                if (
-                    isSupportedFunction(called) &&
-                    this.containsGenerationTimeFetch(called, active)
-                ) {
-                    return true;
-                }
-            }
-            return false;
-        });
+                return false;
+            },
+        );
 
         active.delete(declaration);
         this.generationTimeFetchCache.set(declaration, found);
@@ -1666,8 +1598,7 @@ export class NativeFunctionLowerer {
             ) {
                 const parent = node.parent;
                 const functionExpression =
-                    ts.isArrowFunction(node) ||
-                    ts.isFunctionExpression(node);
+                    ts.isArrowFunction(node) || ts.isFunctionExpression(node);
                 const immediatelyInvoked =
                     ts.isCallExpression(parent) &&
                     this.context.unwrap(parent.expression) === node;
@@ -1708,75 +1639,81 @@ export class NativeFunctionLowerer {
             "createBillboardCustomShader",
         ]);
 
-        const found = someAnalysisNode(declaration.body ?? declaration, (node) => {
-            if (ts.isCallExpression(node)) {
-                if (
-                    ts.isIdentifier(node.expression) &&
-                    shaderFactories.has(node.expression.text)
-                ) {
-                    return true;
+        const found = someAnalysisNode(
+            declaration.body ?? declaration,
+            (node) => {
+                if (ts.isCallExpression(node)) {
+                    if (
+                        ts.isIdentifier(node.expression) &&
+                        shaderFactories.has(node.expression.text)
+                    ) {
+                        return true;
+                    }
+                    const called =
+                        this.context.checker.getResolvedSignature(
+                            node,
+                        )?.declaration;
+                    if (
+                        called?.getSourceFile().isDeclarationFile &&
+                        ts.isFunctionDeclaration(called) &&
+                        called.name &&
+                        shaderFactories.has(called.name.text)
+                    ) {
+                        return true;
+                    }
                 }
-                const called = this.context.checker
-                    .getResolvedSignature(node)
-                    ?.declaration;
-                if (
-                    called?.getSourceFile().isDeclarationFile &&
-                    ts.isFunctionDeclaration(called) &&
-                    called.name &&
-                    shaderFactories.has(called.name.text)
-                ) {
-                    return true;
-                }
-            }
-            return false;
-        });
+                return false;
+            },
+        );
 
         return found;
     }
 
     /** Whether this otherwise plain-data helper needs the entry engine. */
-    private containsEntryEngineOperation(
-        declaration: EligibleMember,
-    ): boolean {
-
-        const found = someAnalysisNode(declaration.body ?? declaration, (node) => {
-            if (ts.isCallExpression(node)) {
-                const callee = this.context.unwrap(node.expression);
-                // `requestAnimationFrame` joins `setTimeout` for the same
-                // reason and one more: a frame yield built on it is not a
-                // call at all in the lowered program, it is a CUT in the
-                // entry body's continuation. A once-emitted namespace
-                // function has no continuation to cut and no engine
-                // binding to queue against, and a counted wait through one
-                // would lose the count -- its body is emitted once for
-                // every call and every iteration.
-                const name = ts.isIdentifier(callee)
-                    ? callee.text
-                    : ts.isPropertyAccessExpression(callee)
-                    ? callee.name.text
-                    : undefined;
-                if (
-                    name === "setTimeout" ||
-                    name === "requestAnimationFrame"
-                ) {
-                    return true;
+    private containsEntryEngineOperation(declaration: EligibleMember): boolean {
+        const found = someAnalysisNode(
+            declaration.body ?? declaration,
+            (node) => {
+                if (ts.isCallExpression(node)) {
+                    const callee = this.context.unwrap(node.expression);
+                    // `requestAnimationFrame` joins `setTimeout` for the same
+                    // reason and one more: a frame yield built on it is not a
+                    // call at all in the lowered program, it is a CUT in the
+                    // entry body's continuation. A once-emitted namespace
+                    // function has no continuation to cut and no engine
+                    // binding to queue against, and a counted wait through one
+                    // would lose the count -- its body is emitted once for
+                    // every call and every iteration.
+                    const name = ts.isIdentifier(callee)
+                        ? callee.text
+                        : ts.isPropertyAccessExpression(callee)
+                          ? callee.name.text
+                          : undefined;
+                    if (
+                        name === "setTimeout" ||
+                        name === "requestAnimationFrame"
+                    ) {
+                        return true;
+                    }
                 }
-            }
-            return false;
-        });
+                return false;
+            },
+        );
 
         return found;
     }
 
     /** Establish object storage before emitting any native member accesses. */
-    private typeRequiresReferenceStorage(sourceType: ts.Type, structName: string): boolean {
+    private typeRequiresReferenceStorage(
+        sourceType: ts.Type,
+        structName: string,
+    ): boolean {
         const target = this.context.checker.getNonNullableType(sourceType);
         const cached = this.referenceStorageCache.get(structName);
         if (cached !== undefined) return cached;
         const sameType = (candidate: ts.Type): boolean => {
-            const normalized = this.context.checker.getNonNullableType(
-                candidate,
-            );
+            const normalized =
+                this.context.checker.getNonNullableType(candidate);
             return (
                 normalized === target ||
                 (normalized.aliasSymbol !== undefined &&
@@ -1790,47 +1727,52 @@ export class NativeFunctionLowerer {
                     this.context.checker.isTypeAssignableTo(target, normalized))
             );
         };
-        const stored = this.context.sourceFiles().some(source => !source.isDeclarationFile && someAnalysisNode(source, (node) => {
-            let storedTypeNode: ts.TypeNode | undefined;
-            if (ts.isArrayTypeNode(node)) {
-                storedTypeNode = node.elementType;
-            } else if (
-                ts.isPropertyDeclaration(node) ||
-                ts.isPropertySignature(node) ||
-                ts.isMethodDeclaration(node)
-            ) {
-                // Fields own their object values, and native method returns
-                // use the same reference representation (mapSignature).
-                storedTypeNode = node.type;
-            } else if (
-                ts.isTypeReferenceNode(node) &&
-                ts.isIdentifier(node.typeName)
-            ) {
-                const index = ["Map", "ReadonlyMap", "Record"].includes(
-                    node.typeName.text,
-                )
-                    ? 1
-                    : ["Array", "ReadonlyArray", "Set"].includes(
-                          node.typeName.text,
-                      )
-                      ? 0
-                      : -1;
-                storedTypeNode = index >= 0
-                    ? node.typeArguments?.[index]
-                    : undefined;
-            }
-            if (
-                storedTypeNode &&
-                sameType(
-                    this.context.checker.getTypeFromTypeNode(
-                        storedTypeNode,
-                    ),
-                )
-            ) {
-                return true;
-            }
-            return false;
-        }));
+        const stored = this.context.sourceFiles().some(
+            (source) =>
+                !source.isDeclarationFile &&
+                someAnalysisNode(source, (node) => {
+                    let storedTypeNode: ts.TypeNode | undefined;
+                    if (ts.isArrayTypeNode(node)) {
+                        storedTypeNode = node.elementType;
+                    } else if (
+                        ts.isPropertyDeclaration(node) ||
+                        ts.isPropertySignature(node) ||
+                        ts.isMethodDeclaration(node)
+                    ) {
+                        // Fields own their object values, and native method returns
+                        // use the same reference representation (mapSignature).
+                        storedTypeNode = node.type;
+                    } else if (
+                        ts.isTypeReferenceNode(node) &&
+                        ts.isIdentifier(node.typeName)
+                    ) {
+                        const index = ["Map", "ReadonlyMap", "Record"].includes(
+                            node.typeName.text,
+                        )
+                            ? 1
+                            : ["Array", "ReadonlyArray", "Set"].includes(
+                                    node.typeName.text,
+                                )
+                              ? 0
+                              : -1;
+                        storedTypeNode =
+                            index >= 0
+                                ? node.typeArguments?.[index]
+                                : undefined;
+                    }
+                    if (
+                        storedTypeNode &&
+                        sameType(
+                            this.context.checker.getTypeFromTypeNode(
+                                storedTypeNode,
+                            ),
+                        )
+                    ) {
+                        return true;
+                    }
+                    return false;
+                }),
+        );
         this.referenceStorageCache.set(structName, stored);
         return stored;
     }
@@ -1852,8 +1794,7 @@ export class NativeFunctionLowerer {
         const classify = (
             bindingDeclaration: ts.Node,
         ): "internal" | "module" | "captured" => {
-            let node: ts.Node | undefined =
-                bindingDeclaration.parent;
+            let node: ts.Node | undefined = bindingDeclaration.parent;
             let sawFunction = false;
             while (node) {
                 if (node === declaration || node === root) {
@@ -1863,87 +1804,85 @@ export class NativeFunctionLowerer {
                     sawFunction = true;
                 }
                 if (ts.isSourceFile(node)) {
-                    return sawFunction
-                        ? "captured"
-                        : "module";
+                    return sawFunction ? "captured" : "module";
                 }
                 node = node.parent;
             }
             return "module";
         };
-        const captured = declaration.body !== undefined && someAnalysisNode(declaration.body, (node) => {
-            if (ts.isIdentifier(node)) {
-                const symbol =
-                    this.context.checker.getSymbolAtLocation(
-                        node,
-                    );
-                const target =
-                    symbol &&
-                    (symbol.flags &
-                        ts.SymbolFlags.Alias) !==
-                        0
-                        ? this.context.checker.getAliasedSymbol(
-                              symbol,
-                          )
-                        : symbol;
-                const bindingDeclaration =
-                    target?.valueDeclaration ??
-                    target?.declarations?.[0];
-                if (bindingDeclaration) {
-                    const shape = classify(
-                        bindingDeclaration,
-                    );
-                    if (shape === "captured") {
-                        return true;
+        const captured =
+            declaration.body !== undefined &&
+            someAnalysisNode(
+                declaration.body,
+                (node) => {
+                    if (ts.isIdentifier(node)) {
+                        const symbol =
+                            this.context.checker.getSymbolAtLocation(node);
+                        const target =
+                            symbol &&
+                            (symbol.flags & ts.SymbolFlags.Alias) !== 0
+                                ? this.context.checker.getAliasedSymbol(symbol)
+                                : symbol;
+                        const bindingDeclaration =
+                            target?.valueDeclaration ??
+                            target?.declarations?.[0];
+                        if (bindingDeclaration) {
+                            const shape = classify(bindingDeclaration);
+                            if (shape === "captured") {
+                                return true;
+                            }
+                            if (shape === "module") {
+                                // Entry-file top-level bindings live as locals
+                                // of the generated main. Compile-time bindings
+                                // (static tuples, records, strings) still fold
+                                // on any path; runtime bindings capture.
+                                const bound =
+                                    this.context.lookupIdentifierValue(node);
+                                if (
+                                    ts.isVariableDeclaration(
+                                        bindingDeclaration,
+                                    ) &&
+                                    bindingDeclaration.initializer &&
+                                    ts.isRegularExpressionLiteral(
+                                        bindingDeclaration.initializer,
+                                    )
+                                ) {
+                                    return true;
+                                }
+                                if (
+                                    bound &&
+                                    bound.kind !== "tuple" &&
+                                    bound.kind !== "record" &&
+                                    (bound.kind !== "string" ||
+                                        bound.staticString === undefined) &&
+                                    bound.kind !== "callback"
+                                ) {
+                                    return true;
+                                }
+                            }
+                        }
                     }
-                    if (shape === "module") {
-                        // Entry-file top-level bindings live as locals
-                        // of the generated main. Compile-time bindings
-                        // (static tuples, records, strings) still fold
-                        // on any path; runtime bindings capture.
-                        const bound =
-                            this.context.lookupIdentifierValue(
+                    if (ts.isCallExpression(node)) {
+                        const called =
+                            this.context.checker.getResolvedSignature(
                                 node,
-                            );
+                            )?.declaration;
                         if (
-                            ts.isVariableDeclaration(bindingDeclaration) &&
-                            bindingDeclaration.initializer &&
-                            ts.isRegularExpressionLiteral(
-                                bindingDeclaration.initializer,
+                            isSupportedFunction(called) &&
+                            this.capturesEnclosingBindings(
+                                called,
+                                root,
+                                active,
+                                skipMemberNames,
                             )
                         ) {
                             return true;
                         }
-                        if (
-                            bound &&
-                            bound.kind !== "tuple" &&
-                            bound.kind !== "record" &&
-                            (bound.kind !== "string" || bound.staticString === undefined) &&
-                            bound.kind !== "callback"
-                        ) {
-                            return true;
-                        }
                     }
-                }
-            }
-            if (ts.isCallExpression(node)) {
-                const called = this.context.checker
-                    .getResolvedSignature(node)
-                    ?.declaration;
-                if (
-                    isSupportedFunction(called) &&
-                    this.capturesEnclosingBindings(
-                        called,
-                        root,
-                        active,
-                        skipMemberNames,
-                    )
-                ) {
-                    return true;
-                }
-            }
-            return false;
-        }, skipMemberNames ? { memberNames: "skip" } : {});
+                    return false;
+                },
+                skipMemberNames ? { memberNames: "skip" } : {},
+            );
         active.delete(declaration);
         return captured;
     }
@@ -1989,9 +1928,7 @@ export class NativeFunctionLowerer {
         }
     }
 
-    private emitDefinition(
-        signature: NativeFunctionSignature,
-    ): void {
+    private emitDefinition(signature: NativeFunctionSignature): void {
         this.context.reachJsData();
         const body = signature.declaration.body;
         if (!body || !ts.isBlock(body)) {
@@ -2001,9 +1938,7 @@ export class NativeFunctionLowerer {
             );
         }
         const returnCpp = signature.returnType
-            ? this.context.dataTypes.cppType(
-                  signature.returnType,
-              )
+            ? this.context.dataTypes.cppType(signature.returnType)
             : "void";
         this.registerDataFunction(
             signature.cppName,
@@ -2019,12 +1954,17 @@ export class NativeFunctionLowerer {
         );
     }
 
-    private emitValueBody(statements: readonly ts.Statement[], returnsValue: boolean): void {
+    private emitValueBody(
+        statements: readonly ts.Statement[],
+        returnsValue: boolean,
+    ): void {
         const terminated = emitReachableStatements(this.context, statements);
         if (returnsValue && !terminated) {
             // An exhaustive source switch may lower to a native if/else chain.
             // Keep the impossible fallthrough defined on all native compilers.
-            this.context.emit('throw std::runtime_error("Native value function fell through without returning.");');
+            this.context.emit(
+                'throw std::runtime_error("Native value function fell through without returning.");',
+            );
         }
     }
 
@@ -2042,18 +1982,14 @@ export class NativeFunctionLowerer {
             lines: string[];
         },
     ): void {
-        const parameterList =
-            definition.parameterDeclarations.join(", ");
+        const parameterList = definition.parameterDeclarations.join(", ");
         this.context.registerNativeFunction(
             `${returnCpp} ${cppName}(${parameterList});`,
             [
                 `${returnCpp} ${cppName}(${parameterList}) {`,
-                ...definition.lines.map(
-                    (line) => `    ${line}`,
-                ),
+                ...definition.lines.map((line) => `    ${line}`),
                 "}",
             ],
         );
     }
-
 }

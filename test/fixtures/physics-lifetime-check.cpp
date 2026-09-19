@@ -9,7 +9,7 @@ namespace bbl::upstream {
 std::array<float, 16> mesh_local_matrix(const MeshRecord&) { std::abort(); }
 std::array<float, 16> mesh_world_matrix(const Engine&, const MeshRecord&) { std::abort(); }
 std::array<float, 16> transform_node_world(const Engine&, TransformNodeHandle) { std::abort(); }
-}
+} // namespace bbl::upstream
 
 int main() {
     using namespace bbl;
@@ -42,7 +42,7 @@ int main() {
             engine->meshes.emplace_back();
             engine->meshes.back().position.x = 200; // A second floating-origin region.
             retained_body = create_physics_body(retained_world, physics_node(MeshHandle{0}),
-                PhysicsMotionType::DYNAMIC, false);
+                                                PhysicsMotionType::DYNAMIC, false);
             native_body = retained_body.handle.ownership;
             PhysicsShape shape;
             shape.handle = pal::physics_shape_create_sphere({0, 0, 0}, 0.5);
@@ -61,12 +61,18 @@ int main() {
         assert(retained_body.region.ownership->members.empty());
         retained_scene.before_render.front()(20); // Engine is gone: no callback/dangling access.
         bool refused = false;
-        try { set_physics_timestep_ms(retained_world, 20); }
-        catch (const std::runtime_error&) { refused = true; }
+        try {
+            set_physics_timestep_ms(retained_world, 20);
+        } catch (const std::runtime_error&) {
+            refused = true;
+        }
         assert(refused);
         refused = false;
-        try { set_physics_body_pre_step(retained_body, true); }
-        catch (const std::runtime_error&) { refused = true; }
+        try {
+            set_physics_body_pre_step(retained_body, true);
+        } catch (const std::runtime_error&) {
+            refused = true;
+        }
         assert(refused);
         retained_body = {};
         assert(native_body.expired() && native_shape.expired());

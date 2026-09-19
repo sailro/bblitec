@@ -4,20 +4,42 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import test from "node:test";
 import { importPinnedModule } from "../src/pinned-shader-composer.js";
-import { cppFunction, cppRecord, optionalNativeFixtureTools, runNativeFixtureCompiler } from "./native-fixture.js";
+import {
+    cppFunction,
+    cppRecord,
+    optionalNativeFixtureTools,
+    runNativeFixtureCompiler,
+} from "./native-fixture.js";
 
 const native = optionalNativeFixtureTools(false);
 
-test("material variant keys follow live shadow receivers, caster views and instance streams", { skip: !native }, async () => {
-    const bits = await importPinnedModule<Record<string, number>>("material/mesh-features.js");
-    for (const name of ["MSH_RECEIVE_SHADOWS", "MSH_HAS_SKELETON", "MSH_VAT",
-        "MSH_HAS_THIN_INSTANCES", "MSH_HAS_INSTANCE_COLOR", "MSH_HAS_MORPH_TARGETS"])
-        assert.ok(Number.isInteger(bits[name]), name);
-    const output = resolve("artifacts/material-variant-keys");
-    mkdirSync(output, { recursive: true });
-    const source = readFileSync("native/src/pal_gpu_shared.hpp", "utf8").replaceAll("\r\n", "\n");
-    const file = join(output, "check.cpp"), executable = join(output, "check.exe");
-    writeFileSync(file, `#define BBLITE_SHADOWS_ESM 1
+test(
+    "material variant keys follow live shadow receivers, caster views and instance streams",
+    { skip: !native },
+    async () => {
+        const bits = await importPinnedModule<Record<string, number>>(
+            "material/mesh-features.js",
+        );
+        for (const name of [
+            "MSH_RECEIVE_SHADOWS",
+            "MSH_HAS_SKELETON",
+            "MSH_VAT",
+            "MSH_HAS_THIN_INSTANCES",
+            "MSH_HAS_INSTANCE_COLOR",
+            "MSH_HAS_MORPH_TARGETS",
+        ])
+            assert.ok(Number.isInteger(bits[name]), name);
+        const output = resolve("artifacts/material-variant-keys");
+        mkdirSync(output, { recursive: true });
+        const source = readFileSync(
+            "native/src/pal_gpu_shared.hpp",
+            "utf8",
+        ).replaceAll("\r\n", "\n");
+        const file = join(output, "check.cpp"),
+            executable = join(output, "check.exe");
+        writeFileSync(
+            file,
+            `#define BBLITE_SHADOWS_ESM 1
 #include <bblite/runtime.hpp>
 #include <cassert>
 namespace bbl::upstream {
@@ -47,9 +69,15 @@ unsigned pinned_pbr_light_mode(unsigned, bool) { return 0; }
 }
 namespace bbl::pal {
 constexpr auto npos = std::size_t(-1);
-${["PinnedVariantKey", "StandardVariantKey"].map(name => cppRecord(source, `struct ${name} {`)).join("\n")}
-${["inline bool pinned_record_instanced(", "inline bool pinned_record_instance_colored(",
-    "inline PinnedVariantKey pinned_variant_key(", "inline StandardVariantKey standard_variant_key("].map(signature => cppFunction(source, signature)).join("\n")}
+${["PinnedVariantKey", "StandardVariantKey"].map((name) => cppRecord(source, `struct ${name} {`)).join("\n")}
+${[
+    "inline bool pinned_record_instanced(",
+    "inline bool pinned_record_instance_colored(",
+    "inline PinnedVariantKey pinned_variant_key(",
+    "inline StandardVariantKey standard_variant_key(",
+]
+    .map((signature) => cppFunction(source, signature))
+    .join("\n")}
 }
 int main() {
     using namespace bbl;
@@ -94,8 +122,19 @@ int main() {
     draw.item.material_kind = upstream::RenderMaterialKind::standard;
     assert(pal::standard_variant_key(engine, draw).mesh_features == (upstream::base | (1u << 21)));
 }
-`);
-    runNativeFixtureCompiler(native!, ["/nologo", "/std:c++20", "/EHsc", "/W4", "/WX",
-        `/I${resolve("native/include")}`, file, `/Fe:${executable}`, `/Fo:${join(output, "check.obj")}`]);
-    execFileSync(executable, { stdio: "pipe" });
-});
+`,
+        );
+        runNativeFixtureCompiler(native!, [
+            "/nologo",
+            "/std:c++20",
+            "/EHsc",
+            "/W4",
+            "/WX",
+            `/I${resolve("native/include")}`,
+            file,
+            `/Fe:${executable}`,
+            `/Fo:${join(output, "check.obj")}`,
+        ]);
+        execFileSync(executable, { stdio: "pipe" });
+    },
+);

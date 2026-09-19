@@ -65,17 +65,18 @@ struct PickTargets {
     SDL_GPUTransferBuffer* staging = nullptr;
 };
 
-inline void release_pick_targets(
-    SDL_GPUDevice* device,
-    PickTargets& targets) {
-    if (targets.color) SDL_ReleaseGPUTexture(device, targets.color);
+inline void release_pick_targets(SDL_GPUDevice* device, PickTargets& targets) {
+    if (targets.color)
+        SDL_ReleaseGPUTexture(device, targets.color);
     if (targets.depth_color) {
         SDL_ReleaseGPUTexture(device, targets.depth_color);
     }
 #if BBLITE_HAS_DETAILED_PICKING
-    if (targets.detail) SDL_ReleaseGPUTexture(device, targets.detail);
+    if (targets.detail)
+        SDL_ReleaseGPUTexture(device, targets.detail);
 #endif
-    if (targets.depth) SDL_ReleaseGPUTexture(device, targets.depth);
+    if (targets.depth)
+        SDL_ReleaseGPUTexture(device, targets.depth);
     if (targets.staging) {
         SDL_ReleaseGPUTransferBuffer(device, targets.staging);
     }
@@ -83,11 +84,8 @@ inline void release_pick_targets(
 }
 
 /** One 1x1 attachment. */
-inline SDL_GPUTexture* create_pick_attachment(
-    SDL_GPUDevice* device,
-    SDL_GPUTextureFormat format,
-    SDL_GPUTextureUsageFlags usage,
-    const char* label) {
+inline SDL_GPUTexture* create_pick_attachment(SDL_GPUDevice* device, SDL_GPUTextureFormat format,
+                                              SDL_GPUTextureUsageFlags usage, const char* label) {
     SDL_GPUTextureCreateInfo info{};
     info.type = SDL_GPU_TEXTURETYPE_2D;
     info.format = format;
@@ -99,38 +97,25 @@ inline SDL_GPUTexture* create_pick_attachment(
     info.sample_count = SDL_GPU_SAMPLECOUNT_1;
     SDL_GPUTexture* texture = SDL_CreateGPUTexture(device, &info);
     if (!texture) {
-        gpu_error(
-            (std::string("SDL_CreateGPUTexture ") + label).c_str());
+        gpu_error((std::string("SDL_CreateGPUTexture ") + label).c_str());
     }
     return texture;
 }
 
-inline void ensure_pick_targets(
-    SDL_GPUDevice* device,
-    PickTargets& targets) {
-    if (targets.color) return;
-    targets.color = create_pick_attachment(
-        device,
-        SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM,
-        SDL_GPU_TEXTUREUSAGE_COLOR_TARGET,
-        "pick-color");
-    targets.depth_color = create_pick_attachment(
-        device,
-        SDL_GPU_TEXTUREFORMAT_R32_FLOAT,
-        SDL_GPU_TEXTUREUSAGE_COLOR_TARGET,
-        "pick-depth-color");
+inline void ensure_pick_targets(SDL_GPUDevice* device, PickTargets& targets) {
+    if (targets.color)
+        return;
+    targets.color = create_pick_attachment(device, SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM,
+                                           SDL_GPU_TEXTUREUSAGE_COLOR_TARGET, "pick-color");
+    targets.depth_color =
+        create_pick_attachment(device, SDL_GPU_TEXTUREFORMAT_R32_FLOAT,
+                               SDL_GPU_TEXTUREUSAGE_COLOR_TARGET, "pick-depth-color");
 #if BBLITE_HAS_DETAILED_PICKING
-    targets.detail = create_pick_attachment(
-        device,
-        SDL_GPU_TEXTUREFORMAT_R32G32B32A32_UINT,
-        SDL_GPU_TEXTUREUSAGE_COLOR_TARGET,
-        "pick-detail");
+    targets.detail = create_pick_attachment(device, SDL_GPU_TEXTUREFORMAT_R32G32B32A32_UINT,
+                                            SDL_GPU_TEXTUREUSAGE_COLOR_TARGET, "pick-detail");
 #endif
-    targets.depth = create_pick_attachment(
-        device,
-        SDL_GPU_TEXTUREFORMAT_D24_UNORM,
-        SDL_GPU_TEXTUREUSAGE_DEPTH_STENCIL_TARGET,
-        "pick-depth");
+    targets.depth = create_pick_attachment(device, SDL_GPU_TEXTUREFORMAT_D24_UNORM,
+                                           SDL_GPU_TEXTUREUSAGE_DEPTH_STENCIL_TARGET, "pick-depth");
     // 256-aligned rows: the encoded id, then the r32float clip depth used
     // by the pin to reconstruct `PickingInfo.pickedPoint`, and -- where
     // the detailed pipeline draws -- the packed primitive index and
@@ -175,8 +160,7 @@ class BillboardPickContributor {
 public:
     BillboardPickContributor() = default;
     BillboardPickContributor(const BillboardPickContributor&) = delete;
-    BillboardPickContributor& operator=(
-        const BillboardPickContributor&) = delete;
+    BillboardPickContributor& operator=(const BillboardPickContributor&) = delete;
     ~BillboardPickContributor() { release(); }
 
     /**
@@ -188,21 +172,17 @@ public:
      * assigned here -- they follow the meshes and the clouds, which the
      * picker counts inside its own pass.
      */
-    void prepare(
-        SDL_GPUDevice* device,
-        const Engine& engine,
-        const Scene& scene) {
-        if (device_ && device_ != device) release();
+    void prepare(SDL_GPUDevice* device, const Engine& engine, const Scene& scene) {
+        if (device_ && device_ != device)
+            release();
         device_ = device;
         systems_.resize(scene.billboard_systems.size());
         bool any = false;
-        for (std::size_t index = 0;
-             index < scene.billboard_systems.size();
-             ++index) {
+        for (std::size_t index = 0; index < scene.billboard_systems.size(); ++index) {
             const BillboardSystemRecord& system =
-                engine.billboard_systems[
-                    scene.billboard_systems[index].value];
-            if (!billboard_pick_draws(system)) continue;
+                engine.billboard_systems[scene.billboard_systems[index].value];
+            if (!billboard_pick_draws(system))
+                continue;
             any = true;
             ensure_pipeline(system.orientation);
             SystemResources& resources = systems_[index];
@@ -213,9 +193,8 @@ public:
                 resources.capacity = system.capacity;
                 SDL_GPUBufferCreateInfo info{};
                 info.usage = SDL_GPU_BUFFERUSAGE_VERTEX;
-                info.size = static_cast<Uint32>(
-                    static_cast<std::size_t>(resources.capacity) *
-                    upstream::billboard_instance_stride_bytes);
+                info.size = static_cast<Uint32>(static_cast<std::size_t>(resources.capacity) *
+                                                upstream::billboard_instance_stride_bytes);
                 resources.instances = SDL_CreateGPUBuffer(device_, &info);
                 if (!resources.instances) {
                     gpu_error("SDL_CreateGPUBuffer billboard-pick");
@@ -231,24 +210,18 @@ public:
             // The pin needs no gate because `writeBuffer` is a staged copy
             // with no submit. This upload depends on the view not at all,
             // so what the system holds is the whole stamp.
-            const SystemUpload wanted{
-                system.count, system.instance_version};
-            if (resources.uploaded == wanted) continue;
+            const SystemUpload wanted{system.count, system.instance_version};
+            if (resources.uploaded == wanted)
+                continue;
             resources.uploaded = wanted;
-            update_buffer(
-                device_,
-                resources.instances,
-                system.instance_data.data(),
-                static_cast<std::size_t>(system.count) *
-                    upstream::billboard_instance_stride_bytes);
+            update_buffer(device_, resources.instances, system.instance_data.data(),
+                          static_cast<std::size_t>(system.count) *
+                              upstream::billboard_instance_stride_bytes);
         }
         if (any && !indices_) {
-            indices_ = upload_buffer(
-                device_,
-                SDL_GPU_BUFFERUSAGE_INDEX,
-                upstream::billboard_index_data.data(),
-                upstream::billboard_index_data.size() *
-                    sizeof(std::uint16_t));
+            indices_ = upload_buffer(device_, SDL_GPU_BUFFERUSAGE_INDEX,
+                                     upstream::billboard_index_data.data(),
+                                     upstream::billboard_index_data.size() * sizeof(std::uint16_t));
         }
     }
 
@@ -257,58 +230,37 @@ public:
      * per system after every earlier candidate, and the draws go into the
      * pass the picker already opened.
      */
-    void record(
-        SDL_GPUCommandBuffer* command,
-        SDL_GPURenderPass* pass,
-        const Engine& engine,
-        const Scene& scene,
-        const std::array<float, 16>& view,
-        const PickSceneUniforms& scene_uniforms,
-        std::vector<PickRange>& ranges,
-        std::uint32_t& next_id) {
-        collect_pick_billboard_candidates(
-            engine, scene, ranges, next_id, candidates_);
+    void record(SDL_GPUCommandBuffer* command, SDL_GPURenderPass* pass, const Engine& engine,
+                const Scene& scene, const std::array<float, 16>& view,
+                const PickSceneUniforms& scene_uniforms, std::vector<PickRange>& ranges,
+                std::uint32_t& next_id) {
+        collect_pick_billboard_candidates(engine, scene, ranges, next_id, candidates_);
         bool scene_pushed = false;
         for (const PickBillboardCandidate& candidate : candidates_) {
-            const Pipeline& pipeline =
-                ensure_pipeline(candidate.orientation);
+            const Pipeline& pipeline = ensure_pipeline(candidate.orientation);
             SDL_BindGPUGraphicsPipeline(pass, pipeline.pipeline);
             if (!scene_pushed) {
                 // Loop-invariant, as the mesh pass's own push is: both
                 // orientations come out of one composed module, so they
                 // resolve `scene` to the same slot, and pushed uniform
                 // state persists across draws.
-                SDL_PushGPUVertexUniformData(
-                    command,
-                    static_cast<Uint32>(pipeline.scene_slot),
-                    &scene_uniforms,
-                    sizeof(scene_uniforms));
+                SDL_PushGPUVertexUniformData(command, static_cast<Uint32>(pipeline.scene_slot),
+                                             &scene_uniforms, sizeof(scene_uniforms));
                 scene_pushed = true;
             }
             const BillboardPickUniforms uniforms =
-                build_billboard_pick_uniforms(
-                    view, candidate.base_id, 0.0f, candidate.axis);
-            SDL_PushGPUVertexUniformData(
-                command,
-                static_cast<Uint32>(pipeline.system_slot),
-                &uniforms,
-                sizeof(uniforms));
+                build_billboard_pick_uniforms(view, candidate.base_id, 0.0f, candidate.axis);
+            SDL_PushGPUVertexUniformData(command, static_cast<Uint32>(pipeline.system_slot),
+                                         &uniforms, sizeof(uniforms));
             SDL_GPUBufferBinding instance_binding{};
-            instance_binding.buffer =
-                systems_[candidate.system_index].instances;
+            instance_binding.buffer = systems_[candidate.system_index].instances;
             SDL_BindGPUVertexBuffers(pass, 0, &instance_binding, 1);
             SDL_GPUBufferBinding index_binding{};
             index_binding.buffer = indices_;
-            SDL_BindGPUIndexBuffer(
-                pass, &index_binding, SDL_GPU_INDEXELEMENTSIZE_16BIT);
-            SDL_DrawGPUIndexedPrimitives(
-                pass,
-                static_cast<Uint32>(
-                    upstream::billboard_index_data.size()),
-                candidate.count,
-                0,
-                0,
-                0);
+            SDL_BindGPUIndexBuffer(pass, &index_binding, SDL_GPU_INDEXELEMENTSIZE_16BIT);
+            SDL_DrawGPUIndexedPrimitives(pass,
+                                         static_cast<Uint32>(upstream::billboard_index_data.size()),
+                                         candidate.count, 0, 0, 0);
         }
     }
 
@@ -340,56 +292,42 @@ private:
      * module beside it is the stage the same builder wrote.
      */
     const Pipeline& ensure_pipeline(BillboardOrientation orientation) {
-        const std::size_t slot =
-            orientation == BillboardOrientation::axis_locked ? 1u : 0u;
+        const std::size_t slot = orientation == BillboardOrientation::axis_locked ? 1u : 0u;
         Pipeline& pipeline = pipelines_[slot];
-        if (pipeline.pipeline) return pipeline;
+        if (pipeline.pipeline)
+            return pipeline;
         const char* vertex_stem = billboard_pick_vertex_stem(orientation);
         const char* fragment_stem = billboard_pick_fragment_stem();
-        const PinnedStageSlots vertex_slots =
-            read_pinned_stage_slots(vertex_stem);
-        const PinnedStageSlots fragment_slots =
-            read_pinned_stage_slots(fragment_stem);
+        const PinnedStageSlots vertex_slots = read_pinned_stage_slots(vertex_stem);
+        const PinnedStageSlots fragment_slots = read_pinned_stage_slots(fragment_stem);
         pipeline.scene_slot = stage_uniform_slot(vertex_slots, "scene");
         pipeline.system_slot = stage_uniform_slot(vertex_slots, "bb");
         // Both in one message, as the mesh picker refuses its own pair:
         // the composed stage projects through `scene` and takes its id
         // base out of `bb`, so a stage that kept either one cannot draw.
         if (pipeline.scene_slot < 0 || pipeline.system_slot < 0) {
-            gpu_error(
-                "picking-billboard.vert kept neither the scene nor the "
-                "per-system block");
+            gpu_error("picking-billboard.vert kept neither the scene nor the "
+                      "per-system block");
         }
-        auto vertex = load_shader(
-            device_,
-            vertex_stem,
-            SDL_GPU_SHADERSTAGE_VERTEX,
-            0,
-            static_cast<std::uint32_t>(vertex_slots.uniforms.size()),
-            "vs");
-        auto fragment = load_shader(
-            device_,
-            fragment_stem,
-            SDL_GPU_SHADERSTAGE_FRAGMENT,
-            static_cast<std::uint32_t>(fragment_slots.textures.size()),
-            static_cast<std::uint32_t>(fragment_slots.uniforms.size()),
-            "fs");
+        auto vertex = load_shader(device_, vertex_stem, SDL_GPU_SHADERSTAGE_VERTEX, 0,
+                                  static_cast<std::uint32_t>(vertex_slots.uniforms.size()), "vs");
+        auto fragment =
+            load_shader(device_, fragment_stem, SDL_GPU_SHADERSTAGE_FRAGMENT,
+                        static_cast<std::uint32_t>(fragment_slots.textures.size()),
+                        static_cast<std::uint32_t>(fragment_slots.uniforms.size()), "fs");
 
         // The pin's own six instance attributes, read out of the table the
         // billboard lowerer generated from the RENDER pipeline's offsets --
         // which is what the pick module's own copy of them must equal. The
         // colour lane at location 6 is the visible stage's alone; the pick
         // fragment writes an id.
-        std::array<SDL_GPUVertexAttribute, billboard_pick_attributes>
-            attributes{};
+        std::array<SDL_GPUVertexAttribute, billboard_pick_attributes> attributes{};
         for (std::size_t index = 0; index < attributes.size(); ++index) {
             const upstream::BillboardInstanceAttribute& row =
                 upstream::billboard_instance_attributes[index];
-            attributes[index] = SDL_GPUVertexAttribute{
-                row.shader_location,
-                0,
-                billboard_attribute_format(row.float_count),
-                row.byte_offset};
+            attributes[index] = SDL_GPUVertexAttribute{row.shader_location, 0,
+                                                       billboard_attribute_format(row.float_count),
+                                                       row.byte_offset};
         }
         SDL_GPUVertexBufferDescription instance_buffer{};
         instance_buffer.slot = 0;
@@ -403,12 +341,10 @@ private:
         SDL_GPUGraphicsPipelineCreateInfo info{};
         info.vertex_shader = vertex.get();
         info.fragment_shader = fragment.get();
-        info.vertex_input_state.vertex_buffer_descriptions =
-            &instance_buffer;
+        info.vertex_input_state.vertex_buffer_descriptions = &instance_buffer;
         info.vertex_input_state.num_vertex_buffers = 1;
         info.vertex_input_state.vertex_attributes = attributes.data();
-        info.vertex_input_state.num_vertex_attributes =
-            static_cast<Uint32>(attributes.size());
+        info.vertex_input_state.num_vertex_attributes = static_cast<Uint32>(attributes.size());
         info.primitive_type = SDL_GPU_PRIMITIVETYPE_TRIANGLELIST;
         info.rasterizer_state.fill_mode = SDL_GPU_FILLMODE_FILL;
         info.rasterizer_state.cull_mode = SDL_GPU_CULLMODE_NONE;
@@ -423,11 +359,9 @@ private:
         info.depth_stencil_state.compare_op = SDL_GPU_COMPAREOP_GREATER;
         info.target_info.color_target_descriptions = color_targets;
         info.target_info.num_color_targets = 2;
-        info.target_info.depth_stencil_format =
-            SDL_GPU_TEXTUREFORMAT_D24_UNORM;
+        info.target_info.depth_stencil_format = SDL_GPU_TEXTUREFORMAT_D24_UNORM;
         info.target_info.has_depth_stencil_target = true;
-        pipeline.pipeline =
-            create_sdl_graphics_pipeline(device_, &info);
+        pipeline.pipeline = create_sdl_graphics_pipeline(device_, &info);
         if (!pipeline.pipeline) {
             gpu_error("SDL_CreateGPUGraphicsPipeline picking-billboard");
         }
@@ -435,7 +369,8 @@ private:
     }
 
     void release() {
-        if (!device_) return;
+        if (!device_)
+            return;
         for (SystemResources& resources : systems_) {
             if (resources.instances) {
                 SDL_ReleaseGPUBuffer(device_, resources.instances);
@@ -443,12 +378,12 @@ private:
             resources = SystemResources{};
         }
         systems_.clear();
-        if (indices_) SDL_ReleaseGPUBuffer(device_, indices_);
+        if (indices_)
+            SDL_ReleaseGPUBuffer(device_, indices_);
         indices_ = nullptr;
         for (Pipeline& pipeline : pipelines_) {
             if (pipeline.pipeline) {
-                SDL_ReleaseGPUGraphicsPipeline(
-                    device_, pipeline.pipeline);
+                SDL_ReleaseGPUGraphicsPipeline(device_, pipeline.pipeline);
             }
             pipeline = Pipeline{};
         }

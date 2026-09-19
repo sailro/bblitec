@@ -11,9 +11,7 @@ import test from "node:test";
 import { compileSource } from "../src/compiler.js";
 import { composeNodeMaterial } from "../src/pinned-node-material.js";
 
-const scene66 = resolve(
-    "corpus/babylon-lite/lab/lite/src/lite/scene66.ts",
-);
+const scene66 = resolve("corpus/babylon-lite/lab/lite/src/lite/scene66.ts");
 
 test("compiles the exact Scene 66 compressed NME and its PCF caster", async () => {
     const result = compileSource(readFileSync(scene66, "utf8"), {
@@ -22,16 +20,18 @@ test("compiles the exact Scene 66 compressed NME and its PCF caster", async () =
     assert.equal(result.manifest.assets.length, 8);
     assert.deepEqual(
         result.manifest.nodeMaterials.map((material) => material.textureNames),
-        [[
-            "Reflection_map",
-            "Normal_map",
-            "Specular_map",
-            "Emissive_map",
-            "Diffuse_map",
-            "Ambient_map",
-            "Light_map",
-            "Opacity_map",
-        ]],
+        [
+            [
+                "Reflection_map",
+                "Normal_map",
+                "Specular_map",
+                "Emissive_map",
+                "Diffuse_map",
+                "Ambient_map",
+                "Light_map",
+                "Opacity_map",
+            ],
+        ],
     );
     assert.ok(result.manifest.features.includes("mesh:morph-targets"));
     assert.ok(result.manifest.features.includes("shadow:pcf-directional"));
@@ -42,15 +42,15 @@ test("compiles the exact Scene 66 compressed NME and its PCF caster", async () =
     ];
     assert.equal(fileLoads.length, 8);
     const expectedInvertY = [
-            "true",
-            "false",
-            "false",
-            "false",
-            "false",
-            "false",
-            "false",
-            "false",
-        ];
+        "true",
+        "false",
+        "false",
+        "false",
+        "false",
+        "false",
+        "false",
+        "false",
+    ];
     assert.deepEqual(
         fileLoads.map((load) => load[1]),
         expectedInvertY,
@@ -60,9 +60,7 @@ test("compiles the exact Scene 66 compressed NME and its PCF caster", async () =
     assert.equal(material.kind, "literal");
     if (material.kind !== "literal") return;
     assert.equal(
-        Array.isArray(material.graph.blocks)
-            ? material.graph.blocks.length
-            : 0,
+        Array.isArray(material.graph.blocks) ? material.graph.blocks.length : 0,
         136,
     );
 

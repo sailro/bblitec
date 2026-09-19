@@ -11,41 +11,58 @@ void mark_mesh_runtime_transform(Engine&, MeshHandle) { ++mesh_live; }
 void set_mesh_rotation_quaternion(Engine& e, MeshHandle h, Vec4 q, bool live) {
     e.meshes[h.value].rotation_quaternion = q;
     e.meshes[h.value].has_rotation_quaternion = true;
-    if (live) ++mesh_live; else ++mesh_dirty;
+    if (live)
+        ++mesh_live;
+    else
+        ++mesh_dirty;
 }
 void set_transform_node_position(Engine& e, TransformNodeHandle h, Vec3d p, bool live) {
     e.transform_nodes[h.value].position = p;
-    if (live) ++node_live; else ++node_dirty;
+    if (live)
+        ++node_live;
+    else
+        ++node_dirty;
 }
 void set_transform_node_rotation(Engine& e, TransformNodeHandle h, Vec3 p, bool live) {
     e.transform_nodes[h.value].rotation = p;
-    if (live) ++node_live; else ++node_dirty;
+    if (live)
+        ++node_live;
+    else
+        ++node_dirty;
 }
 void set_transform_node_scaling(Engine& e, TransformNodeHandle h, Vec3 p, bool live) {
     e.transform_nodes[h.value].scaling = p;
-    if (live) ++node_live; else ++node_dirty;
+    if (live)
+        ++node_live;
+    else
+        ++node_dirty;
 }
 void set_transform_node_rotation_quaternion(Engine& e, TransformNodeHandle h, Vec4 p, bool live) {
     e.transform_nodes[h.value].rotation_quaternion = p;
-    if (live) ++node_live; else ++node_dirty;
+    if (live)
+        ++node_live;
+    else
+        ++node_dirty;
 }
-static float& axis(Vec3& p, std::size_t n) {
-    return n == 0 ? p.x : n == 1 ? p.y : p.z;
-}
+static float& axis(Vec3& p, std::size_t n) { return n == 0 ? p.x : n == 1 ? p.y : p.z; }
 void set_asset_root_position_component(Engine&, AssetHandle, std::size_t n, float v) {
-    axis(asset_root.root_position, n) = v; ++asset_writes;
+    axis(asset_root.root_position, n) = v;
+    ++asset_writes;
 }
 void set_asset_root_rotation_component(Engine&, AssetHandle, std::size_t n, float v) {
-    axis(asset_root.root_rotation, n) = v; ++asset_writes;
+    axis(asset_root.root_rotation, n) = v;
+    ++asset_writes;
 }
 void set_asset_root_position(Engine&, AssetHandle, Vec3 p) {
-    asset_root.root_position = p; ++asset_writes;
+    asset_root.root_position = p;
+    ++asset_writes;
 }
 void set_asset_root_rotation(Engine&, AssetHandle, Vec3 p) {
-    asset_root.root_rotation = p; ++asset_writes;
+    asset_root.root_rotation = p;
+    ++asset_writes;
 }
 void reset_asset_root_scaling(Engine&, AssetHandle) { asset_root.root_scaling_reset = true; }
-}
+} // namespace bbl
 
 #include "scene-node-transforms.hpp"
 
@@ -54,7 +71,8 @@ int main() {
     Engine engine;
     engine.meshes.emplace_back();
     engine.transform_nodes.emplace_back();
-    const SceneNodeHandle mesh = MeshHandle{0}, node = TransformNodeHandle{0}, asset = AssetHandle{0};
+    const SceneNodeHandle mesh = MeshHandle{0}, node = TransformNodeHandle{0},
+                          asset = AssetHandle{0};
     assert(mesh == mesh && mesh != node && asset == asset);
     for (const auto& handle : {mesh, node}) {
         set_scene_node_position(engine, handle, {10000000000.25, 2, 3}, false);
@@ -94,8 +112,11 @@ int main() {
     assert(scene_node_scaling(engine, asset).x == 1);
     set_scene_node_rotation_quaternion(engine, asset, {0, 0, 0, 1}, false);
     bool refused = false;
-    try { set_scene_node_scaling(engine, asset, {2, 1, 1}, false); }
-    catch (const std::runtime_error&) { refused = true; }
+    try {
+        set_scene_node_scaling(engine, asset, {2, 1, 1}, false);
+    } catch (const std::runtime_error&) {
+        refused = true;
+    }
     assert(refused);
     std::cout << "scene-node-transform-check: ok\n";
 }

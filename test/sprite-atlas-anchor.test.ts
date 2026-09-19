@@ -17,10 +17,7 @@ class DoctoredPackerStore extends UpstreamSourceStore {
         assert.ok(source.includes(needle));
         return ts.createSourceFile(
             packerModule,
-            source.replace(
-                needle,
-                "const padding = options.paddingPx ?? 0;",
-            ),
+            source.replace(needle, "const padding = options.paddingPx ?? 0;"),
             ts.ScriptTarget.Latest,
             true,
             ts.ScriptKind.TS,
@@ -29,9 +26,7 @@ class DoctoredPackerStore extends UpstreamSourceStore {
 }
 
 test("the native frame-atlas port accepts the pinned packing rule", () => {
-    assert.doesNotThrow(() =>
-        assertFrameAtlasRule(new LoweringContext()),
-    );
+    assert.doesNotThrow(() => assertFrameAtlasRule(new LoweringContext()));
 });
 
 test("a doctored frame-atlas default refuses native generation", () => {

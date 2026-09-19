@@ -19,8 +19,6 @@ struct SystemFontFace {
  * Generic family names such as "sans-serif" and "monospace" are supported
  * where the platform font service supports them.
  */
-std::optional<SystemFontFace> find_system_font(
-    std::string_view family,
-    int weight);
+std::optional<SystemFontFace> find_system_font(std::string_view family, int weight);
 
 } // namespace bbl::pal

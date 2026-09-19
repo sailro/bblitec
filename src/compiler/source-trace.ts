@@ -24,7 +24,9 @@ let reached: ReachedNodes | undefined;
 export function observeSourceTrace(next: Observer): () => void {
     const previous = observer;
     observer = next;
-    return () => { observer = previous; };
+    return () => {
+        observer = previous;
+    };
 }
 
 /** Publish only after the whole application, including every worker, succeeds. */
@@ -37,11 +39,16 @@ export function traceSourceApplication<T>(compile: () => T): T {
         const result = compile();
         observer(traces);
         return result;
-    } finally { pending = previous; }
+    } finally {
+        pending = previous;
+    }
 }
 
 /** Failed storage replays discard their nodes; emission probes journal the set. */
-export function traceSourceProgram<T>(program: ts.Program, compile: () => T): T {
+export function traceSourceProgram<T>(
+    program: ts.Program,
+    compile: () => T,
+): T {
     if (!pending) return compile();
     const previous = reached;
     const nodes = new ReachedNodes();
@@ -50,16 +57,30 @@ export function traceSourceProgram<T>(program: ts.Program, compile: () => T): T 
         const result = compile();
         pending.push({ program, nodes: new Set(nodes.nodes) });
         return result;
-    } finally { reached = previous; }
+    } finally {
+        reached = previous;
+    }
 }
 
 /** Record a lowering site, never an entire body or an unselected branch. */
 export function traceSourceNode(node: ts.Node): void {
     if (!reached) return;
     reached.add(node);
-    if (node.parent && ts.isPropertyAssignment(node.parent) && node.parent.initializer === node) reached.add(node.parent);
-    if (ts.isParenthesizedExpression(node) || ts.isAsExpression(node) ||
-        ts.isTypeAssertionExpression(node) || ts.isNonNullExpression(node) ||
-        ts.isAwaitExpression(node) || ts.isVoidExpression(node)) traceSourceNode(node.expression);
-    if (ts.isObjectLiteralExpression(node)) for (const property of node.properties) reached.add(property);
+    if (
+        node.parent &&
+        ts.isPropertyAssignment(node.parent) &&
+        node.parent.initializer === node
+    )
+        reached.add(node.parent);
+    if (
+        ts.isParenthesizedExpression(node) ||
+        ts.isAsExpression(node) ||
+        ts.isTypeAssertionExpression(node) ||
+        ts.isNonNullExpression(node) ||
+        ts.isAwaitExpression(node) ||
+        ts.isVoidExpression(node)
+    )
+        traceSourceNode(node.expression);
+    if (ts.isObjectLiteralExpression(node))
+        for (const property of node.properties) reached.add(property);
 }

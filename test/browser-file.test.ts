@@ -1,11 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import {
-    mkdirSync,
-    readFileSync,
-    rmSync,
-    writeFileSync,
-} from "node:fs";
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import test from "node:test";
 
@@ -60,8 +55,7 @@ test("refuses unsupported Blob parts and options by name", () => {
         assert.throws(
             () => compileFileBody(source),
             (error: unknown) =>
-                error instanceof CompileError &&
-                pattern.test(error.message),
+                error instanceof CompileError && pattern.test(error.message),
         );
     };
     refusal(
@@ -185,7 +179,10 @@ test("registers one-shot pointer-lock listeners in the native registry", () => {
         result.cpp,
         /bbl::on_pointer_lock_change\(v_engine, \d+u, bbl::js::make_closure\(std::tuple\{v_transitions\}, \[\]\([^]*?\}\), true\);/,
     );
-    assert.doesNotMatch(result.cpp, /event_once|(?:std::make_shared|bbl::js::make_gc_shared)<bool>\(false\)/);
+    assert.doesNotMatch(
+        result.cpp,
+        /event_once|(?:std::make_shared|bbl::js::make_gc_shared)<bool>\(false\)/,
+    );
 });
 
 test("lowers the complete map export/import browser source shape", () => {
@@ -283,11 +280,13 @@ test("refuses multiple, directories, and unsupported accept syntax", () => {
         assert.throws(
             () => compileFileBody(source),
             (error: unknown) =>
-                error instanceof CompileError &&
-                pattern.test(error.message),
+                error instanceof CompileError && pattern.test(error.message),
         );
     };
-    refusal(`const input=document.createElement('input');input.type='file';input.type='text';`,/without changing a file input/);
+    refusal(
+        `const input=document.createElement('input');input.type='file';input.type='text';`,
+        /without changing a file input/,
+    );
     refusal(
         `
         const input = document.createElement("input");
@@ -375,7 +374,10 @@ test("browser file ownership stays generic and PAL-isolated", () => {
         resolve("native/include/bblite/js_voxel_file.hpp"),
         "utf8",
     );
-    assert.doesNotMatch(shim, /<filesystem>|<fstream>|GetOpenFileName|MoveFile/);
+    assert.doesNotMatch(
+        shim,
+        /<filesystem>|<fstream>|GetOpenFileName|MoveFile/,
+    );
     assert.doesNotMatch(
         voxelShim,
         /<filesystem>|<fstream>|GetOpenFileName|MoveFile/,
@@ -396,20 +398,26 @@ test("browser file ownership stays generic and PAL-isolated", () => {
         runtime,
         /class BrowserFileHandle[\s\S]*std::shared_ptr<BrowserFileRecord> record_/,
     );
-    assert.match(runtime, /maximum_browser_file_snapshot_bytes[\s\S]*256u \* 1024u \* 1024u/);
-    assert.doesNotMatch(runtime, /std::vector<BrowserFileRecord> browser_files/);
+    assert.match(
+        runtime,
+        /maximum_browser_file_snapshot_bytes[\s\S]*256u \* 1024u \* 1024u/,
+    );
+    assert.doesNotMatch(
+        runtime,
+        /std::vector<BrowserFileRecord> browser_files/,
+    );
     assert.match(
         shim,
         /BrowserFileRecord\* current = destination\.get\(\)[\s\S]{0,180}destination\.unique\(\)[\s\S]{0,180}current->replace/,
         "an unshared current selection is reused instead of appended",
     );
-    assert.match(shim, /click_download_anchor\(\s*Engine& engine,\s*UiElementHandle/);
+    assert.match(
+        shim,
+        /click_download_anchor\(\s*Engine& engine,\s*UiElementHandle/,
+    );
     assert.match(shim, /bytes = payload\.bytes/);
     assert.match(shim, /browser_file_ui_element\(engine, handle\)/);
-    const ui = readFileSync(
-        resolve("native/src/pal_ui_rml.cpp"),
-        "utf8",
-    );
+    const ui = readFileSync(resolve("native/src/pal_ui_rml.cpp"), "utf8");
     assert.match(
         cppFunction(ui, "void ui_click("),
         /const auto callbacks = ui_element\(engine, element\)\.click_callbacks;[\s\S]*dispatch_dom_pointer[\s\S]*callback\(\);[\s\S]*const std::string tag = ui_element\(engine, element\)\.tag;[\s\S]*tag == "a"/,
@@ -425,16 +433,16 @@ test("browser file ownership stays generic and PAL-isolated", () => {
         /release_browser_file_subtree\(engine, child\)/,
         "subtree removal releases descendant browser-file ownership",
     );
-    assert.match(ui, /event_type == "click"[\s\S]{0,80}ui_click\(engine, element, true\)/);
+    assert.match(
+        ui,
+        /event_type == "click"[\s\S]{0,80}ui_click\(engine, element, true\)/,
+    );
 
     const projection = readFileSync(
         resolve("src/compiler/output-projection.ts"),
         "utf8",
     );
-    assert.match(
-        projection,
-        /"browser:file": \["src\/pal_file\.cpp"\]/,
-    );
+    assert.match(projection, /"browser:file": \["src\/pal_file\.cpp"\]/);
     const textureExecutor = readFileSync(
         resolve("src/compiler/browser-texture-function.ts"),
         "utf8",
@@ -454,10 +462,16 @@ test("browser file ownership stays generic and PAL-isolated", () => {
         "Windows, Linux, and macOS share SDL's dialog path without app-event dispatch",
     );
     const iosFile = readFileSync(resolve("native/src/pal_file_ios.mm"), "utf8");
-    assert.match(iosFile, /initForOpeningContentTypes:types asCopy:NO/);
-    assert.match(iosFile, /initForExportingURLs:@\[export_url\] asCopy:YES/);
+    assert.match(iosFile, /initForOpeningContentTypes:types\s+asCopy:NO/);
+    assert.match(
+        iosFile,
+        /initForExportingURLs:@\[\s*export_url\s*\]\s+asCopy:YES/,
+    );
     assert.match(iosFile, /startAccessingSecurityScopedResource/);
-    assert.match(iosFile, /@finally[\s\S]{0,130}stopAccessingSecurityScopedResource/);
+    assert.match(
+        iosFile,
+        /@finally[\s\S]{0,130}stopAccessingSecurityScopedResource/,
+    );
     assert.match(iosFile, /coordinateReadingItemAtURL/);
     assert.match(iosFile, /SDL_RunOnMainThread/);
     assert.doesNotMatch(iosFile, /SDL_PollEvent/);
@@ -470,10 +484,7 @@ test("browser file ownership stays generic and PAL-isolated", () => {
         /dispatch_pointer_lock_change[\s\S]{0,120}pointer_lock_change_callbacks\.dispatch\(\)/,
         "dialog-induced pointer-lock dispatch tolerates listener growth",
     );
-    const fileIo = readFileSync(
-        resolve("native/src/pal_file_io.hpp"),
-        "utf8",
-    );
+    const fileIo = readFileSync(resolve("native/src/pal_file_io.hpp"), "utf8");
     assert.match(fileIo, /random_staging_token/);
     assert.match(fileIo, /CREATE_NEW/);
     assert.match(fileIo, /O_CREAT \| O_EXCL \| O_NOFOLLOW/);
@@ -482,7 +493,10 @@ test("browser file ownership stays generic and PAL-isolated", () => {
     assert.match(fileIo, /::fsync/);
     const cmake = readFileSync(resolve("native/CMakeLists.txt"), "utf8");
     assert.doesNotMatch(cmake, /comdlg32/);
-    assert.match(cmake, /if\(IOS AND "browser:file" IN_LIST BBLITE_RUNTIME_FEATURES\)[\s\S]{0,600}pal_file_ios\.mm/);
+    assert.match(
+        cmake,
+        /if\(IOS AND "browser:file" IN_LIST BBLITE_RUNTIME_FEATURES\)[\s\S]{0,600}pal_file_ios\.mm/,
+    );
 });
 
 const nativeTools = optionalNativeFixtureTools();

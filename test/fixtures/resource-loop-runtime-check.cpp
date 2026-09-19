@@ -9,7 +9,7 @@ namespace {
 std::vector<bbl::BoxOptions> constructions;
 std::size_t registrations = 0;
 std::size_t dirty_writes = 0;
-}
+} // namespace
 
 // Record the resource seam; loops, handles, stores and scene ownership execute
 // as emitted, without requiring a GPU for this compiler regression.
@@ -48,7 +48,7 @@ void add_to_scene(Scene& scene, MeshHandle mesh) {
     scene.meshes.push_back(mesh);
     ++registrations;
 }
-}
+} // namespace bbl
 
 int main() {
     const auto initial = bbl::js::managed_node_count();

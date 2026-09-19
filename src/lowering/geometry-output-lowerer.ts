@@ -10,8 +10,7 @@ export class GeometryOutputLowerer {
         const copyModule = "src/frame-graph/copy-to-texture-task.ts";
         const actionsModule = "src/frame-graph/frame-graph-actions.ts";
         const renderModule = "src/frame-graph/render-task.ts";
-        const geometryFile =
-            this.context.sourceFile(geometryModule);
+        const geometryFile = this.context.sourceFile(geometryModule);
         const { declaration: createGeometryTask } =
             this.context.functionDeclaration(
                 geometryModule,
@@ -28,11 +27,8 @@ export class GeometryOutputLowerer {
                     Number(node.right.text) === 8 &&
                     ts.isPropertyAccessExpression(node.left) &&
                     node.left.name.text === "length" &&
-                    ts.isPropertyAccessExpression(
-                        node.left.expression,
-                    ) &&
-                    node.left.expression.name.text ===
-                        "textureDescriptions",
+                    ts.isPropertyAccessExpression(node.left.expression) &&
+                    node.left.expression.name.text === "textureDescriptions",
             )
         ) {
             this.context.contractError(
@@ -40,17 +36,13 @@ export class GeometryOutputLowerer {
                 "Expected the eight-attachment geometry limit.",
             );
         }
-        const hasNamedProperty = (
-            root: ts.Node,
-            name: string,
-        ): boolean =>
+        const hasNamedProperty = (root: ts.Node, name: string): boolean =>
             this.context.hasNode(
                 root,
                 (node) =>
                     (ts.isPropertySignature(node) ||
                         ts.isPropertyAssignment(node)) &&
-                    this.context.propertyName(node.name) ===
-                        name,
+                    this.context.propertyName(node.name) === name,
             );
         for (const property of [
             "targetTextureClearColor",
@@ -77,11 +69,10 @@ export class GeometryOutputLowerer {
                 );
             }
         }
-        const { declaration: buildBlitPath } =
-            this.context.functionDeclaration(
-                copyModule,
-                "buildBlitPath",
-            );
+        const { declaration: buildBlitPath } = this.context.functionDeclaration(
+            copyModule,
+            "buildBlitPath",
+        );
         for (const [name, expected] of [
             // The extents the boundaries are floored against are the
             // TARGET's, matching the emitted resolve_copy_viewport
@@ -89,21 +80,12 @@ export class GeometryOutputLowerer {
             ["w", "target._width"],
             ["h", "target._height"],
             ["x", "Math.floor(v.x * w)"],
-            [
-                "vw",
-                "Math.floor((v.x + v.width) * w) - x",
-            ],
+            ["vw", "Math.floor((v.x + v.width) * w) - x"],
             ["yTop", "Math.floor(v.y * h)"],
-            [
-                "vh",
-                "Math.floor((v.y + v.height) * h) - yTop",
-            ],
+            ["vh", "Math.floor((v.y + v.height) * h) - yTop"],
         ] as const) {
             this.context.assertExpressionShape(
-                this.context.variableInitializer(
-                    buildBlitPath,
-                    name,
-                ),
+                this.context.variableInitializer(buildBlitPath, name),
                 expected,
                 `Copy viewport '${name}'`,
             );
@@ -117,10 +99,8 @@ export class GeometryOutputLowerer {
         // pin's own convention, not a native render-target choice, so it is
         // anchored here rather than documented as ours.
         const viewportCompositions = this.context
-            .findNodes(
-                buildBlitPath,
-                (node): node is ts.BinaryExpression =>
-                    ts.isBinaryExpression(node),
+            .findNodes(buildBlitPath, (node): node is ts.BinaryExpression =>
+                ts.isBinaryExpression(node),
             )
             .filter(
                 (expression) =>
@@ -129,9 +109,7 @@ export class GeometryOutputLowerer {
                     ts.isIdentifier(expression.left) &&
                     expression.left.text === "viewportRect" &&
                     ts.isObjectLiteralExpression(
-                        this.context.unwrapExpression(
-                            expression.right,
-                        ),
+                        this.context.unwrapExpression(expression.right),
                     ),
             );
         if (viewportCompositions.length !== 1) {
@@ -144,10 +122,7 @@ export class GeometryOutputLowerer {
             viewportCompositions[0]!.right,
         ) as ts.ObjectLiteralExpression;
         this.context.assertExpressionShape(
-            this.context.propertyInitializer(
-                viewportRect,
-                "y",
-            ),
+            this.context.propertyInitializer(viewportRect, "y"),
             "h - yTop - vh",
             "Copy viewport Y-flip",
         );
@@ -157,15 +132,9 @@ export class GeometryOutputLowerer {
             ["h", "vh"],
         ] as const) {
             const initializer = this.context.unwrapExpression(
-                this.context.propertyInitializer(
-                    viewportRect,
-                    field,
-                ),
+                this.context.propertyInitializer(viewportRect, field),
             );
-            if (
-                !ts.isIdentifier(initializer) ||
-                initializer.text !== source
-            ) {
+            if (!ts.isIdentifier(initializer) || initializer.text !== source) {
                 this.context.contractError(
                     viewportRect,
                     `Expected pixel viewport '${field}' to carry '${source}'.`,
@@ -182,11 +151,8 @@ export class GeometryOutputLowerer {
                 createCopyTask,
                 (node) =>
                     ts.isCallExpression(node) &&
-                    ts.isPropertyAccessExpression(
-                        node.expression,
-                    ) &&
-                    node.expression.name.text ===
-                        "setScissorRect",
+                    ts.isPropertyAccessExpression(node.expression) &&
+                    node.expression.name.text === "setScissorRect",
             )
         ) {
             this.context.contractError(
@@ -196,23 +162,17 @@ export class GeometryOutputLowerer {
         }
 
         const { declaration: addTaskAtStart } =
-            this.context.functionDeclaration(
-                actionsModule,
-                "addTaskAtStart",
-            );
+            this.context.functionDeclaration(actionsModule, "addTaskAtStart");
         if (
             !this.context.hasNode(
                 addTaskAtStart,
                 (node) =>
                     ts.isCallExpression(node) &&
-                    ts.isPropertyAccessExpression(
-                        node.expression,
-                    ) &&
+                    ts.isPropertyAccessExpression(node.expression) &&
                     node.expression.name.text === "splice" &&
                     node.arguments.length === 3 &&
                     ts.isIdentifier(node.arguments[0]!) &&
-                    node.arguments[0].text ===
-                        "firstUserTask" &&
+                    node.arguments[0].text === "firstUserTask" &&
                     ts.isNumericLiteral(node.arguments[1]!) &&
                     Number(node.arguments[1].text) === 0 &&
                     ts.isIdentifier(node.arguments[2]!) &&
@@ -225,17 +185,13 @@ export class GeometryOutputLowerer {
             );
         }
 
-        const path = (
-            expression: ts.Expression,
-        ): string[] | undefined => {
+        const path = (expression: ts.Expression): string[] | undefined => {
             if (ts.isIdentifier(expression)) {
                 return [expression.text];
             }
             if (ts.isPropertyAccessExpression(expression)) {
                 const owner = path(expression.expression);
-                return owner
-                    ? [...owner, expression.name.text]
-                    : undefined;
+                return owner ? [...owner, expression.name.text] : undefined;
             }
             return undefined;
         };
@@ -254,10 +210,7 @@ export class GeometryOutputLowerer {
                     path(node.right)?.join(".") === right,
             );
         const { declaration: createRenderTask } =
-            this.context.functionDeclaration(
-                renderModule,
-                "createRenderTask",
-            );
+            this.context.functionDeclaration(renderModule, "createRenderTask");
         if (
             !hasNullishFallback(
                 createRenderTask,
@@ -297,12 +250,9 @@ export class GeometryOutputLowerer {
                 writePassSceneUbo,
                 (node) =>
                     ts.isBinaryExpression(node) &&
-                    node.operatorToken.kind ===
-                        ts.SyntaxKind.SlashToken &&
-                    path(node.left)?.join(".") ===
-                        "eng.canvas.width" &&
-                    path(node.right)?.join(".") ===
-                        "eng.canvas.height",
+                    node.operatorToken.kind === ts.SyntaxKind.SlashToken &&
+                    path(node.left)?.join(".") === "eng.canvas.width" &&
+                    path(node.right)?.join(".") === "eng.canvas.height",
             )
         ) {
             this.context.contractError(
@@ -315,12 +265,15 @@ export class GeometryOutputLowerer {
             modulePath: geometryModule,
             symbolName:
                 "createGeometryRendererTask,createRenderTask,createCopyToTextureTask,addTask,addTaskAtStart,RenderTask.addMesh",
-            header: pinnedHeader(["<bblite/runtime.hpp>","","<cstdint>"], `
+            header: pinnedHeader(
+                ["<bblite/runtime.hpp>", "", "<cstdint>"],
+                `
 PixelViewport resolve_copy_viewport(
     const NormalizedViewport& viewport,
     std::uint32_t target_width,
     std::uint32_t target_height);
-`),
+`,
+            ),
             source: `// ${this.context.provenance(
                 geometryModule,
                 "createGeometryRendererTask",

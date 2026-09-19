@@ -27,7 +27,7 @@ int run_window_application(WorkerEntry initialize, EngineOptions) {
     loop.run([&] { initialize(realm); });
     return 0;
 }
-}
+} // namespace bbl::pal
 
 int main() {
     assert(generated_main() == 0);

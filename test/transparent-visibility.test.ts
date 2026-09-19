@@ -3,15 +3,23 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import test from "node:test";
 import { emitUpstreamGenerated } from "../src/upstream-lower.js";
-import { optionalNativeFixtureTools, runNativeFixtureCompiler } from "./native-fixture.js";
+import {
+    optionalNativeFixtureTools,
+    runNativeFixtureCompiler,
+} from "./native-fixture.js";
 
 const tools = optionalNativeFixtureTools(false);
 
-test("transparent bindings observe bare hide/show each frame while opaque bundles defer", { skip: !tools }, () => {
-    const output = resolve("artifacts/transparent-visibility");
-    mkdirSync(output, { recursive: true });
-    emitUpstreamGenerated(output, ["camera:free", "renderer:scene"]);
-    writeFileSync(join(output, "check.cpp"), `
+test(
+    "transparent bindings observe bare hide/show each frame while opaque bundles defer",
+    { skip: !tools },
+    () => {
+        const output = resolve("artifacts/transparent-visibility");
+        mkdirSync(output, { recursive: true });
+        emitUpstreamGenerated(output, ["camera:free", "renderer:scene"]);
+        writeFileSync(
+            join(output, "check.cpp"),
+            `
         #include "renderer_plan.cpp"
         #include <cassert>
         namespace bbl::upstream {
@@ -57,13 +65,30 @@ test("transparent bindings observe bare hide/show each frame while opaque bundle
             bbl::upstream::sort_transparent_draws(lists.transparent, engine, camera);
             assert(lists.transparent.commands.size() == 2);
         }
-    `);
-    const executable = join(output, "check.exe");
-    runNativeFixtureCompiler(tools!, [
-        "/nologo", "/std:c++20", "/W4", "/WX", "/EHsc", "/O2", "/Gy", "/permissive-",
-        `/Fo:${output}\\`, `/Fe:${executable}`, "/I", "native/include",
-        "/I", join(output, "upstream/include"), "/I", join(output, "upstream/src"),
-        join(output, "check.cpp"), "/link", "/OPT:REF",
-    ]);
-    execFileSync(executable, { encoding: "utf8" });
-});
+    `,
+        );
+        const executable = join(output, "check.exe");
+        runNativeFixtureCompiler(tools!, [
+            "/nologo",
+            "/std:c++20",
+            "/W4",
+            "/WX",
+            "/EHsc",
+            "/O2",
+            "/Gy",
+            "/permissive-",
+            `/Fo:${output}\\`,
+            `/Fe:${executable}`,
+            "/I",
+            "native/include",
+            "/I",
+            join(output, "upstream/include"),
+            "/I",
+            join(output, "upstream/src"),
+            join(output, "check.cpp"),
+            "/link",
+            "/OPT:REF",
+        ]);
+        execFileSync(executable, { encoding: "utf8" });
+    },
+);

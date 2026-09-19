@@ -192,11 +192,10 @@ export class TubeLowerer {
      */
     private lowerExtrudeShape(): string {
         const extrudeModule = "src/mesh/create-extrude.ts";
-        const { declaration: extrude } =
-            this.context.functionDeclaration(
-                extrudeModule,
-                "createExtrudeShapeData",
-            );
+        const { declaration: extrude } = this.context.functionDeclaration(
+            extrudeModule,
+            "createExtrudeShapeData",
+        );
         // The cross-section, planed onto the frame's own basis.
         for (const axis of ["x", "y", "z"] as const) {
             this.context.expectShapeCount(
@@ -293,11 +292,10 @@ MeshHandle create_extrude_shape(
         const ribbonModule = "src/mesh/create-ribbon.ts";
         const normalsModule = "src/mesh/compute-normals.ts";
 
-        const { declaration: tubeData } =
-            this.context.functionDeclaration(
-                tubeModule,
-                "createTubeData",
-            );
+        const { declaration: tubeData } = this.context.functionDeclaration(
+            tubeModule,
+            "createTubeData",
+        );
         // The reached defaults and the arms the intrinsic keeps out.
         this.context.assertExpressionShape(
             this.context.variableInitializer(tubeData, "radius"),
@@ -365,20 +363,14 @@ MeshHandle create_extrude_shape(
             "Tube ribbon closePath",
         );
         this.context.assertExpressionShape(
-            this.context.propertyInitializer(
-                ribbonOptions,
-                "closeArray",
-            ),
+            this.context.propertyInitializer(ribbonOptions, "closeArray"),
             "false",
             "Tube ribbon closeArray",
         );
 
         // computePath3D: the Frenet chain.
         const { file: pathFile, declaration: path3d } =
-            this.context.functionDeclaration(
-                pathModule,
-                "computePath3D",
-            );
+            this.context.functionDeclaration(pathModule, "computePath3D");
         const epsilon = this.context.numericValue(
             this.context.variableInitializer(
                 this.context.sourceFile(pathModule),
@@ -411,11 +403,10 @@ MeshHandle create_extrude_shape(
             "crossVec3(prevBinor, curTang)",
             "Path normal step",
         );
-        const { declaration: normalVector } =
-            this.context.functionDeclaration(
-                pathModule,
-                "normalVector",
-            );
+        const { declaration: normalVector } = this.context.functionDeclaration(
+            pathModule,
+            "normalVector",
+        );
         this.context.expectShapeCount(
             normalVector,
             "crossVec3(vt, point)",
@@ -430,11 +421,10 @@ MeshHandle create_extrude_shape(
         // createRibbonData: distance tables, triangulation, seam
         // averaging. The single-path split arm is unreachable (the tube
         // always hands one circle per path point, at least two).
-        const { declaration: ribbon } =
-            this.context.functionDeclaration(
-                ribbonModule,
-                "createRibbonData",
-            );
+        const { declaration: ribbon } = this.context.functionDeclaration(
+            ribbonModule,
+            "createRibbonData",
+        );
         this.context.expectShapeCount(
             ribbon,
             "len(sub(path[j], path[j - 1]))",
@@ -493,22 +483,16 @@ MeshHandle create_extrude_shape(
         // The factory finish: createMeshFromData(engine, "tube",
         // positions, normals, indices, uvs) — the name flows, the
         // argument order is the anchor the emitted call mirrors.
-        const { declaration: tubeFactory } =
-            this.context.functionDeclaration(
-                "src/mesh/mesh-factories.ts",
-                "createTube",
-            );
+        const { declaration: tubeFactory } = this.context.functionDeclaration(
+            "src/mesh/mesh-factories.ts",
+            "createTube",
+        );
         const finish = this.context.callExpression(
             tubeFactory,
             "createMeshFromData",
         );
-        const finishName = this.context.unwrapExpression(
-            finish.arguments[1]!,
-        );
-        if (
-            finish.arguments.length !== 6 ||
-            !ts.isStringLiteral(finishName)
-        ) {
+        const finishName = this.context.unwrapExpression(finish.arguments[1]!);
+        if (finish.arguments.length !== 6 || !ts.isStringLiteral(finishName)) {
             this.context.contractError(
                 finish,
                 "Expected createTube to finish through createMeshFromData with its literal name second.",
@@ -530,10 +514,7 @@ MeshHandle create_extrude_shape(
 
         // computeNormals: the face accumulation and normalization.
         const { declaration: computeNormals } =
-            this.context.functionDeclaration(
-                normalsModule,
-                "computeNormals",
-            );
+            this.context.functionDeclaration(normalsModule, "computeNormals");
         this.context.expectShapeCount(
             computeNormals,
             "p1p2y * p3p2z - p1p2z * p3p2y",

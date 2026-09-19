@@ -14,7 +14,8 @@ struct PhysicsDebugShapeDescriptor {
     std::vector<float> parameters;
     std::vector<std::uint32_t> indices;
     std::vector<PhysicsDebugShapeDescriptor> children;
-    friend bool operator==(const PhysicsDebugShapeDescriptor&, const PhysicsDebugShapeDescriptor&) = default;
+    friend bool operator==(const PhysicsDebugShapeDescriptor&,
+                           const PhysicsDebugShapeDescriptor&) = default;
 };
 
 struct PhysicsDebugGeometry {
@@ -23,7 +24,8 @@ struct PhysicsDebugGeometry {
 };
 
 /** Immutable catalog selection compares every constructor input. */
-PhysicsDebugGeometry materialized_physics_debug_geometry(const PhysicsDebugShapeDescriptor& descriptor);
+PhysicsDebugGeometry
+materialized_physics_debug_geometry(const PhysicsDebugShapeDescriptor& descriptor);
 PhysicsDebugShapeDescriptor physics_shape_debug_descriptor(PhysicsShapeHandle shape);
 PhysicsDebugGeometry physics_body_debug_geometry(PhysicsBodyHandle body);
 

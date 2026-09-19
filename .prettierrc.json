@@ -1,0 +1,14 @@
+{
+  "tabWidth": 4,
+  "embeddedLanguageFormatting": "off",
+  "proseWrap": "preserve",
+  "endOfLine": "lf",
+  "overrides": [
+    {
+      "files": "*.json",
+      "options": {
+        "tabWidth": 2
+      }
+    }
+  ]
+}

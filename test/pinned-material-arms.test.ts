@@ -1,5 +1,11 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import {
+    existsSync,
+    mkdirSync,
+    readFileSync,
+    readdirSync,
+    writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
 import {
@@ -13,7 +19,11 @@ import {
 } from "../src/pinned-material-arms.js";
 import { pinnedSceneArms } from "../src/pinned-scene-arms.js";
 import { readGlb, writeGlb } from "../src/glb-container.js";
-import { GLTF_MESH_PLAN, GLTF_TRANSMISSION_PLAN, GLTF_VARIANT_PLAN } from "../src/gltf-document.js";
+import {
+    GLTF_MESH_PLAN,
+    GLTF_TRANSMISSION_PLAN,
+    GLTF_VARIANT_PLAN,
+} from "../src/gltf-document.js";
 import { packageGltfLoadPlan } from "../src/gltf-load-plan.js";
 
 const armNames: (keyof PinnedMaterialArms)[] = [
@@ -36,11 +46,23 @@ async function sceneAsset(scene: string): Promise<string | undefined> {
     if (!glb) return undefined;
     const source = readGlb(readFileSync(join(directory, glb)));
     assert.ok(source);
-    for (const key of [GLTF_MESH_PLAN, GLTF_VARIANT_PLAN, GLTF_TRANSMISSION_PLAN]) delete source.json[key];
-    const outputDirectory = join("artifacts", "test-pinned-material-arms", scene);
-    mkdirSync(outputDirectory, {recursive: true});
+    for (const key of [
+        GLTF_MESH_PLAN,
+        GLTF_VARIANT_PLAN,
+        GLTF_TRANSMISSION_PLAN,
+    ])
+        delete source.json[key];
+    const outputDirectory = join(
+        "artifacts",
+        "test-pinned-material-arms",
+        scene,
+    );
+    mkdirSync(outputDirectory, { recursive: true });
     const output = join(outputDirectory, glb);
-    writeFileSync(output, await packageGltfLoadPlan(writeGlb(source.json, source.binary), output));
+    writeFileSync(
+        output,
+        await packageGltfLoadPlan(writeGlb(source.json, source.binary), output),
+    );
     return output;
 }
 
@@ -52,13 +74,11 @@ test("reports the arms a scene's own materials compose", async (t) => {
 
     // The sofa: five sheen materials over a plain frame, one of them with its
     // occlusion on TEXCOORD_1.
-    assert.equal(
-        materials.filter((material) => material.arms.sheen).length,
-        5,
-    );
+    assert.equal(materials.filter((material) => material.arms.sheen).length, 5);
     assert.ok(
         materials.every(
-            (material) => material.arms.sheen === material.arms.sheenAlbedoScaling,
+            (material) =>
+                material.arms.sheen === material.arms.sheenAlbedoScaling,
         ),
         "a glTF sheen is always the albedo-scaling model",
     );
@@ -108,7 +128,7 @@ test("the composed renderable variants carry every arm the materials compose", a
     });
     const emitted = unionArms(await composeRenderableVariants(asset, arms));
     assert.doesNotThrow(() =>
-        assertArmsCovered(materials, emitted, "scene253")
+        assertArmsCovered(materials, emitted, "scene253"),
     );
     for (const arm of reached) {
         assert.throws(
@@ -231,35 +251,39 @@ test("Scene 26 composes the pin's subsurface thickness arm", async () => {
         fog: false,
     });
     const variants = await composeScenePbrVariants(
-        [{
-            materialsBefore: 0,
-            gltfAssetsBefore: 1,
-            hasBaseColorTexture: true,
-            hasOrmTexture: true,
-            metallicFactor: 1,
-            roughnessFactor: 1,
-            directIntensity: 1,
-            environmentIntensity: 1,
-            alpha: 1,
-            reflectance: 0.04,
-            doubleSided: false,
-            enableSpecularAA: true,
-            transmission: 0,
-            ior: 1.5,
-            thickness: 0,
-            subsurface: {
-                intensity: 1,
-                color: [1, 1, 1],
-                diffusionDistance: [1, 1, 1],
-                hasThicknessTexture: true,
-                minimumThickness: 0,
-                maximumThickness: 2.2,
+        [
+            {
+                materialsBefore: 0,
+                gltfAssetsBefore: 1,
+                hasBaseColorTexture: true,
+                hasOrmTexture: true,
+                metallicFactor: 1,
+                roughnessFactor: 1,
+                directIntensity: 1,
+                environmentIntensity: 1,
+                alpha: 1,
+                reflectance: 0.04,
+                doubleSided: false,
+                enableSpecularAA: true,
+                transmission: 0,
+                ior: 1.5,
+                thickness: 0,
+                subsurface: {
+                    intensity: 1,
+                    color: [1, 1, 1],
+                    diffusionDistance: [1, 1, 1],
+                    hasThicknessTexture: true,
+                    minimumThickness: 0,
+                    maximumThickness: 2.2,
+                },
             },
-        }],
+        ],
         arms,
     );
 
-    assert.ok(variants.some((variant) => variant.fragmentKey.includes("subsurface")));
+    assert.ok(
+        variants.some((variant) => variant.fragmentKey.includes("subsurface")),
+    );
     for (const variant of variants) {
         assert.match(variant.fragmentWgsl, /subsurfaceParams/);
         assert.match(variant.fragmentWgsl, /thicknessTexture_/);
@@ -277,24 +301,26 @@ test("creation-only metallic F0 does not register the reflectance arm", async ()
         fog: false,
     });
     const variants = await composeScenePbrVariants(
-        [{
-            materialsBefore: 0,
-            gltfAssetsBefore: 0,
-            hasBaseColorTexture: true,
-            hasOrmTexture: true,
-            metallicFactor: 1,
-            roughnessFactor: 1,
-            directIntensity: 1,
-            environmentIntensity: 1,
-            alpha: 1,
-            reflectance: 0.04,
-            occlusionStrength: 0,
-            metallicF0Factor: 0.95,
-            doubleSided: false,
-            transmission: 0,
-            ior: 1.5,
-            thickness: 0,
-        }],
+        [
+            {
+                materialsBefore: 0,
+                gltfAssetsBefore: 0,
+                hasBaseColorTexture: true,
+                hasOrmTexture: true,
+                metallicFactor: 1,
+                roughnessFactor: 1,
+                directIntensity: 1,
+                environmentIntensity: 1,
+                alpha: 1,
+                reflectance: 0.04,
+                occlusionStrength: 0,
+                metallicF0Factor: 0.95,
+                doubleSided: false,
+                transmission: 0,
+                ior: 1.5,
+                thickness: 0,
+            },
+        ],
         arms,
     );
 
@@ -351,18 +377,23 @@ test("a glTF dielectric globally registers scene-material F0", async () => {
     // materials are composed. Its process-global registration therefore
     // exposes a later creation-time F0 even when scene code never calls the
     // setter itself.
-    const {withMeshPlan} = await import("./gltf-mesh-fixture.js");
-    const subjects = await materialSubjects(await withMeshPlan({
-        nodes: [{mesh: 0}], meshes: [{primitives: [{material: 0}]}],
-        materials: [{
-            extensions: {
-                KHR_materials_ior: { ior: 1.209 },
-                // This clears the IOR-seeded setter options, deliberately
-                // exercising registration by an otherwise empty call.
-                KHR_materials_specular: { specularFactor: 1 },
-            },
-        }],
-    }));
+    const { withMeshPlan } = await import("./gltf-mesh-fixture.js");
+    const subjects = await materialSubjects(
+        await withMeshPlan({
+            nodes: [{ mesh: 0 }],
+            meshes: [{ primitives: [{ material: 0 }] }],
+            materials: [
+                {
+                    extensions: {
+                        KHR_materials_ior: { ior: 1.209 },
+                        // This clears the IOR-seeded setter options, deliberately
+                        // exercising registration by an otherwise empty call.
+                        KHR_materials_specular: { specularFactor: 1 },
+                    },
+                },
+            ],
+        }),
+    );
     assert.equal(subjects[0]!.metallicReflectanceRegistered, true);
     assert.equal(subjects[0]!.input["_metallicF0Factor"], undefined);
 
@@ -375,24 +406,26 @@ test("a glTF dielectric globally registers scene-material F0", async () => {
         fog: false,
     });
     const variants = await composeScenePbrVariants(
-        [{
-            materialsBefore: 0,
-            gltfAssetsBefore: 1,
-            hasBaseColorTexture: true,
-            hasOrmTexture: true,
-            metallicFactor: 1,
-            roughnessFactor: 1,
-            directIntensity: 1,
-            environmentIntensity: 1,
-            alpha: 1,
-            reflectance: 0.04,
-            occlusionStrength: 0,
-            metallicF0Factor: 0.95,
-            doubleSided: false,
-            transmission: 0,
-            ior: 1.5,
-            thickness: 0,
-        }],
+        [
+            {
+                materialsBefore: 0,
+                gltfAssetsBefore: 1,
+                hasBaseColorTexture: true,
+                hasOrmTexture: true,
+                metallicFactor: 1,
+                roughnessFactor: 1,
+                directIntensity: 1,
+                environmentIntensity: 1,
+                alpha: 1,
+                reflectance: 0.04,
+                occlusionStrength: 0,
+                metallicF0Factor: 0.95,
+                doubleSided: false,
+                transmission: 0,
+                ior: 1.5,
+                thickness: 0,
+            },
+        ],
         arms,
         1,
         undefined,
@@ -416,30 +449,32 @@ test("scene metallic-reflectance maps compose both linear bindings", async () =>
         fog: false,
     });
     const variants = await composeScenePbrVariants(
-        [{
-            materialsBefore: 0,
-            gltfAssetsBefore: 0,
-            hasBaseColorTexture: true,
-            hasOrmTexture: true,
-            metallicFactor: 1,
-            roughnessFactor: 1,
-            directIntensity: 1,
-            environmentIntensity: 1,
-            alpha: 1,
-            reflectance: 0.04,
-            occlusionStrength: 0,
-            metallicF0Factor: 0.95,
-            doubleSided: false,
-            transmission: 0,
-            ior: 1.5,
-            thickness: 0,
-            metallicReflectance: {
-                hasColor: true,
-                hasMetallicTexture: true,
-                hasReflectanceTexture: true,
-                useOnlyMetallicFromTexture: true,
+        [
+            {
+                materialsBefore: 0,
+                gltfAssetsBefore: 0,
+                hasBaseColorTexture: true,
+                hasOrmTexture: true,
+                metallicFactor: 1,
+                roughnessFactor: 1,
+                directIntensity: 1,
+                environmentIntensity: 1,
+                alpha: 1,
+                reflectance: 0.04,
+                occlusionStrength: 0,
+                metallicF0Factor: 0.95,
+                doubleSided: false,
+                transmission: 0,
+                ior: 1.5,
+                thickness: 0,
+                metallicReflectance: {
+                    hasColor: true,
+                    hasMetallicTexture: true,
+                    hasReflectanceTexture: true,
+                    useOnlyMetallicFromTexture: true,
+                },
             },
-        }],
+        ],
         arms,
     );
 

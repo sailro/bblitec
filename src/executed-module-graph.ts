@@ -158,7 +158,9 @@ function moduleDataUrl(
     }
     let rewritten = source;
     for (const edit of edits.sort((left, right) => right.start - left.start)) {
-        rewritten = rewritten.slice(0, edit.start) + edit.text +
+        rewritten =
+            rewritten.slice(0, edit.start) +
+            edit.text +
             rewritten.slice(edit.end);
     }
     const javascript = transpileForBrowser(rewritten, modulePath);

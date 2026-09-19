@@ -34,24 +34,26 @@ import {
 } from "../option-helpers.js";
 
 export interface EngineOptionContext
-    extends PositiveIntegerContext,
-    Pick<LoweringServices,
-        | "noteTemporalRecordBoundary"
-        | "symbols"
-        | "geometryOutputTasks"
-        | "unwrap"
-        | "propertyName"
-        | "compileValue"
-        | "expectKind"
-        | "expectSameEngine"
-        | "expectObjectLiteral"
-        | "objectProperty"
-        | "compileNumber"
-        | "compileBoolean"
-        | "compileColor4"
-        | "compileStringLiteral"
-        | "cppString"
-    > {}
+    extends
+        PositiveIntegerContext,
+        Pick<
+            LoweringServices,
+            | "noteTemporalRecordBoundary"
+            | "symbols"
+            | "geometryOutputTasks"
+            | "unwrap"
+            | "propertyName"
+            | "compileValue"
+            | "expectKind"
+            | "expectSameEngine"
+            | "expectObjectLiteral"
+            | "objectProperty"
+            | "compileNumber"
+            | "compileBoolean"
+            | "compileColor4"
+            | "compileStringLiteral"
+            | "cppString"
+        > {}
 
 /**
  * A compiled render-target descriptor, and the one fact about it a caller
@@ -107,17 +109,28 @@ export function compileRenderTargetOptions(
             context.expectKind(surface, "engine", unwrappedSize);
         }
     }
-    const sampleCount = samples ? compilePositiveInteger(context, samples) : "1u";
+    const sampleCount = samples
+        ? compilePositiveInteger(context, samples)
+        : "1u";
     const format = colorFormat && context.unwrap(colorFormat);
-    const surfaceFormat = !!format && ts.isPropertyAccessExpression(format) && format.name.text === "format" &&
-        ts.isIdentifier(format.expression) && context.compileValue(format.expression).kind === "engine";
+    const surfaceFormat =
+        !!format &&
+        ts.isPropertyAccessExpression(format) &&
+        format.name.text === "format" &&
+        ts.isIdentifier(format.expression) &&
+        context.compileValue(format.expression).kind === "engine";
     const depth = depthFormat && context.unwrap(depthFormat);
     return {
         cpp: `bbl::RenderTargetOptions{${sampleCount}, ${colorFormat ? "true" : "false"}, ${depthFormat ? "true" : "false"}, false, ${width}, ${height}}`,
         hasColor: colorFormat !== undefined,
-        signature: { surfaceFormat, hasColor: colorFormat !== undefined,
-            ...(depth && ts.isStringLiteral(depth) ? { depthFormat: depth.text } : {}),
-            samples: Number.parseInt(sampleCount) },
+        signature: {
+            surfaceFormat,
+            hasColor: colorFormat !== undefined,
+            ...(depth && ts.isStringLiteral(depth)
+                ? { depthFormat: depth.text }
+                : {}),
+            samples: Number.parseInt(sampleCount),
+        },
     };
 }
 
@@ -129,7 +142,17 @@ export function compileRenderTaskOptions(
     validateObjectProperties(
         context,
         object,
-        ["name", "rt", "rst", "clrColor", "clr", "cam", "cs", "autoMirror", "depth"],
+        [
+            "name",
+            "rt",
+            "rst",
+            "clrColor",
+            "clr",
+            "cam",
+            "cs",
+            "autoMirror",
+            "depth",
+        ],
         "Reached render tasks support name, rt, rst, clrColor, clr, cam, cs, autoMirror, and depth.",
     );
     const nameExpression = context.objectProperty(object, "name");
@@ -140,9 +163,16 @@ export function compileRenderTaskOptions(
     const target = context.compileValue(targetExpression);
     context.expectKind(target, "render-target", targetExpression);
     const signature = target.renderTargetSignature;
-    if (!signature?.surfaceFormat || !signature.hasColor || signature.depthFormat !== "depth24plus-stencil8") {
-        context.noteTemporalRecordBoundary(expression,
-            "TAA source preparation requires the engine color format and depth24plus-stencil8 attachment", "always");
+    if (
+        !signature?.surfaceFormat ||
+        !signature.hasColor ||
+        signature.depthFormat !== "depth24plus-stencil8"
+    ) {
+        context.noteTemporalRecordBoundary(
+            expression,
+            "TAA source preparation requires the engine color format and depth24plus-stencil8 attachment",
+            "always",
+        );
     }
     // The single-sample target an MSAA colour attachment resolves into. The
     // pin ignores it when `rt` is single-sample rather than refusing it, so
@@ -184,7 +214,9 @@ export function compileRenderTaskOptions(
         );
     }
     return `bbl::RenderTaskOptions{${context.cppString(
-        nameExpression ? context.compileStringLiteral(nameExpression) : "render-task",
+        nameExpression
+            ? context.compileStringLiteral(nameExpression)
+            : "render-task",
     )}, ${target.cpp}, ${clearColor ? context.compileColor4(clearColor) : "bbl::Color4{}"}, ${clear ? context.compileBoolean(clear) : "true"}, ${camera?.cpp ?? `${handleCppType("camera")}{}`}, ${camera ? "true" : "false"}, ${canvasSize ? context.compileBoolean(canvasSize) : "false"}, ${autoMirror ? context.compileBoolean(autoMirror) : "true"}, false, ${depth}, ${resolve.cpp}}`;
 }
 
@@ -215,11 +247,17 @@ export function compileGeometryTaskOptions(
         "textureDescriptions",
     );
     if (!descriptionsExpression) {
-        context.fail(object, "Geometry renderer task requires textureDescriptions.");
+        context.fail(
+            object,
+            "Geometry renderer task requires textureDescriptions.",
+        );
     }
     const descriptions = context.unwrap(descriptionsExpression);
     if (!ts.isArrayLiteralExpression(descriptions)) {
-        context.fail(descriptions, "Geometry textureDescriptions must be an array literal.");
+        context.fail(
+            descriptions,
+            "Geometry textureDescriptions must be an array literal.",
+        );
     }
     if (
         descriptions.elements.length === 0 ||
@@ -241,11 +279,17 @@ export function compileGeometryTaskOptions(
         );
         const typeExpression = context.objectProperty(description, "type");
         if (!typeExpression) {
-            context.fail(description, "Geometry texture description requires type.");
+            context.fail(
+                description,
+                "Geometry texture description requires type.",
+            );
         }
         const type = compileGeometryTextureType(context, typeExpression);
         if (attachments.includes(type)) {
-            context.fail(typeExpression, `Duplicate geometry texture type ${type}.`);
+            context.fail(
+                typeExpression,
+                `Duplicate geometry texture type ${type}.`,
+            );
         }
         attachments.push(type);
         const formatExpression = context.objectProperty(description, "format");
@@ -337,11 +381,7 @@ export function compileCopyTaskOptions(
         "Reached copy tasks support name, sourceTexture, targetTexture, resolveTexture, and viewport.",
     );
     const nameExpression = context.objectProperty(object, "name");
-    const sourceCpp = compileTextureReference(
-        context,
-        object,
-        "sourceTexture",
-    );
+    const sourceCpp = compileTextureReference(context, object, "sourceTexture");
     const targetExpression = context.objectProperty(object, "targetTexture");
     const resolveExpression = context.objectProperty(object, "resolveTexture");
     const target = targetExpression
@@ -351,7 +391,10 @@ export function compileCopyTaskOptions(
         ? context.compileValue(resolveExpression)
         : undefined;
     if (!target && !resolveTarget) {
-        context.fail(object, "Copy task requires targetTexture or resolveTexture.");
+        context.fail(
+            object,
+            "Copy task requires targetTexture or resolveTexture.",
+        );
     }
     if (target && targetExpression) {
         context.expectKind(target, "render-target", targetExpression);
@@ -366,7 +409,9 @@ export function compileCopyTaskOptions(
         viewport = `bbl::NormalizedViewport{${requiredObjectNumber(context, viewportObject, "x", "double")}, ${requiredObjectNumber(context, viewportObject, "y", "double")}, ${requiredObjectNumber(context, viewportObject, "width", "double")}, ${requiredObjectNumber(context, viewportObject, "height", "double")}}`;
     }
     return `bbl::CopyTaskOptions{${context.cppString(
-        nameExpression ? context.compileStringLiteral(nameExpression) : "copy-task",
+        nameExpression
+            ? context.compileStringLiteral(nameExpression)
+            : "copy-task",
     )}, ${sourceCpp}, ${target?.cpp ?? "bbl::RenderTargetHandle{}"}, ${resolveTarget?.cpp ?? "bbl::RenderTargetHandle{}"}, ${viewportExpression ? "true" : "false"}, ${viewport}}`;
 }
 
@@ -411,12 +456,10 @@ export function geometryEnumMember(type: GeometryTextureTypeName): string {
  * engine should not have to be handed one to read a number off an object.
  * `EngineOptionContext` satisfies it, so every existing caller is unchanged.
  */
-export interface RequiredObjectNumberContext
-    extends Pick<LoweringServices,
-        | "objectProperty"
-        | "compileNumber"
-        | "fail"
-    > {}
+export interface RequiredObjectNumberContext extends Pick<
+    LoweringServices,
+    "objectProperty" | "compileNumber" | "fail"
+> {}
 
 export function requiredObjectNumber(
     context: RequiredObjectNumberContext,
@@ -426,7 +469,10 @@ export function requiredObjectNumber(
 ): string {
     const value = context.objectProperty(object, name);
     if (!value) {
-        context.fail(object, `Object literal is missing numeric property '${name}'.`);
+        context.fail(
+            object,
+            `Object literal is missing numeric property '${name}'.`,
+        );
     }
     return context.compileNumber(value, precision);
 }
@@ -476,9 +522,15 @@ export function compileTextureReference(
         context.fail(object, `Frame-graph task requires ${property}.`);
     }
     const value = context.compileValue(expression);
-    if (!value.renderTargetSignature || value.renderTargetSignature.samples !== 1) {
-        context.noteTemporalRecordBoundary(expression,
-            "TAA post-process sampling requires a proven single-sample source texture as required by the pinned GPU state", "always");
+    if (
+        !value.renderTargetSignature ||
+        value.renderTargetSignature.samples !== 1
+    ) {
+        context.noteTemporalRecordBoundary(
+            expression,
+            "TAA post-process sampling requires a proven single-sample source texture as required by the pinned GPU state",
+            "always",
+        );
     }
     return compileRenderTextureValue(
         context,
@@ -490,10 +542,7 @@ export function compileTextureReference(
 }
 
 /** All `compileRenderTextureValue` needs: somewhere to refuse. */
-interface RenderTextureSlotContext
-    extends Pick<LoweringServices,
-        | "fail"
-    > {}
+interface RenderTextureSlotContext extends Pick<LoweringServices, "fail"> {}
 
 /**
  * The one place a slot says which render textures may fill it.
@@ -532,9 +581,10 @@ export function compileRenderTextureValue(
             `${describe} is sampled as colour, so it cannot be a depth attachment.`,
         );
     }
-    if (options.sources && !options.sources.includes(
-        value.renderTextureSource ?? "render-target",
-    )) {
+    if (
+        options.sources &&
+        !options.sources.includes(value.renderTextureSource ?? "render-target")
+    ) {
         context.fail(
             expression,
             `${describe} accepts ${options.sources.join(" or ")} textures, ` +
@@ -552,19 +602,13 @@ export function compileSceneDefaultRenderTask(
         return true;
     }
     const options = context.expectObjectLiteral(expression);
-    const value = context.objectProperty(
-        options,
-        "defaultRenderTask",
-    );
+    const value = context.objectProperty(options, "defaultRenderTask");
     if (!value) {
         return true;
     }
     const compiled = context.compileBoolean(value);
     if (compiled !== "true" && compiled !== "false") {
-        context.fail(
-            value,
-            "defaultRenderTask must be a static boolean.",
-        );
+        context.fail(value, "defaultRenderTask must be a static boolean.");
     }
     return compiled === "true";
 }
@@ -603,16 +647,9 @@ export function compileEnginePixelRatioCap(
     },
     options: ts.ObjectLiteralExpression,
 ): number | undefined {
-    const expression = context.objectProperty(
-        options,
-        "maxDevicePixelRatio",
-    );
+    const expression = context.objectProperty(options, "maxDevicePixelRatio");
     if (!expression) return;
-    const cap = compileStaticNumber(
-        context,
-        expression,
-        "maxDevicePixelRatio",
-    );
+    const cap = compileStaticNumber(context, expression, "maxDevicePixelRatio");
     if (cap < 1) {
         context.fail(
             expression,

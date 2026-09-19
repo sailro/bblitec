@@ -51,7 +51,9 @@ export interface DecodedBuffer {
  *  than guessed, because a wrong stride silently shifts every later field.
  *  This is the one copy: `render-diff` decodes through it too, so a stride
  *  fix reaches both diagnostics at once. */
-export function layoutOf(type: string): { size: number; align: number } | undefined {
+export function layoutOf(
+    type: string,
+): { size: number; align: number } | undefined {
     const scalar = /^(f32|i32|u32)$/.exec(type);
     if (scalar) return { size: 4, align: 4 };
     const vector = /^vec([234])<(f32|i32|u32)>$/.exec(type);
@@ -74,7 +76,10 @@ export function layoutOf(type: string): { size: number; align: number } | undefi
         if (!element) return undefined;
         // Uniform arrays round their stride up to 16.
         const stride = roundUp(Math.max(element.align, 16), element.size);
-        return { size: stride * Number(array[2]), align: Math.max(element.align, 16) };
+        return {
+            size: stride * Number(array[2]),
+            align: Math.max(element.align, 16),
+        };
     }
     return undefined;
 }
@@ -151,11 +156,9 @@ export function lastWriteBytes(buffer: {
     const writes = Array.isArray(buffer.writes) ? buffer.writes : [];
     for (let index = writes.length - 1; index >= 0; index--) {
         const write = writes[index] as
-            | string
-            | { bytes?: string; data?: string }
-            | undefined;
+            string | { bytes?: string; data?: string } | undefined;
         const base64 =
-            typeof write === "string" ? write : write?.bytes ?? write?.data;
+            typeof write === "string" ? write : (write?.bytes ?? write?.data);
         if (base64) return Buffer.from(base64, "base64");
     }
     const mapped = Array.isArray(buffer.mappedWrites)
@@ -220,9 +223,7 @@ export function decodeCapturedUniforms(
             ((usage & storageUsage) !== 0 && size <= storageValueCap);
         if (!admitted) continue;
         if (options.sizes && !options.sizes.includes(size)) continue;
-        const bytes = lastWriteBytes(
-            entry as { writes?: unknown; mappedWrites?: unknown },
-        );
+        const bytes = lastWriteBytes(entry);
         if (!bytes) continue;
         const candidates = structs
             .filter((struct) => struct.size === size)
@@ -236,8 +237,14 @@ export function decodeCapturedUniforms(
                 fields: decodeStruct(bytes, struct) ?? [],
             }))
             .filter((candidate) => candidate.fields.length > 0);
+        const id = entry.id ?? entry.index ?? "?";
+        if (typeof id !== "string" && typeof id !== "number") {
+            throw new Error(
+                "Uniform capture buffer identity must be a string or number.",
+            );
+        }
         result.push({
-            id: String(entry.id ?? entry.index ?? "?"),
+            id: String(id),
             size,
             writes: Array.isArray(entry.writes) ? entry.writes.length : 1,
             candidates,
@@ -249,9 +256,7 @@ export function decodeCapturedUniforms(
 export function formatDecodedUniforms(decoded: DecodedBuffer[]): string {
     const lines: string[] = [];
     for (const buffer of decoded) {
-        const names = [
-            ...new Set(buffer.candidates.map((c) => c.struct.name)),
-        ];
+        const names = [...new Set(buffer.candidates.map((c) => c.struct.name))];
         lines.push(
             `buffer ${buffer.id}  ${buffer.size} bytes  ${buffer.writes} write(s)  ` +
                 (names.length > 0
@@ -267,7 +272,9 @@ export function formatDecodedUniforms(decoded: DecodedBuffer[]): string {
         // fragment is known.
         for (const candidate of buffer.candidates) {
             if (buffer.candidates.length > 1) {
-                lines.push(`  as ${candidate.struct.name} (${candidate.struct.module})`);
+                lines.push(
+                    `  as ${candidate.struct.name} (${candidate.struct.module})`,
+                );
             }
             for (const field of candidate.fields) {
                 const value = field.values

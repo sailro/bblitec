@@ -10,8 +10,7 @@ import { pinnedNumericMathCallsWithHypot } from "./pinned-operators.js";
 import { pinnedHeader } from "./pinned-header.js";
 
 const normalizeModule = "src/math/normalize-vec3-tuple-or-up.ts";
-const normalizeObjectModule =
-    "src/math/normalize-vec3.ts";
+const normalizeObjectModule = "src/math/normalize-vec3.ts";
 const lengthModule = "src/math/length-vec3.ts";
 
 /** How a pinned body reaching `normalizeVec3TupleOrUp` spells the call. */
@@ -81,9 +80,7 @@ export function pinnedNormalizeVec3Header(context: LoweringContext): string {
             cppName: "length_vec3",
             inline: true,
             calls: mathCalls,
-            memberBindings: new Map([
-                ...vec3MemberBindings("v"),
-            ]),
+            memberBindings: new Map([...vec3MemberBindings("v")]),
             returns: "double",
         },
     );
@@ -111,9 +108,7 @@ export function pinnedNormalizeVec3Header(context: LoweringContext): string {
                         `length_vec3(${args.join(", ")})`,
                 ],
             ]),
-            memberBindings: new Map([
-                ...vec3MemberBindings("v"),
-            ]),
+            memberBindings: new Map([...vec3MemberBindings("v")]),
             returns: {
                 type: "bbl::Vec3d",
                 value: (lowerer, expression) =>
@@ -133,11 +128,20 @@ export function pinnedNormalizeVec3Header(context: LoweringContext): string {
             },
         },
     );
-    return pinnedHeader(["<bblite/runtime.hpp>","<bblite/js_data.hpp>","","<array>","<cmath>"], `
+    return pinnedHeader(
+        [
+            "<bblite/runtime.hpp>",
+            "<bblite/js_data.hpp>",
+            "",
+            "<array>",
+            "<cmath>",
+        ],
+        `
 ${normalize}
 
 ${length}
 
 ${normalizeObject}
-`);
+`,
+    );
 }

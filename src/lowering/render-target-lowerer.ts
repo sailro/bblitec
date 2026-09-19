@@ -8,7 +8,10 @@ const rttModule = "src/texture/rtt.ts";
 /** Lowers render-target allocation independently of any renderer or task family. */
 export class RenderTargetLowerer {
     public constructor(private readonly context: LoweringContext) {
-        this.context.functionDeclaration(renderTargetModule, "createRenderTarget");
+        this.context.functionDeclaration(
+            renderTargetModule,
+            "createRenderTarget",
+        );
         this.assertPinnedRenderTargetTextureArms();
     }
 
@@ -71,7 +74,10 @@ export class RenderTargetLowerer {
                 "Expected the colour render-target view to carry invertY: true.",
             );
         }
-        for (const sampler of ["getNearestSampler", "getBilinearSampler"] as const) {
+        for (const sampler of [
+            "getNearestSampler",
+            "getBilinearSampler",
+        ] as const) {
             if (!this.context.hasCall(declaration, sampler)) {
                 this.context.contractError(
                     declaration,

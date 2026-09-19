@@ -1,18 +1,24 @@
 import type ts from "typescript";
-import {floatLiteral} from "../../cpp-literals.js";
-import {pinnedRootFlip} from "./shared.js";
+import { floatLiteral } from "../../cpp-literals.js";
+import { pinnedRootFlip } from "./shared.js";
 
 /** Native storage for source-constructed cameras; live pose scheduling is separate. */
-export function lowerGltfCamerasCpp(parser: ts.SourceFile): {parentWriter: string; loading: string; poseRefresh: string} {
+export function lowerGltfCamerasCpp(parser: ts.SourceFile): {
+    parentWriter: string;
+    loading: string;
+    poseRefresh: string;
+} {
     const flip = pinnedRootFlip(parser);
-    return {parentWriter: `
+    return {
+        parentWriter: `
 void write_gltf_camera_parent_world(CameraRecord& camera, Matrix node_world, const Matrix& local) {
     for (std::size_t column = 0; column < 4; ++column)
         node_world[column * 4 + ${flip.lane}] *= ${floatLiteral(flip.sign)};
     camera.parent_world = upstream::matrix_product(node_world, local);
     camera.has_parent_world = true;
 }
-`, loading: `
+`,
+        loading: `
     if (load_cameras) {
         std::vector<CameraHandle> loaded_cameras;
         const auto camera_matrix = [&](const ts::JsonValue& value) {
@@ -53,11 +59,13 @@ void write_gltf_camera_parent_world(CameraRecord& camera, Matrix node_world, con
         for (const auto& index : required(mesh_plan, "containerCameras").as_array())
             asset.cameras.push_back(loaded_cameras.at(unsigned_value(index)));
     }
-`, poseRefresh: `
+`,
+        poseRefresh: `
             for (const AnimatedCameraBinding& binding : animation_runtime->camera_nodes) {
                 if (binding.camera.value >= engine.cameras.size() || binding.node >= animation_runtime->nodes.size()) continue;
                 write_gltf_camera_parent_world(engine.cameras[binding.camera.value],
                     compute_animated_world(binding.node), binding.local);
             }
-`};
+`,
+    };
 }

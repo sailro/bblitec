@@ -23,13 +23,19 @@ export function readCapturePath(value: unknown, path: string): unknown {
         const selectors = segment.slice(open);
         const pattern = /\[([^\]]*)\]/g;
         let consumed = 0;
-        for (let match = pattern.exec(selectors); match !== null; match = pattern.exec(selectors)) {
+        for (
+            let match = pattern.exec(selectors);
+            match !== null;
+            match = pattern.exec(selectors)
+        ) {
             if (match.index !== consumed) break;
             consumed = match.index + match[0].length;
             current = select(current, match[1] ?? "", path);
         }
         if (consumed !== selectors.length) {
-            throw new Error(`capture path: cannot parse segment '${segment}' of '${path}'`);
+            throw new Error(
+                `capture path: cannot parse segment '${segment}' of '${path}'`,
+            );
         }
     }
     return current;
@@ -74,7 +80,9 @@ function select(value: unknown, selector: string, path: string): unknown {
     if (/^\d+$/.test(selector)) return value[Number(selector)];
     const equality = selector.indexOf("=");
     if (equality < 0) {
-        throw new Error(`capture path: selector '[${selector}]' of '${path}' must be an index, '*' or 'key=value'`);
+        throw new Error(
+            `capture path: selector '[${selector}]' of '${path}' must be an index, '*' or 'key=value'`,
+        );
     }
     const key = selector.slice(0, equality);
     const text = selector.slice(equality + 1);

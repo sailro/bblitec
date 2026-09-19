@@ -7,13 +7,13 @@ namespace {
 double clock_time = 100;
 double performance_time = 0;
 std::vector<int> events;
-}
+} // namespace
 
 namespace bbl {
 #include "frame-continuations.hpp"
 void run_timeout_callbacks(Engine&) { events.push_back(8); }
 void run_interval_callbacks(Engine&) { events.push_back(9); }
-}
+} // namespace bbl
 
 namespace bbl::pal {
 double monotonic_milliseconds() { return clock_time; }
@@ -21,7 +21,7 @@ double performance_milliseconds() { return performance_time; }
 void advance_performance_milliseconds(double delta) { performance_time += delta; }
 struct TextGpuCapture;
 #include "frame-lifecycle.hpp"
-}
+} // namespace bbl::pal
 
 using namespace bbl;
 using namespace bbl::pal;
@@ -66,10 +66,12 @@ void check_continuations() {
     bool resolved = false;
     defer_start_continuation(engine, [&] {
         events.push_back(1);
-        defer_start_continuation_until(engine, [&] { return resolved; }, [&] {
-            events.push_back(2);
-            defer_callback(engine, [] { events.push_back(3); });
-        });
+        defer_start_continuation_until(
+            engine, [&] { return resolved; },
+            [&] {
+                events.push_back(2);
+                defer_callback(engine, [] { events.push_back(3); });
+            });
     });
     assert(engine.pending_start_continuations == 1 && !gate.drains_resolved());
     run_deferred_callbacks(engine);
@@ -152,13 +154,15 @@ void check_capture_budget() {
     CaptureGate interactive(interactive_options, 0, &engine);
     assert(interactive.keep_running(true, 1000));
 
-    for (const auto path : {&FrameOptions::screenshot_path, &FrameOptions::id_buffer_path,
-                           &FrameOptions::cluster_buffer_path, &FrameOptions::render_capture_path}) {
+    for (const auto path :
+         {&FrameOptions::screenshot_path, &FrameOptions::id_buffer_path,
+          &FrameOptions::cluster_buffer_path, &FrameOptions::render_capture_path}) {
         FrameOptions requested;
         requested.*path = "output";
         CaptureGate capture(requested, 1);
         assert(capture.requested() && capture.pending() && capture.drains_resolved());
-        capture.screenshot_saved = capture.id_buffer_saved = capture.cluster_buffer_saved = capture.render_capture_saved = true;
+        capture.screenshot_saved = capture.id_buffer_saved = capture.cluster_buffer_saved =
+            capture.render_capture_saved = true;
         assert(!capture.pending());
     }
 }

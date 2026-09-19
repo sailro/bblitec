@@ -7,7 +7,10 @@ import { compileSource } from "../src/compiler.js";
 import { importPinnedModule } from "../src/pinned-shader-composer.js";
 import { LoweringContext } from "../src/lowering/context.js";
 import { FactoryLowerer } from "../src/lowering/factory/material-factories.js";
-import { optionalNativeFixtureTools, runNativeFixtureCompiler } from "./native-fixture.js";
+import {
+    optionalNativeFixtureTools,
+    runNativeFixtureCompiler,
+} from "./native-fixture.js";
 
 interface SourceTexture {
     texture: object;
@@ -42,42 +45,93 @@ test("material texture reads distinguish source-family slots and omitted PBR pro
     `);
     assert.match(result.cpp, /\.has_base_color_texture = false/);
     assert.match(result.cpp, /\.has_base_color_texture = true/);
-    assert.match(result.cpp, /material_texture_present\([^;]+MaterialTextureSlot::base_color/);
-    assert.match(result.cpp, /material_texture_present\([^;]+MaterialTextureSlot::diffuse/);
-    const factory = new FactoryLowerer(new LoweringContext()).lowerPbrMaterialFactory().source;
-    assert.match(factory, /material\.has_public_base_color_texture = options\.has_base_color_texture;/);
+    assert.match(
+        result.cpp,
+        /material_texture_present\([^;]+MaterialTextureSlot::base_color/,
+    );
+    assert.match(
+        result.cpp,
+        /material_texture_present\([^;]+MaterialTextureSlot::diffuse/,
+    );
+    const factory = new FactoryLowerer(
+        new LoweringContext(),
+    ).lowerPbrMaterialFactory().source;
+    assert.match(
+        factory,
+        /material\.has_public_base_color_texture = options\.has_base_color_texture;/,
+    );
 });
 
 test("material texture fallback bytes and presence match actual pinned producers", async (t) => {
     const native = optionalNativeFixtureTools(false);
-    if (!native) { t.skip("Native fixture compiler unavailable."); return; }
+    if (!native) {
+        t.skip("Native fixture compiler unavailable.");
+        return;
+    }
     const { createPbrMaterial } = await importPinnedModule<{
-        createPbrMaterial(props: SourceMaterial): SourceMaterial;
+        createPbrMaterial(this: void, props: SourceMaterial): SourceMaterial;
     }>("material/pbr/pbr-material.js");
     const { createStandardMaterial } = await importPinnedModule<{
-        createStandardMaterial(): SourceMaterial;
+        createStandardMaterial(this: void): SourceMaterial;
     }>("material/standard/create-standard-material.js");
     const uploads: number[][] = [];
     const formats: string[] = [];
-    const engine = {_device: {
-        createTexture(descriptor: {format: string}) {
-            formats.push(descriptor.format);
-            return {createView: () => ({})};
+    const engine = {
+        _device: {
+            createTexture(descriptor: { format: string }) {
+                formats.push(descriptor.format);
+                return { createView: () => ({}) };
+            },
+            queue: {
+                writeTexture(_target: object, bytes: Uint8Array) {
+                    uploads.push([...bytes]);
+                },
+            },
         },
-        queue: {writeTexture(_target: object, bytes: Uint8Array) {uploads.push([...bytes]);}},
-    }};
-    const { uploadBaseColorFactorTexture, assemblePbrProps } = await importPinnedModule<{
-        uploadBaseColorFactorTexture(engine: object, factor: readonly number[], sampler: object, mipmaps: () => void): SourceTexture;
-        assemblePbrProps(mat: object, base: SourceTexture, orm: SourceTexture, normal: undefined,
-            emissive: undefined, extensions: object): SourceMaterial;
-    }>("loader-gltf/gltf-pbr-builder.js");
-    const factor = [.12, .34, .56, .78];
+    };
+    const { uploadBaseColorFactorTexture, assemblePbrProps } =
+        await importPinnedModule<{
+            uploadBaseColorFactorTexture(
+                this: void,
+                engine: object,
+                factor: readonly number[],
+                sampler: object,
+                mipmaps: () => void,
+            ): SourceTexture;
+            assemblePbrProps(
+                this: void,
+                mat: object,
+                base: SourceTexture,
+                orm: SourceTexture,
+                normal: undefined,
+                emissive: undefined,
+                extensions: object,
+            ): SourceMaterial;
+        }>("loader-gltf/gltf-pbr-builder.js");
+    const factor = [0.12, 0.34, 0.56, 0.78];
     const sampler = {};
-    const baked = uploadBaseColorFactorTexture(engine, factor, sampler, () => {});
-    const loaded = assemblePbrProps({_baseColorFactor: factor, _baseColorImage: null,
-        _normalScale: 1, _doubleSided: false, _alphaMode: "OPAQUE"}, baked, baked, undefined, undefined, {});
+    const baked = uploadBaseColorFactorTexture(
+        engine,
+        factor,
+        sampler,
+        () => {},
+    );
+    const loaded = assemblePbrProps(
+        {
+            _baseColorFactor: factor,
+            _baseColorImage: null,
+            _normalScale: 1,
+            _doubleSided: false,
+            _alphaMode: "OPAQUE",
+        },
+        baked,
+        baked,
+        undefined,
+        undefined,
+        {},
+    );
     const absent = createPbrMaterial({});
-    const explicit = createPbrMaterial({baseColorTexture: baked});
+    const explicit = createPbrMaterial({ baseColorTexture: baked });
     const standard = createStandardMaterial();
     assert.equal(loaded.baseColorTexture, baked);
     assert.equal(loaded.baseColorFactor, undefined);
@@ -93,10 +147,12 @@ test("material texture fallback bytes and presence match actual pinned producers
     assert.equal(uploads.length, 1);
 
     const directory = resolve("artifacts/test-material-source-reads");
-    mkdirSync(directory, {recursive: true});
+    mkdirSync(directory, { recursive: true });
     const source = resolve(directory, "check.cpp");
     const executable = resolve(directory, "check.exe");
-    writeFileSync(source, `#include <bblite/runtime.hpp>
+    writeFileSync(
+        source,
+        `#include <bblite/runtime.hpp>
 #include <bblite/js_data.hpp>
 #include <cassert>
 int main() {
@@ -139,8 +195,19 @@ int main() {
     engine.materials.clear();
     assert(retained.data.bytes.size() == 4 && retained.data.bytes[2] == 3);
 }
-`);
-    runNativeFixtureCompiler(native, ["/nologo", "/std:c++20", "/EHsc", "/W4", "/WX", "/Od",
-        `/I${resolve("native/include")}`, source, `/Fe:${executable}`, `/Fo:${resolve(directory, "check.obj")}`]);
-    execFileSync(executable, [], {stdio: "pipe"});
+`,
+    );
+    runNativeFixtureCompiler(native, [
+        "/nologo",
+        "/std:c++20",
+        "/EHsc",
+        "/W4",
+        "/WX",
+        "/Od",
+        `/I${resolve("native/include")}`,
+        source,
+        `/Fe:${executable}`,
+        `/Fo:${resolve(directory, "check.obj")}`,
+    ]);
+    execFileSync(executable, [], { stdio: "pipe" });
 });

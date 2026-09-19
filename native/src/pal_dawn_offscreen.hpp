@@ -6,14 +6,17 @@
 namespace bbl::pal {
 
 struct DawnOffscreenImage final : OffscreenImage {
-    DawnOffscreenImage(WGPUDevice device, WGPUTextureFormat format, std::uint32_t width, std::uint32_t height) {
+    DawnOffscreenImage(WGPUDevice device, WGPUTextureFormat format, std::uint32_t width,
+                       std::uint32_t height) {
         WGPUTextureDescriptor descriptor = WGPU_TEXTURE_DESCRIPTOR_INIT;
         descriptor.dimension = WGPUTextureDimension_2D;
         descriptor.format = format;
-        descriptor.usage = WGPUTextureUsage_RenderAttachment | WGPUTextureUsage_TextureBinding | WGPUTextureUsage_CopySrc;
+        descriptor.usage = WGPUTextureUsage_RenderAttachment | WGPUTextureUsage_TextureBinding |
+                           WGPUTextureUsage_CopySrc;
         descriptor.size = WGPUExtent3D{width, height, 1};
         texture = wgpuDeviceCreateTexture(device, &descriptor);
-        if (!texture) dawn_error("offscreen texture creation failed.");
+        if (!texture)
+            dawn_error("offscreen texture creation failed.");
     }
     ~DawnOffscreenImage() override { wgpuTextureRelease(texture); }
     WGPUTexture texture = nullptr;

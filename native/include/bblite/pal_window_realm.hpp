@@ -24,12 +24,13 @@ struct ScreenMetrics {
 ScreenMetrics window_screen_metrics();
 const void* window_screen_identity();
 UiClientRect window_element_size(UiElementHandle element);
-void window_on_application_error(bool rejection, std::uint64_t identity, ApplicationErrors::Callback callback, bool once);
+void window_on_application_error(bool rejection, std::uint64_t identity,
+                                 ApplicationErrors::Callback callback, bool once);
 void window_off_application_error(bool rejection, std::uint64_t identity);
 std::shared_ptr<CanvasElement> window_canvas(UiElementHandle element);
 
 class ResizeObserver {
-  public:
+public:
     using Callback = js::Callback<void()>;
     explicit ResizeObserver(Callback callback) : callback_(std::move(callback)) {}
     void observe(UiElementHandle element);
@@ -37,7 +38,8 @@ class ResizeObserver {
     void disconnect();
     void deliver();
     void gc_trace(const js::TraceVisitor& visitor) const { visitor(callback_); }
-  private:
+
+private:
     friend std::shared_ptr<ResizeObserver> create_resize_observer(Callback callback);
     // Managed aliases are allocated inside a GC block, so std::enable_shared_from_this
     // cannot discover their control block. The factory supplies this weak identity.
@@ -47,8 +49,9 @@ class ResizeObserver {
 };
 
 class MediaQueryList {
-  public:
-    MediaQueryList(std::string query, double (*read_pixel_ratio)(), bool (*read_motion_preference)());
+public:
+    MediaQueryList(std::string query, double (*read_pixel_ratio)(),
+                   bool (*read_motion_preference)());
     [[nodiscard]] bool matches() const;
     [[nodiscard]] const std::string& media() const noexcept { return media_; }
     void add_change_listener(js::Callback<void()> callback);
@@ -61,7 +64,8 @@ class MediaQueryList {
      */
     [[nodiscard]] bool retained() const noexcept { return !listeners_.empty(); }
     void gc_trace(const js::TraceVisitor& visitor) const { visitor(listeners_); }
-  private:
+
+private:
     enum class Feature { Resolution, ReducedMotion };
     Feature feature_ = Feature::Resolution;
     std::string media_;

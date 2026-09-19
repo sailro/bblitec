@@ -16,7 +16,6 @@ import {
 
 /** Pinned TRS composition and the native matrix coordinate conversion. */
 
-
 /** `base[offset]` → 0, `base[offset + n]` → n, anything else undefined. */
 function offsetElementIndex(
     expression: ts.Expression,
@@ -40,7 +39,9 @@ function offsetElementIndex(
         identifierText(index.left) === offsetName &&
         ts.isNumericLiteral(unwrapExpression(index.right))
     ) {
-        return Number((unwrapExpression(index.right) as ts.NumericLiteral).text);
+        return Number(
+            (unwrapExpression(index.right) as ts.NumericLiteral).text,
+        );
     }
     return undefined;
 }
@@ -114,9 +115,9 @@ function composePinWalk(file: ts.SourceFile): ComposePinWalk {
                 );
             }
             const product = unwrapExpression(binding.initializer);
-            const quaternionProduct = ts.isBinaryExpression(product) &&
-                product.operatorToken.kind ===
-                    ts.SyntaxKind.AsteriskToken &&
+            const quaternionProduct =
+                ts.isBinaryExpression(product) &&
+                product.operatorToken.kind === ts.SyntaxKind.AsteriskToken &&
                 quaternionSet.has(identifierText(product.left) ?? "") &&
                 quaternionSet.has(identifierText(product.right) ?? "");
             if (!quaternionProduct) {
@@ -129,10 +130,7 @@ function composePinWalk(file: ts.SourceFile): ComposePinWalk {
             }
             productLines.push(
                 `    const double ${binding.name.text} = ` +
-                    `${
-                        renderCppExpression(scope, binding.initializer)
-                            .text
-                    };`,
+                    `${renderCppExpression(scope, binding.initializer).text};`,
             );
             names.set(binding.name.text, binding.name.text);
         }
@@ -141,12 +139,13 @@ function composePinWalk(file: ts.SourceFile): ComposePinWalk {
     let lane = 0;
     for (; index < statements.length; index += 1, lane += 1) {
         const statement = statements[index]!;
-        const assignment = ts.isExpressionStatement(statement) &&
-                ts.isBinaryExpression(statement.expression) &&
-                statement.expression.operatorToken.kind ===
-                    ts.SyntaxKind.EqualsToken
-            ? statement.expression
-            : undefined;
+        const assignment =
+            ts.isExpressionStatement(statement) &&
+            ts.isBinaryExpression(statement.expression) &&
+            statement.expression.operatorToken.kind ===
+                ts.SyntaxKind.EqualsToken
+                ? statement.expression
+                : undefined;
         const component = assignment
             ? offsetElementIndex(assignment.left, dstName, offName)
             : undefined;
@@ -175,9 +174,7 @@ function composePinWalk(file: ts.SourceFile): ComposePinWalk {
             continue;
         }
         if (lane >= 12 && lane <= 14) {
-            if (
-                identifierText(value) !== translationNames[lane - 12]
-            ) {
+            if (identifierText(value) !== translationNames[lane - 12]) {
                 refuseNode(
                     symbol,
                     file,
@@ -199,7 +196,10 @@ function composePinWalk(file: ts.SourceFile): ComposePinWalk {
 }
 
 /** `composeMat4IntoBuffer` → `trs_matrix` (float lanes lifted to double). */
-export function lowerMatrixComposeCpp(file: ts.SourceFile, doubleInputs = false): string {
+export function lowerMatrixComposeCpp(
+    file: ts.SourceFile,
+    doubleInputs = false,
+): string {
     const walk = composePinWalk(file);
     return [
         "Matrix trs_matrix(",
@@ -251,7 +251,7 @@ export function lowerMatrixNativeCpp(file: ts.SourceFile): string {
         "    for (std::size_t column = 0; column < 4; ++column) {",
         "        for (std::size_t row = 0; row < 4; ++row) {",
         `            const float row_sign = row == ${lane} ? ` +
-        `${literal} : 1.0f;`,
+            `${literal} : 1.0f;`,
         "            const float column_sign =",
         `                column == ${lane} ? ${literal} : 1.0f;`,
         "            result[column * 4 + row] =",

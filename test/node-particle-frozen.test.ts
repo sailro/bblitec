@@ -8,7 +8,10 @@ import { bakeNodeParticles } from "../src/pinned-node-particle.js";
 
 const fileName = resolve("corpus/babylon-lite/lab/lite/src/lite/scene300.ts");
 const original = readFileSync(fileName, "utf8");
-const initialized = original.slice(0, original.indexOf("    const buffer = system.buffer;"));
+const initialized = original.slice(
+    0,
+    original.indexOf("    const buffer = system.buffer;"),
+);
 function compile(body: string) {
     return compileSource(`${initialized}\n${body}\n}\nmain();`, { fileName });
 }
@@ -18,15 +21,37 @@ const registration = `
 `;
 
 test("unchanged scene300 derives frozen marker placement from the configured canvas", () => {
-    for (const [width, height] of [[1280, 720], [800, 600]] as const) {
+    for (const [width, height] of [
+        [1280, 720],
+        [800, 600],
+    ] as const) {
         const result = compileSource(original, { fileName, width, height });
         const program = result.nodeParticles!;
-        assert.deepEqual(program.sprite2d[0]!.originPx, [width * 0.5, height * 0.72]);
+        assert.deepEqual(program.sprite2d[0]!.originPx, [
+            width * 0.5,
+            height * 0.72,
+        ]);
         assert.equal(program.sprite2d[0]!.retainFrozen, true);
-        const writes = program.steps.filter((step) => step.op === "buffer-write");
+        const writes = program.steps.filter(
+            (step) => step.op === "buffer-write",
+        );
         assert.deepEqual(writes.slice(0, 2), [
-            { op: "buffer-write", set: 0, system: 0, column: "posX", index: 0, value: (96 - width * 0.5) / 220 },
-            { op: "buffer-write", set: 0, system: 0, column: "posY", index: 0, value: (height * 0.72 - 96) / 220 },
+            {
+                op: "buffer-write",
+                set: 0,
+                system: 0,
+                column: "posX",
+                index: 0,
+                value: (96 - width * 0.5) / 220,
+            },
+            {
+                op: "buffer-write",
+                set: 0,
+                system: 0,
+                column: "posY",
+                index: 0,
+                value: (height * 0.72 - 96) / 220,
+            },
         ]);
         assert.match(result.cpp, /sprite_renderer_before_update/);
         assert.match(result.cpp, /\(\*v_liveSamples\)\+\+/);
@@ -45,14 +70,31 @@ test("frozen particle buffer and column aliases preserve ordered initialization 
     `);
     assert.deepEqual(result.nodeParticles!.steps.slice(-3), [
         { op: "scalar", set: 0, system: 0, name: "updateSpeed", value: 0 },
-        { op: "buffer-write", set: 0, system: 0, column: "posX", index: 0, value: 3.1 },
-        { op: "buffer-write", set: 0, system: 0, column: "age", index: 0, value: 0.3673999999999999 },
+        {
+            op: "buffer-write",
+            set: 0,
+            system: 0,
+            column: "posX",
+            index: 0,
+            value: 3.1,
+        },
+        {
+            op: "buffer-write",
+            set: 0,
+            system: 0,
+            column: "age",
+            index: 0,
+            value: 0.3673999999999999,
+        },
     ]);
     assert.deepEqual(result.nodeParticles!.buffers, [
         { set: 0, system: 0, columns: ["age"], observed: true },
     ]);
     assert.match(result.cpp, /node_particle_frozen_capacity\(0, 0\)/);
-    assert.match(result.cpp, /node_particle_frozen_column\(0, 0, "age", 0\.0\)/);
+    assert.match(
+        result.cpp,
+        /node_particle_frozen_column\(0, 0, "age", 0\.0\)/,
+    );
 });
 
 test("particle bake mutations refuse after native reads and inside live callbacks", () => {
@@ -62,7 +104,10 @@ test("particle bake mutations refuse after native reads and inside live callback
         `${registration} renderer._beforeUpdate.push(() => { system.updateSpeed = 1; });`,
         `${registration} renderer._beforeUpdate.push(() => { system.buffer.posX[0] = 2; });`,
     ]) {
-        assert.throws(() => compile(body), /scene300\.ts:\d+:\d+: A frozen particle buffer can only change/);
+        assert.throws(
+            () => compile(body),
+            /scene300\.ts:\d+:\d+: A frozen particle buffer can only change/,
+        );
     }
 });
 
@@ -84,8 +129,15 @@ test("frozen sheet indices retain native typed-array aliases and request a live 
     assert.equal(result.nodeParticles!.sprite2d[0]!.retainFrozen, true);
     assert.equal(result.nodeParticles!.buffers[0]!.sheet, true);
     assert.deepEqual(result.nodeParticles!.buffers[0]!.columns, ["age"]);
-    assert.equal(result.nodeParticles!.steps.filter((step) => step.op === "expect-alive").length, 0);
-    assert.match(result.cpp, /set_frozen_node_particle_sheet\(0, 0, 64\.0, 64\.0, v_cells\)/);
+    assert.equal(
+        result.nodeParticles!.steps.filter((step) => step.op === "expect-alive")
+            .length,
+        0,
+    );
+    assert.match(
+        result.cpp,
+        /set_frozen_node_particle_sheet\(0, 0, 64\.0, 64\.0, v_cells\)/,
+    );
     assert.match(result.cpp, /node_particle_frozen_alive\(0, 0\)/);
 });
 
@@ -96,11 +148,15 @@ test("unreached sprite-sheet callbacks, fields and ownership shapes refuse at so
         `{ cellWidth: 64, cellHeight: 64, cellIndex: cells, update: () => undefined, extra: 1 }`,
         `other`,
     ]) {
-        assert.throws(() => compile(`
+        assert.throws(
+            () =>
+                compile(`
             const cells = new Uint16Array(600);
             const other = { cellWidth: 64, cellHeight: 64, cellIndex: cells, update: () => undefined };
             system._spriteSheet = ${sheet};
-        `), /scene300\.ts:\d+:\d+: .*([Ss]prite.sheet|Uint16Array)/);
+        `),
+            /scene300\.ts:\d+:\d+: .*([Ss]prite.sheet|Uint16Array)/,
+        );
     }
 });
 
@@ -119,12 +175,19 @@ test("frozen snapshots refuse composed aliases in either reach order", () => {
         `${sheet} ${other} other.systems.push(system); ${registration.replace(", set,", ", other,")}`,
         `${other} other.systems.push(system); ${sheet}`,
     ]) {
-        assert.throws(() => compile(body), /scene300\.ts:\d+:\d+: .*([Ss]ystem-list composition|cannot be combined with system-list composition)/);
+        assert.throws(
+            () => compile(body),
+            /scene300\.ts:\d+:\d+: .*([Ss]ystem-list composition|cannot be combined with system-list composition)/,
+        );
     }
     // Existing composition remains an ordered bake operation when no new
     // native snapshot or shared sheet crosses the original-system boundary.
-    const result = compile(`${other} other.systems.push(system); ${registration.replace(", set,", ", other,")}`);
-    assert.ok(result.nodeParticles!.steps.some((step) => step.op === "push-system"));
+    const result = compile(
+        `${other} other.systems.push(system); ${registration.replace(", set,", ", other,")}`,
+    );
+    assert.ok(
+        result.nodeParticles!.steps.some((step) => step.op === "push-system"),
+    );
     assert.deepEqual(result.nodeParticles!.buffers, []);
 });
 
@@ -147,14 +210,22 @@ test("pinned frozen bake preserves full-capacity typed columns and stable Float6
     assert.equal(buffer.stepIsIdentity, true);
     assert.equal(buffer.bufferColumns!.age!.length, 600);
     assert.equal(buffer.bufferColumns!.age![0], 0.3673999999999999);
-    assert.notEqual(buffer.bufferColumns!.age![0], Math.fround(buffer.bufferColumns!.age![0]!));
+    assert.notEqual(
+        buffer.bufferColumns!.age![0],
+        Math.fround(buffer.bufferColumns!.age![0]),
+    );
     assert.equal(buffer.bufferColumns!.posX![0], Math.fround(3.1));
     assert.equal(buffer.bufferColumns!.age![599], 0);
     const atlas = PNG.sync.read(Buffer.from(buffer.texture!.bytes!, "base64"));
     assert.equal(atlas.width, 128);
     assert.equal(atlas.height, 64);
     assert.equal(buffer.texture!.mediaType, "image/png");
-    const rgba = (x: number, y: number) => [...atlas.data.subarray((y * atlas.width + x) * 4, (y * atlas.width + x) * 4 + 4)];
+    const rgba = (x: number, y: number) => [
+        ...atlas.data.subarray(
+            (y * atlas.width + x) * 4,
+            (y * atlas.width + x) * 4 + 4,
+        ),
+    ];
     assert.deepEqual(rgba(96, 8), [255, 96, 32, 255]);
     assert.equal(rgba(96, 56)[3], 0);
 });

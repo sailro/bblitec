@@ -3,14 +3,14 @@ import type { LoweringServices } from "../lowering-services.js";
 import ts from "typescript";
 import { argumentAt } from "../syntax.js";
 import { floatLiteral } from "../../cpp-literals.js";
-import { compileLocalCubemapIntrinsic, type LocalCubemapIntrinsicContext } from "./local-cubemap.js";
+import {
+    compileLocalCubemapIntrinsic,
+    type LocalCubemapIntrinsicContext,
+} from "./local-cubemap.js";
 import type { Value } from "../types.js";
 import type { IntrinsicCallContext } from "./context.js";
 import { enclosingLoopControl } from "../loop-control.js";
-import {
-    requiredStaticColor3,
-    staticColor3Value,
-} from "./material-options.js";
+import { requiredStaticColor3, staticColor3Value } from "./material-options.js";
 import { isToneMappingExport } from "../../pinned-tone-mapping.js";
 import { linearDepthDefaultPlanes } from "../linear-depth-material.js";
 import { isTypedArrayType } from "../data-types.js";
@@ -28,63 +28,65 @@ import type {
 } from "../types.js";
 
 export interface MaterialIntrinsicContext
-    extends IntrinsicCallContext,
-    LocalCubemapIntrinsicContext,
-    ObjectValidationContext,
-    PositiveIntegerContext,
-    Pick<LoweringServices,
-        | "engineHasStarted"
-        | "hasRegisteredScene"
-        | "recordScenePbrSheen"
-        | "recordScenePbrNoColorView"
-        | "recordScenePbrUnlit"
-        | "recordAssetSceneUnlit"
-        | "recordScenePbrSkybox"
-        | "recordScenePbrGammaAlbedo"
-        | "recordScenePbrShadowOnly"
-        | "recordSceneMaterialSlot"
-        | "recordScenePbrClearCoat"
-        | "recordScenePbrIridescence"
-        | "recordScenePbrLightmap"
-        | "recordAssetSceneLightmap"
-        | "pbrLightmapEnabled"
-        | "boundPixelsTextures"
-        | "recordScenePbrAnisotropy"
-        | "recordScenePbrEmissive"
-        | "recordScenePbrMetallicReflectance"
-        | "recordScenePbrSubsurface"
-        | "expectSameEngine"
-        | "requireDefaultEngine"
-        | "requireEngine"
-        | "compileNumber"
-        | "compileBoolean"
-        | "compileVec2"
-        | "compileColor3"
-        | "captureNativeExpression"
-        | "compileStringLiteral"
-        | "compilePbrMaterialOptions"
-        | "compileMetallicReflectanceOptions"
-        | "allocateTemporaryCppName"
-        | "emit"
-        | "compileGridMaterialOptions"
-        | "compileClearCoatOptions"
-        | "compileIridescenceOptions"
-        | "compileAnisotropyOptions"
-        | "compileSheenOptions"
-        | "compileSubsurfaceOptions"
-        | "compileShaderMaterialOptions"
-        | "reachLinearDepthMaterial"
-        | "expectObjectLiteral"
-        | "objectProperty"
-        | "compileNodeMaterialOptions"
-        | "expectShaderVariant"
-        | "resolveShaderUniform"
-        | "resolveShaderTextureSlot"
-        | "resolveShaderStorageBufferSlot"
-        | "compileShaderUniformComponents"
-        | "cppString"
-        | "fail"
-    > {}
+    extends
+        IntrinsicCallContext,
+        LocalCubemapIntrinsicContext,
+        ObjectValidationContext,
+        PositiveIntegerContext,
+        Pick<
+            LoweringServices,
+            | "engineHasStarted"
+            | "hasRegisteredScene"
+            | "recordScenePbrSheen"
+            | "recordScenePbrNoColorView"
+            | "recordScenePbrUnlit"
+            | "recordAssetSceneUnlit"
+            | "recordScenePbrSkybox"
+            | "recordScenePbrGammaAlbedo"
+            | "recordScenePbrShadowOnly"
+            | "recordSceneMaterialSlot"
+            | "recordScenePbrClearCoat"
+            | "recordScenePbrIridescence"
+            | "recordScenePbrLightmap"
+            | "recordAssetSceneLightmap"
+            | "pbrLightmapEnabled"
+            | "boundPixelsTextures"
+            | "recordScenePbrAnisotropy"
+            | "recordScenePbrEmissive"
+            | "recordScenePbrMetallicReflectance"
+            | "recordScenePbrSubsurface"
+            | "expectSameEngine"
+            | "requireDefaultEngine"
+            | "requireEngine"
+            | "compileNumber"
+            | "compileBoolean"
+            | "compileVec2"
+            | "compileColor3"
+            | "captureNativeExpression"
+            | "compileStringLiteral"
+            | "compilePbrMaterialOptions"
+            | "compileMetallicReflectanceOptions"
+            | "allocateTemporaryCppName"
+            | "emit"
+            | "compileGridMaterialOptions"
+            | "compileClearCoatOptions"
+            | "compileIridescenceOptions"
+            | "compileAnisotropyOptions"
+            | "compileSheenOptions"
+            | "compileSubsurfaceOptions"
+            | "compileShaderMaterialOptions"
+            | "reachLinearDepthMaterial"
+            | "expectObjectLiteral"
+            | "objectProperty"
+            | "compileNodeMaterialOptions"
+            | "expectShaderVariant"
+            | "resolveShaderUniform"
+            | "resolveShaderTextureSlot"
+            | "resolveShaderStorageBufferSlot"
+            | "compileShaderUniformComponents"
+            | "cppString"
+            | "fail"
+        > {}
 
 function compileStorageBufferData(
     context: MaterialIntrinsicContext,
@@ -93,10 +95,7 @@ function compileStorageBufferData(
 ) {
     const data = context.compileValue(expression);
     if (data.kind !== "data" || !isTypedArrayType(data.dataType)) {
-        context.fail(
-            expression,
-            `${intrinsic} requires a typed-array view.`,
-        );
+        context.fail(expression, `${intrinsic} requires a typed-array view.`);
     }
     return data;
 }
@@ -174,7 +173,10 @@ function compileMeshNamePredicate(
                   ? literal(node.left)
                   : undefined;
             if (value !== undefined) {
-                const equals: SceneMeshNamePredicate = { kind: "equals", value };
+                const equals: SceneMeshNamePredicate = {
+                    kind: "equals",
+                    value,
+                };
                 return operator === ts.SyntaxKind.EqualsEqualsEqualsToken
                     ? equals
                     : { kind: "not", operand: equals };
@@ -195,7 +197,7 @@ function compileMeshNamePredicate(
         expression,
         "A lightmap walk's mesh filter is folded into a compile-time " +
             "material selection, so it is read in a closed grammar: " +
-            "`mesh.name === \"...\"`, `mesh.name.startsWith(\"...\")`, and " +
+            '`mesh.name === "..."`, `mesh.name.startsWith("...")`, and ' +
             "`!`/`&&`/`||` over those. This test is outside it, and " +
             "approximating it would stamp the wrong materials.",
     );
@@ -280,10 +282,10 @@ function foldedLightmapMeshWalk(
     const declarations = ts.isVariableDeclarationList(walk.initializer)
         ? walk.initializer.declarations
         : [];
-    const binding = declarations.length === 1 &&
-            ts.isIdentifier(declarations[0]!.name)
-        ? declarations[0]!.name.text
-        : undefined;
+    const binding =
+        declarations.length === 1 && ts.isIdentifier(declarations[0]!.name)
+            ? declarations[0]!.name.text
+            : undefined;
     if (binding === undefined) {
         context.fail(
             walk.initializer,
@@ -297,30 +299,27 @@ function foldedLightmapMeshWalk(
     // decides membership. A walk without one stamps every renderable,
     // which is the same shape `setPbrUnlit` over a container takes.
     const head = statements[0];
-    const guard = head !== undefined && ts.isIfStatement(head) &&
-            !head.elseStatement
-        ? head
-        : undefined;
-    const thenBody = guard === undefined
-        ? []
-        : ts.isBlock(guard.thenStatement)
-        ? [...guard.thenStatement.statements]
-        : [guard.thenStatement];
-    const filter = thenBody.length === 1 &&
-            ts.isContinueStatement(thenBody[0]!)
-        ? guard
-        : undefined;
+    const guard =
+        head !== undefined && ts.isIfStatement(head) && !head.elseStatement
+            ? head
+            : undefined;
+    const thenBody =
+        guard === undefined
+            ? []
+            : ts.isBlock(guard.thenStatement)
+              ? [...guard.thenStatement.statements]
+              : [guard.thenStatement];
+    const filter =
+        thenBody.length === 1 && ts.isContinueStatement(thenBody[0]!)
+            ? guard
+            : undefined;
     for (const statement of statements.slice(filter ? 1 : 0)) {
         assertNoSecondSelector(context, statement);
     }
     if (!filter) return { kind: "always" };
     return {
         kind: "not",
-        operand: compileMeshNamePredicate(
-            context,
-            binding,
-            filter.expression,
-        ),
+        operand: compileMeshNamePredicate(context, binding, filter.expression),
     };
 }
 
@@ -340,11 +339,10 @@ function compileShaderUniformWrite(
         argumentAt(call, 1),
         expectedCounts,
     );
-    const components =
-        context.compileShaderUniformComponents(
-            argumentAt(call, 2),
-            count,
-        );
+    const components = context.compileShaderUniformComponents(
+        argumentAt(call, 2),
+        count,
+    );
     const engine = context.requireEngine(material, call);
     if (material.sceneMaterialSlot !== undefined) {
         return {
@@ -385,19 +383,30 @@ export function compileMaterialIntrinsic(
     importedName: string,
     call: ts.CallExpression,
 ): Value | undefined {
-    const localCubemap = compileLocalCubemapIntrinsic(context, importedName, call);
+    const localCubemap = compileLocalCubemapIntrinsic(
+        context,
+        importedName,
+        call,
+    );
     if (localCubemap) return localCubemap;
     return materialIntrinsicHandlers.get(importedName)?.(context, call);
 }
 
-function compileIsPbrMaterial(context: MaterialIntrinsicContext, call: ts.CallExpression): Value | undefined {
+function compileIsPbrMaterial(
+    context: MaterialIntrinsicContext,
+    call: ts.CallExpression,
+): Value | undefined {
     context.expectArgumentCount(call, 1, 1);
     const material = context.compileValue(argumentAt(call, 0));
     context.expectKind(material, "material", argumentAt(call, 0));
-    const isPbr = material.scenePbrMaterialIndex !== undefined ||
+    const isPbr =
+        material.scenePbrMaterialIndex !== undefined ||
         material.assetPbrMaterial === true;
     if (!isPbr && !material.standardMaterial) {
-        context.fail(argumentAt(call, 0), "isPbrMaterial requires a material whose family is known at generation.");
+        context.fail(
+            argumentAt(call, 0),
+            "isPbrMaterial requires a material whose family is known at generation.",
+        );
     }
     return {
         kind: "boolean",
@@ -406,7 +415,10 @@ function compileIsPbrMaterial(context: MaterialIntrinsicContext, call: ts.CallEx
     };
 }
 
-function compileCreateSolidTexture2D(context: MaterialIntrinsicContext, call: ts.CallExpression): Value | undefined {
+function compileCreateSolidTexture2D(
+    context: MaterialIntrinsicContext,
+    call: ts.CallExpression,
+): Value | undefined {
     context.expectArgumentCount(call, 4, 5);
     const engine = context.compileValue(argumentAt(call, 0));
     context.expectKind(engine, "engine", argumentAt(call, 0));
@@ -420,23 +432,55 @@ function compileCreateSolidTexture2D(context: MaterialIntrinsicContext, call: ts
     return {
         kind: "texture",
         textureStorage: "solid",
-        cpp: `bbl::create_solid_texture(` +
+        cpp:
+            `bbl::create_solid_texture(` +
             `${engine.cpp}, ${channels.join(", ")})`,
         engineCpp: engine.engineCpp ?? engine.cpp,
     };
 }
 
-function compileCreatePbrMaterial(context: MaterialIntrinsicContext, call: ts.CallExpression): Value | undefined {
+function compileCreatePbrMaterial(
+    context: MaterialIntrinsicContext,
+    call: ts.CallExpression,
+): Value | undefined {
     context.expectArgumentCount(call, 1, 1);
     const engine = context.requireDefaultEngine(call);
-    const { baseColor, baseColorFactor, hasBaseColorTexture, sourceBaseColorFactor, orm, metallicFactor, roughnessFactor, directIntensity, environmentIntensity, alpha, alphaBlend, reflectance, unlit, doubleSided, enableSpecularAA, skyboxMode, transmission, indexOfRefraction, thickness, useThicknessAsDepth, hasVolume, attenuationColor, attenuationDistance, occlusionStrength, metallicF0Factor, usePhysicalLightFalloff, scenePbrMaterialIndex, } = context.compilePbrMaterialOptions(argumentAt(call, 0));
+    const {
+        baseColor,
+        baseColorFactor,
+        hasBaseColorTexture,
+        sourceBaseColorFactor,
+        orm,
+        metallicFactor,
+        roughnessFactor,
+        directIntensity,
+        environmentIntensity,
+        alpha,
+        alphaBlend,
+        reflectance,
+        unlit,
+        doubleSided,
+        enableSpecularAA,
+        skyboxMode,
+        transmission,
+        indexOfRefraction,
+        thickness,
+        useThicknessAsDepth,
+        hasVolume,
+        attenuationColor,
+        attenuationDistance,
+        occlusionStrength,
+        metallicF0Factor,
+        usePhysicalLightFalloff,
+        scenePbrMaterialIndex,
+    } = context.compilePbrMaterialOptions(argumentAt(call, 0));
     context.expectSameEngine(baseColor, orm, call);
     context.reachFeature("material:pbr", call);
     context.reachFeature("renderer:scene", call);
-    const linearImageProcessing = transmission !== "0.0f" ||
+    const linearImageProcessing =
+        transmission !== "0.0f" ||
         thickness !== "0.0f" ||
-        attenuationColor !==
-            "bbl::Color3{1.0f, 1.0f, 1.0f}" ||
+        attenuationColor !== "bbl::Color3{1.0f, 1.0f, 1.0f}" ||
         attenuationDistance !== "1.0f";
     if (skyboxMode !== "false" || linearImageProcessing) {
         context.reachFeature("renderer:transmission", call);
@@ -450,13 +494,26 @@ function compileCreatePbrMaterial(context: MaterialIntrinsicContext, call: ts.Ca
     // Typed Texture2D returns use StoredTexture even when every source return
     // is a solid or file producer. Those producers occupy its FileTexture arm.
     const fileTexture = (texture: Value): string | undefined => {
-        if (texture.dataType?.kind === "handle" && texture.dataType.handle === "texture") {
-            if (texture.textureStorage !== "solid" && texture.textureStorage !== "file") {
-                context.fail(call, "PBR Texture2D storage requires a known solid or file texture producer.");
+        if (
+            texture.dataType?.kind === "handle" &&
+            texture.dataType.handle === "texture"
+        ) {
+            if (
+                texture.textureStorage !== "solid" &&
+                texture.textureStorage !== "file"
+            ) {
+                context.fail(
+                    call,
+                    "PBR Texture2D storage requires a known solid or file texture producer.",
+                );
             }
             const temporary = context.allocateTemporaryCppName("texture");
-            context.emit({ kind: "declaration", type: "const auto", name: temporary,
-                initializer: `std::get<bbl::FileTexture>(${texture.cpp})` });
+            context.emit({
+                kind: "declaration",
+                type: "const auto",
+                name: temporary,
+                initializer: `std::get<bbl::FileTexture>(${texture.cpp})`,
+            });
             return temporary;
         }
         return texture.textureFile ? texture.cpp : undefined;
@@ -485,7 +542,8 @@ function compileCreatePbrMaterial(context: MaterialIntrinsicContext, call: ts.Ca
     // stopped being a tuple to avoid. C++20 requires them in
     // declaration order, so a reordered `PbrMaterialOptions` is a
     // compile error here rather than a silent remap.
-    const creation = `bbl::create_pbr_material(${engine}, ` +
+    const creation =
+        `bbl::create_pbr_material(${engine}, ` +
         `bbl::PbrMaterialOptions{` +
         `.base_color = ${baseColorCpp}, ` +
         `.base_color_factor = ${baseColorFactor}, ` +
@@ -516,12 +574,21 @@ function compileCreatePbrMaterial(context: MaterialIntrinsicContext, call: ts.Ca
         `${usePhysicalLightFalloff}})`;
     if (baseColorFile || ormFile) {
         const temporary = context.allocateTemporaryCppName("material");
-        context.emit({ kind: "declaration", type: "auto", name: temporary, initializer: creation });
+        context.emit({
+            kind: "declaration",
+            type: "auto",
+            name: temporary,
+            initializer: creation,
+        });
         if (baseColorFile) {
-            context.emit(`bbl::set_material_base_color_file(${engine}, ${temporary}, ${baseColorFile});`);
+            context.emit(
+                `bbl::set_material_base_color_file(${engine}, ${temporary}, ${baseColorFile});`,
+            );
         }
         if (ormFile) {
-            context.emit(`bbl::set_material_orm_file(${engine}, ${temporary}, ${ormFile});`);
+            context.emit(
+                `bbl::set_material_orm_file(${engine}, ${temporary}, ${ormFile});`,
+            );
         }
         return {
             kind: "material",
@@ -538,7 +605,10 @@ function compileCreatePbrMaterial(context: MaterialIntrinsicContext, call: ts.Ca
     };
 }
 
-function compileEnableSceneTransmission(context: MaterialIntrinsicContext, call: ts.CallExpression): Value | undefined {
+function compileEnableSceneTransmission(
+    context: MaterialIntrinsicContext,
+    call: ts.CallExpression,
+): Value | undefined {
     context.expectArgumentCount(call, 2, 2);
     const scene = context.compileValue(argumentAt(call, 0));
     const engine = context.compileValue(argumentAt(call, 1));
@@ -554,38 +624,47 @@ function compileEnableSceneTransmission(context: MaterialIntrinsicContext, call:
     };
 }
 
-function compileCreateGridMaterial(context: MaterialIntrinsicContext, call: ts.CallExpression): Value | undefined {
+function compileCreateGridMaterial(
+    context: MaterialIntrinsicContext,
+    call: ts.CallExpression,
+): Value | undefined {
     context.recordSceneMaterialSlot();
     context.expectArgumentCount(call, 0, 1);
     const engine = context.requireDefaultEngine(call);
     const options = call.arguments[0]
         ? context.compileGridMaterialOptions(call.arguments[0])
         : [
-            "bbl::Color3{0.0f, 0.0f, 0.0f}",
-            "bbl::Color3{0.0f, 0.5f, 0.5f}",
-            "1.0f",
-            "bbl::Vec3{}",
-            "10.0f",
-            "0.33f",
-            "1.0f",
-            "1.0f",
-            "true",
-            "false",
-            "false",
-            "true",
-        ];
+              "bbl::Color3{0.0f, 0.0f, 0.0f}",
+              "bbl::Color3{0.0f, 0.5f, 0.5f}",
+              "1.0f",
+              "bbl::Vec3{}",
+              "10.0f",
+              "0.33f",
+              "1.0f",
+              "1.0f",
+              "true",
+              "false",
+              "false",
+              "true",
+          ];
     context.reachFeature("material:grid", call);
     context.reachFeature("renderer:scene", call);
     return {
         kind: "material",
-        cpp: `bbl::create_grid_material(${engine}, ` +
+        cpp:
+            `bbl::create_grid_material(${engine}, ` +
             `bbl::GridMaterialOptions{` +
             `${options.join(", ")}})`,
         engineCpp: engine,
     };
 }
 
-function compileCreateStandardNoColorMaterialView(context: MaterialIntrinsicContext, call: ts.CallExpression, importedName: "createStandardNoColorMaterialView" | "createPbrNoColorMaterialView"): Value | undefined {
+function compileCreateStandardNoColorMaterialView(
+    context: MaterialIntrinsicContext,
+    call: ts.CallExpression,
+    importedName:
+        "createStandardNoColorMaterialView" | "createPbrNoColorMaterialView",
+): Value | undefined {
     context.expectArgumentCount(call, 1, 1);
     const source = context.compileValue(argumentAt(call, 0));
     context.expectKind(source, "material", argumentAt(call, 0));
@@ -604,14 +683,22 @@ function compileCreateStandardNoColorMaterialView(context: MaterialIntrinsicCont
         kind: "material",
         cpp: `bbl::create_pbr_no_color_material_view(${engineCpp}, ${source.cpp})`,
         engineCpp,
-        scenePbrMaterialIndex: context.recordScenePbrNoColorView(source.scenePbrMaterialIndex),
+        scenePbrMaterialIndex: context.recordScenePbrNoColorView(
+            source.scenePbrMaterialIndex,
+        ),
     };
 }
 
-function compileSetStandardLightmapTexture(context: MaterialIntrinsicContext, call: ts.CallExpression): Value | undefined {
+function compileSetStandardLightmapTexture(
+    context: MaterialIntrinsicContext,
+    call: ts.CallExpression,
+): Value | undefined {
     context.expectArgumentCount(call, 2, 2);
     if (context.hasRegisteredScene() || context.engineHasStarted())
-        context.fail(call, "Standard lightmap texture binding requires setup before scene registration.");
+        context.fail(
+            call,
+            "Standard lightmap texture binding requires setup before scene registration.",
+        );
     const material = context.compileValue(argumentAt(call, 0));
     context.expectKind(material, "material", argumentAt(call, 0));
     const texture = context.compileValue(argumentAt(call, 1));
@@ -619,15 +706,24 @@ function compileSetStandardLightmapTexture(context: MaterialIntrinsicContext, ca
     if (!empty) {
         context.expectKind(texture, "texture", argumentAt(call, 1));
         if (!texture.textureFile)
-            context.fail(argumentAt(call, 1), "Standard lightmaps require a loaded file texture or null.");
+            context.fail(
+                argumentAt(call, 1),
+                "Standard lightmaps require a loaded file texture or null.",
+            );
         context.expectSameEngine(material, texture, call);
         context.boundPixelsTextures.add(texture.cpp);
     }
     context.reachFeature("material:standard-lightmap", call);
-    return { kind: "void", cpp: `bbl::set_standard_lightmap_texture(${context.requireEngine(material, call)}, ${material.cpp}, ${empty ? "bbl::FileTexture{}" : texture.cpp})` };
+    return {
+        kind: "void",
+        cpp: `bbl::set_standard_lightmap_texture(${context.requireEngine(material, call)}, ${material.cpp}, ${empty ? "bbl::FileTexture{}" : texture.cpp})`,
+    };
 }
 
-function compileSetStandardEmissiveTexture(context: MaterialIntrinsicContext, call: ts.CallExpression): Value | undefined {
+function compileSetStandardEmissiveTexture(
+    context: MaterialIntrinsicContext,
+    call: ts.CallExpression,
+): Value | undefined {
     // 1.23 moved the optional Standard textures behind per-texture
     // setters so a scene bundles only the fragments it uses; the
     // record write is what the assignment did, and registering the
@@ -646,7 +742,8 @@ function compileSetStandardEmissiveTexture(context: MaterialIntrinsicContext, ca
         context.reachFeature("material:standard-emissive-file-texture", call);
         return {
             kind: "void",
-            cpp: `bbl::set_standard_emissive_file_texture(` +
+            cpp:
+                `bbl::set_standard_emissive_file_texture(` +
                 `${context.requireEngine(material, call)}, ` +
                 `${material.cpp}, ${texture.cpp})`,
         };
@@ -655,28 +752,36 @@ function compileSetStandardEmissiveTexture(context: MaterialIntrinsicContext, ca
     context.reachFeature("material:standard-emissive-render-texture", call);
     return {
         kind: "void",
-        cpp: `bbl::set_standard_emissive_texture(` +
+        cpp:
+            `bbl::set_standard_emissive_texture(` +
             `${context.requireEngine(material, call)}, ` +
             `${material.cpp}, ${texture.cpp})`,
     };
 }
 
-function compileMarkMaterialUboDirty(context: MaterialIntrinsicContext, call: ts.CallExpression): Value | undefined {
+function compileMarkMaterialUboDirty(
+    context: MaterialIntrinsicContext,
+    call: ts.CallExpression,
+): Value | undefined {
     context.expectArgumentCount(call, 1, 1);
     const material = context.compileValue(argumentAt(call, 0));
     context.expectKind(material, "material", argumentAt(call, 0));
     const engine = context.requireEngine(material, call);
     for (const [field, value] of material.materialUboArrayFields ?? []) {
-        context.emit(`${engine}.materials[${material.cpp}.value].${field} = ${value.cpp};`);
+        context.emit(
+            `${engine}.materials[${material.cpp}.value].${field} = ${value.cpp};`,
+        );
     }
     return {
         kind: "void",
-        cpp: `bbl::mark_material_ubo_dirty(` +
-            `${engine}, ${material.cpp})`,
+        cpp: `bbl::mark_material_ubo_dirty(` + `${engine}, ${material.cpp})`,
     };
 }
 
-function compileCreateShaderMaterial(context: MaterialIntrinsicContext, call: ts.CallExpression): Value | undefined {
+function compileCreateShaderMaterial(
+    context: MaterialIntrinsicContext,
+    call: ts.CallExpression,
+): Value | undefined {
     const materialSlot = context.recordSceneMaterialSlot();
     const runtimeProfile = context.isRuntimeResourceConstruction();
     context.expectArgumentCount(call, 1, 1);
@@ -690,11 +795,18 @@ function compileCreateShaderMaterial(context: MaterialIntrinsicContext, call: ts
         : `bbl::remember_scene_material(${engine}, ${materialSlot}u, ${creation})`;
     if (variant.dynamicUniforms?.length) {
         const material = context.allocateTemporaryCppName("shader_material");
-        context.emit({ kind: "declaration", type: "const auto", name: material, initializer: materialCpp });
+        context.emit({
+            kind: "declaration",
+            type: "const auto",
+            name: material,
+            initializer: materialCpp,
+        });
         for (const uniform of variant.dynamicUniforms) {
-            context.emit(`bbl::set_shader_uniform_value(${engine}, ` +
-                `${material}, ${uniform.offset}u, ` +
-                `${uniform.components.join(", ")});`);
+            context.emit(
+                `bbl::set_shader_uniform_value(${engine}, ` +
+                    `${material}, ${uniform.offset}u, ` +
+                    `${uniform.components.join(", ")});`,
+            );
         }
         materialCpp = material;
     }
@@ -708,31 +820,45 @@ function compileCreateShaderMaterial(context: MaterialIntrinsicContext, call: ts
     };
 }
 
-function compileCreateStorageBuffer(context: MaterialIntrinsicContext, call: ts.CallExpression): Value | undefined {
+function compileCreateStorageBuffer(
+    context: MaterialIntrinsicContext,
+    call: ts.CallExpression,
+): Value | undefined {
     context.expectArgumentCount(call, 2, 3);
     const engineValue = context.compileValue(argumentAt(call, 0));
     context.expectKind(engineValue, "engine", argumentAt(call, 0));
     const engine = context.requireDefaultEngine(call);
-    const data = compileStorageBufferData(context, argumentAt(call, 1), "createStorageBuffer");
+    const data = compileStorageBufferData(
+        context,
+        argumentAt(call, 1),
+        "createStorageBuffer",
+    );
     const label = call.arguments[2]
         ? context.cppString(context.compileStringLiteral(argumentAt(call, 2)))
         : '""';
     context.reachFeature("material:shader-storage", call);
     return {
         kind: "storage-buffer",
-        cpp: `bbl::create_storage_buffer(${engine}, ` +
-            `${data.cpp}, ${label})`,
+        cpp:
+            `bbl::create_storage_buffer(${engine}, ` + `${data.cpp}, ${label})`,
         engineCpp: engine,
     };
 }
 
-function compileUpdateStorageBuffer(context: MaterialIntrinsicContext, call: ts.CallExpression): Value | undefined {
+function compileUpdateStorageBuffer(
+    context: MaterialIntrinsicContext,
+    call: ts.CallExpression,
+): Value | undefined {
     context.expectArgumentCount(call, 3, 4);
     const engine = context.compileValue(argumentAt(call, 0));
     context.expectKind(engine, "engine", argumentAt(call, 0));
     const buffer = context.compileValue(argumentAt(call, 1));
     context.expectKind(buffer, "storage-buffer", argumentAt(call, 1));
-    const data = compileStorageBufferData(context, argumentAt(call, 2), "updateStorageBuffer");
+    const data = compileStorageBufferData(
+        context,
+        argumentAt(call, 2),
+        "updateStorageBuffer",
+    );
     const engineCpp = context.requireEngine(buffer, call);
     const byteOffset = call.arguments[3]
         ? context.compileNumber(argumentAt(call, 3))
@@ -740,41 +866,56 @@ function compileUpdateStorageBuffer(context: MaterialIntrinsicContext, call: ts.
     context.reachFeature("material:shader-storage", call);
     return {
         kind: "void",
-        cpp: `bbl::update_storage_buffer(${engineCpp}, ` +
+        cpp:
+            `bbl::update_storage_buffer(${engineCpp}, ` +
             `${buffer.cpp}, ${data.cpp}, ${byteOffset})`,
     };
 }
 
-function compileDisposeStorageBuffer(context: MaterialIntrinsicContext, call: ts.CallExpression): Value | undefined {
+function compileDisposeStorageBuffer(
+    context: MaterialIntrinsicContext,
+    call: ts.CallExpression,
+): Value | undefined {
     context.expectArgumentCount(call, 1, 1);
     const buffer = context.compileValue(argumentAt(call, 0));
     context.expectKind(buffer, "storage-buffer", argumentAt(call, 0));
     context.reachFeature("material:shader-storage", call);
     return {
         kind: "void",
-        cpp: `bbl::dispose_storage_buffer(` +
+        cpp:
+            `bbl::dispose_storage_buffer(` +
             `${context.requireEngine(buffer, call)}, ${buffer.cpp})`,
     };
 }
 
-function compileSetShaderStorageBuffer(context: MaterialIntrinsicContext, call: ts.CallExpression): Value | undefined {
+function compileSetShaderStorageBuffer(
+    context: MaterialIntrinsicContext,
+    call: ts.CallExpression,
+): Value | undefined {
     context.expectArgumentCount(call, 3, 3);
     const material = context.compileValue(argumentAt(call, 0));
     context.expectKind(material, "material", argumentAt(call, 0));
-    const slot = context.resolveShaderStorageBufferSlot(material, argumentAt(call, 1));
+    const slot = context.resolveShaderStorageBufferSlot(
+        material,
+        argumentAt(call, 1),
+    );
     const buffer = context.compileValue(argumentAt(call, 2));
     context.expectKind(buffer, "storage-buffer", argumentAt(call, 2));
     context.expectSameEngine(material, buffer, call);
     context.reachFeature("material:shader-storage", call);
     return {
         kind: "void",
-        cpp: `bbl::set_shader_storage_buffer(` +
+        cpp:
+            `bbl::set_shader_storage_buffer(` +
             `${context.requireEngine(material, call)}, ` +
             `${material.cpp}, ${slot}u, ${buffer.cpp})`,
     };
 }
 
-function compileSetShadowCasterMaterial(context: MaterialIntrinsicContext, call: ts.CallExpression): Value | undefined {
+function compileSetShadowCasterMaterial(
+    context: MaterialIntrinsicContext,
+    call: ts.CallExpression,
+): Value | undefined {
     context.expectArgumentCount(call, 2, 2);
     const material = context.compileValue(argumentAt(call, 0));
     context.expectKind(material, "material", argumentAt(call, 0));
@@ -783,13 +924,17 @@ function compileSetShadowCasterMaterial(context: MaterialIntrinsicContext, call:
     context.expectSameEngine(material, caster, call);
     return {
         kind: "void",
-        cpp: `bbl::set_shadow_caster_material(` +
+        cpp:
+            `bbl::set_shadow_caster_material(` +
             `${context.requireEngine(material, call)}, ` +
             `${material.cpp}, ${caster.cpp})`,
     };
 }
 
-function compileCreateLinearDepthMaterial(context: MaterialIntrinsicContext, call: ts.CallExpression): Value | undefined {
+function compileCreateLinearDepthMaterial(
+    context: MaterialIntrinsicContext,
+    call: ts.CallExpression,
+): Value | undefined {
     // The pin's own `createShaderMaterial` call, folded: two module
     // constants for the stages, the pin's plane defaults, and the
     // fixed-function state read from the properties beside them.
@@ -807,19 +952,26 @@ function compileCreateLinearDepthMaterial(context: MaterialIntrinsicContext, cal
         // the pin names every one of these materials `linearDepth`
         // and this port's variant identity is the plane pair, so a
         // caller's name could not reach anything.
-        validateObjectProperties(context, options, ["near", "far"], "Reached linear-depth materials support near and far.");
+        validateObjectProperties(
+            context,
+            options,
+            ["near", "far"],
+            "Reached linear-depth materials support near and far.",
+        );
     }
     const plane = (name: "near" | "far"): number => {
         const expression = options
             ? context.objectProperty(options, name)
             : undefined;
-        if (!expression)
-            return defaults[name];
+        if (!expression) return defaults[name];
         const value = staticNumberValue(context, expression);
         if (value === undefined) {
-            context.fail(expression, `A linear-depth material's ${name} plane is a ` +
-                "compile-time number: it is the uniform default " +
-                "the composed variant carries.");
+            context.fail(
+                expression,
+                `A linear-depth material's ${name} plane is a ` +
+                    "compile-time number: it is the uniform default " +
+                    "the composed variant carries.",
+            );
         }
         return value;
     };
@@ -831,21 +983,26 @@ function compileCreateLinearDepthMaterial(context: MaterialIntrinsicContext, cal
     context.reachFeature("renderer:scene", call);
     return {
         kind: "material",
-        cpp: `bbl::create_shader_material(${engine}, ` +
-            `${variant.id}u)`,
+        cpp: `bbl::create_shader_material(${engine}, ` + `${variant.id}u)`,
         engineCpp: engine,
         shaderVariant: variant.name,
     };
 }
 
-function compileSetShaderUniform(context: MaterialIntrinsicContext, call: ts.CallExpression): Value | undefined {
+function compileSetShaderUniform(
+    context: MaterialIntrinsicContext,
+    call: ts.CallExpression,
+): Value | undefined {
     context.expectArgumentCount(call, 3, 3);
     const material = context.compileValue(argumentAt(call, 0));
     context.expectKind(material, "material", argumentAt(call, 0));
     return compileShaderUniformWrite(context, material, call, [1, 2, 3, 4]);
 }
 
-function compileSetShaderTexture(context: MaterialIntrinsicContext, call: ts.CallExpression): Value | undefined {
+function compileSetShaderTexture(
+    context: MaterialIntrinsicContext,
+    call: ts.CallExpression,
+): Value | undefined {
     // src/material/shader/shader-material.ts: the setter stores the
     // texture on the slot the sampler name owns and bumps the
     // material's resource version so the bind group rebuilds. The
@@ -855,46 +1012,63 @@ function compileSetShaderTexture(context: MaterialIntrinsicContext, call: ts.Cal
     context.expectArgumentCount(call, 3, 3);
     const material = context.compileValue(argumentAt(call, 0));
     context.expectKind(material, "material", argumentAt(call, 0));
-    const slot = context.resolveShaderTextureSlot(material, argumentAt(call, 1));
+    const slot = context.resolveShaderTextureSlot(
+        material,
+        argumentAt(call, 1),
+    );
     const texture = context.compileValue(argumentAt(call, 2));
     context.expectKind(texture, "texture", argumentAt(call, 2));
-    const cachedPixelsTexture = texture.dataType?.kind === "handle" &&
+    const cachedPixelsTexture =
+        texture.dataType?.kind === "handle" &&
         texture.dataType.handle === "texture";
-    const setter = texture.csmReceiverGeneratorIndex !== undefined
-        ? "set_shader_csm_texture"
-        : texture.textureFile
-            ? "set_shader_texture"
-            : texture.textureStorage === "pixels" ||
-                cachedPixelsTexture
+    const setter =
+        texture.csmReceiverGeneratorIndex !== undefined
+            ? "set_shader_csm_texture"
+            : texture.textureFile
+              ? "set_shader_texture"
+              : texture.textureStorage === "pixels" || cachedPixelsTexture
                 ? "set_shader_pixels_texture"
                 : undefined;
     if (!setter) {
-        context.fail(argumentAt(call, 2), "Reached shader-material textures come from loadTexture2D, createTexture2DFromPixels, or getCsmReceiverTexture.");
+        context.fail(
+            argumentAt(call, 2),
+            "Reached shader-material textures come from loadTexture2D, createTexture2DFromPixels, or getCsmReceiverTexture.",
+        );
     }
     context.expectSameEngine(material, texture, call);
     return {
         kind: "void",
-        cpp: `bbl::${setter}(` +
+        cpp:
+            `bbl::${setter}(` +
             `${context.requireEngine(material, call)}, ` +
             `${material.cpp}, ${slot}u, ${texture.cpp})`,
     };
 }
 
-function compileSetShaderFloat(context: MaterialIntrinsicContext, call: ts.CallExpression): Value | undefined {
+function compileSetShaderFloat(
+    context: MaterialIntrinsicContext,
+    call: ts.CallExpression,
+): Value | undefined {
     context.expectArgumentCount(call, 3, 3);
     const material = context.compileValue(argumentAt(call, 0));
     context.expectKind(material, "material", argumentAt(call, 0));
     return compileShaderUniformWrite(context, material, call, [1]);
 }
 
-function compileSetShaderVector3(context: MaterialIntrinsicContext, call: ts.CallExpression): Value | undefined {
+function compileSetShaderVector3(
+    context: MaterialIntrinsicContext,
+    call: ts.CallExpression,
+): Value | undefined {
     context.expectArgumentCount(call, 3, 3);
     const material = context.compileValue(argumentAt(call, 0));
     context.expectKind(material, "material", argumentAt(call, 0));
     return compileShaderUniformWrite(context, material, call, [3]);
 }
 
-function compileSetPbrEmissive(context: MaterialIntrinsicContext, call: ts.CallExpression): Value | undefined {
+function compileSetPbrEmissive(
+    context: MaterialIntrinsicContext,
+    call: ts.CallExpression,
+): Value | undefined {
     // src/material/pbr/set-emissive.ts: the linear-RGB emissive
     // color became an opt-in setter over the same material field
     // the glTF emissiveFactor writes. The colour is recorded as
@@ -905,21 +1079,28 @@ function compileSetPbrEmissive(context: MaterialIntrinsicContext, call: ts.CallE
     context.expectKind(material, "material", argumentAt(call, 0));
     const colorExpression = argumentAt(call, 1);
     const channels = staticColor3Value(context, colorExpression);
-    const color = context.captureNativeExpression(() => context.compileColor3(colorExpression));
-    const bindings = material.materialUboArrayFields ??
+    const color = context.captureNativeExpression(() =>
+        context.compileColor3(colorExpression),
+    );
+    const bindings =
+        material.materialUboArrayFields ??
         (material.materialUboArrayFields = new EmissionMap());
     bindings.set("emissive_factor", color);
     context.recordScenePbrEmissive(channels, material.scenePbrMaterialIndex);
     context.reachFeature("material:emissive", call);
     return {
         kind: "void",
-        cpp: `bbl::set_pbr_emissive(` +
+        cpp:
+            `bbl::set_pbr_emissive(` +
             `${context.requireEngine(material, call)}, ` +
             `${material.cpp}, ${color.cpp})`,
     };
 }
 
-function compileSetPbrGammaAlbedo(context: MaterialIntrinsicContext, call: ts.CallExpression): Value | undefined {
+function compileSetPbrGammaAlbedo(
+    context: MaterialIntrinsicContext,
+    call: ts.CallExpression,
+): Value | undefined {
     // src/material/pbr/set-gamma-albedo.ts stamps
     // `mat._gammaAlbedo = true` and registers the gamma extension,
     // which contributes the composed decode block. The runtime mark also
@@ -929,30 +1110,67 @@ function compileSetPbrGammaAlbedo(context: MaterialIntrinsicContext, call: ts.Ca
     context.expectKind(material, "material", argumentAt(call, 0));
     context.recordScenePbrGammaAlbedo(material.scenePbrMaterialIndex);
     context.reachFeature("material:pbr-gamma-albedo", call);
-    return { kind: "void", cpp: `bbl::set_pbr_gamma_albedo(${context.requireEngine(material, call)}, ${material.cpp})` };
+    return {
+        kind: "void",
+        cpp: `bbl::set_pbr_gamma_albedo(${context.requireEngine(material, call)}, ${material.cpp})`,
+    };
 }
 
-function compileSetShadowOnly(context: MaterialIntrinsicContext, call: ts.CallExpression): Value | undefined {
+function compileSetShadowOnly(
+    context: MaterialIntrinsicContext,
+    call: ts.CallExpression,
+): Value | undefined {
     context.expectArgumentCount(call, 1, 2);
     const material = context.compileValue(argumentAt(call, 0));
     context.expectKind(material, "material", argumentAt(call, 0));
-    if (context.engineHasStarted() || context.hasRegisteredScene() || context.isRuntimeResourceConstruction())
-        context.fail(call, "Shadow-only composition requires unconditional construction before scene registration.");
-    const options = call.arguments[1] ? context.expectObjectLiteral(call.arguments[1]) : undefined;
+    if (
+        context.engineHasStarted() ||
+        context.hasRegisteredScene() ||
+        context.isRuntimeResourceConstruction()
+    )
+        context.fail(
+            call,
+            "Shadow-only composition requires unconditional construction before scene registration.",
+        );
+    const options = call.arguments[1]
+        ? context.expectObjectLiteral(call.arguments[1])
+        : undefined;
     if (options)
-        validateObjectProperties(context, options, ["color", "opacity", "falloff"], "setShadowOnly");
+        validateObjectProperties(
+            context,
+            options,
+            ["color", "opacity", "falloff"],
+            "setShadowOnly",
+        );
     const colorValue = options && context.objectProperty(options, "color");
     const opacityValue = options && context.objectProperty(options, "opacity");
     const falloffValue = options && context.objectProperty(options, "falloff");
-    const color = colorValue ? requiredStaticColor3(context, colorValue, "Shadow-only color").channels : [0, 0, 0] as const;
-    const opacity = opacityValue ? compileStaticNumber(context, opacityValue, "Shadow-only opacity") : 1;
-    const falloff = falloffValue ? compileStaticNumber(context, falloffValue, "Shadow-only falloff") : 1;
-    context.recordScenePbrShadowOnly(material.scenePbrMaterialIndex, { color, opacity, falloff });
+    const color = colorValue
+        ? requiredStaticColor3(context, colorValue, "Shadow-only color")
+              .channels
+        : ([0, 0, 0] as const);
+    const opacity = opacityValue
+        ? compileStaticNumber(context, opacityValue, "Shadow-only opacity")
+        : 1;
+    const falloff = falloffValue
+        ? compileStaticNumber(context, falloffValue, "Shadow-only falloff")
+        : 1;
+    context.recordScenePbrShadowOnly(material.scenePbrMaterialIndex, {
+        color,
+        opacity,
+        falloff,
+    });
     const record = `${context.requireEngine(material, call)}.materials.at(${material.cpp}.value)`;
-    return { kind: "void", cpp: `${record}.shadow_only = true; ${record}.shadow_only_color = {${color.map(floatLiteral).join(", ")}}; ${record}.shadow_only_opacity = ${floatLiteral(opacity)}; ${record}.shadow_only_falloff = ${floatLiteral(falloff)}; ${record}.alpha_mode = bbl::MaterialAlphaMode::blend` };
+    return {
+        kind: "void",
+        cpp: `${record}.shadow_only = true; ${record}.shadow_only_color = {${color.map(floatLiteral).join(", ")}}; ${record}.shadow_only_opacity = ${floatLiteral(opacity)}; ${record}.shadow_only_falloff = ${floatLiteral(falloff)}; ${record}.alpha_mode = bbl::MaterialAlphaMode::blend`,
+    };
 }
 
-function compileSetPbrUnlit(context: MaterialIntrinsicContext, call: ts.CallExpression): Value | undefined {
+function compileSetPbrUnlit(
+    context: MaterialIntrinsicContext,
+    call: ts.CallExpression,
+): Value | undefined {
     // src/material/pbr/set-unlit.ts: an opt-in setter that flags the
     // material after creation, registers its fragment extension, and
     // stores the linear-RGB tint that fragment multiplies the base
@@ -967,7 +1185,11 @@ function compileSetPbrUnlit(context: MaterialIntrinsicContext, call: ts.CallExpr
     context.reachFeature("material:pbr", call);
     const tintExpression = call.arguments[1];
     const tint = tintExpression
-        ? requiredStaticColor3(context, tintExpression, "setPbrUnlit's tint must be a static linear RGB colour: it is written into the material UBO the fragment reads.")
+        ? requiredStaticColor3(
+              context,
+              tintExpression,
+              "setPbrUnlit's tint must be a static linear RGB colour: it is written into the material UBO the fragment reads.",
+          )
         : undefined;
     // A material read off a loaded mesh has no scene-side record to
     // stamp: its unlit arm is composed from the document. The fact
@@ -978,13 +1200,13 @@ function compileSetPbrUnlit(context: MaterialIntrinsicContext, call: ts.CallExpr
         : undefined;
     if (container) {
         context.recordAssetSceneUnlit(container, tint?.channels, call);
-    }
-    else {
+    } else {
         context.recordScenePbrUnlit(material.scenePbrMaterialIndex);
     }
     return {
         kind: "void",
-        cpp: "bbl::set_pbr_unlit(" +
+        cpp:
+            "bbl::set_pbr_unlit(" +
             `${context.requireEngine(material, call)}, ` +
             material.cpp +
             (tint ? `, ${tint.cpp}` : "") +
@@ -992,7 +1214,10 @@ function compileSetPbrUnlit(context: MaterialIntrinsicContext, call: ts.CallExpr
     };
 }
 
-function compileSetPbrSkybox(context: MaterialIntrinsicContext, call: ts.CallExpression): Value | undefined {
+function compileSetPbrSkybox(
+    context: MaterialIntrinsicContext,
+    call: ts.CallExpression,
+): Value | undefined {
     // src/material/pbr/set-skybox.ts: the same shape as
     // `setPbrUnlit` above, taking the material alone.
     context.expectArgumentCount(call, 1, 1);
@@ -1007,14 +1232,18 @@ function compileSetPbrSkybox(context: MaterialIntrinsicContext, call: ts.CallExp
     context.reachFeature("renderer:transmission", call);
     return {
         kind: "void",
-        cpp: "bbl::set_pbr_skybox(" +
+        cpp:
+            "bbl::set_pbr_skybox(" +
             `${context.requireEngine(material, call)}, ` +
             material.cpp +
             ")",
     };
 }
 
-function compileSetPbrMetallicReflectance(context: MaterialIntrinsicContext, call: ts.CallExpression): Value | undefined {
+function compileSetPbrMetallicReflectance(
+    context: MaterialIntrinsicContext,
+    call: ts.CallExpression,
+): Value | undefined {
     // The setter conditionally stamps each supplied option, then
     // registers the reflectance extension even for an empty object.
     // Scene 12 reaches the colour, both linear file-map slots and the
@@ -1023,7 +1252,9 @@ function compileSetPbrMetallicReflectance(context: MaterialIntrinsicContext, cal
     context.expectArgumentCount(call, 2, 2);
     const material = context.compileValue(argumentAt(call, 0));
     context.expectKind(material, "material", argumentAt(call, 0));
-    const reflectance = context.compileMetallicReflectanceOptions(argumentAt(call, 1));
+    const reflectance = context.compileMetallicReflectanceOptions(
+        argumentAt(call, 1),
+    );
     for (const texture of [
         reflectance.texture,
         reflectance.reflectanceTexture,
@@ -1032,12 +1263,16 @@ function compileSetPbrMetallicReflectance(context: MaterialIntrinsicContext, cal
             context.expectSameEngine(material, texture, call);
         }
     }
-    context.recordScenePbrMetallicReflectance(reflectance.manifest, material.scenePbrMaterialIndex);
+    context.recordScenePbrMetallicReflectance(
+        reflectance.manifest,
+        material.scenePbrMaterialIndex,
+    );
     context.reachFeature("material:metallic-reflectance", call);
     const engine = context.requireEngine(material, call);
     return {
         kind: "void",
-        cpp: `bbl::set_pbr_metallic_reflectance(` +
+        cpp:
+            `bbl::set_pbr_metallic_reflectance(` +
             `${engine}, ${material.cpp}, ` +
             `${reflectance.colorCpp ? "true" : "false"}, ` +
             `${reflectance.colorCpp ?? "bbl::Color3{}"}, ` +
@@ -1046,7 +1281,10 @@ function compileSetPbrMetallicReflectance(context: MaterialIntrinsicContext, cal
     };
 }
 
-function compileSetPbrSubsurface(context: MaterialIntrinsicContext, call: ts.CallExpression): Value | undefined {
+function compileSetPbrSubsurface(
+    context: MaterialIntrinsicContext,
+    call: ts.CallExpression,
+): Value | undefined {
     context.expectArgumentCount(call, 2, 2);
     const material = context.compileValue(argumentAt(call, 0));
     context.expectKind(material, "material", argumentAt(call, 0));
@@ -1054,10 +1292,14 @@ function compileSetPbrSubsurface(context: MaterialIntrinsicContext, call: ts.Cal
     if (subsurface.thicknessTexture) {
         context.expectSameEngine(material, subsurface.thicknessTexture, call);
     }
-    context.recordScenePbrSubsurface(subsurface.manifest, material.scenePbrMaterialIndex);
+    context.recordScenePbrSubsurface(
+        subsurface.manifest,
+        material.scenePbrMaterialIndex,
+    );
     return {
         kind: "void",
-        cpp: `bbl::set_pbr_subsurface(` +
+        cpp:
+            `bbl::set_pbr_subsurface(` +
             `${context.requireEngine(material, call)}, ` +
             `${material.cpp}, ${subsurface.intensity}, ` +
             `${subsurface.color}, ${subsurface.diffusionDistance}, ` +
@@ -1067,7 +1309,10 @@ function compileSetPbrSubsurface(context: MaterialIntrinsicContext, call: ts.Cal
     };
 }
 
-function compileSetPbrClearCoat(context: MaterialIntrinsicContext, call: ts.CallExpression): Value | undefined {
+function compileSetPbrClearCoat(
+    context: MaterialIntrinsicContext,
+    call: ts.CallExpression,
+): Value | undefined {
     // src/material/pbr/set-clearcoat.ts assigns the props onto the
     // material and registers the clearcoat fragment extension. The
     // registration is unconditional — it does not consult
@@ -1078,7 +1323,10 @@ function compileSetPbrClearCoat(context: MaterialIntrinsicContext, call: ts.Call
     const material = context.compileValue(argumentAt(call, 0));
     context.expectKind(material, "material", argumentAt(call, 0));
     const clearCoat = context.compileClearCoatOptions(argumentAt(call, 1));
-    context.recordScenePbrClearCoat(clearCoat.manifest, material.scenePbrMaterialIndex);
+    context.recordScenePbrClearCoat(
+        clearCoat.manifest,
+        material.scenePbrMaterialIndex,
+    );
     context.reachFeature("material:clearcoat", call);
     // `useF0Remap` is not a reached option, so a scene-code coat
     // always takes the pin's default: the remap is composed. Only
@@ -1086,7 +1334,8 @@ function compileSetPbrClearCoat(context: MaterialIntrinsicContext, call: ts.Call
     context.reachFeature("material:clearcoat-f0-remap", call);
     return {
         kind: "void",
-        cpp: `bbl::set_pbr_clearcoat(` +
+        cpp:
+            `bbl::set_pbr_clearcoat(` +
             `${context.requireEngine(material, call)}, ` +
             `${material.cpp}, ${clearCoat.enabled}, ` +
             `${clearCoat.intensity}, ${clearCoat.roughness}, ` +
@@ -1095,7 +1344,10 @@ function compileSetPbrClearCoat(context: MaterialIntrinsicContext, call: ts.Call
     };
 }
 
-function compileSetPbrIridescence(context: MaterialIntrinsicContext, call: ts.CallExpression): Value | undefined {
+function compileSetPbrIridescence(
+    context: MaterialIntrinsicContext,
+    call: ts.CallExpression,
+): Value | undefined {
     // src/material/pbr/set-iridescence.ts, the same opt-in shape as
     // set-clearcoat.ts and set-sheen.ts beside it: the props land on
     // the material and the fragment extension registers
@@ -1106,11 +1358,15 @@ function compileSetPbrIridescence(context: MaterialIntrinsicContext, call: ts.Ca
     const material = context.compileValue(argumentAt(call, 0));
     context.expectKind(material, "material", argumentAt(call, 0));
     const iridescence = context.compileIridescenceOptions(argumentAt(call, 1));
-    context.recordScenePbrIridescence(iridescence.manifest, material.scenePbrMaterialIndex);
+    context.recordScenePbrIridescence(
+        iridescence.manifest,
+        material.scenePbrMaterialIndex,
+    );
     context.reachFeature("material:iridescence", call);
     return {
         kind: "void",
-        cpp: `bbl::set_pbr_iridescence(` +
+        cpp:
+            `bbl::set_pbr_iridescence(` +
             `${context.requireEngine(material, call)}, ` +
             `${material.cpp}, ${iridescence.enabled}, ` +
             `${iridescence.intensity}, ` +
@@ -1120,7 +1376,10 @@ function compileSetPbrIridescence(context: MaterialIntrinsicContext, call: ts.Ca
     };
 }
 
-function compileEnablePbrLightmap(context: MaterialIntrinsicContext, call: ts.CallExpression): Value | undefined {
+function compileEnablePbrLightmap(
+    context: MaterialIntrinsicContext,
+    call: ts.CallExpression,
+): Value | undefined {
     // src/material/pbr/enable-pbr-lightmap.ts: the opt-in that
     // imports the lightmap fragment and registers its extension.
     // Upstream the always-loaded PBR core scans for no
@@ -1140,7 +1399,10 @@ function compileEnablePbrLightmap(context: MaterialIntrinsicContext, call: ts.Ca
     return { kind: "void", cpp: "" };
 }
 
-function compileSetPbrLightmap(context: MaterialIntrinsicContext, call: ts.CallExpression): Value | undefined {
+function compileSetPbrLightmap(
+    context: MaterialIntrinsicContext,
+    call: ts.CallExpression,
+): Value | undefined {
     // src/material/pbr/enable-pbr-lightmap.ts#setPbrLightmap: the
     // props land on the material and the `_uv2Mask` bit records the
     // TEXCOORD_1 claim. Every one of them is composition input --
@@ -1155,41 +1417,68 @@ function compileSetPbrLightmap(context: MaterialIntrinsicContext, call: ts.CallE
     const texture = context.compileValue(argumentAt(call, 1));
     context.expectKind(texture, "texture", argumentAt(call, 1));
     if (texture.textureStorage !== "file") {
-        context.fail(argumentAt(call, 1), "A reached lightmap is a `loadTexture2D` image: the " +
-            "extension binds the texture's own view and sampler, " +
-            "and its V-flip arm folds the texture-object " +
-            "`invertY` this port only records for a loaded one.");
+        context.fail(
+            argumentAt(call, 1),
+            "A reached lightmap is a `loadTexture2D` image: the " +
+                "extension binds the texture's own view and sampler, " +
+                "and its V-flip arm folds the texture-object " +
+                "`invertY` this port only records for a loaded one.",
+        );
     }
     context.expectSameEngine(material, texture, call);
     if (!context.pbrLightmapEnabled()) {
-        context.fail(call, "setPbrLightmap is reached before `enablePbrLightmap()`. " +
-            "Upstream that setter stamps a material no registered " +
-            "extension detects, so nothing composes and nothing " +
-            "renders; composition is settled where the call sits " +
-            "here, so the opt-in has to precede it.");
+        context.fail(
+            call,
+            "setPbrLightmap is reached before `enablePbrLightmap()`. " +
+                "Upstream that setter stamps a material no registered " +
+                "extension detects, so nothing composes and nothing " +
+                "renders; composition is settled where the call sits " +
+                "here, so the opt-in has to precede it.",
+        );
     }
     const options = call.arguments[2]
         ? context.expectObjectLiteral(call.arguments[2])
         : undefined;
     if (options) {
-        validateObjectProperties(context, options, ["level", "coordIndex", "useAsShadowmap", "gamma"], "Reached lightmap options support level, coordIndex, useAsShadowmap, and gamma.");
+        validateObjectProperties(
+            context,
+            options,
+            ["level", "coordIndex", "useAsShadowmap", "gamma"],
+            "Reached lightmap options support level, coordIndex, useAsShadowmap, and gamma.",
+        );
     }
-    const coordIndexExpression = options &&
-        context.objectProperty(options, "coordIndex");
+    const coordIndexExpression =
+        options && context.objectProperty(options, "coordIndex");
     // The pin's own `options?.coordIndex ?? 1`.
     const coordIndex = coordIndexExpression
-        ? compileStaticNumber(context, coordIndexExpression, "A lightmap coordIndex")
+        ? compileStaticNumber(
+              context,
+              coordIndexExpression,
+              "A lightmap coordIndex",
+          )
         : 1;
     if (coordIndex !== 0 && coordIndex !== 1) {
-        context.fail(coordIndexExpression ?? call, "A lightmap samples TEXCOORD_0 or TEXCOORD_1; the pinned " +
-            "extension declares no other UV set.");
+        context.fail(
+            coordIndexExpression ?? call,
+            "A lightmap samples TEXCOORD_0 or TEXCOORD_1; the pinned " +
+                "extension declares no other UV set.",
+        );
     }
-    const useAsShadowmap = compileOptionalStaticBoolean(context, options && context.objectProperty(options, "useAsShadowmap"), false, "A lightmap's useAsShadowmap");
-    const gamma = compileOptionalStaticBoolean(context, options && context.objectProperty(options, "gamma"), false, "A lightmap's gamma");
+    const useAsShadowmap = compileOptionalStaticBoolean(
+        context,
+        options && context.objectProperty(options, "useAsShadowmap"),
+        false,
+        "A lightmap's useAsShadowmap",
+    );
+    const gamma = compileOptionalStaticBoolean(
+        context,
+        options && context.objectProperty(options, "gamma"),
+        false,
+        "A lightmap's gamma",
+    );
     // `material.lightmapLevel = options?.level ?? 1` — the one
     // runtime lane, so the expression need not settle here.
-    const levelExpression = options &&
-        context.objectProperty(options, "level");
+    const levelExpression = options && context.objectProperty(options, "level");
     const level = levelExpression
         ? context.compileNumber(levelExpression, "float")
         : "1.0f";
@@ -1207,20 +1496,30 @@ function compileSetPbrLightmap(context: MaterialIntrinsicContext, call: ts.CallE
     // call just composed.
     context.boundPixelsTextures.add(texture.cpp);
     if (material.assetPbrMaterial) {
-        context.recordAssetSceneLightmap(foldedLightmapMeshWalk(context, call), lightmap, call);
-    }
-    else {
-        context.recordScenePbrLightmap(lightmap, material.scenePbrMaterialIndex);
+        context.recordAssetSceneLightmap(
+            foldedLightmapMeshWalk(context, call),
+            lightmap,
+            call,
+        );
+    } else {
+        context.recordScenePbrLightmap(
+            lightmap,
+            material.scenePbrMaterialIndex,
+        );
     }
     return {
         kind: "void",
-        cpp: `bbl::set_pbr_lightmap(` +
+        cpp:
+            `bbl::set_pbr_lightmap(` +
             `${context.requireEngine(material, call)}, ` +
             `${material.cpp}, ${texture.cpp}, ${level})`,
     };
 }
 
-function compileSetPbrAnisotropy(context: MaterialIntrinsicContext, call: ts.CallExpression): Value | undefined {
+function compileSetPbrAnisotropy(
+    context: MaterialIntrinsicContext,
+    call: ts.CallExpression,
+): Value | undefined {
     // src/material/pbr/set-anisotropy.ts, the same opt-in shape as
     // its three siblings: the props land on the material and the
     // fragment extension registers unconditionally, so the call
@@ -1234,18 +1533,25 @@ function compileSetPbrAnisotropy(context: MaterialIntrinsicContext, call: ts.Cal
     const material = context.compileValue(argumentAt(call, 0));
     context.expectKind(material, "material", argumentAt(call, 0));
     const anisotropy = context.compileAnisotropyOptions(argumentAt(call, 1));
-    context.recordScenePbrAnisotropy(anisotropy.manifest, material.scenePbrMaterialIndex);
+    context.recordScenePbrAnisotropy(
+        anisotropy.manifest,
+        material.scenePbrMaterialIndex,
+    );
     context.reachFeature("material:anisotropy", call);
     return {
         kind: "void",
-        cpp: `bbl::set_pbr_anisotropy(` +
+        cpp:
+            `bbl::set_pbr_anisotropy(` +
             `${context.requireEngine(material, call)}, ` +
             `${material.cpp}, ${anisotropy.enabled}, ` +
             `${anisotropy.intensity}, ${anisotropy.direction})`,
     };
 }
 
-function compileInstallPbrTracking(context: MaterialIntrinsicContext, call: ts.CallExpression): Value | undefined {
+function compileInstallPbrTracking(
+    context: MaterialIntrinsicContext,
+    call: ts.CallExpression,
+): Value | undefined {
     // src/material/tracking/{pbr,std}-tracking.ts. Every primitive
     // they install is `Object.defineProperty` with a
     // value-preserving getter and a setter whose only effect is
@@ -1268,7 +1574,10 @@ function compileInstallPbrTracking(context: MaterialIntrinsicContext, call: ts.C
     return { kind: "void", cpp: "" };
 }
 
-function compileSetPbrSheen(context: MaterialIntrinsicContext, call: ts.CallExpression): Value | undefined {
+function compileSetPbrSheen(
+    context: MaterialIntrinsicContext,
+    call: ts.CallExpression,
+): Value | undefined {
     // src/material/pbr/set-sheen.ts, the same opt-in shape as
     // set-clearcoat.ts beside it: the props land on the material and
     // the fragment extension registers unconditionally, so the call
@@ -1287,18 +1596,24 @@ function compileSetPbrSheen(context: MaterialIntrinsicContext, call: ts.CallExpr
     if (sheen.texture) {
         const texture = context.compileValue(sheen.texture);
         context.expectKind(texture, "texture", sheen.texture);
-        context.emit(`bbl::set_pbr_sheen_texture(` +
-            `${engine}, ${material.cpp}, ${texture.cpp});`);
+        context.emit(
+            `bbl::set_pbr_sheen_texture(` +
+                `${engine}, ${material.cpp}, ${texture.cpp});`,
+        );
     }
     return {
         kind: "void",
-        cpp: `bbl::set_pbr_sheen(${engine}, ${material.cpp}, ` +
+        cpp:
+            `bbl::set_pbr_sheen(${engine}, ${material.cpp}, ` +
             `${sheen.enabled}, ${sheen.color}, ` +
             `${sheen.roughness}, ${sheen.intensity})`,
     };
 }
 
-function compileSetAlphaToCoverage(context: MaterialIntrinsicContext, call: ts.CallExpression): Value | undefined {
+function compileSetAlphaToCoverage(
+    context: MaterialIntrinsicContext,
+    call: ts.CallExpression,
+): Value | undefined {
     context.expectArgumentCount(call, 2, 2);
     const material = context.compileValue(argumentAt(call, 0));
     if (material.kind !== "material") {
@@ -1310,12 +1625,16 @@ function compileSetAlphaToCoverage(context: MaterialIntrinsicContext, call: ts.C
     const enabled = context.compileBoolean(argumentAt(call, 1));
     return {
         kind: "void",
-        cpp: `bbl::set_alpha_to_coverage(` +
+        cpp:
+            `bbl::set_alpha_to_coverage(` +
             `${context.requireEngine(material, call)}, ${material.cpp}, ${enabled})`,
     };
 }
 
-function compileCreateStandardMaterial(context: MaterialIntrinsicContext, call: ts.CallExpression): Value | undefined {
+function compileCreateStandardMaterial(
+    context: MaterialIntrinsicContext,
+    call: ts.CallExpression,
+): Value | undefined {
     context.recordSceneMaterialSlot();
     context.expectArgumentCount(call, 0, 0);
     const engine = context.requireDefaultEngine(call);
@@ -1330,7 +1649,10 @@ function compileCreateStandardMaterial(context: MaterialIntrinsicContext, call: 
     };
 }
 
-function compileParseNodeMaterialFromSnippet(context: MaterialIntrinsicContext, call: ts.CallExpression): Value | undefined {
+function compileParseNodeMaterialFromSnippet(
+    context: MaterialIntrinsicContext,
+    call: ts.CallExpression,
+): Value | undefined {
     // The pin parses the graph, walks it through one emitter per
     // block class and compiles the module — all of it at page load,
     // from data the source already carries. Generation runs that
@@ -1339,8 +1661,14 @@ function compileParseNodeMaterialFromSnippet(context: MaterialIntrinsicContext, 
     // is the graph's index in the composed table.
     context.recordSceneMaterialSlot();
     context.expectArgumentCount(call, 2, 3);
-    const engine = context.requireEngine(context.compileValue(argumentAt(call, 0)), call);
-    const graph = context.compileNodeMaterialOptions(argumentAt(call, 1), call.arguments[2]);
+    const engine = context.requireEngine(
+        context.compileValue(argumentAt(call, 0)),
+        call,
+    );
+    const graph = context.compileNodeMaterialOptions(
+        argumentAt(call, 1),
+        call.arguments[2],
+    );
     context.reachFeature("material:node", call);
     context.reachFeature("renderer:scene", call);
     // The textures travel under the names the call keyed them by,
@@ -1350,20 +1678,27 @@ function compileParseNodeMaterialFromSnippet(context: MaterialIntrinsicContext, 
     // Resolving here would need the composed order the compiler does
     // not have yet, and would put the same lookup in a second place.
     const textures = graph.textures
-        .map((entry) => `bbl::node_material_texture(` +
-        `${context.cppString(entry.name)}, ` +
-        `${entry.texture.cpp})`)
+        .map(
+            (entry) =>
+                `bbl::node_material_texture(` +
+                `${context.cppString(entry.name)}, ` +
+                `${entry.texture.cpp})`,
+        )
         .join(", ");
     return {
         kind: "material",
-        cpp: `bbl::create_node_material(${engine}, ` +
+        cpp:
+            `bbl::create_node_material(${engine}, ` +
             `${graph.index}u, {${textures}})`,
         engineCpp: engine,
         nodeMaterialIndex: graph.index,
     };
 }
 
-function compileEnableMaterialUvTransform(context: MaterialIntrinsicContext, call: ts.CallExpression): Value | undefined {
+function compileEnableMaterialUvTransform(
+    context: MaterialIntrinsicContext,
+    call: ts.CallExpression,
+): Value | undefined {
     // src/material/enable-material-uv-transform.ts marks the
     // material and preloads the extension's fragment module. The
     // preload is a bundling concern with no native counterpart --
@@ -1378,13 +1713,17 @@ function compileEnableMaterialUvTransform(context: MaterialIntrinsicContext, cal
     context.reachFeature("renderer:scene", call);
     return {
         kind: "void",
-        cpp: `bbl::enable_material_uv_transform(` +
+        cpp:
+            `bbl::enable_material_uv_transform(` +
             `${context.requireEngine(material, call)}, ` +
             `${material.cpp})`,
     };
 }
 
-function compileEnableMaterialPlugins(context: MaterialIntrinsicContext, call: ts.CallExpression): Value | undefined {
+function compileEnableMaterialPlugins(
+    context: MaterialIntrinsicContext,
+    call: ts.CallExpression,
+): Value | undefined {
     // src/material/plugin/enable-material-plugins.ts registers the
     // two plugin bridges into the global PBR and Standard extension
     // registries, and the pre-existing hook loops then compose the
@@ -1405,7 +1744,14 @@ function compileEnableMaterialPlugins(context: MaterialIntrinsicContext, call: t
     return { kind: "void", cpp: "" };
 }
 
-function compileEnableStandardSkeleton(context: MaterialIntrinsicContext, call: ts.CallExpression, importedName: "enableStandardSkeleton" | "enableStandardUvOffset" | "enableStandardVertexColors"): Value | undefined {
+function compileEnableStandardSkeleton(
+    context: MaterialIntrinsicContext,
+    call: ts.CallExpression,
+    importedName:
+        | "enableStandardSkeleton"
+        | "enableStandardUvOffset"
+        | "enableStandardVertexColors",
+): Value | undefined {
     // src/material/standard/enable-standard-vertex-colors.ts
     // installs the vertex-colour fragment factory globally, and
     // standard-renderable.ts then composes it for every mesh
@@ -1414,16 +1760,22 @@ function compileEnableStandardSkeleton(context: MaterialIntrinsicContext, call: 
     // the generated Standard fragment carries the pinned slot.
     context.expectArgumentCount(call, 0, 0);
     context.reachFeature("material:standard", call);
-    context.reachFeature(importedName === "enableStandardSkeleton"
-        ? "material:standard-skeleton"
-        : importedName === "enableStandardUvOffset"
-            ? "material:standard-uv-offset"
-            : "material:standard-vertex-colors", call);
+    context.reachFeature(
+        importedName === "enableStandardSkeleton"
+            ? "material:standard-skeleton"
+            : importedName === "enableStandardUvOffset"
+              ? "material:standard-uv-offset"
+              : "material:standard-vertex-colors",
+        call,
+    );
     context.reachFeature("renderer:scene", call);
     return { kind: "void", cpp: "" };
 }
 
-function compileRebuildMaterial(context: MaterialIntrinsicContext, call: ts.CallExpression): Value | undefined {
+function compileRebuildMaterial(
+    context: MaterialIntrinsicContext,
+    call: ts.CallExpression,
+): Value | undefined {
     context.expectArgumentCount(call, 2, 3);
     const scene = context.compileValue(argumentAt(call, 0));
     const material = context.compileValue(argumentAt(call, 1));
@@ -1431,18 +1783,22 @@ function compileRebuildMaterial(context: MaterialIntrinsicContext, call: ts.Call
     context.expectKind(material, "material", argumentAt(call, 1));
     context.expectSameEngine(scene, material, call);
     if (context.engineHasStarted()) {
-        context.fail(call, "rebuildMaterial after startEngine requires live GPU material resource replacement.");
+        context.fail(
+            call,
+            "rebuildMaterial after startEngine requires live GPU material resource replacement.",
+        );
     }
     if (call.arguments[2]) {
         const options = context.expectObjectLiteral(call.arguments[2]);
-        validateObjectProperties(context, options, ["rebuildViews", "rebuildFrameGraph"], "rebuildMaterial options support rebuildViews and rebuildFrameGraph.");
-        for (const name of [
-            "rebuildViews",
-            "rebuildFrameGraph",
-        ]) {
+        validateObjectProperties(
+            context,
+            options,
+            ["rebuildViews", "rebuildFrameGraph"],
+            "rebuildMaterial options support rebuildViews and rebuildFrameGraph.",
+        );
+        for (const name of ["rebuildViews", "rebuildFrameGraph"]) {
             const property = context.objectProperty(options, name);
-            if (!property)
-                continue;
+            if (!property) continue;
             const value = context.compileBoolean(property);
             if (value !== "true" && value !== "false") {
                 context.fail(property, `${name} must be a static boolean.`);
@@ -1455,14 +1811,36 @@ function compileRebuildMaterial(context: MaterialIntrinsicContext, call: ts.Call
     return { kind: "void", cpp: "" };
 }
 
-const materialIntrinsicHandlers = new EmissionMap<string, (context: MaterialIntrinsicContext, call: ts.CallExpression) => Value | undefined>([
+const materialIntrinsicHandlers = new EmissionMap<
+    string,
+    (
+        context: MaterialIntrinsicContext,
+        call: ts.CallExpression,
+    ) => Value | undefined
+>([
     ["isPbrMaterial", compileIsPbrMaterial],
     ["createSolidTexture2D", compileCreateSolidTexture2D],
     ["createPbrMaterial", compileCreatePbrMaterial],
     ["enableSceneTransmission", compileEnableSceneTransmission],
     ["createGridMaterial", compileCreateGridMaterial],
-    ["createStandardNoColorMaterialView", (context, call) => compileCreateStandardNoColorMaterialView(context, call, "createStandardNoColorMaterialView")],
-    ["createPbrNoColorMaterialView", (context, call) => compileCreateStandardNoColorMaterialView(context, call, "createPbrNoColorMaterialView")],
+    [
+        "createStandardNoColorMaterialView",
+        (context, call) =>
+            compileCreateStandardNoColorMaterialView(
+                context,
+                call,
+                "createStandardNoColorMaterialView",
+            ),
+    ],
+    [
+        "createPbrNoColorMaterialView",
+        (context, call) =>
+            compileCreateStandardNoColorMaterialView(
+                context,
+                call,
+                "createPbrNoColorMaterialView",
+            ),
+    ],
     ["setStandardLightmapTexture", compileSetStandardLightmapTexture],
     ["setStandardEmissiveTexture", compileSetStandardEmissiveTexture],
     ["markMaterialUboDirty", compileMarkMaterialUboDirty],
@@ -1497,11 +1875,37 @@ const materialIntrinsicHandlers = new EmissionMap<string, (context: MaterialIntr
     ["parseNodeMaterialFromSnippet", compileParseNodeMaterialFromSnippet],
     ["enableMaterialUvTransform", compileEnableMaterialUvTransform],
     ["enableMaterialPlugins", compileEnableMaterialPlugins],
-    ["enableStandardSkeleton", (context, call) => compileEnableStandardSkeleton(context, call, "enableStandardSkeleton")],
-    ["enableStandardUvOffset", (context, call) => compileEnableStandardSkeleton(context, call, "enableStandardUvOffset")],
-    ["enableStandardVertexColors", (context, call) => compileEnableStandardSkeleton(context, call, "enableStandardVertexColors")],
+    [
+        "enableStandardSkeleton",
+        (context, call) =>
+            compileEnableStandardSkeleton(
+                context,
+                call,
+                "enableStandardSkeleton",
+            ),
+    ],
+    [
+        "enableStandardUvOffset",
+        (context, call) =>
+            compileEnableStandardSkeleton(
+                context,
+                call,
+                "enableStandardUvOffset",
+            ),
+    ],
+    [
+        "enableStandardVertexColors",
+        (context, call) =>
+            compileEnableStandardSkeleton(
+                context,
+                call,
+                "enableStandardVertexColors",
+            ),
+    ],
     ["rebuildMaterial", compileRebuildMaterial],
 ]);
 
 /** Material effects can be replayed at each statically reached shared call. */
-export function isMaterialCallEffectIntrinsic(name: string): boolean { return materialIntrinsicHandlers.has(name); }
+export function isMaterialCallEffectIntrinsic(name: string): boolean {
+    return materialIntrinsicHandlers.has(name);
+}

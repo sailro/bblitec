@@ -69,10 +69,9 @@ test("an entry no registry scene owns is listed loudly, not hashed", () => {
         writeFileSync(join(root, "stray.txt"), "stray");
         const digest = digestGeneratedTree(root, [join(root, "scene1")]);
         assert.deepEqual(digest.strays, ["scene999", "stray.txt"]);
-        assert.deepEqual(
-            digest.lines,
-            [`${basename(root)}/scene1/a.txt\t${sha1("alpha")}`],
-        );
+        assert.deepEqual(digest.lines, [
+            `${basename(root)}/scene1/a.txt\t${sha1("alpha")}`,
+        ]);
     } finally {
         rmSync(root, { recursive: true, force: true });
     }

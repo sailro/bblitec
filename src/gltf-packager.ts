@@ -1,5 +1,5 @@
 import { readFile } from "node:fs/promises";
-import type {AssetDecoders} from "./asset-decoders.js";
+import type { AssetDecoders } from "./asset-decoders.js";
 import { compressedTextureFormat } from "./compressed-texture-format.js";
 import { packageKtx1 } from "./compressed-texture-package.js";
 import { downloadCachedResource } from "./asset-download-cache.js";
@@ -75,7 +75,8 @@ function asRecords(value: unknown): JsonRecord[] {
 }
 
 function stringValue(value: unknown, label: string): string {
-    if (typeof value !== "string") throw new Error(`glTF ${label} must be a string.`);
+    if (typeof value !== "string")
+        throw new Error(`glTF ${label} must be a string.`);
     return value;
 }
 
@@ -83,7 +84,11 @@ function numberValue(value: unknown, fallback = 0): number {
     return typeof value === "number" ? value : fallback;
 }
 
-function nonNegativeInteger(value: unknown, label: string, fallback?: number): number {
+function nonNegativeInteger(
+    value: unknown,
+    label: string,
+    fallback?: number,
+): number {
     const resolved = asIndex(value === undefined ? fallback : value);
     if (resolved === undefined) {
         throw new Error(`glTF ${label} must be a non-negative integer.`);
@@ -92,9 +97,7 @@ function nonNegativeInteger(value: unknown, label: string, fallback?: number): n
 }
 
 function meshoptExtension(record: JsonRecord): JsonRecord | undefined {
-    return asObject(
-        asObject(record.extensions)?.[MESHOPT_EXTENSION],
-    );
+    return asObject(asObject(record.extensions)?.[MESHOPT_EXTENSION]);
 }
 
 function isMeshoptFallbackBuffer(buffer: JsonRecord): boolean {
@@ -109,7 +112,9 @@ function isMeshoptFallbackBuffer(buffer: JsonRecord): boolean {
  * deliberately, so this keeps the second arm rather than widening the
  * asset-facing reader to a form no reached asset URL uses.
  */
-function dataUri(uri: string): { bytes: Uint8Array; contentType?: string } | undefined {
+function dataUri(
+    uri: string,
+): { bytes: Uint8Array; contentType?: string } | undefined {
     if (!isDataUrl(uri)) return undefined;
     const match = /^data:([^;,]+)?(;base64)?,(.*)$/s.exec(uri);
     if (!match) return undefined;
@@ -142,14 +147,22 @@ async function readResource(
         // determine.
         return downloadCachedResource(new URL(uri, source).href);
     }
-    return { bytes: new Uint8Array(await readFile(resolve(baseDirectory, uri))) };
+    return {
+        bytes: new Uint8Array(await readFile(resolve(baseDirectory, uri))),
+    };
 }
 
-function glbChunks(bytes: Uint8Array): {
-    document: JsonRecord;
-    binary: Buffer;
-} | undefined {
-    const buffer = Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+function glbChunks(bytes: Uint8Array):
+    | {
+          document: JsonRecord;
+          binary: Buffer;
+      }
+    | undefined {
+    const buffer = Buffer.from(
+        bytes.buffer,
+        bytes.byteOffset,
+        bytes.byteLength,
+    );
     if (buffer.length < 12 || buffer.readUInt32LE(0) !== GLB_MAGIC) {
         return undefined;
     }
@@ -223,13 +236,9 @@ function basisuImageColorSpaces(
     for (const material of asRecords(document.materials)) {
         const owners: Record<string, JsonRecord> = {
             material,
-            pbrMetallicRoughness:
-                asObject(material.pbrMetallicRoughness) ?? {},
+            pbrMetallicRoughness: asObject(material.pbrMetallicRoughness) ?? {},
         };
-        const slotTexture = (
-            owner: string,
-            slot: string,
-        ): number | undefined =>
+        const slotTexture = (owner: string, slot: string): number | undefined =>
             asIndex(asObject(owners[owner]?.[slot])?.index);
         const metallicRoughness = slotTexture(
             "pbrMetallicRoughness",
@@ -298,9 +307,7 @@ function basisuImageColorSpaces(
             // core mapper could see it. A document using any of the three
             // would render differently here and in the browser, so each
             // refuses rather than resolving into a different answer.
-            const info = asObject(
-                asObject(owners[owner])?.[slot],
-            );
+            const info = asObject(asObject(owners[owner])?.[slot]);
             if (slot === "occlusionTexture" && info?.strength !== undefined) {
                 throw new Error(
                     `glTF ${assetName} authors an occlusionTexture.strength ` +
@@ -415,15 +422,20 @@ async function gltfSamplerFor(
         ) => PinnedSamplerDescriptor;
     }>("loader-gltf/gltf-sampler-desc.js", ["gltfTexSamplerDesc"]);
     const reproduces = (mapped: PinnedSamplerDescriptor): boolean =>
-        [...new Set([...Object.keys(descriptor), ...Object.keys(mapped)])].every(
-            (key) => descriptor[key] === mapped[key],
-        );
+        [
+            ...new Set([...Object.keys(descriptor), ...Object.keys(mapped)]),
+        ].every((key) => descriptor[key] === mapped[key]);
     const matches: JsonRecord[] = [];
     for (const magFilter of GLTF_SAMPLER_ENUMS.magFilter) {
         for (const minFilter of GLTF_SAMPLER_ENUMS.minFilter) {
             for (const wrapS of GLTF_SAMPLER_ENUMS.wrap) {
                 for (const wrapT of GLTF_SAMPLER_ENUMS.wrap) {
-                    const sampler: JsonRecord = { magFilter, minFilter, wrapS, wrapT };
+                    const sampler: JsonRecord = {
+                        magFilter,
+                        minFilter,
+                        wrapS,
+                        wrapT,
+                    };
                     const mapped = gltfTexSamplerDesc(
                         { textures: [{ sampler: 0 }], samplers: [sampler] },
                         { index: 0 },
@@ -466,10 +478,11 @@ async function ktx2SamplerIndex(
     // By field, not by serialized text: a document that spells the same
     // four enums in a different key order would otherwise miss the reuse
     // and gain a duplicate sampler.
-    const existing = samplers.findIndex((candidate) =>
-        Object.keys(sampler).every(
-            (key) => candidate[key] === sampler[key],
-        ) && Object.keys(candidate).length === Object.keys(sampler).length,
+    const existing = samplers.findIndex(
+        (candidate) =>
+            Object.keys(sampler).every(
+                (key) => candidate[key] === sampler[key],
+            ) && Object.keys(candidate).length === Object.keys(sampler).length,
     );
     if (existing >= 0) return existing;
     samplers.push(sampler);
@@ -487,14 +500,15 @@ export async function packageGltf(
     const remote = /^https?:\/\//i.test(source);
     const rootResource = await readResource(source, source, baseDirectory);
     const parsedGlb = glbChunks(rootResource.bytes);
-    const document = parsedGlb?.document ?? asRecord(
-        JSON.parse(new TextDecoder().decode(rootResource.bytes)),
-    );
+    const document =
+        parsedGlb?.document ??
+        asRecord(JSON.parse(new TextDecoder().decode(rootResource.bytes)));
     if (sourceTextureReads) await packageSourceAlbedoIdentities(document);
     await packageMeshWalks(document, meshWalks);
-    const resourceDirectory = remote || isDataUrl(source)
-        ? baseDirectory
-        : dirname(resolve(baseDirectory, source));
+    const resourceDirectory =
+        remote || isDataUrl(source)
+            ? baseDirectory
+            : dirname(resolve(baseDirectory, source));
     const chunks: Buffer[] = parsedGlb ? [parsedGlb.binary] : [];
     let binaryLength = parsedGlb?.binary.length ?? 0;
     const append = (bytes: Uint8Array): number => {
@@ -637,12 +651,13 @@ export async function packageGltf(
         const bufferIndex = numberValue(view.buffer);
         const placement = placements[bufferIndex];
         if (!placement) {
-            throw new Error(`glTF bufferView references missing buffer ${bufferIndex}.`);
+            throw new Error(
+                `glTF bufferView references missing buffer ${bufferIndex}.`,
+            );
         }
         if (placement.kind === "binary") {
             view.buffer = 0;
-            view.byteOffset =
-                placement.offset + numberValue(view.byteOffset);
+            view.byteOffset = placement.offset + numberValue(view.byteOffset);
         } else {
             view.buffer = placement.buffer;
         }
@@ -690,8 +705,7 @@ export async function packageGltf(
             }
             compressed.buffer = 0;
             compressed.byteOffset =
-                compressedPlacement.offset +
-                compressedOffset;
+                compressedPlacement.offset + compressedOffset;
         }
     }
 
@@ -725,25 +739,29 @@ export async function packageGltf(
                         `no ${BASISU_EXTENSION} texture names.`,
                 );
             }
-            const { transcodeKtx2Texture, writeKtx1 } = await import(
-                "./basis-transcode.js"
-            );
-            const { compressedTextureLowerer } = await import(
-                "./compiler/compressed-texture.js"
-            );
+            const { transcodeKtx2Texture, writeKtx1 } =
+                await import("./basis-transcode.js");
+            const { compressedTextureLowerer } =
+                await import("./compiler/compressed-texture.js");
             const lowerer = compressedTextureLowerer();
-            const transcoded = await transcodeKtx2Texture(uri, bytes, await decoders.ktx2?.());
-            bytes = await packageKtx1(writeKtx1(
-                transcoded,
-                lowerer.magicBytes(),
-                lowerer.glInternalFormat(
-                    srgb
-                        ? lowerer.srgbGpuFormat(transcoded.gpuFormat)
-                        : transcoded.gpuFormat,
+            const transcoded = await transcodeKtx2Texture(
+                uri,
+                bytes,
+                await decoders.ktx2?.(),
+            );
+            bytes = await packageKtx1(
+                writeKtx1(
+                    transcoded,
+                    lowerer.magicBytes(),
+                    lowerer.glInternalFormat(
+                        srgb
+                            ? lowerer.srgbGpuFormat(transcoded.gpuFormat)
+                            : transcoded.gpuFormat,
+                    ),
+                    lowerer.headerLayout(),
+                    lowerer.blockSize(transcoded.gpuFormat),
                 ),
-                lowerer.headerLayout(),
-                lowerer.blockSize(transcoded.gpuFormat),
-            ));
+            );
             mimeType = KTX_MIME;
             transcodedSamplers.set(
                 imageIndex,
@@ -785,10 +803,7 @@ export async function packageGltf(
         chunks.push(Buffer.alloc(finalPadding));
         binaryLength += finalPadding;
     }
-    document.buffers = [
-        { byteLength: binaryLength },
-        ...fallbackBuffers,
-    ];
+    document.buffers = [{ byteLength: binaryLength }, ...fallbackBuffers];
     document.bufferViews = bufferViews;
 
     return writeGlb(document, Buffer.concat(chunks));

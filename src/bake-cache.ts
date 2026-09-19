@@ -102,13 +102,11 @@ export function moduleIdentity(moduleUrl: string): string {
 function pinIdentity(): string {
     if (cachedPinIdentity) return cachedPinIdentity;
     const requireModule = createRequire(import.meta.url);
-    const { readUpstreamPin } =
-        requireModule(
-            "./upstream-source.js",
-        ) as typeof import("./upstream-source.js");
+    const { readUpstreamPin } = requireModule(
+        "./upstream-source.js",
+    ) as typeof import("./upstream-source.js");
     const pin = readUpstreamPin();
-    cachedPinIdentity =
-        `${pin.package}@${pin.version}#${pin.sourceVersion}`;
+    cachedPinIdentity = `${pin.package}@${pin.version}#${pin.sourceVersion}`;
     return cachedPinIdentity;
 }
 
@@ -125,14 +123,12 @@ export function browserIdentity(): string | undefined {
     }
     try {
         const requireModule = createRequire(import.meta.url);
-        const { resolveBrowserPath } =
-            requireModule(
-                "./browser-path.js",
-            ) as typeof import("./browser-path.js");
+        const { resolveBrowserPath } = requireModule(
+            "./browser-path.js",
+        ) as typeof import("./browser-path.js");
         const path = resolveBrowserPath();
         const stats = statSync(path);
-        cachedBrowserIdentity =
-            `${path}|${stats.size}|${stats.mtimeMs}`;
+        cachedBrowserIdentity = `${path}|${stats.size}|${stats.mtimeMs}`;
         return cachedBrowserIdentity;
     } catch {
         cachedBrowserIdentity = null;
@@ -262,10 +258,7 @@ export async function cachedJsonBake<T>(
     return JSON.parse(Buffer.from(bytes).toString("utf8")) as T;
 }
 
-function storeBake(
-    path: string | undefined,
-    produced: Uint8Array,
-): void {
+function storeBake(path: string | undefined, produced: Uint8Array): void {
     if (path === undefined) return;
     try {
         mkdirSync(dirname(path), { recursive: true });
@@ -347,22 +340,22 @@ export function moduleClosureBytes(
     repositoryRoot = resolve("."),
     standIns: ReadonlySet<string> = new Set(),
 ): Uint8Array[] | undefined {
-    return repositoryModuleClosure(modulePaths, repositoryRoot, standIns)?.flatMap(
-        ({ path, source }) => [
-            // The file's identity includes its path, so moving a module is
-            // a different closure even when its text is not.
-            Buffer.from(`${path}\n`, "utf8"),
-            source,
-        ],
-    );
+    return repositoryModuleClosure(
+        modulePaths,
+        repositoryRoot,
+        standIns,
+    )?.flatMap(({ path, source }) => [
+        // The file's identity includes its path, so moving a module is
+        // a different closure even when its text is not.
+        Buffer.from(`${path}\n`, "utf8"),
+        source,
+    ]);
 }
 
 /** Resolve a specifier target the way the suite server serves it: the
  *  file itself, its `.ts` twin for a `.js` specifier, or the bare
  *  specifier plus `.ts`. */
-export function resolveRepositoryModuleFile(
-    path: string,
-): string | undefined {
+export function resolveRepositoryModuleFile(path: string): string | undefined {
     const candidates = [
         path,
         path.endsWith(".js") ? `${path.slice(0, -3)}.ts` : `${path}.ts`,

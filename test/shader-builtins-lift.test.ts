@@ -34,11 +34,7 @@ import {
 function pinnedPackageRoot(): string {
     const repositoryRoot = findRepositoryRoot();
     const pin = readUpstreamPin(repositoryRoot);
-    return resolve(
-        repositoryRoot,
-        "node_modules",
-        ...pin.package.split("/"),
-    );
+    return resolve(repositoryRoot, "node_modules", ...pin.package.split("/"));
 }
 
 // ---------------------------------------------------------------------------
@@ -58,9 +54,7 @@ test("lifts the pinned ground fragment with both dither arms", () => {
     );
     assert.ok(dithered.includes("43758.5453"));
     assert.ok(
-        undithered.includes(
-            "fn dither(a:vec2<f32>,b:f32)->f32{return 0.0;}",
-        ),
+        undithered.includes("fn dither(a:vec2<f32>,b:f32)->f32{return 0.0;}"),
     );
     const [ditherHead] = dithered.split("fn dither(");
     assert.equal(
@@ -85,12 +79,13 @@ test("lifts the pinned ground fragment with both dither arms", () => {
         ),
     );
     assert.ok(dithered.includes("a=max(a,vec4<f32>(0.0));"));
-    assert.ok(
-        dithered.includes("const tonemappingCalibration:f32=1.590579;"),
-    );
+    assert.ok(dithered.includes("const tonemappingCalibration:f32=1.590579;"));
 
     // The binding contract the PAL uploads against is unchanged.
-    assert.match(dithered, /@group\(2\) @binding\(0\) var \w+: texture_2d<f32>;/);
+    assert.match(
+        dithered,
+        /@group\(2\) @binding\(0\) var \w+: texture_2d<f32>;/,
+    );
     assert.match(dithered, /@group\(2\) @binding\(1\) var \w+: sampler;/);
     assert.ok(
         dithered.includes(
@@ -116,9 +111,7 @@ test("the DDS skybox file carries the pin's single high-contrast arm", () => {
 
     assert.ok(vertex.includes("let c=(uniforms.world*vec4<f32>(b,1.0)).xyz;"));
     assert.ok(
-        vertex.includes(
-            "a.clipPos=uniforms.viewProjection*vec4<f32>(c,1.0);",
-        ),
+        vertex.includes("a.clipPos=uniforms.viewProjection*vec4<f32>(c,1.0);"),
     );
     assert.match(vertex, /@location\(0\) positionUVW: vec3<f32>/);
     assert.match(vertex, /@location\(1\) positionW: vec3<f32>/);
@@ -134,9 +127,7 @@ test("the DDS skybox file carries the pin's single high-contrast arm", () => {
     assert.ok(dds.includes("if (uniforms.imageParameters.z>=0.0){"));
     assert.ok(dds.includes("a=1.0-exp2(-1.590579*a);"));
     assert.ok(dds.includes("a=saturate(a);"));
-    assert.ok(
-        dds.includes("a=a+vec3<f32>(dither(b.positionW.xy,0.5));"),
-    );
+    assert.ok(dds.includes("a=a+vec3<f32>(dither(b.positionW.xy,0.5));"));
     assert.ok(dds.includes("var e=normalize(b.positionUVW);"));
     assert.ok(dds.includes("a*=uniforms.primaryColorExposure.rgb;"));
 
@@ -176,10 +167,7 @@ test("a reshaped pinned background literal fails generation by name", () => {
         () =>
             backgroundGroundFragmentWgsl("p", {
                 ...pinned,
-                fragment: pinned.fragment.replace(
-                    "backgroundCenter",
-                    "centre",
-                ),
+                fragment: pinned.fragment.replace("backgroundCenter", "centre"),
             }),
         /ground fragment mesh uniform block/,
     );
@@ -230,9 +218,7 @@ test("lifts the pinned ip() and per-sample loop for image processing", () => {
     // it lays out exactly like the 16 bytes the PAL pushes.
     for (const fragment of [single, multi]) {
         assert.ok(fragment.includes("struct P{e:f32,c:f32,t:f32,p:f32}"));
-        assert.ok(
-            fragment.includes("@group(3)@binding(0)var<uniform> p:P;"),
-        );
+        assert.ok(fragment.includes("@group(3)@binding(0)var<uniform> p:P;"));
         assert.ok(fragment.includes("fn ip(r:vec4f)->vec4f{"));
         assert.ok(fragment.includes("if(p.t>0.5){c=1.0-exp2(-1.590579*c);}"));
         assert.ok(
@@ -274,9 +260,7 @@ test("lifts the pinned ip() and per-sample loop for image processing", () => {
 test("lifts the pinned WGSL_FOG with the documented renames", () => {
     const fog = fogFactorWgsl();
     assert.ok(fog.startsWith("const bblFogE:f32=2.71828;"));
-    assert.ok(
-        fog.includes("fn bblCalcFogFactor(fogDistance:vec3<f32>)->f32{"),
-    );
+    assert.ok(fog.includes("fn bblCalcFogFactor(fogDistance:vec3<f32>)->f32{"));
     // The pin's own three falloff arms over the consumers' uniform slot.
     assert.ok(
         fog.includes(

@@ -47,7 +47,9 @@ export const parseRgbe = pinnedHdrParser.parseRGBE;
 /** The pin's own `shToPolynomial`, re-exported for the DDS packager. */
 export const shToPolynomial = pinnedSphericalHarmonics.shToPolynomial;
 
-const hdrMagic = new Uint8Array([0x42, 0x42, 0x4c, 0x48, 0x44, 0x52, 0x31, 0x00]);
+const hdrMagic = new Uint8Array([
+    0x42, 0x42, 0x4c, 0x48, 0x44, 0x52, 0x31, 0x00,
+]);
 
 interface HdrImage {
     width: number;
@@ -86,14 +88,19 @@ function mipLevelCount(size: number): number {
     return Math.floor(Math.log2(size)) + 1;
 }
 
-export async function packageHdrEnvironment(bytes: Uint8Array, faceSize: number): Promise<Uint8Array> {
+export async function packageHdrEnvironment(
+    bytes: Uint8Array,
+    faceSize: number,
+): Promise<Uint8Array> {
     if (
         !Number.isInteger(faceSize) ||
         faceSize < 1 ||
         faceSize > 2048 ||
         (faceSize & (faceSize - 1)) !== 0
     ) {
-        throw new Error("HDR cubemap faceSize must be a power of two between 1 and 2048.");
+        throw new Error(
+            "HDR cubemap faceSize must be a power of two between 1 and 2048.",
+        );
     }
     const image = parseRgbe(bytes);
     const sphericalHarmonics = preScalePolynomial(

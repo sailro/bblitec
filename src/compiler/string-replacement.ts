@@ -11,14 +11,21 @@ export function regexpCaptureCount(pattern: string): number {
 
 /** Both replacement overloads use the ordinary inline/stored callback invocation path. */
 export function replacementCallback(
-    lowerer: DataLowerer, call: ts.CallExpression, replacement: Value, pattern?: Value,
+    lowerer: DataLowerer,
+    call: ts.CallExpression,
+    replacement: Value,
+    pattern?: Value,
 ): string {
     const context = lowerer.context;
     let stored: Value | undefined;
     if (replacement.dataType?.kind === "function") {
         const cpp = context.allocateTemporaryCppName("replacement_callback");
         context.emit(`const auto ${cpp} = ${replacement.cpp};`);
-        stored = {...replacement, cpp, nativeCaptures: [context.registerNativeBinding(cpp)]};
+        stored = {
+            ...replacement,
+            cpp,
+            nativeCaptures: [context.registerNativeBinding(cpp)],
+        };
     }
     const adapter = context.allocateTemporaryCppName("replacement_invoke");
     const packet = context.allocateTemporaryCppName("replacement_match");
@@ -28,29 +35,70 @@ export function replacementCallback(
         parameters = `[[maybe_unused]] const bbl::js::RegExpReplacement& ${packet}`;
         const captures = pattern.regexpCaptureCount;
         if (captures !== undefined) {
-            supplied = [lowerer.leafValue(`*${packet}.groups[0]`, {kind: "string"}),
-                ...Array.from({length: captures}, (_unused, index) => lowerer.leafValue(
-                    `${packet}.argument<std::string>(${index + 1})`, {kind: "optional", inner: {kind: "string"}})),
-                lowerer.leafValue(`${packet}.offset`, {kind: "number"}),
-                lowerer.leafValue(`${packet}.input`, {kind: "string"})];
+            supplied = [
+                lowerer.leafValue(`*${packet}.groups[0]`, { kind: "string" }),
+                ...Array.from({ length: captures }, (_unused, index) =>
+                    lowerer.leafValue(
+                        `${packet}.argument<std::string>(${index + 1})`,
+                        { kind: "optional", inner: { kind: "string" } },
+                    ),
+                ),
+                lowerer.leafValue(`${packet}.offset`, { kind: "number" }),
+                lowerer.leafValue(`${packet}.input`, { kind: "string" }),
+            ];
         } else {
-            const signature = context.checker.getTypeAtLocation(argumentAt(call, 1)).getCallSignatures()[0];
-            if (!signature) return context.fail(call, "RegExp replacement requires a callable signature.");
+            const signature = context.checker
+                .getTypeAtLocation(argumentAt(call, 1))
+                .getCallSignatures()[0];
+            if (!signature)
+                return context.fail(
+                    call,
+                    "RegExp replacement requires a callable signature.",
+                );
             supplied = signature.parameters.map((parameter, index) => {
-                if (index === 0) return lowerer.leafValue(`*${packet}.groups[0]`, {kind: "string"});
-                const declared = context.dataTypes.fromTsType(context.checker.getTypeOfSymbolAtLocation(parameter, call), call);
-                const inner = declared?.kind === "optional" ? declared.inner : declared;
-                const scalar = (type: DataType): boolean => type.kind === "string" || type.kind === "number" ||
+                if (index === 0)
+                    return lowerer.leafValue(`*${packet}.groups[0]`, {
+                        kind: "string",
+                    });
+                const declared = context.dataTypes.fromTsType(
+                    context.checker.getTypeOfSymbolAtLocation(parameter, call),
+                    call,
+                );
+                const inner =
+                    declared?.kind === "optional" ? declared.inner : declared;
+                const scalar = (type: DataType): boolean =>
+                    type.kind === "string" ||
+                    type.kind === "number" ||
                     (type.kind === "union" && type.members.every(scalar));
-                if (!inner || !scalar(inner)) return context.fail(call,
-                    "A runtime RegExp pattern requires concrete string/number callback parameter types.");
-                return lowerer.leafValue(`${packet}.argument<${context.dataTypes.cppType(inner)}>(${index})`, {kind: "optional", inner});
+                if (!inner || !scalar(inner))
+                    return context.fail(
+                        call,
+                        "A runtime RegExp pattern requires concrete string/number callback parameter types.",
+                    );
+                return lowerer.leafValue(
+                    `${packet}.argument<${context.dataTypes.cppType(inner)}>(${index})`,
+                    { kind: "optional", inner },
+                );
             });
         }
     } else {
-        const types: DataType[] = [{kind: "string"}, {kind: "number"}, {kind: "string"}];
-        supplied = types.map(type => lowerer.leafValue(context.allocateTemporaryCppName("replacement_arg"), type));
-        parameters = supplied.map(value => `[[maybe_unused]] ${context.dataTypes.cppType(value.dataType!)} ${value.cpp}`).join(", ");
+        const types: DataType[] = [
+            { kind: "string" },
+            { kind: "number" },
+            { kind: "string" },
+        ];
+        supplied = types.map((type) =>
+            lowerer.leafValue(
+                context.allocateTemporaryCppName("replacement_arg"),
+                type,
+            ),
+        );
+        parameters = supplied
+            .map(
+                (value) =>
+                    `[[maybe_unused]] ${context.dataTypes.cppType(value.dataType!)} ${value.cpp}`,
+            )
+            .join(", ");
     }
     context.emit(`const auto ${adapter} = [&](${parameters}) -> std::string {`);
     context.increaseIndent();
@@ -58,15 +106,37 @@ export function replacementCallback(
     context.enterRuntimeControlFlow();
     context.enterRuntimeIteration();
     try {
-        const packetOwner = pattern ? context.registerNativeBinding(packet) : undefined;
-        const values = supplied.map(value => ({...value,
-            nativeCaptures: [packetOwner ?? context.registerNativeBinding(value.cpp)]}));
-        const invoke = () => replacement.callbackDeclaration
-            ? context.compileCallbackWithValues(replacement.callbackDeclaration, values, call)
-            : context.fail(call, "String replacement requires a callable value.");
-        const result = stored ? lowerer.compileFunctionValueCall(stored, values, call)
-            : replacement.callbackRecordOwner ? context.withRecordScopes(replacement.callbackRecordOwner, invoke) : invoke();
-        context.emit(`return ${lowerer.compileKnownValueForSink(result, {kind: "string"}, call)};`);
+        const packetOwner = pattern
+            ? context.registerNativeBinding(packet)
+            : undefined;
+        const values = supplied.map((value) => ({
+            ...value,
+            nativeCaptures: [
+                packetOwner ?? context.registerNativeBinding(value.cpp),
+            ],
+        }));
+        const invoke = () =>
+            replacement.callbackDeclaration
+                ? context.compileCallbackWithValues(
+                      replacement.callbackDeclaration,
+                      values,
+                      call,
+                  )
+                : context.fail(
+                      call,
+                      "String replacement requires a callable value.",
+                  );
+        const result = stored
+            ? lowerer.compileFunctionValueCall(stored, values, call)
+            : replacement.callbackRecordOwner
+              ? context.withRecordScopes(
+                    replacement.callbackRecordOwner,
+                    invoke,
+                )
+              : invoke();
+        context.emit(
+            `return ${lowerer.compileKnownValueForSink(result, { kind: "string" }, call)};`,
+        );
     } finally {
         context.leaveRuntimeIteration();
         context.leaveRuntimeControlFlow();

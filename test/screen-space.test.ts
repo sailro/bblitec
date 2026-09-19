@@ -60,11 +60,17 @@ test("running the pinned factories records the documented pipeline configuration
     // The two producers bind the depth attachment through a depth-only
     // view; only the GI producer also samples the lit source colour.
     assert.deepEqual(
-        contact.producer.bindings.map((binding) => `${binding.name}:${binding.kind}:${binding.role ?? "-"}`),
+        contact.producer.bindings.map(
+            (binding) =>
+                `${binding.name}:${binding.kind}:${binding.role ?? "-"}`,
+        ),
         ["ssDepth:depth-texture:depth", "ssContact:uniform:-"],
     );
     assert.deepEqual(
-        gi.producer.bindings.map((binding) => `${binding.name}:${binding.kind}:${binding.role ?? "-"}`),
+        gi.producer.bindings.map(
+            (binding) =>
+                `${binding.name}:${binding.kind}:${binding.role ?? "-"}`,
+        ),
         [
             "ssGiDepth:depth-texture:depth",
             "ssGiColorSampler:sampler:-",
@@ -77,7 +83,9 @@ test("running the pinned factories records the documented pipeline configuration
     // composition against what the backends encode.
     for (const task of [contact, gi]) {
         assert.deepEqual(
-            task.resolve.bindings.map((binding) => binding.role ?? binding.kind),
+            task.resolve.bindings.map(
+                (binding) => binding.role ?? binding.kind,
+            ),
             ["sampler", "depth", "raw", "history", "uniform"],
         );
         assert.equal(task.producer.uniformBytes, 192);
@@ -163,26 +171,55 @@ test("the lowerer translates the temporal state machine and both uniform blocks 
         /sizeof\(ScreenSpaceFrameDecision::temporal_uniforms\) == 288u/,
     );
     // The reset matrix: camera motion is not an invalidation event.
-    assert.ok(source.includes("ev.enabled_transitioned_on) || ev.singular_inverse)"));
+    assert.ok(
+        source.includes("ev.enabled_transitioned_on) || ev.singular_inverse)"),
+    );
     assert.ok(!source.includes("ev.camera_moved ||"));
     // Both frame functions: the disabled transition clears once, the
     // singular inverse clears too, and each packs its block from the
     // clamped live settings.
-    for (const frame of ["contact_shadows_frame", "global_illumination_frame"]) {
+    for (const frame of [
+        "contact_shadows_frame",
+        "global_illumination_frame",
+    ]) {
         assert.ok(source.includes(`ScreenSpaceFrameDecision ${frame}(`));
     }
     assert.match(
         source,
         /if \(state\.last_enabled\) \{\s*decision\.clear_identity = true;/,
     );
-    assert.ok(source.includes("bbl::js::or_number(bbl::js::hypot_js({light_direction.x, light_direction.y, light_direction.z}), 1.0)"));
-    assert.ok(source.includes("decision.producer_uniforms[static_cast<std::size_t>(47.0)] = static_cast<float>(phase);"));
-    assert.ok(source.includes("decision.producer_uniforms[static_cast<std::size_t>(43.0)] = static_cast<float>(rayCount);"));
+    assert.ok(
+        source.includes(
+            "bbl::js::or_number(bbl::js::hypot_js({light_direction.x, light_direction.y, light_direction.z}), 1.0)",
+        ),
+    );
+    assert.ok(
+        source.includes(
+            "decision.producer_uniforms[static_cast<std::size_t>(47.0)] = static_cast<float>(phase);",
+        ),
+    );
+    assert.ok(
+        source.includes(
+            "decision.producer_uniforms[static_cast<std::size_t>(43.0)] = static_cast<float>(rayCount);",
+        ),
+    );
     // The temporal block: previous matrices saved after the resolve, and
     // the GI task's absent spatial inputs taking the pin's own defaults.
-    assert.ok(source.includes("pack_mat4_into_f32(decision.temporal_uniforms.data(), state.prev_view_proj, 32.0);"));
-    assert.ok(source.includes("pack_mat4_into_f32(state.prev_view_proj.data(), viewProj, 0.0);"));
-    assert.ok(source.includes("decision.temporal_uniforms[static_cast<std::size_t>(69.0)] = static_cast<float>(0.0);"));
+    assert.ok(
+        source.includes(
+            "pack_mat4_into_f32(decision.temporal_uniforms.data(), state.prev_view_proj, 32.0);",
+        ),
+    );
+    assert.ok(
+        source.includes(
+            "pack_mat4_into_f32(state.prev_view_proj.data(), viewProj, 0.0);",
+        ),
+    );
+    assert.ok(
+        source.includes(
+            "decision.temporal_uniforms[static_cast<std::size_t>(69.0)] = static_cast<float>(0.0);",
+        ),
+    );
     // The composite writer reads the task's live fields through the pass
     // parameters in the writer's own reading order, and the frame function
     // marks the block dirty only when a slot moved.
@@ -205,6 +242,14 @@ test("the stage table carries each deployed stage's entry points, block and bind
         { stem: "screenspace-0", ...contact.producer },
     ]);
     const header = module.header + module.definitions;
-    assert.ok(header.includes('ScreenSpaceShaderInfo{"screenspace-0", "ssContactVertex", "ssContactFragment", 192u, TextureFormatClass::r8_unorm, screen_space_bindings_0.data(), screen_space_bindings_0.size()}'));
-    assert.ok(header.includes('ScreenSpaceStageBinding{0u, "ssDepth", ScreenSpaceBindingKind::depth_texture, ScreenSpaceTextureRole::depth}'));
+    assert.ok(
+        header.includes(
+            'ScreenSpaceShaderInfo{"screenspace-0", "ssContactVertex", "ssContactFragment", 192u, TextureFormatClass::r8_unorm, screen_space_bindings_0.data(), screen_space_bindings_0.size()}',
+        ),
+    );
+    assert.ok(
+        header.includes(
+            'ScreenSpaceStageBinding{0u, "ssDepth", ScreenSpaceBindingKind::depth_texture, ScreenSpaceTextureRole::depth}',
+        ),
+    );
 });

@@ -20,29 +20,19 @@ function compileLoads(loads: readonly string[]) {
 }
 
 test("preserves contiguous repeated glTF container order", () => {
-    const result = compileLoads([
-        "a.glb",
-        "a.glb",
-        "b.glb",
-        "b.glb",
-    ]);
+    const result = compileLoads(["a.glb", "a.glb", "b.glb", "b.glb"]);
 
     assert.deepEqual(
-        result.manifest.assets.map(
-            ({ source, containerCount }) => ({
-                source,
-                containerCount,
-            }),
-        ),
+        result.manifest.assets.map(({ source, containerCount }) => ({
+            source,
+            containerCount,
+        })),
         [
             { source: "a.glb", containerCount: 2 },
             { source: "b.glb", containerCount: 2 },
         ],
     );
-    assert.equal(
-        result.cpp.match(/bbl::load_gltf\(/g)?.length,
-        4,
-    );
+    assert.equal(result.cpp.match(/bbl::load_gltf\(/g)?.length, 4);
 });
 
 test("refuses an interleaved repeated glTF source", () => {

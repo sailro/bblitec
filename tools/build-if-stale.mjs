@@ -88,9 +88,7 @@ function computeStamp() {
     const lines = [
         `v2 native=${nativeCompilerVersion} api=${compilerApiVersion}`,
     ];
-    files.sort((left, right) =>
-        left.relative < right.relative ? -1 : 1,
-    );
+    files.sort((left, right) => (left.relative < right.relative ? -1 : 1));
     for (const file of files) {
         let stats;
         try {
@@ -100,20 +98,25 @@ function computeStamp() {
         }
         lines.push(`${file.relative}\t${stats.size}\t${stats.mtimeMs}`);
     }
-    return createHash("sha256")
-        .update(lines.join("\n"))
-        .digest("hex");
+    return createHash("sha256").update(lines.join("\n")).digest("hex");
 }
 
 function canReuse(stamp) {
     if (stamp === undefined) return false;
     try {
         const recorded = JSON.parse(readFileSync(stampPath, "utf8"));
-        return recorded.version === 1 && recorded.input === stamp &&
-            Array.isArray(recorded.outputs) && recorded.outputs.length > 0 &&
-            recorded.outputs.every((relative) =>
-                typeof relative === "string" && relative !== "" &&
-                statSync(join(root, "dist", relative)).isFile());
+        return (
+            recorded.version === 1 &&
+            recorded.input === stamp &&
+            Array.isArray(recorded.outputs) &&
+            recorded.outputs.length > 0 &&
+            recorded.outputs.every(
+                (relative) =>
+                    typeof relative === "string" &&
+                    relative !== "" &&
+                    statSync(join(root, "dist", relative)).isFile(),
+            )
+        );
     } catch {
         return false;
     }
@@ -135,20 +138,17 @@ if (canReuse(stamp)) {
 }
 
 run(join(root, "tools", "clean-dist.mjs"), []);
-run(
-    join(
-        root,
-        "node_modules",
-        "@typescript",
-        "native",
-        "bin",
-        "tsc",
-    ),
-    ["-p", join(root, "tsconfig.json")],
-);
+run(join(root, "node_modules", "@typescript", "native", "bin", "tsc"), [
+    "-p",
+    join(root, "tsconfig.json"),
+]);
 if (stamp !== undefined) {
     mkdirSync(join(root, "dist"), { recursive: true });
     const outputs = listFiles(join(root, "dist"), "", [])
-        .map(({ relative }) => relative).sort();
-    writeFileSync(stampPath, JSON.stringify({ version: 1, input: stamp, outputs }) + "\n");
+        .map(({ relative }) => relative)
+        .sort();
+    writeFileSync(
+        stampPath,
+        JSON.stringify({ version: 1, input: stamp, outputs }) + "\n",
+    );
 }

@@ -4,7 +4,8 @@ import { compileSource } from "../src/compiler.js";
 import { runRmlUiFixture } from "./native-fixture.js";
 
 test("wrapping declarations and legacy word-wrap writes reach the same native properties", () => {
-    const compile = (value: string) => compileSource(`
+    const compile = (value: string) =>
+        compileSource(`
         import { createEngine } from "@babylonjs/lite";
         await createEngine({});
         const panel = document.createElement("div");
@@ -14,10 +15,16 @@ test("wrapping declarations and legacy word-wrap writes reach the same native pr
     `);
     const result = compile("anywhere");
     assert.match(result.cpp, /overflow-wrap:break-word;word-break:normal/);
-    assert.match(result.cpp, /ui_set_style_property[^\n]+"overflow-wrap", "anywhere"/);
-    assert.throws(() => compile("break-all"), /only normal, break-word and anywhere/);
+    assert.match(
+        result.cpp,
+        /ui_set_style_property[^\n]+"overflow-wrap", "anywhere"/,
+    );
+    assert.throws(
+        () => compile("break-all"),
+        /only normal, break-word and anywhere/,
+    );
 });
 
-test("retained word wrapping inherits, resets, respects white-space and responds to width changes", t => {
+test("retained word wrapping inherits, resets, respects white-space and responds to width changes", (t) => {
     runRmlUiFixture(t, "ui-wrap");
 });

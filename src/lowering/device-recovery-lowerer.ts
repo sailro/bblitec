@@ -4,7 +4,12 @@ import { assertDeviceRecoveryContracts } from "./device-recovery-contract.js";
 export function lowerDeviceRecovery(context: LoweringContext): LoweredSource {
     const modulePath = "src/engine/device-lost-recovery.ts";
     assertDeviceRecoveryContracts(context);
-    return { modulePath, symbolName: "_enableDeviceLostRecovery,arm,markNextDeviceLossForRecovery", header: "", source: `
+    return {
+        modulePath,
+        symbolName:
+            "_enableDeviceLostRecovery,arm,markNextDeviceLossForRecovery",
+        header: "",
+        source: `
 // ${context.provenance(modulePath, "_enableDeviceLostRecovery, arm")}
 // Native device recreation replays generated upload/composition products over retained CPU owners.
 #include <bblite/runtime.hpp>
@@ -118,5 +123,6 @@ void set_global_callback(Engine& engine, std::string key, std::function<void()> 
     recovery_state(engine).globals[std::move(key)] = std::move(callback);
 }
 } // namespace bbl
-` };
+`,
+    };
 }

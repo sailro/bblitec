@@ -3,25 +3,41 @@ import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import test from "node:test";
-import { remapPinnedVariantRegisters, shaderStageSlots } from "../src/shader-bindings.js";
-import { cppFunction, cppRecord, cppSection, optionalNativeFixtureTools, runNativeFixtureCompiler } from "./native-fixture.js";
+import {
+    remapPinnedVariantRegisters,
+    shaderStageSlots,
+} from "../src/shader-bindings.js";
+import {
+    cppFunction,
+    cppRecord,
+    cppSection,
+    optionalNativeFixtureTools,
+    runNativeFixtureCompiler,
+} from "./native-fixture.js";
 
-test("SDL integer texture allocations, shader counts and draw bindings preserve uint payloads", t => {
+test("SDL integer texture allocations, shader counts and draw bindings preserve uint payloads", (t) => {
     const tools = optionalNativeFixtureTools(false);
     const sdlInclude = resolve("artifacts/tools/sdl-min/include");
     if (!tools || !existsSync(join(sdlInclude, "SDL3/SDL_gpu.h"))) {
-        t.skip("A native fixture compiler and pinned SDL headers are required.");
+        t.skip(
+            "A native fixture compiler and pinned SDL headers are required.",
+        );
         return;
     }
     const shared = readFileSync("native/src/pal_sdl_gpu_shared.hpp", "utf8");
     const splat = readFileSync("native/src/pal_sdl_gpu_splat.hpp", "utf8");
-    const clustered = readFileSync("native/src/pal_sdl_gpu_clustered.hpp", "utf8");
+    const clustered = readFileSync(
+        "native/src/pal_sdl_gpu_clustered.hpp",
+        "utf8",
+    );
     const hlsl = `ByteAddressBuffer morph : register(t0, space1);
 Texture2D<uint4> cells : register(t2, space1);
 Texture2D<float4> color : register(t6, space1);
 Texture2D<uint> indices : register(t7, space1);`;
-    const sidecar = shaderStageSlots(remapPinnedVariantRegisters(hlsl, false))
-        .map(slot => `${slot.kind}${slot.index} ${slot.name}`).join("\n") + "\n";
+    const sidecar =
+        shaderStageSlots(remapPinnedVariantRegisters(hlsl, false))
+            .map((slot) => `${slot.kind}${slot.index} ${slot.name}`)
+            .join("\n") + "\n";
     const output = resolve("artifacts/test-sdl-integer-textures");
     mkdirSync(output, { recursive: true });
     const source = `#include "pal_sdl_gpu_resources.hpp"
@@ -135,8 +151,20 @@ int main() {
     assert(allocations.empty());
 }
 `;
-    const path = join(output, "check.cpp"), executable = join(output, "check.exe");
+    const path = join(output, "check.cpp"),
+        executable = join(output, "check.exe");
     writeFileSync(path, source);
-    runNativeFixtureCompiler(tools, ["/nologo", "/std:c++20", "/EHsc", "/W4", "/WX", `/I${resolve("native/src")}`, `/I${sdlInclude}`, path, `/Fe:${executable}`, `/Fo:${join(output, "check.obj")}`]);
+    runNativeFixtureCompiler(tools, [
+        "/nologo",
+        "/std:c++20",
+        "/EHsc",
+        "/W4",
+        "/WX",
+        `/I${resolve("native/src")}`,
+        `/I${sdlInclude}`,
+        path,
+        `/Fe:${executable}`,
+        `/Fo:${join(output, "check.obj")}`,
+    ]);
     assert.equal(execFileSync(executable, { encoding: "utf8" }), "");
 });

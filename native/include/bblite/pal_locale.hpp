@@ -20,11 +20,15 @@ struct CollationOptions {
 
 [[nodiscard]] std::string normalize_string(const std::string& value, const std::string& form);
 [[nodiscard]] double compare_strings(const std::string& left, const std::string& right,
-    const std::vector<std::string>& locales, const CollationOptions& options);
+                                     const std::vector<std::string>& locales,
+                                     const CollationOptions& options);
 
 [[nodiscard]] inline std::vector<std::string> collation_locales(std::nullopt_t) { return {}; }
-[[nodiscard]] inline std::vector<std::string> collation_locales(const std::string& locale) { return {locale}; }
-[[nodiscard]] inline std::vector<std::string> collation_locales(const js::Array<std::string>& locales) {
+[[nodiscard]] inline std::vector<std::string> collation_locales(const std::string& locale) {
+    return {locale};
+}
+[[nodiscard]] inline std::vector<std::string>
+collation_locales(const js::Array<std::string>& locales) {
     return {locales.begin(), locales.end()};
 }
 template <typename T>
@@ -32,4 +36,4 @@ template <typename T>
     return locales ? collation_locales(*locales) : std::vector<std::string>{};
 }
 
-}
+} // namespace bbl::pal
