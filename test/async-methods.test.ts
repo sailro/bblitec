@@ -52,6 +52,19 @@ test("async methods preserve activation timing, receivers and conditional evalua
         class Counter{value=0;async add(left:number,right:number){await Promise.resolve();this.value+=left+right;return this.value;}}
         const counter=new Counter();let input=3;const result=counter.add(input,input++);input=100;
         if(await result!==6||counter.value!==6)throw new Error("class argument snapshots");
+        class StoredCounter {
+            constructor(public value:number) {}
+            read():number {return this.value;}
+        }
+        const storedCounters:StoredCounter[]=[new StoredCounter(7)];
+        async function readStored():Promise<number> {
+            const value=storedCounters[0]!.read();
+            await Promise.resolve();
+            return value;
+        }
+        const earlier=readStored(),later=readStored();
+        if(await earlier!==7||await later!==7)
+            throw new Error("overlapping computed receiver lifetimes");
         globalThis.close();
     })();`;
     let closed = false;
@@ -96,7 +109,11 @@ test("async methods preserve activation timing, receivers and conditional evalua
         `/Fe:${exe}`,
         cpp,
     ]);
-    const execution = spawnSync(exe, { encoding: "utf8", timeout: 10000 });
+    const execution = spawnSync(exe, {
+        encoding: "utf8",
+        timeout: 10000,
+        windowsHide: true,
+    });
     assert.equal(execution.stdout, "");
     assert.equal(execution.stderr, "");
     assert.ifError(execution.error);

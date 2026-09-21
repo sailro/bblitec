@@ -165,6 +165,31 @@ void typed_closure_replaced_capture_cycles() {
     assert(managed_node_count() == baseline);
 }
 
+void retained_argument_lifetimes() {
+    const auto baseline = managed_node_count();
+    auto source = make_ref<Link>();
+    const auto identity = source.weak_identity();
+    const auto observe = [](LinkRef argument) {
+        assert(argument);
+        assert(collect_cycles() == 0);
+    };
+    for (int iteration = 0; iteration < 1000; ++iteration) {
+        {
+            const auto snapshot = source;
+            observe(snapshot);
+        }
+        observe(source);
+        assert(!identity.expired() && Link::live == 1);
+        auto transient = make_ref<Link>();
+        transient.reset();
+        auto next = make_gc_shared<int>(iteration);
+        assert(*next == iteration && Link::live == 1);
+    }
+    source.reset();
+    assert(identity.expired() && Link::live == 0);
+    assert(managed_node_count() == baseline);
+}
+
 int main() {
     const auto baseline = managed_node_count();
     const LinkRef absent;
@@ -184,6 +209,7 @@ int main() {
     typed_closure_identity();
     typed_closure_call_contracts();
     typed_closure_replaced_capture_cycles();
+    retained_argument_lifetimes();
     assert(managed_node_count() == baseline);
     {
         auto plain = make_ref<Link>();

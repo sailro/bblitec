@@ -224,6 +224,19 @@ test("static string specialization evaluates argument effects once and preserves
         function mutateFlag(value: boolean): string { value = !value; return \`\${value}\`; }
         if (mutateText("ready") !== "ready!" || mutateFlag(true) !== "false")
             throw new Error("mutable primitive template parameters");
+        let text = "before";
+        function replaceText():string { text = "after"; return "/"; }
+        const textOrder = \`\${text}\${replaceText()}\${text}\`;
+        if (textOrder !== "before/after") throw new Error("template text snapshot before mutation");
+        function stripDigits(value: string): string { return value.replace(/\\d+$/, ""); }
+        if (stripDigits(text + "12") !== "after") throw new Error("pure replacement");
+        let replaced = "aba";
+        const callbackResult = replaced.replaceAll("a", () => { replaced = "changed"; return "x"; });
+        if (callbackResult !== "xbx" || replaced !== "changed") throw new Error("replacement callback snapshot");
+        replaced = "aba";
+        function chooseSearch(): string { replaced = "after"; return "a"; }
+        const searchResult = replaced.replace(chooseSearch(), "x");
+        if (searchResult !== "xba" || replaced !== "after") throw new Error("replacement argument snapshot");
         }
         main();
     `);
@@ -246,4 +259,24 @@ test("static string specialization evaluates argument effects once and preserves
         source,
     ]);
     execFileSync(executable, { stdio: "pipe" });
+});
+
+test("pure replacement arguments do not copy a stable named string receiver", () => {
+    const result = compileSource(`
+        function stripDigits(value: string): string { return value.replace(/\\d+$/, ""); }
+        const source = String(Math.random());
+        const result = stripDigits(source);
+        if (result.length > source.length) throw new Error("replacement length");
+    `);
+    assert.match(result.cpp, /\.replace\([^;\n]+, ""\)/);
+    assert.doesNotMatch(result.cpp, /v_bblite_replace_source_/);
+});
+
+test("pure string interpolation borrows its values without intermediate string copies", () => {
+    const result = compileSource(`
+        function label(left:string, right:string):string { return \`\${left}:\${right}\`; }
+        const labels: ((left:string,right:string)=>string)[] = [label];
+        if (labels[0]!("left","right") !== "left:right") throw new Error("template output");
+    `);
+    assert.doesNotMatch(result.cpp, /std::string v_bblite_template_part_/);
 });

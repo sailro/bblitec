@@ -282,7 +282,9 @@ test("projection intrinsic keeps f32 lanes and widens ArrayLike calls once", () 
     assert.ok(projectionStorage);
     assert.match(
         result.cpp,
-        new RegExp(`bbl::js::F32Array v_vp = ${projectionStorage[1]};`),
+        new RegExp(
+            `bbl::js::F32Array v_vp = bbl::js::snapshot_value\\(${projectionStorage[1]}\\);`,
+        ),
     );
     assert.match(
         result.cpp,

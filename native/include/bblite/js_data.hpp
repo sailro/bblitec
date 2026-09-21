@@ -45,6 +45,15 @@
 
 namespace bbl::js {
 
+/** Transfer a compiler-owned temporary into its source binding. */
+template <typename T> [[nodiscard]] T take_temporary(T& value) {
+    static_assert(!std::is_const_v<T>);
+    if constexpr (std::is_trivially_copyable_v<T>)
+        return value;
+    else
+        return std::move(value);
+}
+
 // Apple's system libc++ only provides floating to_chars from macOS 13.3.
 #if defined(__APPLE__)
 namespace number_chars = boost::charconv;
@@ -407,34 +416,101 @@ template <typename Values> [[nodiscard]] Values retain_typed_array_owner(const V
  * `make_shared` fuses them. WeakMap keys allocate a lifetime token on demand.
  */
 template <typename T> class Ref {
+    struct Block;
+
 public:
+    // Each block keeps its unique storage owner until its last counted reference.
+    // Receiver scopes carry that owner temporarily and count as external GC roots.
+    class LifetimeOwner {
+    public:
+        LifetimeOwner(const LifetimeOwner&) = delete;
+        LifetimeOwner& operator=(const LifetimeOwner&) = delete;
+        LifetimeOwner(LifetimeOwner&&) = delete;
+        LifetimeOwner& operator=(LifetimeOwner&&) = delete;
+        ~LifetimeOwner() {
+            if (!block_)
+                return;
+            if (block_->active_owner != this) {
+                // Suspended activations can release receiver scopes out of order.
+                auto* successor = block_->active_owner;
+                while (successor && successor->previous_ != this)
+                    successor = successor->previous_;
+                if (!successor || owner_)
+                    std::terminate();
+                successor->previous_ = previous_;
+                block_->release();
+                return;
+            }
+            if (!owner_ || owner_.get() != block_)
+                std::terminate();
+            block_->release();
+            block_->active_owner = previous_;
+            if (previous_)
+                previous_->owner_ = std::move(owner_);
+            else if (block_->count != 0)
+                block_->lifetime = std::move(owner_);
+        }
+
+    private:
+        friend class Ref;
+        explicit LifetimeOwner(Block* block)
+            : block_(block), previous_(block ? block->active_owner : nullptr) {
+            if (!block_)
+                return;
+            block_->retain();
+            owner_ = previous_ ? std::move(previous_->owner_) : std::move(block_->lifetime);
+            if (!owner_ || owner_.get() != block_)
+                std::terminate();
+            block_->active_owner = this;
+        }
+        Block* block_ = nullptr;
+        LifetimeOwner* previous_ = nullptr;
+        std::unique_ptr<Block> owner_;
+    };
+
     using element_type = T;
 
     Ref() = default;
     Ref(const Ref& other) : block_(other.block_) {
         if (block_)
-            ++block_->count;
+            block_->retain();
     }
     Ref(Ref&& other) noexcept : block_(other.block_) { other.block_ = nullptr; }
     Ref& operator=(const Ref& other) {
-        Ref copy(other);
-        swap(copy);
+        auto* replacement = other.block_;
+        if (replacement)
+            replacement->retain();
+        auto* released = block_;
+        block_ = replacement;
+        if (released)
+            released->release();
         return *this;
     }
     Ref& operator=(Ref&& other) noexcept {
-        Ref moved(std::move(other));
-        swap(moved);
+        if (this == &other)
+            return *this;
+        auto* released = block_;
+        block_ = other.block_;
+        other.block_ = nullptr;
+        if (released)
+            released->release();
         return *this;
     }
     ~Ref() { reset(); }
 
-    void swap(Ref& other) noexcept { std::swap(block_, other.block_); }
-    void reset() {
-        auto* released = std::exchange(block_, nullptr);
-        if (released && --released->count == 0)
-            delete released;
+    void swap(Ref& other) noexcept {
+        auto* previous = block_;
+        block_ = other.block_;
+        other.block_ = previous;
     }
-    [[nodiscard]] T* get() const { return block_ ? std::addressof(*block_->value) : nullptr; }
+    void reset() {
+        auto* released = block_;
+        block_ = nullptr;
+        if (released)
+            released->release();
+    }
+    [[nodiscard]] LifetimeOwner lifetime_owner() const { return LifetimeOwner(block_); }
+    [[nodiscard]] T* get() const { return block_ ? std::addressof(block_->value) : nullptr; }
     [[nodiscard]] T& operator*() const { return require_value(); }
     [[nodiscard]] T* operator->() const { return std::addressof(require_value()); }
     explicit operator bool() const { return block_ != nullptr; }
@@ -453,33 +529,55 @@ public:
 
 private:
     T& require_value() const {
-        if (!block_ || !block_->value)
+        if (!block_ || !block_->payload_alive)
             throw std::runtime_error("Cannot access a nullish object.");
-        return *block_->value;
+        return block_->value;
     }
 
     struct Block final : gc::Node {
         template <typename... Args>
-        explicit Block(Args&&... args) : value(std::in_place, std::forward<Args>(args)...) {}
-        ~Block() override { clear(); }
+        explicit Block(Args&&... args) : value(std::forward<Args>(args)...) {
+            this->payload_alive = true;
+        }
+        ~Block() override {
+            this->detach();
+            clear();
+        }
         std::size_t count = 1;
-        std::optional<T> value;
+        std::unique_ptr<Block> lifetime;
+        LifetimeOwner* active_owner = nullptr;
+        union {
+            T value;
+        };
         std::shared_ptr<const void> identity;
         void trace(const TraceVisitor& visitor) const override {
-            if (value)
-                visitor(*value);
+            if (this->payload_alive)
+                visitor(value);
         }
         void clear() noexcept override {
-            this->payload_alive = false;
-            identity.reset();
-            value.reset();
+            if (std::exchange(this->payload_alive, false)) {
+                identity.reset();
+                std::destroy_at(std::addressof(value));
+            }
         }
         std::size_t owners() const noexcept override { return count; }
-        void pin() noexcept override { ++count; }
-        void unpin() noexcept override {
-            if (--count == 0)
-                delete this;
+        void retain() noexcept {
+            if (count == 0 || count == std::numeric_limits<std::size_t>::max())
+                std::terminate();
+            ++count;
         }
+        void release() noexcept {
+            if (count == 0)
+                std::terminate();
+            --count;
+            if (count == 0) {
+                auto owner = std::move(lifetime);
+                if (!owner && !active_owner)
+                    std::terminate();
+            }
+        }
+        void pin() noexcept override { retain(); }
+        void unpin() noexcept override { release(); }
     };
 
     template <typename U, typename... Args> friend Ref<U> make_ref(Args&&... args);
@@ -490,7 +588,11 @@ private:
 };
 
 template <typename T, typename... Args> [[nodiscard]] Ref<T> make_ref(Args&&... args) {
-    return Ref<T>(new typename Ref<T>::Block(std::forward<Args>(args)...));
+    auto block = std::make_unique<typename Ref<T>::Block>(std::forward<Args>(args)...);
+    block->attach();
+    auto* value = block.get();
+    value->lifetime = std::move(block);
+    return Ref<T>(value);
 }
 
 /**
@@ -986,6 +1088,22 @@ private:
     T* reference_ = nullptr;
     std::optional<T> owned_;
 };
+
+template <typename T> struct IsNullable : std::false_type {};
+template <typename T> struct IsNullable<Nullable<T>> : std::true_type {};
+
+/**
+ * Own the JavaScript value selected by a borrowed native expression.
+ * Nullable snapshots own the selected value, not a borrowed Map slot.
+ */
+template <typename T>
+    requires(!IsNullable<std::remove_cvref_t<T>>::value)
+[[nodiscard]] std::remove_cvref_t<T> snapshot_value(T&& value) {
+    return std::forward<T>(value);
+}
+template <typename T> [[nodiscard]] Nullable<T> snapshot_value(const Nullable<T>& value) {
+    return value.has_value() ? Nullable<T>{*value} : Nullable<T>{};
+}
 
 [[nodiscard]] inline std::u16string string_code_units(const std::string& value);
 [[nodiscard]] inline std::string string_from_code_units(const std::u16string& units);
@@ -1529,10 +1647,10 @@ protected:
         return entry;
     }
     /** Append a not-yet-present entry and index it under `key`. */
-    void insert(const KeyT& key, const EntryT& entry) {
-        storage_->entries.push_back(Slot{entry});
+    template <typename Entry> void insert(KeyT key, Entry&& entry) {
+        storage_->entries.push_back(Slot{std::forward<Entry>(entry)});
         storage_->invalidate_lookup();
-        storage_->index.emplace(key, std::prev(storage_->entries.end()));
+        storage_->index.emplace(std::move(key), std::prev(storage_->entries.end()));
     }
 
     std::shared_ptr<Storage> storage_ = make_gc_shared<Storage>();
@@ -1559,10 +1677,16 @@ public:
         return entry == storage_->index.end() ? MapGetResult<V>::missing()
                                               : MapGetResult<V>::found(entry->second->value.second);
     }
+    [[nodiscard]] auto get_owned(const K& key) const { return snapshot_value(get(key)); }
     template <typename OptionalKey>
         requires std::is_same_v<OptionalKey, K>
     [[nodiscard]] typename MapGetResult<V>::Type get(const Nullable<OptionalKey>& key) const {
         return key.has_value() ? get(*key) : MapGetResult<V>::missing();
+    }
+    template <typename OptionalKey>
+        requires std::is_same_v<OptionalKey, K>
+    [[nodiscard]] auto get_owned(const Nullable<OptionalKey>& key) const {
+        return snapshot_value(get(key));
     }
     [[nodiscard]] V& at(const K& key) {
         const auto entry = find(key);
@@ -1578,12 +1702,17 @@ public:
         }
         return entry->second->value.second;
     }
-    Map& set(const K& key, const V& value) {
+    template <typename Value = V>
+        requires std::is_convertible_v<Value&&, V>
+    Map& set(const K& key, Value&& value) {
         const auto entry = find(key, false);
         if (entry == storage_->index.end()) {
-            insert(key, Entry{key, value});
+            // The value may alias the key; retain the index key before moving it.
+            K index_key = key;
+            insert(std::move(index_key), Entry{key, std::forward<Value>(value)});
         } else {
-            entry->second->value.second = value;
+            V replacement = std::forward<Value>(value);
+            entry->second->value.second = std::move(replacement);
         }
         return *this;
     }
@@ -1666,7 +1795,7 @@ using Date = Ref<double>;
 struct StorageTag {};
 using Storage = Ref<StorageTag>;
 [[nodiscard]] inline Storage local_storage_object() {
-    static const auto instance = make_ref<StorageTag>();
+    static thread_local const auto instance = make_ref<StorageTag>();
     return instance;
 }
 using DateTimeFormat = Ref<std::string>;

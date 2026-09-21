@@ -70,7 +70,7 @@ std::size_t gltf_checked_index(double value) {
 }
 const JsonArray& gltf_array_or_empty(const JsonObject& object, std::string_view key) {
     static const JsonArray empty;
-    const auto* value = optional(object, std::string(key));
+    const auto* value = optional(object, key);
     return value && !value->is_null() ? value->as_array() : empty;
 }
 // ${context.provenance(module, "getTextureImageIndex")}

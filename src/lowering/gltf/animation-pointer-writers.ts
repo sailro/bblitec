@@ -179,7 +179,7 @@ export function lowerGltfAnimationPointerWriters(context: LoweringContext): {
                             const light = lowerer.expression(
                                 call.expression.expression,
                             );
-                            return `[&]() { const auto pointer_light_owner = ${light}; return pointer_light_owner.get("_bumpLightVersion").nullish() ? GltfPbrValue{} : __pointerEffects.bump_light_version(pointer_light_owner); }()`;
+                            return `[&]() { const auto& pointer_light_owner = ${light}; return pointer_light_owner.get("_bumpLightVersion").nullish() ? GltfPbrValue{} : __pointerEffects.bump_light_version(pointer_light_owner); }()`;
                         }
                         if (
                             ts.isIdentifier(call.expression) &&

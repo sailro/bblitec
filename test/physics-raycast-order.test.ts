@@ -140,6 +140,45 @@ test("physics ray arguments compile with side effects and retained point objects
     );
 });
 
+test("temporary ray-point formals own their result without duplicate Ref snapshots", () => {
+    const result = compileSource(`
+        import HavokPhysics from "@babylonjs/havok";
+        import {
+            createEngine,
+            createHavokWorld,
+            createSceneContext,
+            physicsRaycast,
+            type Vec3,
+        } from "@babylonjs/lite";
+
+        const engine = await createEngine({});
+        const scene = createSceneContext(engine);
+        const world = createHavokWorld(scene, await HavokPhysics());
+        const points: Vec3[] = [
+            { x: 0, y: 1, z: 0 },
+            { x: 0, y: -1, z: 0 },
+        ];
+        const origin = points[0]!;
+        function target(): Vec3 {
+            return { x: 0, y: -1, z: 0 };
+        }
+        function cast(point: Vec3): boolean {
+            return physicsRaycast(world, origin, point).hasHit;
+        }
+        const hit = cast(target());
+    `);
+
+    const parameter = result.cpp.match(/auto&& (v_fn\d+_point) = [^;]+;/);
+    assert.ok(parameter);
+    assert.match(
+        result.cpp,
+        new RegExp(
+            `bbl::Vec3d\\{${parameter[1]}->x, ${parameter[1]}->y, ${parameter[1]}->z\\}`,
+        ),
+    );
+    assert.doesNotMatch(result.cpp, /v_bblite_ray_point_owner_/);
+});
+
 test("physics ray options refuse unmaterialized aliases instead of replaying dynamic initializers", () => {
     const query =
         "const query: { membership: number; shouldHitTriggers: boolean; collideWith: number }";

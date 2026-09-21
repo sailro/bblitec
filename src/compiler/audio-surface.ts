@@ -49,6 +49,7 @@ interface AudioCallContext
             | "expectKind"
             | "expectArgumentCount"
             | "allocateTemporaryCppName"
+            | "registerNativeTemporary"
             | "cppString"
             | "registerAsset"
             | "dataLowerer"
@@ -448,9 +449,10 @@ export function compileAudioMethodCall(
         }
         const node = context.allocateTemporaryCppName("audio_node");
         context.emit(
-            `const bbl::pal::AudioNodeHandle ${node} = ` +
+            `bbl::pal::AudioNodeHandle ${node} = ` +
                 `bbl::pal::${factory.factory}(${receiver.cpp});`,
         );
+        context.registerNativeTemporary(node);
         return {
             kind: "audio-node",
             cpp: node,

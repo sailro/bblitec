@@ -39,8 +39,7 @@ bool MediaQueryList::matches() const {
 }
 
 void MediaQueryList::add_change_listener(js::Callback<void()> callback) {
-    const auto identity = callback.identity();
-    listeners_.add(identity, std::move(callback));
+    listeners_.add(std::move(callback));
 }
 
 void MediaQueryList::deliver() {

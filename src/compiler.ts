@@ -872,6 +872,10 @@ class Compiler implements LoweringServices {
         string,
         NativeCaptureBinding
     >();
+    private readonly nativeTemporaries =
+        new EmissionWeakSet<NativeCaptureBinding>();
+    private readonly nativeConstBindings =
+        new EmissionWeakSet<NativeCaptureBinding>();
     private readonly nativeStoredValues = new EmissionWeakSet<Value>();
     private readonly nativeDependencyStack: Set<NativeCaptureBinding>[] =
         emissionArray([]);
@@ -3191,6 +3195,7 @@ class Compiler implements LoweringServices {
             declaration,
             cppName,
         );
+        const initializerBoundary = this.nativeBindingCheckpoint();
         let value = this.compileValue(declaration.initializer);
         if (
             value.kind === "number" &&
@@ -3255,8 +3260,10 @@ class Compiler implements LoweringServices {
             // empty when nothing matched, and copying the bare handle would
             // hand a later guard an indeterminate one -- the pin's
             // `undefined` -- as present.
-            const initializerCpp =
-                value.optionalStorageCpp ?? this.optionalResourceCpp(value);
+            const initializerCpp = this.takeNativeTemporary(
+                value.optionalStorageCpp ?? this.optionalResourceCpp(value),
+                initializerBoundary,
+            );
             this.emit(
                 sharedClosureStorage
                     ? {
@@ -3418,6 +3425,11 @@ class Compiler implements LoweringServices {
                 narrowed.dataType.kind === "dataview" ||
                 narrowed.dataType.kind === "bufferview" ||
                 narrowed.dataType.kind === "numberindex" ||
+                narrowed.dataType.kind === "json" ||
+                narrowed.dataType.kind === "optional" ||
+                narrowed.dataType.kind === "union" ||
+                narrowed.dataType.kind === "iterator" ||
+                narrowed.dataType.kind === "enummap" ||
                 isTypedArrayType(narrowed.dataType);
             // These copies own their references; another wrapper's resize or
             // rebind cannot invalidate them like an interior C++ reference.
@@ -3432,6 +3444,9 @@ class Compiler implements LoweringServices {
             const referenceStruct =
                 narrowed.dataType.kind === "struct" &&
                 this.dataTypes.isReferenceStruct(narrowed.dataType.name);
+            const stableOwnerAlias =
+                (wrapperCopiesIdentity || referenceStruct) &&
+                this.borrowsConstBinding(declaration, narrowed);
             if (optionalFoundCpp && !referenceStruct) {
                 // A JavaScript local captures whether the element existed
                 // when its initializer ran. Keep that snapshot separate
@@ -3452,15 +3467,35 @@ class Compiler implements LoweringServices {
                 sharedClosureStorage &&
                 this.identifierIsRebound(declaration.name);
             const boundCpp = sharedDataBinding ? `(*${cppName})` : cppName;
+            const selectedCpp = narrowed.ownedCpp ?? narrowed.cpp;
+            const transferredCpp = narrowed.borrowedData
+                ? selectedCpp
+                : selectedCpp === narrowed.cpp
+                  ? this.takeNativeTemporary(selectedCpp, initializerBoundary)
+                  : selectedCpp;
+            let initializerCpp = transferredCpp;
+            if (
+                !stableOwnerAlias &&
+                !narrowed.borrowedData &&
+                narrowed.ownedCpp === undefined &&
+                transferredCpp === selectedCpp &&
+                (narrowed.nativeLvalue ||
+                    cppIdentifierPattern.test(selectedCpp)) &&
+                (wrapperCopiesIdentity || referenceStruct)
+            ) {
+                this.reachJsData();
+                initializerCpp = `bbl::js::snapshot_value(${selectedCpp})`;
+            }
             this.emit({
                 kind: "declaration",
                 name: cppName,
                 type: sharedDataBinding
                     ? "auto"
-                    : `${localType}${(aliases && !wrapperCopiesIdentity) || narrowed.borrowedData ? "&" : ""}`,
+                    : `${localType}${stableOwnerAlias || (aliases && !wrapperCopiesIdentity) || narrowed.borrowedData ? "&" : ""}`,
                 initializer: sharedDataBinding
-                    ? `bbl::js::make_gc_shared<${localType}>(${narrowed.cpp})`
-                    : narrowed.cpp,
+                    ? `bbl::js::make_gc_shared<${localType}>(${initializerCpp})`
+                    : initializerCpp,
+                attributes: stableOwnerAlias ? "[[maybe_unused]] " : "",
             });
             if (optionalFoundCpp && referenceStruct) {
                 // Reference-backed records already use an empty shared
@@ -3584,9 +3619,31 @@ class Compiler implements LoweringServices {
         // compileValue already emits a JS number at double precision.
         // Compiling the initializer again is observably wrong for calls and
         // other expressions that materialize temporaries.
-        const initializerCpp = value.cpp;
+        let initializerCpp =
+            value.ownedCpp ??
+            this.takeNativeTemporary(value.cpp, initializerBoundary);
+        const stableOwnerAlias = this.borrowsConstBinding(declaration, value);
+        if (
+            !stableOwnerAlias &&
+            initializerCpp === value.cpp &&
+            (value.nativeLvalue || cppIdentifierPattern.test(value.cpp)) &&
+            ![
+                "number",
+                "boolean",
+                "string",
+                "engine",
+                "scene",
+                "platform-keyboard-event",
+                "platform-mouse-event",
+            ].includes(value.kind)
+        ) {
+            this.reachJsData();
+            initializerCpp = `bbl::js::snapshot_value(${value.ownedCpp ?? value.cpp})`;
+        }
         const maybeUnused =
-            value.kind === "number" || value.kind === "boolean"
+            value.kind === "number" ||
+            value.kind === "boolean" ||
+            stableOwnerAlias
                 ? "[[maybe_unused]] "
                 : "";
         const sharedPrimitive =
@@ -3604,7 +3661,11 @@ class Compiler implements LoweringServices {
         this.emit({
             kind: "declaration",
             name: cppName,
-            type: sharedPrimitive ? "auto" : nativeType,
+            type: sharedPrimitive
+                ? "auto"
+                : stableOwnerAlias
+                  ? "auto&"
+                  : nativeType,
             initializer: sharedPrimitive
                 ? `bbl::js::make_gc_shared<${nativeType}>(${initializerCpp})`
                 : initializerCpp,
@@ -3637,6 +3698,12 @@ class Compiler implements LoweringServices {
             nativeBinding: true,
         };
         if (!sharedClosureStorage) delete stored.sharedStorageCpp;
+        if (stored.kind === "audio-engine" && stored.audioMainBusCpp) {
+            stored.audioMainBusCpp = this.takeNativeTemporary(
+                stored.audioMainBusCpp,
+                initializerBoundary,
+            );
+        }
         if (value.kind === "animation-clip") {
             stored.animationFrameRate = `${cppName}.frame_rate`;
             stored.animationDuration = `${cppName}.duration`;
@@ -3654,6 +3721,72 @@ class Compiler implements LoweringServices {
             delete stored.staticBoolean;
         }
         this.defineVariable(declaration.name, stored);
+    }
+
+    private borrowsConstBinding(
+        declaration: ts.VariableDeclaration,
+        value: Value,
+    ): boolean {
+        return (
+            this.isImmutableVariable(declaration) &&
+            this.hasStableNativeBinding(value)
+        );
+    }
+
+    private isImmutableVariable(declaration: ts.Node | undefined): boolean {
+        let name: ts.Identifier | undefined;
+        if (declaration && ts.isBindingElement(declaration)) {
+            if (!ts.isIdentifier(declaration.name)) return false;
+            name = declaration.name;
+            let parent: ts.Node = declaration.parent;
+            while (
+                ts.isArrayBindingPattern(parent) ||
+                ts.isObjectBindingPattern(parent)
+            ) {
+                parent = parent.parent;
+            }
+            declaration = parent;
+        } else if (
+            declaration &&
+            ts.isVariableDeclaration(declaration) &&
+            ts.isIdentifier(declaration.name)
+        ) {
+            name = declaration.name;
+        }
+        return (
+            declaration !== undefined &&
+            ts.isVariableDeclaration(declaration) &&
+            declaration.initializer !== undefined &&
+            name !== undefined &&
+            ts.isVariableDeclarationList(declaration.parent) &&
+            (declaration.parent.flags & ts.NodeFlags.Const) !== 0 &&
+            !this.identifierIsRebound(name)
+        );
+    }
+
+    private hasStableNativeBinding(value: Value): boolean {
+        if (
+            value.sharedStorageCpp ||
+            value.borrowedData ||
+            value.runtimeIteration ||
+            (value.readOnly &&
+                !(
+                    value.dataType?.kind === "struct" &&
+                    this.dataTypes.isReferenceStruct(value.dataType.name)
+                )) ||
+            (value.dataType?.kind === "struct" &&
+                !this.dataTypes.isReferenceStruct(value.dataType.name)) ||
+            !cppIdentifierPattern.test(value.stableOwnerCpp ?? value.cpp)
+        )
+            return false;
+        return this.hasStableNativeExpression(
+            value.stableOwnerCpp ?? value.cpp,
+        );
+    }
+
+    private hasStableNativeExpression(cpp: string): boolean {
+        const binding = this.nativeBindings.get(cpp);
+        return binding !== undefined && this.nativeConstBindings.has(binding);
     }
 
     /** Mutable methods need a shared slot before callbacks can retain their owner. */
@@ -4097,6 +4230,7 @@ class Compiler implements LoweringServices {
                 type,
                 byReference,
                 readOnly,
+                borrowedWrapper: false,
             };
         });
         const returnCpp = returnType
@@ -4627,6 +4761,7 @@ class Compiler implements LoweringServices {
                 sharedStorageCpp: cppName,
             });
         }
+        const initializerBoundary = this.nativeBindingCheckpoint();
         const initializerSnapshot =
             spreadTarget &&
             ((ts.isObjectLiteralExpression(initializer) &&
@@ -4665,16 +4800,28 @@ class Compiler implements LoweringServices {
                 this.emit(`(*${cppName}) = std::move(${targetCpp});`);
             }
         } else {
-            const initializerCpp = initializerSnapshot
-                ? this.dataLowerer.compileKnownValueForSink(
-                      initializerSnapshot,
-                      annotated,
-                      declaration.initializer,
-                  )
-                : this.dataLowerer.compileForSink(
-                      declaration.initializer,
-                      annotated,
-                  );
+            const initializerCpp = this.takeNativeTemporary(
+                initializerSnapshot
+                    ? this.dataLowerer.compileKnownValueForSink(
+                          initializerSnapshot,
+                          annotated,
+                          declaration.initializer,
+                      )
+                    : this.dataLowerer.compileForSink(
+                          declaration.initializer,
+                          annotated,
+                      ),
+                initializerBoundary,
+            );
+            const sourceValue = ts.isIdentifier(initializer)
+                ? this.lookupOptional(initializer)
+                : undefined;
+            const stableOwnerAlias =
+                sourceValue !== undefined &&
+                sourceValue.cpp === initializerCpp &&
+                this.borrowsConstBinding(declaration, sourceValue) &&
+                (annotated.kind !== "struct" ||
+                    this.dataTypes.isReferenceStruct(annotated.name));
             this.emit(
                 sharedDataBinding
                     ? {
@@ -4687,7 +4834,9 @@ class Compiler implements LoweringServices {
                       ? `(*${cppName}) = ${initializerCpp};`
                       : {
                             kind: "declaration",
-                            type: this.dataTypes.cppType(annotated),
+                            type: stableOwnerAlias
+                                ? "auto&"
+                                : this.dataTypes.cppType(annotated),
                             name: cppName,
                             initializer: initializerCpp,
                             attributes: "[[maybe_unused]] ",
@@ -4987,7 +5136,7 @@ class Compiler implements LoweringServices {
      * `false` keeps `++`/`--` out of the set, which is the answer every
      * caller here has always had.
      */
-    private identifierIsRebound(identifier: ts.Identifier): boolean {
+    public identifierIsRebound(identifier: ts.Identifier): boolean {
         const symbol = this.symbols.valueSymbol(identifier);
         if (!symbol) return false;
         const file = identifier.getSourceFile();
@@ -5199,6 +5348,7 @@ class Compiler implements LoweringServices {
                 "Array destructuring requires an initializer.",
             );
         }
+        const initializerBoundary = this.nativeBindingCheckpoint();
         const rawValue = this.compileValue(declaration.initializer);
         const value =
             rawValue.kind === "data"
@@ -5338,7 +5488,12 @@ class Compiler implements LoweringServices {
                     `Tuple has ${tupleArity} elements, destructuring expects ${bindings.length}.`,
                 );
             }
-            const temporary = this.bindDataTuple(value, tupleArity);
+            const temporary = this.bindDataTuple(
+                value,
+                tupleArity,
+                "tuple",
+                initializerBoundary,
+            );
             bindings.forEach((element, index) => {
                 if (index === restIndex && restName) {
                     this.bindLocalValue(
@@ -9819,17 +9974,24 @@ class Compiler implements LoweringServices {
                     argumentAt(call, 0),
                     "The realm engine requires a native canvas context.",
                 );
-            const snapshot = this.allocateTemporaryCppName("engine_canvas");
-            this.emit({
-                kind: "declaration",
-                type: "const auto",
-                name: snapshot,
-                initializer:
-                    canvas.kind === "ui-element"
-                        ? `bbl::pal::window_canvas(${canvas.cpp})`
-                        : canvas.cpp,
-            });
-            canvasArgument = `, ${snapshot}`;
+            if (canvas.kind === "ui-element") {
+                const snapshot = this.allocateTemporaryCppName("engine_canvas");
+                this.emit({
+                    kind: "declaration",
+                    type: "const auto",
+                    name: snapshot,
+                    initializer: `bbl::pal::window_canvas(${canvas.cpp})`,
+                });
+                canvasArgument = `, ${snapshot}`;
+            } else {
+                canvasArgument = `, ${
+                    this.pinValueToTemporary(
+                        canvas,
+                        "engine_canvas",
+                        argumentAt(call, 0),
+                    ).cpp
+                }`;
+            }
         }
         let msaaSamples: 1 | 4 | "runtime" = 4;
         let sampleOverride: string | undefined;
@@ -11538,7 +11700,7 @@ class Compiler implements LoweringServices {
         const name = `bbl_static_table_${this.staticRecordAccessors.size}`;
         this.registerNativeFunction(`${mapType}& ${name}();`, [
             `${mapType}& ${name}() {`,
-            `    static ${initializer}`,
+            `    static thread_local ${initializer}`,
             `    return values;`,
             `}`,
         ]);
@@ -11547,10 +11709,11 @@ class Compiler implements LoweringServices {
     }
 
     public registerNativeFunction(
-        prototype: string,
+        prototype: string | undefined,
         definitionLines: string[],
     ): void {
-        if (prototype !== "") this.nativeFunctionPrototypes.push(prototype);
+        if (prototype !== undefined)
+            this.nativeFunctionPrototypes.push(prototype);
         this.nativeFunctionDefinitions.push(...definitionLines, "");
     }
 
@@ -11564,7 +11727,8 @@ class Compiler implements LoweringServices {
             definitionLines.join("\n"),
             new Set(localBindings),
         );
-        if (entry.added) this.registerNativeFunction("", definitionLines);
+        if (entry.added)
+            this.registerNativeFunction(undefined, definitionLines);
         return entry.name;
     }
 
@@ -11627,6 +11791,44 @@ class Compiler implements LoweringServices {
 
     public nativeBindingCheckpoint(): number {
         return this.nextNativeBindingSequence;
+    }
+
+    public registerNativeTemporary(name: string, type?: DataType): void {
+        // Views borrow; generic handles can retain companion expressions.
+        // Scalars need neither transfer nor additional JS runtime support.
+        if (
+            type?.kind === "span" ||
+            type?.kind === "table" ||
+            type?.kind === "handle" ||
+            type?.kind === "number" ||
+            type?.kind === "boolean" ||
+            type?.kind === "enum"
+        )
+            return;
+        this.nativeTemporaries.add(this.registerNativeBinding(name));
+    }
+
+    public registerNativeConstBinding(
+        name: string,
+        allowReference = false,
+    ): NativeCaptureBinding {
+        const binding = this.registerNativeBinding(name, false, allowReference);
+        this.nativeConstBindings.add(binding);
+        return binding;
+    }
+
+    public takeNativeTemporary(cpp: string, boundary: number): string {
+        const binding = this.nativeBindings.get(cpp);
+        if (
+            !binding ||
+            binding.sequence <= boundary ||
+            !this.nativeTemporaries.has(binding)
+        )
+            return cpp;
+        // Only a temporary created by this initializer is exclusive: a cached
+        // property or an existing source binding must retain its own value.
+        this.reachJsData();
+        return `bbl::js::take_temporary(${cpp})`;
     }
 
     public captureHoistedLines(
@@ -12286,17 +12488,25 @@ class Compiler implements LoweringServices {
         const name = this.allocateTemporaryCppName("audio_main_bus");
         const initial = value.audioMainBusCpp ?? "bbl::pal::AudioNodeHandle{}";
         const shared = value.sharedStorageCpp !== undefined;
+        const borrows =
+            !shared &&
+            value.audioMainBusCpp !== undefined &&
+            this.hasStableNativeExpression(value.audioMainBusCpp);
         this.useNativeValue(value);
         this.emit(
             shared
                 ? `[[maybe_unused]] auto ${name} = bbl::js::make_gc_shared<bbl::pal::AudioNodeHandle>(${initial});`
-                : `[[maybe_unused]] bbl::pal::AudioNodeHandle ${name} = ${initial};`,
+                : borrows
+                  ? `[[maybe_unused]] auto& ${name} = ${initial};`
+                  : `[[maybe_unused]] bbl::pal::AudioNodeHandle ${name} = ${initial};`,
         );
         value.audioMainBusCpp = shared ? `(*${name})` : name;
         value.audioMainBusOwnerCpp = owner;
+        const binding = this.registerNativeBinding(name, borrows, !shared);
+        if (borrows) this.nativeConstBindings.add(binding);
         value.nativeCompanionCaptures = {
             ...value.nativeCompanionCaptures,
-            audioMainBusCpp: [this.registerNativeBinding(name, false, !shared)],
+            audioMainBusCpp: [binding],
         };
     }
 
@@ -13346,7 +13556,8 @@ class Compiler implements LoweringServices {
             const binding = this.registerNativeBinding(snapshot);
             const closure = this.captureManagedClosureLines(
                 () => {
-                    if (parameter) this.registerNativeBinding(parameter.name);
+                    if (parameter)
+                        this.registerNativeConstBinding(parameter.name, true);
                     this.useNativeBinding(binding);
                     this.emitDiscardedValue(
                         this.dataLowerer.compileFunctionValueCall(
@@ -13397,7 +13608,8 @@ class Compiler implements LoweringServices {
         try {
             compiled = this.captureManagedClosureLines(
                 () => {
-                    if (parameter) this.registerNativeBinding(parameter.name);
+                    if (parameter)
+                        this.registerNativeConstBinding(parameter.name, true);
                     const unwrapped = this.unwrap(callback) as
                         | ts.Identifier
                         | ts.PropertyAccessExpression
@@ -14903,6 +15115,9 @@ class Compiler implements LoweringServices {
         const innermost = this.variableScopes.at(-1)!;
         const binding = owner.get(symbol)!;
         const destination: Value = { ...value, cpp: binding.value.cpp };
+        delete destination.ownedCpp;
+        delete destination.stableOwnerCpp;
+        delete destination.nativeOwnedRvalue;
         for (const property of [
             "sharedStorageCpp",
             "optionalStorageCpp",
@@ -14952,6 +15167,31 @@ class Compiler implements LoweringServices {
     }
 
     public defineVariable(identifier: ts.MemberName, value: Value): void {
+        const immutable = this.isImmutableVariable(identifier.parent);
+        if (value.nativeOwnedRvalue) {
+            value = { ...value };
+            delete value.nativeOwnedRvalue;
+        }
+        if (
+            (value.ownedCpp !== undefined ||
+                value.stableOwnerCpp !== undefined) &&
+            cppIdentifierPattern.test(value.cpp)
+        ) {
+            value = { ...value };
+            delete value.ownedCpp;
+            delete value.stableOwnerCpp;
+        }
+        if (
+            immutable &&
+            !value.sharedStorageCpp &&
+            value.optionalStorageCpp !== undefined &&
+            cppIdentifierPattern.test(value.optionalStorageCpp)
+        ) {
+            value = {
+                ...value,
+                stableOwnerCpp: value.optionalStorageCpp,
+            };
+        }
         if (
             this.options.workers &&
             value.kind === "engine" &&
@@ -15009,6 +15249,26 @@ class Compiler implements LoweringServices {
         }
         this.bindAudioMainBusStorage(value);
         this.describeNativeValue(value);
+        const binding = this.nativeBindings.get(value.cpp);
+        if (
+            binding &&
+            !value.sharedStorageCpp &&
+            !value.borrowedData &&
+            !value.runtimeIteration &&
+            immutable
+        ) {
+            this.nativeConstBindings.add(binding);
+        }
+        if (immutable && !value.sharedStorageCpp) {
+            for (const capture of value.nativeCaptures ?? [])
+                this.nativeConstBindings.add(capture);
+            for (const captures of Object.values(
+                value.nativeCompanionCaptures ?? {},
+            )) {
+                for (const capture of captures ?? [])
+                    this.nativeConstBindings.add(capture);
+            }
+        }
         const symbol = this.requireValueSymbol(identifier);
         const scope = this.variableScopes.at(-1)!;
         if (scope.has(symbol)) {
@@ -15072,18 +15332,7 @@ class Compiler implements LoweringServices {
         return stored;
     }
 
-    /**
-     * Binds an inlined user-function parameter. Unlike local
-     * declarations (the pinned value model copies path-bound locals),
-     * JavaScript object arguments alias, and the native-function path
-     * already passes struct/vector/typed-array parameters by reference
-     * — so the inline path binds those through a forwarding reference:
-     * lvalue arguments alias the caller's binding (writes through the
-     * parameter mutate it) while temporaries stay owned. Resource handles
-     * are JavaScript references but native value IDs, so they must be copied;
-     * forwarding a property-backed handle could retain a reference into an
-     * engine vector that a later factory call reallocates.
-     */
+    /** Captured mutable parameters own their binding, not the caller's slot. */
     private mutableCapturedParameter(
         identifier: ts.Identifier,
         value: Value,
@@ -15114,6 +15363,12 @@ class Compiler implements LoweringServices {
             value.kind === "data"
                 ? this.dataLowerer.narrowForDeclaration(value, identifier)
                 : value;
+        if (
+            narrowed.dataType?.kind === "struct" &&
+            this.identifierIsRebound(identifier)
+        ) {
+            this.dataTypes.markStoredObjectReferences(narrowed.dataType);
+        }
         this.bindLocalOrParameterValue(
             identifier,
             narrowed,
@@ -15343,6 +15598,9 @@ class Compiler implements LoweringServices {
         label: string,
         node?: ts.Expression,
     ): Value {
+        if (value.ownedCpp !== undefined) {
+            return this.pinValueToTemporary(value, label, node);
+        }
         if (value.kind === "callback") {
             const resolved =
                 value.callbackDeclaration &&
@@ -15396,8 +15654,8 @@ class Compiler implements LoweringServices {
      * The leaf is deliberately not shared with `materializeRecordScalars`
      * below. That one gives a record member a native home, so it emits a
      * mutable local and folds a static value into a literal; this one refuses
-     * a folded value outright and emits `const`. One line each, and the
-     * difference is the contract rather than an accident.
+     * a folded value outright and keeps an owning binding. One line each, and
+     * the difference is the contract rather than an accident.
      */
     public pinValueToTemporary(
         value: Value,
@@ -15412,28 +15670,67 @@ class Compiler implements LoweringServices {
             delete value.staticString;
             delete value.staticBoolean;
         }
+        if (this.hasStableNativeBinding(value)) {
+            this.useNativeValue(value);
+            return value;
+        }
         if (
             ["text-data", "text-renderable", "text-vector"].includes(value.kind)
         ) {
             const retained = retainTextValue(this, value);
+            this.registerNativeConstBinding(retained.cpp);
             this.describeNativeValue(retained);
             return retained;
         }
         if (value.kind === "callback") {
             return this.materializeEscapingValue(value, label);
         }
-        if (
-            isJsonValue(value) ||
-            (value.kind === "data" && isOpaqueReference(value.dataType))
-        ) {
+        const snapshotsData =
+            value.kind === "data" &&
+            value.dataType !== undefined &&
+            (isOpaqueReference(value.dataType) ||
+                isTypedArrayType(value.dataType) ||
+                [
+                    "arraybuffer",
+                    "dataview",
+                    "bufferview",
+                    "json",
+                    "optional",
+                    "union",
+                    "vector",
+                    "map",
+                    "set",
+                    "iterator",
+                    "tuple",
+                    "product",
+                    "enummap",
+                ].includes(value.dataType.kind));
+        if (isJsonValue(value) || snapshotsData) {
             const cpp = this.allocateTemporaryCppName(label);
+            this.reachJsData();
             this.emit({
                 kind: "declaration",
-                type: "const auto",
+                type: "auto",
                 name: cpp,
-                initializer: value.cpp,
+                initializer:
+                    value.ownedCpp ??
+                    (value.nativeLvalue || cppIdentifierPattern.test(value.cpp)
+                        ? `bbl::js::snapshot_value(${value.cpp})`
+                        : value.cpp),
             });
             const pinned = { ...value, cpp, nativeBinding: true as const };
+            delete pinned.ownedCpp;
+            for (const key of [
+                "objectIdentityCpp",
+                "optionalFoundCpp",
+                "truthinessCpp",
+                "optionalStorageCpp",
+            ] as const) {
+                const spelling = pinned[key];
+                if (spelling?.includes(value.cpp))
+                    pinned[key] = spelling.replaceAll(value.cpp, cpp);
+            }
+            this.registerNativeConstBinding(cpp);
             this.describeNativeValue(pinned);
             return pinned;
         }
@@ -15441,17 +15738,18 @@ class Compiler implements LoweringServices {
             const cpp = this.allocateTemporaryCppName(label);
             // A scene snapshot owns its selected shared state while remaining
             // writable through the native Scene& APIs after source rebinding.
-            const type =
-                value.kind === "engine"
-                    ? "auto&"
-                    : value.kind === "scene"
-                      ? "auto"
-                      : "const auto";
+            const type = value.kind === "engine" ? "auto&" : "auto";
             this.emit({
                 kind: "declaration",
                 type,
                 name: cpp,
-                initializer: value.cpp,
+                initializer:
+                    value.kind === "engine"
+                        ? value.cpp
+                        : value.nativeLvalue ||
+                            cppIdentifierPattern.test(value.cpp)
+                          ? `bbl::js::snapshot_value(${value.cpp})`
+                          : value.cpp,
                 attributes: "[[maybe_unused]] ",
             });
             const pinned = {
@@ -15460,15 +15758,11 @@ class Compiler implements LoweringServices {
                 ...(value.kind === "engine" ? { engineCpp: cpp } : {}),
                 nativeBinding: true as const,
             };
+            if (type === "auto") this.registerNativeConstBinding(cpp);
             this.describeNativeValue(pinned);
             return pinned;
         }
-        if (
-            value.kind === "data" &&
-            value.dataType?.kind === "struct" &&
-            !value.nativeLvalue &&
-            !cppIdentifierPattern.test(value.cpp)
-        ) {
+        if (value.kind === "data" && value.dataType?.kind === "struct") {
             // A struct held under a plain name or read from storage reads
             // twice for free. A computed one -- a call, an indexed read, a
             // member of a computed record -- is bound once, and the identity
@@ -15478,9 +15772,13 @@ class Compiler implements LoweringServices {
             const cpp = this.allocateTemporaryCppName(label);
             this.emit({
                 kind: "declaration",
-                type: "const auto",
+                type: "auto",
                 name: cpp,
-                initializer: value.cpp,
+                initializer:
+                    value.ownedCpp ??
+                    (value.nativeLvalue || cppIdentifierPattern.test(value.cpp)
+                        ? `bbl::js::snapshot_value(${value.cpp})`
+                        : value.cpp),
             });
             const derived = this.dataLowerer.leafValue(
                 value.cpp,
@@ -15492,6 +15790,7 @@ class Compiler implements LoweringServices {
                 cpp,
                 nativeBinding: true as const,
             };
+            delete pinned.ownedCpp;
             for (const key of [
                 "objectIdentityCpp",
                 "optionalFoundCpp",
@@ -15500,6 +15799,7 @@ class Compiler implements LoweringServices {
                 if (spelling !== undefined && pinned[key] === derived[key])
                     pinned[key] = spelling;
             }
+            this.registerNativeConstBinding(cpp);
             this.describeNativeValue(pinned);
             return pinned;
         }
@@ -15541,7 +15841,13 @@ class Compiler implements LoweringServices {
             name: cppName,
             initializer: value.cpp,
         });
-        return { ...value, cpp: cppName };
+        const binding = this.registerNativeConstBinding(cppName);
+        return {
+            ...value,
+            cpp: cppName,
+            nativeCaptures: [binding],
+            nativeBinding: true,
+        };
     }
 
     /**
@@ -15555,18 +15861,37 @@ class Compiler implements LoweringServices {
      * here, which is the tuple-shaped case of the rule
      * `pinValueToTemporary` above states.
      */
-    public bindDataTuple(value: Value, arity: number, label = "tuple"): string {
+    public bindDataTuple(
+        value: Value,
+        arity: number,
+        label = "tuple",
+        initializerBoundary?: number,
+    ): string {
+        if (this.hasStableNativeBinding(value)) {
+            this.useNativeValue(value);
+            return value.cpp;
+        }
         const cppName = this.allocateTemporaryCppName(label);
+        const readOnly = value.readOnly === true;
+        const initializer =
+            initializerBoundary === undefined
+                ? value.cpp
+                : this.takeNativeTemporary(value.cpp, initializerBoundary);
         this.emit({
             kind: "declaration",
-            type: `const ${this.dataTypes.cppType({
-                kind: "tuple",
-                arity,
-            })}`,
+            type: readOnly
+                ? "const auto&"
+                : `const ${this.dataTypes.cppType({
+                      kind: "tuple",
+                      arity,
+                  })}`,
             name: cppName,
-            initializer: value.cpp,
+            initializer:
+                readOnly || initializer !== value.cpp
+                    ? initializer
+                    : `bbl::js::snapshot_value(${value.cpp})`,
         });
-        this.useNativeBinding(this.registerNativeBinding(cppName, false, true));
+        this.useNativeBinding(this.registerNativeConstBinding(cppName, true));
         return cppName;
     }
 
@@ -16259,6 +16584,24 @@ class Compiler implements LoweringServices {
             parameter &&
             (this.dataLowerer.dataTypeAt(identifier)?.kind === "handle" ||
                 isHandleKind(value.kind));
+        const reboundParameter =
+            parameter &&
+            ts.isIdentifier(identifier) &&
+            (this.identifierIsRebound(identifier) ||
+                (this.isSharedClosureScalar(
+                    value.dataType?.kind ?? value.kind,
+                ) &&
+                    !readOnlyParameter));
+        const referenceValue =
+            value.kind !== "number" && value.kind !== "boolean";
+        const stableNativeBinding =
+            referenceValue && this.hasStableNativeBinding(value);
+        const borrowsImmutableBinding =
+            !sharedStorage &&
+            stableNativeBinding &&
+            (parameter
+                ? !reboundParameter
+                : this.isImmutableVariable(identifier.parent));
         const platformEvent =
             value.kind === "platform-keyboard-event" ||
             value.kind === "platform-mouse-event";
@@ -16266,21 +16609,39 @@ class Compiler implements LoweringServices {
             ? "const auto&"
             : reference
               ? "auto&"
-              : value.kind === "number"
-                ? "double"
-                : value.kind === "boolean"
-                  ? "bool"
-                  : value.kind === "string" ||
-                      (value.kind === "data" &&
-                          value.dataType?.kind === "string")
-                    ? "std::string"
-                    : parameter && !copiesHandle
-                      ? "auto&&"
-                      : "auto";
-        const initializerCpp =
+              : borrowsImmutableBinding
+                ? "auto&"
+                : value.kind === "number"
+                  ? "double"
+                  : value.kind === "boolean"
+                    ? "bool"
+                    : value.kind === "string" ||
+                        (value.kind === "data" &&
+                            value.dataType?.kind === "string")
+                      ? "std::string"
+                      : parameter && !copiesHandle && !reboundParameter
+                        ? "auto&&"
+                        : "auto";
+        const ownsTemporaryArgument =
+            parameter &&
+            !sharedStorage &&
+            !reboundParameter &&
+            nativeType === "auto&&" &&
+            value.nativeOwnedRvalue === true;
+        let initializerCpp =
             value.kind === "number" && value.staticNumber !== undefined
                 ? numberConstantValue(value.staticNumber).cpp
                 : value.cpp;
+        if (
+            !sharedStorage &&
+            !borrowsImmutableBinding &&
+            referenceValue &&
+            !reference &&
+            (stableNativeBinding || (parameter && value.nativeLvalue))
+        ) {
+            this.reachJsData();
+            initializerCpp = `bbl::js::snapshot_value(${initializerCpp})`;
+        }
         const maybeUnused =
             value.kind === "number" || value.kind === "boolean" || parameter
                 ? "[[maybe_unused]] "
@@ -16308,6 +16669,8 @@ class Compiler implements LoweringServices {
                 });
             }
         } else {
+            if (borrowsImmutableBinding)
+                this.registerNativeBinding(cppName, true);
             this.emit({
                 kind: "declaration",
                 type: nativeType,
@@ -16334,6 +16697,7 @@ class Compiler implements LoweringServices {
                   }
                 : {}),
         };
+        delete stored.nativeOwnedRvalue;
         if (!sharedStorage) delete stored.sharedStorageCpp;
         if (
             value.kind === "data" &&
@@ -16349,6 +16713,19 @@ class Compiler implements LoweringServices {
             stored.animationDuration = `${storedCpp}.duration`;
         }
         this.defineVariable(identifier, stored);
+        if (
+            parameter &&
+            !sharedStorage &&
+            !reboundParameter &&
+            (borrowsImmutableBinding ||
+                ownsTemporaryArgument ||
+                (copiesHandle && !reference) ||
+                nativeType === "std::string")
+        ) {
+            this.nativeConstBindings.add(
+                this.registerNativeBinding(cppName, borrowsImmutableBinding),
+            );
+        }
     }
 
     /** Visit bindings and the generation facts nested inside their values. */
@@ -17884,6 +18261,10 @@ class Compiler implements LoweringServices {
                         callback,
                         `The recovery '${source}' callback parameters are not represented.`,
                     );
+                const error =
+                    target === "on_failed"
+                        ? this.allocateTemporaryCppName("recovery_error")
+                        : undefined;
                 const parameter =
                     target === "on_failed"
                         ? ({
@@ -17894,13 +18275,14 @@ class Compiler implements LoweringServices {
                               recordProperties: {
                                   message: {
                                       kind: "string",
-                                      cpp: "error",
+                                      cpp: error!,
                                       dataType: { kind: "string" },
                                   },
                               },
                           } satisfies Value)
                         : undefined;
                 const lines = this.captureEmittedLines(() => {
+                    if (error) this.registerNativeConstBinding(error, true);
                     const result = this.compileCallbackWithValues(
                         callback,
                         parameter ? [parameter] : [],
@@ -17909,7 +18291,7 @@ class Compiler implements LoweringServices {
                     this.emitDiscardedValue(result);
                 });
                 this.emit(
-                    `${registration.cpp}->${target} = [&](${parameter ? "[[maybe_unused]] const std::string& error" : ""}) {`,
+                    `${registration.cpp}->${target} = [&](${error ? `[[maybe_unused]] const std::string& ${error}` : ""}) {`,
                 );
                 this.increaseIndent();
                 for (const line of lines) this.emit(line);

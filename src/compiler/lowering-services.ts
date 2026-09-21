@@ -471,6 +471,13 @@ export interface LoweringServices {
     ): Value | undefined;
     compileEngineCreation(call: ts.CallExpression, cppName: string): Value;
     allocateTemporaryCppName(label: string): string;
+    registerNativeTemporary(name: string, type?: DataType): void;
+    registerNativeConstBinding(
+        name: string,
+        allowReference?: boolean,
+    ): NativeCaptureBinding;
+    takeNativeTemporary(cpp: string, boundary: number): string;
+    identifierIsRebound(identifier: ts.Identifier): boolean;
     allocateUserFunctionPrefix(): string;
     allocateBlockPrefix(): string;
     compileStaticString(expression: ts.Expression): string;
@@ -594,7 +601,10 @@ export interface LoweringServices {
         entries: readonly string[],
         canHoist: boolean,
     ): string;
-    registerNativeFunction(prototype: string, definitionLines: string[]): void;
+    registerNativeFunction(
+        prototype: string | undefined,
+        definitionLines: string[],
+    ): void;
     registerSharedNativeFunction(
         name: string,
         definitionLines: string[],
@@ -826,7 +836,12 @@ export interface LoweringServices {
         label: string,
         node?: ts.Expression,
     ): Value;
-    bindDataTuple(value: Value, arity: number, label?: string): string;
+    bindDataTuple(
+        value: Value,
+        arity: number,
+        label?: string,
+        initializerBoundary?: number,
+    ): string;
     compileCallbackWithValues(
         declaration:
             | ts.Identifier

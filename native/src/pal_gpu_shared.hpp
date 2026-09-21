@@ -6257,7 +6257,7 @@ inline void print_memory_frame_profile(long frame, const bbl::Engine& engine,
     line << std::fixed << std::setprecision(1) << "[mem][frame] frame=" << frame
          << " working_set_mb=" << bbl::pal::process_working_set_bytes() / mb
          << " mesh_records=" << engine.meshes.size() << " scene_meshes=" << scene_meshes
-         << " gc_nodes=" << bbl::js::gc::registry.size
+         << " gc_nodes=" << bbl::js::managed_node_count()
          << " gc_allocations=" << bbl::js::gc::registry.total_allocations
          << " geometry_records=" << engine.geometries.size()
          << " live_geometries=" << live_geometries << " geometry_mb=" << geometry_bytes / mb

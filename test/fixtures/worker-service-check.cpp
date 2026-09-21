@@ -10,6 +10,21 @@ void require(bool condition, const char* message) {
         throw std::runtime_error(message);
 }
 
+void listener_identity() {
+    PlatformEventListeners<void()> listeners;
+    int regular = 0, once = 0;
+    js::Callback<void()> callback{[&] { ++regular; }};
+    listeners.add(callback);
+    listeners.add(callback);
+    listeners.add(js::Callback<void()>{[&] { ++once; }}, true);
+    listeners.dispatch();
+    listeners.dispatch();
+    require(regular == 2 && once == 1, "Listener identity or once registration was lost");
+    listeners.remove(callback.identity());
+    listeners.dispatch();
+    require(regular == 2, "Listener removal lost the callback identity");
+}
+
 void counter_module(pal::WorkerRealm& realm) {
     auto count = js::make_ref<double>(0);
     realm.add_message_listener(pal::Worker::MessageCallback(js::make_closure(
@@ -162,6 +177,7 @@ void realm_state_reset() {
 
 int main() {
     try {
+        listener_identity();
         independent_instances();
         startup_errors();
         listener_error_cleanup();

@@ -158,6 +158,23 @@ const controls = `
         alternating.first(argument(4), argument(7));
         if (other.position.y !== 6 || argumentCalls !== 10)
             throw new Error("mutual recursive receiver");
+        interface Counter { value: number }
+        const counters: Counter[] = [{ value: 0 }, { value: 10 }];
+        const selectedCounter = counters.find((counter) => counter.value === 10)!;
+        function incrementCounter(counter: Counter, depth: number): void {
+            counter.value++;
+            if (depth > 0) incrementCounter(counter, depth - 1);
+        }
+        class CounterWalker {
+            walk(counter: Counter, depth: number): void {
+                counter.value += 2;
+                if (depth > 0) this.walk(counter, depth - 1);
+            }
+        }
+        incrementCounter(selectedCounter, 2);
+        new CounterWalker().walk(selectedCounter, 1);
+        if (counters[1]!.value !== 17)
+            throw new Error("borrowed recursive record identity");
         let loads = 0;
         async function load(ignored: number): Promise<void> {
             await loadTexture2D(engine, "data:image/png;base64,iVBORw0KGgo=", { mipMaps: false });
@@ -170,10 +187,18 @@ const controls = `
 
 test("recursive specializations share bodies within their native scope", () => {
     const result = compileSource(controls);
-    assert.equal(result.cpp.match(/make_recursive_group\(/g)?.length, 8);
+    assert.equal(result.cpp.match(/make_recursive_group\(/g)?.length, 9);
     assert.equal(result.cpp.match(/"shared move body"/g)?.length, 1);
     assert.equal(result.cpp.match(/"shared method body"/g)?.length, 1);
     assert.match(result.cpp, /storedmover_receiver/);
+    assert.match(
+        result.cpp,
+        /const bblscene::Counter& fn\d+_(?:recursive_)?arg_0/,
+    );
+    assert.match(
+        result.cpp,
+        /bbl::js::take_temporary\(v_bblite_find_result_\d+\)/,
+    );
 });
 
 test("specialization snapshots distinguish changed facts, aliases and scopes", () => {

@@ -180,12 +180,12 @@ using JsonArray = ts::JsonValue::Array;
 using JsonObject = ts::JsonValue::Object;
 
 const ts::JsonValue& required(const JsonObject& object, std::string_view key) {
-    const auto found = object.find(std::string(key));
+    const auto found = object.find(key);
     if (found == object.end()) throw std::runtime_error("glTF is missing '" + std::string(key) + "'.");
     return found->second;
 }
 
-const ts::JsonValue* optional(const JsonObject& object, const std::string& key) {
+const ts::JsonValue* optional(const JsonObject& object, std::string_view key) {
     const auto found = object.find(key);
     return found == object.end() ? nullptr : &found->second;
 }
@@ -194,7 +194,7 @@ ${lowered.parserJson}
 
 const JsonArray& array_or_empty(const JsonObject& object, std::string_view key) {
     static const JsonArray empty;
-    const ts::JsonValue* value = optional(object, std::string(key));
+    const ts::JsonValue* value = optional(object, key);
     return value ? value->as_array() : empty;
 }
 

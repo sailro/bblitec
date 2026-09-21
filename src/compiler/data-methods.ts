@@ -4,6 +4,7 @@ import { nativeDataMetadata, withNativeMetadata } from "./types.js";
 // call (invoked through `DataLowerer.compileDataMethodCall`).
 import { EmissionSet, EmissionMap } from "./emission-transaction.js";
 import ts from "typescript";
+import { cppIdentifierPattern } from "../cpp-literals.js";
 import {
     argumentAt,
     expressionMayRunCode,
@@ -1431,6 +1432,7 @@ function compileArrayFind(state: ArrayMethodState): Value {
         },
     );
     lowerer.registerLocal(result, "owned");
+    lowerer.context.registerNativeTemporary(result, resultType);
     return lowerer.leafValue(result, resultType);
 }
 
@@ -1907,7 +1909,33 @@ function compileArrayForEach(state: ArrayMethodState): Value {
 function compileArrayPush(state: ArrayMethodState): Value {
     const lowerer: DataLowerer = state.lowerer;
     const { call, narrowed, dataType, dynamicOwner } = state;
-    const captureArguments = call.arguments.some(expressionMayRunCode);
+    let lastEffect = call.arguments.length - 1;
+    while (
+        lastEffect >= 0 &&
+        !expressionMayRunCode(call.arguments[lastEffect]!)
+    )
+        --lastEffect;
+    const captureArguments = lastEffect >= 0;
+    const capturedInitializer = (cpp: string, type: DataType): string => {
+        const ownsReference =
+            type.kind === "string" ||
+            type.kind === "struct" ||
+            type.kind === "arraybuffer" ||
+            type.kind === "dataview" ||
+            type.kind === "bufferview" ||
+            type.kind === "json" ||
+            type.kind === "optional" ||
+            type.kind === "union" ||
+            type.kind === "vector" ||
+            type.kind === "map" ||
+            type.kind === "set" ||
+            type.kind === "iterator" ||
+            type.kind === "tuple" ||
+            type.kind === "product" ||
+            type.kind === "enummap" ||
+            isTypedArrayType(type);
+        return ownsReference ? `bbl::js::snapshot_value(${cpp})` : cpp;
+    };
     const callee = lowerer.context.unwrap(call.expression);
     const receiver =
         captureArguments ||
@@ -1932,7 +1960,8 @@ function compileArrayPush(state: ArrayMethodState): Value {
     const preparedValues: string[] = [];
     const pushedValues =
         (pushedHandleKind || staticElements) && !hasSpread
-            ? call.arguments.map((argument) => {
+            ? call.arguments.map((argument, index) => {
+                  const boundary = lowerer.context.nativeBindingCheckpoint();
                   const value = lowerer.context.compileValue(argument);
                   lowerer.context.refuseBorrowedPlatformEventEscape(
                       value,
@@ -1945,16 +1974,23 @@ function compileArrayPush(state: ArrayMethodState): Value {
                       argument,
                   );
                   let prepared = cpp;
-                  if (captureArguments) {
+                  if (index < lastEffect) {
                       prepared =
                           lowerer.context.allocateTemporaryCppName(
                               "push_argument",
                           );
+                      const selected = lowerer.context.takeNativeTemporary(
+                          cpp,
+                          boundary,
+                      );
                       lowerer.context.emit({
                           kind: "declaration",
                           type: "const auto",
                           name: prepared,
-                          initializer: cpp,
+                          initializer:
+                              selected === cpp
+                                  ? capturedInitializer(cpp, dataType.element)
+                                  : selected,
                       });
                   }
                   preparedValues.push(prepared);
@@ -1963,7 +1999,7 @@ function compileArrayPush(state: ArrayMethodState): Value {
                   if (!pushedHandleKind || !staticElements) return value;
                   const snapshot = {
                       ...value,
-                      ...(captureArguments ? { cpp: prepared } : {}),
+                      ...(index < lastEffect ? { cpp: prepared } : {}),
                   };
                   delete snapshot.nativeBinding;
                   const pinned = lowerer.context.pinValueToTemporary(
@@ -2116,16 +2152,8 @@ function compileArrayPush(state: ArrayMethodState): Value {
             }
             const copy =
                 lowerer.context.allocateTemporaryCppName("push_spread");
-            const selected =
-                lowerer.context.allocateTemporaryCppName("push_iterable");
-            lowerer.context.emit({
-                kind: "declaration",
-                type: "const auto",
-                name: selected,
-                initializer: source,
-            });
             lowerer.context.emit(
-                `auto ${copy} = bbl::js::array_from_iterable<${lowerer.context.dataTypes.cppType(dataType.element)}>(${selected});`,
+                `auto ${copy} = bbl::js::array_from_iterable<${lowerer.context.dataTypes.cppType(dataType.element)}>(${source});`,
             );
             return `${receiver}.insert(${receiver}.end(), ${copy}.begin(), ${copy}.end())`;
         }
@@ -2143,20 +2171,28 @@ function compileArrayPush(state: ArrayMethodState): Value {
         }
         let value = preparedValues[index];
         if (value === undefined) {
+            const boundary = lowerer.context.nativeBindingCheckpoint();
             const cpp = lowerer.compileForRetainedSink(
                 argument,
                 dataType.element,
                 "Array.push",
             );
             value = cpp;
-            if (captureArguments) {
+            if (index < lastEffect) {
                 value =
                     lowerer.context.allocateTemporaryCppName("push_argument");
+                const selected = lowerer.context.takeNativeTemporary(
+                    cpp,
+                    boundary,
+                );
                 lowerer.context.emit({
                     kind: "declaration",
                     type: "const auto",
                     name: value,
-                    initializer: cpp,
+                    initializer:
+                        selected === cpp
+                            ? capturedInitializer(cpp, dataType.element)
+                            : selected,
                 });
             }
         }
@@ -2339,11 +2375,14 @@ function compileMapDataMethod(
                     `${narrowed.cpp}.get(${key})`,
                     dataType.value,
                 ),
+                ownedCpp: `${narrowed.cpp}.get_owned(${key})`,
+                nativeLvalue: true,
             };
         }
         return {
             kind: "data",
             cpp: `${narrowed.cpp}.get(${key})`,
+            ownedCpp: `${narrowed.cpp}.get_owned(${key})`,
             // TypeScript flattens `(T | null) | undefined` to one
             // nullable union. Preserve that shape so a single
             // source guard narrows a Map whose value is nullable.
@@ -2737,26 +2776,42 @@ function compileStringDataMethod(
                 "String.replace expects a pattern and replacement.",
             );
         }
-        const snapshot = (value: Value, label: string): string => {
+        const replacementType = lowerer.context.checker.getTypeAtLocation(
+            argumentAt(call, 1),
+        );
+        const callbackReplacement = (
+            replacementType.isUnion()
+                ? replacementType.types
+                : [replacementType]
+        ).some((type) => type.getCallSignatures().length !== 0);
+        const replacementMayChange =
+            callbackReplacement || expressionMayRunCode(argumentAt(call, 1));
+        const argumentsMayChange =
+            replacementMayChange || expressionMayRunCode(argumentAt(call, 0));
+        const snapshot = (
+            value: Value,
+            label: string,
+            mayChange: boolean,
+        ): string => {
+            if (!mayChange && cppIdentifierPattern.test(value.cpp))
+                return value.cpp;
             if (
                 value.staticString !== undefined &&
-                value.cpp === lowerer.context.cppString(value.staticString)
-            )
-                return value.cpp;
-            const name = lowerer.context.allocateTemporaryCppName(label);
-            lowerer.context.emit({
-                kind: "declaration",
-                type: "const std::string",
-                name,
-                initializer: value.cpp,
-                attributes: "[[maybe_unused]] ",
-            });
-            return name;
+                value.cpp !== lowerer.context.cppString(value.staticString)
+            ) {
+                value = { ...value };
+                delete value.staticString;
+            }
+            return lowerer.context.pinValueToTemporary(value, label).cpp;
         };
-        const source = snapshot(narrowed, "replace_source");
+        const source = snapshot(narrowed, "replace_source", argumentsMayChange);
         const pattern = lowerer.context.compileValue(argumentAt(call, 0));
         if (pattern.kind === "string" || pattern.dataType?.kind === "string") {
-            const search = snapshot(pattern, "replace_search");
+            const search = snapshot(
+                pattern,
+                "replace_search",
+                replacementMayChange,
+            );
             const replacementValue = lowerer.context.compileValue(
                 argumentAt(call, 1),
             );

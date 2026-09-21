@@ -19,6 +19,7 @@ export interface WorkerLoweringContext extends Pick<
     | "reachJsData"
     | "compileWorkerCallback"
     | "compileNumber"
+    | "pinValueToTemporary"
     | "emit"
     | "allocateTemporaryCppName"
     | "cppString"

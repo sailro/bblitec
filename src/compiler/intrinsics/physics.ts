@@ -367,14 +367,7 @@ function compileRayPointArgument(
                 "Retained physics ray point objects require a native reference representation.",
             );
         }
-        const owner = context.allocateTemporaryCppName("ray_point_owner");
-        context.emit({
-            kind: "declaration",
-            type: "const auto",
-            name: owner,
-            initializer: value.cpp,
-        });
-        value = { ...value, cpp: owner };
+        value = context.pinValueToTemporary(value, "ray_point_owner", point);
     }
     return context.vec3FromRecord(value, point, "double");
 }

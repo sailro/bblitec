@@ -32,7 +32,7 @@ inline const pal::FileDialogOptions voxel_file_dialog_options{
  * numbers spelled by the one formatter every string coercion shares.
  */
 template <typename SaveData>
-[[nodiscard]] inline bool save_voxel_world(Engine& engine, const SaveData& data) {
+[[nodiscard]] inline bool save_voxel_world(Engine& engine, Ref<SaveData> data) {
     if (!data || !data->player) {
         return false;
     }

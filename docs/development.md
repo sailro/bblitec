@@ -241,8 +241,8 @@ npm run lint:cpp -- all --generated --backend both
 
 Generate and build the selected scenes first. A build covers only its reached features and platform;
 use both backends and the affected subsystem configurations. Fix generated-code defects in the
-compiler, not its output. Generated analysis is opt-in, not a clean baseline: ownership snapshots and
-MSVC library modeling require diagnostic review. Suggested fixes are never applied to generated files.
+compiler, not its output. Generated analysis is opt-in and uses the same configured checks as maintained
+sources. Suggested fixes are never applied to generated files.
 
 ## Validation
 

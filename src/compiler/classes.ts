@@ -8,10 +8,13 @@ import type { LoweringServices } from "./lowering-services.js";
 import ts from "typescript";
 import { cppIdentifierPattern } from "../cpp-literals.js";
 import type { DataStructField, DataType } from "./data-types.js";
-import { passesByReference } from "./data-types.js";
+import { dataTypesEqual, passesByReference } from "./data-types.js";
 import type { Value } from "./types.js";
 import { sameCompiledValue } from "./types.js";
-import { parameterIsReadOnly } from "./user-functions.js";
+import {
+    borrowsReferenceParameter,
+    parameterIsReadOnly,
+} from "./user-functions.js";
 import { firstReturn } from "./loop-control.js";
 import {
     FunctionSpecializations,
@@ -76,13 +79,18 @@ interface ClassLoweringContext extends Pick<
     | "options"
     | "compileAsyncCall"
     | "dataTypes"
+    | "dataLowerer"
     | "nativeFunctions"
     | "functionEmissionScope"
     | "canShareFunctionBody"
     | "compileSharedMethod"
     | "registerNativeBinding"
+    | "registerNativeConstBinding"
+    | "registerNativeTemporary"
     | "lookupIdentifierValue"
+    | "identifierIsRebound"
     | "compileValue"
+    | "pinValueToTemporary"
     | "emitStatement"
     | "bindParameterValue"
     | "bindClassParameterValue"
@@ -155,6 +163,7 @@ export class ClassLowerer {
             parameters: readonly {
                 declaration: ts.ParameterDeclaration;
                 type: DataType;
+                borrowedWrapper: boolean;
             }[];
             returnType: DataType | undefined;
         }
@@ -855,9 +864,19 @@ export class ClassLowerer {
             const bound = this.context.allocateTemporaryCppName(
                 `${structName.toLowerCase()}_receiver`,
             );
+            const source = this.context.allocateTemporaryCppName(
+                `${structName.toLowerCase()}_receiver_source`,
+            );
+            const lifetime = this.context.allocateTemporaryCppName(
+                `${structName.toLowerCase()}_receiver_lifetime`,
+            );
+            this.context.emit(`const auto& ${source} = ${instanceCpp};`);
+            this.context.emit(
+                `[[maybe_unused]] auto ${lifetime} = ${source}.lifetime_owner();`,
+            );
             this.context.emit(
                 `${this.context.dataTypes.cppType(value.dataType)} ` +
-                    `${bound} = ${instanceCpp};`,
+                    `${bound} = ${source};`,
             );
             instanceCpp = bound;
         }
@@ -1152,10 +1171,15 @@ export class ClassLowerer {
             const result = returnsVoid
                 ? undefined
                 : `bbl_class_${this.context.allocateUserFunctionPrefix()}result`;
+            const needsFunctionScope =
+                !returnsVoid ||
+                firstReturn(method.body.statements) !== undefined;
             this.context.emit(
                 returnsVoid
-                    ? "[&]() -> void {"
-                    : `[[maybe_unused]] const auto ${result} = [&]() -> ${this.context.dataTypes.cppType(returnType!)} {`,
+                    ? needsFunctionScope
+                        ? "[&]() -> void {"
+                        : "{"
+                    : `[[maybe_unused]] auto ${result} = [&]() -> ${this.context.dataTypes.cppType(returnType!)} {`,
             );
             this.context.increaseIndent();
             this.context.beginNativeFunctionBody(returnType);
@@ -1167,7 +1191,9 @@ export class ClassLowerer {
                 this.context.endNativeFunctionBody();
                 this.context.decreaseIndent();
             }
-            this.context.emit("}();");
+            this.context.emit(needsFunctionScope ? "}();" : "}");
+            if (result)
+                this.context.registerNativeTemporary(result, returnType);
             return result
                 ? {
                       ...this.context.dataValue(result, returnType!),
@@ -1203,7 +1229,9 @@ export class ClassLowerer {
             this.bindParameters(setter, [value], undefined, false, [
                 argumentValue,
             ]);
-            this.context.emit("[&]() -> void {");
+            const needsFunctionScope =
+                firstReturn(setter.body.statements) !== undefined;
+            this.context.emit(needsFunctionScope ? "[&]() -> void {" : "{");
             this.context.increaseIndent();
             this.context.beginNativeFunctionBody(undefined);
             try {
@@ -1214,7 +1242,7 @@ export class ClassLowerer {
                 this.context.endNativeFunctionBody();
                 this.context.decreaseIndent();
             }
-            this.context.emit("}();");
+            this.context.emit(needsFunctionScope ? "}();" : "}");
         } finally {
             this.context.defineThis(previousThis);
             this.context.popScope();
@@ -1249,7 +1277,16 @@ export class ClassLowerer {
                     `Recursive method '${methodName}' parameters must contain only plain data.`,
                 );
             }
-            return { declaration: parameter, identifier: parameter.name, type };
+            return {
+                declaration: parameter,
+                identifier: parameter.name,
+                type,
+                borrowedWrapper: borrowsReferenceParameter(
+                    this.context,
+                    parameter.name,
+                    type,
+                ),
+            };
         });
         if (returnType && this.context.dataTypes.carriesHandle(returnType)) {
             this.context.fail(
@@ -1280,16 +1317,18 @@ export class ClassLowerer {
             ? this.context.dataTypes.cppType(returnType)
             : "void";
         const cppParameters = parameters.map(
-            ({ declaration, identifier, type }, index) => {
+            ({ declaration, identifier, type, borrowedWrapper }, index) => {
                 const cppType = this.context.dataTypes.cppType(type);
                 const readOnly = parameterIsReadOnly(
                     this.context.checker,
                     method,
                     identifier,
                 );
-                const typeCpp = passesByReference(this.context.dataTypes, type)
-                    ? `${readOnly ? "const " : ""}${cppType}&`
-                    : cppType;
+                const typeCpp =
+                    passesByReference(this.context.dataTypes, type) ||
+                    borrowedWrapper
+                        ? `${readOnly || borrowedWrapper ? "const " : ""}${cppType}&`
+                        : cppType;
                 return {
                     name: `${prefix}arg_${index}`,
                     typeCpp,
@@ -1297,6 +1336,7 @@ export class ClassLowerer {
                     identifier,
                     type,
                     readOnly,
+                    borrowedWrapper,
                 };
             },
         );
@@ -1316,6 +1356,11 @@ export class ClassLowerer {
         this.context.beginNativeFunctionBody(returnType);
         try {
             for (const parameter of cppParameters) {
+                if (parameter.borrowedWrapper)
+                    this.context.registerNativeConstBinding(
+                        parameter.name,
+                        true,
+                    );
                 this.context.bindParameterValue(parameter.identifier, {
                     ...this.context.dataValue(parameter.name, parameter.type),
                     ...(parameter.readOnly ? { readOnly: true as const } : {}),
@@ -1351,6 +1396,7 @@ export class ClassLowerer {
         parameters: readonly {
             declaration: ts.ParameterDeclaration;
             type: DataType;
+            borrowedWrapper: boolean;
         }[],
         returnType: DataType | undefined,
     ): Value {
@@ -1360,16 +1406,44 @@ export class ClassLowerer {
                 "Recursive method received too many arguments.",
             );
         }
-        const argumentsCpp = parameters.map(({ declaration, type }, index) => {
-            const argument = call.arguments[index] ?? declaration.initializer;
-            if (!argument) {
-                this.context.fail(
-                    call,
-                    `Recursive method argument ${index + 1} is required.`,
-                );
-            }
-            return this.context.compileForDataSink(argument, type);
-        });
+        const argumentsCpp = parameters.map(
+            ({ declaration, type, borrowedWrapper }, index) => {
+                const argument =
+                    call.arguments[index] ?? declaration.initializer;
+                if (!argument) {
+                    this.context.fail(
+                        call,
+                        `Recursive method argument ${index + 1} is required.`,
+                    );
+                }
+                if (borrowedWrapper) {
+                    const rawValue =
+                        this.context.dataLowerer.compileDataPath(
+                            argument,
+                            "read",
+                        ) ?? this.context.compileValue(argument);
+                    const value =
+                        rawValue.kind === "data"
+                            ? this.context.dataLowerer.narrowOptional(
+                                  rawValue,
+                                  argument,
+                              )
+                            : rawValue;
+                    if (
+                        value.kind === "data" &&
+                        value.dataType &&
+                        dataTypesEqual(value.dataType, type)
+                    ) {
+                        return this.context.pinValueToTemporary(
+                            value,
+                            "function_argument",
+                            argument,
+                        ).cpp;
+                    }
+                }
+                return this.context.compileForDataSink(argument, type);
+            },
+        );
         const invocation = `${cppName}(${argumentsCpp.join(", ")})`;
         if (!returnType) {
             return { kind: "void", cpp: invocation };

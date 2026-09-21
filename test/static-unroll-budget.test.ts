@@ -106,10 +106,7 @@ test("folds a large handle-tuple for...of into a static table and one native loo
         result.cpp,
         /const bbl::MeshHandle v_bblite_handle_table_\d+\[300\] = \{/,
     );
-    assert.match(
-        result.cpp,
-        /\{\n\s*v_bblite_array_handle_\d+, v_bblite_array_handle_\d+, /,
-    );
+    assert.match(result.cpp, /\{\n\s*v_box0, v_box1, /);
     assert.match(
         result.cpp,
         /for \(const bbl::MeshHandle v_bblite_handle_table_member_\d+ : v_bblite_handle_table_\d+\) \{/,

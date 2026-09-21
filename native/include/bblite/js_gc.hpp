@@ -28,40 +28,41 @@ class TraceVisitor;
 namespace gc {
 struct Node;
 struct Registry {
-    Node* first = nullptr;
-    std::size_t size = 0;
+    std::vector<Node*> nodes;
     std::size_t allocations = 0;
     std::size_t total_allocations = 0;
     unsigned frames_since_collection = 0;
     bool collecting = false;
+    ~Registry() noexcept;
 };
 // Generated JavaScript values belong to the control thread, as Ref counts do.
 inline thread_local Registry registry;
 
 struct Node {
-    Node* previous = nullptr;
-    Node* next = nullptr;
+    std::size_t registry_index = 0;
     std::size_t incoming = 0;
     bool reachable = false;
-    bool payload_alive = true;
+    bool payload_alive = false;
+    bool linked = false;
     Node() {
-        next = registry.first;
-        if (next)
-            next->previous = this;
-        registry.first = this;
-        ++registry.size;
         ++registry.allocations;
         ++registry.total_allocations;
     }
-    virtual ~Node() {
-        if (previous)
-            previous->next = next;
-        else
-            registry.first = next;
-        if (next)
-            next->previous = previous;
-        --registry.size;
+    void attach() {
+        const auto index = registry.nodes.size();
+        registry.nodes.push_back(this);
+        registry_index = index;
+        linked = true;
     }
+    void detach() noexcept {
+        if (!linked)
+            return;
+        registry.nodes[registry_index] = registry.nodes.back();
+        registry.nodes[registry_index]->registry_index = registry_index;
+        registry.nodes.pop_back();
+        linked = false;
+    }
+    virtual ~Node() { detach(); }
     Node(const Node&) = delete;
     Node& operator=(const Node&) = delete;
     virtual void trace(const TraceVisitor&) const = 0;
@@ -178,21 +179,54 @@ private:
     void* state_;
 };
 
+inline gc::Registry::~Registry() noexcept {
+    // Pin the complete registry before clearing cycles; payload destruction
+    // can publish more nodes, which join the same teardown.
+    collecting = true;
+    std::size_t pinned = 0;
+    std::size_t cleared = 0;
+    for (;;) {
+        while (pinned < nodes.size()) {
+            nodes[pinned]->pin();
+            ++pinned;
+        }
+        while (cleared < pinned) {
+            nodes[cleared]->clear();
+            ++cleared;
+        }
+        if (pinned == nodes.size())
+            break;
+    }
+    // Longer-lived invalid roots must not touch a destroyed thread registry.
+    while (!nodes.empty()) {
+        auto* node = nodes.back();
+        node->detach();
+        node->unpin();
+    }
+}
+
 namespace gc {
 template <typename T> struct SharedBlock final : Node {
     template <typename... Args>
-    explicit SharedBlock(Args&&... args) : value(std::in_place, std::forward<Args>(args)...) {}
-    ~SharedBlock() override { clear(); }
-    std::optional<T> value;
+    explicit SharedBlock(Args&&... args) : value(std::forward<Args>(args)...) {
+        payload_alive = true;
+    }
+    ~SharedBlock() override {
+        detach();
+        clear();
+    }
+    union {
+        T value;
+    };
     std::weak_ptr<const void> identity;
     std::shared_ptr<const void> retained;
     void trace(const TraceVisitor& visitor) const override {
-        if (value)
-            visitor(*value);
+        if (payload_alive)
+            visitor(value);
     }
     void clear() noexcept override {
-        payload_alive = false;
-        value.reset();
+        if (std::exchange(payload_alive, false))
+            std::destroy_at(std::addressof(value));
     }
     std::size_t owners() const noexcept override {
         return static_cast<std::size_t>(identity.use_count());
@@ -208,7 +242,8 @@ template <typename T, typename... Args>
 [[nodiscard]] std::shared_ptr<T> make_gc_shared(Args&&... args) {
     auto block = std::make_shared<gc::SharedBlock<T>>(std::forward<Args>(args)...);
     block->identity = block;
-    auto* value = std::addressof(*block->value);
+    block->attach();
+    auto* value = std::addressof(block->value);
     if constexpr (requires { value->gc_bind_node(block.get()); })
         value->gc_bind_node(block.get());
     return {std::move(block), value};
@@ -222,13 +257,11 @@ template <typename T> [[nodiscard]] auto make_gc_cell(T&& value) {
  * still die immediately through their existing reference-count operations. */
 inline std::size_t collect_cycles() {
     auto& registry = gc::registry;
-    if (registry.collecting || !registry.first)
+    if (registry.collecting || registry.nodes.empty())
         return 0;
-    std::vector<gc::Node*> nodes;
-    nodes.reserve(registry.size);
+    const auto nodes = registry.nodes;
     gc::SharedNodes shared;
-    for (auto* node = registry.first; node; node = node->next) {
-        nodes.push_back(node);
+    for (auto* node : nodes) {
         auto identity = node->shared_owner();
         if (!identity.expired())
             shared.emplace_back(std::move(identity), node);
@@ -296,12 +329,12 @@ inline std::size_t collect_cycles() {
     return collected;
 }
 
-inline std::size_t managed_node_count() noexcept { return gc::registry.size; }
+inline std::size_t managed_node_count() noexcept { return gc::registry.nodes.size(); }
 
 /** Bounded cadence also handles dropping the last root without allocating. */
 inline void collect_at_frame_boundary() {
     auto& registry = gc::registry;
-    if (!registry.first)
+    if (registry.nodes.empty())
         return;
     ++registry.frames_since_collection;
     if (registry.frames_since_collection >= 60 ||

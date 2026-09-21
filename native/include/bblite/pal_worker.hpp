@@ -73,8 +73,7 @@ public:
     void terminate() { inbox_->terminate(); }
     void add_message_listener(MessageCallback callback, bool once = false) {
         require_owner();
-        const auto identity = callback.identity();
-        message_listeners_.add(identity, std::move(callback), once);
+        message_listeners_.add(std::move(callback), once);
     }
     void remove_message_listener(const MessageCallback& callback) {
         require_owner();
@@ -82,8 +81,7 @@ public:
     }
     void add_error_listener(ErrorCallback callback, bool once = false) {
         require_owner();
-        const auto identity = callback.identity();
-        error_listeners_.add(identity, std::move(callback), once);
+        error_listeners_.add(std::move(callback), once);
     }
     void remove_error_listener(const ErrorCallback& callback) {
         require_owner();
@@ -201,8 +199,7 @@ public:
 
     void add_message_listener(Worker::MessageCallback callback, bool once = false) {
         require_owner();
-        const auto identity = callback.identity();
-        messages_.add(identity, std::move(callback), once);
+        messages_.add(std::move(callback), once);
     }
     void remove_message_listener(const Worker::MessageCallback& callback) {
         require_owner();

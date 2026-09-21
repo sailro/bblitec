@@ -176,6 +176,41 @@ private:
     std::shared_ptr<Callback> recursive_owner_;
 };
 
+template <typename R, typename... Args>
+[[nodiscard]] auto snapshot_callback(const Callback<R(Args...)>& callback) {
+    return callback.snapshot();
+}
+
+template <typename Function> class NativeInvocation {
+public:
+    explicit NativeInvocation(Function function) : function_(function) {}
+    template <typename... Args>
+    std::invoke_result_t<Function, Args...> operator()(Args&&... args) const {
+        if (!function_)
+            throw std::bad_function_call();
+        return function_(std::forward<Args>(args)...);
+    }
+    explicit operator bool() const { return function_ != nullptr; }
+
+private:
+    Function function_;
+};
+
+template <typename R, bool Noexcept, typename... Args>
+[[nodiscard]] auto snapshot_callback(R (*function)(Args...) noexcept(Noexcept)) {
+    return NativeInvocation<decltype(function)>{function};
+}
+
+template <typename Function>
+    requires(std::is_empty_v<Function> &&
+             requires(const Function& function) {
+                 requires std::is_pointer_v<decltype(+function)>;
+                 requires std::is_function_v<std::remove_pointer_t<decltype(+function)>>;
+             })
+[[nodiscard]] auto snapshot_callback(const Function& function) {
+    return snapshot_callback(+function);
+}
+
 // A signature adapter keeps the function's identity and traced environment.
 template <typename Target, typename Source, typename Invoke>
 [[nodiscard]] Target adapt_callback(Source source, Invoke invoke) {

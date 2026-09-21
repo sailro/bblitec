@@ -168,7 +168,7 @@ export function lowerGltfMaterialObjectFunction(
             const expression = ts.isShorthandPropertyAssignment(property)
                 ? property.name
                 : property.initializer;
-            return `${result}.set(${JSON.stringify(property.name.text)}, ${lowerer.expression(expression)});`;
+            return `${result}.assign(${JSON.stringify(property.name.text)}, ${lowerer.expression(expression)});`;
         });
         return `[&]() { auto ${result} = GltfPbrValue::object(); ${statements.join(" ")} return ${result}; }()`;
     };
@@ -512,6 +512,18 @@ export function lowerGltfMaterialObjectFunction(
                 const expression = context.unwrapExpression(
                     statement.expression,
                 );
+                if (
+                    ts.isBinaryExpression(expression) &&
+                    expression.operatorToken.kind === ts.SyntaxKind.EqualsToken
+                ) {
+                    const target = member(expression.left, lowerer);
+                    if (target) {
+                        const receiver = `material_target_${temporary++}`;
+                        return [
+                            `${indent}{ ${snapshotType(target.owner)} ${receiver} = ${target.receiver}; ${receiver}.assign(${target.key}, ${value(expression.right, lowerer)}); }`,
+                        ];
+                    }
+                }
                 if (
                     ts.isCallExpression(expression) &&
                     context.expressionMatchesShape(

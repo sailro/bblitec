@@ -34,7 +34,7 @@ public:
 class JsonValue {
 public:
     using Array = std::vector<JsonValue>;
-    using Object = std::map<std::string, JsonValue>;
+    using Object = std::map<std::string, JsonValue, std::less<>>;
     using Storage = std::variant<std::nullptr_t, bool, double, std::string, Array, Object>;
 
     JsonValue() : storage_(nullptr) {}

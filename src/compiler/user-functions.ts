@@ -96,6 +96,49 @@ function generationKnownStringArgument(value: Value): boolean {
     return known(value);
 }
 
+/** Plain-data field reads cannot invoke accessors; preserve real getter effects. */
+function dataArgumentMayRunCode(
+    checker: ts.TypeChecker,
+    expression: ts.Expression,
+): boolean {
+    return someAnalysisNode(
+        expression,
+        (node) => {
+            if (
+                ts.isCallExpression(node) ||
+                ts.isNewExpression(node) ||
+                ts.isElementAccessExpression(node) ||
+                isUpdateExpression(node) ||
+                isAssignmentExpression(node)
+            ) {
+                return true;
+            }
+            if (!ts.isPropertyAccessExpression(node)) return false;
+            const symbol = checker.getSymbolAtLocation(node.name);
+            return (
+                !symbol ||
+                (symbol.declarations ?? []).some((declaration) =>
+                    ts.isGetAccessorDeclaration(declaration),
+                )
+            );
+        },
+        { functions: "skip", types: "skip" },
+    );
+}
+
+export function borrowsReferenceParameter(
+    context: Pick<LoweringServices, "dataTypes" | "identifierIsRebound">,
+    parameter: ts.BindingName,
+    type: DataType,
+): boolean {
+    return (
+        type.kind === "struct" &&
+        context.dataTypes.isReferenceStruct(type.name) &&
+        ts.isIdentifier(parameter) &&
+        !context.identifierIsRebound(parameter)
+    );
+}
+
 /** The index of a declaration's rest parameter, when it declares one. */
 function restParameterIndex(
     declaration: SupportedFunction,
@@ -958,6 +1001,7 @@ export interface UserFunctionContext
             | "emitExpressionAsStatement"
             | "emitDiscardedValue"
             | "lookupIdentifierValue"
+            | "identifierIsRebound"
             | "functionEmissionScope"
             | "activeThis"
             | "canShareFunctionBody"
@@ -995,6 +1039,7 @@ export interface UserFunctionContext
             | "beginNativeFunctionBody"
             | "endNativeFunctionBody"
             | "registerNativeBinding"
+            | "registerNativeTemporary"
             | "registerNativeFunction"
             | "registerSharedNativeFunction"
             | "captureManagedClosureLines"
@@ -1826,6 +1871,7 @@ export class UserFunctionLowerer {
             );
         }
         const runtimeArguments: string[] = [];
+        let lastEffectfulArgument: number | undefined;
         declaration.parameters.forEach((parameter, index) => {
             const argument = expressions[index] ?? parameter.initializer;
             const evaluated =
@@ -1844,14 +1890,81 @@ export class UserFunctionLowerer {
             }
             const type = parameterTypes[index];
             if (type) {
-                const cpp = evaluated
-                    ? context.dataLowerer.compileKnownValueForSink(
-                          evaluated,
-                          type,
-                          argument ?? parameter,
-                      )
-                    : context.compileForDataSink(argument!, type);
-                if (passesByReference(context.dataTypes, type)) {
+                const borrowedReference = borrowsReferenceParameter(
+                    context,
+                    parameter.name,
+                    type,
+                );
+                let cpp: string;
+                if (borrowedReference) {
+                    const rawValue =
+                        evaluated ??
+                        context.dataLowerer.compileDataPath(
+                            argument!,
+                            "read",
+                        ) ??
+                        context.compileValue(argument!);
+                    const value =
+                        rawValue.kind === "data" && argument
+                            ? context.dataLowerer.narrowOptional(
+                                  rawValue,
+                                  argument,
+                              )
+                            : rawValue;
+                    cpp =
+                        value.kind === "data" &&
+                        value.dataType &&
+                        dataTypesEqual(value.dataType, type)
+                            ? (() => {
+                                  if (
+                                      evaluatedArguments === undefined &&
+                                      lastEffectfulArgument === undefined
+                                  ) {
+                                      lastEffectfulArgument =
+                                          expressions.length - 1;
+                                      while (
+                                          lastEffectfulArgument >= 0 &&
+                                          !dataArgumentMayRunCode(
+                                              context.checker,
+                                              expressions[
+                                                  lastEffectfulArgument
+                                              ]!,
+                                          )
+                                      )
+                                          --lastEffectfulArgument;
+                                  }
+                                  const laterEffect =
+                                      index < (lastEffectfulArgument ?? -1);
+                                  if (!laterEffect) {
+                                      context.useNativeValue(value);
+                                      return value.cpp;
+                                  }
+                                  return context.pinValueToTemporary(
+                                      value,
+                                      "function_argument",
+                                      argument,
+                                  ).cpp;
+                              })()
+                            : evaluated
+                              ? context.dataLowerer.compileKnownValueForSink(
+                                    evaluated,
+                                    type,
+                                    argument ?? parameter,
+                                )
+                              : context.compileForDataSink(argument!, type);
+                } else {
+                    cpp = evaluated
+                        ? context.dataLowerer.compileKnownValueForSink(
+                              evaluated,
+                              type,
+                              argument ?? parameter,
+                          )
+                        : context.compileForDataSink(argument!, type);
+                }
+                if (
+                    passesByReference(context.dataTypes, type) ||
+                    borrowedReference
+                ) {
                     // Bind both lvalues and temporary identity-bearing containers.
                     const name =
                         context.allocateTemporaryCppName("call_argument");
@@ -2438,6 +2551,15 @@ export class UserFunctionLowerer {
                               context.dataTypes,
                               type,
                               entry.parameterReadOnly[index]!,
+                              type.kind === "struct" &&
+                                  context.dataTypes.isReferenceStruct(
+                                      type.name,
+                                  ) &&
+                                  borrowsReferenceParameter(
+                                      context,
+                                      entry.ir.parameters[index]!.name,
+                                      type,
+                                  ),
                           )
                         : undefined,
                 )
@@ -2547,6 +2669,9 @@ export class UserFunctionLowerer {
         metadata: Value | undefined,
         call: ts.Node,
     ): Value {
+        if (result.kind !== "void") {
+            result = { ...result, nativeOwnedRvalue: true };
+        }
         if (!metadata) return result;
         if (isHandleKind(result.kind))
             return withNativeMetadata(result, metadata);
@@ -2729,13 +2854,23 @@ export class UserFunctionLowerer {
                 }
                 const cppName = `${parameterPrefix}recursive_arg_${runtimeIndex++}`;
                 parameterNames.push(cppName);
+                const borrowedReference = borrowsReferenceParameter(
+                    context,
+                    parameter.name,
+                    type,
+                );
                 parameterDeclarations.push(
-                    `[[maybe_unused]] ${this.recursiveParameterCpp(context.dataTypes, type, entry.parameterReadOnly[index]!)} ${cppName}`,
+                    `[[maybe_unused]] ${this.recursiveParameterCpp(context.dataTypes, type, entry.parameterReadOnly[index]!, borrowedReference)} ${cppName}`,
                 );
                 parameterBindings.push({
                     parameter,
                     value: {
-                        ...context.dataValue(cppName, type),
+                        ...this.nativeParameterValue(
+                            context,
+                            parameter.name,
+                            cppName,
+                            type,
+                        ),
                         ...(entry.parameterReadOnly[index]
                             ? { readOnly: true as const }
                             : {}),
@@ -2997,11 +3132,26 @@ export class UserFunctionLowerer {
         dataTypes: DataTypeRegistry,
         type: DataType,
         readOnly: boolean,
+        borrowedReference: boolean,
     ): string {
         const cpp = dataTypes.cppType(type);
-        return passesByReference(dataTypes, type)
-            ? `${readOnly ? "const " : ""}${cpp}&`
+        return passesByReference(dataTypes, type) || borrowedReference
+            ? `${readOnly || borrowedReference ? "const " : ""}${cpp}&`
             : cpp;
+    }
+
+    private nativeParameterValue(
+        context: UserFunctionContext,
+        parameter: ts.BindingName,
+        name: string,
+        type: DataType,
+    ): Value {
+        return context.dataValue(
+            type.kind === "string" && ts.isIdentifier(parameter)
+                ? `std::move(${name})`
+                : name,
+            type,
+        );
     }
 
     private declarationIdentifier(
@@ -3401,11 +3551,10 @@ export class UserFunctionLowerer {
                             continue;
                         }
                         const { type, cppName: name } = supplied;
-                        let value = context.dataValue(
-                            type.kind === "string" &&
-                                ts.isIdentifier(parameter.name)
-                                ? `std::move(${name})`
-                                : name,
+                        let value = this.nativeParameterValue(
+                            context,
+                            parameter.name,
+                            name,
                             type,
                         );
                         if (
@@ -3815,7 +3964,7 @@ export class UserFunctionLowerer {
             context.dataTypes.markStoredObjectReferences(returnType);
         const result = `bbl_fn_${context.allocateUserFunctionPrefix()}result`;
         context.emit(
-            `${returnType ? `[[maybe_unused]] const auto ${result} = ` : ""}[&]() -> ${returnType ? context.dataTypes.cppType(returnType) : "void"} {`,
+            `${returnType ? `[[maybe_unused]] auto ${result} = ` : ""}[&]() -> ${returnType ? context.dataTypes.cppType(returnType) : "void"} {`,
         );
         context.increaseIndent();
         context.beginNativeFunctionBody(
@@ -3845,6 +3994,7 @@ export class UserFunctionLowerer {
             context.decreaseIndent();
         }
         context.emit("}();");
+        if (returnType) context.registerNativeTemporary(result, returnType);
         return returnType
             ? context.dataValue(result, returnType)
             : { kind: "void", cpp: "" };

@@ -169,6 +169,9 @@ export interface DataLoweringContext
             | "isDefaultLibraryIdentifier"
             | "useNativeValue"
             | "registerNativeBinding"
+            | "registerNativeTemporary"
+            | "nativeBindingCheckpoint"
+            | "takeNativeTemporary"
             | "registerSharedNativeFunction"
             | "checker"
             | "lookup"
@@ -1090,20 +1093,31 @@ export class DataLowerer {
         let presentOwner: Value;
         let snapshotPresentOwner = false;
         if (owner.dataType?.kind === "optional") {
-            const temporary =
-                this.context.allocateTemporaryCppName("optional_chain");
             // Reads borrow container storage. Calls snapshot the receiver:
             // evaluating an argument can clear the original nullable slot.
-            this.context.emit({
-                kind: "declaration",
-                type: ts.isCallExpression(access) ? "auto" : "const auto&",
-                name: temporary,
-                initializer: owner.cpp,
-                attributes: "[[maybe_unused]] ",
-            });
-            present = `${temporary}.has_value()`;
+            const selected = ts.isCallExpression(access)
+                ? this.context.pinValueToTemporary(
+                      owner,
+                      "optional_chain",
+                      access.expression,
+                  )
+                : (() => {
+                      const temporary =
+                          this.context.allocateTemporaryCppName(
+                              "optional_chain",
+                          );
+                      this.context.emit({
+                          kind: "declaration",
+                          type: "const auto&",
+                          name: temporary,
+                          initializer: owner.cpp,
+                          attributes: "[[maybe_unused]] ",
+                      });
+                      return { ...owner, cpp: temporary };
+                  })();
+            present = `${selected.cpp}.has_value()`;
             presentOwner = withNativeMetadata(
-                this.leafValue(`(*${temporary})`, owner.dataType.inner),
+                this.leafValue(`(*${selected.cpp})`, owner.dataType.inner),
                 plainOwner,
             );
         } else if (optionalFoundCpp !== undefined) {
@@ -1154,15 +1168,11 @@ export class DataLowerer {
         let selected: Value | undefined;
         const selectedLines = this.context.captureEmittedLines(() => {
             if (snapshotPresentOwner) {
-                const temporary =
-                    this.context.allocateTemporaryCppName("optional_receiver");
-                this.context.emit({
-                    kind: "declaration",
-                    type: "const auto",
-                    name: temporary,
-                    initializer: presentOwner.cpp,
-                });
-                presentOwner = { ...presentOwner, cpp: temporary };
+                presentOwner = this.context.pinValueToTemporary(
+                    presentOwner,
+                    "optional_receiver",
+                    ts.isCallExpression(access) ? access.expression : undefined,
+                );
             }
             this.context.enterRuntimeControlFlow();
             try {
@@ -1243,11 +1253,12 @@ export class DataLowerer {
                 ? `(${selectedPresent} ? ${selectedCpp} : ${empty})`
                 : selectedCpp;
             this.context.emit(
-                `const ${cppType} ${result} = ([&]() -> ${cppType} {\n` +
+                `${cppType} ${result} = ([&]() -> ${cppType} {\n` +
                     `    if (!(${present})) return ${empty};\n` +
                     selectedLines.map((line) => `    ${line}\n`).join("") +
                     `    return ${resultCpp};\n}());`,
             );
+            this.context.registerNativeTemporary(result, type);
             return this.leafValue(result, type);
         };
         if (
@@ -1725,12 +1736,25 @@ export class DataLowerer {
             declared.kind !== "optional" &&
             dataTypesEqual(declared, value.dataType.inner)
         ) {
-            return withNativeMetadata(
-                this.leafValue(`(*${value.cpp})`, declared),
-                value,
-            );
+            return this.presentOptionalValue(value, declared);
         }
         return value;
+    }
+
+    private presentOptionalValue(value: Value, inner: DataType): Value {
+        const present = withNativeMetadata(
+            this.leafValue(`(*${value.cpp})`, inner),
+            value,
+        );
+        present.nativeLvalue = true;
+        if (cppIdentifierPattern.test(value.cpp))
+            present.stableOwnerCpp = value.cpp;
+        if (value.ownedCpp !== undefined) {
+            present.ownedCpp = `bbl::js::snapshot_value(*(${value.cpp}))`;
+        } else {
+            delete present.ownedCpp;
+        }
+        return present;
     }
 
     /**
@@ -1793,10 +1817,7 @@ export class DataLowerer {
                         this.narrowedUnionMemberIndex(inner, narrowed) >= 0)))
         ) {
             return this.narrowOptional(
-                withNativeMetadata(
-                    this.leafValue(`(*${value.cpp})`, inner),
-                    value,
-                ),
+                this.presentOptionalValue(value, inner),
                 expression,
                 false,
                 expectedType,
@@ -1865,17 +1886,23 @@ export class DataLowerer {
         // spellings follow the temporary. A name reads twice for free, and
         // a flag another source supplied selects the value once already.
         const left =
-            !storage &&
-            computed.dataType?.kind === "struct" &&
-            computed.optionalFoundCpp ===
-                this.referencePresence(computed.cpp) &&
-            !cppIdentifierPattern.test(computed.cpp)
+            computed.ownedCpp !== undefined
                 ? this.context.pinValueToTemporary(
                       computed,
                       "nullish",
                       expression.left,
                   )
-                : computed;
+                : !storage &&
+                    computed.dataType?.kind === "struct" &&
+                    computed.optionalFoundCpp ===
+                        this.referencePresence(computed.cpp) &&
+                    !cppIdentifierPattern.test(computed.cpp)
+                  ? this.context.pinValueToTemporary(
+                        computed,
+                        "nullish",
+                        expression.left,
+                    )
+                  : computed;
         if (left.kind === "json-null") {
             return this.context.compileValue(expression.right);
         }
@@ -2078,13 +2105,11 @@ export class DataLowerer {
                         : {}),
                 };
             }
-            const temp = this.context.allocateTemporaryCppName("nullish");
-            this.context.emit({
-                kind: "declaration",
-                type: "const auto",
-                name: temp,
-                initializer: left.cpp,
-            });
+            const temp = this.context.pinValueToTemporary(
+                left,
+                "nullish",
+                expression.left,
+            ).cpp;
             const right = this.context.unwrap(expression.right);
             if (
                 right.kind === ts.SyntaxKind.NullKeyword ||
@@ -2286,6 +2311,7 @@ export class DataLowerer {
                     : `${owner.cpp}.${field.name}`,
                 field.type,
             );
+            value.nativeLvalue = true;
             if (field.uncheckedProperty) value.preserveUncheckedLookup = true;
             const staticField =
                 !this.context.dataTypes.isReferenceStruct(dataType.name) ||
@@ -2343,7 +2369,7 @@ export class DataLowerer {
                 owner.cpp,
                 this.context.cppString(property),
                 dataType.value,
-                { kind: "optional", inner: dataType.value },
+                this.context.dataTypes.nullableType(dataType.value),
             );
         }
         if (
@@ -2678,7 +2704,10 @@ export class DataLowerer {
         if (dataType.kind === "numberindex") {
             const receiver =
                 this.context.allocateTemporaryCppName("indexed_numbers");
-            this.context.emit(`const auto ${receiver} = ${owner.cpp};`);
+            const selection = expressionMayRunCode(access.argumentExpression)
+                ? "const auto"
+                : "const auto&";
+            this.context.emit(`${selection} ${receiver} = ${owner.cpp};`);
             const index = this.context.compileNumber(
                 access.argumentExpression,
                 "double",
@@ -2792,10 +2821,13 @@ export class DataLowerer {
                     ? "->"
                     : ".";
                 return withNativeMetadata(
-                    this.leafValue(
-                        `${owner.cpp}${arrow}${field.name}`,
-                        field.type,
-                    ),
+                    {
+                        ...this.leafValue(
+                            `${owner.cpp}${arrow}${field.name}`,
+                            field.type,
+                        ),
+                        nativeLvalue: true,
+                    },
                     mode === "read" &&
                         (field.readOnly || owner.recordOwnKeys || arrow === ".")
                         ? owner.recordProperties?.[name]
@@ -2970,6 +3002,7 @@ export class DataLowerer {
             case "vector": {
                 const value: Value = {
                     ...this.leafValue(indexed, dataType.element),
+                    ...(mode === "read" ? { nativeLvalue: true as const } : {}),
                     nativeCaptures: owner.nativeCaptures ?? [],
                     ...(owner.readOnly ? { readOnly: true as const } : {}),
                     ...(ownedRead &&
@@ -3665,6 +3698,8 @@ export class DataLowerer {
         }
         return {
             ...this.leafValue(lookup, lookupType),
+            ownedCpp: `${owner}.get_owned(${key})`,
+            nativeLvalue: true,
             preserveUncheckedLookup: true,
         };
     }
@@ -5033,7 +5068,7 @@ export class DataLowerer {
             kind: "declaration",
             type: "const auto",
             name: callback,
-            initializer: `(${callable}).snapshot()`,
+            initializer: `bbl::js::snapshot_callback(${callable})`,
         });
         const args = this.compileFunctionArguments(call, functionType);
         const cpp = `${callback}(${args.join(", ")})`;
@@ -5064,7 +5099,7 @@ export class DataLowerer {
         const lines = this.context.captureEmittedLines(() => {
             if (receiver) this.context.emit(`if (!(${receiver})) ${missing}`);
             this.context.emit(
-                `const auto ${callback} = (${callable}).snapshot();`,
+                `const auto ${callback} = bbl::js::snapshot_callback(${callable});`,
             );
             if (call.questionDotToken)
                 this.context.emit(`if (!${callback}) ${missing}`);
@@ -5225,7 +5260,7 @@ export class DataLowerer {
         });
         this.context.emit({
             kind: "declaration",
-            type: "static const auto",
+            type: "static thread_local const auto",
             name: source,
             initializer: sourceCpp,
         });
@@ -5565,13 +5600,11 @@ export class DataLowerer {
             }
             // Constructor arguments evaluate left-to-right, including an
             // owner or numeric expression that changes another binding.
-            const buffer = this.context.allocateTemporaryCppName("view_buffer");
-            this.context.emit({
-                kind: "declaration",
-                type: "const auto",
-                name: buffer,
-                initializer: source.cpp,
-            });
+            const buffer = this.context.pinValueToTemporary(
+                source,
+                "view_buffer",
+                unwrapped,
+            ).cpp;
             const numericArgument = (argument: ts.Expression): string => {
                 const value = this.context.compileNumber(argument, "double");
                 const temporary =
@@ -6052,6 +6085,13 @@ export class DataLowerer {
             value = this.narrowOptional(value, node);
         }
         if (
+            value.ownedCpp !== undefined &&
+            value.dataType !== undefined &&
+            dataTypesEqual(value.dataType, dataType)
+        ) {
+            return value.ownedCpp;
+        }
+        if (
             dataType.kind !== "borrowed-platform-event" &&
             value.dataType &&
             this.spanCompatible(value.dataType, dataType)
@@ -6078,10 +6118,7 @@ export class DataLowerer {
                                     ) >= 0,
                             ))))
             ) {
-                value = withNativeMetadata(
-                    this.leafValue(`(*${value.cpp})`, inner),
-                    value,
-                );
+                value = this.presentOptionalValue(value, inner);
             }
         }
         if (value.dataType?.kind === "union" && dataType.kind !== "union") {
@@ -9262,6 +9299,7 @@ export class DataLowerer {
             operand: ts.Expression,
             expected: Extract<DataType, { kind: "optional" }>,
             lowered?: Value,
+            snapshot = true,
         ): string => {
             this.context.reachJsData();
             const value =
@@ -9277,7 +9315,7 @@ export class DataLowerer {
                     this.context.allocateTemporaryCppName("optional_compare");
                 this.context.emit({
                     kind: "declaration",
-                    type: "const auto",
+                    type: snapshot ? "const auto" : "const auto&",
                     name: temporary,
                     initializer: value.optionalStorageCpp,
                 });
@@ -9333,7 +9371,7 @@ export class DataLowerer {
                 this.context.allocateTemporaryCppName("optional_compare");
             this.context.emit({
                 kind: "declaration",
-                type: "const auto",
+                type: snapshot ? "const auto" : "const auto&",
                 name: temporary,
                 initializer: this.compileKnownValueForSink(
                     value,
@@ -9348,15 +9386,30 @@ export class DataLowerer {
             optionalComparable(rightType) &&
             dataTypesEqual(leftType.inner, rightType.inner)
         ) {
-            const leftCpp = bindOptional(left, leftType, leftOptional);
-            const rightCpp = bindOptional(right, rightType, rightOptional);
+            const leftCpp = bindOptional(
+                left,
+                leftType,
+                leftOptional,
+                expressionMayRunCode(right),
+            );
+            const rightCpp = bindOptional(
+                right,
+                rightType,
+                rightOptional,
+                false,
+            );
             const equal =
                 `(${leftCpp}.has_value() == ${rightCpp}.has_value() && ` +
                 `(!${leftCpp}.has_value() || (*${leftCpp}) == (*${rightCpp})))`;
             return negated ? `!${equal}` : equal;
         }
         if (optionalComparable(leftType)) {
-            const leftCpp = bindOptional(left, leftType, leftOptional);
+            const leftCpp = bindOptional(
+                left,
+                leftType,
+                leftOptional,
+                expressionMayRunCode(right),
+            );
             const present = widenTag(
                 { cpp: `(*${leftCpp})`, dataType: leftType.inner },
                 left,
@@ -9368,7 +9421,12 @@ export class DataLowerer {
             return negated ? `!${equal}` : equal;
         }
         if (optionalComparable(rightType)) {
-            const rightCpp = bindOptional(right, rightType, rightOptional);
+            const rightCpp = bindOptional(
+                right,
+                rightType,
+                rightOptional,
+                false,
+            );
             const present = widenTag(
                 { cpp: `(*${rightCpp})`, dataType: rightType.inner },
                 right,

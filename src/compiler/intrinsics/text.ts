@@ -19,7 +19,6 @@ import {
 import type { Value } from "../types.js";
 import type { IntrinsicCallContext } from "./context.js";
 import { pinnedHandleKind } from "../data-types.js";
-import { retainTextValue } from "../text-surface.js";
 
 export interface TextIntrinsicContext
     extends
@@ -57,7 +56,11 @@ export function compileTextIntrinsic(
         context.expectArgumentCount(call, 3, 3);
         const data = context.compileValue(argumentAt(call, 0));
         context.expectKind(data, "text-data", argumentAt(call, 0));
-        const owner = retainTextValue(context, data);
+        const owner = context.pinValueToTemporary(
+            data,
+            "text_owner",
+            argumentAt(call, 0),
+        );
         const run = context.allocateTemporaryCppName("text_run_ref");
         context.emit(
             `const auto ${run}=${context.compileForDataSink(argumentAt(call, 1), { kind: "handle", handle: "text-run-ref" })};`,
@@ -75,7 +78,11 @@ export function compileTextIntrinsic(
         context.expectArgumentCount(call, 2, 2);
         const data = context.compileValue(argumentAt(call, 0));
         context.expectKind(data, "text-data", argumentAt(call, 0));
-        const owner = retainTextValue(context, data);
+        const owner = context.pinValueToTemporary(
+            data,
+            "text_owner",
+            argumentAt(call, 0),
+        );
         let operation: string | undefined,
             previous: Value | undefined,
             run: string | undefined;
@@ -88,7 +95,11 @@ export function compileTextIntrinsic(
             else if (name === "previous") {
                 const value = context.compileValue(expression);
                 context.expectKind(value, "text-run", expression);
-                previous = retainTextValue(context, value);
+                previous = context.pinValueToTemporary(
+                    value,
+                    "text_owner",
+                    expression,
+                );
             } else if (name === "run") {
                 const record = context.unwrap(expression);
                 if (
@@ -106,7 +117,11 @@ export function compileTextIntrinsic(
                     record.properties[0].expression,
                 );
                 context.expectKind(source, "text-run", record.properties[0]);
-                const retained = retainTextValue(context, source);
+                const retained = context.pinValueToTemporary(
+                    source,
+                    "text_owner",
+                    record.properties[0].expression,
+                );
                 const color = context.compileForDataSink(
                     record.properties[1].initializer,
                     { kind: "tuple", arity: 4 },
@@ -138,7 +153,11 @@ export function compileTextIntrinsic(
         context.expectArgumentCount(call, 1, 2);
         const data = context.compileValue(argumentAt(call, 0));
         context.expectKind(data, "text-data", argumentAt(call, 0));
-        const owner = retainTextValue(context, data);
+        const owner = context.pinValueToTemporary(
+            data,
+            "text_owner",
+            argumentAt(call, 0),
+        );
         const options = context.allocateTemporaryCppName("text_layer_options");
         context.emit(`bbl::TextLayerOptions ${options};`);
         for (const [field, value] of textOptionEntries(
@@ -253,7 +272,11 @@ export function compileTextIntrinsic(
         context.expectArgumentCount(call, 2, 3);
         const owner = context.compileValue(argumentAt(call, 0));
         context.expectKind(owner, "text-data", argumentAt(call, 0));
-        const retained = retainTextValue(context, owner);
+        const retained = context.pinValueToTemporary(
+            owner,
+            "text_owner",
+            argumentAt(call, 0),
+        );
         const text = context.compileValue(argumentAt(call, 1));
         expectTextString(context, text, argumentAt(call, 1));
         if (call.arguments[2] && !omitted(context, argumentAt(call, 2)))
@@ -289,7 +312,11 @@ export function compileTextIntrinsic(
         const value = context.compileValue(call.arguments[0]);
         context.expectKind(value, "text-renderable", call.arguments[0]);
         context.reachFeature("text:data", call);
-        const owner = retainTextValue(context, value);
+        const owner = context.pinValueToTemporary(
+            value,
+            "text_owner",
+            call.arguments[0],
+        );
         if (name === "getAlphaToCoverage")
             return {
                 kind: "boolean",
@@ -306,7 +333,11 @@ export function compileTextIntrinsic(
         context.expectArgumentCount(call, 1, 2);
         const value = context.compileValue(argumentAt(call, 0));
         context.expectKind(value, "text-data", argumentAt(call, 0));
-        const data = retainTextValue(context, value);
+        const data = context.pinValueToTemporary(
+            value,
+            "text_owner",
+            argumentAt(call, 0),
+        );
         const options = compileRenderableOptions(context, call.arguments[1]);
         context.reachFeature("text:data", call);
         context.reachFeature("text:renderable", call);

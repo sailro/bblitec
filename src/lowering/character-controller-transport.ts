@@ -201,6 +201,7 @@ export function characterTransportSchema(
                         return {
                             cpp: `${owner.cpp}->${field[0]}`,
                             type: field[1]!,
+                            borrowed: "mutable",
                         };
                 }
             }

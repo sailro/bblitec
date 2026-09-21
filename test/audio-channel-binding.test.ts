@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { compileSource } from "../src/compiler.js";
 
-test("audio channel locals and aliases own shared typed-array views", () => {
+test("audio channel locals own shared views and immutable aliases borrow them", () => {
     const result = compileSource(`
         import { createAudioEngineAsync } from "@babylonjs/lite";
         const audio = await createAudioEngineAsync();
@@ -26,6 +26,6 @@ test("audio channel locals and aliases own shared typed-array views", () => {
     }
     assert.match(
         result.cpp,
-        /\bbbl::js::F32Array\s+\w+_alias\s*=\s*\w+_channel;/,
+        /\bbbl::js::F32Array&\s+\w+_alias\s*=\s*\w+_channel;/,
     );
 });

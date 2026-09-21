@@ -485,7 +485,7 @@ function packagedAssetLookupBody(
         );
     }
     return (
-        `static bbl::js::Map<std::string, std::string> paths{${entries.join(", ")}}; ` +
+        `static thread_local bbl::js::Map<std::string, std::string> paths{${entries.join(", ")}}; ` +
         `auto found = paths.get(key); ` +
         `if (!found.has_value()) throw std::runtime_error("Unknown packaged asset: " + key); ` +
         `return bbl::asset_path(found.value()); `

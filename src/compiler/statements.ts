@@ -2902,13 +2902,11 @@ export class StatementLowerer {
                     "A statically expanded resource iteration requires an unchanged array size.",
                 );
             }
-            const range = context.allocateTemporaryCppName("resource_range");
-            context.emit({
-                kind: "declaration",
-                type: "const auto",
-                name: range,
-                initializer: target.container.cpp,
-            });
+            const range = context.pinValueToTemporary(
+                target.container,
+                "resource_range",
+                statement.expression,
+            ).cpp;
             const iterator =
                 context.allocateTemporaryCppName("resource_iterator");
             context.emit({

@@ -6,18 +6,26 @@ import { EmissionSet, EmissionMap } from "./emission-transaction.js";
 import type { LoweringServices } from "./lowering-services.js";
 import ts from "typescript";
 import { CompileError } from "./compile-error.js";
-import { unwrapExpression } from "./syntax.js";
+import {
+    expressionMayRunCode,
+    isAssignmentExpression,
+    isUpdateExpression,
+    unwrapExpression,
+} from "./syntax.js";
 import { emitReachableStatements } from "./loop-control.js";
 import { arrayReturnStorage } from "./array-return-storage.js";
 import { cppIdentifier, cppIdentifierPattern } from "../cpp-literals.js";
 import { isDefaultLibraryIdentifier } from "./symbols.js";
 import {
     dataTypesEqual,
+    isTypedArrayType,
     passesByReference,
     type DataType,
 } from "./data-types.js";
+import { MATH_MEMBERS, mathMemberCall } from "./math-intrinsics.js";
 import type { Value } from "./types.js";
 import {
+    borrowsReferenceParameter,
     isSupportedFunction,
     parameterIsReadOnly,
     requiresDefaultParameterBinding,
@@ -34,6 +42,7 @@ export interface NativeFunctionContext extends Pick<
     | "sourceFiles"
     | "lookupIdentifierValue"
     | "knownValueWithoutEvaluation"
+    | "classOf"
     | "compileValue"
     | "probeEmission"
     | "useNativeValue"
@@ -48,6 +57,10 @@ export interface NativeFunctionContext extends Pick<
     | "cppLocalName"
     | "captureEmittedLines"
     | "registerNativeFunction"
+    | "registerNativeTemporary"
+    | "registerNativeConstBinding"
+    | "pinValueToTemporary"
+    | "identifierIsRebound"
     | "beginNativeFunctionBody"
     | "endNativeFunctionBody"
     | "reachJsData"
@@ -64,6 +77,7 @@ interface DataFunctionParameter {
     type: DataType;
     byReference: boolean;
     readOnly: boolean;
+    borrowedWrapper: boolean;
 }
 
 interface NativeFunctionSignature {
@@ -172,6 +186,8 @@ export function captureDataFunctionBody(
             ...parameters.map((parameter) => {
                 const cppName = context.cppLocalName(parameter.name.text);
                 const cppType = context.dataTypes.cppType(parameter.type);
+                if (parameter.borrowedWrapper)
+                    context.registerNativeConstBinding(cppName, true);
                 context.defineVariable(parameter.name, {
                     ...context.dataLowerer.leafValue(cppName, parameter.type),
                     ...(parameter.readOnly ? { readOnly: true as const } : {}),
@@ -446,9 +462,21 @@ export class NativeFunctionLowerer {
                         `Function '${callee.text}' requires argument '${parameter.name.text}'.`,
                     );
                 }
-                return this.compileArgument(initializer, parameter);
+                return this.compileArgument(
+                    initializer,
+                    parameter,
+                    call.arguments,
+                    index + 1,
+                    signature.declaration,
+                );
             }
-            return this.compileArgument(argument, parameter);
+            return this.compileArgument(
+                argument,
+                parameter,
+                call.arguments,
+                index + 1,
+                signature.declaration,
+            );
         });
         const cpp = `bblscene::${signature.cppName}(${argumentsCpp.join(", ")})`;
         return this.callValue(cpp, signature.returnType);
@@ -528,7 +556,13 @@ export class NativeFunctionLowerer {
             this.emitMethodDefinition(signature),
         );
         const argumentsCpp = signature.parameters.map((parameter, index) =>
-            this.compileArgument(argumentExpressions[index]!, parameter),
+            this.compileArgument(
+                argumentExpressions[index]!,
+                parameter,
+                argumentExpressions,
+                index + 1,
+                signature.method,
+            ),
         );
         const callCpp = `bblscene::${signature.cppName}(${[
             ...fieldArguments,
@@ -541,11 +575,12 @@ export class NativeFunctionLowerer {
         const result = `bbl_method_${this.context.allocateUserFunctionPrefix()}result`;
         this.context.emit({
             kind: "declaration",
-            type: "const auto",
+            type: "auto",
             name: result,
             initializer: callCpp,
             attributes: "[[maybe_unused]] ",
         });
+        this.context.registerNativeTemporary(result, signature.returnType);
         return {
             ...this.context.dataLowerer.leafValue(result, signature.returnType),
             requiresExplicitDiscard: true,
@@ -672,12 +707,18 @@ export class NativeFunctionLowerer {
         if (!returnType) {
             return { kind: "void", cpp };
         }
-        return this.context.dataLowerer.leafValue(cpp, returnType);
+        return {
+            ...this.context.dataLowerer.leafValue(cpp, returnType),
+            nativeOwnedRvalue: true,
+        };
     }
 
     private compileArgument(
         expression: ts.Expression,
         parameter: NativeFunctionSignature["parameters"][number],
+        laterArguments: readonly (ts.Expression | undefined)[] = [],
+        firstLaterArgument = 0,
+        directKernel?: SupportedFunction,
     ): string {
         const dataType = parameter.type;
         if (!dataType) {
@@ -687,6 +728,51 @@ export class NativeFunctionLowerer {
             );
         }
         if (parameter.byReference) {
+            if (parameter.borrowedWrapper) {
+                const rawValue =
+                    this.context.dataLowerer.compileDataPath(
+                        expression,
+                        "read",
+                    ) ?? this.context.compileValue(expression);
+                const value =
+                    rawValue.kind === "data"
+                        ? this.context.dataLowerer.narrowOptional(
+                              rawValue,
+                              expression,
+                          )
+                        : rawValue;
+                if (
+                    value.kind === "data" &&
+                    value.dataType?.kind === "struct" &&
+                    dataTypesEqual(value.dataType, dataType)
+                ) {
+                    if (
+                        (value.nativeLvalue ||
+                            value.sharedStorageCpp !== undefined ||
+                            cppIdentifierPattern.test(value.cpp)) &&
+                        directKernel !== undefined &&
+                        this.directKernelCannotRunUserCode(directKernel) &&
+                        laterArguments.every(
+                            (argument, index) =>
+                                index < firstLaterArgument ||
+                                argument === undefined ||
+                                this.expressionCannotRunUserCode(argument),
+                        )
+                    ) {
+                        this.context.useNativeValue(value);
+                        return value.cpp;
+                    }
+                    return this.context.pinValueToTemporary(
+                        value,
+                        "function_argument",
+                        expression,
+                    ).cpp;
+                }
+                return this.context.dataLowerer.compileForSink(
+                    expression,
+                    dataType,
+                );
+            }
             if (parameter.readOnly) {
                 const rawPath = this.context.dataLowerer.compileDataPath(
                     expression,
@@ -742,6 +828,205 @@ export class NativeFunctionLowerer {
         // narrowed stored object. Both arms decline such calls before
         // reaching here (argumentPreservesObjectIdentity).
         return this.context.dataLowerer.compileForSink(expression, dataType);
+    }
+
+    private readonly directKernelEffects = new Map<
+        SupportedFunction,
+        boolean
+    >();
+
+    private directKernelCannotRunUserCode(
+        declaration: SupportedFunction,
+        active = new Set<SupportedFunction>(),
+    ): boolean {
+        const cached = this.directKernelEffects.get(declaration);
+        if (cached !== undefined) return cached;
+        if (active.has(declaration)) return true;
+        active.add(declaration);
+        const locals = new Set<ts.Symbol>();
+        if (declaration.body)
+            someAnalysisNode(
+                declaration.body,
+                (node) => {
+                    if (ts.isVariableDeclaration(node))
+                        this.collectBindingSymbols(node.name, locals);
+                    return false;
+                },
+                { functions: "skip", types: "skip" },
+            );
+        const result =
+            declaration.body !== undefined &&
+            this.nodeCannotRunUserCode(declaration.body, true, locals, active);
+        active.delete(declaration);
+        this.directKernelEffects.set(declaration, result);
+        return result;
+    }
+
+    private expressionCannotRunUserCode(expression: ts.Expression): boolean {
+        return (
+            !expressionMayRunCode(expression) ||
+            this.nodeCannotRunUserCode(expression, false, new Set(), new Set())
+        );
+    }
+
+    private collectBindingSymbols(
+        name: ts.BindingName,
+        symbols: Set<ts.Symbol>,
+    ): void {
+        if (ts.isIdentifier(name)) {
+            const symbol = this.context.checker.getSymbolAtLocation(name);
+            if (symbol) symbols.add(symbol);
+            return;
+        }
+        for (const element of name.elements)
+            if (!ts.isOmittedExpression(element))
+                this.collectBindingSymbols(element.name, symbols);
+    }
+
+    private writesLocalOrNumericStorage(
+        target: ts.Expression,
+        locals: ReadonlySet<ts.Symbol>,
+    ): boolean {
+        const node = unwrapExpression(target);
+        if (ts.isIdentifier(node)) {
+            const symbol = this.context.checker.getSymbolAtLocation(node);
+            return symbol !== undefined && locals.has(symbol);
+        }
+        if (ts.isElementAccessExpression(node)) {
+            const type = this.context.dataLowerer.dataTypeAt(node.expression);
+            return (
+                type !== undefined &&
+                (type.kind === "numberindex" || isTypedArrayType(type))
+            );
+        }
+        if (ts.isArrayLiteralExpression(node))
+            return node.elements.every(
+                (element) =>
+                    ts.isOmittedExpression(element) ||
+                    (!ts.isSpreadElement(element) &&
+                        this.writesLocalOrNumericStorage(element, locals)),
+            );
+        return false;
+    }
+
+    private directCallCannotRunUserCode(
+        call: ts.CallExpression,
+        allowPureMath: boolean,
+        active: Set<SupportedFunction>,
+    ): boolean {
+        if (allowPureMath) {
+            const math = mathMemberCall(call, (identifier) =>
+                isDefaultLibraryIdentifier(this.context.checker, identifier),
+            );
+            const member =
+                math === undefined ? undefined : MATH_MEMBERS.get(math.name);
+            if (member !== undefined && member.reach !== "js-random")
+                return true;
+        }
+        const called = this.directCallDeclaration(call);
+        return (
+            called !== undefined &&
+            this.directKernelCannotRunUserCode(called, active)
+        );
+    }
+
+    private directCallDeclaration(
+        call: ts.CallExpression,
+    ): SupportedFunction | undefined {
+        const declared =
+            this.context.checker.getResolvedSignature(call)?.declaration;
+        if (declared && isSupportedFunction(declared)) return declared;
+        const callee = unwrapExpression(call.expression);
+        if (!ts.isPropertyAccessExpression(callee)) return undefined;
+        const receiver = unwrapExpression(callee.expression);
+        const value = ts.isIdentifier(receiver)
+            ? this.context.lookupIdentifierValue(receiver)
+            : this.context.knownValueWithoutEvaluation(receiver);
+        const declaration =
+            value &&
+            (this.context.classOf(value) ??
+                (value.dataType?.kind === "struct"
+                    ? this.context.dataTypes.classStruct(value.dataType.name)
+                          ?.declaration
+                    : undefined));
+        return declaration?.members.find(
+            (member): member is ts.MethodDeclaration =>
+                ts.isMethodDeclaration(member) &&
+                ts.isMemberName(member.name) &&
+                member.name.text === callee.name.text &&
+                member.body !== undefined,
+        );
+    }
+
+    private nodeCannotRunUserCode(
+        root: ts.Node,
+        allowPureMath: boolean,
+        locals: ReadonlySet<ts.Symbol>,
+        active: Set<SupportedFunction>,
+    ): boolean {
+        return !someAnalysisNode(
+            root,
+            (node) => {
+                if (ts.isCallExpression(node)) {
+                    return !this.directCallCannotRunUserCode(
+                        node,
+                        allowPureMath,
+                        active,
+                    );
+                }
+                if (
+                    ts.isNewExpression(node) ||
+                    ts.isDeleteExpression(node) ||
+                    ts.isAwaitExpression(node) ||
+                    ts.isYieldExpression(node) ||
+                    ts.isThrowStatement(node)
+                )
+                    return true;
+                if (isAssignmentExpression(node))
+                    return !this.writesLocalOrNumericStorage(node.left, locals);
+                if (isUpdateExpression(node))
+                    return !this.writesLocalOrNumericStorage(
+                        node.operand,
+                        locals,
+                    );
+                if (ts.isPropertyAccessExpression(node)) {
+                    if (
+                        node !== root &&
+                        ts.isCallExpression(node.parent) &&
+                        node.parent.expression === node
+                    )
+                        return false;
+                    const symbol = this.context.checker.getSymbolAtLocation(
+                        node.name,
+                    );
+                    return !symbol?.declarations?.every(
+                        (declaration) =>
+                            ts.isPropertySignature(declaration) ||
+                            ts.isPropertyDeclaration(declaration),
+                    );
+                }
+                if (ts.isElementAccessExpression(node)) {
+                    const type = this.context.dataLowerer.dataTypeAt(
+                        node.expression,
+                    );
+                    return !(
+                        type &&
+                        ([
+                            "vector",
+                            "span",
+                            "tuple",
+                            "product",
+                            "table",
+                            "enummap",
+                            "numberindex",
+                        ].includes(type.kind) ||
+                            isTypedArrayType(type))
+                    );
+                }
+                return false;
+            },
+            { functions: "skip", types: "skip" },
+        );
     }
 
     /**
@@ -845,10 +1130,11 @@ export class NativeFunctionLowerer {
             }
             if (
                 parameterType?.kind === "struct" &&
-                this.typeRequiresReferenceStorage(
-                    parameterTsType,
-                    parameterType.name,
-                )
+                (this.context.identifierIsRebound(parameter.name) ||
+                    this.typeRequiresReferenceStorage(
+                        parameterTsType,
+                        parameterType.name,
+                    ))
             ) {
                 // Reference representation is a property of the source
                 // object type, not the order in which native functions are
@@ -872,15 +1158,33 @@ export class NativeFunctionLowerer {
             parameters.push({
                 name: parameter.name,
                 type: parameterType,
-                byReference: passesByReference(
-                    this.context.dataTypes,
-                    parameterType,
-                ),
-                readOnly: parameterIsReadOnly(
-                    this.context.checker,
-                    declaration,
-                    parameter.name,
-                ),
+                ...(() => {
+                    const rebound = this.context.identifierIsRebound(
+                        parameter.name,
+                    );
+                    const borrowedWrapper = borrowsReferenceParameter(
+                        this.context,
+                        parameter.name,
+                        parameterType,
+                    );
+                    return {
+                        borrowedWrapper,
+                        byReference:
+                            borrowedWrapper ||
+                            (passesByReference(
+                                this.context.dataTypes,
+                                parameterType,
+                            ) &&
+                                !rebound),
+                        readOnly:
+                            borrowedWrapper ||
+                            parameterIsReadOnly(
+                                this.context.checker,
+                                declaration,
+                                parameter.name,
+                            ),
+                    };
+                })(),
             });
         }
         return { parameters, returnType };

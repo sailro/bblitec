@@ -1006,7 +1006,7 @@ test("executes imported module initializers once in dependency order", () => {
         "the one emitted loop body appends both runtime rows",
     );
     assert.match(result.cpp, new RegExp(`${index[1]}\\.set\\(`));
-    assert.match(result.cpp, new RegExp(`${index[1]}\\.get\\(v_key\\)`));
+    assert.match(result.cpp, new RegExp(`${index[1]}\\.get_owned\\(v_key\\)`));
 });
 
 test("materializes private module state observed by an exported function", () => {
@@ -1029,10 +1029,10 @@ test("materializes private module state observed by an exported function", () =>
     assert.ok(values, "private state has native storage");
     const alias = result.cpp.match(
         new RegExp(
-            `bbl::js::Array<double> (v_module\\d+_target) = ${values[1]}`,
+            `bbl::js::Array<double>& (v_module\\d+_target) = ${values[1]}`,
         ),
     );
-    assert.ok(alias, "the copied Array wrapper retains shared storage");
+    assert.ok(alias, "the immutable binding borrows its stable Array wrapper");
     assert.equal(
         (result.cpp.match(new RegExp(`${alias[1]}\\.push_back`, "g")) ?? [])
             .length,
@@ -1092,7 +1092,7 @@ test("materializes an inferred array mutated through a local alias", () => {
     assert.ok(values);
     assert.match(
         result.cpp,
-        new RegExp(`bbl::js::Array<double> v_alias = ${values[1]}`),
+        new RegExp(`bbl::js::Array<double>& v_alias = ${values[1]}`),
     );
     assert.match(result.cpp, /v_alias\.push_back\(4\.0\)/);
 });
@@ -1108,7 +1108,10 @@ test("snapshots an Array wrapper when swapping JavaScript object bindings", () =
         const selected = current[0];
     `);
 
-    assert.match(result.cpp, /bbl::js::Array<double> v_tmp = v_current;/);
+    assert.match(
+        result.cpp,
+        /bbl::js::Array<double> v_tmp = bbl::js::snapshot_value\(v_current\);/,
+    );
     assert.doesNotMatch(result.cpp, /bbl::js::Array<double>& v_tmp/);
     assert.match(result.cpp, /v_current = v_next;/);
     assert.match(result.cpp, /v_next = v_tmp;/);
@@ -1236,10 +1239,40 @@ test("stabilizes stored record representation before native parameter emission",
     assert.match(result.cpp, /using Archive = bbl::js::Ref<ArchiveData>;/);
     assert.match(
         result.cpp,
-        /double indexOf\(bblscene::Archive v_fn\d+_archive, std::string v_fn\d+_name\)/,
+        /double indexOf\(const bblscene::Archive& v_fn\d+_archive, std::string v_fn\d+_name\)/,
     );
-    assert.match(result.cpp, /v_fn\d+_archive->names\.get\(/);
+    assert.match(result.cpp, /v_fn\d+_archive->names\.get_owned\(/);
     assert.doesNotMatch(result.cpp, /v_fn\d+_archive\.names/);
+});
+
+test("borrows stable Ref parameters and snapshots rebindable call arguments", () => {
+    const result = compileSource(`
+        interface State {
+            value: number;
+        }
+        function add(state: State, amount: number): number {
+            state.value += amount;
+            return state.value;
+        }
+        const stable: State = { value: 1 };
+        const first = add(stable, 2);
+        let current = stable;
+        function replace(): number {
+            current = { value: 10 };
+            return 3;
+        }
+        const second = add(current, replace());
+    `);
+
+    assert.match(
+        result.cpp,
+        /double add\(const bblscene::State& v_fn\d+_state, double v_fn\d+_amount\)/,
+    );
+    assert.match(result.cpp, /bblscene::add\(v_stable, 2\.0\)/);
+    assert.match(
+        result.cpp,
+        /auto (v_bblite_function_argument_\d+) = bbl::js::snapshot_value\(v_current\);[\s\S]*v_current = bbl::js::make_ref<bblscene::StateData>[\s\S]*bblscene::add\(\1, 3\.0\)/,
+    );
 });
 
 test("supports early returns in native data functions", () => {
@@ -1549,7 +1582,7 @@ test("lowers '??' over the data model", () => {
     // laziness.
     assert.match(
         result.cpp,
-        /const auto (v_bblite_nullish_\d+) = [^;]+;\s*return \(\1\.has_value\(\) \? \(\*\1\) : v_fn\d+_slot\.fallback\);/,
+        /auto (v_bblite_nullish_\d+) = bbl::js::snapshot_value\(v_fn\d+_slot\.current\);\s*return \(\1\.has_value\(\) \? \(\*\1\) : v_fn\d+_slot\.fallback\);/,
     );
     // A left the model proves non-nullish IS the result: the dead right
     // side is discarded exactly as JavaScript never evaluates it.
@@ -1742,7 +1775,7 @@ test("lowers optional data property and element chains generically", () => {
 
     assert.match(
         result.cpp,
-        /\[\[maybe_unused\]\] const auto& (v_bblite_optional_chain_\d+) = v_fn\d+_def;\s*const auto v_bblite_nullish_\d+ = \(static_cast<bool>\(\1\) \? bbl::js::Nullable<double>\{\1->speed\} : bbl::js::Nullable<double>\{std::nullopt\}\)/,
+        /\[\[maybe_unused\]\] const auto& (v_bblite_optional_chain_\d+) = v_fn\d+_def;\s*auto v_bblite_nullish_\d+ = \(static_cast<bool>\(\1\) \? bbl::js::Nullable<double>\{\1->speed\} : bbl::js::Nullable<double>\{std::nullopt\}\)/,
     );
     assert.match(result.cpp, /bbl::js::Nullable<bblscene::Trigger>/);
     assert.match(result.cpp, /v_bblite_optional_compare_\d+\.has_value\(\) &&/);
@@ -1771,11 +1804,37 @@ test("compares the value of an optional boolean from a dynamic record lookup", (
 
     assert.match(
         result.cpp,
-        /\[\[maybe_unused\]\] const auto& (v_bblite_optional_chain_\d+) = .*\.get\([^;]+;\s*const auto (v_bblite_optional_compare_\d+) = \(static_cast<bool>\(\1\) \? bbl::js::Nullable<bool>\{\1->active\} : bbl::js::Nullable<bool>\{std::nullopt\}\);\s*return \(\2\.has_value\(\) && \(\*\2\) == true\);/s,
+        /\[\[maybe_unused\]\] const auto& (v_bblite_optional_chain_\d+) = .*\.get\([^;]+;\s*const auto& (v_bblite_optional_compare_\d+) = \(static_cast<bool>\(\1\) \? bbl::js::Nullable<bool>\{\1->active\} : bbl::js::Nullable<bool>\{std::nullopt\}\);\s*return \(\2\.has_value\(\) && \(\*\2\) == true\);/s,
     );
     assert.doesNotMatch(
         result.cpp,
         /Nullable<bool>[^;]*\.has_value\(\) == true/,
+    );
+});
+
+test("owns retained Map.get records while immediate field reads borrow", () => {
+    const result = compileSource(`
+        interface Item {
+            value: number;
+        }
+        const items = new Map<string, Item>();
+        const original: Item = { value: 7 };
+        items.set("item", original);
+        const saved = items.get("item");
+        const immediate = items.get("item")?.value;
+        items.delete("item");
+        if (!saved || saved !== original || immediate !== 7) {
+            throw new Error("Map.get ownership");
+        }
+    `);
+
+    assert.match(
+        result.cpp,
+        /bblscene::Item v_saved = v_items\.get_owned\("item"\);/,
+    );
+    assert.match(
+        result.cpp,
+        /const auto& (v_bblite_optional_chain_\d+) = v_items\.get\("item"\);[\s\S]*\1->value/,
     );
 });
 
@@ -2361,7 +2420,7 @@ test("selects a fallback for nullable reference records by presence", () => {
         const cell = finish({ start: { x: 2, y: 9 } });
     `);
 
-    assert.match(result.cpp, /const auto .*nullish.* = .*\.get\("start"\);/);
+    assert.match(result.cpp, /auto .*nullish.* = .*\.get_owned\("start"\);/);
     assert.match(result.cpp, /nullish.* \? .*nullish.* : /);
     assert.doesNotMatch(result.cpp, /static_cast<bool>\(\(\*/);
 });
@@ -2454,7 +2513,7 @@ test("hoists module record factories out of hot dynamic lookups", () => {
 
     assert.match(
         result.cpp,
-        /static bbl::js::Map<double, bblscene::Definition> values\{/,
+        /static thread_local bbl::js::Map<double, bblscene::Definition> values\{/,
     );
     assert.doesNotMatch(result.cpp, /bool opaque\([^)]*\) \{\s+bbl::js::Map/);
 });
@@ -2864,7 +2923,7 @@ test("guards optional class method calls before evaluating their body", () => {
 
     assert.match(
         result.cpp,
-        /if \(static_cast<bool>\(\(\*v_bblite_class_field_target_\d+\)\)\) \{\s*\[&\]\(\) -> void \{/,
+        /if \(static_cast<bool>\(\(\*v_bblite_class_field_target_\d+\)\)\) \{\s*\{\s*v_bblite_target_receiver_\d+->count \+= 1\.0;/,
     );
     assert.match(
         result.cpp,
@@ -2948,9 +3007,9 @@ test("materializes a numeric Record for dynamic optional lookup", () => {
 
     assert.match(
         result.cpp,
-        /static bbl::js::Map<double, bblscene::Definition> values/,
+        /static thread_local bbl::js::Map<double, bblscene::Definition> values/,
     );
-    assert.match(result.cpp, /\.get\(v_\w*key\)/);
+    assert.match(result.cpp, /\.get_owned\(v_\w*key\)/);
 });
 
 test("guards a missing open Record key before dereferencing its local", () => {
@@ -2966,7 +3025,7 @@ test("guards a missing open Record key before dereferencing its local", () => {
     `);
 
     const lookup = result.cpp.match(
-        /bbl::js::Nullable<double> (v_\w*weapon) = .*\.get\(.*\);/,
+        /bbl::js::Nullable<double> (v_\w*weapon) = .*\.get_owned\(.*\);/,
     );
     assert.ok(lookup);
     const local = lookup[1]!;
@@ -3038,9 +3097,9 @@ test("preserves object identity through a dynamic Record lookup", () => {
     assert.match(result.cpp, /using Entry = bbl::js::Ref<EntryData>;/);
     assert.match(
         result.cpp,
-        /static bbl::js::Map<std::string, bblscene::Entry> values/,
+        /static thread_local bbl::js::Map<std::string, bblscene::Entry> values/,
     );
-    assert.match(result.cpp, /\.get\(v_\w*code\)/);
+    assert.match(result.cpp, /\.get_owned\(v_\w*code\)/);
     assert.match(result.cpp, /static_cast<bool>\(v_\w*entry\)/);
     assert.match(result.cpp, /v_\w*entry->value\+\+;/);
 });
@@ -3898,7 +3957,7 @@ test("binds object data-path locals with shared identity", () => {
     // field write still reaches the object stored in the holder.
     assert.match(
         result.cpp,
-        /bblscene::Record\d+ v_fn\d+_alias = v_fn\d+_holder\.inner;/,
+        /bblscene::Record\d+ v_fn\d+_alias = bbl::js::snapshot_value\(v_fn\d+_holder\.inner\);/,
     );
     assert.match(result.cpp, /v_fn\d+_alias->count = 5\.0;/);
 });
@@ -3922,7 +3981,7 @@ test("writes through a data struct returned by a reached call", () => {
         /auto&& (v_bblite_typed_slot_\d+) = bbl::js::array_store_checked\([^\n]+2\.0[^\n]+\);\s+\1 = bbl::js::to_uint8\(7\.0\)/,
     );
     assert.equal(
-        (result.cpp.match(/const auto bbl_fn_fn\d+_result/g) ?? []).length,
+        (result.cpp.match(/auto bbl_fn_fn\d+_result/g) ?? []).length,
         1,
         "probing an unchecked element must not evaluate its call-shaped owner twice",
     );
@@ -4161,11 +4220,11 @@ test("keeps an object element alive after its container is resized", () => {
         list.push({ value: 2 });
         entry.value = 5;
     `);
-    // The struct-element literal carries no element snapshot, so even
-    // the static index reads through the checked accessor.
+    // The checked access selects the existing slot; the source binding then
+    // owns that selected reference before the array grows.
     assert.match(
         result.cpp,
-        /bblscene::Entry v_entry = bbl::js::array_index_checked\(v_list, 0\.0, "[^"]+"\);/,
+        /bblscene::Entry v_entry = bbl::js::snapshot_value\(bbl::js::array_index_checked\(v_list, 0\.0, "[^"]+"\)\);/,
     );
     assert.match(result.cpp, /v_entry->value = 5\.0;/);
 });
@@ -4186,7 +4245,7 @@ test("mutable object aliases retain JavaScript identity", () => {
     `);
     assert.match(
         result.cpp,
-        /bblscene::Record\d+ v_fn\d+_alias = v_fn\d+_holder\.inner;/,
+        /bblscene::Record\d+ v_fn\d+_alias = bbl::js::snapshot_value\(v_fn\d+_holder\.inner\);/,
     );
     assert.match(result.cpp, /v_fn\d+_alias->count = 5\.0;/);
 });
@@ -4307,8 +4366,8 @@ test("stores interface methods for runtime-selected implementations", () => {
 
     assert.match(result.cpp, /bbl::js::Callback<void\(\)> activate/);
     assert.match(result.cpp, /if \(!\([^)]*callback_receiver/);
-    assert.match(result.cpp, /->deactivate;/);
-    assert.match(result.cpp, /->activate;/);
+    assert.match(result.cpp, /snapshot_callback\([^;]+->deactivate\);/);
+    assert.match(result.cpp, /snapshot_callback\([^;]+->activate\);/);
     assert.doesNotMatch(result.cpp, /const auto v_bblite_property_key_\d+ =/);
     assert.match(
         result.cpp,
@@ -4650,7 +4709,7 @@ test("shares callbacks assigned after UI handlers are retained", () => {
     assert.match(
         result.cpp,
         new RegExp(
-            `const auto (\\w+) = \\(\\*${storage[1]}\\);\\s*if \\(!\\1\\) return;\\s*\\1\\(\\);`,
+            `const auto (\\w+) = bbl::js::snapshot_callback\\(\\(\\*${storage[1]}\\)\\);\\s*if \\(!\\1\\) return;\\s*\\1\\(\\);`,
         ),
     );
     assert.match(result.cpp, new RegExp(`\\(\\*${storage[1]}\\) = `));
@@ -4818,6 +4877,14 @@ test("defaults omitted Uint8Array slice and subarray bounds", () => {
         const buffer = source.buffer;
         const tail = new Uint8Array(buffer, 1);
         const middle = new Uint8Array(buffer, 1, 1).slice();
+        const holder = { buffer };
+        const replacementSource = new Uint8Array([9]);
+        const replacement = replacementSource.buffer;
+        function offset(): number {
+            holder.buffer = replacement;
+            return 1;
+        }
+        const retained = new Uint8Array(holder.buffer, offset());
     `);
 
     assert.match(
@@ -4830,7 +4897,12 @@ test("defaults omitted Uint8Array slice and subarray bounds", () => {
     );
     assert.match(
         result.cpp,
-        /const auto (v_bblite_view_buffer_\d+) = v_buffer;\s+const double (v_bblite_view_index_\d+) = 1\.0;\s+bbl::js::U8Array v_tail = bbl::js::U8Array\(\1, bbl::js::buffer_view_index\(\2\)\);/,
+        /const double (v_bblite_view_index_\d+) = 1\.0;\s+bbl::js::U8Array v_tail = bbl::js::U8Array\(v_buffer, bbl::js::buffer_view_index\(\1\)\);/,
+    );
+    assert.doesNotMatch(result.cpp, /v_bblite_view_buffer_\d+ = v_buffer;/);
+    assert.match(
+        result.cpp,
+        /auto (v_bblite_view_buffer_\d+) = bbl::js::snapshot_value\(v_holder->buffer\);[\s\S]*v_holder->buffer = v_replacement;[\s\S]*bbl::js::U8Array v_retained = bbl::js::U8Array\(\1,/,
     );
     assert.match(
         result.cpp,
@@ -5039,7 +5111,7 @@ test("compares a missing optional scalar as absent", () => {
 
     assert.match(
         result.cpp,
-        /const auto \w+_optional_compare_\d+ = v_entry\.shape/,
+        /const auto& \w+_optional_compare_\d+ = v_entry\.shape/,
     );
     assert.match(result.cpp, /\.has_value\(\)/);
 });
@@ -6912,7 +6984,7 @@ test("does not snapshot a Record write behind a runtime condition", () => {
     `);
 
     assert.match(result.cpp, /\.set\("one", 1\.0\);/);
-    assert.match(result.cpp, /\.get\("one"\)/);
+    assert.match(result.cpp, /\.get_owned\("one"\)/);
 });
 
 test("turns a conditionally spread scalar property into an optional field", () => {
@@ -8364,7 +8436,7 @@ test("narrows an assigned nullable retained-UI class field", () => {
     assert.match(result.cpp, /ui_append_to_root/);
     assert.match(
         result.cpp,
-        /if \([^\n]+\.has_value\(\)\) \{\s*const auto (\w+) = [^;]+;\s*bbl::ui_remove\([^,]+, \1\);/,
+        /if \([^\n]+\.has_value\(\)\) \{\s*\[\[maybe_unused\]\] auto (\w+) = [^;]+;\s*bbl::ui_remove\([^,]+, \1\);/,
     );
 });
 
@@ -8698,8 +8770,10 @@ test("stores retained UI elements in explicitly typed DOM arrays", () => {
     `);
 
     assert.match(result.cpp, /bbl::js::Array<bbl::UiElementHandle>/);
-    assert.match(result.cpp, /v_bblite_array_handle_\d+ = v_[^;]+cell;/);
-    assert.match(result.cpp, /\.push_back\(v_bblite_array_handle_\d+\)/);
+    const inserted = [
+        ...result.cpp.matchAll(/\.push_back\((v_\w*cell)\)/g),
+    ].map((match) => match[1]);
+    assert.equal(new Set(inserted).size, 2);
     assert.match(result.cpp, /ui_set_style_property/);
 });
 
@@ -8724,12 +8798,14 @@ test("carries document.body through an inlined retained UI mount helper", () => 
 
     for (const element of ["panel", "footer"]) {
         const argument = result.cpp.match(
-            new RegExp(`const auto (\\w+) = v_\\w+${element};`),
+            new RegExp(`ui_append_child\\([^,]+, [^,]+, (v_\\w+${element})\\)`),
         )?.[1];
-        assert.ok(argument, "the mount argument is captured before insertion");
-        assert.match(
-            result.cpp,
-            new RegExp(`ui_append_child\\([^,]+, [^,]+, ${argument}\\)`),
+        assert.ok(argument, "the immutable mount argument is retained");
+        const declaration = result.cpp.indexOf(` ${argument} =`);
+        assert.ok(
+            declaration >= 0 &&
+                declaration < result.cpp.indexOf("ui_append_child("),
+            "the source handle is initialized before insertion",
         );
     }
 });
@@ -10926,7 +11002,10 @@ test("stores nullable retained UI callbacks as empty native functions", () => {
         /auto v_callback = bbl::js::make_gc_shared<bbl::js::Callback<void\(\)>>/,
     );
     assert.match(result.cpp, /static_cast<bool>\(\(\*v_callback\)\)/);
-    assert.match(result.cpp, /const auto (\w+) = \(\*v_callback\);\s*\1\(\);/);
+    assert.match(
+        result.cpp,
+        /const auto (\w+) = bbl::js::snapshot_callback\(\(\*v_callback\)\);\s*\1\(\);/,
+    );
     assert.match(
         result.cpp,
         /stored_callback = bbl::js::make_closure\(std::tuple\{v_button, std::ref\(v_bblite_inline_engine_\d+\)\}, \[\]\(\[\[maybe_unused\]\] decltype\(std::tuple\{[^}\n]*\}\)& \w+\) -> void/,
@@ -10951,7 +11030,7 @@ test("supplies omitted optional arguments to stored functions", () => {
 
     assert.match(
         result.cpp,
-        /const auto (\w+) = [^;]+\.banner;\s*\1\([^,]+, std::nullopt\)/,
+        /const auto (\w+) = bbl::js::snapshot_callback\([^;]+\.banner\);\s*\1\([^,]+, std::nullopt\)/,
     );
     assert.match(result.cpp, /has_value\(\) \? \*[^:]+ : ""/);
 });
@@ -13351,6 +13430,32 @@ test("assigns a promised resource tuple into definite-assignment locals", () => 
     assert.equal((result.cpp.match(/bbl::add_to_scene/g) ?? []).length, 2);
 });
 
+test("borrows immutable Promise.all results from their ordered owners", () => {
+    const result = compileSource(`
+        import { createEngine, loadGltf } from "@babylonjs/lite";
+
+        async function main() {
+            const engine = await createEngine({});
+            const [ship, rock] = await Promise.all([
+                loadGltf(engine, "ship.glb"),
+                loadGltf(engine, "rock.glb"),
+            ]);
+            if (ship === rock) throw new Error("asset identities");
+        }
+    `);
+
+    assert.equal(
+        (result.cpp.match(/auto v_bblite_awaited_\d+ =/g) ?? []).length,
+        2,
+    );
+    assert.match(result.cpp, /auto& v_(?:fn\d+_)?ship = v_bblite_awaited_\d+;/);
+    assert.match(result.cpp, /auto& v_(?:fn\d+_)?rock = v_bblite_awaited_\d+;/);
+    assert.doesNotMatch(
+        result.cpp,
+        /auto v_(?:fn\d+_)?(?:ship|rock) = v_bblite_awaited_\d+;/,
+    );
+});
+
 test("stringifies a native exception through a catch binding", () => {
     const result = compileSource(`
         import { createEngine, loadGltf } from "@babylonjs/lite";
@@ -13618,7 +13723,10 @@ test("preserves numeric tuple identity except through array spread", () => {
         const copy: V3 = [...source.mins];
     `);
 
-    assert.match(result.cpp, /bbl::js::Tuple<3> v_alias = v_source\.mins;/);
+    assert.match(
+        result.cpp,
+        /bbl::js::Tuple<3> v_alias = bbl::js::snapshot_value\(v_source\.mins\);/,
+    );
     assert.match(
         result.cpp,
         /bbl::js::Tuple<3> v_copy = bbl::js::clone_tuple\(v_source\.mins\);/,
@@ -18120,7 +18228,10 @@ test("retains mutable containers in records returned by factories", () => {
     );
     assert.ok(storage);
     assert.match(result.cpp, new RegExp(`\\(\\*${storage[1]}\\)\\.set\\(`));
-    assert.match(result.cpp, new RegExp(`\\(\\*${storage[1]}\\)\\.get\\(`));
+    assert.match(
+        result.cpp,
+        new RegExp(`\\(\\*${storage[1]}\\)\\.get_owned\\(`),
+    );
     assert.doesNotMatch(
         result.cpp,
         /bbl::js::Map<double, std::string>\{\}\.(?:set|get)\(/,
@@ -19629,7 +19740,7 @@ test("binds a colour helper's returned tuple instead of splicing the call", () =
     });
     const bindings = [
         ...result.cpp.matchAll(
-            /const bbl::js::Tuple<3> (\w+) = bblscene::colorFor\(/g,
+            /const bbl::js::Tuple<3> (\w+) = bbl::js::snapshot_value\(bblscene::colorFor\(/g,
         ),
     ];
     assert.equal(bindings.length, 8);

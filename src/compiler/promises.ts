@@ -15,6 +15,9 @@ export interface PromiseLoweringContext extends Pick<
     | "decreaseIndent"
     | "cppString"
     | "allocateTemporaryCppName"
+    | "nativeBindingCheckpoint"
+    | "registerNativeConstBinding"
+    | "takeNativeTemporary"
     | "fail"
 > {}
 
@@ -113,6 +116,7 @@ export function compileImmediatePromise(
         }
         const elements: Value[] = [];
         for (const element of argument.elements) {
+            const boundary = context.nativeBindingCheckpoint();
             const value = context.compileValue(element);
             if (value.cpp.length === 0 || value.kind === "engine") {
                 elements.push(value);
@@ -128,9 +132,14 @@ export function compileImmediatePromise(
                 kind: "declaration",
                 type: "auto",
                 name: temporary,
-                initializer: value.cpp,
+                initializer: context.takeNativeTemporary(value.cpp, boundary),
             });
-            elements.push({ ...value, cpp: temporary });
+            elements.push({
+                ...value,
+                cpp: temporary,
+                nativeCaptures: [context.registerNativeConstBinding(temporary)],
+                nativeBinding: true,
+            });
         }
         return { kind: "tuple", cpp: "", tupleElements: elements };
     }
@@ -189,6 +198,7 @@ export function compileImmediatePromise(
         context.emit("try {");
         context.increaseIndent();
     }
+    const settlementBoundary = context.nativeBindingCheckpoint();
     let value = context.compileValue(call.expression.expression);
     if (
         value.kind !== "engine" &&
@@ -200,9 +210,17 @@ export function compileImmediatePromise(
             kind: "declaration",
             type: "auto",
             name: settled,
-            initializer: value.cpp,
+            initializer: context.takeNativeTemporary(
+                value.cpp,
+                settlementBoundary,
+            ),
         });
-        value = { ...value, cpp: settled };
+        value = {
+            ...value,
+            cpp: settled,
+            nativeCaptures: [context.registerNativeConstBinding(settled)],
+            nativeBinding: true,
+        };
     } else if (value.kind === "void") {
         emitValue(context, value);
     }

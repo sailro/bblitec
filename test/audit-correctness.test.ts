@@ -1138,19 +1138,19 @@ test(
         #include <cassert>
         int main() {
             using namespace bbl::js;
-            const auto initial_nodes = gc::registry.size;
+            const auto initial_nodes = managed_node_count();
             const auto initial_allocations = gc::registry.total_allocations;
             {
                 auto first = make_gc_shared<int>(1);
                 auto second = make_gc_shared<int>(2);
-                assert(gc::registry.size == initial_nodes + 2);
+                assert(managed_node_count() == initial_nodes + 2);
                 first.reset();
                 collect_cycles();
-                assert(gc::registry.size == initial_nodes + 1);
+                assert(managed_node_count() == initial_nodes + 1);
                 assert(gc::registry.allocations == 0);
                 assert(gc::registry.total_allocations == initial_allocations + 2);
             }
-            assert(gc::registry.size == initial_nodes);
+            assert(managed_node_count() == initial_nodes);
             assert(gc::registry.total_allocations == initial_allocations + 2);
         }
     `,

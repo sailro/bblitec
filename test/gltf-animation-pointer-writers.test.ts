@@ -209,7 +209,7 @@ test("source pointer bodies and native aliased stores agree across every writer 
 #include <fstream>
 #include <memory>
 namespace ts = bbl::ts;
-namespace bbl { const ts::JsonValue* optional(const ts::JsonValue::Object& value, const std::string& key) {
+namespace bbl { const ts::JsonValue* optional(const ts::JsonValue::Object& value, std::string_view key) {
     const auto found = value.find(key); return found == value.end() ? nullptr : &found->second;
 } }
 struct GltfPbrObject;

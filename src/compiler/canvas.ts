@@ -317,14 +317,12 @@ export function emitCanvasAssignment(
             expression,
             "Canvas dimensions currently support direct assignment.",
         );
-    const temporary = context.allocateTemporaryCppName("canvas_receiver");
-    context.emit({
-        kind: "declaration",
-        type: "auto",
-        name: temporary,
-        initializer: owner.cpp,
-    });
+    const receiver = context.pinValueToTemporary(
+        owner,
+        "canvas_receiver",
+        target.expression,
+    );
     const value = context.compileNumber(expression.right, "double");
-    context.emit(`${temporary}->set_${target.name.text}(${value});`);
+    context.emit(`${receiver.cpp}->set_${target.name.text}(${value});`);
     return true;
 }

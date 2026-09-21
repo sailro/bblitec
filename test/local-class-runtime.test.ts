@@ -125,6 +125,37 @@ const workspaceOverParts = `
     }
 `;
 
+test("void class methods and setters avoid closures unless a return needs its own scope", () => {
+    const source = `
+        import {createEngine, createStandardMaterial, markMaterialUboDirty} from "@babylonjs/lite";
+        const COLORS: readonly [number, number, number] = [0.4, 0.75, 1];
+        class Tint {
+            private color: [number, number, number] = [0, 0, 0];
+            private material = createStandardMaterial();
+            constructor() { this.material.emissiveColor = this.color; }
+            setColor(rgb: readonly [number, number, number]): void {
+                this.color[0] = rgb[0]; this.color[1] = rgb[1]; this.color[2] = rgb[2];
+                markMaterialUboDirty(this.material);
+            }
+            set blue(value: number) { this.color[2] = value; }
+        }
+        const engine = await createEngine({});
+        const tint = new Tint();
+        tint.setColor(COLORS);
+        tint.blue = 0.5;
+    `;
+    const straight = compileSource(source).cpp;
+    assert.doesNotMatch(straight, /\[&\]\(\) -> void \{/);
+    assert.match(straight, /mark_material_ubo_dirty/);
+    const returning = compileSource(
+        source.replace(
+            "set blue(value: number) {",
+            "set blue(value: number) { if (value < 0) return;",
+        ),
+    ).cpp;
+    assert.match(returning, /\[&\]\(\) -> void \{/);
+});
+
 test("keeps a class nothing stores as a compile-time record", () => {
     const result = compileSource(`
         class Counter {
@@ -244,7 +275,27 @@ test(
         if (retained[0]!.values !== values) throw new Error("constructor array identity");
         values[1] = 8;
         if (retained[0]!.total() !== 12) throw new Error("constructor array alias mutation");
+        class Selected {
+            constructor(public id: number) {}
+            visit(callback: () => void): number {
+                callback();
+                return this.id;
+            }
+        }
+        let selections = 0;
+        const selected: Selected[] = [new Selected(11)];
+        function choose(): Selected {
+            selections += 1;
+            return selected[0]!;
+        }
+        const observed = choose().visit(() => { selected[0] = new Selected(13); });
+        if (observed !== 11 || selections !== 1 || selected[0]!.id !== 13)
+            throw new Error("computed receiver lifetime and evaluation order");
     `);
+        assert.match(
+            result.cpp,
+            /const auto& (\w+) = [^;\n]+;\s*\[\[maybe_unused\]\] auto \w+ = \1\.lifetime_owner\(\);/,
+        );
         const output = resolve("artifacts/class-parameter-properties");
         mkdirSync(output, { recursive: true });
         const source = join(output, "check.cpp"),

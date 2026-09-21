@@ -44,6 +44,9 @@ initializers use the selected representation. Equivalent definitions share code;
 distinct captures and resource identities. Pinned functions use `lowerPinnedFunction`; selected bodies
 use `lowerPinnedBody`. WGSL uses typed IR or explicit reflected-source contracts.
 
+Fresh native temporaries transfer into source locals; immutable bindings can borrow stable owners.
+Rebound parameters own their binding while object and container mutations preserve shared identity.
+
 ## Scene orchestration
 
 `scene-command.ts` resolves registry IDs and paths. The registry owns poses, thresholds and diagnostics.
@@ -54,8 +57,10 @@ belong to scene identity. Property and glTF animation retain separate playback c
 
 - Handles index engine records; resolve them again after storage growth.
 - RAII owns locals. Shared containers and `bbl::js::Ref<T>` preserve JS identity.
+- Computed method receivers retain their selected owner through callbacks and cycle collection.
 - Closures retain referenced cells; suspended calls own their live locals.
-- Traced records, containers and callbacks participate in cycle collection at frame boundaries and teardown.
+- Traced records, containers and callbacks participate in cycle collection at frame boundaries and teardown. Only complete payloads enter the registry; they detach before destruction.
+- Managed statics and GC registries are realm-local; teardown clears payloads before releasing registry storage.
 - Non-atomic JS references stay on their owning realm. Borrowed events last one dispatch.
 - Physics, navigation and audio owners are independent of renderer lifetime.
 - GPU resources remain alive through their in-flight submissions.

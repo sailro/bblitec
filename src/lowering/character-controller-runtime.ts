@@ -190,7 +190,7 @@ public:
         body_wrappers_.clear();
 ${thinInstances ? "        instance_wrappers_.clear();" : ""}
     }
-    js::Ref<PhysicsShape> _create_shape(js::Ref<PhysicsWorld> world, js::Ref<ShapeDescription> shape) override {
+    js::Ref<PhysicsShape> _create_shape(const js::Ref<PhysicsWorld>& world, js::Ref<ShapeDescription> shape) override {
         auto result = js::make_ref<PhysicsShape>();
         upstream::PhysicsShapeParameters parameters;
         const auto& p = shape->parameters;
@@ -204,17 +204,17 @@ ${thinInstances ? "        instance_wrappers_.clear();" : ""}
         result->value = create_transform_node(*engine_, std::move(name), {x,y,z}, {${defaultRotation}}, {${defaultScale}});
         return result;
     }
-    js::Ref<PhysicsBody> _create_body(js::Ref<PhysicsWorld> world, js::Ref<TransformNode> node, double motion) override {
+    js::Ref<PhysicsBody> _create_body(const js::Ref<PhysicsWorld>& world, js::Ref<TransformNode> node, double motion) override {
         return wrap_body(upstream::create_physics_body(world->value, upstream::physics_node(node->value), static_cast<upstream::PhysicsMotionType>(motion), ${startsAsleep}));
     }
-    void _set_body_shape(js::Ref<PhysicsWorld> world, js::Ref<PhysicsBody> body, js::Ref<PhysicsShape> shape) override { upstream::set_physics_body_shape(world->value, body->value, shape->value); }
-    void _set_body_mass_properties(js::Ref<PhysicsWorld> world, js::Ref<PhysicsBody> body, js::Ref<InertiaOverride> properties) override {
+    void _set_body_shape(const js::Ref<PhysicsWorld>& world, const js::Ref<PhysicsBody>& body, js::Ref<PhysicsShape> shape) override { upstream::set_physics_body_shape(world->value, body->value, shape->value); }
+    void _set_body_mass_properties(const js::Ref<PhysicsWorld>& world, const js::Ref<PhysicsBody>& body, js::Ref<InertiaOverride> properties) override {
         upstream::PhysicsMassPropertyOverrides overrides;
         overrides.inertia = Vec3d{properties->inertia->x, properties->inertia->y, properties->inertia->z};
         upstream::set_physics_body_mass_properties(world->value, body->value, overrides);
     }
-    void _set_body_pre_step(js::Ref<PhysicsBody> body, bool enabled) override { upstream::set_physics_body_pre_step(body->value, enabled); }
-    void _remove_body(js::Ref<PhysicsWorld> world, js::Ref<PhysicsBody> body) override { upstream::remove_physics_body(world->value, body->value); }
+    void _set_body_pre_step(const js::Ref<PhysicsBody>& body, bool enabled) override { upstream::set_physics_body_pre_step(body->value, enabled); }
+    void _remove_body(const js::Ref<PhysicsWorld>& world, const js::Ref<PhysicsBody>& body) override { upstream::remove_physics_body(world->value, body->value); }
     void _release_shape(js::Ref<PhysicsShape> shape) override { shape->value.handle = {}; }
     js::Ref<QueryCollector> _create_collector(double capacity) override {
         if (capacity <= 0 || !std::isfinite(capacity) || std::floor(capacity) != capacity) throw std::runtime_error("Character collector capacity is invalid.");

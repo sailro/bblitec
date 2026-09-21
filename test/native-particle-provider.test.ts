@@ -101,6 +101,10 @@ test("provider option aliases retain static options and source-ordered native ca
     assert.deepEqual(result.nodeParticles!.steps, []);
     assert.deepEqual(result.nodeParticles!.buffers, []);
     assert.match(result.cpp, /sample_node_particle_emitter/);
+    assert.match(
+        result.cpp,
+        /auto v_bblite_particle_provider_\d+ = bbl::js::snapshot_callback\(/,
+    );
     assert.match(result.cpp, /set_random_override/);
 });
 

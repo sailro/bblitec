@@ -249,7 +249,7 @@ test("bound source writers retain aliases and refresh independent native materia
 #include <cassert>
 #include <fstream>
 namespace bbl {
-const ts::JsonValue* optional(const ts::JsonValue::Object& value, const std::string& key) {
+const ts::JsonValue* optional(const ts::JsonValue::Object& value, std::string_view key) {
     const auto found = value.find(key); return found == value.end() ? nullptr : &found->second;
 }
 std::size_t gltf_checked_index(double value) {

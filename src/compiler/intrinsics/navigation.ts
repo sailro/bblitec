@@ -45,6 +45,7 @@ export interface NavigationIntrinsicContext
             | "emitDataVectorOfStructs"
             | "allocateTemporaryCppName"
             | "registerNativeBinding"
+            | "registerNativeTemporary"
             | "emit"
             | "requireEngine"
             | "unwrap"
@@ -433,10 +434,11 @@ export function compileNavigationIntrinsic(
             );
             const crowd = context.allocateTemporaryCppName("nav_crowd");
             context.emit(
-                `const bbl::pal::NavCrowdHandle ${crowd} = ` +
+                `bbl::pal::NavCrowdHandle ${crowd} = ` +
                     `bbl::upstream::create_nav_crowd(${plugin.cpp}, ` +
                     `${maxAgents}, ${maxAgentRadius});`,
             );
+            context.registerNativeTemporary(crowd);
             return { kind: "navigation-crowd", cpp: crowd };
         }
 

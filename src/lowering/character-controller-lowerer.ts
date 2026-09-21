@@ -1,4 +1,9 @@
 import ts from "typescript";
+import { forEachAnalysisNode } from "../compiler/analysis-walk.js";
+import {
+    isAssignmentExpression,
+    isUpdateExpression,
+} from "../compiler/syntax.js";
 import type { LoweringContext } from "./context.js";
 import {
     PinnedReferenceLowerer,
@@ -141,6 +146,7 @@ export function lowerCharacterControllerKernel(
                       ["Mat4", "number[]"],
                       ["unknown", "optional:number"],
                   ]),
+                  ownedAssignments: new Set(["this._body"]),
                   ...characterTransportSchema(context),
               }
             : {}),
@@ -375,6 +381,14 @@ export function lowerCharacterControllerKernel(
         });
         const zero = context.variableInitializer(file, "ZERO");
         bindings.set("ZERO", lowerer.expression(zero, "Vec3"));
+        const borrowedAdapterParameters = new Map<string, readonly number[]>([
+            ["createPhysicsShape", [0]],
+            ["createPhysicsBody", [0]],
+            ["setPhysicsBodyShape", [0, 1]],
+            ["setPhysicsBodyMassProperties", [0, 1]],
+            ["setPhysicsBodyPreStep", [0]],
+            ["removePhysicsBody", [0, 1]],
+        ]);
         for (const [name, cpp, parameters, returns] of [
             [
                 "createPhysicsShape",
@@ -424,6 +438,13 @@ export function lowerCharacterControllerKernel(
                 parameters,
                 requiredParameters: parameters.length,
                 returns,
+                ...(borrowedAdapterParameters.has(name)
+                    ? {
+                          borrowedParameters: new Set(
+                              borrowedAdapterParameters.get(name),
+                          ),
+                      }
+                    : {}),
             });
     }
     const fields = controller.members.filter(
@@ -473,6 +494,7 @@ export function lowerCharacterControllerKernel(
         bindings.set(`this.${field.name.getText(file)}`, {
             cpp: field.name.getText(file),
             type,
+            borrowed: "mutable",
         });
     }
     const hasDependentDefault = (
@@ -489,6 +511,29 @@ export function lowerCharacterControllerKernel(
             preceding.add(parameter.name.getText(file));
             return dependent;
         });
+    };
+    const reboundParameterNames = (
+        declaration:
+            | ts.FunctionDeclaration
+            | ts.MethodDeclaration
+            | ts.ConstructorDeclaration,
+    ): ReadonlySet<string> => {
+        const rebound = new Set<string>();
+        if (declaration.body)
+            forEachAnalysisNode(
+                declaration.body,
+                (node) => {
+                    const target = isAssignmentExpression(node)
+                        ? node.left
+                        : isUpdateExpression(node)
+                          ? node.operand
+                          : undefined;
+                    if (target && ts.isIdentifier(target))
+                        rebound.add(target.text);
+                },
+                { functions: "skip", types: "skip" },
+            );
+        return rebound;
     };
     const prototype = (
         name: string,
@@ -512,7 +557,11 @@ export function lowerCharacterControllerKernel(
                         "Pinned controller parameter must be ordinary and named.",
                     );
                 const initializer = parameter.initializer;
-                return `[[maybe_unused]] ${lowerer.storage(fn.parameters[index]!)} ${parameter.name.text}${nativeDefaults && initializer ? ` = ${lowerer.expression(initializer, fn.parameters[index]).cpp}` : nativeDefaults && parameter.questionToken ? " = {}" : ""}`;
+                const storage = lowerer.storage(fn.parameters[index]!);
+                const parameterType = fn.borrowedParameters?.has(index)
+                    ? `const ${storage}&`
+                    : storage;
+                return `[[maybe_unused]] ${parameterType} ${parameter.name.text}${nativeDefaults && initializer ? ` = ${lowerer.expression(initializer, fn.parameters[index]).cpp}` : nativeDefaults && parameter.questionToken ? " = {}" : ""}`;
             });
         return `${lowerer.storage(fn.returns)} ${name}(${parameters.join(", ")})`;
     };
@@ -524,10 +573,17 @@ export function lowerCharacterControllerKernel(
             ts.isMethodDeclaration(declaration) ? `this.${name}` : name,
         )!;
         const locals = new Map(bindings);
+        const rebound = reboundParameterNames(declaration);
         for (const [index, parameter] of declaration.parameters.entries())
             locals.set(parameter.name.getText(file), {
                 cpp: parameter.name.getText(file),
                 type: fn.parameters[index]!,
+                borrowed:
+                    declaration.body &&
+                    ts.isIdentifier(parameter.name) &&
+                    !rebound.has(parameter.name.text)
+                        ? "stable"
+                        : "mutable",
             });
         const body = new PinnedReferenceLowerer(context, {
             ...schema,
@@ -582,13 +638,35 @@ export function lowerCharacterControllerKernel(
         const constructor = controller.members.find(
             ts.isConstructorDeclaration,
         )!;
+        const bodyAssignments = context.findNodes(
+            controller,
+            (node): node is ts.BinaryExpression =>
+                ts.isBinaryExpression(node) &&
+                node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+                node.left.getText(file) === "this._body",
+        );
+        if (
+            bodyAssignments.length !== 1 ||
+            !ts.findAncestor(bodyAssignments[0], (node) => node === constructor)
+        )
+            return context.contractError(
+                controller,
+                "Pinned controller body ownership assignment changed.",
+            );
         const locals = new Map(bindings);
+        const rebound = reboundParameterNames(constructor);
         for (const parameter of constructor.parameters)
             locals.set(parameter.name.getText(file), {
                 cpp: parameter.name.getText(file),
                 type: lowerer.type(parameter.type!),
+                borrowed:
+                    constructor.body &&
+                    ts.isIdentifier(parameter.name) &&
+                    !rebound.has(parameter.name.text)
+                        ? "stable"
+                        : "mutable",
             });
-        initialize = `void initialize(js::Ref<PhysicsWorld> world, js::Ref<Vec3> position, js::Ref<PhysicsCharacterControllerOptions> options) {\n${new PinnedReferenceLowerer(context, { ...schema, bindings: locals }).statements(constructor.body!.statements)}\n}`;
+        initialize = `void initialize(const js::Ref<PhysicsWorld>& world, js::Ref<Vec3> position, js::Ref<PhysicsCharacterControllerOptions> options) {\n${new PinnedReferenceLowerer(context, { ...schema, bindings: locals }).statements(constructor.body!.statements)}\n}`;
     }
     return `#pragma once
 #include <bblite/js_data.hpp>
@@ -618,13 +696,13 @@ struct CharacterControllerKernel {
 ${
     full
         ? `    virtual js::Array<js::Ref<PhysicsBody>> _world_bodies() = 0;
-    virtual js::Ref<PhysicsShape> _create_shape(js::Ref<PhysicsWorld>, js::Ref<ShapeDescription>) = 0;
+    virtual js::Ref<PhysicsShape> _create_shape(const js::Ref<PhysicsWorld>&, js::Ref<ShapeDescription>) = 0;
     virtual js::Ref<TransformNode> _create_node(std::string, double, double, double) = 0;
-    virtual js::Ref<PhysicsBody> _create_body(js::Ref<PhysicsWorld>, js::Ref<TransformNode>, double) = 0;
-    virtual void _set_body_shape(js::Ref<PhysicsWorld>, js::Ref<PhysicsBody>, js::Ref<PhysicsShape>) = 0;
-    virtual void _set_body_mass_properties(js::Ref<PhysicsWorld>, js::Ref<PhysicsBody>, js::Ref<InertiaOverride>) = 0;
-    virtual void _set_body_pre_step(js::Ref<PhysicsBody>, bool) = 0;
-    virtual void _remove_body(js::Ref<PhysicsWorld>, js::Ref<PhysicsBody>) = 0;
+    virtual js::Ref<PhysicsBody> _create_body(const js::Ref<PhysicsWorld>&, js::Ref<TransformNode>, double) = 0;
+    virtual void _set_body_shape(const js::Ref<PhysicsWorld>&, const js::Ref<PhysicsBody>&, js::Ref<PhysicsShape>) = 0;
+    virtual void _set_body_mass_properties(const js::Ref<PhysicsWorld>&, const js::Ref<PhysicsBody>&, js::Ref<InertiaOverride>) = 0;
+    virtual void _set_body_pre_step(const js::Ref<PhysicsBody>&, bool) = 0;
+    virtual void _remove_body(const js::Ref<PhysicsWorld>&, const js::Ref<PhysicsBody>&) = 0;
     virtual void _release_shape(js::Ref<PhysicsShape>) = 0;
     virtual js::Ref<QueryCollector> _create_collector(double) = 0;
     virtual void _release_collector(js::Ref<QueryCollector>) = 0;

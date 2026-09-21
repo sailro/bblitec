@@ -33,7 +33,7 @@ export function deploymentSearchParamsValue(
     const name = context.allocateTemporaryCppName("deployment_query");
     context.emit({
         kind: "declaration",
-        type: "static const auto",
+        type: "static thread_local const auto",
         name,
         initializer: bag.cpp,
     });

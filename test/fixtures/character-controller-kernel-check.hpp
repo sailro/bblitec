@@ -35,7 +35,7 @@ struct Kernel final : CharacterControllerKernel {
     double dt = 1.0 / 60;
     js::Ref<Vec3> node = v();
     Kernel() { _position = v(); }
-    js::Ref<PhysicsShape> _create_shape(js::Ref<PhysicsWorld>,
+    js::Ref<PhysicsShape> _create_shape(const js::Ref<PhysicsWorld>&,
                                         js::Ref<ShapeDescription> shape) override {
         auto result = js::make_ref<PhysicsShape>();
         result->radius = shape->parameters->radius;
@@ -51,7 +51,7 @@ struct Kernel final : CharacterControllerKernel {
         vset(node, x, y, z);
         return js::make_ref<TransformNode>();
     }
-    js::Ref<PhysicsBody> _create_body(js::Ref<PhysicsWorld>, js::Ref<TransformNode>,
+    js::Ref<PhysicsBody> _create_body(const js::Ref<PhysicsWorld>&, js::Ref<TransformNode>,
                                       double motion) override {
         lifecycle.push_back(3);
         lifecycle.push_back(motion);
@@ -61,21 +61,21 @@ struct Kernel final : CharacterControllerKernel {
         bodies.push_back(result);
         return result;
     }
-    void _set_body_shape(js::Ref<PhysicsWorld>, js::Ref<PhysicsBody>,
+    void _set_body_shape(const js::Ref<PhysicsWorld>&, const js::Ref<PhysicsBody>&,
                          js::Ref<PhysicsShape> shape) override {
         lifecycle.push_back(4);
         lifecycle.push_back(shape->height);
     }
-    void _set_body_mass_properties(js::Ref<PhysicsWorld>, js::Ref<PhysicsBody>,
+    void _set_body_mass_properties(const js::Ref<PhysicsWorld>&, const js::Ref<PhysicsBody>&,
                                    js::Ref<InertiaOverride> p) override {
         for (double value : {5.0, p->inertia->x, p->inertia->y, p->inertia->z})
             lifecycle.push_back(value);
     }
-    void _set_body_pre_step(js::Ref<PhysicsBody>, bool enabled) override {
+    void _set_body_pre_step(const js::Ref<PhysicsBody>&, bool enabled) override {
         lifecycle.push_back(6);
         lifecycle.push_back(enabled ? 1 : 0);
     }
-    void _remove_body(js::Ref<PhysicsWorld>, js::Ref<PhysicsBody> removed) override {
+    void _remove_body(const js::Ref<PhysicsWorld>&, const js::Ref<PhysicsBody>& removed) override {
         lifecycle.push_back(7);
         const auto i = js::array_index_of(bodies, removed);
         if (i >= 0)

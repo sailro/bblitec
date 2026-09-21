@@ -1,5 +1,10 @@
 import assert from "node:assert/strict";
-import { asObject, type JsonObject } from "../src/gltf-document.js";
+import {
+    asNumbers,
+    asObject,
+    asString,
+    type JsonObject,
+} from "../src/gltf-document.js";
 
 export function jsonObject(value: unknown): JsonObject {
     const record = asObject(value);
@@ -17,13 +22,13 @@ export function jsonRecords(value: unknown): JsonObject[] {
 }
 
 export function jsonNumbers(value: unknown): number[] {
-    return jsonArray(value).map((entry) => {
-        assert.ok(typeof entry === "number", "Expected a numeric JSON array.");
-        return entry;
-    });
+    const numbers = asNumbers(value);
+    assert.ok(numbers, "Expected a numeric JSON array.");
+    return numbers;
 }
 
 export function jsonString(value: unknown): string {
-    assert.ok(typeof value === "string", "Expected a JSON string.");
-    return value;
+    const text = asString(value);
+    assert.ok(text !== undefined, "Expected a JSON string.");
+    return text;
 }

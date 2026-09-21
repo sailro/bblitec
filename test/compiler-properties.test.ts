@@ -177,7 +177,7 @@ test("re-tags a handle and then reads through it", () => {
 
     // The re-tagged binding is the camera handle, and the bounds read
     // indexes the camera record through it.
-    assert.match(result.cpp, /auto v_ortho = v_camera;/);
+    assert.match(result.cpp, /auto& v_ortho = v_camera;/);
     assert.match(
         result.cpp,
         /v_engine\.cameras\[v_ortho\.value\]\.ortho_half_height/,

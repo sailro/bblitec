@@ -52,6 +52,7 @@ interface TextSurfaceContext extends Pick<
     | "lookupOptional"
     | "probeEmission"
     | "allocateTemporaryCppName"
+    | "pinValueToTemporary"
     | "emit"
     | "expectKind"
     | "fail"
@@ -106,9 +107,9 @@ export function retainTextValue(
     const cpp = context.allocateTemporaryCppName("text_owner");
     context.emit({
         kind: "declaration",
-        type: "const auto",
+        type: "auto",
         name: cpp,
-        initializer: value.cpp,
+        initializer: `bbl::js::snapshot_value(${value.cpp})`,
         attributes: "[[maybe_unused]] ",
     });
     return { ...value, cpp };
@@ -314,7 +315,11 @@ export function compileTextMutation(
     ) {
         const vector = ownerValue(context, node.expression.expression);
         if (!vector || vector.kind !== "text-vector") return undefined;
-        const owner = retainTextValue(context, vector);
+        const owner = context.pinValueToTemporary(
+            vector,
+            "text_owner",
+            node.expression.expression,
+        );
         const count = axes(owner.textTransform!).length;
         if (node.arguments.length !== count)
             context.fail(
@@ -355,7 +360,11 @@ export function compileTextMutation(
             left,
             "Computed text property writes are not represented.",
         );
-    const owner = retainTextValue(context, value);
+    const owner = context.pinValueToTemporary(
+        value,
+        "text_owner",
+        left.expression,
+    );
     const name = left.name.text;
     const transform = owner.textTransform;
     const axis = transform ? axes(transform).indexOf(name) : -1;

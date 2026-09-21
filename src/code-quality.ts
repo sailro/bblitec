@@ -139,37 +139,75 @@ function trackedNativeFiles(root: string): string[] {
     );
 }
 
-async function main(args: readonly string[]): Promise<void> {
-    const [command, ...rest] = args;
-    if (command !== "format" && command !== "lint") {
-        throw new Error(
-            "Expected code-quality format [--write] or lint <scene|build-directory|all> [...].",
+function formatCommand(args: readonly string[]): void {
+    const parsed = parseFlags(
+        args,
+        {
+            boolean: ["--write", "--help"],
+            value: ["--file"],
+            positionals: 0,
+        },
+        "code-quality format",
+    );
+    if (parsed.flags.has("--help")) {
+        console.log("code-quality format [--write] [--file <owned-source>]");
+        return;
+    }
+    const root = findRepositoryRoot();
+    const files = trackedNativeFiles(root);
+    const selected = parsed.values.get("--file");
+    const selectedKey =
+        selected === undefined ? undefined : pathKey(resolve(selected));
+    if (
+        selectedKey !== undefined &&
+        !files.some((file) => pathKey(resolve(root, file)) === selectedKey)
+    ) {
+        throw new Error(`Not a maintained native source: ${selected}.`);
+    }
+    holdDistLock("code-quality format");
+    const tool = clangTool("clang-format");
+    const inputs = files.filter(
+        (file) =>
+            selectedKey === undefined ||
+            pathKey(resolve(root, file)) === selectedKey,
+    );
+    if (inputs.length === 0)
+        throw new Error("No maintained C++ files to format.");
+    for (let offset = 0; offset < inputs.length; offset += 64) {
+        execFileSync(
+            tool,
+            [
+                "--style=file",
+                ...(parsed.flags.has("--write")
+                    ? ["-i"]
+                    : ["--dry-run", "--Werror"]),
+                ...inputs.slice(offset, offset + 64),
+            ],
+            { cwd: root, stdio: "inherit", windowsHide: true },
         );
     }
+    console.log(
+        `clang-format: ${inputs.length} maintained source files ${parsed.flags.has("--write") ? "formatted" : "checked"}.`,
+    );
+}
+
+async function lintCommand(args: readonly string[]): Promise<void> {
     const parsed = parseFlags(
-        rest,
+        args,
         {
-            boolean:
-                command === "format"
-                    ? ["--write", "--help"]
-                    : ["--help", "--generated"],
-            value:
-                command === "format"
-                    ? ["--file"]
-                    : ["--file", "--jobs", "--backend"],
-            positionals: command === "lint" ? Number.MAX_SAFE_INTEGER : 0,
+            boolean: ["--help", "--generated"],
+            value: ["--file", "--jobs", "--backend"],
+            positionals: Number.MAX_SAFE_INTEGER,
         },
-        `code-quality ${command}`,
+        "code-quality lint",
     );
     if (parsed.flags.has("--help")) {
         console.log(
-            command === "format"
-                ? "code-quality format [--write] [--file <owned-source>]"
-                : "code-quality lint <scene|build-directory|all> [...] [--generated] [--backend sdl_gpu|dawn|both] [--file <source>] [--jobs <count>]",
+            "code-quality lint <scene|build-directory|all> [...] [--generated] [--backend sdl_gpu|dawn|both] [--file <source>] [--jobs <count>]",
         );
         return;
     }
-    if (command === "lint" && parsed.positionals.length === 0) {
+    if (parsed.positionals.length === 0) {
         throw new Error(
             "Pass a configured native build directory containing compile_commands.json, " +
                 "for example: npm run lint:cpp -- native/build-scene1-release. " +
@@ -181,47 +219,6 @@ async function main(args: readonly string[]): Promise<void> {
             "'all' cannot be combined with individual lint targets.",
         );
     }
-    const root = findRepositoryRoot();
-    const files = trackedNativeFiles(root);
-    const selected = parsed.values.get("--file");
-    const selectedKey =
-        selected === undefined ? undefined : pathKey(resolve(selected));
-    if (
-        command === "format" &&
-        selectedKey !== undefined &&
-        !files.some((file) => pathKey(resolve(root, file)) === selectedKey)
-    ) {
-        throw new Error(`Not a maintained native source: ${selected}.`);
-    }
-    holdDistLock(`code-quality ${command}`);
-    if (command === "format") {
-        const tool = clangTool("clang-format");
-        const inputs = files.filter(
-            (file) =>
-                selectedKey === undefined ||
-                pathKey(resolve(root, file)) === selectedKey,
-        );
-        if (inputs.length === 0)
-            throw new Error("No maintained C++ files to format.");
-        for (let offset = 0; offset < inputs.length; offset += 64) {
-            execFileSync(
-                tool,
-                [
-                    "--style=file",
-                    ...(parsed.flags.has("--write")
-                        ? ["-i"]
-                        : ["--dry-run", "--Werror"]),
-                    ...inputs.slice(offset, offset + 64),
-                ],
-                { cwd: root, stdio: "inherit", windowsHide: true },
-            );
-        }
-        console.log(
-            `clang-format: ${inputs.length} maintained source files ${parsed.flags.has("--write") ? "formatted" : "checked"}.`,
-        );
-        return;
-    }
-
     const jobs =
         flagNumber(parsed, "--jobs", "code-quality lint") ??
         Math.min(4, availableParallelism());
@@ -233,6 +230,17 @@ async function main(args: readonly string[]): Promise<void> {
         backendValue === undefined
             ? undefined
             : canonicalCompiledBackend(backendValue, "code-quality lint");
+    holdDistLock("code-quality lint");
+    const tool = clangTool("clang-tidy");
+    const environment =
+        process.platform === "win32"
+            ? discoverWindowsBuildTools("auto").environment
+            : process.env;
+    const root = findRepositoryRoot();
+    const files = trackedNativeFiles(root);
+    const selected = parsed.values.get("--file");
+    const selectedKey =
+        selected === undefined ? undefined : pathKey(resolve(selected));
     const targets = parsed.positionals.includes("all")
         ? scenes
         : parsed.positionals.map(
@@ -326,11 +334,6 @@ async function main(args: readonly string[]): Promise<void> {
             scene: typeof target === "string" ? undefined : target.id,
         };
     });
-    const tool = clangTool("clang-tidy");
-    const environment =
-        process.platform === "win32"
-            ? discoverWindowsBuildTools("auto").environment
-            : process.env;
     const logs = join(
         root,
         "artifacts",
@@ -410,6 +413,19 @@ async function main(args: readonly string[]): Promise<void> {
     console.log(
         `clang-tidy: ${work.length} translation units checked; logs in ${relative(root, logs).split(sep).join("/")}.`,
     );
+}
+
+async function main(args: readonly string[]): Promise<void> {
+    const [command, ...rest] = args;
+    if (command === "format") {
+        formatCommand(rest);
+    } else if (command === "lint") {
+        await lintCommand(rest);
+    } else {
+        throw new Error(
+            "Expected code-quality format [--write] or lint <scene|build-directory|all> [...].",
+        );
+    }
 }
 
 if (isMainModule(import.meta.url)) {

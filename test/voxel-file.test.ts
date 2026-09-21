@@ -43,7 +43,10 @@ test("compiled voxel save/load uses selected files, cancellation and JavaScript 
         async function main() {
             const engine = await createEngine({});
             const data: SaveData = ${JSON.stringify(data).replace('"x":0', '"x":-0')};
-            if (await saveWorld(data)) throw new Error("cancelled save");
+            function snapshot(): SaveData {
+                return {v: 1, seed: data.seed, time: data.time, player: data.player, edits: data.edits};
+            }
+            if (await saveWorld(snapshot())) throw new Error("cancelled save");
             if (!await saveToFile(data)) throw new Error("selected save");
             if (await loadWorld()) throw new Error("cancelled load");
             const loaded = await loadFromFile();
@@ -68,6 +71,7 @@ test("compiled voxel save/load uses selected files, cancellation and JavaScript 
     );
     assert.ok(result.manifest.features.includes("browser:file"));
     assert.ok(result.manifest.runtimeSources.includes("src/pal_file.cpp"));
+    assert.match(result.cpp, /save_voxel_world\([^;]+std::move\(/);
     writeFileSync(join(directory, "program.hpp"), result.cpp);
     writeFileSync(
         join(directory, "expected.hpp"),

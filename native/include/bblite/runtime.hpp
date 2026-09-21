@@ -243,6 +243,11 @@ public:
     [[nodiscard]] bool empty() const noexcept { return entries_.empty(); }
 
 #if defined(BBLITE_WORKERS) && BBLITE_WORKERS
+    void add(Callback callback, bool once = false) {
+        const auto identity = callback.identity();
+        add(identity, std::move(callback), once);
+    }
+
     void gc_trace(const js::TraceVisitor& visitor) const {
         for (const Entry& entry : entries_)
             visitor(entry.callback);

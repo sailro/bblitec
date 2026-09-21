@@ -76,6 +76,7 @@ export interface AudioIntrinsicContext
             | "allocateTemporaryCppName"
             | "emit"
             | "registerNativeBinding"
+            | "registerNativeTemporary"
             | "audioSessionCpp"
             | "expectObjectLiteral"
         > {}
@@ -166,7 +167,7 @@ export function compileAudioIntrinsic(
             // A sound source connects into `mainBus._in`, which is that
             // second gain. Two nodes, and the shape is the contract.
             context.emit(
-                `const bbl::pal::AudioContextHandle ${engine}_ctx = ` +
+                `bbl::pal::AudioContextHandle ${engine}_ctx = ` +
                     `bbl::pal::audio_create_context(${context.audioSessionCpp()});`,
             );
             context.emit(
@@ -178,12 +179,14 @@ export function compileAudioIntrinsic(
                     `bbl::pal::audio_destination(${engine}_ctx));`,
             );
             context.emit(
-                `const bbl::pal::AudioNodeHandle ${engine}_main_bus = ` +
+                `bbl::pal::AudioNodeHandle ${engine}_main_bus = ` +
                     `bbl::pal::audio_create_gain(${engine}_ctx);`,
             );
             context.emit(
                 `bbl::pal::audio_connect(${engine}_main_bus, ${engine}_main_out);`,
             );
+            context.registerNativeTemporary(`${engine}_ctx`);
+            context.registerNativeTemporary(`${engine}_main_bus`);
             return {
                 kind: "audio-engine",
                 cpp: `${engine}_ctx`,

@@ -55,6 +55,7 @@ import {
     isLogicalAssignmentOperator,
     isAssignmentExpression,
     isUpdateExpression,
+    expressionMayRunCode,
     regularExpressionParts,
 } from "./syntax.js";
 import { compileErrorConstruction, errorConstructor } from "./error-values.js";
@@ -1427,22 +1428,35 @@ export class ExpressionLowerer {
         const parts: string[] = [this.context.cppString(expression.head.text)];
         let compiledStaticText = expression.head.text;
         let allCompiledValuesAreStatic = true;
-        expression.templateSpans.forEach((span) => {
+        let lastEffect = expression.templateSpans.length - 1;
+        while (
+            lastEffect >= 0 &&
+            !expressionMayRunCode(
+                expression.templateSpans[lastEffect]!.expression,
+            )
+        ) {
+            lastEffect--;
+        }
+        expression.templateSpans.forEach((span, index) => {
             // Resolve each substitution after its predecessors' effects. A
             // closed numeric expression keeps its fact alongside helper results.
             const known = this.context.evaluator.staticTextValue(
                 span.expression,
             );
-            const value =
+            const compiled =
                 known === undefined
-                    ? this.context.pinValueToTemporary(
-                          this.compileValue(span.expression),
-                          "template_part",
-                          span.expression,
-                      )
+                    ? this.compileValue(span.expression)
                     : staticStringValue(known, (text) =>
                           this.context.cppString(text),
                       );
+            const value =
+                known === undefined && index <= lastEffect
+                    ? this.context.pinValueToTemporary(
+                          compiled,
+                          "template_part",
+                          span.expression,
+                      )
+                    : compiled;
             const staticText = staticStringCoercion(value);
             if (staticText === undefined) {
                 allCompiledValuesAreStatic = false;
@@ -3689,6 +3703,9 @@ export class ExpressionLowerer {
                             )),
                 );
                 const lookup = `${table}.${totalClosedKey ? "at" : "get"}(${key.cpp})`;
+                const ownedLookup = totalClosedKey
+                    ? `bbl::js::snapshot_value(${lookup})`
+                    : `${table}.get_owned(${key.cpp})`;
                 const recordValues = Object.values(
                     owner.recordProperties ?? {},
                 );
@@ -3736,14 +3753,20 @@ export class ExpressionLowerer {
                     // optional data type would later spell `.has_value()`
                     // on a pointer, while narrowing it eagerly would lose
                     // the missing-key guard.
-                    return this.context.dataLowerer.leafValue(
-                        lookup,
-                        valueType,
-                    );
+                    return {
+                        ...this.context.dataLowerer.leafValue(
+                            lookup,
+                            valueType,
+                        ),
+                        ownedCpp: ownedLookup,
+                        nativeLvalue: true,
+                    };
                 }
                 return {
                     kind: "data",
                     cpp: lookup,
+                    ownedCpp: ownedLookup,
+                    nativeLvalue: true,
                     dataType: resultType,
                     ...(resultType.kind === "optional"
                         ? { preserveUncheckedLookup: true as const }

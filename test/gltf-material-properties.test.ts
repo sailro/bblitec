@@ -67,7 +67,9 @@ function alteredMaterialSetup(): LoweringContext {
     );
 }
 
-function reboundMaterialReceiver(): LoweringContext {
+function reboundMaterialReceiver(
+    operation = "return Object.assign(selected, (selected = {...selected})) === original;",
+): LoweringContext {
     const module = "src/loader-gltf/gltf-pbr-builder-ext.ts";
     const { declaration } = new LoweringContext().functionDeclaration(
         module,
@@ -76,7 +78,7 @@ function reboundMaterialReceiver(): LoweringContext {
     const parameter = declaration.parameters[0]!.name;
     assert.ok(ts.isIdentifier(parameter));
     const body = `{ let selected = {...${parameter.text}}; const original = selected;
-        return Object.assign(selected, (selected = {...selected})) === original; }`;
+        ${operation} }`;
     return doctoredContext(
         module,
         declaration.getText(),
@@ -218,6 +220,18 @@ for (const [variant, context] of [
     ["registry", reversedMaterialRegistry()],
     ["setup", alteredMaterialSetup()],
     ["receiver-rebinding", reboundMaterialReceiver()],
+    [
+        "property-write-rebinding",
+        reboundMaterialReceiver(
+            "selected.marker = (selected = {...selected}); return original.marker === selected && original !== selected;",
+        ),
+    ],
+    [
+        "callback-array-mutation",
+        reboundMaterialReceiver(
+            "const values = [1, 2, 3]; let calls = 0; const mapped = values.map(value => ((calls = calls + 1) === 1 ? (values[1] = 20) : value)); return original === selected && mapped[1] === 20 && calls === 3;",
+        ),
+    ],
     [
         "construction",
         doctoredContext(
@@ -614,6 +628,7 @@ for (const [variant, context] of [
         #include <fstream>
         #include <functional>
         #include <optional>
+        #include <type_traits>
         namespace bbl {
             void enable_scene_transmission(Scene& scene) { scene.transmission_enabled = true; }
             using JsonObject = ts::JsonValue::Object;
@@ -656,6 +671,100 @@ for (const [variant, context] of [
         }
         int main() {
             using namespace bbl;
+            static_assert(std::is_nothrow_move_constructible_v<GltfPbrValue>);
+            static_assert(std::is_nothrow_move_assignable_v<GltfPbrValue>);
+            {
+                auto object = GltfPbrValue::object();
+                object.set("long_material_property_name", GltfPbrValue{1.0});
+                const auto document = ts::json_parse(R"({"long_material_property_name":4})");
+                const GltfPbrValue source{&document};
+                const auto before = allocation_count;
+                assert(object.get("long_material_property_name").number() == 1.0);
+                object.set("long_material_property_name", GltfPbrValue{2.0});
+                assert(object.get("long_material_property_name").number() == 2.0);
+                assert(source.get("long_material_property_name").number() == 4.0);
+                object.erase("missing_long_material_property");
+                object.erase("long_material_property_name");
+                assert(object.get("long_material_property_name").undefined());
+                assert(allocation_count == before);
+            }
+            {
+                auto object = GltfPbrValue::object();
+                object.assign("text", GltfPbrValue{});
+                const GltfPbrValue text{std::string(64, 'x')};
+                const auto before = allocation_count;
+                object.assign("text", text);
+                assert(allocation_count == before + 1);
+                const auto selected = object.set("text", text);
+                object.assign("text", GltfPbrValue{"replacement"});
+                assert(selected.string() == text.string());
+                for (std::size_t allowed = 0; allowed < 3; ++allowed) {
+                    auto empty = GltfPbrValue::object();
+                    const auto live = outstanding_allocations;
+                    allocation_failure_at = allocation_count + allowed;
+                    bool caught = false;
+                    try { (void)empty.set("new", text); }
+                    catch (const std::bad_alloc&) { caught = true; }
+                    allocation_failure_at = std::numeric_limits<std::size_t>::max();
+                    assert(caught && empty.size() == 0 && outstanding_allocations == live);
+                }
+            }
+            {
+                const auto array = GltfPbrValue::array({GltfPbrValue{1.0}, GltfPbrValue{2.0}, GltfPbrValue{3.0}});
+                const auto document = ts::json_parse("[1,2,3]");
+                const GltfPbrValue source{&document};
+                const auto storage = std::make_shared<std::vector<double>>(std::initializer_list<double>{1.0, 2.0, 3.0});
+                const GltfPbrValue native{storage};
+                const auto before = allocation_count;
+                for (const auto& values : {array, source, native}) {
+                    assert(gltf_pbr_includes(values, GltfPbrValue{2.0}).truthy());
+                    assert(!gltf_pbr_includes(values, GltfPbrValue{4.0}).truthy());
+                }
+                assert(allocation_count == before);
+                for (const auto& values : {array, source}) {
+                    const auto conversion = allocation_count;
+                    const auto numbers = values.numeric_array();
+                    assert(numbers->size() == 3 && (*numbers)[0] == 1.0 && (*numbers)[2] == 3.0);
+                    assert(allocation_count == conversion + 2);
+                }
+                const auto retained = allocation_count;
+                assert(native.numeric_array() == storage);
+                assert(allocation_count == retained);
+                const auto nan = GltfPbrValue{std::numeric_limits<double>::quiet_NaN()};
+                assert(gltf_pbr_includes(GltfPbrValue::array({nan}), nan).truthy());
+                const GltfPbrValue text{std::string(64, 'x')};
+                const auto strings = GltfPbrValue::array({text});
+                const auto scan = allocation_count;
+                assert(gltf_pbr_includes(strings, text).truthy());
+                assert(allocation_count == scan);
+                unsigned calls = 0;
+                const auto some_allocations = allocation_count;
+                assert(gltf_pbr_some(array, [&](const GltfPbrValue&) { ++calls; return GltfPbrValue{true}; }).truthy());
+                assert(calls == 1 && allocation_count == some_allocations);
+                auto mutable_array = GltfPbrValue::array({GltfPbrValue{1.0}, GltfPbrValue{2.0}, GltfPbrValue{3.0}});
+                const auto retained_array = mutable_array;
+                calls = 0;
+                const auto mapped = gltf_pbr_map(mutable_array, [&](GltfPbrValue value) {
+                    if (++calls == 1) {
+                        retained_array.set_at(1.0, GltfPbrValue{20.0});
+                        retained_array.push(GltfPbrValue{99.0});
+                        mutable_array = GltfPbrValue{};
+                    }
+                    return value;
+                });
+                assert(calls == 3 && mapped.size() == 3 && mapped.at(1.0).number() == 20.0);
+                assert(mutable_array.undefined() && retained_array.size() == 4);
+            }
+            {
+                const auto live = outstanding_allocations;
+                {
+                    auto owner = GltfPbrValue::array({GltfPbrValue{1.0}});
+                    const auto alias = owner;
+                    owner = GltfPbrValue{};
+                    assert(alias.at(0.0).number() == 1.0);
+                }
+                assert(outstanding_allocations == live);
+            }
             const auto unlit_lifetime = [] {
                 auto material = GltfPbrValue::object();
                 auto raw = GltfPbrValue::object();

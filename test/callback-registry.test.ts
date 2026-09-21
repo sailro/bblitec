@@ -420,7 +420,7 @@ test("distinguishes callback expressions in static and runtime loops", () => {
     assert.equal(new Set(identities).size, 2);
     assert.match(
         result.cpp,
-        /for \(auto&& (\w+) : v_callbacks\) \{\s*const auto (\w+) = \(\1\)\.snapshot\(\);\s*\2\(\);/,
+        /for \(auto&& (\w+) : v_callbacks\) \{\s*const auto (\w+) = bbl::js::snapshot_callback\(\1\);\s*\2\(\);/,
     );
 
     const runtime = compileSource(`

@@ -1864,6 +1864,12 @@ export interface ValueFields {
     };
     ownedEngineCpp?: string;
     cpp: string;
+    /** Owning materialization of a borrowed lookup result at a retained sink. */
+    ownedCpp?: string;
+    /** Immutable storage whose present value this expression borrows. */
+    stableOwnerCpp?: string;
+    /** A by-value native expression whose wrapper is owned until this full expression ends. */
+    nativeOwnedRvalue?: true;
     /** Owning cell for a mutable captured binding; cpp reads its current value. */
     sharedStorageCpp?: string;
     /** Native bindings still read by this value and its companion expressions. */

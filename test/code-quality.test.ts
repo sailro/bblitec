@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { resolve } from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 import { ESLint } from "eslint";
 import { getFileInfo } from "prettier";
 import {
@@ -8,7 +10,13 @@ import {
     nativeFormatFiles,
 } from "../src/code-quality.js";
 import { createJavaScriptFunction } from "../src/typescript-transpile.js";
-import { jsonArray, jsonNumbers, jsonObject, jsonRecords } from "./json.js";
+import {
+    jsonArray,
+    jsonNumbers,
+    jsonObject,
+    jsonRecords,
+    jsonString,
+} from "./json.js";
 import { cppFunction } from "./native-fixture.js";
 
 test("native fixture extraction preserves formatted function bodies", () => {
@@ -91,10 +99,44 @@ test("JSON fixture readers reject invalid shapes instead of coercing or dropping
     assert.deepEqual(jsonArray([null, 1]), [null, 1]);
     assert.deepEqual(jsonRecords([{ value: 1 }]), [{ value: 1 }]);
     assert.deepEqual(jsonNumbers([0, -0, 1]), [0, -0, 1]);
+    const numbers = [1, 2, 3];
+    assert.equal(jsonNumbers(numbers), numbers);
+    assert.equal(jsonString(""), "");
     assert.throws(() => jsonObject([]), /JSON object/);
     assert.throws(() => jsonArray({}), /JSON array/);
     assert.throws(() => jsonRecords([{}, null]), /JSON object/);
     assert.throws(() => jsonNumbers([1, "2"]), /numeric JSON array/);
+    assert.throws(() => jsonString(1), /JSON string/);
+});
+
+test("native quality commands keep their flag grammars separate", () => {
+    const command = fileURLToPath(
+        new URL("../src/code-quality.js", import.meta.url),
+    );
+    for (const mode of ["format", "lint"]) {
+        const result = spawnSync(process.execPath, [command, mode, "--help"], {
+            encoding: "utf8",
+            windowsHide: true,
+        });
+        assert.ifError(result.error);
+        assert.equal(result.status, 0, result.stderr);
+        assert.match(result.stdout, new RegExp(`^code-quality ${mode} `));
+    }
+    for (const args of [
+        ["format", "--generated"],
+        ["lint", "--write"],
+    ]) {
+        const result = spawnSync(process.execPath, [command, ...args], {
+            encoding: "utf8",
+            windowsHide: true,
+        });
+        assert.ifError(result.error);
+        assert.equal(result.status, 1);
+        assert.match(
+            result.stderr,
+            /^Unknown code-quality (?:format|lint) argument /,
+        );
+    }
 });
 
 test("native formatting owns only maintained sources and C++ test fixtures", () => {

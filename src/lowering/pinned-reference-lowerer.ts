@@ -13,18 +13,22 @@ import {
 export interface ReferenceValue {
     cpp: string;
     type: string;
+    borrowed?: "mutable" | "stable";
 }
 export interface ReferenceFunction {
     cpp: string;
     parameters: readonly string[];
     requiredParameters: number;
     returns: string;
+    borrowedParameters?: ReadonlySet<number>;
 }
 export interface ReferenceSchema {
     records: ReadonlyMap<string, ReadonlyMap<string, string>>;
     functions: ReadonlyMap<string, ReferenceFunction>;
     bindings: Map<string, ReferenceValue>;
     returnType: string;
+    /** Field assignments whose owned result remains the stable source for later reads in this scope. */
+    ownedAssignments?: ReadonlySet<string>;
     numberAliases?: ReadonlySet<string>;
     typeAliases?: ReadonlyMap<string, string>;
     /** Native transport values whose members and operations the caller lowers. */
@@ -173,6 +177,16 @@ export class PinnedReferenceLowerer {
         }
     }
 
+    private owned(value: ReferenceValue): string {
+        return value.type === "number" ||
+            value.type === "boolean" ||
+            value.type === "void" ||
+            value.type.startsWith("function:") ||
+            !value.borrowed
+            ? value.cpp
+            : `js::snapshot_value(${value.cpp})`;
+    }
+
     public statements(
         statements: readonly ts.Statement[],
         indent = "    ",
@@ -198,6 +212,9 @@ export class PinnedReferenceLowerer {
             );
         if (ts.isArrayBindingPattern(declaration.name)) {
             const value = this.expression(declaration.initializer);
+            const stable =
+                ts.isVariableDeclarationList(declaration.parent) &&
+                (declaration.parent.flags & ts.NodeFlags.Const) !== 0;
             const fields = tupleTypes(value.type);
             if (!fields || declaration.name.elements.length > fields.length)
                 return this.context.contractError(
@@ -205,7 +222,7 @@ export class PinnedReferenceLowerer {
                     "Pinned tuple destructuring requires represented fields.",
                 );
             const temporary = `tuple_${this.temporary++}`;
-            return `auto ${temporary} = ${value.cpp};\n${declaration.name.elements
+            return `auto ${temporary} = ${this.owned(value)};\n${declaration.name.elements
                 .map((element, index) => {
                     if (ts.isOmittedExpression(element)) return "";
                     if (
@@ -221,11 +238,18 @@ export class PinnedReferenceLowerer {
                     this.schema.bindings.set(element.name.text, {
                         cpp,
                         type: fields[index]!,
+                        borrowed: stable ? "stable" : "mutable",
                     });
-                    return `    auto ${cpp} = std::get<${index}>(${temporary});`;
+                    const selected: ReferenceValue = {
+                        cpp: `std::get<${index}>(${temporary})`,
+                        type: fields[index]!,
+                        borrowed: "mutable",
+                    };
+                    return `    auto ${cpp} = ${this.owned(selected)};`;
                 })
                 .join("\n")}`;
         }
+
         if (!ts.isIdentifier(declaration.name))
             return this.context.contractError(
                 declaration,
@@ -237,8 +261,46 @@ export class PinnedReferenceLowerer {
             ? this.type(declaration.type)
             : undefined;
         const value = this.expression(declaration.initializer, expected);
-        this.schema.bindings.set(name, { cpp, type: value.type });
-        return `${value.type.startsWith("function:") ? "auto" : this.storage(value.type)} ${cpp} = ${value.cpp}`;
+        const stable =
+            ts.isVariableDeclarationList(declaration.parent) &&
+            (declaration.parent.flags & ts.NodeFlags.Const) !== 0;
+        this.schema.bindings.set(name, {
+            cpp,
+            type: value.type,
+            borrowed: stable ? "stable" : "mutable",
+        });
+        return `${value.type.startsWith("function:") ? "auto" : this.storage(value.type)} ${cpp} = ${this.owned(value)}`;
+    }
+
+    private ownedAssignment(
+        statement: ts.ExpressionStatement,
+        indent: string,
+    ): string | undefined {
+        const expression = this.context.unwrapExpression(statement.expression);
+        if (
+            !ts.isBinaryExpression(expression) ||
+            expression.operatorToken.kind !== ts.SyntaxKind.EqualsToken
+        )
+            return undefined;
+        const path = expression.left.getText(expression.getSourceFile());
+        if (!this.schema.ownedAssignments?.has(path)) return undefined;
+        const target = this.expression(expression.left);
+        const value = this.expression(expression.right, target.type);
+        if (value.type !== target.type)
+            return this.context.contractError(
+                expression.right,
+                "Pinned owned assignment requires one represented type.",
+            );
+        const owner = `assignment_owner_${this.temporary++}`;
+        this.schema.bindings.set(path, {
+            cpp: owner,
+            type: target.type,
+            borrowed: "stable",
+        });
+        return (
+            `${indent}${this.storage(target.type)} ${owner} = ${this.owned(value)};\n` +
+            `${indent}${target.cpp} = ${owner};`
+        );
     }
 
     public statement(statement: ts.Statement, indent: string): string {
@@ -253,8 +315,11 @@ export class PinnedReferenceLowerer {
                         `${indent}${this.declaration(declaration)};`,
                 )
                 .join("\n");
-        if (ts.isExpressionStatement(statement))
+        if (ts.isExpressionStatement(statement)) {
+            const owned = this.ownedAssignment(statement, indent);
+            if (owned !== undefined) return owned;
             return `${indent}${this.expression(statement.expression).cpp};`;
+        }
         if (ts.isReturnStatement(statement))
             return `${indent}return${statement.expression ? ` ${this.expression(statement.expression, this.schema.returnType).cpp}` : ""};`;
         if (ts.isIfStatement(statement))
@@ -289,8 +354,14 @@ export class PinnedReferenceLowerer {
                 this.schema.bindings.set(name.text, {
                     cpp: item,
                     type: values.type.slice(0, -2),
+                    borrowed: "mutable",
                 });
-                return `${indent}{ auto ${array} = ${values.cpp};\n${indent}for (std::size_t ${index} = 0; ${index} < ${array}.size(); ++${index}) {\n${indent}    auto ${item} = ${array}.at(${index});\n${this.branch(statement.statement, indent + "    ")}\n${indent}}\n${indent}}`;
+                const selected: ReferenceValue = {
+                    cpp: `${array}.at(${index})`,
+                    type: values.type.slice(0, -2),
+                    borrowed: "mutable",
+                };
+                return `${indent}{ auto ${array} = ${this.owned(values)};\n${indent}for (std::size_t ${index} = 0; ${index} < ${array}.size(); ++${index}) {\n${indent}    auto ${item} = ${this.owned(selected)};\n${this.branch(statement.statement, indent + "    ")}\n${indent}}\n${indent}}`;
             });
         if (ts.isForStatement(statement))
             return this.scoped(() => {
@@ -338,7 +409,11 @@ export class PinnedReferenceLowerer {
             if (expected === "object" && this.schema.records.has(exact.type))
                 return { cpp: `${exact.cpp}.weak_identity()`, type: "object" };
             return exact.type === `optional:${expected}`
-                ? { cpp: `${exact.cpp}.value()`, type: expected! }
+                ? {
+                      cpp: `${exact.cpp}.value()`,
+                      type: expected!,
+                      borrowed: exact.borrowed ?? "mutable",
+                  }
                 : exact;
         }
         const adapted = this.schema.expression?.(node, expected, this);
@@ -388,7 +463,11 @@ export class PinnedReferenceLowerer {
                     cpp: `(${owner.cpp} ? std::optional<${this.storage(type)}>{${owner.cpp}->${node.name.text}} : std::nullopt)`,
                     type: `optional:${type}`,
                 };
-            return { cpp: `${owner.cpp}->${node.name.text}`, type };
+            return {
+                cpp: `${owner.cpp}->${node.name.text}`,
+                type,
+                borrowed: "mutable",
+            };
         }
         if (ts.isElementAccessExpression(node)) {
             const value = this.expression(node.expression);
@@ -409,6 +488,7 @@ export class PinnedReferenceLowerer {
                 return {
                     cpp: `std::get<${index}>(${owner.cpp})`,
                     type: tuple[index],
+                    borrowed: "mutable",
                 };
             }
             if (!owner.type.endsWith("[]"))
@@ -419,6 +499,7 @@ export class PinnedReferenceLowerer {
             return {
                 cpp: `${owner.cpp}.at(js::array_index(${this.expression(node.argumentExpression).cpp}))`,
                 type: owner.type.slice(0, -2),
+                borrowed: "mutable",
             };
         }
         if (ts.isObjectLiteralExpression(node)) {
@@ -574,7 +655,7 @@ export class PinnedReferenceLowerer {
                     cpp:
                         node.operatorToken.kind ===
                         ts.SyntaxKind.QuestionQuestionToken
-                            ? `([&]() { auto value = ${left.cpp}; return value ? value : ${right.cpp}; }())`
+                            ? `([&]() { auto value = ${this.owned(left)}; return value ? value : ${right.cpp}; }())`
                             : `([&]() { auto& value = ${left.cpp}; if (!value) value = ${right.cpp}; return value; }())`,
                     type: left.type,
                 };
@@ -587,7 +668,7 @@ export class PinnedReferenceLowerer {
                 const type = left.type.slice(9),
                     right = this.expression(node.right, type);
                 return {
-                    cpp: `([&]() { const auto optional = ${left.cpp}; return optional ? *optional : ${right.cpp}; }())`,
+                    cpp: `([&]() { const auto& optional = ${left.cpp}; return optional ? *optional : ${right.cpp}; }())`,
                     type,
                 };
             }
@@ -668,8 +749,22 @@ export class PinnedReferenceLowerer {
                     node,
                     "Pinned reference call does not match its declared argument count.",
                 );
+            const arguments_ = node.arguments.map((argument, index) =>
+                this.expression(argument, fn.parameters[index]),
+            );
+            const compiled = arguments_.map((argument, index) => {
+                if (!fn.borrowedParameters?.has(index)) return argument.cpp;
+                if (!this.schema.records.has(argument.type))
+                    return this.context.contractError(
+                        node.arguments[index]!,
+                        "Pinned borrowed parameters require reference records.",
+                    );
+                return argument.borrowed === "stable"
+                    ? argument.cpp
+                    : `js::snapshot_value(${argument.cpp})`;
+            });
             return {
-                cpp: `${fn.cpp}(${node.arguments.map((argument, index) => this.expression(argument, fn.parameters[index]).cpp).join(", ")})`,
+                cpp: `${fn.cpp}(${compiled.join(", ")})`,
                 type: fn.returns,
             };
         }
@@ -695,6 +790,7 @@ export class PinnedReferenceLowerer {
                     return {
                         cpp: `${owner.cpp}.get(${this.expression(node.arguments[0]!, key).cpp})`,
                         type: value,
+                        borrowed: "mutable",
                     };
                 if (method === "set" && node.arguments.length === 2)
                     return {
@@ -738,6 +834,7 @@ export class PinnedReferenceLowerer {
                     this.schema.bindings.set(parameter.name.text, {
                         cpp: item,
                         type: owner.type.slice(0, -2),
+                        borrowed: "mutable",
                     });
                     const predicate = cppCondition(
                         this.expression(callback.body).cpp,
@@ -752,7 +849,7 @@ export class PinnedReferenceLowerer {
                             ? `filtered.push_back(${item});`
                             : `found = static_cast<double>(${index}); break;`;
                     return {
-                        cpp: `([&]() { auto ${array} = ${owner.cpp}; ${initial} const auto length = ${array}.size(); for (std::size_t ${index} = 0; ${index} < length; ++${index}) { auto ${item} = ${array}.at(${index}); if (${predicate}) { ${accept} } } return ${output}; }())`,
+                        cpp: `([&]() { auto ${array} = ${this.owned(owner)}; ${initial} const auto length = ${array}.size(); for (std::size_t ${index} = 0; ${index} < length; ++${index}) { auto ${item} = ${this.owned({ cpp: `${array}.at(${index})`, type: owner.type.slice(0, -2), borrowed: "mutable" })}; if (${predicate}) { ${accept} } } return ${output}; }())`,
                         type: method === "filter" ? owner.type : "number",
                     };
                 });

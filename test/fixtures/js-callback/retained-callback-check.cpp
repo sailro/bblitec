@@ -124,10 +124,10 @@ void prepared_invocation_retains_once() {
             bbl::js::collect_cycles();
             return value + 1;
         }};
-        node = bbl::js::gc::registry.first;
+        node = bbl::js::gc::registry.nodes.back();
         assert(node->owners() == 1);
         const auto allocations = allocation_count;
-        const auto invocation = callback.snapshot();
+        const auto invocation = bbl::js::snapshot_callback(callback);
         assert(node->owners() == 2);
         assert(allocation_count == allocations);
         callback = {};
@@ -146,6 +146,30 @@ void prepared_invocation_retains_once() {
     assert(failed);
 }
 
+void native_invocation_snapshot() {
+    int (*function)(int) = +[](int value) { return value + 1; };
+    const auto allocations = allocation_count;
+    const auto selected = bbl::js::snapshot_callback(function);
+    function = nullptr;
+    assert(selected && selected(7) == 8);
+    assert(allocation_count == allocations);
+    const auto absent = bbl::js::snapshot_callback(function);
+    assert(!absent);
+    bool failed = false;
+    try {
+        (void)absent(0);
+    } catch (const std::bad_function_call&) {
+        failed = true;
+    }
+    assert(failed);
+    int value = 1;
+    auto reference = bbl::js::snapshot_callback(+[](int& input) noexcept -> int& { return input; });
+    reference(value) = 9;
+    assert(value == 9);
+    const auto lambda = bbl::js::snapshot_callback([](int input) { return input * 2; });
+    assert(lambda(3) == 6);
+}
+
 int main() {
     recursive_callback_lifetime();
     recursive_callback_allocations();
@@ -153,6 +177,7 @@ int main() {
     identity_erasure_shares_captures();
     identity_erasure_retains_recursive_owner();
     prepared_invocation_retains_once();
+    native_invocation_snapshot();
     using Callback = bbl::js::Callback<void(double)>;
     std::vector<Callback> callbacks;
     int steps = 0;

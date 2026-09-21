@@ -140,6 +140,38 @@ test("controller arithmetic is read from the pin and unrepresented statements re
         }
     }
     const original = lowerCharacterControllerKernel(new LoweringContext());
+    const full = lowerCharacterControllerKernel(new LoweringContext(), true);
+    assert.match(full, /local_sci = js::snapshot_value\(constraints\.at\(/);
+    assert.match(
+        full,
+        /auto values_\d+ = js::snapshot_value\(local_newContacts\)/,
+    );
+    assert.match(
+        full,
+        /const auto& optional = local_thinWorld; return optional \? \*optional : _body_world_matrix/,
+    );
+    assert.match(
+        full,
+        /virtual js::Ref<PhysicsBody> _create_body\(const js::Ref<PhysicsWorld>&/,
+    );
+    assert.match(full, /void initialize\(const js::Ref<PhysicsWorld>& world,/);
+    const bodyOwner = full.match(
+        /js::Ref<PhysicsBody> (assignment_owner_\d+) = _create_body\(world, _node, 1\.0\);/,
+    );
+    assert.ok(bodyOwner);
+    assert.match(full, new RegExp(`_body = ${bodyOwner[1]};`));
+    assert.match(
+        full,
+        new RegExp(`_set_body_shape\\(world, ${bodyOwner[1]}, _shape\\)`),
+    );
+    assert.match(
+        full,
+        new RegExp(`_set_body_mass_properties\\(world, ${bodyOwner[1]},`),
+    );
+    assert.match(
+        full,
+        /_set_body_shape\(js::snapshot_value\(_world\), js::snapshot_value\(_body\), local_newShape\)/,
+    );
     const changed = lowerCharacterControllerKernel(
         new LoweringContext(
             new EditedStore(

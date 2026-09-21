@@ -479,7 +479,7 @@ export function compileParticleIntrinsic(
                 kind: "declaration",
                 type: "auto",
                 name: callbackCpp,
-                initializer: callback,
+                initializer: `bbl::js::snapshot_callback(${callback})`,
             });
             const initialMatrixCpp = context.allocateTemporaryCppName(
                 "particle_emitter_initial",

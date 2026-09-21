@@ -1,23 +1,10 @@
 #include <cassert>
-#include <cstdlib>
 #include <exception>
 #include <memory>
-#include <new>
-#include <optional>
 #include <stdexcept>
 #include <variant>
 
-std::size_t allocations = 0;
-void* operator new(std::size_t size) {
-    if (void* memory = std::malloc(size ? size : 1)) {
-        ++allocations;
-        return memory;
-    }
-    throw std::bad_alloc();
-}
-void operator delete(void* memory) noexcept { std::free(memory); }
-void operator delete(void* memory, std::size_t) noexcept { std::free(memory); }
-
+#include "allocation-tracker.hpp"
 #include "load-promise.hpp"
 
 struct Rejection : std::runtime_error {
@@ -27,26 +14,26 @@ struct Rejection : std::runtime_error {
 };
 
 int main() {
-    const auto before = allocations;
+    const auto before = allocation_count;
     GltfLoadPromise<int> value{42};
     auto copy = value;
     value = {};
     assert(copy && copy.get() == 42);
-    assert(allocations == before);
+    assert(allocation_count == before);
     auto image = std::make_shared<int>(7);
-    const auto image_allocations = allocations;
+    const auto image_allocations = allocation_count;
     auto settled = GltfLoadPromise<std::shared_ptr<int>>::settle([&] { return image; });
     auto shared = settled;
     settled = {};
     assert(shared.get() == image);
-    assert(allocations == image_allocations);
+    assert(allocation_count == image_allocations);
     const auto identity = std::make_shared<int>(9);
     const auto failure = std::make_exception_ptr(Rejection(identity));
     auto rejected = GltfLoadPromise<int>::settle([&]() -> int { std::rethrow_exception(failure); });
-    const auto error_allocations = allocations;
+    const auto error_allocations = allocation_count;
     auto retained = rejected;
     rejected = {};
-    assert(allocations == error_allocations);
+    assert(allocation_count == error_allocations);
     bool caught = false;
     try {
         (void)retained.get();

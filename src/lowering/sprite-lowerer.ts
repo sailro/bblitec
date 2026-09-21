@@ -3089,8 +3089,8 @@ SpriteInstanceUpload stage_y_sort_upload(
         state->dirty_max = 0u;
         return {state->packed_instances.data(), 0u, 0u};
     }
-    std::uint32_t lo = layer.count;
-    std::uint32_t hi = 0u;
+    std::uint32_t lo;
+    std::uint32_t hi;
     if (state->full_upload ||
         (dirty_begin == 0u && dirty_end >= layer.count)) {
         lo = 0u;

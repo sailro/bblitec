@@ -142,7 +142,7 @@ function expressionStruct(
     }
     const value = lowerer.requireDataValue(unwrapped, dataType);
     lowerer.markEscaped(value);
-    return value.cpp;
+    return value.ownedCpp ?? value.cpp;
 }
 
 function expressionEnummap(
@@ -250,7 +250,7 @@ function valueStruct(
         // stores, whether it was just constructed (a record over
         // that Ref) or read back out of a container.
         lowerer.context.dataTypes.cppType(dataType);
-        return value.cpp;
+        return value.ownedCpp ?? value.cpp;
     }
     if (
         lowerer.context.dataTypes.isClassStruct(dataType.name) &&
@@ -269,6 +269,13 @@ function valueStruct(
         lowerer.context.dataTypes.isReferenceStruct(dataType.name)
     ) {
         return `${lowerer.context.dataTypes.cppType(dataType)}{}`;
+    }
+    if (
+        value.kind === "data" &&
+        value.dataType?.kind === "struct" &&
+        dataTypesEqual(value.dataType, dataType)
+    ) {
+        return value.ownedCpp ?? value.cpp;
     }
     // A structural view of a stored class binds its prototype methods to
     // the retained receiver, just as a view of a local class record does.
@@ -324,9 +331,6 @@ function valueStruct(
     }
     if (value.kind === "data" && value.dataType?.kind === "struct") {
         const sourceType = value.dataType;
-        if (dataTypesEqual(sourceType, dataType)) {
-            return value.cpp;
-        }
         const sourceFields = new EmissionMap(
             lowerer.context.dataTypes
                 .structFields(sourceType.name, node)

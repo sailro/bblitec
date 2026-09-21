@@ -117,15 +117,15 @@ test("localStorage lowers to the PAL store behind its own feature", () => {
     assert.match(result.cpp, /#include <bblite\/js_json\.hpp>/);
     assert.match(
         result.cpp,
-        /const auto (\w+) = bbl::js::local_storage_get_item;\s*bbl::js::Nullable<std::string> \w+ = \1\("sandblox-world"\)/,
+        /const auto (\w+) = bbl::js::snapshot_callback\(bbl::js::local_storage_get_item\);\s*bbl::js::Nullable<std::string> \w+ = \1\("sandblox-world"\)/,
     );
     assert.match(
         result.cpp,
-        /const auto (\w+) = bbl::js::local_storage_set_item;\s*\1\("sandblox-world", bbl::js::json_stringify\(/,
+        /const auto (\w+) = bbl::js::snapshot_callback\(bbl::js::local_storage_set_item\);\s*\1\("sandblox-world", bbl::js::json_stringify\(/,
     );
     assert.match(
         result.cpp,
-        /const auto (\w+) = bbl::js::local_storage_remove_item;\s*\1\("sandblox-world"\)/,
+        /const auto (\w+) = bbl::js::snapshot_callback\(bbl::js::local_storage_remove_item\);\s*\1\("sandblox-world"\)/,
     );
     // The reads and writes are inside the source's own try/catch, so a PAL
     // failure takes the arm the browser's quota error takes.
@@ -155,7 +155,7 @@ test("getItem answers a nullable string with JavaScript falsiness", () => {
     `);
     assert.match(
         result.cpp,
-        /const auto (\w+) = bbl::js::local_storage_get_item;\s*bbl::js::Nullable<std::string> \w+ = \1\(/,
+        /const auto (\w+) = bbl::js::snapshot_callback\(bbl::js::local_storage_get_item\);\s*bbl::js::Nullable<std::string> \w+ = \1\(/,
     );
     // Absent AND empty are both falsy, which `has_value()` alone is not.
     assert.match(result.cpp, /if \(bbl::js::nullable_truthy\(\w+\)\)/);
@@ -309,7 +309,7 @@ test("JSON.parse answers a dynamic document the source's guards decide over", ()
     // `.length === n` and the indexed reads inside the guard.
     assert.match(result.cpp, /\.length\(\)/);
     const receivers = [
-        ...result.cpp.matchAll(/const auto (\w+) = [^;\n]+\.get\("s"\);/g),
+        ...result.cpp.matchAll(/\bauto (\w+) = [^;\n]+\.get\("s"\);/g),
     ];
     assert.ok(
         receivers.some(([, name]) =>
