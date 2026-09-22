@@ -53,7 +53,7 @@ export function loadPinnedBrdfLutShader(): string {
     );
     const assemblySource = readFileSync(assemblyPath, "utf8");
     const chunkMatch = assemblySource.match(
-        /from '(\.\.\/_chunks\/hdr-brdf-lut\.compute-[^']+\.js)'/,
+        /from ["'](\.\.\/_chunks\/hdr-brdf-lut\.compute-[^"']+\.js)["']/,
     );
     if (!chunkMatch?.[1]) {
         throw new Error(
@@ -65,7 +65,7 @@ export function loadPinnedBrdfLutShader(): string {
         "utf8",
     );
     const shaderMatch = chunkSource.match(
-        /const brdfLutWGSL = ("(?:[^"\\]|\\.)*");/,
+        /var hdr_brdf_lut_compute_default = ("(?:[^"\\]|\\.)*");/,
     );
     if (!shaderMatch?.[1]) {
         throw new Error("Pinned Babylon Lite BRDF LUT shader was not found.");

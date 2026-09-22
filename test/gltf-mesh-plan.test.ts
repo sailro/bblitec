@@ -283,7 +283,7 @@ test("scene recording refuses unknown resources and registration effects", async
                 "if (mesh.name === 'first')",
             ),
         ),
-        /cannot be added/,
+        /#535/,
     );
     await packageGltfMeshPlan(document, bin);
     const plan = packagedGltfMeshPlan(document);

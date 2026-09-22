@@ -1,6 +1,7 @@
 // Generation executes the pinned KTX parser and packages its mip descriptors.
 // The native reader views those blocks; format and sampler rules come from the pin.
 import ts from "typescript";
+import { containsPinnedErrorMessage } from "./pinned-error.js";
 import { LoweredSource, LoweringContext } from "./context.js";
 import { compressedTextureFormat as layout } from "../compressed-texture-format.js";
 import { pinnedHeader } from "./pinned-header.js";
@@ -600,7 +601,11 @@ export class CompressedTextureLowerer {
                 declaration,
                 (node): node is ts.IfStatement =>
                     ts.isIfStatement(node) &&
-                    node.getText(file).includes(message),
+                    containsPinnedErrorMessage(
+                        this.context,
+                        node.thenStatement,
+                        message,
+                    ),
             )[0];
             if (!guard || !ts.isBinaryExpression(guard.expression)) {
                 this.context.contractError(

@@ -1,4 +1,5 @@
 import ts from "typescript";
+import { lowerMeshGeometryResize } from "../mesh-geometry-resize.js";
 import { cppIdentifierPattern } from "../../cpp-literals.js";
 import { LoweredSource, LoweringContext } from "../context.js";
 import {
@@ -580,12 +581,13 @@ ${
 #include <cmath>
 #include <limits>
 #include <span>
+#include <set>
 #include <stdexcept>
 #include <utility>
 
 namespace bbl {
 
-${this.boxFactorySource(boxFaceVertexLines, boxQuadSize, boxQuadIndexList, boxAddFaceCalls, boxDataFactory)}${this.groundFactorySource(groundBuilderBody, heightMapGround, heightmapBody)}${this.planeAndSphereFactorySource(planeVertices, planeIndices, sphereBuilderBody)}${this.morphAndBuilderSource(reachedTorus, torusBuilderBody, computeNormals, discFactory, cylinderFactory, capsuleFactory, polyhedronFactory, ribbonFactory, torusKnotFactory, computeAabb)}${this.meshDataFactorySource()}${this.thinInstanceSource(instanceColorSetter)}${poolHelpers}${cullingHelper}} // namespace bbl
+${this.boxFactorySource(boxFaceVertexLines, boxQuadSize, boxQuadIndexList, boxAddFaceCalls, boxDataFactory)}${this.groundFactorySource(groundBuilderBody, heightMapGround, heightmapBody)}${this.planeAndSphereFactorySource(planeVertices, planeIndices, sphereBuilderBody)}${this.morphAndBuilderSource(reachedTorus, torusBuilderBody, computeNormals, discFactory, cylinderFactory, capsuleFactory, polyhedronFactory, ribbonFactory, torusKnotFactory, computeAabb)}${this.meshDataFactorySource()}${features.includes("mesh:resize-geometry") ? lowerMeshGeometryResize(this.context) : ""}${this.thinInstanceSource(instanceColorSetter)}${poolHelpers}${cullingHelper}} // namespace bbl
 `,
         };
     }
@@ -3066,6 +3068,7 @@ ${body}
     const float half_height = height * 0.5f;
     const float half_depth = depth * 0.5f;
     ModelGeometry geometry;
+    geometry.owned_packed_geometry = true;
     const auto add_face = [&](
                               Vec3 a,
                               Vec3 b,
@@ -3138,6 +3141,7 @@ MeshHandle create_ground(Engine& engine, GroundOptions options) {
     PinnedMeshData data =
         pinned_create_flat_ground_data(options);
     ModelGeometry geometry;
+    geometry.owned_packed_geometry = true;
     geometry.vertices.reserve(data.vertex_count);
     for (std::size_t vertex = 0; vertex < data.vertex_count; ++vertex) {
         geometry.vertices.push_back(ModelVertex{
@@ -3246,6 +3250,7 @@ MeshHandle create_ground_from_height_map(
     const float half_width = options.width * 0.5f;
     const float half_height = options.height * 0.5f;
     ModelGeometry geometry;
+    geometry.owned_packed_geometry = true;
     geometry.vertices = {
 ${planeVertices}
     };
@@ -3272,6 +3277,7 @@ ${sphereBuilderBody}
 static ModelGeometry build_sphere_geometry(SphereOptions options) {
     PinnedMeshData data = pinned_create_sphere_data(options);
     ModelGeometry geometry;
+    geometry.owned_packed_geometry = true;
     geometry.vertices.reserve(data.vertex_count);
     for (std::size_t vertex = 0; vertex < data.vertex_count; ++vertex) {
         geometry.vertices.push_back(ModelVertex{
@@ -3467,6 +3473,7 @@ ${torusBuilderBody}
 MeshHandle create_torus(Engine& engine, TorusOptions options) {
     PinnedMeshData data = pinned_create_torus_data(options);
     ModelGeometry geometry;
+    geometry.owned_packed_geometry = true;
     geometry.vertices.reserve(data.vertex_count);
     for (std::size_t vertex = 0; vertex < data.vertex_count; ++vertex) {
         const Vec3 position{
@@ -3527,9 +3534,8 @@ ${computeAabb}
     }
 
     private meshDataFactorySource(): string {
-        return `MeshHandle create_mesh_from_data(
+        return `static std::uint32_t upload_mesh_geometry_data(
     Engine& engine,
-    const std::string& name,
     const std::vector<float>& positions,
     const std::vector<float>& normals,
     const std::vector<std::uint32_t>& indices,
@@ -3539,6 +3545,7 @@ ${computeAabb}
     const std::vector<float>& colors) {
     const std::size_t vertex_count = positions.size() / 3;
     ModelGeometry geometry;
+    geometry.owned_packed_geometry = true;
     geometry.vertices.resize(vertex_count);
     for (std::size_t index = 0; index < vertex_count; ++index) {
         ModelVertex& vertex = geometry.vertices[index];
@@ -3599,11 +3606,17 @@ ${computeAabb}
             static_cast<float>(aabb[1][2])};
     }
     engine.geometries.push_back(std::move(geometry));
+    return static_cast<std::uint32_t>(engine.geometries.size()-1);
+}
+MeshHandle create_mesh_from_data(Engine& engine, const std::string& name,
+    const std::vector<float>& positions, const std::vector<float>& normals,
+    const std::vector<std::uint32_t>& indices, const std::vector<float>& uvs,
+    const std::vector<float>& uvs2, const std::vector<float>& tangents,
+    const std::vector<float>& colors) {
     MeshRecord mesh;
     mesh.name = name;
     mesh.primitive = PrimitiveKind::gltf;
-    mesh.geometry =
-        static_cast<std::uint32_t>(engine.geometries.size() - 1);
+    mesh.geometry = upload_mesh_geometry_data(engine,positions,normals,indices,uvs,uvs2,tangents,colors);
     engine.meshes.push_back(mesh);
     return MeshHandle{
         static_cast<std::uint32_t>(engine.meshes.size() - 1)};

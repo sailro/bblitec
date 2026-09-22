@@ -108,6 +108,7 @@ export interface MaterialOptionContext
  * written out once, at the call site, from these names.
  */
 export interface CompiledPbrMaterialOptions {
+    plugins: ts.Expression | undefined;
     baseColor: Value;
     baseColorFactor: string;
     hasBaseColorTexture: boolean;
@@ -464,6 +465,7 @@ export function compilePbrMaterialOptions(
             "transmissive",
             "subsurface",
             "usePhysicalLightFalloff",
+            "plugins",
         ],
         "Reached PBR lowering supports base/ORM textures, the base color factor, metallic/roughness factors, alpha and alpha blending, reflectance, occlusion strength, specular AA, the internal metallic F0 factor, lighting intensities, the light falloff mode, skybox mode, and transmission subsurface fields.",
     );
@@ -785,6 +787,7 @@ export function compilePbrMaterialOptions(
         metallicF0Factor: metallicF0FactorCpp,
         usePhysicalLightFalloff: physicalLightFalloffCpp,
         scenePbrMaterialIndex: sceneMaterialIndex,
+        plugins: context.objectProperty(object, "plugins"),
     };
 }
 

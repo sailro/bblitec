@@ -1,6 +1,7 @@
 #pragma once
 #include <bblite/checked_handles.hpp>
 #include <bblite/pal_audio_types.hpp>
+#include <bblite/pal_storage_buffer.hpp>
 
 #include <bblite/js_callback.hpp>
 #include <bblite/snapshot_list.hpp>
@@ -34,6 +35,10 @@ namespace bbl {
 struct Engine;
 struct DomInput;
 struct UiImageRequest;
+struct ComputeStorageTextureRegistry;
+struct UniformBufferRegistry;
+struct ComputeTask;
+struct MaterialPluginUniformState;
 /** The first OS language preference, with a hyphenated region when available. */
 [[nodiscard]] std::string preferred_language();
 [[nodiscard]] std::string native_platform();
@@ -46,6 +51,9 @@ struct PropertyAnimationManagerRecord;
 namespace pal {
 class AudioSession;
 class OffscreenRun;
+struct ComputeTextureAllocation;
+struct ComputeCommandEncoder;
+struct GpuRetirementState;
 } // namespace pal
 
 namespace js {
@@ -125,6 +133,17 @@ struct Color3 {
     float r = 1.0f;
     float g = 1.0f;
     float b = 1.0f;
+};
+
+// Source light setters retain JavaScript numbers until the light UBO stores
+// them. Existing float color producers keep their rounding on conversion.
+struct Color3d {
+    double r = 1.0;
+    double g = 1.0;
+    double b = 1.0;
+    Color3d() = default;
+    Color3d(double red, double green, double blue) : r(red), g(green), b(blue) {}
+    Color3d(Color3 value) : r(value.r), g(value.g), b(value.b) {}
 };
 
 struct Color4 {
@@ -380,6 +399,11 @@ struct MaterialHandle {
 /** One GPU-readable byte buffer created by the shader-material API. */
 struct StorageBufferHandle {
     std::uint32_t value = invalid_handle;
+    std::weak_ptr<Engine> engine{};
+    [[nodiscard]] bool operator==(const StorageBufferHandle& other) const {
+        return value == other.value && !engine.owner_before(other.engine) &&
+               !other.engine.owner_before(engine);
+    }
 };
 
 /** A browser Gamepad identity backed by one SDL joystick instance. */
@@ -933,6 +957,15 @@ enum class ScaleRounding {
     round,
 };
 
+using SurfaceRenderTargetSizeResolver = std::array<double, 2> (*)(double, double, double);
+
+enum class DepthTextureFormat {
+    depth24_plus_stencil8,
+    depth16_unorm,
+    depth24_plus,
+    depth32_float,
+};
+
 struct RenderTargetOptions {
     std::uint32_t samples = 1;
     bool has_color = true;
@@ -959,6 +992,8 @@ struct RenderTargetOptions {
     std::uint32_t depth_layers = 1;
     /** See `RenderTargetRecord::scale_rounding`. */
     ScaleRounding scale_rounding = ScaleRounding::floor;
+    SurfaceRenderTargetSizeResolver resolve_surface_size = nullptr;
+    DepthTextureFormat depth_format = DepthTextureFormat::depth24_plus_stencil8;
 };
 
 enum class RenderTextureSource {
@@ -975,6 +1010,8 @@ struct RenderTextureRef {
     RenderTargetHandle target{};
     TaskHandle task{};
     GeometryTextureType geometry_type = GeometryTextureType::irradiance;
+    /** Explicit depth facade of a color/depth render target. */
+    bool depth_only = false;
 };
 
 struct RenderTaskOptions {
@@ -1028,11 +1065,14 @@ struct RenderTaskOptions {
      * the pass renders through.
      */
     std::uint32_t depth_layer = 0;
+    bool depth_clear = true;
+    bool shared_target = false;
 };
 
 struct RenderTaskMesh {
     MeshHandle mesh{};
     MaterialHandle material{};
+    bool follows_material = false;
 };
 
 struct GeometryTaskOptions {
@@ -1332,12 +1372,23 @@ struct ScreenSpaceFrameDecision {
 };
 
 enum class FrameTaskKind {
+    compute,
     render,
     geometry,
     copy,
     screen_space,
     post_process,
     effect,
+};
+
+/** GPU attachment ownership bridges to the source-generated resize protocol. */
+struct RenderTargetLifecycle {
+    virtual ~RenderTargetLifecycle() = default;
+    virtual void prepare_resize() = 0;
+    virtual void replaced(std::function<void()> release) = 0;
+    virtual void synchronize() = 0;
+    virtual void dispose(std::function<void()> release) = 0;
+    virtual js::Callback<void()> subscribe(std::function<void()> callback) = 0;
 };
 
 struct RenderTargetRecord {
@@ -1381,6 +1432,9 @@ struct RenderTargetRecord {
     ScaleRounding scale_rounding = ScaleRounding::floor;
     /** Canvas-sized default graph targets inherit their scene's surface. */
     std::optional<UiElementHandle> surface_canvas{};
+    SurfaceRenderTargetSizeResolver resolve_surface_size = nullptr;
+    std::shared_ptr<RenderTargetLifecycle> lifecycle{};
+    DepthTextureFormat depth_format = DepthTextureFormat::depth24_plus_stencil8;
 };
 
 /** The pin's mixed cache tuple, named by its seven identity/value inputs. */
@@ -1403,8 +1457,13 @@ struct PersistentSceneUniforms {
 
 struct FrameTaskRecord {
     FrameTaskKind kind = FrameTaskKind::render;
+    std::optional<bool> execution_enabled;
+    std::shared_ptr<ComputeTask> compute;
     RenderTaskOptions render;
     std::vector<RenderTaskMesh> render_meshes;
+    bool render_mesh_refresh = false;
+    bool render_recorded = false;
+    bool render_meshes_dirty = false;
     GeometryTaskOptions geometry;
     CopyTaskOptions copy;
     /**
@@ -1424,6 +1483,7 @@ struct FrameTaskRecord {
 struct RenderTargetTexture {
     RenderTargetHandle rt{};
     RenderTextureRef texture{};
+    RenderTextureRef depth_texture{};
 };
 
 /**
@@ -1635,6 +1695,36 @@ private:
     std::shared_ptr<Storage> storage_;
 };
 
+/** A sampled GPU image shared by source texture facades and render bindings. */
+struct GpuTextureSource {
+    std::shared_ptr<pal::OffscreenRun> run;
+    std::shared_ptr<pal::ComputeTextureAllocation> allocation;
+    double owners = 0;
+    void (*acquire)(GpuTextureSource&) = nullptr;
+    bool (*release)(GpuTextureSource&) = nullptr;
+};
+
+/** A source render-target facade resolved against the current GPU allocation. */
+struct RenderTextureData {
+    Engine* engine = nullptr;
+    std::weak_ptr<const int> engine_lifetime;
+    RenderTextureRef reference{};
+    std::shared_ptr<RenderTargetLifecycle> lifecycle;
+};
+
+/** One source texture-pool owner held by a native render binding. */
+struct GpuTextureLease {
+    std::shared_ptr<GpuTextureSource> source;
+    explicit GpuTextureLease(std::shared_ptr<GpuTextureSource> image) : source(std::move(image)) {
+        if (!source || !source->acquire || !source->release)
+            throw std::runtime_error("GPU texture has no source ownership operations.");
+        source->acquire(*source);
+    }
+    ~GpuTextureLease() { source->release(*source); }
+    GpuTextureLease(const GpuTextureLease&) = delete;
+    GpuTextureLease& operator=(const GpuTextureLease&) = delete;
+};
+
 struct TextureData {
     SharedTextureBytes bytes;
     // When both are non-zero, `bytes` are RGBA texels at this size rather
@@ -1671,6 +1761,8 @@ struct TextureData {
     // GPU blocks viewed directly in their shared container storage.
     CompressedTexture compressed{};
     std::shared_ptr<const std::vector<CompressedTexture>> compressed_alternatives;
+    std::shared_ptr<GpuTextureSource> gpu_source;
+    std::shared_ptr<RenderTextureData> render_source;
 
     /**
      * Whether this slot carries an image at all.
@@ -1681,7 +1773,9 @@ struct TextureData {
      * testing one field — a second predicate for the same fact is what
      * drifts.
      */
-    bool has_image() const { return !bytes.empty() || !compressed.mips.empty(); }
+    bool has_image() const {
+        return gpu_source || render_source || !bytes.empty() || !compressed.mips.empty();
+    }
 };
 
 struct FileTexture {
@@ -1762,6 +1856,8 @@ using StoredTexture = std::variant<FileTexture, PixelsTexture>;
 struct MaterialPluginTexture {
     TextureData data{};
     bool srgb = false;
+    std::string texture_name{};
+    std::string sampler_name{};
 };
 
 struct ModelVertex {
@@ -1829,7 +1925,16 @@ enum class MeshTopology : std::uint8_t {
     line_strip,
 };
 
+/** Authored GPUPrimitiveState partial; applied over the material's PBR defaults. */
+struct MeshPrimitiveState {
+    MeshTopology topology = MeshTopology::triangles;
+    std::optional<bool> cull_none;
+    std::optional<bool> clockwise_front_face;
+};
+
 struct ModelGeometry {
+    /** Source procedural streams own one tightly packed allocation. */
+    bool owned_packed_geometry = false;
     std::vector<ModelVertex> vertices;
     std::vector<ModelVertex> bind_vertices;
     // Source NORMAL values for a draw that reads raw local attributes.
@@ -2033,6 +2138,9 @@ struct MeshRecord {
     std::optional<ImportedMeshTrs> imported_clone_trs;
     MaterialHandle material{};
     std::uint32_t geometry = invalid_handle;
+    std::optional<double> topology_index;
+    std::optional<double> primitive_features;
+    std::optional<MeshPrimitiveState> primitive_override;
     /**
      * Whether `removeFromScene` retired this record. The pin lets the
      * JavaScript collector drop a removed mesh's arrays; here the removal
@@ -2054,8 +2162,11 @@ struct MeshRecord {
     // A cloned imported root remains an outer scene-node transform. Unlike
     // ordinary mesh TRS this is applied by the draw world after deformation,
     // matching a clone whose mesh retains the source skeleton/morph resource.
-    Vec3 outer_position{};
-    Vec3 outer_rotation{};
+    Vec3d outer_position{};
+    Vec3d outer_rotation{};
+    Vec3d outer_scaling{1, 1, 1};
+    Vec4d outer_rotation_quaternion{0, 0, 0, 1};
+    bool outer_has_rotation_quaternion = false;
     float baked_world_scale = 1.0f;
     std::uint64_t transform_version = 0;
     bool has_rotation_quaternion = false;
@@ -2607,6 +2718,10 @@ struct MaterialRecord {
     // keep different texture values, and the composed variant they share
     // resolves each binding by name against this list's position.
     std::vector<MaterialPluginTexture> plugin_textures;
+    using PluginUniformWriter = js::Callback<void(js::F32Array, js::Map<std::string, double>)>;
+    std::shared_ptr<std::vector<PluginUniformWriter>> plugin_uniform_writers;
+    mutable std::unordered_map<std::size_t, std::shared_ptr<MaterialPluginUniformState>>
+        plugin_uniform_states;
     bool double_sided = false;
     // The pin's opacityFromRGB (createStandardMaterial default false; the
     // .babylon loader sets it from opacityTexture.getAlphaFromRGB,
@@ -2767,8 +2882,12 @@ inline void derive_material_alpha_mode(MaterialRecord& material) {
 struct LightRecord {
     LightKind kind = LightKind::directional;
     Vec3 position{};
+    Vec3 rotation{};
+    Vec3 scaling{1.0f, 1.0f, 1.0f};
+    Vec4 rotation_quaternion{0.0f, 0.0f, 0.0f, 1.0f};
+    bool has_rotation_quaternion = false;
     Vec3 direction{0.0f, 1.0f, 0.0f};
-    float intensity = 1.0f;
+    double intensity = 1.0;
     float range = std::numeric_limits<float>::max();
     // cos(angle/2) for a spot cone, which is what the pinned spot light packs
     // into its direction slot. glTF gives the half-angle directly as
@@ -2789,10 +2908,11 @@ struct LightRecord {
     // carries no exponent and the PBR path shades cones by inverse-square
     // falloff instead, which never reads this.
     float exponent = 1.0f;
-    Color3 diffuse_color{};
+    Color3d diffuse_color{};
     Color3 specular_color{};
     Color3 ground_color{0.0f, 0.0f, 0.0f};
-    std::array<float, 16> local_matrix{};
+    // A parent matrix is resolved at each read so ancestor motion stays live.
+    std::function<std::array<float, 16>()> parent_world_matrix;
     // The meshes this light applies to, as the pinned engine keeps them: an
     // inclusion list wins outright when it is non-empty, otherwise the
     // exclusion list filters. Empty on both means every mesh, which is what
@@ -2884,15 +3004,16 @@ struct CameraRecord {
     std::optional<double> lower_radius_limit;
     std::optional<double> upper_radius_limit;
     bool controls_enabled = false;
+    std::function<void(CameraRecord&, double, double)> configurable_free_pointer;
+    std::function<void(CameraRecord&, double, const std::function<bool(std::string_view)>&)>
+        configurable_free_update;
     std::function<bool()> should_handle_pointer_down;
     std::function<bool()> external_drag_active;
     std::function<bool()> external_pick_pending;
-    // Orthographic projection state (src/camera/orthographic.ts). The
-    // four clip planes stay derived from the half-extent, which is the
-    // reached surface: vertically +/-half_height, horizontally scaled by
-    // the render target's aspect ratio.
+    // Null orthographic planes derive from the half-extent and viewport aspect.
     bool orthographic = false;
     double ortho_half_height = 1.0;
+    std::optional<double> ortho_left, ortho_right, ortho_bottom, ortho_top;
     /**
      * The `_camera` glTF loader feature's naming: `def.name ?? camera<idx>`
      * on an imported camera, the record default (empty) on a scene-created
@@ -2947,6 +3068,8 @@ struct AnimationGroupRecord {
     /** `AnimationGroup.weight`: what the weighted mixer contributes it at. */
     float weight = 1.0f;
     std::weak_ptr<PropertyAnimationManagerRecord> animation_owner;
+    double duration = 0;
+    double frame_rate = 0;
 };
 
 /**
@@ -3055,10 +3178,12 @@ struct AssetRecord {
     // The synthetic root's own transform for a hierarchy clone. The cloned
     // mesh records carry it as `outer_position`/`outer_rotation`; these
     // values preserve absolute assignment and clone-of-clone semantics.
-    Vec3 root_position{};
-    Vec3 root_rotation{};
-    /** Whether the public glTF root's synthetic X mirror was reset to identity. */
-    bool root_scaling_reset = false;
+    Vec3d root_position{};
+    Vec3d root_rotation{};
+    Vec3d root_scaling{-1, 1, 1};
+    Vec4d root_rotation_quaternion{0, 0, 0, 1};
+    double root_quaternion_version = 0;
+    double root_synced_quaternion_version = -1;
     CameraHandle camera{};
     Color4 clear_color{};
     bool has_camera = false;
@@ -3409,6 +3534,10 @@ struct UiElementRecord {
     /** Static markup assigned through the reached element.innerHTML surface. */
     std::string inner_rml;
     std::unordered_map<std::string, std::string> attributes;
+    /** Current input state after a property write or user activation. */
+    std::optional<bool> checked;
+    /** Current option selection, independent of its default selected attribute. */
+    std::optional<bool> selected;
     std::unordered_map<std::string, std::string> style_properties;
     /** Latest write order, one entry per property; empty values remove declarations. */
     std::vector<std::string> style_property_order;
@@ -3625,11 +3754,24 @@ struct DeviceRecoveryRegistration {
 using MeshMaterialSceneOwners = std::vector<std::weak_ptr<SceneState>>;
 
 struct Engine {
+    /** Realm allocations publish a weak owner for APIs reached through scene borrows. */
+    std::weak_ptr<Engine> realm_owner;
     std::unordered_map<std::uint32_t, std::shared_ptr<MeshMaterialSceneOwners>>
         mesh_material_scenes;
     struct DeviceRecoveryState;
     std::shared_ptr<DeviceRecoveryState> device_recovery;
+    std::shared_ptr<pal::GpuRetirementState> gpu_retirements;
+    std::weak_ptr<ComputeStorageTextureRegistry> compute_storage_textures;
+    std::function<void()> dispose_compute_textures;
+    std::weak_ptr<UniformBufferRegistry> uniform_buffers;
+    std::function<void()> dispose_uniform_buffers;
+    std::shared_ptr<std::vector<std::function<void()>>> managed_resource_disposers;
+    std::function<void()> dispose_managed_resources;
+    double resource_epoch = 0;
+    std::function<void()> flush_gpu_retirements;
+    std::function<void()> dispose_gpu_retirements;
     std::uint64_t device_generation = 1;
+    bool device_disposed = false;
     std::uint64_t draw_call_count = 0;
     OwnerLifetime lifetime;
 #if defined(BBLITE_WORKERS) && BBLITE_WORKERS
@@ -3810,11 +3952,18 @@ struct Engine {
     std::vector<MaterialRecord> materials;
     struct StorageBufferRecord {
         std::vector<std::uint8_t> bytes;
+        std::shared_ptr<pal::StorageBufferOwner> gpu;
+        double byte_length = 0;
+        double usage = 0;
+        bool writable = false;
+        bool has_shadow = false;
+        bool registered = true;
         std::uint64_t version = 1;
         bool disposed = false;
         std::string label;
     };
     std::vector<StorageBufferRecord> storage_buffers;
+    std::function<void(Engine&)> dispose_storage_buffers;
     /** Creation-ordered handles retained for source values that escape scope. */
     std::vector<MaterialHandle> scene_material_slots;
     std::vector<LightRecord> lights;
@@ -3837,6 +3986,9 @@ struct Engine {
     std::vector<BoneRecord> bones;
     std::vector<RenderTargetRecord> render_targets;
     std::vector<FrameTaskRecord> frame_tasks;
+    std::shared_ptr<pal::ComputeCommandEncoder> current_compute_encoder;
+    js::Callback<void(std::shared_ptr<pal::ComputeCommandEncoder>)> compute_one_shot_submitted;
+    js::Callback<void()> compute_one_shot_frame_submitted;
     RenderTargetHandle swapchain_target{};
     /**
      * Stable wrappers for registered JavaScript SceneContext identities.
@@ -3940,7 +4092,32 @@ struct Engine {
 #endif
     std::uint64_t next_file_texture_identity = 1;
     std::unordered_map<std::string, FileTexture> file_texture_cache;
+    std::vector<FileTexture> render_texture_facades;
 };
+
+/** Preserve the Texture2D identity when a render-target facade enters plain data. */
+inline FileTexture retained_render_texture(Engine& engine, RenderTextureRef reference) {
+    if (reference.source != RenderTextureSource::render_target)
+        throw std::runtime_error("Stored render textures require a render-target owner.");
+    const auto& target = engine.render_targets.at(reference.target.value);
+    if (!target.has_color)
+        reference.depth_only = true;
+    for (const auto& facade : engine.render_texture_facades) {
+        const auto& previous = facade.data.render_source->reference;
+        if (previous.target.value == reference.target.value &&
+            previous.depth_only == reference.depth_only)
+            return facade;
+    }
+    FileTexture facade;
+    facade.identity = engine.next_file_texture_identity++;
+    facade.width = target.width;
+    facade.height = target.height;
+    facade.data.uv_invert_y = target.has_color && !reference.depth_only;
+    facade.data.render_source = std::make_shared<RenderTextureData>(
+        RenderTextureData{&engine, engine.lifetime.token(), reference, target.lifecycle});
+    engine.render_texture_facades.push_back(facade);
+    return facade;
+}
 
 inline bool has_sprite_renderers(const Engine& engine) {
 #if !defined(BBLITE_HAS_SPRITES) || BBLITE_HAS_SPRITES
@@ -4001,6 +4178,11 @@ void begin_device_recovery(Engine& engine);
 void complete_device_recovery(Engine& engine);
 void fail_device_recovery(Engine& engine, const std::string& error);
 void dispose_engine(Engine& engine);
+void register_managed_resource_disposer(Engine& engine, std::function<void()> dispose);
+
+inline MaterialHandle render_task_mesh_material(const Engine& engine, const RenderTaskMesh& entry) {
+    return entry.follows_material ? engine.meshes.at(entry.mesh.value).material : entry.material;
+}
 
 inline std::vector<MeshHandle> asset_mesh_walk(const Engine& engine, AssetHandle asset,
                                                std::size_t walk_index) {
@@ -4080,6 +4262,14 @@ template <typename Data>
 template <typename Data>
 inline void update_storage_buffer(Engine& engine, StorageBufferHandle handle, const Data& data,
                                   double byte_offset) {
+    if (handle.value < engine.storage_buffers.size() && engine.storage_buffers[handle.value].gpu) {
+        using Element = typename Data::value_type;
+        engine.storage_buffers[handle.value].gpu->update(
+            engine, handle.value,
+            {reinterpret_cast<const std::uint8_t*>(data.data()), data.size() * sizeof(Element)},
+            byte_offset);
+        return;
+    }
     if (handle.value >= engine.storage_buffers.size() || !std::isfinite(byte_offset) ||
         byte_offset < 0.0 || std::floor(byte_offset) != byte_offset) {
         throw std::runtime_error("Invalid storage-buffer update.");
@@ -4104,9 +4294,14 @@ inline void dispose_storage_buffer(Engine& engine, StorageBufferHandle handle) {
     if (handle.value >= engine.storage_buffers.size())
         return;
     auto& record = engine.storage_buffers[handle.value];
+    if (record.gpu) {
+        record.gpu->dispose(engine, handle.value);
+        return;
+    }
     if (record.disposed)
         return;
     record.disposed = true;
+    record.registered = false;
     record.bytes.clear();
     ++record.version;
 }
@@ -4369,6 +4564,7 @@ struct EnvironmentState {
     std::uint32_t specular_width = 0;
     std::uint32_t specular_mip_count = 0;
     std::vector<TextureData> specular_faces;
+    std::shared_ptr<pal::ComputeTextureAllocation> specular_gpu;
     bool specular_rgba16f = false;
     TextureData brdf_lut;
     std::uint32_t brdf_lut_width = 0;
@@ -4540,6 +4736,7 @@ struct SceneState {
     std::shared_ptr<SourceMaterialGroups> source_material_groups;
     std::vector<MeshHandle> pbr_material_swap_queue;
     bool material_groups_built = false;
+    bool source_built = false;
     bool material_group_rebuild_pending = false;
     void (*process_material_groups)(Scene&) = nullptr;
     void (*enqueue_material_group)(Scene&, MeshHandle) = nullptr;
@@ -5035,6 +5232,17 @@ create_mesh_from_data(Engine& engine, const std::string& name, const std::vector
                       const std::vector<float>& tangents, const std::vector<float>& colors);
 void update_mesh_positions(Engine& engine, MeshHandle mesh, const std::vector<float>& positions,
                            double vertex_offset, double vertex_count, double source_vertex_offset);
+void resize_mesh_geometry(Engine& engine, MeshHandle mesh, const std::vector<float>& positions,
+                          const std::vector<float>& normals,
+                          const std::vector<std::uint32_t>& indices,
+                          const std::vector<float>& uvs = {}, const std::vector<float>& uvs2 = {},
+                          const std::vector<float>& tangents = {},
+                          const std::vector<float>& colors = {});
+void resize_shared_mesh_geometry(
+    Engine& engine, std::span<const MeshHandle> meshes, const std::vector<float>& positions,
+    const std::vector<float>& normals, const std::vector<std::uint32_t>& indices,
+    const std::vector<float>& uvs = {}, const std::vector<float>& uvs2 = {},
+    const std::vector<float>& tangents = {}, const std::vector<float>& colors = {});
 // The matrices parameter is a non-const lvalue reference on purpose: the
 // record keeps aliasing the caller's array for later per-frame updates
 // (the pinned setThinInstances adopts the array by reference), so a
@@ -5265,19 +5473,38 @@ inline void set_standard_diffuse_texture(Engine& engine, MaterialHandle material
 }
 void enable_material_uv_transform(Engine& engine, MaterialHandle material);
 void set_material_plugins(Engine& engine, MaterialHandle material, std::uint8_t signature_index);
+void add_material_plugin_uniform_writer(Engine& engine, MaterialHandle material,
+                                        MaterialRecord::PluginUniformWriter writer);
 // The textures a plugin's `bindTextures` fills its declared bindings with,
 // appended in push order. `set_material_plugins` clears the list first, so
 // a second `material.plugins = [...]` replaces them the way it replaces the
 // plugin list upstream.
 void add_material_plugin_pixels_texture(Engine& engine, MaterialHandle material,
-                                        const PixelsTexture& texture);
+                                        const PixelsTexture& texture, std::string texture_name = {},
+                                        std::string sampler_name = {});
 void add_material_plugin_file_texture(Engine& engine, MaterialHandle material,
-                                      const FileTexture& texture);
-LightHandle create_hemispheric_light(Engine& engine, Vec3 direction, float intensity = 1.0f);
-LightHandle create_directional_light(Engine& engine, Vec3 direction, float intensity = 1.0f);
-LightHandle create_point_light(Engine& engine, Vec3 position, float intensity = 1.0f);
+                                      const FileTexture& texture, std::string texture_name = {},
+                                      std::string sampler_name = {});
+inline void add_material_plugin_texture(Engine& engine, MaterialHandle material,
+                                        const StoredTexture& texture, std::string texture_name,
+                                        std::string sampler_name) {
+    std::visit(
+        [&](const auto& source) {
+            if constexpr (std::is_same_v<std::decay_t<decltype(source)>, FileTexture>) {
+                add_material_plugin_file_texture(engine, material, source, texture_name,
+                                                 sampler_name);
+            } else {
+                add_material_plugin_pixels_texture(engine, material, source, texture_name,
+                                                   sampler_name);
+            }
+        },
+        texture);
+}
+LightHandle create_hemispheric_light(Engine& engine, Vec3 direction, double intensity = 1.0);
+LightHandle create_directional_light(Engine& engine, Vec3 direction, double intensity = 1.0);
+LightHandle create_point_light(Engine& engine, Vec3 position, double intensity = 1.0);
 LightHandle create_spot_light(Engine& engine, Vec3 position, Vec3 direction, double angle,
-                              float exponent, float intensity = 1.0f);
+                              float exponent, double intensity = 1.0);
 // A light's position and direction are ObservableVec3 upstream: writing one
 // marks the light's local matrix dirty, and the next read rebuilds it. These
 // entry points are that pair — the field write plus the rebuild — and each is
@@ -5413,10 +5640,19 @@ CameraHandle create_banked_free_camera(Engine& engine, Vec3d position, Vec3d tar
 CameraHandle create_default_camera(Engine& engine, Scene& scene);
 // Returns the same camera so the caller can keep using it as the live
 // orthographic bounds object the pinned entry point hands back.
-CameraHandle enable_orthographic_camera(Engine& engine, CameraHandle camera, double half_height);
+CameraHandle enable_orthographic_camera(Engine& engine, CameraHandle camera, double half_height,
+                                        std::optional<double> left = {},
+                                        std::optional<double> right = {},
+                                        std::optional<double> bottom = {},
+                                        std::optional<double> top = {});
 
 RenderTargetHandle create_render_target(Engine& engine, RenderTargetOptions options);
-RenderTargetTexture create_render_target_texture(Engine& engine, RenderTargetOptions options);
+RenderTargetTexture create_render_target_texture(Engine& engine, RenderTargetOptions options,
+                                                 bool surface_sized = false);
+std::array<double, 2> resolve_surface_render_target_size(double width, double height,
+                                                         double surface_scale);
+js::Callback<void()> on_render_target_texture_resize(Engine& engine, RenderTargetTexture result,
+                                                     std::function<void()> callback);
 RenderTargetHandle swapchain_render_target(Engine& engine);
 TaskHandle create_render_task(Engine& engine, Scene& scene, RenderTaskOptions options);
 TaskHandle create_geometry_renderer_task(Engine& engine, Scene& scene, GeometryTaskOptions options);
@@ -5553,8 +5789,9 @@ ShadowGeneratorHandle create_csm_directional_shadow_generator(Engine& engine, Li
 void set_shadow_task_caster_meshes(Engine& engine, ShadowGeneratorHandle generator,
                                    std::vector<MeshHandle> caster_meshes);
 void enable_morph_target_shadows(Engine& engine, ShadowGeneratorHandle generator);
-void add_render_task_mesh(Engine& engine, TaskHandle task, MeshHandle mesh,
-                          MaterialHandle material);
+void add_render_task_mesh(Engine& engine, TaskHandle task, MeshHandle mesh, MaterialHandle material,
+                          bool material_override = true);
+void enable_render_task_mesh_refresh(Engine& engine, TaskHandle task);
 
 void add_to_scene(Scene& scene, MeshHandle mesh);
 void add_to_scene(Scene& scene, TransformNodeHandle node);
@@ -5564,13 +5801,21 @@ void add_to_scene(Scene& scene, const SceneNodeHandle& node);
 void add_asset_entities(Scene& scene, AssetHandle asset);
 AssetHandle clone_asset_root(Engine& engine, AssetHandle asset);
 MeshHandle clone_mesh_node(Engine& engine, MeshHandle mesh);
+void set_asset_root_position(Engine& engine, AssetHandle asset, Vec3d value);
 void set_asset_root_position_component(Engine& engine, AssetHandle asset, std::size_t component,
-                                       float value);
+                                       double value);
+void set_asset_root_rotation(Engine& engine, AssetHandle asset, Vec3d value);
 void set_asset_root_rotation_component(Engine& engine, AssetHandle asset, std::size_t component,
-                                       float value);
-void set_asset_root_position(Engine& engine, AssetHandle asset, Vec3 value);
-void set_asset_root_rotation(Engine& engine, AssetHandle asset, Vec3 value);
-void reset_asset_root_scaling(Engine& engine, AssetHandle asset);
+                                       double value);
+void set_asset_root_scaling(Engine& engine, AssetHandle asset, Vec3d value);
+void set_asset_root_scaling_component(Engine& engine, AssetHandle asset, std::size_t component,
+                                      double value);
+void set_asset_root_rotation_quaternion(Engine& engine, AssetHandle asset, Vec4d value);
+void set_asset_root_rotation_quaternion_component(Engine& engine, AssetHandle asset,
+                                                  std::size_t component, double value);
+Vec3d asset_root_rotation(Engine& engine, AssetHandle asset);
+std::array<float, 16> asset_root_world_matrix(Engine& engine, AssetHandle asset);
+void set_light_asset_parent(Engine& engine, LightHandle light, AssetHandle parent);
 
 // A retained SceneNode may be a mesh, a transform node, or an imported root.
 Vec3d scene_node_position(Engine& engine, const SceneNodeHandle& node);
@@ -5679,6 +5924,14 @@ void set_camera_vector(CameraRecord& camera, Vec3d CameraRecord::* vector, Vec3d
 void set_camera_limits(Engine& engine, CameraHandle camera, std::uint32_t present_mask,
                        const std::array<double, 6>& limits);
 void attach_free_control(Engine& engine, CameraHandle camera);
+struct ConfigurableFreeControlOptions {
+    std::optional<std::vector<std::string>> upKeys;
+    std::optional<std::vector<std::string>> downKeys;
+    std::optional<std::vector<std::string>> fastKeys;
+    std::optional<double> fastMultiplier;
+};
+void attach_configurable_free_control(Engine& engine, CameraHandle camera,
+                                      ConfigurableFreeControlOptions options);
 #if !defined(BBLITE_HAS_SPRITES) || BBLITE_HAS_SPRITES
 #include <bblite/runtime/sprite-options.hpp>
 #endif
@@ -5815,6 +6068,7 @@ std::optional<bool> run_pbr_rebuild_transaction(Scene& scene, const std::vector<
                                                 bool (*builder)(Scene&,
                                                                 const std::vector<MeshHandle>&));
 void set_mesh_material(Engine& engine, MeshHandle mesh, MaterialHandle material);
+void mark_mesh_renderable_dirty(Engine& engine, MeshHandle mesh);
 void set_pbr_gamma_albedo(Engine& engine, MaterialHandle material);
 void load_image_skybox(Scene& scene, std::array<std::string, 6> face_paths, float size);
 void set_scene_fog(Scene& scene, float mode, float density, float start, float end, Color3 color);
@@ -5852,6 +6106,7 @@ void set_mesh_visible(Engine& engine, MeshHandle mesh, bool visible);
 [[nodiscard]] std::vector<float> mesh_cpu_uvs(const Engine& engine, MeshHandle mesh);
 [[nodiscard]] std::vector<std::uint32_t> mesh_cpu_indices(const Engine& engine, MeshHandle mesh);
 [[nodiscard]] js::Array<double> mesh_world_matrix_array(const Engine& engine, MeshHandle mesh);
+[[nodiscard]] js::Array<double> asset_root_world_matrix_array(Engine& engine, AssetHandle asset);
 [[nodiscard]] js::Array<double> mesh_bound_min_array(const Engine& engine, MeshHandle mesh);
 [[nodiscard]] js::Array<double> mesh_bound_max_array(const Engine& engine, MeshHandle mesh);
 

@@ -37,6 +37,12 @@ export function lowerMeshMaterialSetter(context: LoweringContext): string {
     const lookup =
         "[&]() { const auto found = engine.mesh_material_scenes.find(mesh.value); return found == engine.mesh_material_scenes.end() ? std::shared_ptr<MeshMaterialSceneOwners>{} : found->second; }()";
     const bindings = new Map<string, PinnedBinding>([
+        // Native plugin uniforms follow the material handle at draw time;
+        // the browser's scene-to-material UBO subscription is unnecessary.
+        [
+            "scene._meshMaterialChange",
+            { cpp: "nullptr", type: "opaque", staticallyAbsent: true },
+        ],
         ["v", { cpp: "material.value", type: "scalar" }],
         [
             "_mat",
@@ -198,6 +204,10 @@ export function lowerMeshMaterialSetter(context: LoweringContext): string {
         module,
         "unregisterMeshScene",
     ).declaration;
+    const dirty = context.functionDeclaration(
+        module,
+        "markMeshRenderableDirty",
+    ).declaration;
     return `void insert_mesh_material_scene(MeshMaterialSceneOwners& owners, const std::shared_ptr<SceneState>& scene) {
     if (std::none_of(owners.begin(), owners.end(), [&](const auto& owner) { return owner.lock() == scene; })) owners.push_back(scene);
 }
@@ -218,6 +228,10 @@ ${body(unregister, unregister.body!.statements)}
 // ${context.provenance(module, "installMaterialSetter")}
 void set_mesh_material(Engine& engine, MeshHandle mesh, MaterialHandle material) {
 ${body(setter, setter.body.statements)}
+}
+// ${context.provenance(module, "markMeshRenderableDirty")}
+void mark_mesh_renderable_dirty(Engine& engine, MeshHandle mesh) {
+${body(dirty, dirty.body!.statements)}
 }
 `;
 }

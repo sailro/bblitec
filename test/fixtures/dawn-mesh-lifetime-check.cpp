@@ -5,6 +5,7 @@
 #define BBLITE_PINNED_MATERIALS 1
 #include "pal_dawn_resources.hpp"
 #include "pal_owned_gpu_record.hpp"
+#include "pal_record_sync.hpp"
 #include "pal_texture_upload_cache.hpp"
 #include <algorithm>
 #include <array>
@@ -12,6 +13,7 @@
 #include <map>
 #include <memory>
 #include <string>
+#include <tuple>
 #include <vector>
 
 struct Resource {
@@ -87,9 +89,7 @@ struct DawnState {
     void release_frame_graph_textures() {}
     std::vector<DawnMesh> meshes;
     std::vector<std::vector<DawnMesh>> overlay_meshes;
-    struct ShaderStorageBuffer {
-        WGPUBuffer buffer = nullptr;
-    };
+    using ShaderStorageBuffer = VersionedGpuBuffer<WGPUBuffer>;
     std::vector<ShaderStorageBuffer> shader_storage_buffers;
     std::vector<std::unique_ptr<DawnSharedShaderGeometry>> shared_shader_geometries;
     TextureUploadCache<DawnTexture> shared_material_images;
@@ -99,10 +99,10 @@ struct DawnState {
     struct Pipeline {
         WGPURenderPipeline pipeline = nullptr;
     };
-    std::array<std::array<WGPURenderPipeline, 1>, 1> depth_only_pipelines{};
+    std::map<std::tuple<bool, std::uint32_t, WGPUTextureFormat>, WGPURenderPipeline>
+        depth_only_pipelines;
     std::map<int, WGPURenderPipeline> blit_pipelines;
-    std::array<std::array<std::map<int, Pipeline>, 1>, 1> task_pipelines;
-    std::map<int, Pipeline> shader_shadow_pipelines, pipelines;
+    std::map<int, Pipeline> pipelines;
     WGPURenderPipeline depth_copy_pipeline = nullptr, image_processing_pipeline = nullptr,
                        transmission_grab_pipeline = nullptr, skybox_pipeline = nullptr,
                        ground_pipeline = nullptr;
@@ -141,8 +141,8 @@ struct DawnState {
         WGPUBuffer lights_uniforms = nullptr, scene_uniforms = nullptr;
     };
     std::vector<OverlayFrame> overlay_frames;
-    std::map<std::uint32_t, std::map<std::size_t, WGPURenderPipeline>> pinned_variant_pipelines,
-        standard_variant_pipelines, node_variant_pipelines;
+    std::map<std::uint32_t, std::map<DawnVariantPipelineKey, WGPURenderPipeline>>
+        pinned_variant_pipelines, standard_variant_pipelines, node_variant_pipelines;
     std::vector<WGPUPipelineLayout> pinned_pipeline_layouts, standard_pipeline_layouts,
         node_pipeline_layouts, shader_pipeline_layouts;
     std::vector<WGPUBindGroupLayout> pinned_draw_layouts, standard_draw_layouts, node_draw_layouts,
@@ -247,4 +247,21 @@ int main() {
     }
     for (const auto& resource : allocations)
         assert(!resource->alive);
+    allocations.clear();
+    {
+        const auto buffer = make<WGPUBuffer>();
+        auto owner = std::shared_ptr<void>(
+            buffer, [](void* value) { release(static_cast<WGPUBuffer>(value)); });
+        {
+            DawnState state;
+            state.shader_storage_buffers.push_back({buffer, 16, 0, owner});
+            DawnMesh mesh(state);
+            mesh.bindings[bbl::upstream::RenderPipelineKind::standard].textures =
+                make<WGPUBindGroup>({buffer});
+            state.meshes.push_back(std::move(mesh));
+        }
+        assert(buffer->alive);
+        owner.reset();
+        assert(!buffer->alive);
+    }
 }

@@ -54,3 +54,48 @@ export function eventTargetCpp(
         );
     return `bbl::dom_target_value(${engine}, ${target})`;
 }
+
+/** Retained HTML element interfaces follow the element's tag and document identity. */
+export function compileDomInstanceOf(
+    context: Context &
+        Pick<
+            LoweringServices,
+            "compileValue" | "emitDiscardedValue" | "cppString"
+        >,
+    expression: ts.Expression,
+): string | undefined {
+    if (
+        !ts.isBinaryExpression(expression) ||
+        expression.operatorToken.kind !== ts.SyntaxKind.InstanceOfKeyword ||
+        !ts.isIdentifier(expression.right) ||
+        !context.isDefaultLibraryIdentifier(expression.right)
+    )
+        return undefined;
+    const tags = new Map([
+        ["HTMLInputElement", "input"],
+        ["HTMLSelectElement", "select"],
+        ["HTMLTextAreaElement", "textarea"],
+        ["HTMLButtonElement", "button"],
+        ["HTMLCanvasElement", "canvas"],
+    ]);
+    const tag = tags.get(expression.right.text);
+    if (!tag) return undefined;
+    const value = context.compileValue(expression.left);
+    const type = value.dataType;
+    if (
+        value.kind === "json-null" ||
+        value.kind === "number" ||
+        value.kind === "boolean" ||
+        value.kind === "string"
+    ) {
+        context.emitDiscardedValue(value);
+        return "false";
+    }
+    context.reachFeature("input:dom", expression);
+    context.reachFeature("ui:rml", expression);
+    const target =
+        type?.kind === "optional" && type.inner.kind === "event-target"
+            ? value.cpp
+            : eventTargetCpp(context, value, expression.left);
+    return `bbl::dom_target_has_tag(${target}, ${context.cppString(tag)})`;
+}

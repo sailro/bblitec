@@ -941,6 +941,7 @@ async function recordMeshPlan(
             _deferredBuilders: [] as Array<() => Promise<unknown>>,
             _disposables: [] as Array<() => void>,
             _built: false,
+            _meshMaterialChange: undefined,
         };
         const iblRecording = new GltfIblRecording(
             recorder,

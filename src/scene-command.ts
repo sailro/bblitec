@@ -912,7 +912,7 @@ async function withBuildOptions(
                 command === "process"
                     ? ["--backend", "--compiler", "--shader"]
                     : ["--backend", "--compiler"],
-            boolean: ["--cold"],
+            boolean: command === "process" ? ["--cold", "--live"] : ["--cold"],
         },
         command,
     );
@@ -1532,7 +1532,16 @@ function shaderStage(selected: readonly SceneDefinition[]): Stage {
     };
 }
 
-async function processScene(idOrSource: string): Promise<void> {
+async function processScene(idOrSource: string, live = false): Promise<void> {
+    if (live) {
+        if (idOrSource === "all") {
+            throw new Error(
+                "process --live requires one scene or TypeScript source.",
+            );
+        }
+        await processTwin(twinScene(resolveScene(idOrSource)));
+        return;
+    }
     requireDevelopmentPreflight({
         browser: true,
         labSound: idOrSource === "all",
@@ -3028,6 +3037,7 @@ async function runDeclaredObserve(
         checkId,
         scene: resolveScene(spec.scene),
         spec: spec.observe,
+        noQueryTwin: spec.twin === true,
         headed: parsed.flags.has("--headed"),
     });
 }
@@ -3103,10 +3113,10 @@ const COMMANDS: readonly CommandSpec[] = [
         argument: SCENE_OR_ALL_ARGUMENT,
         flags: {
             value: ["--backend", "--compiler", "--shader"],
-            boolean: ["--cold"],
+            boolean: ["--cold", "--live"],
         },
         summary:
-            "compile, compile shaders (--shader d3d12|vulkan|metal|all) and build",
+            "compile, compile shaders (--shader d3d12|vulkan|metal|all) and build; --live builds a no-query <id>-live twin for interaction",
         lock: true,
     },
     {
@@ -3363,7 +3373,9 @@ async function main(): Promise<void> {
             await withBuildOptions("build", rest, () => build(id!));
             return;
         case "process":
-            await withBuildOptions("process", rest, () => processScene(id!));
+            await withBuildOptions("process", rest, () =>
+                processScene(id!, parsed!.flags.has("--live")),
+            );
             return;
         case "parity":
             await parity(id!, rest);

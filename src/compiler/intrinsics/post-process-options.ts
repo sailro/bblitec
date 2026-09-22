@@ -74,7 +74,7 @@ export function compilePostProcessTaskOptions(
         "sourceTexture",
         "color",
     );
-    const target = optionalRenderTarget(context, object, "targetTexture");
+    const target = optionalRenderTarget(context, object, "targetTexture", true);
 
     const samplingExpression = context.objectProperty(
         object,
@@ -213,7 +213,7 @@ export function compilePostProcessCompositeOptions(
         );
     }
 
-    const target = optionalRenderTarget(context, object, "targetTexture");
+    const target = optionalRenderTarget(context, object, "targetTexture", true);
 
     const sourceTasks = (composite.sourceTasks ?? []).map((option) => {
         const expression = context.objectProperty(object, option);

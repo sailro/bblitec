@@ -43,6 +43,7 @@ import {
     caughtErrorValue,
     compileErrorConstruction,
     errorConstructor,
+    errorValue,
     thrownMessage,
 } from "./error-values.js";
 import { emitStringAppend } from "./expressions.js";
@@ -512,8 +513,8 @@ export class StatementLowerer {
     }
 
     public terminatesAfterLowering(statement: ts.Statement): boolean {
-        return (
-            terminatesFlow(statement) || this.loweredTerminators.has(statement)
+        return terminatesFlow(statement, (node) =>
+            this.loweredTerminators.has(node),
         );
     }
 
@@ -569,7 +570,10 @@ export class StatementLowerer {
             return;
         }
         if (ts.isExpressionStatement(statement)) {
-            this.emitExpression(context, statement.expression);
+            this.loweredTerminators.delete(statement);
+            if (this.emitExpression(context, statement.expression)) {
+                this.loweredTerminators.add(statement);
+            }
             return;
         }
         if (ts.isIfStatement(statement)) {
@@ -1180,7 +1184,11 @@ export class StatementLowerer {
         const browserLocal = (candidate: ts.Expression): boolean => {
             const value = context.unwrap(candidate);
             if (ts.isIdentifier(value)) {
-                return context.lookupOptional(value)?.kind === "browser";
+                const bound = context.lookupOptional(value);
+                return (
+                    bound?.kind === "browser" &&
+                    bound.browserValue?.kind !== "search-params"
+                );
             }
             return (
                 (ts.isPropertyAccessExpression(value) ||
@@ -1285,8 +1293,8 @@ export class StatementLowerer {
      * to C++ `catch (...)`, as does a binding the block only reports. A read
      * binding catches `std::exception` and is the caught Error value.
      *
-     * A finally block is a scope guard, so it runs on normal completion,
-     * early return, and exception just as the JavaScript block does.
+     * The body exception is retained before cleanup runs so a cleanup throw
+     * can replace it without throwing during C++ stack unwinding.
      */
     private emitTry(
         context: StatementLoweringContext,
@@ -1314,6 +1322,12 @@ export class StatementLowerer {
         const body = context.captureEmittedLines(() =>
             this.emitTryBody(context, statement),
         );
+        const abruptBody =
+            context.activeNativeReturnType() !== undefined &&
+            !this.staticIterationCompleted() &&
+            this.terminatesAfterLowering(statement.tryBlock) &&
+            (!statement.catchClause ||
+                this.terminatesAfterLowering(statement.catchClause.block));
         const captureFinally = () =>
             this.captureFinallyGuard(context, finallyBlock, beforeBody);
         if (context.emitEngineFinally(body, captureFinally, statement)) return;
@@ -1324,13 +1338,27 @@ export class StatementLowerer {
         if (finallyGuard) {
             context.emit("{");
             context.increaseIndent();
-            context.emitFinallyGuard(finallyGuard);
-        }
-        for (const line of body) context.emit(line);
-        if (finallyGuard) {
+            const guard = context.emitFinallyGuard(finallyGuard);
+            const pending =
+                context.allocateTemporaryCppName("finally_exception");
+            context.emit(`std::exception_ptr ${pending};`);
+            context.emit("try {");
+            context.increaseIndent();
+            for (const line of body) context.emit(line);
+            context.decreaseIndent();
+            context.emit(
+                `} catch (...) { ${pending} = std::current_exception(); }`,
+            );
+            context.emit(`${guard}.run();`);
+            // A source body that cannot complete normally reaches this
+            // boundary only through the catch above. Preserve that fact for
+            // C++ return analysis, including non-void coroutine bodies.
+            context.emit(
+                `${abruptBody ? "" : `if (${pending}) `}std::rethrow_exception(${pending});`,
+            );
             context.decreaseIndent();
             context.emit("}");
-        }
+        } else for (const line of body) context.emit(line);
     }
 
     private emitTryBody(
@@ -1357,6 +1385,17 @@ export class StatementLowerer {
                     "Native catch bindings require an identifier.",
                 );
             }
+            const suspendedCatch =
+                context.workerCheckpointCpp() &&
+                someAnalysisNode(
+                    statement.catchClause.block,
+                    ts.isAwaitExpression,
+                    { functions: "skip" },
+                )
+                    ? context.allocateTemporaryCppName("pending_exception")
+                    : undefined;
+            if (suspendedCatch)
+                context.emit(`std::exception_ptr ${suspendedCatch};`);
             context.emit("try {");
             context.increaseIndent();
             context.pushScope(context.allocateBlockPrefix());
@@ -1382,9 +1421,11 @@ export class StatementLowerer {
                     "} catch (const bbl::pal::WorkerTerminated&) { throw;",
                 );
             context.emit(
-                catchCpp
-                    ? `} catch (const std::exception& ${catchCpp}) {`
-                    : "} catch (...) {",
+                suspendedCatch
+                    ? `} catch (...) { ${suspendedCatch} = std::current_exception(); }\nif (${suspendedCatch}) {`
+                    : catchCpp
+                      ? `} catch (const std::exception& ${catchCpp}) {`
+                      : "} catch (...) {",
             );
             context.increaseIndent();
             context.pushScope(context.allocateBlockPrefix());
@@ -1396,7 +1437,22 @@ export class StatementLowerer {
                 ) {
                     context.bindLocalValue(
                         catchDeclaration.name,
-                        caughtErrorValue(context, catchCpp),
+                        suspendedCatch
+                            ? errorValue(
+                                  {
+                                      kind: "data",
+                                      dataType: { kind: "string" },
+                                      cpp: `bbl::js::promise_error_message(${suspendedCatch})`,
+                                  },
+                                  "Error",
+                                  context.cppString,
+                                  {
+                                      kind: "data",
+                                      cpp: `bbl::js::Error(${suspendedCatch})`,
+                                      dataType: { kind: "error" },
+                                  },
+                              )
+                            : caughtErrorValue(context, catchCpp),
                     );
                 }
                 for (const child of statement.catchClause.block.statements) {
@@ -1545,11 +1601,16 @@ export class StatementLowerer {
                   context.isDefaultLibraryIdentifier(identifier),
               )
             : undefined;
-        const value = thrownMessage(
+        const error =
             ts.isNewExpression(thrown) && errorName !== undefined
                 ? compileErrorConstruction(context, thrown, errorName, "thrown")
-                : context.compileValue(thrown),
-        );
+                : context.compileValue(thrown);
+        if (error.dataType?.kind === "error") {
+            context.reachThrow();
+            context.emitNativeThrow(error.cpp, statement, true);
+            return;
+        }
+        const value = thrownMessage(error);
         if (!value) {
             context.fail(
                 statement,
@@ -3068,7 +3129,7 @@ export class StatementLowerer {
     public emitExpression(
         context: StatementLoweringContext,
         expression: ts.Expression,
-    ): void {
+    ): boolean | void {
         traceSourceNode(expression);
         context.checkNodeGeometryMutation(expression);
         const input = context.compileNodeInputMutation(expression);
@@ -3098,8 +3159,7 @@ export class StatementLowerer {
             // `void call()` preserves the call's side effects and discards
             // only its value. At a statement boundary the value was already
             // unused, so lower the operand through the same statement path.
-            this.emitExpression(context, operand);
-            return;
+            return this.emitExpression(context, operand);
         }
         if (ts.isDeleteExpression(unwrapped)) {
             context.emitDelete(unwrapped);
@@ -3346,7 +3406,7 @@ export class StatementLowerer {
                 return;
             const value = context.compileValue(unwrapped);
             context.emitDiscardedValue(value);
-            return;
+            return value.abruptCompletion;
         }
         if (ts.isAwaitExpression(expression)) {
             // `await <promise a scene callback resolves>`. Unlike the
@@ -3587,75 +3647,6 @@ export class StatementLowerer {
         if (target.kind === "light") {
             return this.compileLightVectorSet(context, call, owner, target);
         }
-        if (
-            target.kind === "asset-root" &&
-            (owner.name.text === "position" ||
-                owner.name.text === "rotation" ||
-                owner.name.text === "rotationQuaternion" ||
-                owner.name.text === "scaling")
-        ) {
-            context.assertAssetRootWritable(target, call);
-            if (
-                owner.name.text === "rotationQuaternion" ||
-                owner.name.text === "scaling"
-            ) {
-                const expected =
-                    owner.name.text === "rotationQuaternion"
-                        ? [0, 0, 0, 1]
-                        : [1, 1, 1];
-                if (call.arguments.length !== expected.length) {
-                    context.fail(
-                        call,
-                        `${owner.name.text}.set expects exactly ${expected.length} numeric arguments.`,
-                    );
-                }
-                const values = call.arguments.map((argument) =>
-                    context.compileValue(argument),
-                );
-                if (
-                    values.some(
-                        (value, index) =>
-                            value.kind !== "number" ||
-                            value.staticNumber !== expected[index],
-                    )
-                ) {
-                    context.fail(
-                        call,
-                        owner.name.text === "scaling"
-                            ? "An imported glTF root currently supports resetting its synthetic handedness scale to identity."
-                            : "An imported glTF root currently supports resetting its synthetic rotation quaternion to identity.",
-                    );
-                }
-                if (owner.name.text === "scaling") {
-                    context.emit(
-                        `bbl::reset_asset_root_scaling(` +
-                            `${context.requireEngine(target, call)}, ${target.cpp});`,
-                    );
-                }
-                return true;
-            }
-            const components = this.setCallComponents(
-                context,
-                call,
-                3,
-                `${owner.name.text}.set`,
-                "float",
-            );
-            const engine = context.requireEngine(target, call);
-            const transform = sceneNodeTransformDescriptor(owner.name.text);
-            if (!transform?.assetSetter) {
-                context.fail(
-                    owner,
-                    `An imported root has no '${owner.name.text}' writer.`,
-                );
-            }
-            context.emit(
-                `bbl::${transform.assetSetter}(` +
-                    `${engine}, ${target.cpp}, ` +
-                    `bbl::Vec3{${components.join(", ")}});`,
-            );
-            return true;
-        }
         const transform = sceneNodeTransformDescriptor(owner.name.text);
         return transform
             ? this.emitSceneNodeVectorSet(context, call, target, transform)
@@ -3668,6 +3659,20 @@ export class StatementLowerer {
         target: Value,
         transform: SceneNodeTransformDescriptor,
     ): boolean {
+        if (target.kind === "asset-root") {
+            context.assertAssetRootWritable(target, call);
+            const components = this.setCallComponents(
+                context,
+                call,
+                transform.components.length,
+                transform.sourceProperty + ".set",
+                "double",
+            );
+            context.emit(
+                `bbl::${transform.assetSetter}(${context.requireEngine(target, call)}, ${target.cpp}, bbl::${components.length === 4 ? "Vec4d" : "Vec3d"}{${components.join(", ")}});`,
+            );
+            return true;
+        }
         if (target.kind === "transform-node" || target.kind === "scene-node") {
             // A node's TRS lanes are the same ObservableVec3/ObservableQuat
             // a mesh's are -- upstream a TransformNode IS a SceneNode -- so
@@ -3933,17 +3938,20 @@ export class StatementLowerer {
         context: StatementLoweringContext,
         call: ts.CallExpression,
     ): boolean {
-        if (
-            !ts.isPropertyAccessExpression(call.expression) ||
-            !ts.isIdentifier(call.expression.expression)
-        ) {
+        const exported =
+            context.symbols.importedName(call.expression) === "addMeshToTask";
+        const member = ts.isPropertyAccessExpression(call.expression)
+            ? call.expression
+            : undefined;
+        if (!exported && (!member || !ts.isIdentifier(member.expression)))
             return false;
-        }
-        const method = call.expression.name.text;
+        const method = exported ? "addMesh" : member!.name.text;
         if (method !== "addMesh" && method !== "updateUniforms") {
             return false;
         }
-        const task = context.lookup(call.expression.expression);
+        const task = context.compileValue(
+            exported ? argumentAt(call, 0) : member!.expression,
+        );
         if (task.kind !== "task") {
             return false;
         }
@@ -3963,16 +3971,20 @@ export class StatementLowerer {
             );
             return true;
         }
-        context.expectArgumentCount(call, 1, 2);
-        const mesh = context.compileValue(argumentAt(call, 0));
-        context.expectKind(mesh, "mesh", argumentAt(call, 0));
+        const offset = exported ? 1 : 0;
+        context.expectArgumentCount(call, 1 + offset, 2 + offset);
+        const mesh = context.compileValue(argumentAt(call, offset));
+        context.expectKind(mesh, "mesh", argumentAt(call, offset));
         context.expectSameEngine(task, mesh, call);
         const engine = context.requireEngine(task, call);
         // The pin's own `opts.material ?? mesh.material`: a call with no
         // override draws the mesh with the material it already carries.
         let materialCpp = `${engine}.meshes[${mesh.cpp}.value].material`;
-        if (call.arguments.length === 2) {
-            const options = context.expectObjectLiteral(argumentAt(call, 1));
+        let materialOverride = false;
+        if (call.arguments.length === 2 + offset) {
+            const options = context.expectObjectLiteral(
+                argumentAt(call, 1 + offset),
+            );
             const materialExpression = context.objectProperty(
                 options,
                 "material",
@@ -3987,9 +3999,10 @@ export class StatementLowerer {
             context.expectKind(material, "material", materialExpression);
             context.expectSameEngine(task, material, call);
             materialCpp = material.cpp;
+            materialOverride = true;
         }
         context.emit(
-            `bbl::add_render_task_mesh(${engine}, ${task.cpp}, ${mesh.cpp}, ${materialCpp});`,
+            `bbl::add_render_task_mesh(${engine}, ${task.cpp}, ${mesh.cpp}, ${materialCpp}, ${materialOverride});`,
         );
         return true;
     }
@@ -3999,8 +4012,12 @@ export class StatementLowerer {
  * True when a branch always leaves the surrounding iteration or
  * function, so code after the branch never observes its effects.
  */
-function terminatesFlow(statement: ts.Statement): boolean {
+function terminatesFlow(
+    statement: ts.Statement,
+    lowered: (node: ts.Statement) => boolean = () => false,
+): boolean {
     if (
+        lowered(statement) ||
         ts.isContinueStatement(statement) ||
         ts.isBreakStatement(statement) ||
         ts.isReturnStatement(statement) ||
@@ -4010,22 +4027,22 @@ function terminatesFlow(statement: ts.Statement): boolean {
     }
     if (ts.isBlock(statement)) {
         const last = statement.statements.at(-1);
-        return last ? terminatesFlow(last) : false;
+        return last ? terminatesFlow(last, lowered) : false;
     }
     if (ts.isIfStatement(statement)) {
         return (
             !!statement.elseStatement &&
-            terminatesFlow(statement.thenStatement) &&
-            terminatesFlow(statement.elseStatement)
+            terminatesFlow(statement.thenStatement, lowered) &&
+            terminatesFlow(statement.elseStatement, lowered)
         );
     }
     if (ts.isTryStatement(statement)) {
         return (
             (!!statement.finallyBlock &&
-                terminatesFlow(statement.finallyBlock)) ||
-            (terminatesFlow(statement.tryBlock) &&
+                terminatesFlow(statement.finallyBlock, lowered)) ||
+            (terminatesFlow(statement.tryBlock, lowered) &&
                 (!statement.catchClause ||
-                    terminatesFlow(statement.catchClause.block)))
+                    terminatesFlow(statement.catchClause.block, lowered)))
         );
     }
     return false;

@@ -1,17 +1,20 @@
 #include <bblite/pal_window_realm.hpp>
 #include <bblite/pal.hpp>
 #include <bblite/pal_animation_frame.hpp>
+#include <bblite/pal_location.hpp>
 #include "pal_window_presenter.hpp"
 #include "pal_gpu_shared.hpp"
 #include "pal_platform_events.hpp"
 #include "pal_system_preferences.hpp"
 #include "pal_window.hpp"
+#include "pal_file_io.hpp"
 #if BBLITE_HAS_PBR_RENDERER
 #include "pal_camera_controls.hpp"
 #endif
 
 #include <atomic>
 #include <bit>
+#include <charconv>
 #include <condition_variable>
 #include <iostream>
 #include <sstream>
@@ -20,10 +23,53 @@
 
 namespace bbl::pal {
 namespace {
+struct WindowScreenshotCheckpoint {
+    long frame;
+    std::string path;
+};
+
+std::vector<WindowScreenshotCheckpoint> window_screenshot_checkpoints(std::string_view source,
+                                                                      const FrameOptions& options,
+                                                                      bool captures_engine_frames) {
+    if (source.empty())
+        return {};
+    if (options.screenshot_path.empty() || captures_engine_frames)
+        throw std::invalid_argument(
+            "BBLITE_SCREENSHOT_FRAMES requires BBLITE_SCREENSHOT and presentation-frame capture.");
+    const auto final_path = detail::utf8_file_path(options.screenshot_path);
+    std::vector<WindowScreenshotCheckpoint> checkpoints;
+    std::size_t begin = 0;
+    while (begin <= source.size()) {
+        const auto separator = source.find(',', begin);
+        const auto end = separator == std::string_view::npos ? source.size() : separator;
+        const auto token = source.substr(begin, end - begin);
+        long frame = 0;
+        const auto parsed = std::from_chars(token.data(), token.data() + token.size(), frame);
+        if (token.empty() || token.front() < '0' || token.front() > '9' ||
+            parsed.ec != std::errc{} || parsed.ptr != token.data() + token.size() ||
+            frame >= options.screenshot_frame ||
+            (!checkpoints.empty() && frame <= checkpoints.back().frame))
+            throw std::invalid_argument(
+                "BBLITE_SCREENSHOT_FRAMES requires ordered unique nonnegative integers before BBLITE_SCREENSHOT_FRAME.");
+        auto path = final_path;
+        path.replace_extension(".frame-" + std::to_string(frame) + ".png");
+        const auto encoded = path.u8string();
+        checkpoints.push_back({frame, std::string(encoded.begin(), encoded.end())});
+        if (separator == std::string_view::npos)
+            break;
+        begin = separator + 1;
+    }
+    return checkpoints;
+}
+
 struct WindowEvent final : ExternalEvent {
     UiElementHandle element;
     std::string type;
     PlatformMouseEvent mouse;
+    std::optional<std::string> form_value;
+    std::optional<bool> checked;
+    std::optional<UiElementHandle> selected_option;
+    std::optional<bool> open;
 };
 struct WindowDomEvent final : ExternalEvent {
     std::shared_ptr<DomEventBatch> batch;
@@ -122,6 +168,7 @@ struct WindowServices final : CanvasProvider {
     std::shared_ptr<const LayoutSnapshot> layout;
     std::atomic<bool> screen_requested = false;
     std::atomic<bool> reload_requested = false;
+    std::shared_ptr<WindowLocation> location;
     std::unordered_map<std::uint32_t, std::shared_ptr<CanvasEndpoint>> canvases;
     std::vector<std::weak_ptr<OffscreenSurface>> endpoints;
     bool stopping = false;
@@ -176,6 +223,14 @@ std::unique_ptr<DocumentSnapshot> snapshot_document(const Engine& engine) {
         for (const auto& [name, callbacks] : native.event_callbacks)
             if (!callbacks.empty())
                 names.events.push_back(name);
+        if (native.tag == "details" &&
+            std::find(names.events.begin(), names.events.end(), "toggle") == names.events.end())
+            names.events.push_back("toggle");
+        const auto input_type = native.attributes.find("type");
+        if ((native.tag == "input" || native.tag == "textarea" || native.tag == "select") &&
+            (input_type == native.attributes.end() || input_type->second != "file") &&
+            std::find(names.events.begin(), names.events.end(), "input") == names.events.end())
+            names.events.push_back("input");
         native.click_callbacks.clear();
         native.event_callbacks.clear();
 #if defined(BBLITE_HAS_BROWSER_FILE) && BBLITE_HAS_BROWSER_FILE
@@ -237,14 +292,29 @@ void apply_document(Engine& engine, DocumentSnapshot snapshot,
                 inbox->post(std::move(event));
             });
         for (const auto& name : snapshot.listeners[index].events) {
-            target.event_callbacks[name].push_back(
-                [inbox, element, name](const PlatformMouseEvent& pointer) {
-                    auto event = std::make_unique<WindowEvent>();
-                    event->element = element;
-                    event->type = name;
-                    event->mouse = pointer;
-                    inbox->post(std::move(event));
-                });
+            target.event_callbacks[name].push_back([inbox, &engine, element,
+                                                    name](const PlatformMouseEvent& pointer) {
+                auto event = std::make_unique<WindowEvent>();
+                event->element = element;
+                event->type = name;
+                event->mouse = pointer;
+                if (name == "toggle")
+                    event->open = ui_has_attribute(engine, element, "open");
+                if (name == "input" || name == "change") {
+                    if (ui_get_attribute(engine, element, "type") == "checkbox")
+                        event->checked = ui_get_checked(engine, element);
+                    else if (handle_at(engine.ui_elements, element).tag == "select") {
+                        event->selected_option = UiElementHandle{};
+                        for (const auto option : handle_at(engine.ui_elements, element).children)
+                            if (ui_get_selected(engine, option)) {
+                                event->selected_option = option;
+                                break;
+                            }
+                    } else
+                        event->form_value = ui_get_form_value(engine, element);
+                }
+                inbox->post(std::move(event));
+            });
         }
     }
     ++engine.ui_revision;
@@ -355,6 +425,13 @@ const void* window_document_identity() { return std::addressof(current_document(
 void window_location_reload() {
     current_document().host->reload_requested = true;
     EventLoop::current().close();
+}
+std::string window_location_search(const std::string& initial) {
+    return current_document().host->location->search(initial);
+}
+void window_location_set_search(const std::string& value) {
+    current_document().host->location->navigate(value);
+    window_location_reload();
 }
 js::Promise<js::PromiseVoid> window_clipboard_write(std::string text) {
     auto& doc = current_document();
@@ -548,6 +625,13 @@ int run_window_application(WorkerEntry initialize, EngineOptions options) {
             }
             capture_frame_count = static_cast<std::uint64_t>(frame) + 1;
         }
+        const auto screenshot_checkpoints =
+            window_screenshot_checkpoints(environment_variable("BBLITE_SCREENSHOT_FRAMES"),
+                                          frame_options, capture_frame_count != 0);
+        for (const auto& checkpoint : screenshot_checkpoints) {
+            std::filesystem::remove(detail::utf8_file_path(checkpoint.path));
+            std::filesystem::remove(detail::utf8_file_path(checkpoint.path + ".build-stamp"));
+        }
         if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS))
             throw std::runtime_error(SDL_GetError());
         struct Quit {
@@ -577,10 +661,12 @@ int run_window_application(WorkerEntry initialize, EngineOptions options) {
         if (!presenter)
             throw std::runtime_error("Requested Window GPU backend is unavailable.");
         // Reload replaces realm-owned state while keeping the native window and device.
+        const auto location = std::make_shared<WindowLocation>();
         for (;;) {
             auto services = std::make_shared<WindowServices>(
                 std::shared_ptr<OffscreenDevice>(presenter, &presenter->device()),
                 capture_frame_count);
+            services->location = location;
             Engine display;
             display.options = options;
             dom_input(display).canvas_background = false;
@@ -621,6 +707,14 @@ int run_window_application(WorkerEntry initialize, EngineOptions options) {
                         auto& engine = window_document_engine();
                         if (event->element.value >= engine.ui_elements.size())
                             return;
+                        if (event->checked)
+                            ui_set_checked(engine, event->element, *event->checked);
+                        if (event->open)
+                            ui_set_boolean_attribute(engine, event->element, "open", *event->open);
+                        if (event->selected_option)
+                            ui_set_selection(engine, event->element, *event->selected_option);
+                        if (event->form_value)
+                            ui_set_form_value(engine, event->element, *event->form_value);
                         const auto& record = handle_at(engine.ui_elements, event->element);
                         if (event->type == "click") {
                             const auto callbacks = record.click_callbacks;
@@ -908,8 +1002,13 @@ int run_window_application(WorkerEntry initialize, EngineOptions options) {
                                           return canvas.frame.sequence == capture_frame_count;
                                       })
                         : presented == std::max(0L, frame_options.screenshot_frame);
-                const bool capture =
-                    canvases_ready && !frame_options.screenshot_path.empty() && capture_ready;
+                const auto checkpoint = std::find_if(
+                    screenshot_checkpoints.begin(), screenshot_checkpoints.end(),
+                    [presented](const auto& value) { return value.frame == presented; });
+                const bool checkpoint_ready = checkpoint != screenshot_checkpoints.end();
+                const bool capture = !pending_input && canvases_ready &&
+                                     !frame_options.screenshot_path.empty() &&
+                                     (capture_ready || checkpoint_ready);
                 bool did_present = false;
                 if (presenter->can_present()) {
                     const auto& recorded = record_ui_rml_frame(*ui, width, height);
@@ -931,13 +1030,25 @@ int run_window_application(WorkerEntry initialize, EngineOptions options) {
                         for (auto& draw : canvas_capture->draws)
                             draw.layer = 0;
                     }
-                    did_present =
-                        presenter->present(frames, canvas_capture ? *canvas_capture : recorded,
-                                           capture ? frame_options.screenshot_path : std::string{});
+                    std::string screenshot_path;
+                    if (capture)
+                        screenshot_path =
+                            checkpoint_ready ? checkpoint->path : frame_options.screenshot_path;
+                    did_present = presenter->present(
+                        frames, canvas_capture ? *canvas_capture : recorded, screenshot_path);
+                    if (did_present && capture && checkpoint_ready) {
+                        const std::string_view stamp = bblite_build_stamp();
+                        detail::write_file_atomically(
+                            detail::utf8_file_path(checkpoint->path + ".build-stamp"), stamp,
+                            stamp.size(), "Screenshot checkpoint build stamp");
+                    }
                 }
-                if (did_present)
+                // A source input callback may synchronously request layout.
+                // Continue serving/presenting that layout above, but finish
+                // its dispatch and default action before the next repaint tick.
+                if (did_present && !pending_input)
                     services->animation_frames->tick(EventLoop::Clock::now());
-                if (did_present && canvases_ready) {
+                if (did_present && canvases_ready && !pending_input) {
                     input_replay.dispatch(presented, window.get(), display);
                     if (trace_window && presented % runtime_trace_interval() == 0) {
                         std::ostringstream trace;
@@ -967,6 +1078,7 @@ int run_window_application(WorkerEntry initialize, EngineOptions options) {
                 std::rethrow_exception(application_error);
             if (!services->reload_requested)
                 return 0;
+            location->commit_reload();
         }
     } catch (const std::exception& error) {
         std::cerr << "Babylon Lite Window error: " << error.what() << '\n';

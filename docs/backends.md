@@ -26,6 +26,9 @@ backend requests fail.
 Canvas metrics update before callbacks; RAF retains its registration phase and timers drain at frame boundaries.
 `pal_window.hpp` owns the OS window independently of renderer rebuilds.
 
+GPU completion posts native events to the owning realm. Dawn waits for mapping/submission futures
+on a worker thread; SDL waits for submission fences. Promise reactions stay on the realm thread.
+
 ## Compiled binding contract
 
 - SDL binds compiled resources after dead declarations are removed. Sidecars specify stage visibility,
@@ -45,6 +48,7 @@ Canvas metrics update before callbacks; RAF retains its registration phase and t
 - Node geometry retains original attribute/index streams and separate per-view uniforms.
 
 Maintained patches cover SDL descriptor-heap rollover, D3D12 multisampled lines/storage reads,
+opt-in whole-array storage views and barriers,
 Metal buffer lengths/fence queries and Dawn Metal primitive-index capability.
 Dawn disables texture swizzling on iOS Simulator and uses its non-swizzle depth/stencil path.
 Dawn uses SDL's Android native window and selects a supported BGRA8/RGBA8 surface format;

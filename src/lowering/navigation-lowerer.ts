@@ -264,11 +264,11 @@ export class NavigationLowerer {
         // identity transform, so the emitted composition covers both.
         const { declaration: composeLocal } = this.context.functionDeclaration(
             "src/scene/world-matrix-state.ts",
-            "composeTrsLocalMatrix",
+            "composeTrsLocalMatrixIntoBuffer",
         );
         this.context.expectShapeCount(
             composeLocal,
-            "isIdentity ? createIdentityMat4() : composeMat4(position.x, position.y, position.z, rotation.x, rotation.y, rotation.z, rotation.w, scaling.x, scaling.y, scaling.z)",
+            "composeMat4IntoBuffer(local, 0, position.x, position.y, position.z, rotation.x, rotation.y, rotation.z, rotation.w, scaling.x, scaling.y, scaling.z)",
             "the unparented local world matrix",
         );
 

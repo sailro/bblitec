@@ -8,7 +8,9 @@
 #include <RmlUi/Core/Decorator.h>
 #include <RmlUi/Core/Element.h>
 #include <RmlUi/Core/Elements/ElementFormControlInput.h>
+#include <RmlUi/Core/Event.h>
 #include <RmlUi/Core/Geometry.h>
+#include <RmlUi/Core/Input.h>
 #include <RmlUi/Core/MeshUtilities.h>
 #include <RmlUi/Core/RenderManager.h>
 #include <algorithm>
@@ -31,6 +33,21 @@ public:
                      (context ? context->GetDensityIndependentPixelRatio() : 1.f);
         ratio = -1.f;
         return true;
+    }
+
+protected:
+    void ProcessDefaultAction(Rml::Event& event) override {
+        Rml::ElementFormControlInput::ProcessDefaultAction(event);
+        if (IsDisabled() || GetAttribute<Rml::String>("type", "text") != "range" ||
+            event != Rml::EventId::Keydown)
+            return;
+        // RmlUi's slider handles arrow increments, but omits browser endpoint keys.
+        const int key = event.GetParameter<int>("key_identifier", 0);
+        if (key == Rml::Input::KI_HOME || key == Rml::Input::KI_END) {
+            SetValue(key == Rml::Input::KI_HOME ? GetAttribute<Rml::String>("min", "0")
+                                                : GetAttribute<Rml::String>("max", "100"));
+            event.StopPropagation();
+        }
     }
 };
 

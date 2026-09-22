@@ -43,8 +43,8 @@ test("glTF sampler lookup, descriptors and sharing execute the pinned source", (
         ),
         doctoredContext(
             module,
-            "desc.lodMaxClamp === 0",
-            "desc.lodMaxClamp === 1000",
+            "minF === 9728 || minF === 9729",
+            "minF === 9984 || minF === 9985",
         ),
         doctoredContext(
             module,
@@ -52,9 +52,9 @@ test("glTF sampler lookup, descriptors and sharing execute the pinned source", (
             "json.samplers?.[0]",
         ),
         doctoredContext(
-            "src/resource/gpu-pool.ts",
-            'desc.addressModeU ?? "clamp-to-edge"',
-            '"repeat"',
+            "src/resource/texture-sampler-pool.ts",
+            "addressModeU: defaultAddressMode",
+            'addressModeU: "repeat"',
         ),
     ];
     const inputs: { textures?: object[] | null; samplers?: object[] | null }[] =
@@ -118,57 +118,52 @@ test("glTF sampler lookup, descriptors and sharing execute the pinned source", (
             context
                 .functionDeclaration(module, "makeSamplerFor")
                 .declaration.getText(),
-            context
-                .functionDeclaration("src/resource/gpu-pool.ts", "samplerKey")
-                .declaration.getText(),
             `function defaults() { return ${sampler.initializer.arguments[1]!.getText()}; }`,
         ].join("\n");
+        const pooled = createJavaScriptFunction(
+            "exports",
+            `${transpileCommonJs(context.sourceFile("src/resource/texture-sampler-pool.ts").text, "pool.ts")}\nreturn getOrCreateSampler;`,
+        )({}) as (engine: object, descriptor: object, key: string) => object;
+        const getSampler = createJavaScriptFunction(
+            "exports",
+            "getPooledSampler",
+            `${transpileCommonJs(context.functionDeclaration("src/resource/sampler-pool.ts", "getOrCreateSampler").declaration.getText(), "sampler.ts")}\nreturn getOrCreateSampler;`,
+        )({}, pooled) as (engine: object, descriptor: object) => object;
         const js = transpileCommonJs(source, module);
         const execute = createJavaScriptFunction(
             "exports",
             "getOrCreateSampler",
-            `${js}\nreturn {gltfTexSamplerDesc,makeSamplerFor,samplerKey,defaults};`,
-        )({}, (_engine: object, descriptor: object) => cached(descriptor)) as {
+            `${js}\nreturn {gltfTexSamplerDesc,makeSamplerFor,defaults};`,
+        )({}, getSampler) as {
             gltfTexSamplerDesc(json: object, info: object): object;
             makeSamplerFor(
                 engine: object,
                 json: object,
                 defaultSampler: object,
             ): (info: object | null) => object;
-            samplerKey(descriptor: object): string;
             defaults(): object;
         };
         let serial = 0;
-        let pool = new Map<string, { serial: number; descriptor: object }>();
         const create = (descriptor: object) => ({
             serial: ++serial,
             descriptor,
         });
-        const cached = (descriptor: object) => {
-            const key = execute.samplerKey(descriptor);
-            let sampler = pool.get(key);
-            if (!sampler) {
-                sampler = create(descriptor);
-                pool.set(key, sampler);
-            }
-            return sampler;
-        };
         return inputs.map((input) => {
             serial = 0;
-            pool = new Map();
-            const registered: object[] = [],
-                defaultSampler = cached(execute.defaults());
-            const resolver = execute.makeSamplerFor(
-                {
-                    _device: { createSampler: create },
-                    _deviceLostRecovery: {
-                        _samplerDescriptors: {
-                            set(sampler: object) {
-                                registered.push(sampler);
-                            },
+            const registered: object[] = [];
+            const engine = {
+                _device: { createSampler: create },
+                _deviceLostRecovery: {
+                    _samplerDescriptors: {
+                        set(sampler: object) {
+                            registered.push(sampler);
                         },
                     },
                 },
+            };
+            const defaultSampler = getSampler(engine, execute.defaults());
+            const resolver = execute.makeSamplerFor(
+                engine,
                 input,
                 defaultSampler,
             );

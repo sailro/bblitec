@@ -9,7 +9,7 @@ import {
     lowerOpaqueOrderStamp,
 } from "../src/lowering/renderer-lowerer.js";
 import {
-    extractPackagedStringLiteral,
+    readPinnedRawShader,
     extractPackagedTemplateLiteral,
     readPinnedLibraryModule,
 } from "../src/pinned-shader-composer.js";
@@ -260,10 +260,10 @@ test("translates the pinned multiply writer whole", () => {
 
 test("lifts the cubemap-skybox stages from the packaged pin", () => {
     // The packaged literals the lift reads.
-    const module = readPinnedLibraryModule(
+    const fragmentLiteral = readPinnedRawShader(
         "material/standard/skybox-cubemap.js",
+        "shaders/skybox-cubemap.fragment.wgsl",
     );
-    const fragmentLiteral = extractPackagedStringLiteral(module, "skyFragSrc");
     assert.ok(fragmentLiteral.includes("let e=normalize(b.vPositionLocal);"));
     const shaders = new RendererLowerer(new LoweringContext()).lowerShaders({
         ground: false,
@@ -361,9 +361,15 @@ test("anchors the draw-list rules to the pinned bucket fork", () => {
     // The pinned fork the anchors inside lowerRenderPlan pair with: a
     // failed pairing throws there, so this test both re-states the pin's
     // side and checks the emitted rules still carry the transcription.
-    const renderTask = sharedStore.getSource("src/frame-graph/render-task.ts");
-    assert.ok(renderTask.includes("if (r.isTransparent || r._transmissive) {"));
-    assert.ok(renderTask.includes("} else if (r._direct) {"));
+    const renderTask = sharedStore.getSource(
+        "src/frame-graph/render-task-base.ts",
+    );
+    assert.ok(
+        renderTask.includes(
+            "if (renderable.isTransparent || renderable._transmissive) {",
+        ),
+    );
+    assert.ok(renderTask.includes("} else if (renderable._direct) {"));
     assert.ok(renderTask.includes("opaque.sort(compareBindingOrder);"));
     const plan = new RendererLowerer(new LoweringContext()).lowerRenderPlan({});
     // append_draw transcribes the pinned transparent predicate.
@@ -538,7 +544,7 @@ test("adopts the pinned transparent sort center: the draw world's translation", 
     );
     assert.match(
         plan.source,
-        /transform_position\(\s*outer_transform_matrix\(mesh\.outer_position, mesh\.outer_rotation\),\s*local_center\)/,
+        /transform_position\(\s*outer_transform_matrix\(mesh\),\s*local_center\)/,
     );
     assert.match(
         plan.source,
@@ -555,7 +561,9 @@ test("adopts the pinned transparent sort center: the draw world's translation", 
 });
 
 test("anchors the light-slot packing to the pinned lights-ubo module", () => {
-    const lightsUbo = sharedStore.getSource("src/render/lights-ubo.ts");
+    const lightsUbo =
+        sharedStore.getSource("src/render/scene-lights-ubo.ts") +
+        sharedStore.getSource("src/render/mesh-light-selection.ts");
     // The pinned loops the PALs walk against the emitted
     // light_affects_mesh: both advance their slot cursor only for
     // _writeLightUbo lights, which keeps a mesh's packed indices aligned

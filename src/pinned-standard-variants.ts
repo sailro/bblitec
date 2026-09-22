@@ -87,7 +87,7 @@ import {
 import {
     type MaterialPluginManifest,
     type MaterialPluginSamplerManifest,
-    pinnedPluginBakeShift,
+    pinnedPluginPresenceBit,
     standardPluginFeatureBits,
 } from "./pinned-material-plugins.js";
 import { plainUboSpec } from "./pinned-material-arms.js";
@@ -95,7 +95,8 @@ import { refuseGeneration } from "./generation-refusal.js";
 import { pinnedBabylonMaterials } from "./pinned-babylon-materials.js";
 
 /** The pinned modules the contracts below are keyed on when they refuse. */
-const STANDARD_MATERIAL_MODULE = "src/material/standard/standard-material.ts";
+const STANDARD_MATERIAL_MODULE =
+    "src/material/standard/standard-material-features.ts";
 const SKELETON_FRAGMENT_MODULE = "src/shader/fragments/skeleton-fragment.ts";
 
 /** The material fields the pin's Standard feature derivation reads. */
@@ -195,7 +196,11 @@ interface StdExtDescriptor {
     _id: string;
     _feature: number;
     _meshFeatures?: (meshFeatures: number, material?: unknown) => number;
-    _frag: (features: number, meshFeatures: number) => unknown;
+    _frag: (
+        features: number,
+        meshFeatures: number,
+        material?: unknown,
+    ) => unknown;
 }
 
 /**
@@ -342,7 +347,7 @@ export async function pinnedStandardMaterialFeatures(
         _computeStandardMaterialFeatures: (
             material: PinnedStandardMaterialInput,
         ) => number;
-    }>("material/standard/standard-material.js");
+    }>("material/standard/standard-material-features.js");
     // The plugin bridge's index is a *bake*, not a detection: Standard's
     // feature computation is not extension-extensible, so `registerStdPlugins`
     // writes `_computeStandardMaterialFeatures(mat) | (idx << SHIFT)` into
@@ -374,7 +379,8 @@ export async function pinnedStandardRenderableFeatures(
     const features = await pinnedStandardMaterialFeatures(material);
     let word = features;
     for (const ext of await standardExtensions(skeleton)) {
-        word |= ext._meshFeatures?.(meshFeatures, material) ?? 0;
+        word |=
+            ext._meshFeatures?.(meshFeatures, pinnedOptInSlots(material)) ?? 0;
     }
     return word;
 }
@@ -391,7 +397,10 @@ export async function pinnedStandardRenderableFeatures(
 function pinnedOptInSlots(
     material: PinnedStandardMaterialInput,
 ): Record<string, unknown> {
-    const translated: Record<string, unknown> = { ...material };
+    const translated: Record<string, unknown> = {
+        ...material,
+        _pi: material.pluginIndex ?? 0,
+    };
     // The slots the pin reads under a leading underscore are exactly the ones
     // it moved behind a setter, and the record-source table already names
     // them that way. Deriving the list from it means the two cannot drift --
@@ -565,9 +574,14 @@ export async function composePinnedStandardVariant(
         // 1.23 hands the material to `_meshFeatures` as well: the UV
         // transform reads `material._hasUvTx` from it. Passing what the pin
         // passes keeps a hook that reads it from seeing `undefined`.
-        features |= ext._meshFeatures?.(meshFeatures, material) ?? 0;
+        features |=
+            ext._meshFeatures?.(meshFeatures, pinnedOptInSlots(material)) ?? 0;
         if (features & ext._feature) {
-            const fragment = ext._frag(features, meshFeatures);
+            const fragment = ext._frag(
+                features,
+                meshFeatures,
+                pinnedOptInSlots(material),
+            );
             if (fragment) fragments.push(fragment);
         }
     }
@@ -586,13 +600,31 @@ export async function composePinnedStandardVariant(
         const shadow = await importPinnedModule<{
             createStdShadowFragment: (
                 slots: readonly ShadowLightSlot[],
+                factory?: (
+                    id: string,
+                    slots: readonly ShadowLightSlot[],
+                ) => unknown,
             ) => unknown;
         }>("material/standard/fragments/std-shadow-fragment.js");
         // Before `createStdShadowFragment` asserts a `"csm"` slot's factory
         // is non-null; the trigger and why it is the pin's own are stated
         // once, at `reachCsmReceiverFactories`.
         await reachCsmReceiverFactories(shadowLights);
-        fragments.push(shadow.createStdShadowFragment(shadowLights));
+        const builder = shadowLights.some((slot) => slot.shadowType === "csm")
+            ? undefined
+            : await importPinnedModule<{
+                  loadShadowFragmentFactory(
+                      slots: readonly ShadowLightSlot[],
+                  ): Promise<
+                      (id: string, slots: readonly ShadowLightSlot[]) => unknown
+                  >;
+              }>("shader/fragments/shadow-fragment-builder.js");
+        fragments.push(
+            shadow.createStdShadowFragment(
+                shadowLights,
+                await builder?.loadShadowFragmentFactory(shadowLights),
+            ),
+        );
     }
     // `rebuildSingle` builds the shared thin-instance fragment at the
     // pool's own colour state, then -- for a coloured pool -- replaces its
@@ -752,6 +784,8 @@ export function pinnedStandardVariantManifestEntry(
  * same correspondences, so the two agree bit for bit.
  */
 export interface PinnedStandardSelector {
+    /** The pin keeps this signature outside the feature word. */
+    pluginIndex?: number;
     /** The pin's feature word as the native derivation computes it. */
     features: number;
     /** The `MSH_*` bits for the mesh half of the key. */
@@ -943,7 +977,7 @@ function lowerStandardFeatureDerivation(
     uvTransform: boolean,
     plugins: boolean,
 ): string {
-    const modulePath = "src/material/standard/standard-material.ts";
+    const modulePath = "src/material/standard/standard-material-features.ts";
     const { file, declaration } = context.functionDeclaration(
         modulePath,
         "_computeStandardMaterialFeatures",
@@ -997,7 +1031,10 @@ function lowerStandardFeatureDerivation(
         aliases: new Map(),
         accumulators: new Set(),
     });
-    let scope = newScope("m");
+    const parameter = declaration.parameters[0]?.name;
+    if (!parameter || !ts.isIdentifier(parameter))
+        return fail(declaration, "expected named material parameter");
+    let scope = newScope(parameter.text);
     const propertyName = (expression: ts.Expression): string | undefined => {
         const unwrapped = context.unwrapExpression(expression);
         if (ts.isIdentifier(unwrapped) && scope.aliases.has(unwrapped.text)) {
@@ -1253,24 +1290,12 @@ function lowerStandardFeatureDerivation(
         scope = previousScope;
         flagModule = previousModule;
     };
-    /**
-     * The plugin bridge's own pre-bake, as the line it adds.
-     *
-     * The pin's own bake is `_computeStandardMaterialFeatures(mat) | (idx
-     * << PLUGIN_INDEX_SHIFT)`, and `pinnedPluginBakeShift` asserts that
-     * expression's shape before handing back the shift — so this is the
-     * pin's line with the record's field in place of its `idx`, no mask
-     * included, because the pin masks on read-back rather than on the bake.
-     * `registerPluginBridges` checks the list count against
-     * `PLUGIN_INDEX_MASK` once, which is where an overflowing index would
-     * matter rather than in every draw.
-     */
     const lowerPluginIndex = (indent: string): void => {
         lines.push(
-            `${indent}// std-plugin-bridge.ts registerStdPlugins`,
-            `${indent}features |= ` +
-                `static_cast<std::uint32_t>(material.plugin_signature_index)` +
-                ` << ${pinnedPluginBakeShift(context)}u;`,
+            indent +
+                "if (material.plugin_signature_index != 0) features |= " +
+                pinnedPluginPresenceBit(context) +
+                "u;",
         );
     };
     const lowerStatements = (
@@ -1680,11 +1705,12 @@ export async function composeSceneStandardVariants(
     // composition depends only on the derived word (and the options), so the
     // first input with a value stands for every material sharing it, and the
     // Map's own key order is the value list the rest of this function walks.
-    const representative = new Map<number, PinnedStandardMaterialInput>();
+    const representative = new Map<string, PinnedStandardMaterialInput>();
     for (const material of materialInputs) {
         const features = await pinnedStandardRenderableFeatures(material, 0);
-        if (!representative.has(features)) {
-            representative.set(features, material);
+        const identity = `${features}:${material.pluginIndex ?? 0}`;
+        if (!representative.has(identity)) {
+            representative.set(identity, material);
         }
     }
     const featureValues = [...representative.keys()];
@@ -1741,7 +1767,7 @@ export async function composeSceneStandardVariants(
         options: PinnedStandardComposeOptions,
         geometryTask?: number,
     ): Promise<void> => {
-        const key = `${selectorFeatures}:${meshFeatures}:${
+        const key = `${selectorFeatures}:${material.pluginIndex ?? 0}:${meshFeatures}:${
             geometryTask ?? "-"
         }`;
         if (seenKeys.has(key)) return;
@@ -1775,6 +1801,9 @@ export async function composeSceneStandardVariants(
         }
         selectors.push({
             features: selectorFeatures,
+            ...(material.pluginIndex !== undefined
+                ? { pluginIndex: material.pluginIndex }
+                : {}),
             meshFeatures,
             ...(geometryTask !== undefined ? { geometryTask } : {}),
             variant: index,
@@ -2265,7 +2294,7 @@ inline bool standard_variant_skeleton(const StandardVariantEntry& variant) {
             `${
                 selector.geometryTask ??
                 "std::numeric_limits<std::size_t>::max()"
-            }, ${selector.variant}},`,
+            }, ${selector.variant}, ${selector.pluginIndex ?? 0}u},`,
     );
     const meshRows = options.renderableMeshFeatures.map(
         (bits) => `    ${bits},`,
@@ -2370,7 +2399,7 @@ inline constexpr std::uint32_t standard_opacity_texture_flag =
 inline constexpr std::uint32_t standard_double_sided_flag =
     ${flag("DOUBLE_SIDED")}u;
 
-// src/material/standard/standard-material.ts
+// src/material/standard/standard-material-features.ts
 // _computeStandardMaterialFeatures, lowered from its own AST over the
 // record fields the generated loader and compiled setters fill. The
 // generation side executes the same pinned function over the same
@@ -2469,6 +2498,7 @@ struct StandardVariantSelector {
      *  colour and depth-only passes. */
     std::size_t geometry_task;
     std::size_t variant;
+    std::uint32_t plugin_index;
 };
 
 ${cpp.table("StandardVariantSelector", "standard_variant_selectors", selectorRows.length, `${selectorRows.join("\n")}`)}
@@ -2492,13 +2522,15 @@ ${cpp.constant(
 inline std::size_t standard_variant_for(
     std::uint32_t features,
     std::uint32_t mesh_features,
-    std::size_t geometry_task = std::numeric_limits<std::size_t>::max()) {
+    std::size_t geometry_task = std::numeric_limits<std::size_t>::max(),
+    std::uint32_t plugin_index = 0) {
     for (const StandardVariantSelector& selector :
          standard_variant_selectors) {
         if (
             selector.features == features &&
             selector.mesh_features == mesh_features &&
-            selector.geometry_task == geometry_task) {
+            selector.geometry_task == geometry_task &&
+            selector.plugin_index == plugin_index) {
             return selector.variant;
         }
     }

@@ -14,6 +14,9 @@
 #include <bblite/pal.hpp>
 #include <bblite/pal_image.hpp>
 #include <bblite/runtime.hpp>
+#if defined(BBLITE_COMPUTE_FRAME_GRAPH) && BBLITE_COMPUTE_FRAME_GRAPH
+#include <bblite/pal_compute_frame_graph.hpp>
+#endif
 #if BBLITE_GPU_INSTANCE_COLORS
 #include <bblite/js_data.hpp>
 #endif
@@ -642,13 +645,9 @@ namespace bbl::pal {
 #if !defined(BBLITE_HAS_PBR_RENDERER) || BBLITE_HAS_PBR_RENDERER
 inline std::array<float, 16> outer_draw_world(const std::array<float, 16>& world,
                                               const MeshRecord& record) {
-    if (record.outer_position.x == 0.0f && record.outer_position.y == 0.0f &&
-        record.outer_position.z == 0.0f && record.outer_rotation.x == 0.0f &&
-        record.outer_rotation.y == 0.0f && record.outer_rotation.z == 0.0f) {
+    if (upstream::outer_transform_is_identity(record))
         return world;
-    }
-    return upstream::matrix_product(
-        upstream::outer_transform_matrix(record.outer_position, record.outer_rotation), world);
+    return upstream::matrix_product(upstream::outer_transform_matrix(record), world);
 }
 
 /**
@@ -2953,6 +2952,8 @@ struct ShadowRefreshState {
     std::vector<upstream::ShadowReceiverBlock> blocks;
     /** Whether `blocks[handle]` holds an upload yet. */
     std::vector<bool> uploaded;
+    /** The enabled value last synchronized into this backend's receiver allocation. */
+    std::vector<upstream::ShadowEnabledUploadState> enabled_uploads;
     /**
      * The pinned render gate's `_last*` lanes, by handle — the state each
      * `render*ShadowMap` hook keeps on its task between frames, plus the
@@ -3003,6 +3004,7 @@ inline void refresh_shadow_generators(const Scene& scene, Engine& engine,
     if (refresh.blocks.size() < engine.shadow_generators.size()) {
         refresh.blocks.resize(engine.shadow_generators.size());
         refresh.uploaded.resize(engine.shadow_generators.size(), false);
+        refresh.enabled_uploads.resize(engine.shadow_generators.size());
         refresh.gates.resize(engine.shadow_generators.size());
     }
     // The pin's own floating-origin offset for a shadow map:
@@ -3034,6 +3036,66 @@ inline void refresh_shadow_generators(const Scene& scene, Engine& engine,
             ShadowGeneratorRecord& generator = handle_at(engine.shadow_generators, handle);
             const LightRecord& light_record = handle_at(engine.lights, light);
             upstream::ShadowRefreshGate& gate = handle_at(refresh.gates, handle);
+            const auto notify_receivers = [&](const upstream::ShadowReceiverBlock& block) {
+#if BBLITE_SHADOWS_CSM
+                const auto receiver_callbacks = generator.csm_receiver_callbacks;
+                if (generator.filter == ShadowFilter::csm_directional && receiver_callbacks &&
+                    !receiver_callbacks->empty()) {
+                    js::F32Array values(block.size / sizeof(float));
+                    if (!values.empty())
+                        std::memcpy(values.data(), block.bytes.data(), block.size);
+                    receiver_callbacks->dispatch(values);
+                }
+#else
+                (void)block;
+#endif
+            };
+            // A backend refresh owns each receiver allocation and its source upload state.
+            bool shadow_enabled = true;
+            if (generator.runtime_enabled) {
+                upstream::ShadowReceiverBlock block =
+                    handle_at(refresh.uploaded, handle)
+                        ? handle_at(refresh.blocks, handle)
+                        : upstream::shadow_receiver_block(generator);
+#if BBLITE_SHADOWS_CSM
+                if (generator.filter == ShadowFilter::csm_directional &&
+                    !handle_at(refresh.uploaded, handle))
+                    block.bytes.fill(std::byte{});
+#endif
+                // Shadow receiver slots remain allocated for this refresh state's lifetime.
+                const std::uint64_t receiver_identity =
+                    static_cast<std::uint64_t>(handle.value) + 1;
+                shadow_enabled = upstream::synchronize_shadow_enabled(
+                    generator, handle_at(refresh.enabled_uploads, handle), receiver_identity,
+                    [&]() -> std::optional<js::F32Array> {
+#if BBLITE_SHADOWS_CSM
+                        js::F32Array values(block.size / sizeof(float));
+                        if (!values.empty())
+                            std::memcpy(values.data(), block.bytes.data(), block.size);
+                        return values;
+#else
+                        return std::nullopt;
+#endif
+                    },
+                    [&]() -> std::shared_ptr<PlatformEventListeners<void(const js::F32Array&)>> {
+#if BBLITE_SHADOWS_CSM
+                        return generator.csm_receiver_callbacks;
+#else
+                        return {};
+#endif
+                    },
+                    [&](std::uint64_t, double byte_offset, const auto& data) {
+                        const auto offset = static_cast<std::size_t>(byte_offset);
+                        const auto bytes = data.size() * sizeof(float);
+                        if (offset > block.size || bytes > block.size - offset)
+                            throw std::runtime_error(
+                                "Shadow enabled receiver upload exceeds its block.");
+                        std::memcpy(block.bytes.data() + offset, data.data(), bytes);
+                        visit(generator, handle, slot, block, true);
+                        handle_at(refresh.blocks, handle) = block;
+                        handle_at(refresh.uploaded, handle) = true;
+                    });
+            }
             const upstream::CsmCameraKey* csm_camera = nullptr;
 #if BBLITE_SHADOWS_CSM
             const double aspect = csm_camera_aspect;
@@ -3062,8 +3124,9 @@ inline void refresh_shadow_generators(const Scene& scene, Engine& engine,
             // below — keep their last-render values. The verdict lands on
             // the gate, where each backend's task loop reads it to skip
             // the caster pass itself.
-            const bool due = upstream::shadow_refresh_due(engine, generator, light_record, eye,
-                                                          csm_camera, gate);
+            const bool due =
+                shadow_enabled && upstream::shadow_refresh_due(engine, generator, light_record, eye,
+                                                               csm_camera, gate);
             gate.due = due;
             if (due) {
                 if (generator.filter == ShadowFilter::pcf_spot) {
@@ -3101,20 +3164,7 @@ inline void refresh_shadow_generators(const Scene& scene, Engine& engine,
                 return;
             }
             const upstream::ShadowReceiverBlock block = upstream::shadow_receiver_block(generator);
-#if BBLITE_SHADOWS_CSM
-            const auto receiver_callbacks = generator.csm_receiver_callbacks;
-            if (generator.filter == ShadowFilter::csm_directional && receiver_callbacks &&
-                !receiver_callbacks->empty()) {
-                js::F32Array values(block.size / sizeof(float));
-                if (!values.empty()) {
-                    std::memcpy(values.data(), block.bytes.data(), block.size);
-                }
-                // getCsmReceiverData subscribers observe the exact block
-                // produced by the pin's packer on every refresh, before the
-                // backend consumes resources updated by their callbacks.
-                receiver_callbacks->dispatch(values);
-            }
-#endif
+            notify_receivers(block);
             const bool moved =
                 !handle_at(refresh.uploaded, handle) || block != handle_at(refresh.blocks, handle);
             handle_at(refresh.blocks, handle) = block;
@@ -3277,20 +3327,25 @@ inline std::vector<std::uint8_t> pinned_lights_block(const Scene& scene, const E
 template <typename Block>
 inline void pinned_mesh_light_selection(const Scene& scene, const Engine& engine,
                                         std::uint32_t mesh_index, Block& block) {
-    std::uint32_t count = 0;
-    std::uint32_t light_index = 0;
-    for (const LightHandle handle : scene.lights) {
-        if (light_index >= upstream::pinned_max_lights)
-            break;
-        if (handle.value >= engine.lights.size())
-            continue;
-        if (upstream::light_affects_mesh(handle_at(engine.lights, handle), mesh_index)) {
-            block.li[count / 4][count % 4] = light_index;
-            ++count;
+    if constexpr (requires {
+                      block.li;
+                      block.lc;
+                  }) {
+        std::uint32_t count = 0;
+        std::uint32_t light_index = 0;
+        for (const LightHandle handle : scene.lights) {
+            if (light_index >= upstream::pinned_max_lights)
+                break;
+            if (handle.value >= engine.lights.size())
+                continue;
+            if (upstream::light_affects_mesh(handle_at(engine.lights, handle), mesh_index)) {
+                block.li[count / 4][count % 4] = light_index;
+                ++count;
+            }
+            ++light_index;
         }
-        ++light_index;
+        block.lc = count;
     }
-    block.lc = count;
 }
 
 #if BBLITE_PINNED_MATERIAL_VARIANTS
@@ -3541,16 +3596,11 @@ inline PinnedVariantKey pinned_variant_key(const Scene& scene, const Engine& eng
         }
         const std::size_t receive_shadows =
             static_cast<std::size_t>(upstream::pinned_msh_receive_shadows);
-        if (record.receives_shadows) {
+        if (upstream::pinned_material_receives_shadows(
+                key.material_view != 0u, record.receives_shadows,
+                upstream::pinned_scene_has_shadows(engine, scene))) {
             key.mesh_features |= receive_shadows;
         } else {
-            key.mesh_features &= ~receive_shadows;
-        }
-        // A shadow-caster material view is itself the shadow output. The
-        // pin computes `receiveShadows` as `!shadowOutput && ...`, so its
-        // no-colour/ESM views never splice the receiver fragment even when
-        // their source mesh receives shadows in the main render task.
-        if (key.material_view != 0u) {
             key.mesh_features &= ~receive_shadows;
         }
     }
@@ -3870,6 +3920,7 @@ inline std::string shader_sampler_unmapped(const upstream::ShaderVariantInfo& in
 /** The pair `standard_variant_for` looks a draw up by, or none. */
 struct StandardVariantKey {
     std::uint32_t features = 0;
+    std::uint32_t plugin_index = 0;
     std::size_t mesh_features = 0;
     bool resolved = false;
 };
@@ -3882,7 +3933,7 @@ struct StandardVariantKey {
  * would print something subtly different -- the no-color pass bit and the
  * thin-instance and morph mesh bits are ORed on here, after the raw reads.
  */
-inline StandardVariantKey standard_variant_key(const Engine& engine,
+inline StandardVariantKey standard_variant_key(const Scene& scene, const Engine& engine,
                                                const upstream::RenderDrawCommand& draw) {
     StandardVariantKey key;
     if (draw.item.material_kind != upstream::RenderMaterialKind::standard ||
@@ -3891,6 +3942,7 @@ inline StandardVariantKey standard_variant_key(const Engine& engine,
     }
     const MaterialRecord& material = handle_at(engine.materials, draw.item.material);
     key.features = upstream::standard_material_features(material);
+    key.plugin_index = material.plugin_signature_index;
     if (material.no_color) {
         key.features |= upstream::standard_no_color_output_flag;
     }
@@ -3927,7 +3979,13 @@ inline StandardVariantKey standard_variant_key(const Engine& engine,
         }
         const std::size_t receive_shadows =
             static_cast<std::size_t>(upstream::pinned_msh_receive_shadows);
-        if (record.receives_shadows) {
+        if (upstream::pinned_material_receives_shadows(
+                material.no_color
+#if BBLITE_SHADOWS_ESM
+                    || material.esm_shadow
+#endif
+                ,
+                record.receives_shadows, upstream::pinned_scene_has_shadows(engine, scene))) {
             key.mesh_features |= receive_shadows;
         } else {
             key.mesh_features &= ~receive_shadows;
@@ -3973,9 +4031,9 @@ inline StandardVariantKey standard_variant_key(const Engine& engine,
  * disagree, which is what an upstream feature-derivation change looks like
  * from here.
  */
-inline std::string standard_variant_request(const Engine& engine,
+inline std::string standard_variant_request(const Scene& scene, const Engine& engine,
                                             const upstream::RenderDrawCommand& draw) {
-    const StandardVariantKey key = standard_variant_key(engine, draw);
+    const StandardVariantKey key = standard_variant_key(scene, engine, draw);
     if (!key.resolved) {
         if (draw.item.material.value >= engine.materials.size()) {
             return "no key: material handle " + std::to_string(draw.item.material.value) +
@@ -4008,15 +4066,15 @@ standard_variant_for_draw(const Scene& scene, const Engine& engine,
                           // Filled with the derived key when the caller passes one, so the draw
                           // can consume `key.features` instead of re-deriving it.
                           StandardVariantKey* key_out = nullptr) {
-    (void)scene;
-    const StandardVariantKey key = standard_variant_key(engine, draw);
+    const StandardVariantKey key = standard_variant_key(scene, engine, draw);
     if (key_out)
         *key_out = key;
     if (!key.resolved) {
         return npos;
     }
-    return upstream::standard_variant_for(
-        key.features, static_cast<std::uint32_t>(key.mesh_features), geometry_task);
+    return upstream::standard_variant_for(key.features,
+                                          static_cast<std::uint32_t>(key.mesh_features),
+                                          geometry_task, key.plugin_index);
 }
 
 /**
@@ -4286,8 +4344,9 @@ inline std::vector<std::uint16_t> decode_rgbd(const TextureData& texture_data, i
 
 inline bool environment_cube_present(const EnvironmentState& environment) {
     return environment.specular_width != 0 && environment.specular_mip_count != 0 &&
-           environment.specular_faces.size() >=
-               static_cast<std::size_t>(environment.specular_mip_count) * 6;
+           (environment.specular_gpu ||
+            environment.specular_faces.size() >=
+                static_cast<std::size_t>(environment.specular_mip_count) * 6);
 }
 
 /**
@@ -4900,6 +4959,8 @@ private:
  */
 inline DecodedImage decode_uploadable_image(const TextureData& texture_data,
                                             const std::array<std::uint8_t, 4>& fallback) {
+    if (texture_data.gpu_source || texture_data.render_source)
+        throw std::runtime_error("GPU-backed texture requires a live sampled-resource binding.");
     DecodedImage image;
     if (texture_data.bytes.empty()) {
         image.width = image.height = 1;
@@ -5062,6 +5123,11 @@ struct ScaledExtents {
 inline ScaledExtents scaled_target_extents(const RenderTargetRecord& record,
                                            std::uint32_t source_width,
                                            std::uint32_t source_height) {
+    if (record.resolve_surface_size) {
+        const auto size =
+            record.resolve_surface_size(source_width, source_height, record.width_ratio);
+        return {static_cast<std::uint32_t>(size[0]), static_cast<std::uint32_t>(size[1])};
+    }
     if (record.scale_rounding == ScaleRounding::round) {
 #if defined(BBLITE_HAS_SCREEN_SPACE) && BBLITE_HAS_SCREEN_SPACE
         const upstream::ScreenSpaceScaledSize scaled = upstream::screen_space_scaled_size(
@@ -5081,6 +5147,15 @@ template <class Format> struct RenderTargetPlan {
     std::uint32_t width, height;
     Format color_format;
 };
+
+inline void synchronize_render_target_lifecycles(const Engine& engine) {
+    const auto count = engine.render_targets.size();
+    for (std::size_t index = 0; index < count; ++index) {
+        const auto lifecycle = engine.render_targets[index].lifecycle;
+        if (lifecycle)
+            lifecycle->synchronize();
+    }
+}
 
 /** Resolve source-relative sizes and inherited formats before allocating GPU resources. */
 template <class Format, class Convert>

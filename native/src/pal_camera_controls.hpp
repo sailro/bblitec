@@ -129,7 +129,9 @@ inline void handle_camera_pointer_event(const SDL_Event& event, CameraRecord& ca
             return;
         }
         if (camera.kind == CameraKind::free) {
-            if (state.orbiting) {
+            if (camera.configurable_free_pointer && (state.orbiting || state.panning)) {
+                camera.configurable_free_pointer(camera, event.motion.xrel, event.motion.yrel);
+            } else if (state.orbiting) {
                 upstream::apply_free_camera_pointer_rotation(camera, event.motion.xrel,
                                                              event.motion.yrel);
             }
@@ -225,6 +227,19 @@ inline void update_camera(CameraRecord& camera) {
 
     int key_count = 0;
     const bool* keys = SDL_GetKeyboardState(&key_count);
+    if (camera.configurable_free_update) {
+        std::vector<std::string_view> pressed_codes;
+        for (int index = 0; index < key_count; ++index) {
+            if (keys[index])
+                pressed_codes.push_back(keyboard_event_code(static_cast<SDL_Scancode>(index)));
+        }
+        camera.configurable_free_update(
+            camera, nominal_frame_milliseconds, [&pressed_codes](std::string_view code) {
+                return std::find(pressed_codes.begin(), pressed_codes.end(), code) !=
+                       pressed_codes.end();
+            });
+        return;
+    }
     const auto pressed = [keys, key_count](SDL_Scancode scancode) {
         const int index = static_cast<int>(scancode);
         return index >= 0 && index < key_count && keys[index];

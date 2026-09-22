@@ -1,4 +1,5 @@
 import ts from "typescript";
+import { encodePinnedErrorContracts } from "./pinned-error.js";
 import {
     propertyNameText,
     unwrapExpression as unwrapSyntaxWrappers,
@@ -226,6 +227,18 @@ export function numericValue(
                 return left * right;
             case ts.SyntaxKind.SlashToken:
                 return left / right;
+            case ts.SyntaxKind.LessThanLessThanToken:
+                return left << right;
+            case ts.SyntaxKind.GreaterThanGreaterThanToken:
+                return left >> right;
+            case ts.SyntaxKind.GreaterThanGreaterThanGreaterThanToken:
+                return left >>> right;
+            case ts.SyntaxKind.BarToken:
+                return left | right;
+            case ts.SyntaxKind.AmpersandToken:
+                return left & right;
+            case ts.SyntaxKind.CaretToken:
+                return left ^ right;
             default:
                 break;
         }
@@ -584,11 +597,12 @@ export class LoweringContext {
      */
     public dynamicImportExport(
         registryModule: string,
-        returned: ts.ReturnStatement,
+        returned: ts.ReturnStatement | ts.Expression,
     ): { module: string; exportName: string } {
-        let access = returned.expression
-            ? this.unwrapExpression(returned.expression)
-            : undefined;
+        const expression = ts.isReturnStatement(returned)
+            ? returned.expression
+            : returned;
+        let access = expression ? this.unwrapExpression(expression) : undefined;
         if (access && ts.isArrowFunction(access) && !ts.isBlock(access.body)) {
             access = this.unwrapExpression(access.body);
         }
@@ -610,6 +624,7 @@ export class LoweringContext {
             !imported ||
             !ts.isCallExpression(imported) ||
             imported.expression.kind !== ts.SyntaxKind.ImportKeyword ||
+            imported.arguments.length !== 1 ||
             !specifier ||
             !ts.isStringLiteral(specifier)
         ) {
@@ -762,6 +777,17 @@ export class LoweringContext {
         expectedSource: string,
         label: string,
     ): void {
+        if (
+            expectedSource.includes("new Error") &&
+            statements.some((statement) =>
+                this.hasCall(statement, "ThrowLiteError"),
+            )
+        )
+            expectedSource = encodePinnedErrorContracts(
+                this,
+                expectedSource,
+                owner,
+            );
         const expected = ts.createSourceFile(
             "expected-statements.ts",
             expectedSource,
@@ -866,6 +892,15 @@ export class LoweringContext {
         expectedBody: string,
         label: string,
     ): void {
+        if (
+            expectedBody.includes("new Error") &&
+            this.hasCall(declaration, "ThrowLiteError")
+        )
+            expectedBody = encodePinnedErrorContracts(
+                this,
+                expectedBody,
+                declaration,
+            );
         const expectedFile = ts.createSourceFile(
             "body-contract.ts",
             `function expected() ${expectedBody}`,

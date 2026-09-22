@@ -936,6 +936,15 @@ const assetIntrinsicHandlers = new EmissionMap<
     ) => Value | undefined
 >([
     [
+        "setMeshoptBaseUrl",
+        (context, call) =>
+            compileAssetDecoderConfiguration(
+                context,
+                "setMeshoptBaseUrl",
+                call,
+            ),
+    ],
+    [
         "setKtx2DecoderUrl",
         (context, call) =>
             compileAssetDecoderConfiguration(
@@ -983,5 +992,10 @@ const assetIntrinsicHandlers = new EmissionMap<
 
 /** Packaged asset effects can be replayed at each statically reached shared call. */
 export function isAssetCallEffectIntrinsic(name: string): boolean {
-    return assetIntrinsicHandlers.has(name);
+    return (
+        assetIntrinsicHandlers.has(name) &&
+        !["setDracoBaseUrl", "setMeshoptBaseUrl", "setKtx2DecoderUrl"].includes(
+            name,
+        )
+    );
 }

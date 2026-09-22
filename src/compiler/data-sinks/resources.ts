@@ -74,6 +74,9 @@ function expressionHandle(
         if (atlas) return atlas;
     }
     if (value.kind !== dataType.handle) {
+        if (dataType.handle === "texture" && value.kind === "render-texture") {
+            return lowerer.compileKnownValueForSink(value, dataType, unwrapped);
+        }
         lowerer.context.fail(
             unwrapped,
             `Expected a ${dataType.handle} value, received ${value.kind}.`,
@@ -219,6 +222,22 @@ function valueResource(
         value.animationGroupSource === "property"
     ) {
         return value.cpp;
+    }
+    if (
+        dataType.kind === "handle" &&
+        dataType.handle === "texture" &&
+        value.kind === "render-texture"
+    ) {
+        if (
+            value.renderTextureSource !== undefined &&
+            value.renderTextureSource !== "render-target"
+        ) {
+            lowerer.context.fail(
+                node,
+                "Stored render textures require a createRenderTargetTexture owner.",
+            );
+        }
+        return `bbl::StoredTexture{bbl::retained_render_texture(${lowerer.context.requireEngine(value, node)}, ${value.cpp})}`;
     }
     if (dataType.kind === "handle" && value.kind === dataType.handle) {
         if (dataType.handle === "texture") {

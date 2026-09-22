@@ -21,6 +21,7 @@
  *   validation throws.
  */
 import ts from "typescript";
+import { containsPinnedErrorMessage } from "./pinned-error.js";
 import type { LoweredSource, LoweringContext } from "./context.js";
 import { PinnedShaderText } from "./pinned-shader-text.js";
 import { lowerComputeAabb } from "./pinned-compute-aabb.js";
@@ -899,17 +900,11 @@ void update_line_system(
                     node.expression,
                     condition,
                 ) &&
-                this.context.findNodes(
+                containsPinnedErrorMessage(
+                    this.context,
                     node.thenStatement,
-                    (thrown): thrown is ts.Node =>
-                        // The pin writes some of these messages as a
-                        // template, interpolating the component it is
-                        // rejecting, so the head is what carries the text.
-                        (ts.isStringLiteral(thrown) &&
-                            thrown.text.startsWith(message)) ||
-                        (ts.isTemplateExpression(thrown) &&
-                            thrown.head.text.startsWith(message)),
-                ).length > 0,
+                    message,
+                ),
         )[0];
         if (!guard) {
             this.context.contractError(

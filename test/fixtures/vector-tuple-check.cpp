@@ -14,7 +14,7 @@ MaterialHandle create_standard_material(Engine& engine) {
     engine.materials.emplace_back();
     return {index};
 }
-LightHandle create_hemispheric_light(Engine& engine, Vec3 direction, float intensity) {
+LightHandle create_hemispheric_light(Engine& engine, Vec3 direction, double intensity) {
     assert(direction.x == 4 && direction.y == 5 && direction.z == 6 && intensity == 1);
     assert(engine.materials.size() == lights + 1);
     const auto& color = engine.materials.back().diffuse_color;

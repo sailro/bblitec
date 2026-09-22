@@ -127,6 +127,8 @@ export class UpstreamSourceStore {
      */
     private static readonly builtSources = new Map<string, string>();
     private readonly sourceFiles = new Map<string, ts.SourceFile>();
+    private readonly packagedModules = new Map<string, string>();
+    private readonly declarationModules = new Map<string, string[]>();
     private readonly publicExports = new Map<string, PublicExport>();
 
     public constructor(
@@ -195,6 +197,14 @@ export class UpstreamSourceStore {
         return this.sources.has(modulePath.replace(/\\/g, "/"));
     }
 
+    /** The emitted module containing a source, including Vite's shared chunks. */
+    public packagedModulePath(modulePath: string): string {
+        const path = this.packagedModules.get(modulePath);
+        if (!path)
+            throw new Error(`No packaged module contains ${modulePath}.`);
+        return path;
+    }
+
     public getSourceFile(modulePath: string): ts.SourceFile {
         const normalized = modulePath.replace(/\\/g, "/");
         const cached = this.sourceFiles.get(normalized);
@@ -254,13 +264,41 @@ export class UpstreamSourceStore {
                 const path = map.sources?.[index]
                     ? virtualSourcePath(map.sources[index]!)
                     : undefined;
-                if (path && content) this.sources.set(path, content);
+                if (path && content) {
+                    this.sources.set(path, content);
+                    this.packagedModules.set(
+                        path,
+                        relative(libRoot, mapPath.slice(0, -4)).replace(
+                            /\\/g,
+                            "/",
+                        ),
+                    );
+                }
             }
         }
-        this.sources.set(
-            "src/index.ts",
-            readFileSync(join(libRoot, "index.js"), "utf8"),
-        );
+        // Vite 8 publishes the original barrel in its source map. The
+        // bundled barrel aliases imports through minified local names.
+        if (!this.sources.has("src/index.ts")) {
+            this.sources.set(
+                "src/index.ts",
+                readFileSync(join(libRoot, "index.js"), "utf8"),
+            );
+        }
+        // The bundled index has local export aliases. Index declaration
+        // candidates once instead of scanning every source for each export.
+        for (const path of this.listSources()) {
+            if (path === "src/index.ts") continue;
+            for (const match of this.sources
+                .get(path)!
+                .matchAll(
+                    /\bexport\s+(?:(?:async|declare)\s+)?(?:function|class|interface|type|enum|const|let|var)\s+(\w+)/g,
+                )) {
+                const name = match[1]!;
+                const modules = this.declarationModules.get(name) ?? [];
+                modules.push(path);
+                this.declarationModules.set(name, modules);
+            }
+        }
     }
 
     private loadPublicExports(): void {
@@ -269,23 +307,28 @@ export class UpstreamSourceStore {
             if (
                 !ts.isExportDeclaration(statement) ||
                 !statement.exportClause ||
-                !ts.isNamedExports(statement.exportClause) ||
-                !statement.moduleSpecifier ||
-                !ts.isStringLiteral(statement.moduleSpecifier)
+                !ts.isNamedExports(statement.exportClause)
             ) {
                 continue;
             }
             for (const element of statement.exportClause.elements) {
                 const exportedName = element.name.text;
+                const hasModule =
+                    statement.moduleSpecifier &&
+                    ts.isStringLiteral(statement.moduleSpecifier);
                 const modulePath =
-                    this.resolveImport(
-                        "src/index.ts",
-                        statement.moduleSpecifier.text,
-                    ) ?? this.findSourceExport(exportedName);
+                    (hasModule
+                        ? this.resolveImport(
+                              "src/index.ts",
+                              statement.moduleSpecifier.text,
+                          )
+                        : undefined) ?? this.findSourceExport(exportedName);
                 if (!modulePath) continue;
                 this.publicExports.set(exportedName, {
                     exportedName,
-                    importedName: element.propertyName?.text ?? exportedName,
+                    importedName: hasModule
+                        ? (element.propertyName?.text ?? exportedName)
+                        : exportedName,
                     modulePath,
                 });
             }
@@ -293,16 +336,7 @@ export class UpstreamSourceStore {
     }
 
     private findSourceExport(name: string): string | undefined {
-        for (const path of this.listSources()) {
-            if (path === "src/index.ts") {
-                continue;
-            }
-            // A module that never spells the name cannot export it, and
-            // the text test spares the parse this walk would otherwise
-            // pay for most of the package on every store.
-            if (!this.sources.get(path)!.includes(name)) {
-                continue;
-            }
+        for (const path of this.declarationModules.get(name) ?? []) {
             const file = this.getSourceFile(path);
             for (const statement of file.statements) {
                 if (!(

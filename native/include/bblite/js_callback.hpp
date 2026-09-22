@@ -181,6 +181,21 @@ template <typename R, typename... Args>
     return callback.snapshot();
 }
 
+/** Native stored functions already own their lexical receiver. A bound function
+ * has fresh identity and retains the supplied thisArg as a JavaScript bound function does. */
+template <typename R, typename... Args, typename Receiver>
+[[nodiscard]] Callback<R(Args...)> bind_callback(Callback<R(Args...)> target, Receiver receiver) {
+    return make_closure(std::tuple{std::move(target), std::move(receiver)},
+                        [](auto& captures, Args... args) -> R {
+                            return std::get<0>(captures)(std::forward<Args>(args)...);
+                        });
+}
+template <typename R, typename... Args, typename Receiver>
+[[nodiscard]] Callback<R(Args...)> bind_callback(std::function<R(Args...)> target,
+                                                 Receiver receiver) {
+    return bind_callback(Callback<R(Args...)>(std::move(target)), std::move(receiver));
+}
+
 template <typename Function> class NativeInvocation {
 public:
     explicit NativeInvocation(Function function) : function_(function) {}

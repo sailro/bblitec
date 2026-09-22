@@ -11,6 +11,7 @@ import type { GltfGeometryPacker } from "./gltf-mesh-geometry.js";
 export interface GltfLight {
     kind: "point" | "directional" | "spot";
     world: number;
+    direction?: number[];
     node: number | null;
     diffuse: number[];
     specular: number[];
@@ -83,16 +84,23 @@ export function packageGltfLight(
         bumpVersion: typeof light._bumpLightVersion === "function",
     };
     if (light.range !== undefined) result.range = scalar(light.range);
-    if (type === "spot") {
+    if (type !== "point") {
         if (typeof light._writeLightUbo !== "function")
-            throw new Error("Missing glTF spot light writer.");
+            throw new Error("Missing glTF directional light writer.");
         const uniform = new Float32Array(16);
         Reflect.apply(light._writeLightUbo, light, [uniform, 0]);
-        result.spot = {
-            angle: scalar(light.angle),
-            cosine: scalar(uniform[15]),
-            exponent: scalar(light.exponent),
-        };
+        result.direction = Array.from(
+            uniform.subarray(
+                type === "spot" ? 12 : 0,
+                type === "spot" ? 15 : 3,
+            ),
+        );
+        if (type === "spot")
+            result.spot = {
+                angle: scalar(light.angle),
+                cosine: scalar(uniform[15]),
+                exponent: scalar(light.exponent),
+            };
     }
     return result;
 }
@@ -125,6 +133,7 @@ function readGltfLight(
         bumpVersion: light.bumpVersion,
     };
     if (light.range !== undefined) result.range = scalar(light.range);
+    if (result.kind !== "point") result.direction = color(light.direction);
     if (result.kind === "spot") {
         const spot = asObject(light.spot);
         if (!spot) throw new Error("Missing packaged glTF spot light state.");

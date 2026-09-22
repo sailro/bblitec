@@ -1,4 +1,5 @@
 import ts from "typescript";
+import { nativeTextureFormats } from "../native-texture-format.js";
 import {
     POST_PROCESS_EFFECTS,
     postProcessComposite,
@@ -23,6 +24,10 @@ import { pinnedNumericMathCalls } from "./pinned-operators.js";
 import { TaaPostProcessLowerer } from "./taa-post-process-lowerer.js";
 import { SceneUboLowerer } from "./scene-ubo-lowerer.js";
 import { refuseGeneration, type FeatureSites } from "../generation-refusal.js";
+import {
+    compositeScalarAccessors,
+    compositeScalarFunction,
+} from "./post-process-accessors.js";
 
 /** The feature every post-process refusal is keyed on. */
 const POST_PROCESS_FEATURE = "renderer:post-process";
@@ -735,6 +740,7 @@ void update_post_process_uniforms(Engine& engine, TaskHandle handle) {
 }
 
 ${this.compositeFactories()}
+${this.compositeAccessorDefinitions()}
 } // namespace bbl
 `;
     }
@@ -765,7 +771,50 @@ ${this.compositeFactories()}
                     "    PostProcessCompositeInputs inputs);",
             )
             .join("\n\n");
-        return `\nnamespace bbl {\n\n${declarations}\n\n} // namespace bbl\n`;
+        const accessors = this.composites
+            .flatMap((composite, index) =>
+                compositeScalarAccessors(
+                    composite.intrinsic,
+                    composite.scalarAccesses ?? [],
+                    this.context,
+                ).flatMap((accessor) => [
+                    `double ${compositeScalarFunction(index, accessor.property, false)}(const Engine& engine, TaskHandle task);`,
+                    `void ${compositeScalarFunction(index, accessor.property, true)}(Engine& engine, TaskHandle task, double value);`,
+                ]),
+            )
+            .join("\n");
+        return `\nnamespace bbl {\n\n${declarations}\n${accessors}\n\n} // namespace bbl\n`;
+    }
+
+    private compositeAccessorDefinitions(): string {
+        return this.composites
+            .flatMap((composite, index) =>
+                compositeScalarAccessors(
+                    composite.intrinsic,
+                    composite.scalarAccesses ?? [],
+                    this.context,
+                ).map((accessor) => {
+                    const passes = composite.passes.flatMap((pass, slot) =>
+                        pass.intrinsic === accessor.effect ? [slot] : [],
+                    );
+                    if (passes.length !== 1)
+                        refuseGeneration(
+                            POST_PROCESS_FEATURE,
+                            `Composite scalar ${accessor.property} requires one retained inline pass.`,
+                            this.featureSites,
+                        );
+                    const parameter = `engine.frame_tasks.at(task.value).post_process.passes.at(${passes[0]}).params.at(${accessor.slot})`;
+                    return `double ${compositeScalarFunction(index, accessor.property, false)}(const Engine& engine, TaskHandle task) {
+    const double& parameter = ${parameter};
+${accessor.getter}
+}
+void ${compositeScalarFunction(index, accessor.property, true)}(Engine& engine, TaskHandle task, double value) {
+    double& parameter = ${parameter};
+${accessor.setter}
+}`;
+                }),
+            )
+            .join("\n\n");
     }
 
     /**
@@ -1243,15 +1292,7 @@ export function nativeTextureFormat(
     label: string,
     featureSites?: FeatureSites,
 ): string {
-    const native: Readonly<Record<string, string>> = {
-        r8unorm: "TextureFormatClass::r8_unorm",
-        r16float: "TextureFormatClass::r16_float",
-        r32float: "TextureFormatClass::r32_float",
-        rg16float: "TextureFormatClass::rg16_float",
-        rgba8unorm: "TextureFormatClass::rgba8_unorm",
-        rgba16float: "TextureFormatClass::rgba16_float",
-    };
-    const name = native[format];
+    const name = nativeTextureFormats.get(format);
     if (!name) {
         refuseGeneration(
             POST_PROCESS_FEATURE,
@@ -1260,7 +1301,7 @@ export function nativeTextureFormat(
             featureSites,
         );
     }
-    return name;
+    return `TextureFormatClass::${name}`;
 }
 
 /** One pass, by the stage index it deploys at. */

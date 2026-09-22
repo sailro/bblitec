@@ -253,7 +253,7 @@ test("pinned local probes retain distinct cube layers, grid bytes, writer fields
                 projectionSize: [1, -1, 1],
             },
         }),
-        /#249/,
+        /#281/,
     );
     assert.deepEqual(
         await packLocalCubemap(plan),

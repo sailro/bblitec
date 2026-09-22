@@ -27,8 +27,8 @@ function contexts(): LoweringContext[] {
         ),
         doctoredContext(
             module,
-            "is already attached to another AnimationManager",
-            "belongs to a different manager",
+            "ThrowLiteError(0, group.name)",
+            "ThrowLiteError(9999, group.name)",
         ),
     ];
 }
@@ -45,12 +45,20 @@ function sourceResult(context: LoweringContext): unknown {
         "createAnimationTask",
         "addAnimationTask",
         "ANIMATION_GROUP_TASK_CATEGORY",
+        "ThrowLiteError",
         transpileCommonJs(body, module) + "\nreturn addAnimationGroup;",
     )(
         {},
         () => ({}),
         () => {},
         "animation-group",
+        createJavaScriptFunction(
+            "exports",
+            transpileCommonJs(
+                context.store.getSource("src/lite-error.ts"),
+                "src/lite-error.ts",
+            ) + "\nreturn ThrowLiteError;",
+        )({}),
     ) as (manager: Manager, group: Group) => void;
     const managers: Manager[] = [
         { _animationGroups: [] },

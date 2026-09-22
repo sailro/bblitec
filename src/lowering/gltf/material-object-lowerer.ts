@@ -514,6 +514,20 @@ export function lowerGltfMaterialObjectFunction(
                 );
                 if (
                     ts.isBinaryExpression(expression) &&
+                    ts.isIdentifier(expression.left) &&
+                    expression.operatorToken.kind ===
+                        ts.SyntaxKind.PlusEqualsToken
+                ) {
+                    const target = lowerer.expression(expression.left);
+                    const sum = ts.factory.createBinaryExpression(
+                        expression.left,
+                        ts.SyntaxKind.PlusToken,
+                        expression.right,
+                    );
+                    return [`${indent}${target} = ${lowerer.expression(sum)};`];
+                }
+                if (
+                    ts.isBinaryExpression(expression) &&
                     expression.operatorToken.kind === ts.SyntaxKind.EqualsToken
                 ) {
                     const target = member(expression.left, lowerer);

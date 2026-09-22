@@ -559,14 +559,19 @@ export class PlatformCalls {
             const event = this.context.compileStringLiteral(
                 argumentAt(call, 0),
             );
+            const fileChange = event === "change" && uiElement.uiFileInput;
             if (event === "change") {
-                if (uiElement.uiTag !== "input" || !uiElement.uiFileInput) {
+                if (
+                    !["input", "textarea", "select"].includes(
+                        uiElement.uiTag ?? "",
+                    )
+                ) {
                     this.context.fail(
                         argumentAt(call, 0),
-                        "The native 'change' event is supported only on a retained <input type=\"file\">.",
+                        "The native 'change' event requires a retained form control.",
                     );
                 }
-                this.context.reachFeature("browser:file", call);
+                if (fileChange) this.context.reachFeature("browser:file", call);
             }
             const mappedEvent =
                 event === "pointerdown"
@@ -613,13 +618,13 @@ export class PlatformCalls {
             };
             const lambda = this.context.compilePlatformCallback(
                 callback,
-                event === "click" || event === "change"
+                event === "click" || fileChange
                     ? undefined
                     : {
                           cppType: "const bbl::PlatformMouseEvent&",
                           name: parameter,
                       },
-                event === "click" || event === "change" ? [] : [pointerValue],
+                event === "click" || fileChange ? [] : [pointerValue],
                 undefined,
                 true,
                 false,
@@ -627,14 +632,14 @@ export class PlatformCalls {
             const registration =
                 event === "click"
                     ? "ui_on_click"
-                    : event === "change"
+                    : fileChange
                       ? "ui_on_file_change"
                       : "ui_on_event";
             this.context.emit(
                 `bbl::${registration}(` +
                     `${engine}, ${uiElement.cpp}, ` +
                     `${
-                        event === "click" || event === "change"
+                        event === "click" || fileChange
                             ? ""
                             : `${this.context.cppString(mappedEvent)}, `
                     }` +
@@ -928,7 +933,11 @@ export class PlatformCalls {
                 id !== undefined
                     ? this.ui.nativeHostUiTags().get(id)
                     : undefined;
-            if (!tag)
+            const optionalReceiver =
+                ts.isPropertyAccessExpression(call.parent) &&
+                call.parent.expression === call &&
+                !!call.parent.questionDotToken;
+            if (!tag || optionalReceiver)
                 return {
                     kind: "data",
                     cpp: `bbl::ui_find_element_by_id(${engine}, ${this.ui.uiStringCpp(argumentAt(call, 0), "element id")})`,

@@ -52,6 +52,24 @@ export function compileTextIntrinsic(
     name: string,
     call: ts.CallExpression,
 ): Value | undefined {
+    if (name === "loadFontWeightOffset") {
+        context.expectArgumentCount(call, 0, 0);
+        promoteLiveTextData(context);
+        context.reachFeature("text:layout", call);
+        context.reachFeature("text:weight", call);
+        return {
+            kind: "data",
+            cpp: "bbl::set_font_weight_offset",
+            dataType: {
+                kind: "function",
+                parameters: [
+                    { kind: "handle", handle: "text-data" },
+                    { kind: "handle", handle: "text-run-ref" },
+                    { kind: "number" },
+                ],
+            },
+        };
+    }
     if (name === "setFontWeightOffset") {
         context.expectArgumentCount(call, 3, 3);
         const data = context.compileValue(argumentAt(call, 0));

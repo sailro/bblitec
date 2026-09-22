@@ -22,7 +22,10 @@ export interface GltfRecordedGeometry {
     indexCount: number;
     indexFormat: string;
     _vbLayout?: Partial<
-        Record<"_p" | "_n" | "_t" | "_u" | "_u2" | "_c", VertexLayout>
+        Record<
+            "position" | "normal" | "tangent" | "uv" | "uv2" | "color",
+            VertexLayout
+        >
     >;
 }
 
@@ -160,12 +163,12 @@ export class GltfGeometryPacker {
             );
         };
         const layout = gpu._vbLayout;
-        attribute("POSITION", gpu.positionBuffer, 3, layout?._p, true);
-        attribute("NORMAL", gpu.normalBuffer, 3, layout?._n, true);
-        attribute("TANGENT", gpu.tangentBuffer, 4, layout?._t);
-        attribute("TEXCOORD_0", gpu.uvBuffer, 2, layout?._u, true);
-        attribute("TEXCOORD_1", gpu.uv2Buffer, 2, layout?._u2);
-        attribute("COLOR_0", gpu.colorBuffer, 4, layout?._c);
+        attribute("POSITION", gpu.positionBuffer, 3, layout?.position, true);
+        attribute("NORMAL", gpu.normalBuffer, 3, layout?.normal, true);
+        attribute("TANGENT", gpu.tangentBuffer, 4, layout?.tangent);
+        attribute("TEXCOORD_0", gpu.uvBuffer, 2, layout?.uv, true);
+        attribute("TEXCOORD_1", gpu.uv2Buffer, 2, layout?.uv2);
+        attribute("COLOR_0", gpu.colorBuffer, 4, layout?.color);
         if (gpu.indexFormat !== "uint16" && gpu.indexFormat !== "uint32")
             throw new Error("Unsupported recorded glTF index format.");
         return {

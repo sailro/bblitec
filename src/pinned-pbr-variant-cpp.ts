@@ -20,6 +20,7 @@ import { createHash } from "node:crypto";
 import ts from "typescript";
 import { floatLiteral } from "./cpp-literals.js";
 import { pinnedLightModeCpp } from "./pinned-light-mode.js";
+import { materialShadowReceiverCpp } from "./lowering/material-shadow-receiver.js";
 import type { LoweringContext } from "./lowering/context.js";
 import {
     lowerPinnedUboWriter,
@@ -31,6 +32,8 @@ import {
     type PinnedStandardVariantManifestEntry,
 } from "./pinned-standard-variants.js";
 import { packagedWgsl } from "./pinned-wgsl-build.js";
+import { lowerMaterialPluginUniformBody } from "./lowering/material-plugin-uniforms.js";
+import { stringLiteral } from "./cpp-literals.js";
 
 /**
  * The float lanes a scalar or vector UBO field spans, shared by the PBR and
@@ -38,7 +41,13 @@ import { packagedWgsl } from "./pinned-wgsl-build.js";
  * the four-lane `vec4<f32>`, exactly as both builders spelled it.
  */
 function laneCount(wgslType: string): number {
-    return wgslType === "f32" ? 1 : wgslType === "vec3<f32>" ? 3 : 4;
+    return wgslType === "f32"
+        ? 1
+        : wgslType === "vec2<f32>"
+          ? 2
+          : wgslType === "vec3<f32>"
+            ? 3
+            : 4;
 }
 
 /**
@@ -404,6 +413,7 @@ const fieldTypes: Readonly<
     Record<string, { cppType: string; align: number; size: number }>
 > = {
     f32: { cppType: "float", align: 4, size: 4 },
+    "vec2<f32>": { cppType: "std::array<float, 2>", align: 8, size: 8 },
     "vec3<f32>": { cppType: "std::array<float, 3>", align: 16, size: 12 },
     "vec4<f32>": { cppType: "std::array<float, 4>", align: 16, size: 16 },
     // The scene block carries matrices where the material blocks do not.
@@ -762,9 +772,11 @@ export function variantBindings(
     // group 2 is the shadow receiver's, whose rows the same reflection
     // answers for -- the composed text is the only authority on either.
     group = 1,
+    includeBaseUniforms = false,
 ): readonly VariantBinding[] {
     const key = createHash("sha1")
         .update(String(group))
+        .update(includeBaseUniforms ? "all-uniforms" : "extension-uniforms")
         .update("\0")
         .update(vertexWgsl)
         .update("\0")
@@ -772,7 +784,12 @@ export function variantBindings(
         .digest("hex");
     const cached = reflectedVariantBindings.get(key);
     if (cached) return cached;
-    const rows = reflectVariantBindings(vertexWgsl, fragmentWgsl, group);
+    const rows = reflectVariantBindings(
+        vertexWgsl,
+        fragmentWgsl,
+        group,
+        includeBaseUniforms,
+    );
     reflectedVariantBindings.set(key, rows);
     return rows;
 }
@@ -781,6 +798,7 @@ function reflectVariantBindings(
     vertexWgsl: string,
     fragmentWgsl: string,
     group: number,
+    includeBaseUniforms: boolean,
 ): readonly VariantBinding[] {
     const pattern = new RegExp(
         `@group\\(${group}\\)\\s*@binding\\((\\d+)\\)\\s*` +
@@ -809,7 +827,7 @@ function reflectVariantBindings(
                   // one, and Dawn builds its layout entry from this row. Every
                   // uniform block of another group is the group's own.
                   addressSpace.startsWith("uniform")
-                  ? group !== 1 || Number(match[1]) > 1
+                  ? includeBaseUniforms || group !== 1 || Number(match[1]) > 1
                       ? "uniformBuffer"
                       : undefined
                   : type.startsWith("texture_")
@@ -903,7 +921,8 @@ const lightWriters: ReadonlyArray<{
 
 /** How the light writers' reads map onto our own `LightRecord`. */
 const lightSources: Readonly<Record<string, string>> = {
-    worldMatrix: "light.world_matrix", // lanes resolve through laneSources
+    worldMatrix: "world",
+    direction: "light.direction", // lanes resolve through laneSources
     diffuse: "light.diffuse_color",
     diffuseColor: "light.diffuse_color",
     specular: "light.specular_color",
@@ -1150,18 +1169,7 @@ export function lightUniformsBlock(
                 `inline void write_${light.kind.toLowerCase()}_light(\n` +
                 `    const LightRecord& light,\n` +
                 `    LightEntry& out) {\n` +
-                // The pin's own light world matrix, from the module this scene already
-                // lowers. Its column 2 is the normalized direction and its translation
-                // the position, which is what the writers' lane reads resolve against.
-                `    std::array<float, 16> world{};\n` +
-                `    local_matrix_from_direction(\n` +
-                `        light.direction.x,\n` +
-                `        light.direction.y,\n` +
-                `        light.direction.z,\n` +
-                `        light.position.x,\n` +
-                `        light.position.y,\n` +
-                `        light.position.z,\n` +
-                `        world);\n` +
+                `    const auto world = light_world_matrix(light);\n` +
                 `${lowerPinnedUboWriter(context, {
                     modulePath: light.modulePath,
                     symbolName: light.symbolName,
@@ -1171,6 +1179,12 @@ export function lightUniformsBlock(
                     propertySources: lightSources,
                     vectorProperties: lightVectors,
                     laneSources: { worldMatrix: lightMatrixLanes },
+                    bufferWriters: {
+                        writeWorldLightDirection: {
+                            cpp: "write_world_light_direction",
+                            lanes: 3,
+                        },
+                    },
                     slots,
                 }).join("\n")}\n}`,
         );
@@ -1331,6 +1345,7 @@ export function pinnedSharedVariantDecls(
     return `// ${provenance}
 #pragma once
 
+#include <bblite/runtime.hpp>
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -1411,6 +1426,7 @@ struct PinnedVariantBinding {
     /** Which stages declare it; group 1 is shared by both. */
     bool vertex;
     bool fragment;
+    bool non_filtering_sampler = false;
 };
 
 /** What one group-2 row serves for its light. */
@@ -1439,6 +1455,7 @@ struct PinnedShadowBinding {
 };
 
 ${pinnedLightModeCpp()}
+${materialShadowReceiverCpp(context)}
 
 } // namespace bbl::upstream
 `;
@@ -1559,6 +1576,7 @@ export function pinnedPbrVariantsHeader(
             offset: offsets[index]!,
             lanes: laneCount(field.wgslType),
         }));
+        const pluginFields = new Set(variant.pluginUniformFields ?? []);
         // Every pinned extension writer whose base field this variant declares,
         // lowered from that declaration's own AST. The arithmetic is the pin's.
         const reached = extensionWriters.filter((extension) =>
@@ -1569,6 +1587,7 @@ export function pinnedPbrVariantsHeader(
         );
         let currentWriter: UboFieldSlot[] | undefined;
         for (const slot of slots) {
+            if (pluginFields.has(slot.name)) continue;
             currentWriter = writerFields.get(slot.name) ?? currentWriter;
             currentWriter?.push(slot);
         }
@@ -1583,7 +1602,7 @@ export function pinnedPbrVariantsHeader(
         // extension covers the block starting at its own base field, in
         // declaration order, which is how the pin partitions them too.
         {
-            const covered = new Set<string>();
+            const covered = new Set<string>(pluginFields);
             const bases = [...writerFields.keys()];
             let owner = "base";
             for (const slot of slots) {
@@ -1783,6 +1802,26 @@ export function pinnedPbrVariantsHeader(
                         `                block);`,
                 ),
                 ...thicknessScaled,
+                ...(variant.pluginUniformFields !== undefined
+                    ? [
+                          "            if (const auto plugins = material.plugin_uniform_writers) {",
+                          `                auto& cached = material.plugin_uniform_states[${table.length}];`,
+                          "                if (!cached) {",
+                          "                    cached = std::make_shared<MaterialPluginUniformState>();",
+                          `                    cached->data = js::F32Array(${totalBytes / 4});`,
+                          ...slots.map(
+                              (slot) =>
+                                  `                    cached->offsets.set(${stringLiteral(slot.name)}, ${slot.offset});`,
+                          ),
+                          "                }",
+                          "                auto data = cached->data;",
+                          "                auto offsets = cached->offsets;",
+                          "                std::memcpy(data.data(), &block, sizeof(block));",
+                          lowerMaterialPluginUniformBody(context),
+                          "                std::memcpy(&block, data.data(), sizeof(block));",
+                          "            }",
+                      ]
+                    : []),
                 "            std::memcpy(",
                 "                destination,",
                 "                &block,",
@@ -1813,6 +1852,7 @@ export function pinnedPbrVariantsHeader(
         table.push(
             `    {"${variant.fragmentKey}", "${variant.vertex}", ` +
                 `"${variant.fragment}", ${totalBytes}, ` +
+                `${variantBindings(variant.vertexWgsl, variant.fragmentWgsl, 1, true).some((binding) => binding.binding === 1 && binding.vertex) ? "true" : "false"}, ` +
                 `${bindingRows.length}, ${bindings.length}, ` +
                 `${pbrShadowRows.length}, ${shadowBindings.length}, ` +
                 `${attributeRows.length}, ${attributes.length}, ` +
@@ -1853,11 +1893,24 @@ export function pinnedPbrVariantsHeader(
             );
         }
         for (const entry of bindings) {
+            const sourceLayout = variant.meshBindingLayout?.find(
+                (layout) => layout.binding === entry.binding,
+            );
+            const kind =
+                entry.kind === "texture2dLoad" &&
+                sourceLayout?.texture?.sampleType === "float"
+                    ? "texture2d"
+                    : entry.kind === "texture2d" &&
+                        sourceLayout?.texture?.sampleType ===
+                            "unfilterable-float"
+                      ? "texture2dLoad"
+                      : entry.kind;
             bindingRows.push(
                 `    {${entry.binding}, "${entry.name}", ` +
-                    `PinnedBindingKind::${entry.kind}, ` +
+                    `PinnedBindingKind::${kind}, ` +
                     `${entry.vertex ? "true" : "false"}, ` +
-                    `${entry.fragment ? "true" : "false"}},`,
+                    `${entry.fragment ? "true" : "false"}, ` +
+                    `${sourceLayout?.sampler?.type === "non-filtering" ? "true" : "false"}},`,
             );
         }
     }
@@ -1878,6 +1931,7 @@ export function pinnedPbrVariantsHeader(
 
 #include <bblite/upstream/pinned_variant_bindings.hpp>
 #include <bblite/runtime.hpp>
+${variants.some((variant) => variant.pluginUniformFields !== undefined) ? "#include <bblite/pal_material_plugin.hpp>" : ""}
 ${lightKinds.length > 0 ? "#include <bblite/upstream/light_matrix.hpp>\n" : ""}
 namespace bbl::upstream {
 
@@ -1936,6 +1990,7 @@ struct PbrVariantEntry {
     std::string_view vertex_shader;
     std::string_view fragment_shader;
     std::size_t material_ubo_bytes;
+    bool material_ubo_vertex;
     /** Half-open range into the binding table above. */
     std::size_t first_binding;
     std::size_t binding_count;
@@ -2539,7 +2594,11 @@ function materialTextureSlotRows(features: MaterialTextureSlotFeatures): {
  */
 export function materialTextureSlotsHeader(
     features: MaterialTextureSlotFeatures,
-    variants: readonly { vertexWgsl: string; fragmentWgsl: string }[],
+    variants: readonly {
+        vertexWgsl: string;
+        fragmentWgsl: string;
+        pluginTextureBindings?: readonly string[];
+    }[],
     provenance: string,
 ): CppModule {
     const cpp = new CppDefinitions();
@@ -2558,14 +2617,21 @@ export function materialTextureSlotsHeader(
         if (row.samplerName !== "") served.add(row.samplerName);
     }
     const unserved = new Set<string>();
-    for (const binding of bindings) {
-        if (
-            binding.kind === "storageBuffer" ||
-            binding.kind === "uniformBuffer"
-        ) {
-            continue;
+    for (const variant of variants) {
+        const pluginBindings = new Set(variant.pluginTextureBindings ?? []);
+        for (const binding of variantBindings(
+            variant.vertexWgsl,
+            variant.fragmentWgsl,
+        )) {
+            if (
+                binding.kind === "storageBuffer" ||
+                binding.kind === "uniformBuffer"
+            ) {
+                continue;
+            }
+            if (!served.has(binding.name) && !pluginBindings.has(binding.name))
+                unserved.add(binding.name);
         }
-        if (!served.has(binding.name)) unserved.add(binding.name);
     }
     if (unserved.size > 0) {
         throw new Error(

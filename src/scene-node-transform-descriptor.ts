@@ -28,10 +28,8 @@ export interface SceneNodeTransformDescriptor {
         | "set_scene_node_rotation_quaternion_component"
         | "set_scene_node_scaling_component";
     meshSetter?: "set_mesh_rotation_quaternion";
-    assetSetter?: "set_asset_root_position" | "set_asset_root_rotation";
-    assetComponentSetter?:
-        | "set_asset_root_position_component"
-        | "set_asset_root_rotation_component";
+    assetSetter: `set_asset_root_${SceneNodeTransformDescriptor["nativeField"]}`;
+    assetComponentSetter: `set_asset_root_${SceneNodeTransformDescriptor["nativeField"]}_component`;
 }
 
 export const SCENE_NODE_TRANSFORMS = [
@@ -70,6 +68,8 @@ export const SCENE_NODE_TRANSFORMS = [
         sceneNodeComponentSetter:
             "set_scene_node_rotation_quaternion_component",
         meshSetter: "set_mesh_rotation_quaternion",
+        assetSetter: "set_asset_root_rotation_quaternion",
+        assetComponentSetter: "set_asset_root_rotation_quaternion_component",
     },
     {
         sourceProperty: "scaling",
@@ -80,6 +80,8 @@ export const SCENE_NODE_TRANSFORMS = [
         transformNodeSetter: "set_transform_node_scaling",
         sceneNodeSetter: "set_scene_node_scaling",
         sceneNodeComponentSetter: "set_scene_node_scaling_component",
+        assetSetter: "set_asset_root_scaling",
+        assetComponentSetter: "set_asset_root_scaling_component",
     },
 ] as const satisfies readonly SceneNodeTransformDescriptor[];
 

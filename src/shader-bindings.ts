@@ -32,7 +32,9 @@ function storageTextureRegisters(source: string): Set<string> {
     );
 }
 
-function compactRegisters(source: string, vertex?: boolean): string {
+export type SdlShaderStage = boolean | "compute";
+
+function compactRegisters(source: string, vertex?: SdlShaderStage): string {
     const pattern =
         vertex === undefined
             ? /register\(([tsbu])(\d+), space(\d+)\)/g
@@ -59,6 +61,19 @@ function compactRegisters(source: string, vertex?: boolean): string {
         );
     }
     const mapping = new Map<string, number>();
+    const writableBuffers = new Set(
+        [
+            ...source.matchAll(
+                /RW(?:ByteAddress|Structured)Buffer(?:<[^>]+>)?\s+\w+\s*:\s*register\(u(\d+)(?:, space(\d+))?/g,
+            ),
+        ].map((match) =>
+            registerKey({
+                kind: "u",
+                index: Number(match[1]),
+                space: Number(match[2] ?? 0),
+            }),
+        ),
+    );
     const storageTextures = storageTextureRegisters(source);
     const resourceOrder = (register: Register): number =>
         storage.has(registerKey(register))
@@ -72,7 +87,12 @@ function compactRegisters(source: string, vertex?: boolean): string {
         );
         ordered.sort((left, right) => {
             const storageOrder =
-                kind === "t" ? resourceOrder(left) - resourceOrder(right) : 0;
+                kind === "t"
+                    ? resourceOrder(left) - resourceOrder(right)
+                    : vertex === "compute" && kind === "u"
+                      ? Number(writableBuffers.has(registerKey(left))) -
+                        Number(writableBuffers.has(registerKey(right)))
+                      : 0;
             return (
                 (vertex === undefined ? left.space - right.space : 0) ||
                 storageOrder ||
@@ -105,13 +125,19 @@ function compactRegisters(source: string, vertex?: boolean): string {
             const target =
                 vertex === undefined
                     ? original.space
-                    : kind === "b"
-                      ? vertex
-                          ? 1
-                          : 3
-                      : vertex
-                        ? 0
-                        : 2;
+                    : vertex === "compute"
+                      ? kind === "b"
+                          ? 2
+                          : kind === "u"
+                            ? 1
+                            : 0
+                      : kind === "b"
+                        ? vertex
+                            ? 1
+                            : 3
+                        : vertex
+                          ? 0
+                          : 2;
             return `register(${kind}${mapped}, space${target})`;
         },
     );
@@ -119,7 +145,7 @@ function compactRegisters(source: string, vertex?: boolean): string {
 
 export function remapPinnedVariantRegisters(
     source: string,
-    vertex: boolean,
+    vertex: SdlShaderStage,
 ): string {
     return compactRegisters(source, vertex);
 }
@@ -151,7 +177,7 @@ function mapSampledTextureUses(
 /** SDL Vulkan binds texture/sampler pairs as combined image samplers at tN/sN.
  * Integer and multisampled Load textures use SDL's storage-texture descriptors.
  * DXC maps register spaces directly onto Vulkan descriptor sets. */
-export function sdlSpirvSource(source: string, vertex: boolean): string {
+export function sdlSpirvSource(source: string, vertex: SdlShaderStage): string {
     source = remapPinnedVariantRegisters(source, vertex);
     // Tint encodes WGSL locations in TEXCOORD indices. DXC otherwise assigns
     // consecutive Vulkan locations, breaking sparse vertex layouts and varyings.
@@ -297,6 +323,64 @@ export interface ShaderSlot {
     name: string;
 }
 
+/** Original WGSL binding coordinates survive Tint's HLSL register annotations. */
+export function computeShaderSlotMetadata(
+    original: string,
+    normalized: string,
+): string[] {
+    const coordinates = new Map<string, [number, number]>();
+    for (const match of original.matchAll(
+        /(?:cbuffer\s+cbuffer_(\w+)|(?:\w+(?:<[^>]+>)?)\s+(\w+))\s*:\s*register\([tsbu](\d+)(?:, space(\d+))?\)/g,
+    )) {
+        coordinates.set((match[1] ?? match[2])!, [
+            Number(match[4] ?? 0),
+            Number(match[3]),
+        ]);
+    }
+    const threads = [
+        ...normalized.matchAll(/\[numthreads\((\d+),\s*(\d+),\s*(\d+)\)\]/g),
+    ];
+    if (threads.length !== 1)
+        throw new Error(
+            "Compute artifact requires one concrete workgroup size.",
+        );
+    const slots = shaderStageSlots(normalized);
+    const samplers = new Map<string, string>();
+    mapSampledTextureUses(
+        normalized,
+        slots.filter((slot) => slot.kind === "s").map((slot) => slot.name),
+        (call, _prefix, texture, sampler) => {
+            const previous = samplers.get(texture);
+            if (previous !== undefined && previous !== sampler)
+                throw new Error(
+                    `SDL compute cannot bind multiple samplers for texture ${texture}.`,
+                );
+            samplers.set(texture, sampler);
+            return call;
+        },
+    );
+    return [
+        `@workgroup ${threads[0]!.slice(1).join(" ")}`,
+        ...slots.map((slot) => {
+            const coordinate = coordinates.get(slot.name);
+            if (!coordinate)
+                throw new Error(
+                    `Compute resource ${slot.name} has no original binding.`,
+                );
+            const sampler = samplers.get(slot.name),
+                paired =
+                    sampler === undefined
+                        ? undefined
+                        : coordinates.get(sampler);
+            if (sampler !== undefined && !paired)
+                throw new Error(
+                    `Compute sampler ${sampler} has no original binding.`,
+                );
+            return `${slot.kind}${slot.index} ${slot.name} ${coordinate.join(" ")} ${paired?.join(" ") ?? "-1 -1"}`;
+        }),
+    ];
+}
+
 /** Storage slots follow the sampled-texture prefix within each register space. */
 export function shaderStageSlots(hlsl: string): ShaderSlot[] {
     const sampledBySpace = new Map<number, number>();
@@ -316,6 +400,21 @@ export function shaderStageSlots(hlsl: string): ShaderSlot[] {
         }
     }
     const slots: ShaderSlot[] = [];
+    const writableTextures = [
+        ...hlsl.matchAll(
+            /RWTexture\w*(?:<[^>]+>)?\s+\w+\s*:\s*register\(u\d+(?:, space\d+)?/g,
+        ),
+    ].length;
+    for (const match of hlsl.matchAll(
+        /(RWTexture\w*(?:<[^>]+>)?|RW(?:ByteAddress|Structured)Buffer(?:<[^>]+>)?)\s+(\w+)\s*:\s*register\(u(\d+)(?:, space(\d+))?/g,
+    )) {
+        const texture = match[1]!.startsWith("RWTexture");
+        slots.push({
+            kind: texture ? "j" : "w",
+            index: Number(match[3]) - (texture ? 0 : writableTextures),
+            name: match[2]!,
+        });
+    }
     for (const match of hlsl.matchAll(
         /(?:cbuffer\s+cbuffer_(\w+)|(?:Texture\w*(?:<[^>]+>)?|Sampler\w*State)\s+(\w+)|(?:RW)?(?:ByteAddress|Structured)Buffer(?:<[^>]+>)?\s+(\w+))\s*:\s*register\(([tsb])(\d+)(?:, space(\d+))?/g,
     )) {
@@ -354,17 +453,26 @@ export function sdlMslSource(
     // Metal reserves `main`; Tint may rename it to a generated identifier.
     // Each artifact contains one stage, so give its exported function the
     // stable name used by the SDL loader, independently of WGSL naming.
-    const entries = [...msl.matchAll(/^(vertex|fragment)\s+\w+\s+(\w+)\(/gm)];
+    const entries = [
+        ...msl.matchAll(/^(vertex|fragment|kernel)\s+\w+\s+(\w+)\(/gm),
+    ];
     if (entries.length !== 1)
-        throw new Error("Expected one Tint Metal render entry point.");
+        throw new Error("Expected one Tint Metal entry point.");
     if (entries[0]![2] !== "main0" && /\bmain0\b/.test(msl)) {
         throw new Error(
             "Tint Metal source already uses the SDL entry-point name main0.",
         );
     }
-    msl = msl.replace(/^(vertex|fragment)(\s+\w+\s+)\w+\(/m, "$1$2main0(");
+    msl = msl.replace(
+        /^(vertex|fragment|kernel)(\s+\w+\s+)\w+\(/m,
+        "$1$2main0(",
+    );
     const uniforms = slots.filter((slot) => slot.kind === "b").length;
     const textures = slots.filter((slot) => slot.kind === "t").length;
+    const readonlyTextures = slots.filter((slot) => slot.kind === "i").length;
+    const readonlyBuffers = slots.filter((slot) => slot.kind === "r").length;
+    const storageSlot = (slot: ShaderSlot): number =>
+        slot.index + (slot.kind === "w" ? readonlyBuffers : 0);
     const byName = new Map(slots.map((slot) => [slot.name, slot]));
     // SDL binds samplers alongside textures. Tint may remove the sampler of
     // an earlier textureLoad, so independently compacted sampler slots drift.
@@ -395,7 +503,9 @@ export function sdlMslSource(
         // The SDL Metal patch publishes lengths at buffer(30) in SDL slot order.
         const storage = [...msl.matchAll(/\b(\w+)\s*\[\[buffer\((\d+)\)\]\]/g)]
             .map((match) => ({ name: match[1]!, index: Number(match[2]) }))
-            .filter((binding) => byName.get(binding.name)?.kind === "r")
+            .filter((binding) =>
+                ["r", "w"].includes(byName.get(binding.name)?.kind ?? ""),
+            )
             .sort((a, b) => a.index - b.index);
         let lengths = 0;
         msl = msl.replace(
@@ -407,7 +517,7 @@ export function sdlMslSource(
                     throw new Error(
                         "Metal array length has no reflected storage buffer.",
                     );
-                const slot = byName.get(buffer.name)!.index;
+                const slot = storageSlot(byName.get(buffer.name)!);
                 lengths++;
                 return `${pointer}[${Math.floor(slot / 4)}u].${"xyzw"[slot % 4]}`;
             },
@@ -415,7 +525,8 @@ export function sdlMslSource(
         if (!lengths)
             throw new Error("Unrecognized Tint Metal array-length expression.");
         const vectors = Math.ceil(
-            slots.filter((slot) => slot.kind === "r").length / 4,
+            slots.filter((slot) => slot.kind === "r" || slot.kind === "w")
+                .length / 4,
         );
         msl = msl.replace(
             /const constant tint_array<uint4, \d+>\* tint_storage_buffer_sizes/g,
@@ -433,7 +544,7 @@ export function sdlMslSource(
                     `Metal resource ${name} is absent from the SDL shader bindings.`,
                 );
             const expectedKind =
-                slot.kind === "b" || slot.kind === "r"
+                slot.kind === "b" || slot.kind === "r" || slot.kind === "w"
                     ? "buffer"
                     : slot.kind === "s"
                       ? "sampler"
@@ -448,9 +559,13 @@ export function sdlMslSource(
                     : slot.index +
                       (slot.kind === "r"
                           ? uniforms
-                          : slot.kind === "i"
-                            ? textures
-                            : 0);
+                          : slot.kind === "w"
+                            ? uniforms + readonlyBuffers
+                            : slot.kind === "i"
+                              ? textures
+                              : slot.kind === "j"
+                                ? textures + readonlyTextures
+                                : 0);
             if (index === undefined)
                 throw new Error(
                     `Metal sampler ${name} has no reflected texture pair.`,

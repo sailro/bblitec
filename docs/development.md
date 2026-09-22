@@ -22,6 +22,9 @@ $env:CMAKE_COMMAND = 'C:/Program Files/Microsoft Visual Studio/18/Community/Comm
 `scene` discovers CMake through vswhere; dependency scripts accept PATH, CMAKE_COMMAND or `-CMake`.
 Rebuild installed dependencies after maintained patches change, including `pwsh -File tools/build-rmlui.ps1`.
 
+For interactive startup without the reference query, use `npm run scene -- process <id> --live`.
+It writes `generated/<id>-live` and builds `native/build-<id>-live-release`; reference builds and checks keep their registered query.
+
 ### Linux prerequisites
 
 Install [PowerShell 7](https://learn.microsoft.com/powershell/scripting/install/install-ubuntu),

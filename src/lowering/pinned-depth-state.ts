@@ -14,6 +14,7 @@
  * near -> 1 and far -> 0, checked beside the clear value they pair with.
  */
 import ts from "typescript";
+import { PinnedNumericLowerer } from "./pinned-numeric-lowerer.js";
 import { floatLiteral } from "../cpp-literals.js";
 import type { LoweringContext } from "./context.js";
 
@@ -51,11 +52,11 @@ const renderPassModule = "src/frame-graph/render-pass.ts";
 /**
  * The pin's own depth-clear fallback, read from its declaration.
  *
- * `render-target.ts` declares `_depthClearValue` as an optional descriptor
+ * `render-target.ts` declares `depthClearValue` as an optional descriptor
  * field ("Defaults to reverse-Z far depth `0`") with no named constant, so
  * the readable authority is where the pin applies the default:
  * `render-pass.ts` builds every depth attachment with
- * `_depthClearValue ?? 0`. Every such fallback in the module must agree —
+ * `depthClearValue ?? 0`. Every such fallback in the module must agree —
  * a second site with another value would mean the convention forked.
  */
 function pinnedDepthClearValue(context: LoweringContext): number {
@@ -69,20 +70,22 @@ function pinnedDepthClearValue(context: LoweringContext): number {
                     ts.SyntaxKind.QuestionQuestionToken &&
                 (ts.isPropertyAccessExpression(node.left) ||
                     ts.isPropertyAccessChain(node.left)) &&
-                node.left.name.text === "_depthClearValue",
+                node.left.name.text === "depthClearValue" &&
+                ts.isPropertyAccessExpression(node.left.expression) &&
+                node.left.expression.name.text === "_descriptor",
         )
         .map((node) => context.numericValue(node.right, file));
     if (fallbacks.length === 0) {
         context.contractError(
             file,
-            "Pinned render-pass no longer defaults _depthClearValue.",
+            "Pinned render-pass no longer defaults depthClearValue.",
         );
     }
     const value = fallbacks[0]!;
     if (fallbacks.some((candidate) => candidate !== value)) {
         context.contractError(
             file,
-            "Pinned render-pass defaults _depthClearValue inconsistently: " +
+            "Pinned render-pass defaults depthClearValue inconsistently: " +
                 `${fallbacks.join(", ")}.`,
         );
     }
@@ -180,6 +183,28 @@ export function pinnedReverseDepthCompare(context: LoweringContext): string {
  * billboard pass still draws under the same convention.
  */
 export function pinnedDepthStateHeader(context: LoweringContext): string {
+    const depthPolicyPath = "src/frame-graph/render-task-base.ts";
+    const depthPolicy = context.functionDeclaration(
+        depthPolicyPath,
+        "buildRenderPassDescriptor",
+    );
+    const loadPolicy = new PinnedNumericLowerer(depthPolicy.file, {
+        bindings: new Map([
+            ["config.depth", { cpp: "external_depth", type: "bool" }],
+            ["depthSrc._eager", { cpp: "external_eager", type: "bool" }],
+            ["config.depthClear", { cpp: "depth_clear", type: "bool" }],
+        ]),
+        calls: new Map(),
+        expression(node) {
+            if (ts.isStringLiteral(node)) {
+                if (node.text === "load") return "true";
+                if (node.text === "clear") return "false";
+            }
+            return undefined;
+        },
+    }).expression(
+        context.variableInitializer(depthPolicy.declaration, "loadOp"),
+    );
     const compare = pinnedReverseDepthCompare(context);
     const provenance = context.provenance(
         renderTargetModule,
@@ -193,7 +218,7 @@ export function pinnedDepthStateHeader(context: LoweringContext): string {
     const depthClear = pinnedDepthClearValue(context);
     if (depthClear !== 0) {
         throw new Error(
-            `Pinned _depthClearValue default is ${depthClear}; this port's ` +
+            `Pinned depthClearValue default is ${depthClear}; this port's ` +
                 "reverse-Z consumers assume the far plane clears to 0.",
         );
     }
@@ -225,6 +250,11 @@ inline constexpr DepthCompare pinned_depth_compare =
 
 /** The far plane under that convention, which is what a pass clears to. */
 inline constexpr float pinned_depth_clear = ${floatLiteral(depthClear)};
+
+// ${context.provenance(depthPolicyPath, "buildRenderPassDescriptor")}
+inline bool render_task_loads_depth(bool external_depth, bool external_eager, bool depth_clear) {
+    return ${loadPolicy};
+}
 
 } // namespace bbl::upstream
 `;

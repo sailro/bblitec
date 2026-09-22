@@ -22,15 +22,9 @@
  * answers with a mesh walk: which index the Standard bridge assigned, so the
  * generated feature derivation can OR the same bits out of the record.
  *
- * The reached slice is a plugin declaring a name, a `getCustomCode`
- * returning WGSL, and the texture and sampler pairs `getSamplers` declares
- * with `bindTextures`/`getActiveTextures` filling them. Uniforms,
- * `defines`, `priority` and `isEnabled` all refuse at generation where the
- * scene declares them, so nothing here has to answer for the material UBO
- * or the self-managed Standard `pluginUbo`. The samplers do reach a bind
- * group: the pin composes their declarations into the fragment, the
- * generated reflection numbers them, and the material record carries the
- * textures each material fills them with.
+ * Source plugins carry constant shader declarations and dynamic texture/UBO
+ * callbacks. The PBR vertex opt-in executes its own pinned bridge; Standard
+ * retains fragment texture plugins. Priority and enabled-state mutation refuse.
  */
 import ts from "typescript";
 import { importPinnedModule } from "./pinned-shader-composer.js";
@@ -40,60 +34,24 @@ import { sharedUpstreamStore } from "./upstream-source.js";
 /** The pinned module the Standard bridge keeps its index layout in. */
 const STD_PLUGIN_BRIDGE = "src/material/plugin/std-plugin-bridge.ts";
 
-/** One of that module's own constants, evaluated from its declaration. */
-function standardPluginConstant(
-    context: LoweringContext,
-    name: "PLUGIN_INDEX_SHIFT" | "PLUGIN_INDEX_MASK",
-): number {
+/** The mesh hook contributes presence; the material keeps a separate signature index. */
+export function pinnedPluginPresenceBit(context: LoweringContext): number {
     const file = context.sourceFile(STD_PLUGIN_BRIDGE);
-    const declared = context.moduleScopeConstant(file, name);
-    if (!declared) {
+    const bridge = context.variableInitializer(file, "stdPluginExt");
+    if (!ts.isObjectLiteralExpression(bridge))
         return context.contractError(
-            file,
-            `Expected ${STD_PLUGIN_BRIDGE} to declare ${name}.`,
+            bridge,
+            "Expected the Standard plugin extension.",
         );
-    }
-    return context.numericValue(declared, file);
-}
-
-/**
- * The shift the Standard bridge bakes its signature index at, taken from the
- * expression that bakes it.
- *
- * The generated Standard derivation re-emits that OR with the material
- * record's own field in place of the pin's `idx`, so what has to hold is the
- * *expression*, not just the constant: a pin that masked the bake, changed
- * the operator, or moved the shift to the other operand would still export a
- * `PLUGIN_INDEX_SHIFT` worth reading while meaning something else. Asserting
- * the shape is what makes the emitted line the pin's own line.
- *
- * 1.25.0 moved the bake out of `registerStdPlugins` into the per-material
- * `bakeStdPluginMaterial` the walk now calls, which is where it is read.
- */
-export function pinnedPluginBakeShift(context: LoweringContext): number {
-    const { declaration } = context.functionDeclaration(
-        STD_PLUGIN_BRIDGE,
-        "bakeStdPluginMaterial",
-    );
-    const [bake] = context.findNodes(
-        declaration,
-        (node): node is ts.BinaryExpression =>
-            ts.isBinaryExpression(node) &&
-            node.operatorToken.kind === ts.SyntaxKind.BarToken,
-    );
-    if (!bake) {
-        return context.contractError(
-            declaration,
-            "The pinned bakeStdPluginMaterial no longer ORs its signature " +
-                "index into the material's computed feature word.",
-        );
-    }
     context.assertExpressionShape(
-        bake,
-        "_computeStandardMaterialFeatures(mat) | (idx << PLUGIN_INDEX_SHIFT)",
-        "bakeStdPluginMaterial signature-index bake",
+        context.propertyInitializer(bridge, "_meshFeatures"),
+        "(_meshFeatures, mat) => (mat?._pi ? HAS_STD_PLUGINS : 0)",
+        "Standard plugin presence hook",
     );
-    return standardPluginConstant(context, "PLUGIN_INDEX_SHIFT");
+    return context.numericValue(
+        context.variableInitializer(file, "HAS_STD_PLUGINS"),
+        file,
+    );
 }
 
 /**
@@ -111,6 +69,19 @@ export interface MaterialPluginSamplerManifest {
     sampler: string;
     textureType?: string;
     samplerType?: string;
+    visibility?: "vertex" | "fragment" | "vertex-fragment";
+    depthTexture?: boolean;
+}
+
+export interface MaterialPluginUniformManifest {
+    name: string;
+    type: string;
+    visibility?: "vertex" | "fragment" | "vertex-fragment";
+}
+
+export interface MaterialPluginVaryingManifest {
+    name: string;
+    type: string;
 }
 
 /** One `MaterialPlugin` object literal, folded from the scene's own AST. */
@@ -130,6 +101,9 @@ export interface MaterialPluginManifest {
      * which is also the order `bindPluginTextures` pushes their resources.
      */
     samplers?: readonly MaterialPluginSamplerManifest[];
+    defines?: Readonly<Record<string, string | number | boolean>>;
+    uniforms?: readonly MaterialPluginUniformManifest[];
+    varyings?: readonly MaterialPluginVaryingManifest[];
 }
 
 /** The shape the pin's own bridges read a plugin through. */
@@ -139,6 +113,9 @@ interface PinnedPlugin {
         shaderType: "vertex" | "fragment",
     ): Readonly<Record<string, string>> | null;
     getSamplers?(): readonly MaterialPluginSamplerManifest[];
+    readonly defines?: Readonly<Record<string, string | number | boolean>>;
+    getUniforms?(): { ubo: readonly MaterialPluginUniformManifest[] };
+    getVaryings?(): readonly MaterialPluginVaryingManifest[];
 }
 
 /**
@@ -163,6 +140,11 @@ function pinnedPlugin(manifest: MaterialPluginManifest): PinnedPlugin {
             return code ?? null;
         },
         ...(samplers ? { getSamplers: () => samplers } : {}),
+        ...(manifest.defines ? { defines: manifest.defines } : {}),
+        ...(manifest.uniforms
+            ? { getUniforms: () => ({ ubo: manifest.uniforms! }) }
+            : {}),
+        ...(manifest.varyings ? { getVaryings: () => manifest.varyings! } : {}),
     };
 }
 
@@ -189,6 +171,9 @@ export function materialPluginListKey(
             plugin.fragment ?? null,
             plugin.vertex ?? null,
             plugin.samplers ?? null,
+            plugin.defines ?? null,
+            plugin.uniforms ?? null,
+            plugin.varyings ?? null,
         ]),
     );
 }
@@ -272,13 +257,14 @@ async function registerPluginBridges(
             }>("material/standard/standard-flags.js"),
             importPinnedModule<{
                 getStandardGroupBuilder: () => unknown;
-            }>("material/standard/standard-material.js"),
+            }>("material/standard/standard-group-builder.js"),
             importPinnedModule<{
                 _getStdExtsSorted: () => readonly {
                     _id: string;
                     _frag: (
                         features: number,
                         meshFeatures: number,
+                        material?: unknown,
                     ) => {
                         _bindings?: readonly PinnedBindingDecl[];
                     };
@@ -305,6 +291,7 @@ async function registerPluginBridges(
         plugins: readonly PinnedPlugin[];
         _buildGroup: unknown;
         _renderFeatures?: { features: number };
+        _pi?: number;
     }[];
     // 1.25.0 gives the bridge the whole scene: it walks `scene.meshes` as
     // before, and everything else it reads off one is lifetime state a
@@ -326,36 +313,19 @@ async function registerPluginBridges(
         stdFlags._registerStdExt,
     );
     const context = new LoweringContext(sharedUpstreamStore());
-    const shift = standardPluginConstant(context, "PLUGIN_INDEX_SHIFT");
-    const mask = standardPluginConstant(context, "PLUGIN_INDEX_MASK");
-    // The pin overflows the field rather than truncating, so the bound is
-    // checked once here instead of masked into every draw's derivation.
-    if (standardMaterialPlugins.length > mask) {
+    const presence = pinnedPluginPresenceBit(context);
+    if (standardMaterialPlugins.length > 255)
         throw new Error(
-            `A scene attaching ${standardMaterialPlugins.length} distinct ` +
-                "plugin lists to Standard materials exceeds the pin's own " +
-                `PLUGIN_INDEX_MASK of ${mask}, past which the signature ` +
-                "index runs into the feature bits beside it.",
+            "Native Standard material plugins support at most 255 distinct lists.",
         );
-    }
-    // `MaterialRecord::plugin_signature_index` is a byte, sized to that
-    // mask so the field costs no padding; a pin that widened the reserved
-    // field would need the record widened with it.
-    if (mask > 0xff) {
-        throw new Error(
-            `Pinned PLUGIN_INDEX_MASK is ${mask}, which no longer fits the ` +
-                "byte MaterialRecord::plugin_signature_index reserves for " +
-                "it.",
-        );
-    }
-    const registered = standardPluginFragmentBindings(stdExts, shift);
+    const registered = standardPluginFragmentBindings(stdExts);
     return materials.map((material, position) => {
-        const baked = material._renderFeatures?.features;
+        const baked = material._pi;
         // The compiler numbered the lists 1..n in this order and emitted
         // that index into the material record, so the pin agreeing is what
         // makes the generated derivation's OR the pin's own bake rather than
         // a parallel numbering. `_indexFor` counts from one, in call order.
-        const expected = (position + 1) << shift;
+        const expected = position + 1;
         if (baked !== expected) {
             throw new Error(
                 "Pinned registerStdPlugins baked plugin signature bits " +
@@ -385,7 +355,7 @@ async function registerPluginBridges(
                     `${JSON.stringify(declared)}.`,
             );
         }
-        return { bits: baked, bindings };
+        return { bits: presence, bindings };
     });
 }
 
@@ -398,20 +368,18 @@ async function registerPluginBridges(
  * the list from the manifests, would be `buildPluginFragment`'s pairing
  * written a second time.
  */
-function standardPluginFragmentBindings(
-    flags: {
-        _getStdExtsSorted: () => readonly {
-            _id: string;
-            _frag: (
-                features: number,
-                meshFeatures: number,
-            ) => {
-                _bindings?: readonly PinnedBindingDecl[];
-            };
-        }[];
-    },
-    shift: number,
-): (index: number) => readonly MaterialPluginSamplerManifest[] {
+function standardPluginFragmentBindings(flags: {
+    _getStdExtsSorted: () => readonly {
+        _id: string;
+        _frag: (
+            features: number,
+            meshFeatures: number,
+            material?: unknown,
+        ) => {
+            _bindings?: readonly PinnedBindingDecl[];
+        };
+    }[];
+}): (index: number) => readonly MaterialPluginSamplerManifest[] {
     const ext = flags
         ._getStdExtsSorted()
         .find((candidate) => candidate._id === "plugin");
@@ -422,7 +390,7 @@ function standardPluginFragmentBindings(
         );
     }
     return (index) => {
-        const declarations = ext._frag(index << shift, 0)._bindings ?? [];
+        const declarations = ext._frag(0, 0, { _pi: index })._bindings ?? [];
         const pairs: MaterialPluginSamplerManifest[] = [];
         for (let at = 0; at < declarations.length; at += 1) {
             const texture = declarations[at]!;
@@ -459,6 +427,14 @@ export async function enablePinnedMaterialPlugins(
 ): Promise<void> {
     bridges ??= registerPluginBridges(standardMaterialPlugins);
     await bridges;
+}
+
+/** Execute the explicit PBR vertex-resource bridge opt-in before composition. */
+export async function enablePinnedPbrMaterialPluginVertexData(): Promise<void> {
+    const module = await importPinnedModule<{
+        enablePbrMaterialPluginVertexData(): void;
+    }>("material/plugin/enable-pbr-material-plugin-vertex-data.js");
+    module.enablePbrMaterialPluginVertexData();
 }
 
 /** The plugin objects a `PinnedMaterialInput.plugins` slot carries. */

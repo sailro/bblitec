@@ -47,6 +47,7 @@ export interface PostProcessCompositionRequest {
      * is the pin's to decide, not this port's.
      */
     options: Readonly<Record<string, PostProcessOptionValue>>;
+    scalarAccesses?: readonly string[];
 }
 
 /** What the pin composed, plus the layout its bind group declares. */
@@ -124,6 +125,7 @@ export interface ComposedComposite {
     passes: readonly ComposedCompositePass[];
     /** The observed pass owning the facade's public output, not execution order. */
     outputPass: number;
+    scalarAccesses?: readonly string[];
     /** Pinned public factory state consumed by the TAA execute hook. */
     taa?: { factor: number; disableOnCameraMove: boolean; samples: number };
 }
@@ -518,6 +520,9 @@ export async function composeComposite(
         intermediates,
         passes,
         outputPass: run.outputPass,
+        ...(request.scalarAccesses
+            ? { scalarAccesses: request.scalarAccesses }
+            : {}),
         ...(taa ? { taa } : {}),
     };
 }

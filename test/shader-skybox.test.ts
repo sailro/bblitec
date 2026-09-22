@@ -1,16 +1,18 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import {
-    extractPackagedStringLiteral,
-    readPinnedLibraryModule,
-} from "../src/pinned-shader-composer.js";
+import { readPinnedRawShader } from "../src/pinned-shader-composer.js";
 import { parseWgslModule, statementUsesPath } from "../src/shader-ir.js";
 import { specializeImageSkybox } from "../src/shader-skybox.js";
 import { emitWgslModule } from "../src/shader-wgsl-emitter.js";
 
-const module = readPinnedLibraryModule("material/standard/skybox-cubemap.js");
-const vertex = extractPackagedStringLiteral(module, "skyVertSrc");
-const fragment = extractPackagedStringLiteral(module, "skyFragSrc");
+const vertex = readPinnedRawShader(
+    "material/standard/skybox-cubemap.js",
+    "shaders/skybox-cubemap.vertex.wgsl",
+);
+const fragment = readPinnedRawShader(
+    "material/standard/skybox-cubemap.js",
+    "shaders/skybox-cubemap.fragment.wgsl",
+);
 
 test("skybox specialization transforms typed bindings, stage interfaces and fog expressions", () => {
     const result = specializeImageSkybox(vertex, fragment);

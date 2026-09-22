@@ -21,6 +21,7 @@ import { compileHttpResponseMethod } from "./http.js";
 import {
     compileSearchParamsMethod,
     deploymentSearchParamsValue,
+    RuntimeSearchParamsRequired,
 } from "./search-params.js";
 import { compileCollectionForEach } from "./collection-methods.js";
 
@@ -433,6 +434,7 @@ export function compileDataMethodCall(
         dynamicOwner?.kind === "browser" &&
         dynamicOwner.browserValue?.kind === "search-params"
     ) {
+        if (method === "set") throw new RuntimeSearchParamsRequired();
         dynamicOwner = deploymentSearchParamsValue(
             lowerer,
             dynamicOwner.browserValue.search,

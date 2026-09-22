@@ -14,6 +14,8 @@ Engine& window_document_engine();
 const void* window_document_identity();
 js::Promise<js::PromiseVoid> window_clipboard_write(std::string text);
 void window_location_reload();
+std::string window_location_search(const std::string& initial);
+void window_location_set_search(const std::string& value);
 void update_window_document();
 double window_device_pixel_ratio();
 UiClientRect window_viewport_size();

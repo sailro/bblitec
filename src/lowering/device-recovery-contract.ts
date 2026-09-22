@@ -184,11 +184,15 @@ export async function runDeviceLostRecovery(engine: EngineContext, state: Device
     if (missingFeatures.length) {
         throw new Error(\`WebGPU device recovery missing required features: \${missingFeatures.join(", ")}\`);
     }
+    const storageRecovery = engine._storageBuffers?.size ? await loadCpuStorageRecovery() : undefined;
     engine._device = await runRecoveryStep("requesting a replacement device", () => adapter.requestDevice({
         requiredFeatures: state._requiredFeatures,
-        requiredLimits: { ...engine._options?.requiredLimits, ...engine._storageRequiredLimits },
+        requiredLimits: { ...engine._options?.requiredLimits, ...storageRecovery?.getCpuStorageRecoveryLimits(engine) },
     }));
-    await runRecoveryStep("rebuilding engine storage buffers", () => engine._rebuildStorageBuffers?.());
+    await runRecoveryStep("rebuilding engine storage buffers", async () => {
+        const recovery = storageRecovery ?? (engine._storageBuffers?.size ? await loadCpuStorageRecovery() : undefined);
+        recovery?.rebuildCpuStorageBuffers(engine);
+    });
     await runRecoveryStep("reconfiguring rendering surfaces", () => {
         for (const surface of engine.surfaces) {
             const usage = surface._swapchainCopySrc ? TU.RENDER_ATTACHMENT | TU.COPY_SRC : TU.RENDER_ATTACHMENT;
@@ -299,7 +303,6 @@ async function runRecoveryStep<T>(description: string, action: () => T | Promise
         "rebuildRegisteredScenes",
         `
 export async function rebuildRegisteredScenes(engine: EngineContext): Promise<void> {
-    clearSceneBGLCache();
     engine._pbrFallbackTex = undefined;
     for (const surface of engine.surfaces) {
         for (const ctx of surface._renderingContexts) {
@@ -340,7 +343,6 @@ async function rebuildSceneGpu(engine: EngineContext, scene: SceneContext): Prom
     const rebuilds = scene._renderables.filter((r) => !!r._rebuild).map((r) => r._rebuild!);
     scene._renderables.length = scene._uniformUpdaters.length = 0;
     scene._meshDisposables.clear();
-    scene._meshAuxDisposables.clear();
     if (scene._lightGpuState) {
         scene._lightGpuState = undefined;
     }
@@ -400,7 +402,7 @@ async function runRecoveryStep<T>(description: string, action: () => Promise<T>)
         `
 function resetFrameGraphTasks(engine: EngineContext, scene: SceneContext): void {
     for (const task of scene._frameGraph._tasks) {
-        if (!("_sceneUBO" in task && "_sceneBG" in task && "_opaqueBindings" in task)) {
+        if (!("_sceneUBO" in task && "_targetSignature" in task && "_opaqueBindings" in task)) {
             continue;
         }
         const rt = task as unknown as RecoverableRenderTask;
@@ -727,15 +729,19 @@ export function _releaseDeviceLostRecoveryCapture(engine: EngineContext, include
         "runBatch",
         `
 function runBatch(batch: GpuResourceRetirement[]): void {
-    for (const retire of batch.splice(0)) {
-        try {
-            retire();
-        }
-        catch {
-        }
-    }
+    runGpuResourceCallbacks(batch.splice(0));
 }
 `,
+    );
+    check(
+        "gpu-resource-retirement",
+        "runGpuResourceCallbacks",
+        `export function runGpuResourceCallbacks(disposers: readonly GpuResourceRetirement[]): void {
+            for (const retire of disposers) {
+                try { retire(); }
+                catch (error) { console.error("GPU resource retirement failed.", error); }
+            }
+        }`,
     );
     check(
         "gpu-resource-retirement",

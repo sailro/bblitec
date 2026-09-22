@@ -26,7 +26,7 @@ function floatArray(value: Float32Array): string {
 }
 
 function floatVector(value: readonly number[]): string {
-    return `bbl::Vec3{${value.map((lane) => `static_cast<float>(${doubleLiteral(lane)})`).join(", ")}}`;
+    return `bbl::Vec3d{${value.map((lane) => `static_cast<float>(${doubleLiteral(lane)})`).join(", ")}}`;
 }
 
 function doubleArray(value: Float64Array): string {
@@ -234,11 +234,15 @@ test(
             cases.push(`{
     const auto left = ${floatArray(left)};
     const std::array<double, 16> right{${[...right].map(doubleLiteral).join(", ")}};
-    const auto outer = bbl::upstream::outer_transform_matrix(${floatVector(translation)}, ${floatVector(rotation)});
+    bbl::MeshRecord root;
+    root.outer_position = ${floatVector(translation)};
+    root.outer_rotation = ${floatVector(rotation)};
+    const auto outer = bbl::upstream::outer_transform_matrix(root);
     same(outer, ${floatArray(outer)});
     same(bbl::upstream::matrix_product(outer, left), ${floatArray(appliedOuter)});
-    narrowed(bbl::upstream::outer_transform_product(${floatVector(translation)}, ${floatVector(rotation)}, right), ${floatArray(Float32Array.from(productDouble))});
-    exact(bbl::upstream::outer_transform_product(${floatVector(translation)}, bbl::Vec3{0.0f, 0.0f, 0.0f}, right), ${doubleArray(translatedProduct)});
+    narrowed(bbl::upstream::outer_transform_product(root, right), ${floatArray(Float32Array.from(productDouble))});
+    root.outer_rotation = {};
+    exact(bbl::upstream::outer_transform_product(root, right), ${doubleArray(translatedProduct)});
     same(bbl::upstream::matrix_product(left, right), ${floatArray(product)});
     same(bbl::upstream::matrix_product(left.data(), right), ${floatArray(product)});
     std::array<float, 16> actual{};

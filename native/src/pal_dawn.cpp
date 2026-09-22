@@ -34,6 +34,7 @@
 
 #include "pal_camera_controls.hpp"
 #include "pal_dawn_shared.hpp"
+#include "pal_dawn_compute_texture.hpp"
 #if BBLITE_OFFSCREEN_SURFACES
 #include "pal_dawn_offscreen.hpp"
 #endif
@@ -82,6 +83,7 @@
 #include <map>
 #include <memory>
 #include <stdexcept>
+#include <tuple>
 #include <string>
 #include <unordered_map>
 #include <utility>
@@ -240,6 +242,7 @@ struct DawnDrawResources {
     WGPUBindGroup group = nullptr;
     /** The variant, times two plus the Standard unfilterable-emissive bit. */
     std::size_t group_key = npos;
+    std::vector<std::uint32_t> plugin_texture_allocations;
     /** The pinned arm's vertex choice; `pinned_draw_conventions` states it. */
     bool mirrored_vertices = false;
 };
@@ -485,6 +488,14 @@ void release_dawn_composed_material_textures(DawnSharedComposedMaterialTextures&
                                        : mesh.shader_textures;
 }
 
+struct DawnTaskTarget {
+    WGPUTextureFormat color;
+    WGPUTextureFormat depth;
+};
+using DawnVariantPipelineKey = std::tuple<std::size_t, WGPUTextureFormat, WGPUTextureFormat>;
+using DawnMeshPipelineKey = std::tuple<upstream::RenderPipelineKind, std::uint32_t, std::uint32_t,
+                                       WGPUTextureFormat, WGPUTextureFormat, bool>;
+
 struct DawnPipeline {
     WGPURenderPipeline pipeline = nullptr;
 };
@@ -513,6 +524,7 @@ struct DawnRenderTarget {
     std::uint32_t height = 0;
     /** What its colour attachment resolved to, for a target that follows it. */
     WGPUTextureFormat color_format = WGPUTextureFormat_Undefined;
+    WGPUTextureFormat depth_format = WGPUTextureFormat_Undefined;
     /**
      * Which build of the frame graph created these textures, numbered per
      * target: the identity a screen-space effect compares its bound
@@ -735,7 +747,7 @@ struct DawnUiResources {
  * once instead of three times.
  */
 void release_variant_family(
-    std::map<std::uint32_t, std::map<std::size_t, WGPURenderPipeline>>& pipelines,
+    std::map<std::uint32_t, std::map<DawnVariantPipelineKey, WGPURenderPipeline>>& pipelines,
     std::vector<WGPUPipelineLayout>& pipeline_layouts,
     std::vector<WGPUBindGroupLayout>& draw_layouts, std::vector<WGPUShaderModule>& fragment_modules,
     std::vector<WGPUShaderModule>& vertex_modules) {
@@ -980,17 +992,10 @@ struct DawnState : DawnDevice {
     WGPUShaderModule depth_copy_module = nullptr;
     WGPURenderPipeline depth_copy_pipeline = nullptr;
     // Depth-only pipelines by [sided][samples==4].
-    std::array<std::array<WGPURenderPipeline, 2>, 2> depth_only_pipelines{};
+    std::map<std::tuple<bool, std::uint32_t, WGPUTextureFormat>, WGPURenderPipeline>
+        depth_only_pipelines;
     // Blit pipelines keyed by target (format, samples).
     std::map<std::pair<WGPUTextureFormat, std::uint32_t>, WGPURenderPipeline> blit_pipelines;
-    // Mesh pipelines for render-task targets that differ from the
-    // main pass, keyed by [multisampled][has depth]; the main 4x set
-    // stays in `pipelines`.
-    std::array<
-        std::array<std::map<std::pair<upstream::RenderPipelineKind, std::uint32_t>, DawnPipeline>,
-                   2>,
-        2>
-        task_pipelines{};
     std::uint32_t frame_graph_width = 0;
     std::uint32_t frame_graph_height = 0;
     // Explicit bind group layouts shared by every mesh pipeline
@@ -1086,7 +1091,8 @@ struct DawnState : DawnDevice {
     std::vector<WGPUPipelineLayout> node_pipeline_layouts;
     std::vector<WGPUShaderModule> node_vertex_modules;
     std::vector<WGPUShaderModule> node_fragment_modules;
-    std::map<std::uint32_t, std::map<std::size_t, WGPURenderPipeline>> node_variant_pipelines;
+    std::map<std::uint32_t, std::map<DawnVariantPipelineKey, WGPURenderPipeline>>
+        node_variant_pipelines;
 #endif
 #if BBLITE_STANDARD_VARIANTS > 0
     // The Standard family's composed layouts, modules and pipelines. The
@@ -1097,12 +1103,14 @@ struct DawnState : DawnDevice {
     std::vector<WGPUPipelineLayout> standard_pipeline_layouts;
     std::vector<WGPUShaderModule> standard_vertex_modules;
     std::vector<WGPUShaderModule> standard_fragment_modules;
-    std::map<std::uint32_t, std::map<std::size_t, WGPURenderPipeline>> standard_variant_pipelines;
+    std::map<std::uint32_t, std::map<DawnVariantPipelineKey, WGPURenderPipeline>>
+        standard_variant_pipelines;
 #endif
 #if BBLITE_PBR_VARIANTS > 0
     std::vector<WGPUShaderModule> pinned_vertex_modules;
     std::vector<WGPUShaderModule> pinned_fragment_modules;
-    std::map<std::uint32_t, std::map<std::size_t, WGPURenderPipeline>> pinned_variant_pipelines;
+    std::map<std::uint32_t, std::map<DawnVariantPipelineKey, WGPURenderPipeline>>
+        pinned_variant_pipelines;
 #endif
 #if BBLITE_PINNED_MATERIALS
     // The frame's scene and lights blocks, shared by the PBR and the
@@ -1208,12 +1216,7 @@ struct DawnState : DawnDevice {
     WGPUBuffer empty_morph_deltas = nullptr;
     WGPUBuffer empty_morph_weights = nullptr;
 #endif
-    // Mesh pipelines keyed by (kind, shader variant id); the variant is
-    // zero for every non-shader kind.
-    std::map<std::pair<upstream::RenderPipelineKind, std::uint32_t>, DawnPipeline> pipelines;
-    /** Vertex-only custom-material pipelines for depth shadow targets. */
-    std::map<std::pair<upstream::RenderPipelineKind, std::uint32_t>, DawnPipeline>
-        shader_shadow_pipelines;
+    std::map<DawnMeshPipelineKey, DawnPipeline> pipelines;
     // Attribution capture resources (scene-1 diagnostics tooling),
     // created lazily on the first requested capture. Pipelines are
     // keyed by [double_sided]; the PBR diagnostic set adds the MRT
@@ -1303,7 +1306,7 @@ struct DawnState : DawnDevice {
     }
 #endif
 
-    void release_frame_graph_textures() {
+    void release_frame_graph_textures(const Engine* preserve = nullptr) {
 #if BBLITE_SHADOW_RECEIVERS
         // Custom shader resource groups may bind a CSM map directly. They
         // must release that view before the frame graph destroys it and
@@ -1325,8 +1328,12 @@ struct DawnState : DawnDevice {
         }
         pbr_shadow_groups.clear();
 #endif
-        for (DawnRenderTarget& target : render_targets)
-            target = {};
+        for (std::size_t index = 0; index < render_targets.size(); ++index) {
+            if (preserve && index < preserve->render_targets.size() &&
+                preserve->render_targets[index].lifecycle)
+                continue;
+            render_targets[index] = {};
+        }
         for (DawnGeometryTask& task : geometry_tasks)
             task = {};
 #if defined(BBLITE_HAS_POST_PROCESS) && BBLITE_HAS_POST_PROCESS
@@ -1748,30 +1755,13 @@ struct DawnState : DawnDevice {
             wgpuSamplerRelease(shadow_filtering_sampler);
         }
 #endif
-        for (auto& sided : depth_only_pipelines) {
-            for (WGPURenderPipeline pipeline : sided) {
-                if (pipeline)
-                    wgpuRenderPipelineRelease(pipeline);
-            }
+        for (auto& [key, pipeline] : depth_only_pipelines) {
+            if (pipeline)
+                wgpuRenderPipelineRelease(pipeline);
         }
         for (auto& [key, pipeline] : blit_pipelines) {
             if (pipeline)
                 wgpuRenderPipelineRelease(pipeline);
-        }
-        for (auto& by_depth : task_pipelines) {
-            for (auto& pipeline_map : by_depth) {
-                for (auto& [kind, pipeline] : pipeline_map) {
-                    if (pipeline.pipeline) {
-                        wgpuRenderPipelineRelease(pipeline.pipeline);
-                    }
-                }
-            }
-        }
-        for (auto& [key, pipeline] : shader_shadow_pipelines) {
-            (void)key;
-            if (pipeline.pipeline) {
-                wgpuRenderPipelineRelease(pipeline.pipeline);
-            }
         }
         if (depth_copy_pipeline) {
             wgpuRenderPipelineRelease(depth_copy_pipeline);
@@ -1830,7 +1820,7 @@ struct DawnState : DawnDevice {
 #endif
         release_meshes();
         for (ShaderStorageBuffer& storage : shader_storage_buffers) {
-            if (storage.buffer)
+            if (storage.buffer && !storage.borrowed_owner)
                 wgpuBufferRelease(storage.buffer);
         }
         shader_storage_buffers.clear();
@@ -2233,6 +2223,20 @@ void sync_shader_storage_buffers(DawnState& state, const Engine& engine) {
         },
         [&](WGPUBuffer buffer, const void* bytes, std::size_t size) {
             wgpuQueueWriteBuffer(state.queue, buffer, 0, bytes, size);
+        },
+        [](const Engine::StorageBufferRecord& source) -> DawnState::ShaderStorageBuffer {
+            if (!source.gpu || source.disposed)
+                return {};
+#if BBLITE_COMPUTE_BUFFERS
+            const auto allocation =
+                std::dynamic_pointer_cast<DawnStorageBuffer>(source.gpu->allocation);
+            if (!allocation || !allocation->buffer)
+                throw std::runtime_error("Storage allocation does not belong to Dawn.");
+            return {allocation->buffer.get(), static_cast<std::size_t>(source.byte_length),
+                    source.version, source.gpu};
+#else
+            throw std::runtime_error("This renderer has no owned storage-buffer support.");
+#endif
         });
 }
 
@@ -2805,8 +2809,20 @@ WGPUBindGroupLayoutEntry variant_layout_entry(const upstream::PinnedVariantBindi
     }
     switch (binding.kind) {
     case upstream::PinnedBindingKind::sampler:
-        layout_entry.sampler.type =
-            depth_emissive ? WGPUSamplerBindingType_NonFiltering : WGPUSamplerBindingType_Filtering;
+        layout_entry.sampler.type = depth_emissive || binding.non_filtering_sampler
+                                        ? WGPUSamplerBindingType_NonFiltering
+                                        : WGPUSamplerBindingType_Filtering;
+        break;
+    case upstream::PinnedBindingKind::samplerComparison:
+        layout_entry.sampler.type = WGPUSamplerBindingType_Comparison;
+        break;
+    case upstream::PinnedBindingKind::textureDepth2d:
+    case upstream::PinnedBindingKind::textureDepth2dArray:
+        layout_entry.texture.sampleType = WGPUTextureSampleType_Depth;
+        layout_entry.texture.viewDimension =
+            binding.kind == upstream::PinnedBindingKind::textureDepth2dArray
+                ? WGPUTextureViewDimension_2DArray
+                : WGPUTextureViewDimension_2D;
         break;
     case upstream::PinnedBindingKind::storageBuffer:
         // The morph arms' deltas and weights.
@@ -2999,6 +3015,16 @@ WGPUTexture upload_reflection_cube(DawnState& state,
 // reversal is an SDL-only adaptation).
 WGPUTexture create_environment_texture(DawnState& state, const EnvironmentState& environment,
                                        std::uint32_t layers = 6) {
+#if BBLITE_COMPUTE_TEXTURES
+    if (environment.specular_gpu) {
+        const auto allocation =
+            std::dynamic_pointer_cast<DawnComputeTexture>(environment.specular_gpu);
+        if (!allocation || !allocation->texture || layers != 6)
+            throw std::runtime_error("Dawn environment requires a live six-face GPU cube.");
+        wgpuTextureAddRef(allocation->texture);
+        return allocation->texture;
+    }
+#endif
     const bool has_environment = environment_cube_present(environment);
     if (!has_environment)
         return nullptr;
@@ -3175,6 +3201,22 @@ std::uint32_t task_sample_count(const DawnState& state, std::uint32_t requested)
     return requested == 4 ? state.sample_count : 1u;
 }
 
+WGPUTextureFormat depth_texture_format(const RenderTargetRecord& record) {
+    if (record.shadow_map)
+        return WGPUTextureFormat_Depth32Float;
+    switch (record.depth_format) {
+    case DepthTextureFormat::depth24_plus_stencil8:
+        return WGPUTextureFormat_Depth24PlusStencil8;
+    case DepthTextureFormat::depth16_unorm:
+        return WGPUTextureFormat_Depth16Unorm;
+    case DepthTextureFormat::depth24_plus:
+        return WGPUTextureFormat_Depth24Plus;
+    case DepthTextureFormat::depth32_float:
+        return WGPUTextureFormat_Depth32Float;
+    }
+    throw std::runtime_error("Unrepresented depth texture format.");
+}
+
 WGPUTextureFormat texture_format(TextureFormatClass format) {
     switch (format) {
     case TextureFormatClass::rgba8_unorm:
@@ -3224,28 +3266,40 @@ void create_frame_graph_textures(DawnState& state, const Engine& engine, std::ui
     if (state.render_targets.size() == engine.render_targets.size() &&
         state.frame_graph_width == width && state.frame_graph_height == height &&
         !surface_targets_changed(engine, state.render_targets, width, height)) {
+        synchronize_render_target_lifecycles(engine);
         return;
     }
     const auto target_plans =
         plan_render_targets(engine, width, height, state.surface_format,
                             [](TextureFormatClass format) { return texture_format(format); });
-    state.release_frame_graph_textures();
+    state.release_frame_graph_textures(&engine);
 #if BBLITE_SHADOW_RECEIVERS
     // Every shadow map was just released with the other targets, so the
     // render gate's "already rendered" sentinels no longer describe a
     // texture that exists: each generator's next frame must render.
     state.shadow_refresh.invalidate_rendered_maps();
 #endif
-    state.frame_graph_width = width;
-    state.frame_graph_height = height;
     state.render_targets.resize(engine.render_targets.size());
-    for (std::size_t index = 0; index < engine.render_targets.size(); ++index) {
-        const RenderTargetRecord& record = engine.render_targets[index];
-        DawnRenderTarget& target = state.render_targets[index];
+    for (std::size_t index = 0; index < target_plans.size(); ++index) {
+        const RenderTargetRecord record = engine.render_targets[index];
         const auto& planned = target_plans[index];
+        auto& current = state.render_targets[index];
+        std::shared_ptr<DawnRenderTarget> replacement;
+        if (record.lifecycle) {
+            if (current.allocation && current.width == planned.width &&
+                current.height == planned.height && current.color_format == planned.color_format) {
+                record.lifecycle->synchronize();
+                continue;
+            }
+            record.lifecycle->prepare_resize();
+            replacement = std::make_shared<DawnRenderTarget>();
+        }
+        DawnRenderTarget& target = replacement ? *replacement : current;
         target.width = planned.width;
         target.height = planned.height;
         target.color_format = planned.color_format;
+        target.depth_format =
+            record.has_depth ? depth_texture_format(record) : WGPUTextureFormat_Undefined;
         if (record.swapchain)
             continue;
         target.allocation = ++state.render_target_allocations;
@@ -3284,15 +3338,12 @@ void create_frame_graph_textures(DawnState& state, const Engine& engine, std::ui
             // `create_render_target` normalises this, so the record's own
             // invariant is that it is at least one.
             const std::uint32_t depth_layers = record.depth_layers;
-            target.depth =
-                create_frame_texture(state,
-                                     record.shadow_map ? WGPUTextureFormat_Depth32Float
-                                                       : WGPUTextureFormat_Depth24PlusStencil8,
-                                     samples, target.width, target.height,
-                                     record.sampled_depth ? WGPUTextureUsage_RenderAttachment |
-                                                                WGPUTextureUsage_TextureBinding
-                                                          : WGPUTextureUsage_RenderAttachment,
-                                     depth_layers);
+            target.depth = create_frame_texture(
+                state, target.depth_format, samples, target.width, target.height,
+                record.sampled_depth
+                    ? WGPUTextureUsage_RenderAttachment | WGPUTextureUsage_TextureBinding
+                    : WGPUTextureUsage_RenderAttachment,
+                depth_layers);
             // One attachment view per layer:
             // `ensureCsmShadowTaskState` builds each cascade's render
             // target over `createView({dimension:"2d", baseArrayLayer:i,
@@ -3334,6 +3385,13 @@ void create_frame_graph_textures(DawnState& state, const Engine& engine, std::ui
                     target.depth_copy_view = create_dawn_texture_view(
                         target.depth_copy, nullptr, "wgpuTextureCreateView frame graph depth copy");
                 }
+            }
+        }
+        if (replacement) {
+            auto previous = std::make_shared<DawnRenderTarget>(std::move(current));
+            current = std::move(*replacement);
+            if (previous->allocation) {
+                record.lifecycle->replaced([previous] { *previous = {}; });
             }
         }
     }
@@ -3400,6 +3458,8 @@ void create_frame_graph_textures(DawnState& state, const Engine& engine, std::ui
         task.depth_view = create_dawn_texture_view(task.depth, nullptr,
                                                    "wgpuTextureCreateView geometry task depth");
     }
+    state.frame_graph_width = width;
+    state.frame_graph_height = height;
 }
 
 #if BBLITE_GPU_DEFORMATION
@@ -3559,6 +3619,10 @@ WGPUBindGroupLayout pinned_frame_layout_for(DawnState& state) {
 }
 
 #if BBLITE_PBR_VARIANTS > 0
+std::pair<WGPUTexture, WGPUTextureView> dawn_render_target_texture(DawnState& state,
+                                                                   const Engine& engine,
+                                                                   RenderTargetHandle target_handle,
+                                                                   bool depth_only);
 /**
  * Group 1 for one variant: the mesh block, the material block, then exactly the
  * resources that variant's fragment declares.
@@ -3588,7 +3652,8 @@ WGPUBindGroupLayout pinned_draw_layout_for(DawnState& state, std::size_t variant
     // `mesh.world` is read in the vertex stage and `mesh.li` in the fragment,
     // so the mesh block is visible to both.
     uniform(0, WGPUShaderStage_Vertex | WGPUShaderStage_Fragment);
-    uniform(1, WGPUShaderStage_Fragment);
+    uniform(1, WGPUShaderStage_Fragment |
+                   (entry.material_ubo_vertex ? WGPUShaderStage_Vertex : WGPUShaderStage_None));
     for (std::size_t index = 0; index < entry.binding_count; ++index) {
         entries.push_back(variant_layout_entry(
             upstream::pbr_variant_bindings[entry.first_binding + index], false));
@@ -3812,6 +3877,39 @@ struct PinnedResource {
  */
 PinnedResource pinned_resource_for(DawnState& state, const DawnMesh& mesh, std::string_view name,
                                    [[maybe_unused]] const MaterialRecord* material = nullptr) {
+#if BBLITE_HAS_MATERIAL_PLUGIN_TEXTURES
+    if (material && mesh.shared_plugin_textures) {
+        for (std::size_t index = 0; index < material->plugin_textures.size(); ++index) {
+            const auto& binding = material->plugin_textures[index];
+            if (binding.texture_name == name || binding.sampler_name == name) {
+                auto& sampled = mesh.shared_plugin_textures->textures.at(index);
+                if (const auto& source = binding.data.render_source) {
+                    if (source->engine_lifetime.expired())
+                        throw std::runtime_error("Render texture engine has expired.");
+                    const auto& reference = source->reference;
+                    const auto& target = state.render_targets.at(reference.target.value);
+                    if (target.color || target.depth) {
+                        const auto [texture, view] = dawn_render_target_texture(
+                            state, *source->engine, reference.target, reference.depth_only);
+                        if (sampled.view.get() != view) {
+                            wgpuTextureAddRef(texture);
+                            wgpuTextureViewAddRef(view);
+                            sampled.texture = texture;
+                            sampled.view = view;
+                            const auto sampler =
+                                reference.depth_only ? state.nearest_sampler : state.ground_sampler;
+                            wgpuSamplerAddRef(sampler);
+                            sampled.sampler = sampler;
+                        }
+                    }
+                    if (!sampled.view)
+                        throw std::runtime_error("Render texture has no live sampled allocation.");
+                }
+                return {sampled.view, sampled.sampler};
+            }
+        }
+    }
+#endif
     const upstream::MaterialTextureSlot* slot = material_slot_for_binding(name);
     if (slot != nullptr) {
 #if BBLITE_LOCAL_CUBEMAP
@@ -4145,7 +4243,8 @@ build_pinned_draw_group(DawnState& state, DawnMesh& mesh, std::size_t variant,
             continue;
         }
         const PinnedResource resource = pinned_resource_for(state, mesh, binding.name, material);
-        if (binding.kind == upstream::PinnedBindingKind::sampler) {
+        if (binding.kind == upstream::PinnedBindingKind::sampler ||
+            binding.kind == upstream::PinnedBindingKind::samplerComparison) {
             group_entry.sampler = resource.sampler;
         } else {
             group_entry.textureView = resource.view;
@@ -4167,7 +4266,31 @@ build_pinned_draw_group(DawnState& state, DawnMesh& mesh, std::size_t variant,
 DawnDrawState& ensure_pinned_draw_bindings(DawnState& state, DawnMesh& mesh, std::uint32_t material,
                                            std::size_t variant, const MaterialRecord* record) {
     DawnDrawState& draw_state = mesh.pinned_states.try_emplace(material, state).first->second;
-    if (draw_state.group && draw_state.group_key == variant) {
+    auto& allocations = draw_state.plugin_texture_allocations;
+    std::size_t allocation_count = 0;
+    bool allocations_changed = false;
+#if BBLITE_HAS_MATERIAL_PLUGIN_TEXTURES
+    if (record)
+        for (const auto& binding : record->plugin_textures) {
+            if (const auto& source = binding.data.render_source) {
+                const auto allocation =
+                    state.render_targets.at(source->reference.target.value).allocation;
+                if (allocation_count == allocations.size()) {
+                    allocations.push_back(allocation);
+                    allocations_changed = true;
+                } else if (allocations[allocation_count] != allocation) {
+                    allocations[allocation_count] = allocation;
+                    allocations_changed = true;
+                }
+                ++allocation_count;
+            }
+        }
+#endif
+    if (allocation_count != allocations.size()) {
+        allocations.resize(allocation_count);
+        allocations_changed = true;
+    }
+    if (draw_state.group && draw_state.group_key == variant && !allocations_changed) {
         return draw_state;
     }
     if (draw_state.group)
@@ -4427,14 +4550,21 @@ void encode_variant_draw(WGPURenderPassEncoder pass, WGPURenderPipeline pipeline
  * Deriving it from whether a depth copy happens to exist would part from
  * that for a target carrying both.
  */
-std::pair<WGPUTexture, WGPUTextureView>
-dawn_render_target_texture(DawnState& state, const Engine& engine,
-                           RenderTargetHandle target_handle) {
+std::pair<WGPUTexture, WGPUTextureView> dawn_render_target_texture(DawnState& state,
+                                                                   const Engine& engine,
+                                                                   RenderTargetHandle target_handle,
+                                                                   bool depth_only = false) {
     if (target_handle.value >= state.render_targets.size()) {
         dawn_error("Frame graph render target handle is invalid.");
     }
     const RenderTargetRecord& record = handle_at(engine.render_targets, target_handle);
     DawnRenderTarget& target = handle_at(state.render_targets, target_handle);
+    if (depth_only) {
+        if (!record.sampled_depth || !target.depth_sampled_view) {
+            pal::fail_render_target_has_no_texture();
+        }
+        return {target.depth, target.depth_sampled_view};
+    }
     if (pal::render_target_samples_depth(record)) {
         if (record.has_depth && target.depth_copy) {
             return {target.depth_copy, target.depth_copy_view};
@@ -5176,7 +5306,8 @@ build_standard_draw_group(DawnState& state, DawnMesh& mesh, const MaterialRecord
                                .c_str());
             }
         }
-        if (binding.kind == upstream::PinnedBindingKind::sampler) {
+        if (binding.kind == upstream::PinnedBindingKind::sampler ||
+            binding.kind == upstream::PinnedBindingKind::samplerComparison) {
             group_entry.sampler = sampler;
         } else {
             group_entry.textureView = view;
@@ -5242,7 +5373,8 @@ StandardRenderViews standard_render_views(DawnState& state, const Engine& engine
             dawn_error("a material render texture must name a render target "
                        "built by createRenderTargetTexture.");
         }
-        return dawn_render_target_texture(state, engine, reference.target).second;
+        return dawn_render_target_texture(state, engine, reference.target, reference.depth_only)
+            .second;
     };
     return StandardRenderViews{
         material->has_emissive_render_texture ? view(material->emissive_render_texture) : nullptr,
@@ -5308,7 +5440,7 @@ void write_standard_draw_blocks(DawnState& state, const Scene& scene, const Engi
                 dawn_error(("Standard draw for mesh " + std::to_string(draw.item.mesh.value) +
                             ", material " + std::to_string(draw.item.material.value) +
                             " resolves no composed variant in a geometry task: " +
-                            standard_variant_request(engine, draw))
+                            standard_variant_request(scene, engine, draw))
                                .c_str());
             }
             DawnMesh& mesh = state.meshes[draw.item_index];
@@ -5585,18 +5717,20 @@ DawnPipeline& pipeline_for(DawnState& state, upstream::RenderPipelineKind kind,
                            std::uint32_t shader_variant = 0,
                            /** Zero asks for the frame's own sample count. */
                            std::uint32_t requested_samples = 0, bool has_depth = true,
-                           bool shadow_pass = false) {
+                           bool shadow_pass = false, std::optional<DawnTaskTarget> target = {}) {
     // The main set is whatever matches the frame; a render-task target
     // that differs gets its own. Written as "matches the frame" rather
     // than "is 4x" so a single-sample run keeps one main set instead of
     // filing every pipeline under the task buckets.
     const std::uint32_t samples = requested_samples == 0 ? state.sample_count : requested_samples;
-    const bool frame_samples = samples == state.sample_count;
-    auto& pipeline_map = shadow_pass ? state.shader_shadow_pipelines
-                         : frame_samples && has_depth
-                             ? state.pipelines
-                             : state.task_pipelines[frame_samples ? 1 : 0][has_depth ? 1 : 0];
-    const auto pipeline_key = std::make_pair(kind, shader_variant);
+    const auto color_format = target ? target->color : state.frame_color_format;
+    const auto depth_format = target ? target->depth
+                                     : (shadow_pass ? WGPUTextureFormat_Depth32Float
+                                                    : WGPUTextureFormat_Depth24PlusStencil8);
+    auto& pipeline_map = state.pipelines;
+    const auto pipeline_key =
+        std::make_tuple(kind, shader_variant, samples, color_format,
+                        has_depth ? depth_format : WGPUTextureFormat_Undefined, shadow_pass);
     const auto existing = pipeline_map.find(pipeline_key);
     if (existing != pipeline_map.end())
         return existing->second;
@@ -5696,8 +5830,7 @@ DawnPipeline& pipeline_for(DawnState& state, upstream::RenderPipelineKind kind,
 
     const bool depth_write_off = traits.transparent || (shader_info && !shader_info->depth_write);
     WGPUDepthStencilState depth_stencil = WGPU_DEPTH_STENCIL_STATE_INIT;
-    depth_stencil.format =
-        shadow_pass ? WGPUTextureFormat_Depth32Float : WGPUTextureFormat_Depth24PlusStencil8;
+    depth_stencil.format = depth_format;
     depth_stencil.depthWriteEnabled =
         depth_write_off ? WGPUOptionalBool_False : WGPUOptionalBool_True;
     depth_stencil.depthCompare = dawn_depth_compare(shader_info && shader_info->depth_compare
@@ -5715,7 +5848,7 @@ DawnPipeline& pipeline_for(DawnState& state, upstream::RenderPipelineKind kind,
         alpha_to_coverage_enabled(traits.shader_a2c, samples);
 
     WGPUColorTargetState color_target = WGPU_COLOR_TARGET_STATE_INIT;
-    color_target.format = state.frame_color_format;
+    color_target.format = color_format;
     WGPUBlendState blend{};
     if (traits.transparent || (shader_info && shader_info->alpha_blending)) {
         blend =
@@ -5840,10 +5973,11 @@ fill_variant_vertex_layouts(VariantVertexAttributes& inputs,
  * family its own material belongs to, so a builder that answered this for
  * itself would be right only for the casters that family happens to own.
  */
-[[maybe_unused]] void apply_pass_depth_state(WGPUDepthStencilState& depth_stencil,
-                                             bool shadow_pass) {
-    depth_stencil.format =
-        shadow_pass ? WGPUTextureFormat_Depth32Float : WGPUTextureFormat_Depth24PlusStencil8;
+[[maybe_unused]] void apply_pass_depth_state(WGPUDepthStencilState& depth_stencil, bool shadow_pass,
+                                             std::optional<DawnTaskTarget> target) {
+    depth_stencil.format = target ? target->depth
+                                  : (shadow_pass ? WGPUTextureFormat_Depth32Float
+                                                 : WGPUTextureFormat_Depth24PlusStencil8);
     depth_stencil.depthCompare = dawn_depth_compare(pal::pass_depth_compare(shadow_pass));
 }
 
@@ -5920,10 +6054,17 @@ pinned_variant_pipeline(DawnState& state, std::size_t variant, upstream::RenderP
                         // Which ESM generator's map this pass writes, when it writes one. The
                         // colour format is that generator's own recorded row, so two generators
                         // whose factories returned different formats build different pipelines.
-                        std::uint32_t esm_shadow_index = invalid_handle) {
-    const std::size_t key = pal::variant_pipeline_key(
+                        std::uint32_t esm_shadow_index = invalid_handle,
+                        std::optional<DawnTaskTarget> target = {}) {
+    const auto variant_key = pal::variant_pipeline_key(
         pal::esm_keyed_variant(variant, upstream::pbr_variants.size(), esm_shadow_index), kind,
         {shadow_pass, has_depth});
+    const auto color_format = target ? target->color : state.frame_color_format;
+    const auto depth_format = target ? target->depth
+                                     : (shadow_pass ? WGPUTextureFormat_Depth32Float
+                                                    : WGPUTextureFormat_Depth24PlusStencil8);
+    const auto key = std::make_tuple(variant_key, color_format,
+                                     has_depth ? depth_format : WGPUTextureFormat_Undefined);
     auto& map = state.pinned_variant_pipelines[samples];
     const auto existing = map.find(key);
     if (existing != map.end())
@@ -5980,7 +6121,7 @@ pinned_variant_pipeline(DawnState& state, std::size_t variant, upstream::RenderP
     descriptor.primitive.frontFace = traits.front;
     descriptor.primitive.cullMode = traits.cull;
     WGPUDepthStencilState depth_stencil = WGPU_DEPTH_STENCIL_STATE_INIT;
-    apply_pass_depth_state(depth_stencil, shadow_pass);
+    apply_pass_depth_state(depth_stencil, shadow_pass, target);
     // A no-color view draws in the depth-only tasks, which write depth
     // whatever the material's own alpha would have said.
     depth_stencil.depthWriteEnabled = !entry.no_color_output && traits.transparent
@@ -5990,7 +6131,7 @@ pinned_variant_pipeline(DawnState& state, std::size_t variant, upstream::RenderP
     descriptor.multisample.count = samples;
     descriptor.multisample.mask = ~0u;
     WGPUColorTargetState color_target = WGPU_COLOR_TARGET_STATE_INIT;
-    color_target.format = state.frame_color_format;
+    color_target.format = color_format;
 #if BBLITE_SHADOWS_ESM
     // An ESM caster variant draws into ONE generator's map -- the task that
     // owns this pass names it -- so the format is that generator's own row
@@ -6038,21 +6179,26 @@ pinned_variant_pipeline(DawnState& state, std::size_t variant, upstream::RenderP
  * cull state the render plan bucketed (standard-pipeline.ts
  * getOrCreateStandardPipeline).
  */
-WGPURenderPipeline
-standard_variant_pipeline(DawnState& state, std::size_t variant, upstream::RenderPipelineKind kind,
-                          std::uint32_t samples, bool has_depth, bool unfilterable_emissive,
-                          const FrameTaskRecord* geometry_task = nullptr,
-                          // The pin's one exception to this port's depth convention: a shadow
-                          // caster pass renders standard-Z into the generator's own
-                          // `depth32float` map.
-                          bool shadow_pass = false,
-                          // Which ESM generator's map this pass writes, when it writes one. The
-                          // colour format is that generator's own recorded row, so two generators
-                          // whose factories returned different formats build different pipelines.
-                          std::uint32_t esm_shadow_index = invalid_handle) {
-    const std::size_t key = pal::variant_pipeline_key(
+WGPURenderPipeline standard_variant_pipeline(
+    DawnState& state, std::size_t variant, upstream::RenderPipelineKind kind, std::uint32_t samples,
+    bool has_depth, bool unfilterable_emissive, const FrameTaskRecord* geometry_task = nullptr,
+    // The pin's one exception to this port's depth convention: a shadow
+    // caster pass renders standard-Z into the generator's own
+    // `depth32float` map.
+    bool shadow_pass = false,
+    // Which ESM generator's map this pass writes, when it writes one. The
+    // colour format is that generator's own recorded row, so two generators
+    // whose factories returned different formats build different pipelines.
+    std::uint32_t esm_shadow_index = invalid_handle, std::optional<DawnTaskTarget> target = {}) {
+    const auto variant_key = pal::variant_pipeline_key(
         pal::esm_keyed_variant(variant, upstream::standard_variants.size(), esm_shadow_index), kind,
         {shadow_pass, has_depth, unfilterable_emissive});
+    const auto color_format = target ? target->color : state.frame_color_format;
+    const auto depth_format = target ? target->depth
+                                     : (shadow_pass ? WGPUTextureFormat_Depth32Float
+                                                    : WGPUTextureFormat_Depth24PlusStencil8);
+    const auto key = std::make_tuple(variant_key, color_format,
+                                     has_depth ? depth_format : WGPUTextureFormat_Undefined);
     auto& map = state.standard_variant_pipelines[samples];
     const auto existing = map.find(key);
     if (existing != map.end())
@@ -6102,7 +6248,7 @@ standard_variant_pipeline(DawnState& state, std::size_t variant, upstream::Rende
     descriptor.primitive.frontFace = traits.front;
     descriptor.primitive.cullMode = traits.cull;
     WGPUDepthStencilState depth_stencil = WGPU_DEPTH_STENCIL_STATE_INIT;
-    apply_pass_depth_state(depth_stencil, shadow_pass);
+    apply_pass_depth_state(depth_stencil, shadow_pass, target);
     depth_stencil.depthWriteEnabled = !entry.no_color_output && traits.transparent
                                           ? WGPUOptionalBool_False
                                           : WGPUOptionalBool_True;
@@ -6110,7 +6256,7 @@ standard_variant_pipeline(DawnState& state, std::size_t variant, upstream::Rende
     descriptor.multisample.count = samples;
     descriptor.multisample.mask = ~0u;
     WGPUColorTargetState color_target = WGPU_COLOR_TARGET_STATE_INIT;
-    color_target.format = state.frame_color_format;
+    color_target.format = color_format;
 #if BBLITE_SHADOWS_ESM
     // An ESM caster variant draws into ONE generator's map -- the task that
     // owns this pass names it -- so the format is that generator's own row
@@ -6340,12 +6486,19 @@ node_variant_pipeline(DawnState& state, std::size_t variant, upstream::RenderPip
                       // it resolved. A geometry module is composed for exactly ONE task, so
                       // the slot-keyed cache stays valid with that task's targets baked in.
                       [[maybe_unused]] const FrameTaskRecord* geometry_task = nullptr,
-                      std::size_t geometry_variant = pal::no_node_geometry_variant) {
+                      std::size_t geometry_variant = pal::no_node_geometry_variant,
+                      std::optional<DawnTaskTarget> target = {}) {
     const bool geometry_view = geometry_variant != pal::no_node_geometry_variant;
     const std::size_t slot = pal::node_draw_slot(variant, caster, geometry_variant);
-    const std::size_t key = pal::variant_pipeline_key(
+    const auto variant_key = pal::variant_pipeline_key(
         pal::esm_keyed_variant(slot, pal::node_variant_slots(), esm_shadow_index), kind,
         {shadow_pass, has_depth});
+    const auto color_format = target ? target->color : state.frame_color_format;
+    const auto depth_format = target ? target->depth
+                                     : (shadow_pass ? WGPUTextureFormat_Depth32Float
+                                                    : WGPUTextureFormat_Depth24PlusStencil8);
+    const auto key = std::make_tuple(variant_key, color_format,
+                                     has_depth ? depth_format : WGPUTextureFormat_Undefined);
     auto& map = state.node_variant_pipelines[samples];
     const auto existing = map.find(key);
     if (existing != map.end())
@@ -6415,13 +6568,13 @@ node_variant_pipeline(DawnState& state, std::size_t variant, upstream::RenderPip
     // bucketed by, so all three views read the one table.
     descriptor.primitive.cullMode = dawn_cull_mode(traits.cull);
     WGPUDepthStencilState depth_stencil = WGPU_DEPTH_STENCIL_STATE_INIT;
-    apply_pass_depth_state(depth_stencil, shadow_pass);
+    apply_pass_depth_state(depth_stencil, shadow_pass, target);
     depth_stencil.depthWriteEnabled = transparent ? WGPUOptionalBool_False : WGPUOptionalBool_True;
     descriptor.depthStencil = has_depth ? &depth_stencil : nullptr;
     descriptor.multisample.count = samples;
     descriptor.multisample.mask = ~0u;
     WGPUColorTargetState color_target = WGPU_COLOR_TARGET_STATE_INIT;
-    color_target.format = state.frame_color_format;
+    color_target.format = color_format;
 #if BBLITE_SHADOWS_ESM
     // The caster writes ONE generator's map, so the format is that
     // generator's own recorded row rather than the frame's.
@@ -6869,9 +7022,9 @@ void write_node_geometry_task(DawnState& state, NodeMeshBlockCache& mesh_blocks,
 // Depth-only pipelines mirror SDL: the scene vertex module with the
 // empty depth-only fragment, depth writes on, no color targets.
 WGPURenderPipeline depth_only_pipeline_for(DawnState& state, bool double_sided,
-                                           std::uint32_t samples) {
+                                           std::uint32_t samples, WGPUTextureFormat format) {
     WGPURenderPipeline& slot =
-        state.depth_only_pipelines[double_sided ? 1 : 0][samples == state.sample_count ? 1 : 0];
+        state.depth_only_pipelines[std::make_tuple(double_sided, samples, format)];
     if (slot)
         return slot;
     if (!state.depth_only_module) {
@@ -6893,7 +7046,7 @@ WGPURenderPipeline depth_only_pipeline_for(DawnState& state, bool double_sided,
     descriptor.primitive.frontFace = WGPUFrontFace_CCW;
     descriptor.primitive.cullMode = double_sided ? WGPUCullMode_None : WGPUCullMode_Back;
     WGPUDepthStencilState depth_stencil = WGPU_DEPTH_STENCIL_STATE_INIT;
-    depth_stencil.format = WGPUTextureFormat_Depth24PlusStencil8;
+    depth_stencil.format = format;
     depth_stencil.depthWriteEnabled = WGPUOptionalBool_True;
     depth_stencil.depthCompare = dawn_depth_compare(upstream::pinned_depth_compare);
     descriptor.depthStencil = &depth_stencil;
@@ -9474,6 +9627,21 @@ DawnMesh upload_dawn_scene_mesh(DawnState& state, Engine& engine,
     const auto upload_material_slot_texture =
         [&](DawnSampledTexture& sampled, const auto& texture,
             std::vector<std::shared_ptr<DawnTexture>>* leases) {
+            if (texture.data.render_source)
+                return;
+            if (const auto& source = texture.data.gpu_source) {
+                const auto image =
+                    std::dynamic_pointer_cast<DawnComputeTexture>(source->allocation);
+                if (source->owners == 0 || !image || !image->sampled_view || !image->sampler)
+                    throw std::runtime_error(
+                        "Material texture has no live Dawn sampled allocation.");
+                sampled.borrowed_image = std::make_shared<GpuTextureLease>(source);
+                sampled.texture = image->texture.retain();
+                sampled.view = image->sampled_view.retain();
+                wgpuSamplerAddRef(image->sampler);
+                sampled.sampler = image->sampler.get();
+                return;
+            }
             const auto upload = [&] {
                 std::uint32_t mip_count = 1;
                 return DawnTexture{upload_material_texture(state, texture.data, texture.srgb,
@@ -10213,7 +10381,7 @@ class DawnSceneRun {
                 if (handle.value >= engine.frame_tasks.size()) {
                     throw std::runtime_error("Scene frame task handle is invalid.");
                 }
-                const FrameTaskRecord& task = handle_at(engine.frame_tasks, handle);
+                FrameTaskRecord& task = handle_at(engine.frame_tasks, handle);
                 if (task.kind != FrameTaskKind::render && task.kind != FrameTaskKind::geometry) {
                     continue;
                 }
@@ -10224,6 +10392,8 @@ class DawnSceneRun {
                 }
                 render_task.draw_lists =
                     upstream::build_render_task_draw_lists(task_plan.items, engine, task);
+                task.render_recorded = true;
+                task.render_meshes_dirty = false;
             }
         }
     }
@@ -10294,11 +10464,11 @@ class DawnSceneRun {
                 // naming the mesh, matching the SDL_GPU backend.
                 const std::size_t variant = standard_variant_for_draw(*pass_scene, engine, draw);
                 if (variant == npos) {
-                    dawn_error(
-                        ("Standard draw for mesh " + std::to_string(draw.item.mesh.value) +
-                         ", material " + std::to_string(draw.item.material.value) +
-                         " resolves no composed variant: " + standard_variant_request(engine, draw))
-                            .c_str());
+                    dawn_error(("Standard draw for mesh " + std::to_string(draw.item.mesh.value) +
+                                ", material " + std::to_string(draw.item.material.value) +
+                                " resolves no composed variant: " +
+                                standard_variant_request(*pass_scene, engine, draw))
+                                   .c_str());
                 }
                 const MaterialRecord* standard_material =
                     draw.item.material.value < engine.materials.size()
@@ -10977,6 +11147,9 @@ public:
         if (request_renderer_restart_if_scene_set_changed(engine, active_registered_scenes)) {
             return FramePreparation::restart;
         }
+#if defined(BBLITE_COMPUTE_FRAME_GRAPH) && BBLITE_COMPUTE_FRAME_GRAPH
+        begin_compute_frame_prefix(engine);
+#endif
 #if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI && !(defined(BBLITE_WORKERS) && BBLITE_WORKERS)
         // Browser layout observes DOM changes made by this turn's RAF
         // callbacks before painting the frame.
@@ -11485,6 +11658,15 @@ public:
         }
 #endif
 #endif
+        // Sampled render targets must exist before material bind groups are built.
+        if (!engine.render_targets.empty()) {
+#if defined(BBLITE_HAS_TAA) && BBLITE_HAS_TAA
+            if (!engine.stopped)
+                create_frame_graph_textures(state, engine, width, height);
+#else
+            create_frame_graph_textures(state, engine, width, height);
+#endif
+        }
         // RAF callbacks and CSM receiver subscriptions can both update
         // ShaderMaterial storage. Publish their latest bytes before any
         // caster or colour pass builds and binds the reflected groups.
@@ -11607,11 +11789,7 @@ public:
         }
 #endif
         if (!scene.tasks.empty()) {
-#if defined(BBLITE_HAS_TAA) && BBLITE_HAS_TAA
-            if (!engine.stopped)
-                create_frame_graph_textures(state, engine, width, height);
-#else
-            create_frame_graph_textures(state, engine, width, height);
+#if !(defined(BBLITE_HAS_TAA) && BBLITE_HAS_TAA)
 #if BBLITE_SHADOW_RECEIVERS
             // Which generators have had their casters' pass-independent
             // blocks written this frame. A cascaded generator renders one
@@ -11916,6 +12094,13 @@ public:
         [[maybe_unused]] auto& capture_source = frame_->capture_source;
         [[maybe_unused]] auto& frame_graph_presented = frame_->frame_graph_presented;
         encoder = wgpuDeviceCreateCommandEncoder(state.device, nullptr);
+#if defined(BBLITE_COMPUTE_FRAME_GRAPH) && BBLITE_COMPUTE_FRAME_GRAPH
+        DawnCommandEncoder surface_encoder;
+        if (compute_frame_prefix_deferred(engine)) {
+            surface_encoder = std::move(encoder);
+            encoder = wgpuDeviceCreateCommandEncoder(state.device, nullptr);
+        }
+#endif
         capture_source = surface_texture.texture;
         // Meaningful only under the frame-graph arm, where the default
         // above is a never-rendered surface: set by the same two arms
@@ -11945,7 +12130,8 @@ public:
                                         // ShaderMaterial's group-1 pass
                                         // block. Tasks own one so cascades
                                         // do not all read the frame camera.
-                                        WGPUBuffer shader_pass_uniforms = nullptr) {
+                                        WGPUBuffer shader_pass_uniforms = nullptr,
+                                        std::optional<DawnTaskTarget> target = {}) {
             (void)frame_group;
             (void)shadow_pass;
             (void)esm_shadow_index;
@@ -11987,7 +12173,7 @@ public:
                         list_pass,
                         pinned_variant_pipeline(state, variant, draw.pipeline, samples,
                                                 pass_has_depth, nullptr, shadow_pass,
-                                                esm_shadow_index),
+                                                esm_shadow_index, target),
                         bound_pipeline, frame_group ? frame_group : pinned_frame_group(state),
                         pinned_state.group,
                         // Skinned and palette-world draws read the mirrored
@@ -12044,7 +12230,7 @@ public:
                         standard_variant_pipeline(state, variant, draw.pipeline, samples,
                                                   pass_has_depth,
                                                   (standard_state.group_key & 1) != 0, nullptr,
-                                                  shadow_pass, esm_shadow_index),
+                                                  shadow_pass, esm_shadow_index, target),
                         bound_pipeline, frame_group ? frame_group : pinned_frame_group(state),
                         standard_state.group,
                         // The Standard families carry no glTF X-mirror: the
@@ -12092,7 +12278,8 @@ public:
                         state, draw, list_pass,
                         node_variant_pipeline(state, draw.item.shader_variant, draw.pipeline,
                                               samples, pass_has_depth, shadow_pass, node_caster,
-                                              esm_shadow_index),
+                                              esm_shadow_index, nullptr,
+                                              pal::no_node_geometry_variant, target),
                         bound_pipeline, frame_group ? frame_group : pinned_frame_group(state),
                         node_state.group,
                         // A node graph reads the baked vertices under the
@@ -12103,7 +12290,7 @@ public:
 #endif
                 DawnPipeline& pipeline =
                     pipeline_for(state, draw.pipeline, draw.item.shader_variant, samples,
-                                 pass_has_depth, shadow_pass);
+                                 pass_has_depth, shadow_pass, target);
                 if (pipeline.pipeline != bound_pipeline) {
                     wgpuRenderPassEncoderSetPipeline(list_pass, pipeline.pipeline);
                     bound_pipeline = pipeline.pipeline;
@@ -12540,7 +12727,8 @@ public:
             const auto source_texture_view =
                 [&](const RenderTextureRef& reference) -> std::pair<WGPUTexture, WGPUTextureView> {
                 if (reference.source == RenderTextureSource::render_target) {
-                    return render_target_texture(reference.target);
+                    return dawn_render_target_texture(state, engine, reference.target,
+                                                      reference.depth_only);
                 }
                 if (reference.task.value >= engine.frame_tasks.size()) {
                     throw std::runtime_error("Frame graph source task handle is invalid.");
@@ -12605,6 +12793,20 @@ public:
                             throw std::runtime_error("Scene frame task handle is invalid.");
                         }
                         FrameTaskRecord& task = handle_at(engine.frame_tasks, handle);
+                        if (task.execution_enabled == false)
+                            continue;
+#if defined(BBLITE_COMPUTE_FRAME_GRAPH) && BBLITE_COMPUTE_FRAME_GRAPH
+                        if (task.kind == FrameTaskKind::compute) {
+                            if (surface_encoder) {
+                                DawnCommandBuffer shadows{
+                                    wgpuCommandEncoderFinish(encoder, nullptr)};
+                                submit_dawn_command(state.queue, shadows);
+                                encoder = std::exchange(surface_encoder, {});
+                                begin_compute_frame_prefix(engine, true);
+                            }
+                            continue;
+                        }
+#endif
 #if defined(BBLITE_HAS_TAA) && BBLITE_HAS_TAA
                         if (task.kind != FrameTaskKind::render &&
                             task.kind != FrameTaskKind::post_process) {
@@ -12781,13 +12983,17 @@ public:
                                 WGPURenderPassDepthStencilAttachment depth_attachment{};
                                 depth_attachment.view =
                                     target.depth_layer_views[task.render.depth_layer];
-                                depth_attachment.depthLoadOp = WGPULoadOp_Clear;
+                                depth_attachment.depthLoadOp =
+                                    upstream::render_task_loads_depth(false, false,
+                                                                      task.render.depth_clear)
+                                        ? WGPULoadOp_Load
+                                        : WGPULoadOp_Clear;
                                 depth_attachment.depthClearValue = upstream::pinned_depth_clear;
-                                depth_attachment.depthStoreOp = target_record.sampled_depth
-                                                                    ? WGPUStoreOp_Store
-                                                                    : WGPUStoreOp_Discard;
-                                depth_attachment.stencilLoadOp = WGPULoadOp_Clear;
-                                depth_attachment.stencilStoreOp = WGPUStoreOp_Discard;
+                                depth_attachment.depthStoreOp = WGPUStoreOp_Store;
+                                if (target.depth_format == WGPUTextureFormat_Depth24PlusStencil8) {
+                                    depth_attachment.stencilLoadOp = depth_attachment.depthLoadOp;
+                                    depth_attachment.stencilStoreOp = WGPUStoreOp_Store;
+                                }
                                 WGPURenderPassDescriptor pass_descriptor =
                                     WGPU_RENDER_PASS_DESCRIPTOR_INIT;
                                 pass_descriptor.colorAttachmentCount = 0;
@@ -12797,7 +13003,9 @@ public:
                                 if (!render_task.scene_group) {
                                     DawnBindGroupLayout scene_layout{
                                         wgpuRenderPipelineGetBindGroupLayout(
-                                            depth_only_pipeline_for(state, false, samples), 1)};
+                                            depth_only_pipeline_for(state, false, samples,
+                                                                    target.depth_format),
+                                            1)};
                                     WGPUBindGroupEntry scene_entry = WGPU_BIND_GROUP_ENTRY_INIT;
                                     scene_entry.binding = 0;
                                     scene_entry.buffer = render_task.view_projection;
@@ -12814,17 +13022,20 @@ public:
                                 for (int sided_mode = 0; sided_mode < 2; ++sided_mode) {
                                     wgpuRenderPassEncoderSetPipeline(
                                         task_pass,
-                                        depth_only_pipeline_for(state, sided_mode == 1, samples));
+                                        depth_only_pipeline_for(state, sided_mode == 1, samples,
+                                                                target.depth_format));
                                     wgpuRenderPassEncoderSetBindGroup(
                                         task_pass, 1, render_task.scene_group, 0, nullptr);
                                     for (const RenderTaskMesh& entry : task.render_meshes) {
-                                        if (entry.material.value >= engine.materials.size()) {
+                                        const auto material_handle =
+                                            render_task_mesh_material(engine, entry);
+                                        if (material_handle.value >= engine.materials.size()) {
                                             throw std::runtime_error(
                                                 "Depth task material override is "
                                                 "invalid.");
                                         }
                                         const MaterialRecord& material =
-                                            handle_at(engine.materials, entry.material);
+                                            handle_at(engine.materials, material_handle);
                                         if (!material.no_color) {
                                             throw std::runtime_error(
                                                 "Depth-only render task requires "
@@ -12934,13 +13145,17 @@ public:
                                 // shadow map that is the single layer 0.
                                 depth_attachment.view =
                                     target.depth_layer_views[task.render.depth_layer];
-                                depth_attachment.depthLoadOp = WGPULoadOp_Clear;
+                                depth_attachment.depthLoadOp =
+                                    upstream::render_task_loads_depth(false, false,
+                                                                      task.render.depth_clear)
+                                        ? WGPULoadOp_Load
+                                        : WGPULoadOp_Clear;
                                 depth_attachment.depthClearValue = upstream::pinned_depth_clear;
-                                depth_attachment.depthStoreOp = target_record.sampled_depth
-                                                                    ? WGPUStoreOp_Store
-                                                                    : WGPUStoreOp_Discard;
-                                depth_attachment.stencilLoadOp = WGPULoadOp_Clear;
-                                depth_attachment.stencilStoreOp = WGPUStoreOp_Discard;
+                                depth_attachment.depthStoreOp = WGPUStoreOp_Store;
+                                if (target.depth_format == WGPUTextureFormat_Depth24PlusStencil8) {
+                                    depth_attachment.stencilLoadOp = depth_attachment.depthLoadOp;
+                                    depth_attachment.stencilStoreOp = WGPUStoreOp_Store;
+                                }
                                 pass_descriptor.depthStencilAttachment = &depth_attachment;
                             }
                             DawnRenderPass task_pass{
@@ -12979,7 +13194,11 @@ public:
                                 borrowed_depth_view || (target_record.has_depth && target.depth);
                             if (task.render.scene_stages) {
                                 if (task.render.has_camera || samples != state.sample_count ||
-                                    !pass_has_depth) {
+                                    !pass_has_depth ||
+                                    target.color_format != state.frame_color_format ||
+                                    (!borrowed_depth_view &&
+                                     target.depth_format !=
+                                         WGPUTextureFormat_Depth24PlusStencil8)) {
                                     throw std::runtime_error(
                                         "Compiler-owned scene stages require the "
                                         "default camera, sample count, and depth target.");
@@ -13077,19 +13296,27 @@ public:
 #endif
                                 }
                             }
-                            draw_list_into(task_pass, render_task.draw_lists.opaque, samples,
-                                           bound_pipeline, pass_has_depth,
-                                           render_task.pinned_frame_group, false, invalid_handle,
-                                           render_task.view_projection);
+                            draw_list_into(
+                                task_pass, render_task.draw_lists.opaque, samples, bound_pipeline,
+                                pass_has_depth, render_task.pinned_frame_group, false,
+                                invalid_handle, render_task.view_projection,
+                                DawnTaskTarget{target.color_format,
+                                               borrowed_depth_view
+                                                   ? WGPUTextureFormat_Depth24PlusStencil8
+                                                   : target.depth_format});
 #if BBLITE_HAS_BILLBOARDS
                             if (task.render.scene_stages) {
                                 draw_task_billboards(BillboardDepthMode::cutout);
                             }
 #endif
-                            draw_list_into(task_pass, render_task.draw_lists.transparent, samples,
-                                           bound_pipeline, pass_has_depth,
-                                           render_task.pinned_frame_group, false, invalid_handle,
-                                           render_task.view_projection);
+                            draw_list_into(
+                                task_pass, render_task.draw_lists.transparent, samples,
+                                bound_pipeline, pass_has_depth, render_task.pinned_frame_group,
+                                false, invalid_handle, render_task.view_projection,
+                                DawnTaskTarget{target.color_format,
+                                               borrowed_depth_view
+                                                   ? WGPUTextureFormat_Depth24PlusStencil8
+                                                   : target.depth_format});
                             if (task.render.scene_stages && state.ground_enabled) {
                                 // Ground is the final scene stage, after transparent
                                 // meshes, exactly as in the non-frame-graph pass.
@@ -13301,7 +13528,8 @@ public:
                                                         std::to_string(draw.item.mesh.value) +
                                                         " resolves no composed variant "
                                                         "in a geometry task: " +
-                                                        standard_variant_request(engine, draw))
+                                                        standard_variant_request(graph_scene,
+                                                                                 engine, draw))
                                                            .c_str());
                                         }
                                         const auto draw_state_it =
@@ -13753,6 +13981,9 @@ public:
         submit_dawn_command(state.queue, command);
         command.reset();
         encoder.reset();
+#if defined(BBLITE_COMPUTE_FRAME_GRAPH) && BBLITE_COMPUTE_FRAME_GRAPH
+        finish_compute_frame_prefix(engine);
+#endif
 
         if (capture_frame) {
             WGPUBufferMapCallbackInfo map_callback = WGPU_BUFFER_MAP_CALLBACK_INFO_INIT;

@@ -35,7 +35,7 @@ test("emits the render gate on the pin's own version rule", () => {
     // terms: casters, caster-list identity, light.
     assert.match(
         header,
-        /inline bool shadow_refresh_due\([\s\S]{0,600}if \(generator\.force_refresh_every_frame\) return true;[\s\S]{0,900}gate\.rendered &&\s*caster_version == gate\.last_caster_version &&\s*generator\.caster_list_version == gate\.last_caster_list_version &&\s*light\.position\.x == gate\.last_light_position\.x &&[\s\S]{0,300}light\.direction\.z == gate\.last_light_direction\.z &&\s*camera_unchanged\)/,
+        /inline bool shadow_refresh_due\([\s\S]{0,600}if \(generator\.force_refresh_every_frame\) return true;[\s\S]{0,1000}gate\.rendered &&\s*caster_version == gate\.last_caster_version &&\s*generator\.caster_list_version == gate\.last_caster_list_version &&\s*light\.position\.x == gate\.last_light_position\.x &&[\s\S]{0,300}light\.direction\.z == gate\.last_light_direction\.z &&\s*light_matrix == gate\.last_light_matrix &&\s*light\.angle == gate\.last_light_angle &&\s*camera_unchanged\)/,
     );
     // A fresh gate cannot skip: the pin's -1 sentinels.
     assert.match(
@@ -100,7 +100,7 @@ test("gates each family's fit and publishes the verdict to the task loops", () =
     // task loops read.
     assert.match(
         shared,
-        /const bool due = upstream::shadow_refresh_due\(\s*engine,\s*generator,\s*light_record,\s*eye,\s*csm_camera,\s*gate\);\s*gate\.due = due;/,
+        /const bool due =\s*shadow_enabled && upstream::shadow_refresh_due\(\s*engine,\s*generator,\s*light_record,\s*eye,\s*csm_camera,\s*gate\);\s*gate\.due = due;/,
     );
     // Every fit runs only on a due frame; the caster fold is hoisted once
     // ahead of the family switch, and the spot arm alone skips it.
@@ -135,7 +135,7 @@ test("gates each family's fit and publishes the verdict to the task loops", () =
         );
         assert.match(
             backend,
-            /release_frame_graph_textures\((?:state)?\);[\s\S]{0,400}shadow_refresh\.invalidate_rendered_maps\(\);/,
+            /release_frame_graph_textures\((?:state, )?&engine\);[\s\S]{0,400}shadow_refresh\.invalidate_rendered_maps\(\);/,
         );
     }
 });
@@ -190,14 +190,17 @@ test("builds vertex-only custom shader pipelines for shadow targets", () => {
     );
 
     const dawn = readFileSync("native/src/pal_dawn.cpp", "utf8");
-    assert.match(dawn, /DawnPipeline>\s+shader_shadow_pipelines;/);
     assert.match(
         dawn,
-        /auto& pipeline_map = shadow_pass\s*\? state\.shader_shadow_pipelines/,
+        /std::map<DawnMeshPipelineKey, DawnPipeline> pipelines;/,
     );
     assert.match(
         dawn,
-        /depth_stencil\.format =\s*shadow_pass\s*\? WGPUTextureFormat_Depth32Float/,
+        /pipeline_key =\s*std::make_tuple\(kind, shader_variant, samples, color_format,[\s\S]{0,160}shadow_pass\);/,
+    );
+    assert.match(
+        dawn,
+        /depth_format = target\s*\? target->depth[\s\S]{0,100}shadow_pass\s*\? WGPUTextureFormat_Depth32Float/,
     );
     assert.match(
         dawn,

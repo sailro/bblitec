@@ -17,7 +17,7 @@ import {
     runNativeFixtureCompiler,
 } from "./native-fixture.js";
 
-test("storage create and update share typed-array acceptance and refusal", () => {
+test("storage creation and update accept typed arrays and refuse plain arrays", () => {
     const source = (createData: string, updateData: string) => `
         import { createEngine, createStorageBuffer, updateStorageBuffer } from "babylon-lite";
         const engine = await createEngine({});
@@ -33,7 +33,7 @@ test("storage create and update share typed-array acceptance and refusal", () =>
     }
     assert.throws(
         () => compileSource(source("[1, 2]", "new Float32Array(4)")),
-        /createStorageBuffer requires a typed-array view/,
+        /createStorageBuffer requires an ArrayBuffer view/,
     );
     assert.throws(
         () => compileSource(source("new Float32Array(4)", "[1, 2]")),

@@ -6,15 +6,17 @@
 #include <type_traits>
 #include <vector>
 
-static std::vector<int> released;
-void SDL_DestroyGPUDevice(SDL_GPUDevice*) { released.push_back(1); }
-void SDL_ReleaseWindowFromGPUDevice(SDL_GPUDevice*, SDL_Window*) { released.push_back(2); }
-void wgpuInstanceRelease(WGPUInstance) { released.push_back(3); }
-void wgpuAdapterRelease(WGPUAdapter) { released.push_back(4); }
-void wgpuDeviceRelease(WGPUDevice) { released.push_back(5); }
-void wgpuQueueRelease(WGPUQueue) { released.push_back(6); }
-void wgpuSurfaceRelease(WGPUSurface) { released.push_back(7); }
-void wgpuDeviceDestroy(WGPUDevice) { released.push_back(8); }
+static std::vector<int> device_release_events;
+void SDL_DestroyGPUDevice(SDL_GPUDevice*) { device_release_events.push_back(1); }
+void SDL_ReleaseWindowFromGPUDevice(SDL_GPUDevice*, SDL_Window*) {
+    device_release_events.push_back(2);
+}
+void wgpuInstanceRelease(WGPUInstance) { device_release_events.push_back(3); }
+void wgpuAdapterRelease(WGPUAdapter) { device_release_events.push_back(4); }
+void wgpuDeviceRelease(WGPUDevice) { device_release_events.push_back(5); }
+void wgpuQueueRelease(WGPUQueue) { device_release_events.push_back(6); }
+void wgpuSurfaceRelease(WGPUSurface) { device_release_events.push_back(7); }
+void wgpuDeviceDestroy(WGPUDevice) { device_release_events.push_back(8); }
 
 namespace bbl::pal {
 std::string environment_variable(const char*) { return {}; }
@@ -29,7 +31,7 @@ int main() {
     static_assert(!std::is_copy_constructible_v<DawnDevice> &&
                   !std::is_move_constructible_v<DawnDevice>);
     for (int stage = 0; stage <= 5; ++stage) {
-        released.clear();
+        device_release_events.clear();
         try {
             DawnDevice device;
             if (stage >= 1)
@@ -47,26 +49,26 @@ int main() {
             throw std::runtime_error("construction interrupted");
         } catch (const std::runtime_error&) {
         }
-        assert(released.size() == static_cast<std::size_t>(stage));
+        assert(device_release_events.size() == static_cast<std::size_t>(stage));
         for (int i = 0; i < stage; ++i)
-            assert(released[i] == 2 + stage - i);
+            assert(device_release_events[i] == 2 + stage - i);
     }
-    released.clear();
+    device_release_events.clear();
     {
         DawnDevice device;
         device.destroy_device();
-        assert(released.empty());
+        assert(device_release_events.empty());
         device.device = fake<WGPUDevice>();
         device.surface = fake<WGPUSurface>();
         device.destroy_device();
         assert(!device.surface);
-        assert((released == std::vector<int>{7, 8}));
+        assert((device_release_events == std::vector<int>{7, 8}));
     }
-    assert((released == std::vector<int>{7, 8, 5}));
+    assert((device_release_events == std::vector<int>{7, 8, 5}));
     bbl::EngineOptions options;
     options.width = options.height = 16;
     for (bool claimed : {false, true}) {
-        released.clear();
+        device_release_events.clear();
         {
             SdlGpuDevice device;
             assert(initialize_run_sdl(SDL_INIT_VIDEO));
@@ -77,16 +79,16 @@ int main() {
             device.window_claimed = claimed;
             device.release();
         }
-        assert(released == (claimed ? std::vector<int>{2, 1} : std::vector<int>{1}));
+        assert(device_release_events == (claimed ? std::vector<int>{2, 1} : std::vector<int>{1}));
         assert(SDL_WasInit(SDL_INIT_VIDEO) == 0);
     }
-    released.clear();
+    device_release_events.clear();
     {
         SdlGpuDevice borrowed;
         borrowed.device = fake<SDL_GPUDevice*>();
         borrowed.owns_device = false;
     }
-    assert(released.empty());
+    assert(device_release_events.empty());
     {
         SdlWindowRun run;
         assert(initialize_run_sdl(SDL_INIT_VIDEO));

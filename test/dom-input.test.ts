@@ -41,6 +41,9 @@ test("generated DOM listeners receive retained SDL paths and control native defa
         }, true);
         const options = {capture: false, once: true, passive: false};
         button.addEventListener("pointerdown", event => {
+            if (!(event.target instanceof HTMLButtonElement) || event.target instanceof HTMLInputElement ||
+                event.target instanceof HTMLSelectElement || event.target instanceof HTMLTextAreaElement)
+                throw new Error("event target interface");
             if (event.currentTarget !== button) throw new Error("element current target");
             const target = event.currentTarget;
             if (target) target.addEventListener("pointerup", () => { button.setAttribute("data-up", "yes"); }, {once:true});

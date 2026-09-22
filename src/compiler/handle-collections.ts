@@ -5,6 +5,7 @@ import { EmissionSet, EmissionMap } from "./emission-transaction.js";
 import type { LoweringServices } from "./lowering-services.js";
 import ts from "typescript";
 import { readAssetBytesSync } from "./asset-bytes-sync.js";
+import { DynamicBindingStorageRequired } from "./dynamic-binding-storage.js";
 import { handleCppType } from "./data-types.js";
 import { requireGltfGroupSource } from "./intrinsics/animation.js";
 import {
@@ -358,6 +359,7 @@ interface HandleCollectionsContext
             | "guardStaticConstructionRead"
             | "meshWalks"
             | "checker"
+            | "symbols"
             | "dataTypes"
             | "options"
             | "assetPayloads"
@@ -1549,6 +1551,23 @@ export class HandleCollections {
         }
         this.context.expectArgumentCount(call, 1, 1);
         const pushed = this.context.compileValue(argumentAt(call, 0));
+        if (pushed.nativeError) {
+            const declaration =
+                this.context.symbols.valueSymbol(owner)?.valueDeclaration;
+            if (
+                declaration &&
+                ts.isVariableDeclaration(declaration) &&
+                declaration.initializer
+            )
+                throw new DynamicBindingStorageRequired(declaration, {
+                    kind: "vector",
+                    element: { kind: "error" },
+                });
+            return this.context.fail(
+                owner,
+                "An error list requires owned array storage.",
+            );
+        }
         if (!compileTimeListKinds.includes(pushed.kind)) return undefined;
         if (kind !== undefined && pushed.kind !== kind) {
             this.context.fail(
@@ -1580,6 +1599,8 @@ export class HandleCollections {
         if (callee.name.text !== "find") {
             return undefined;
         }
+        const root = this.findAssetRoot(call, callee.expression);
+        if (root) return root;
         const mapped = this.mappedMaterialFindSource(callee.expression);
         // A named collection, or the asset's flattened mesh list searched
         // in place -- `getContainerMeshes(asset).find(...)` -- which is
@@ -1625,6 +1646,57 @@ export class HandleCollections {
             );
         }
         return this.runtimeFind(target, predicate);
+    }
+
+    /** The glTF loader always inserts its synthetic SceneNode before feature entities. */
+    private findAssetRoot(
+        call: ts.CallExpression,
+        expression: ts.Expression,
+    ): Value | undefined {
+        const context = this.context;
+        const collection = context.unwrap(expression);
+        if (
+            !ts.isPropertyAccessExpression(collection) ||
+            collection.name.text !== "entities"
+        )
+            return undefined;
+        const owner = context.compileValue(collection.expression);
+        if (owner.kind !== "asset") return undefined;
+        if ((owner.asset?.kind ?? owner.assetKind) !== "gltf")
+            return context.fail(
+                collection,
+                "Entity search requires a glTF container with its synthetic root.",
+            );
+        context.expectArgumentCount(call, 1, 1);
+        const predicate = context.unwrap(argumentAt(call, 0));
+        if (
+            !ts.isArrowFunction(predicate) ||
+            predicate.parameters.length !== 1 ||
+            !ts.isIdentifier(predicate.parameters[0]!.name) ||
+            ts.isBlock(predicate.body)
+        )
+            return context.fail(
+                predicate,
+                "Entity search requires an expression-bodied arrow with one element parameter.",
+            );
+        const root: Value = {
+            ...owner,
+            kind: "asset-root",
+            truthinessCpp: "true",
+            engineCpp: context.requireEngine(owner, collection),
+        };
+        context.pushScope(context.allocateBlockPrefix());
+        try {
+            context.bindLocalValue(predicate.parameters[0]!.name, root);
+            if (context.compileCondition(predicate.body) !== "true")
+                return context.fail(
+                    predicate.body,
+                    "Entity search beyond the synthetic glTF root requires a represented heterogeneous entity collection.",
+                );
+        } finally {
+            context.popScope();
+        }
+        return root;
     }
 
     /**

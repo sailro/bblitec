@@ -142,6 +142,8 @@ function sourceResult(context: LoweringContext, overrides: boolean): unknown {
         context.numericValue(ts.factory.createIdentifier(name), types),
     );
     const body =
+        text("src/lite-error.ts") +
+        "\n" +
         text("src/animation/evaluate.ts") +
         "\n" +
         text(module) +

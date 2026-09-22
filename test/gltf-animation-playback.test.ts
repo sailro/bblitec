@@ -142,6 +142,8 @@ function sourceResult(context: LoweringContext): unknown[] {
     let current: Group | undefined;
     let events: unknown[] = [];
     const body =
+        text("src/lite-error.ts") +
+        "\n" +
         text(controllerModule) +
         "\n" +
         text(groupModule) +
@@ -314,8 +316,8 @@ function contexts(): LoweringContext[] {
         ),
         doctoredContext(
             controllerModule,
-            'throw new Error("AnimationController.tick requires an EngineContext for skeleton or morph animation")',
-            'throw new Error("changed engine gate")',
+            "ThrowLiteError(544)",
+            "ThrowLiteError(9999)",
         ),
     ];
 }

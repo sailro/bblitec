@@ -12,6 +12,8 @@ test("optional DOM calls snapshot the receiver and skip absent-call arguments", 
         `
         const worker = new Worker(new URL("./worker.ts", import.meta.url), {type:"module"});
         worker.terminate();
+        document.getElementById("host")?.remove();
+        document.getElementById("host")?.remove();
         const parent = document.createElement("div");
         parent.id = "parent";
         document.body.append(parent);
@@ -69,7 +71,13 @@ test("optional DOM calls snapshot the receiver and skip absent-call arguments", 
         if (visits !== 1) throw new Error("absent query continuation");
         globalThis.close();
     `,
-        { fileName: join(directory, "entry.ts") },
+        {
+            fileName: join(directory, "entry.ts"),
+            nativeHostUi: {
+                sourcePath: "test/ui-optional-calls.test.ts",
+                elements: [{ tag: "div", attributes: { id: "host" } }],
+            },
+        },
     );
     writeFileSync(join(directory, "program.hpp"), result.cpp);
     runRmlUiFixture(t, "ui-optional-calls");

@@ -72,3 +72,28 @@ test("grid track admission rejects unsupported placement and malformed sizing", 
 
 test("native grid tracks preserve sizing, rows, identity and live cascades", (t) =>
     runRmlUiFixture(t, "ui-grid-tracks"));
+
+test("grid-column admission preserves positive explicit line placement", () => {
+    for (const placement of ["auto", "1 / 3", "2/4", "256 / 257"])
+        assert.match(
+            compile(`.range{grid-column:${placement}}`).cpp,
+            /grid-column/,
+        );
+    for (const placement of [
+        "0/2",
+        "2/2",
+        "3/1",
+        "1/258",
+        "-1/-2",
+        "span 2",
+        "header",
+        "1/auto",
+    ])
+        assert.throws(
+            () => compile(`.range{grid-column:${placement}}`),
+            /grid-column/,
+        );
+});
+
+test("native grid column spans retain row placement, track widths and element identity", (t) =>
+    runRmlUiFixture(t, "ui-grid-column"));

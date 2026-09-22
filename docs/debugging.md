@@ -95,6 +95,7 @@ Results are in artifacts/check/<id>/. Use numeric checks where small missing obj
 | Recovery | scene164 |
 | Interactivity | calculator, scene304 |
 | Desktop controls | quake, sandblox |
+| Ocean simulation / controls / resolution | ocean / ocean-ui / ocean-resolution |
 
 Scene149 browser live resize throws error #84; its resized reference uses unchanged-module startup at
 960x600. Input tape `-`/UiIdle@0:0 is idle; UiWheelUp/Down uses SDL packets, WheelUp/Down a browser notch.
@@ -123,6 +124,7 @@ Artifact suffix gpu means SDL_GPU; CLI values are sdl_gpu/dawn.
 | `BBLITE_RENDER_CAPTURE`, `BBLITE_NODE_GPU_CAPTURE` | Capture path; optional node GPU receipts |
 | `BBLITE_DEFORMATION_DUMP` | Supported SDL bone/morph dump |
 | `BBLITE_SCREENSHOT`, `BBLITE_SCREENSHOT_FRAME`, `BBLITE_MAX_FRAMES` | Image path, frame, run limit |
+| `BBLITE_SCREENSHOT_FRAMES` | Window-only comma-separated ascending presentation frames before the final screenshot; writes `<stem>.frame-<n>.png` and build-stamp sidecars in the same run; excludes engine-frame capture |
 | `BBLITE_ANIMATION_SEEK_SECONDS`, `BBLITE_FRAME_DELTA_MS` | Deterministic pose/timing |
 | `BBLITE_MSAA=1`, `BBLITE_CAPTURE_UI=0` | Single-sample/canvas-only diagnosis |
 | `BBLITE_INPUT_REPLAY`, `BBLITE_RUNTIME_TRACE`, `BBLITE_RUNTIME_TRACE_INTERVAL` | Event tape/state trace |

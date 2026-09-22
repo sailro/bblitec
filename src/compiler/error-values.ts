@@ -1,14 +1,11 @@
 import ts from "typescript";
-import { someAnalysisNode } from "./analysis-walk.js";
 import type { LoweringServices } from "./lowering-services.js";
 import type { Value } from "./types.js";
 
 /**
  * The default-library Error constructors a scene throws, holds and
- * catches. Every one of them is `Error` with a different `name`: the
- * native exception carries the message alone, so a caught value answers
- * `instanceof Error` and reads its message, while the constructor that
- * made it is the value's own static `name`.
+ * catches. Owned exception pointers preserve identity, names and represented
+ * error causes through native throws, catches and promise rejections.
  */
 export const ERROR_CONSTRUCTORS: ReadonlySet<string> = new Set([
     "Error",
@@ -18,6 +15,7 @@ export const ERROR_CONSTRUCTORS: ReadonlySet<string> = new Set([
     "ReferenceError",
     "EvalError",
     "URIError",
+    "AggregateError",
 ]);
 
 /** The library Error constructor `expression` calls, when it calls one. */
@@ -34,33 +32,35 @@ export function errorConstructor(
 }
 
 /**
- * The Error a native catch binds. The exception's message is copied into
- * one temporary; the error fields refer to it without another string binding.
+ * A native catch retains the original exception after its handler exits.
  */
 export function caughtErrorValue(
     context: Pick<
         LoweringServices,
-        "emit" | "allocateTemporaryCppName" | "cppString"
+        "emit" | "allocateTemporaryCppName" | "cppString" | "reachJsData"
     >,
     exceptionCpp: string,
 ): Value {
-    const pinned = context.allocateTemporaryCppName("caught_message");
-    context.emit(
-        `const std::string ${pinned} = std::string(${exceptionCpp}.what());`,
-    );
+    const pinned = context.allocateTemporaryCppName("caught_error");
+    context.reachJsData();
+    context.emit(`(void)${exceptionCpp};`);
+    context.emit(`const bbl::js::Error ${pinned} = std::current_exception();`);
     const message: Extract<Value, { kind: "data" }> = {
         kind: "data",
-        cpp: pinned,
+        cpp: `bbl::js::error_message(${pinned})`,
         dataType: { kind: "string" },
     };
-    return errorValue(message, "Error", context.cppString);
+    return errorValue(message, "Error", context.cppString, {
+        kind: "data",
+        cpp: pinned,
+        dataType: { kind: "error" },
+    });
 }
 
 /**
  * An Error as a value: `nativeError` is what `instanceof Error` and
  * `throw` read, and the record properties answer `.message` and `.name`.
- * `base` carries the representation the value already has (a caught
- * exception is its message string); a constructed Error has none.
+ * `base` carries an owned exception or a platform event's borrowed error view.
  */
 export function errorValue(
     message: Value,
@@ -78,37 +78,21 @@ export function errorValue(
         recordProperties: {
             ...base.recordProperties,
             message,
-            name: { kind: "string", cpp: cppString(name), staticString: name },
+            name:
+                base.dataType?.kind === "error"
+                    ? {
+                          kind: "string",
+                          cpp: `bbl::js::error_name(${base.cpp})`,
+                      }
+                    : {
+                          kind: "string",
+                          cpp: cppString(name),
+                          staticString: name,
+                      },
             // Native exceptions do not carry a JavaScript engine's optional stack string.
             stack: { kind: "json-null", cpp: "std::nullopt" },
         },
     };
-}
-
-/**
- * `{ cause }` beside the message. JavaScript keeps the cause on the error
- * while the native exception carries the message alone, so the option is
- * accepted when dropping it skips nothing a scene could observe: a cause
- * that is not a call.
- */
-function isDroppedCause(options: ts.Expression): boolean {
-    return (
-        ts.isObjectLiteralExpression(options) &&
-        options.properties.every(
-            (property) =>
-                (ts.isShorthandPropertyAssignment(property) &&
-                    property.name.text === "cause") ||
-                (ts.isPropertyAssignment(property) &&
-                    ts.isIdentifier(property.name) &&
-                    property.name.text === "cause" &&
-                    !someAnalysisNode(
-                        property.initializer,
-                        (node) =>
-                            ts.isCallExpression(node) ||
-                            ts.isNewExpression(node),
-                    )),
-        )
-    );
 }
 
 /**
@@ -128,20 +112,20 @@ export function compileErrorConstruction(
         | "cppString"
         | "unwrap"
         | "fail"
+        | "reachJsData"
     >,
     expression: ts.NewExpression,
     name: string,
     consumer: "held" | "thrown" = "held",
 ): Value {
+    if (name === "AggregateError")
+        return compileAggregateError(context, expression);
     const arguments_ = expression.arguments ?? [];
     const [argument, options] = arguments_;
-    if (
-        arguments_.length > 2 ||
-        (options !== undefined && !isDroppedCause(context.unwrap(options)))
-    ) {
+    if (arguments_.length > 2) {
         context.fail(
             expression,
-            `new ${name} takes a message and a { cause } option; the native exception carries the message alone.`,
+            `new ${name} takes a message and an optional error cause.`,
         );
     }
     let message: Value;
@@ -165,7 +149,7 @@ export function compileErrorConstruction(
                 { kind: "string" },
                 argument,
             );
-            if (consumer === "held") {
+            if (consumer === "held" || options !== undefined) {
                 const temporary =
                     context.allocateTemporaryCppName("error_message");
                 context.emit(`const std::string ${temporary} = ${cpp};`);
@@ -174,7 +158,95 @@ export function compileErrorConstruction(
             message = { kind: "data", cpp, dataType: { kind: "string" } };
         }
     }
-    return errorValue(message, name, context.cppString);
+    context.reachJsData();
+    const cause = compileErrorCause(context, options);
+    let cpp = `bbl::js::make_error(${context.cppString(name)}, ${message.cpp}, ${cause})`;
+    if (consumer === "held") {
+        const temporary = context.allocateTemporaryCppName("error_value");
+        context.emit(`const bbl::js::Error ${temporary} = ${cpp};`);
+        cpp = temporary;
+    }
+    return errorValue(message, name, context.cppString, {
+        kind: "data",
+        cpp,
+        dataType: { kind: "error" },
+    });
+}
+
+function compileAggregateError(
+    context: Parameters<typeof compileErrorConstruction>[0],
+    expression: ts.NewExpression,
+): Value {
+    const args = expression.arguments ?? [];
+    if (!args.length || args.length > 3)
+        return context.fail(
+            expression,
+            "AggregateError requires an error iterable, optional message and cause.",
+        );
+    context.reachJsData();
+    const errors = context.dataLowerer.compileForSink(args[0]!, {
+        kind: "vector",
+        element: { kind: "error" },
+    });
+    const list = context.allocateTemporaryCppName("aggregate_errors");
+    context.emit(`const auto ${list} = ${errors};`);
+    const message = args[1]
+        ? context.dataLowerer.compileForSink(args[1], { kind: "string" })
+        : context.cppString("");
+    const text = context.allocateTemporaryCppName("aggregate_message");
+    context.emit(`const std::string ${text} = ${message};`);
+    const cause = compileErrorCause(context, args[2]);
+    const cpp = context.allocateTemporaryCppName("aggregate_error");
+    context.emit(
+        `const bbl::js::Error ${cpp} = bbl::js::make_aggregate_error(${list}, ${text}, ${cause});`,
+    );
+    return errorValue(
+        { kind: "string", cpp: text },
+        "AggregateError",
+        context.cppString,
+        { kind: "data", cpp, dataType: { kind: "error" } },
+    );
+}
+
+function compileErrorCause(
+    context: Parameters<typeof compileErrorConstruction>[0],
+    expression: ts.Expression | undefined,
+): string {
+    let cause = "std::exception_ptr{}";
+    if (expression) {
+        const options = context.unwrap(expression);
+        if (!ts.isObjectLiteralExpression(options))
+            return context.fail(
+                options,
+                "Error options require a cause record.",
+            );
+        for (const property of options.properties) {
+            const name =
+                (ts.isPropertyAssignment(property) ||
+                    ts.isShorthandPropertyAssignment(property)) &&
+                ts.isIdentifier(property.name)
+                    ? property.name.text
+                    : undefined;
+            if (
+                name !== "cause" ||
+                (!ts.isPropertyAssignment(property) &&
+                    !ts.isShorthandPropertyAssignment(property))
+            )
+                return context.fail(
+                    property,
+                    "Error options only represent an error cause.",
+                );
+            const value = ts.isPropertyAssignment(property)
+                ? property.initializer
+                : property.name;
+            const compiled = context.dataLowerer.compileForSink(value, {
+                kind: "error",
+            });
+            cause = context.allocateTemporaryCppName("error_cause");
+            context.emit(`const std::exception_ptr ${cause} = ${compiled};`);
+        }
+    }
+    return cause;
 }
 
 /** The message a thrown value carries, or undefined when it carries none. */

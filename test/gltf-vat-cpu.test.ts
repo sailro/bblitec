@@ -79,8 +79,8 @@ function variants(): LoweringContext[] {
         ),
         doctoredContext(
             vatModule,
-            "has no skeleton binding for clip",
-            "lacks a skeleton binding for clip",
+            "ThrowLiteError(703, target.mesh.name, group.name)",
+            "ThrowLiteError(9999, target.mesh.name, group.name)",
         ),
     ];
 }
@@ -121,7 +121,11 @@ function sourceResult(context: LoweringContext): unknown[] {
         "_setTickAnimationImpl",
         "GLTF_CLIP",
         transpileCommonJs(
-            source(controllerModule) + "\n" + source(groupModule),
+            source("src/lite-error.ts") +
+                "\n" +
+                source(controllerModule) +
+                "\n" +
+                source(groupModule),
             groupModule,
         ) + "\nreturn {createAnimationGroups,stopAnimation};",
     )(
@@ -155,7 +159,9 @@ function sourceResult(context: LoweringContext): unknown[] {
     const prepare = createJavaScriptFunction(
         "stopAnimation",
         transpileCommonJs(
-            "const DEFAULT_FRAME_RATE = 60;\n" + functions,
+            source("src/lite-error.ts") +
+                "\nconst DEFAULT_FRAME_RATE = 60;\n" +
+                functions,
             vatModule,
         ) + "\nreturn prepareVatMany;",
     )(api.stopAnimation) as (

@@ -36,6 +36,11 @@ import ts from "typescript";
 
 import type { DataType } from "./data-types.js";
 import type { Feature, Value, ValueKind } from "./types.js";
+import { isAssignmentOperator } from "./syntax.js";
+import {
+    compositeScalarAccessors,
+    compositeScalarFunction,
+} from "../lowering/post-process-accessors.js";
 
 /** A property the compiled surface deliberately does not serve. */
 interface RefusedProperty {
@@ -113,6 +118,7 @@ interface PropertyRead {
      * the value read, for a read that names the owner's own attachment.
      */
     carriesRenderTextureAspect?: true;
+    renderTextureAspect?: "depth";
     /**
      * Carries which recorded node-particle set the owner names onto the
      * value read, so the element access that follows can say which set's
@@ -139,6 +145,8 @@ interface PropertyRead {
      * and binding paths consume.
      */
     dataType?: DataType;
+    /** The native scalar field uses std::optional rather than js::Nullable. */
+    nativeOptionalScalar?: "double" | "bool";
     /** A producer whose optional native carrier is statically known present. */
     knownPresent?: (owner: Value) => boolean;
     /**
@@ -371,6 +379,211 @@ export function readHandleCollection(
  * between two values run to run.
  */
 export const propertyRules: readonly PropertyRule[] = [
+    {
+        owner: "compute-dispatch",
+        property: "enabled",
+        value: "boolean",
+        helper: "bbl::compute_dispatch_enabled",
+    },
+    {
+        owner: "compute-dispatch",
+        property: "shader",
+        value: "compute-shader",
+        helper: "bbl::compute_dispatch_shader",
+    },
+    {
+        owner: "compute-dispatch",
+        property: "bindings",
+        value: "compute-binding-set",
+        helper: "bbl::compute_dispatch_bindings",
+    },
+    {
+        owner: "compute-shader",
+        property: "name",
+        value: "string",
+        helper: "bbl::compute_shader_name",
+    },
+    {
+        owner: "compute-shader",
+        property: "_destroyed",
+        value: "boolean",
+        helper: "bbl::compute_shader_destroyed",
+    },
+    {
+        owner: "compute-binding-decl",
+        property: "name",
+        value: "string",
+        helper: "bbl::compute_binding_name",
+    },
+    {
+        owner: "compute-binding-decl",
+        property: "group",
+        value: "number",
+        helper: "bbl::compute_binding_group",
+    },
+    {
+        owner: "compute-binding-decl",
+        property: "binding",
+        value: "number",
+        helper: "bbl::compute_binding_index",
+    },
+    {
+        owner: "compute-uniform-writer",
+        property: "slot",
+        value: "number",
+        helper: "bbl::compute_uniform_writer_slot",
+    },
+    {
+        owner: "compute-uniform-writer",
+        property: "arena",
+        value: "compute-uniform-arena",
+        helper: "bbl::compute_uniform_writer_arena",
+    },
+    {
+        owner: "compute-uniform-writer",
+        property: "layout",
+        value: "compute-uniform-layout",
+        helper: "bbl::compute_uniform_writer_layout",
+    },
+
+    {
+        owner: "compute-uniform-arena",
+        property: "slotByteLength",
+        value: "number",
+        helper: "bbl::compute_uniform_arena_slot_byte_length",
+    },
+    {
+        owner: "compute-uniform-arena",
+        property: "slotStride",
+        value: "number",
+        helper: "bbl::compute_uniform_arena_slot_stride",
+    },
+    {
+        owner: "compute-uniform-arena",
+        property: "slotCount",
+        value: "number",
+        helper: "bbl::compute_uniform_arena_slot_count",
+    },
+    {
+        owner: "compute-uniform-arena",
+        property: "_destroyed",
+        value: "boolean",
+        helper: "bbl::compute_uniform_arena_destroyed",
+    },
+    {
+        owner: "compute-uniform-arena",
+        property: "buffer",
+        value: "uniform-buffer",
+        helper: "bbl::compute_uniform_arena_buffer",
+    },
+
+    {
+        owner: "uniform-buffer",
+        property: "byteLength",
+        value: "number",
+        helper: "bbl::uniform_buffer_byte_length",
+    },
+    {
+        owner: "uniform-buffer",
+        property: "_destroyed",
+        value: "boolean",
+        helper: "bbl::uniform_buffer_destroyed",
+    },
+    {
+        owner: "compute-uniform-layout",
+        property: "byteLength",
+        value: "number",
+        helper: "bbl::compute_uniform_layout_byte_length",
+    },
+    {
+        owner: "compute-task",
+        property: "name",
+        value: "string",
+        helper: "bbl::compute_task_name",
+    },
+    {
+        owner: "compute-one-shot",
+        property: "completion",
+        value: "promise",
+        dataType: { kind: "promise" },
+        helper: "bbl::compute_one_shot_completion",
+        feature: "compute:one-shot",
+    },
+    {
+        owner: "task",
+        property: "executionEnabled",
+        value: "data",
+        dataType: { kind: "optional", inner: { kind: "boolean" } },
+        record: ["frame_tasks", "execution_enabled"],
+        nativeOptionalScalar: "bool",
+    },
+    {
+        owner: "compute-task",
+        property: "executionEnabled",
+        value: "boolean",
+        helper: "bbl::compute_task_execution_enabled",
+    },
+    {
+        owner: "compute-task",
+        property: "_disposed",
+        value: "boolean",
+        helper: "bbl::compute_task_disposed",
+    },
+    {
+        owner: "compute-task",
+        property: "dispose",
+        value: "data",
+        dataType: { kind: "function", parameters: [], identity: true },
+        helper: "bbl::compute_task_dispose",
+        helperReturnsFreshData: true,
+    },
+    {
+        owner: "compute-task",
+        property: "record",
+        value: "data",
+        dataType: { kind: "function", parameters: [], identity: true },
+        helper: "bbl::compute_task_record",
+        helperReturnsFreshData: true,
+        feature: "compute:task-execution",
+    },
+    ...(["width", "height", "depthOrArrayLayers"] as const).map(
+        (property): PropertyRead => ({
+            owner: "compute-storage-texture",
+            property,
+            value: "number",
+            helper: `bbl::compute_storage_texture_${property}`,
+        }),
+    ),
+    {
+        owner: "compute-storage-texture",
+        property: "_destroyed",
+        value: "boolean",
+        helper: "bbl::compute_storage_texture_destroyed",
+    },
+    {
+        owner: "compute-storage-texture",
+        property: "sampledTexture",
+        value: "texture",
+        textureStorage: "file",
+        helper: "bbl::compute_storage_texture_sampled_texture",
+        optionalFound: (owner) => `(${owner})->sampled_texture.has_value()`,
+    },
+    {
+        owner: "compute-storage-texture",
+        property: "computeTexture",
+        value: "compute-texture-resource",
+        helper: "bbl::compute_storage_texture_compute_texture",
+        optionalFound: (owner) =>
+            `static_cast<bool>((${owner})->compute_texture)`,
+    },
+    {
+        owner: "compute-storage-texture",
+        property: "computeSampler",
+        value: "compute-sampler",
+        helper: "bbl::compute_storage_texture_compute_sampler",
+        optionalFound: (owner) =>
+            `static_cast<bool>((${owner})->compute_sampler)`,
+    },
     ...(["platform-mouse-event", "platform-keyboard-event"] as const).map(
         (owner): PropertyRead => ({
             owner,
@@ -624,6 +837,18 @@ export const propertyRules: readonly PropertyRule[] = [
         record: ["cameras", "speed"],
     },
     {
+        owner: "camera",
+        property: "_yaw",
+        value: "number",
+        record: ["cameras", "free_yaw"],
+    },
+    {
+        owner: "camera",
+        property: "_pitch",
+        value: "number",
+        record: ["cameras", "free_pitch"],
+    },
+    {
         // The native record keeps upstream's spelling of the field.
         owner: "camera",
         property: "angularSensitivity",
@@ -655,10 +880,13 @@ export const propertyRules: readonly PropertyRule[] = [
         property: "worldMatrix",
         value: "camera-world-matrix",
         retag: true,
-        reject: (owner) =>
-            owner.cameraKind === "arc-rotate"
-                ? undefined
-                : "Reached camera worldMatrix access currently requires an ArcRotateCamera.",
+    },
+    {
+        owner: "camera",
+        property: "worldMatrixVersion",
+        value: "number",
+        record: ["cameras", "world_matrix_version"],
+        feature: "camera:world-matrix-version",
     },
     {
         owner: "camera-ortho",
@@ -667,10 +895,23 @@ export const propertyRules: readonly PropertyRule[] = [
         record: ["cameras", "ortho_half_height"],
     },
     {
-        // The opt-in PBR setters take the material back off the mesh it
-        // was assigned to (`setPbrSkybox(box.material)`), and they mutate
-        // the object they are handed, so the read carries which scene
-        // material the assignment stored.
+        owner: "mesh",
+        property: "_topology",
+        value: "data",
+        dataType: { kind: "optional", inner: { kind: "number" } },
+        record: ["meshes", "topology_index"],
+        nativeOptionalScalar: "double",
+    },
+    {
+        owner: "mesh",
+        property: "_primitiveFeatures",
+        value: "data",
+        dataType: { kind: "optional", inner: { kind: "number" } },
+        record: ["meshes", "primitive_features"],
+        nativeOptionalScalar: "double",
+    },
+    {
+        // The read retains the identity assigned to this mesh.
         owner: "mesh",
         property: "material",
         value: "material",
@@ -842,6 +1083,17 @@ export const propertyRules: readonly PropertyRule[] = [
         dataType: { kind: "string" },
         record: ["animation_groups", "name"],
     },
+    ...(
+        [
+            ["duration", "duration"],
+            ["frameRate", "frame_rate"],
+        ] as const
+    ).map(([property, field]): PropertyRead => ({
+        owner: "animation-group",
+        property,
+        value: "number",
+        record: ["animation_groups", field],
+    })),
     {
         // The `_camera` loader feature names each imported camera
         // `def.name ?? camera<index>`; a scene-created camera carries the
@@ -994,6 +1246,17 @@ export const propertyRules: readonly PropertyRule[] = [
         feature: "mesh:geometry-access",
     },
     {
+        owner: "asset-root",
+        property: "worldMatrix",
+        value: "data",
+        dataType: { kind: "vector", element: { kind: "number" } },
+        helper: "bbl::asset_root_world_matrix_array",
+        helperTakesEngine: true,
+        helperReturnsFreshData: true,
+        alwaysTruthy: true,
+        feature: "mesh:geometry-access",
+    },
+    {
         owner: "mesh",
         property: "boundMin",
         value: "data",
@@ -1127,6 +1390,15 @@ export const propertyRules: readonly PropertyRule[] = [
         field: "texture",
         carriesRenderTextureAspect: true,
     },
+    {
+        owner: "render-target-texture",
+        property: "depthTexture",
+        value: "render-texture",
+        field: "depth_texture",
+        renderTextureAspect: "depth",
+        optionalFound: (owner) =>
+            `${owner}.depth_texture.target.value != bbl::invalid_handle`,
+    },
 ];
 
 /**
@@ -1140,6 +1412,7 @@ export const propertyRules: readonly PropertyRule[] = [
  * other. Reads and writes now agree by construction.
  */
 export function cameraRecordField(property: string): string | undefined {
+    if (property === "worldMatrixVersion") return undefined;
     const rule = propertyRules.find(
         (candidate) =>
             candidate.owner === "camera" &&
@@ -1161,6 +1434,7 @@ export interface PropertyContext extends Pick<
     | "noteMaterialColorRead"
     | "fail"
     | "meshHasThinInstancePool"
+    | "dataValue"
 > {}
 
 /**
@@ -1168,6 +1442,18 @@ export interface PropertyContext extends Pick<
  * claims the pair, so the caller can try the readings that are not field
  * lookups.
  */
+export function readCallableProperty(
+    context: PropertyContext,
+    owner: Value,
+    property: string,
+    expression: ts.Node,
+): Value | undefined {
+    const rule = ruleFor(propertyRules, owner, property);
+    if (!rule || !("dataType" in rule) || rule.dataType?.kind !== "function")
+        return undefined;
+    return readProperty(context, owner, property, expression);
+}
+
 export function readProperty(
     context: PropertyContext,
     owner: Value,
@@ -1178,6 +1464,24 @@ export function readProperty(
      */
     expression: ts.Node,
 ): Value | undefined {
+    if (owner.kind === "task" && owner.postProcessComposite) {
+        const composite = owner.postProcessComposite;
+        const accessor = compositeScalarAccessors(composite.intrinsic, [
+            property,
+        ]).find((entry) => entry.property === property);
+        if (accessor) {
+            composite.scalarAccesses = [
+                ...new Set([...(composite.scalarAccesses ?? []), property]),
+            ];
+            const engineCpp = context.requireEngine(owner, expression);
+            return {
+                kind: "number",
+                cpp: `bbl::${compositeScalarFunction(composite.compositeIndex, property, false)}(${engineCpp}, ${owner.cpp})`,
+                engineCpp,
+                impure: true,
+            };
+        }
+    }
     const rule = ruleFor(propertyRules, owner, property);
     if (!rule) {
         return undefined;
@@ -1207,6 +1511,19 @@ export function readProperty(
         ts.isBinaryExpression(parent) &&
         parent.left === originalExpression &&
         parent.operatorToken.kind === ts.SyntaxKind.EqualsToken;
+    if (
+        rule.nativeOptionalScalar &&
+        parent &&
+        ((ts.isBinaryExpression(parent) &&
+            parent.left === originalExpression &&
+            isAssignmentOperator(parent.operatorToken.kind)) ||
+            ((ts.isPrefixUnaryExpression(parent) ||
+                ts.isPostfixUnaryExpression(parent)) &&
+                parent.operand === originalExpression))
+    ) {
+        // This read is a value conversion; the resource setter owns writes.
+        return undefined;
+    }
     if (
         rule.feature &&
         !(rule.feature === "material:source-texture-read" && simpleWriteTarget)
@@ -1238,75 +1555,100 @@ export function readProperty(
             ? rule.dataType.inner
             : rule.dataType;
     const read = (cpp: string): Value =>
-        valueForKind(rule.value, {
-            cpp: dataType !== rule.dataType ? `(*${cpp})` : cpp,
-            ...(dataType ? { dataType } : {}),
-            ...(rule.textureStorage
-                ? { textureStorage: rule.textureStorage }
-                : {}),
-            ...(engineCpp ? { engineCpp } : {}),
-            ...(rule.value === "picked-node" && owner.pickingEngineKnown
-                ? { pickingEngineKnown: true as const }
-                : {}),
-            ...(rule.carriesScenePbrMaterial &&
-            owner.scenePbrMaterialIndex !== undefined
-                ? {
-                      scenePbrMaterialIndex: owner.scenePbrMaterialIndex,
-                  }
-                : {}),
-            ...(rule.carriesScenePbrMaterial && owner.standardMaterial
-                ? { standardMaterial: true as const }
-                : {}),
-            ...(rule.carriesScenePbrMaterial &&
-            owner.kind === "mesh" &&
-            owner.sceneMeshIndex === undefined &&
-            owner.scenePbrMaterialIndex === undefined &&
-            !owner.standardMaterial
-                ? {
-                      assetPbrMaterial: true as const,
-                      // The container a proven whole-list walk is visiting, when this
-                      // mesh came from one. A loaded material has no scene-side record
-                      // to stamp, so this is the only compile-time identity a setter
-                      // reaching it has: the document whose materials compose.
-                      ...(owner.assetWholeMeshList
-                          ? { assetWholeMeshList: owner.assetWholeMeshList }
-                          : {}),
-                  }
-                : {}),
-            ...(rule.carriesShadowGenerator &&
-            shadowGeneratorIndex !== undefined
-                ? { shadowGeneratorIndex }
-                : {}),
-            ...(rule.carriesNodeParticleSet &&
-            owner.nodeParticleSetIndex !== undefined
-                ? { nodeParticleSetIndex: owner.nodeParticleSetIndex }
-                : {}),
-            ...(rule.impure ? { impure: true as const } : {}),
-            ...(rule.optionalHandle
-                ? {
-                      optionalFoundCpp: handleFoundCpp(cpp),
-                  }
-                : {}),
-            ...(rule.optionalFound
-                ? { optionalFoundCpp: rule.optionalFound(owner.cpp, engineCpp) }
-                : {}),
-            ...(rule.alwaysTruthy ? { truthinessCpp: "true" } : {}),
-            ...(rule.helperReturnsFreshData
-                ? { freshData: true as const }
-                : {}),
-            ...(rule.carriesRenderTextureAspect
-                ? {
-                      ...(owner.isDepthTexture
-                          ? { isDepthTexture: owner.isDepthTexture }
-                          : {}),
-                      ...(owner.renderTextureSource
-                          ? {
-                                renderTextureSource: owner.renderTextureSource,
-                            }
-                          : {}),
-                  }
-                : {}),
-        });
+        dataType?.kind === "promise"
+            ? context.dataValue(cpp, dataType)
+            : valueForKind(rule.value, {
+                  cpp:
+                      dataType !== rule.dataType
+                          ? `(*${cpp})`
+                          : rule.nativeOptionalScalar
+                            ? `([](const auto& value) { return value ? bbl::js::Nullable<${rule.nativeOptionalScalar}>{*value} : bbl::js::Nullable<${rule.nativeOptionalScalar}>{}; })(${cpp})`
+                            : cpp,
+                  ...(dataType ? { dataType } : {}),
+                  ...(rule.textureStorage
+                      ? { textureStorage: rule.textureStorage }
+                      : {}),
+                  ...(engineCpp ? { engineCpp } : {}),
+                  ...(rule.value === "picked-node" && owner.pickingEngineKnown
+                      ? { pickingEngineKnown: true as const }
+                      : {}),
+                  ...(rule.carriesScenePbrMaterial &&
+                  owner.scenePbrMaterialIndex !== undefined
+                      ? {
+                            scenePbrMaterialIndex: owner.scenePbrMaterialIndex,
+                        }
+                      : {}),
+                  ...(rule.carriesScenePbrMaterial && owner.standardMaterial
+                      ? { standardMaterial: true as const }
+                      : {}),
+                  ...(rule.carriesScenePbrMaterial &&
+                  owner.kind === "mesh" &&
+                  owner.sceneMeshIndex === undefined &&
+                  owner.scenePbrMaterialIndex === undefined &&
+                  !owner.standardMaterial
+                      ? {
+                            assetPbrMaterial: true as const,
+                            // The container a proven whole-list walk is visiting, when this
+                            // mesh came from one. A loaded material has no scene-side record
+                            // to stamp, so this is the only compile-time identity a setter
+                            // reaching it has: the document whose materials compose.
+                            ...(owner.assetWholeMeshList
+                                ? {
+                                      assetWholeMeshList:
+                                          owner.assetWholeMeshList,
+                                  }
+                                : {}),
+                        }
+                      : {}),
+                  ...(rule.carriesShadowGenerator &&
+                  shadowGeneratorIndex !== undefined
+                      ? { shadowGeneratorIndex }
+                      : {}),
+                  ...(rule.carriesNodeParticleSet &&
+                  owner.nodeParticleSetIndex !== undefined
+                      ? { nodeParticleSetIndex: owner.nodeParticleSetIndex }
+                      : {}),
+                  ...(rule.impure ||
+                  (owner.kind === "camera" && rule.value === "number")
+                      ? { impure: true as const }
+                      : {}),
+                  ...(rule.optionalHandle
+                      ? {
+                            optionalFoundCpp: handleFoundCpp(cpp),
+                        }
+                      : {}),
+                  ...(rule.optionalFound
+                      ? {
+                            optionalFoundCpp: rule.optionalFound(
+                                owner.cpp,
+                                engineCpp,
+                            ),
+                        }
+                      : {}),
+                  ...(rule.alwaysTruthy ? { truthinessCpp: "true" } : {}),
+                  ...(rule.helperReturnsFreshData
+                      ? { freshData: true as const }
+                      : {}),
+                  ...(rule.carriesRenderTextureAspect
+                      ? {
+                            ...(owner.isDepthTexture
+                                ? { isDepthTexture: owner.isDepthTexture }
+                                : {}),
+                            ...(owner.renderTextureSource
+                                ? {
+                                      renderTextureSource:
+                                          owner.renderTextureSource,
+                                  }
+                                : {}),
+                        }
+                      : {}),
+                  ...(rule.renderTextureAspect === "depth"
+                      ? {
+                            isDepthTexture: true as const,
+                            renderTextureSource: "render-target" as const,
+                        }
+                      : {}),
+              });
     if (rule.record || rule.field) {
         return read(
             nativeLocation(

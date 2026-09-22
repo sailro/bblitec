@@ -53,7 +53,10 @@ import type {
     ScenePbrMaterialManifest,
 } from "./compiler/types.js";
 import { pinnedMeshFeaturesFromPrimitive } from "./pinned-mesh-features.js";
-import { importPinnedModule } from "./pinned-shader-composer.js";
+import {
+    importPinnedModule,
+    importPinnedModuleWithExports,
+} from "./pinned-shader-composer.js";
 import { sharedUpstreamStore } from "./upstream-source.js";
 import { refuseGeneration } from "./generation-refusal.js";
 import { gltfVariantPlan } from "./gltf-variant-plan.js";
@@ -167,12 +170,17 @@ interface PinnedArmBits {
 let pinnedArmBitsPromise: Promise<PinnedArmBits> | undefined;
 
 function pinnedArmBits(): Promise<PinnedArmBits> {
-    pinnedArmBitsPromise ??= importPinnedModule<{
-        PBR_HAS_SHEEN_ALBEDO_SCALING: number;
-        PBR_HAS_SPEC_GLOSS: number;
-    }>("material/pbr/pbr-flag-bits.js").then((bits) => ({
-        sheenAlbedoScaling: bits.PBR_HAS_SHEEN_ALBEDO_SCALING,
-        specGloss: bits.PBR_HAS_SPEC_GLOSS,
+    pinnedArmBitsPromise ??= Promise.all([
+        importPinnedModuleWithExports<{ PBR_HAS_SHEEN_ALBEDO_SCALING: number }>(
+            "material/pbr/fragments/sheen-fragment.js",
+            ["PBR_HAS_SHEEN_ALBEDO_SCALING"],
+        ),
+        importPinnedModule<{ PBR_HAS_SPEC_GLOSS: number }>(
+            "material/pbr/pbr-flag-bits.js",
+        ),
+    ]).then(([sheen, core]) => ({
+        sheenAlbedoScaling: sheen.PBR_HAS_SHEEN_ALBEDO_SCALING,
+        specGloss: core.PBR_HAS_SPEC_GLOSS,
         occlusionUv2: pinnedOcclusionUv2Bit(),
     }));
     return pinnedArmBitsPromise;
@@ -835,6 +843,10 @@ export interface PinnedRenderableVariant {
     vertexWgsl: string;
     fragmentWgsl: string;
     materialUboSpec: unknown;
+    /** Fields declared by the material's source plugins. */
+    pluginUniformFields?: readonly string[];
+    pluginTextureBindings?: readonly string[];
+    meshBindingLayout?: PinnedPbrVariant["meshBindingLayout"];
 }
 
 /**
@@ -1134,6 +1146,7 @@ export async function composeScenePbrVariants(
     scene: {
         linearImageProcessing?: boolean;
         metallicReflectanceRegistered?: boolean;
+        pluginsRegistered?: boolean;
         /**
          * The scene's shadow-casting lights in `scene.lights` order, which
          * the pin hands the composer once for the whole build.
@@ -1475,6 +1488,24 @@ export async function composeScenePbrVariants(
                     vertexWgsl: variant.vertexWgsl,
                     fragmentWgsl: variant.fragmentWgsl,
                     materialUboSpec: plainUboSpec(variant.materialUboSpec),
+                    ...(material.plugins && scene.pluginsRegistered
+                        ? {
+                              pluginUniformFields: material.plugins.flatMap(
+                                  (plugin) =>
+                                      plugin.uniforms?.map(
+                                          (field) => field.name,
+                                      ) ?? [],
+                              ),
+                              pluginTextureBindings: material.plugins.flatMap(
+                                  (plugin) =>
+                                      plugin.samplers?.flatMap((sampler) => [
+                                          sampler.texture,
+                                          sampler.sampler,
+                                      ]) ?? [],
+                              ),
+                              meshBindingLayout: variant.meshBindingLayout,
+                          }
+                        : {}),
                 });
             }
         }

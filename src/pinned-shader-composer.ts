@@ -22,8 +22,12 @@ import ts from "typescript";
 import { javascriptModuleUrl } from "./data-url.js";
 import { existsSync, readFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
-import { dirname, join, resolve } from "node:path";
-import { findRepositoryRoot, readUpstreamPin } from "./upstream-source.js";
+import { dirname, join, resolve, relative } from "node:path";
+import {
+    findRepositoryRoot,
+    readUpstreamPin,
+    sharedUpstreamStore,
+} from "./upstream-source.js";
 
 /**
  * The WebGPU flag namespaces, installed before the first pinned import.
@@ -109,7 +113,148 @@ export function pinnedLibraryRoot(): string {
  * already does. Synchronous because `lowerShaders` is.
  */
 export function readPinnedLibraryModule(relativePath: string): string {
-    return readFileSync(join(pinnedLibraryRoot(), relativePath), "utf8");
+    return readFileSync(
+        join(pinnedLibraryRoot(), pinnedImplementationPath(relativePath)),
+        "utf8",
+    );
+}
+
+/** Resolve implementation text through source maps rather than hashed chunk names. */
+export function pinnedImplementationPath(relativePath: string): string {
+    const sourcePath = `src/${relativePath.replace(/\.js$/, ".ts")}`;
+    const store = sharedUpstreamStore();
+    return store.hasSource(sourcePath)
+        ? store.packagedModulePath(sourcePath)
+        : relativePath;
+}
+
+/** Raw WGSL imports retain their source path in Vite's region markers. */
+export function extractPackagedRawShader(
+    source: string,
+    sourcePath: string,
+): string {
+    const marker = `//#region ${sourcePath}?raw`;
+    const start = source.indexOf(marker);
+    if (start < 0)
+        throw new Error(`Pinned raw shader '${sourcePath}' was not found.`);
+    const region = source.slice(
+        start + marker.length,
+        source.indexOf("//#endregion", start),
+    );
+    const declaration = /\b(?:const|let|var) (\w+) = "/.exec(region);
+    if (!declaration)
+        throw new Error(
+            `Pinned raw shader '${sourcePath}' has no string declaration.`,
+        );
+    return extractPackagedStringLiteral(region, declaration[1]!);
+}
+
+const rawShaderCache = new Map<string, string>();
+
+/** Vite may inline a raw import into its call argument and remove the region. */
+function inlinedRawShader(
+    modulePath: string,
+    sourcePath: string,
+): string | undefined {
+    const originalPath = `src/${modulePath.replace(/\.js$/, ".ts")}`;
+    const store = sharedUpstreamStore();
+    if (!store.hasSource(originalPath)) return undefined;
+    const original = store.getSourceFile(originalPath);
+    const imported = original.statements.find(
+        (node): node is ts.ImportDeclaration =>
+            ts.isImportDeclaration(node) &&
+            ts.isStringLiteral(node.moduleSpecifier) &&
+            node.moduleSpecifier.text.endsWith(`/${sourcePath}?raw`),
+    )?.importClause?.name?.text;
+    if (!imported) return undefined;
+    const uses: { callee: string; argument: number }[] = [];
+    const collect = (node: ts.Node): void => {
+        if (ts.isCallExpression(node))
+            node.arguments.forEach((argument, index) => {
+                if (ts.isIdentifier(argument) && argument.text === imported)
+                    uses.push({
+                        callee: node.expression.getText(original),
+                        argument: index,
+                    });
+            });
+        ts.forEachChild(node, collect);
+    };
+    collect(original);
+    const packaged = ts.createSourceFile(
+        modulePath,
+        readPinnedLibraryModule(modulePath),
+        ts.ScriptTarget.Latest,
+        true,
+        ts.ScriptKind.JS,
+    );
+    const values = new Set<string>();
+    const read = (node: ts.Node): void => {
+        if (ts.isCallExpression(node))
+            for (const use of uses) {
+                if (node.expression.getText(packaged) !== use.callee) continue;
+                const argument = node.arguments[use.argument];
+                if (argument && ts.isStringLiteral(argument))
+                    values.add(argument.text);
+            }
+        ts.forEachChild(node, read);
+    };
+    read(packaged);
+    return values.size === 1 ? [...values][0] : undefined;
+}
+
+/** Find a raw import in the implementation or a shared dependency chunk. */
+export function readPinnedRawShader(
+    modulePath: string,
+    sourcePath: string,
+): string {
+    const key = `${modulePath}:${sourcePath}`;
+    const cached = rawShaderCache.get(key);
+    if (cached !== undefined) return cached;
+    const visited = new Set<string>();
+    const visit = (path: string): string | undefined => {
+        if (visited.has(path)) return undefined;
+        visited.add(path);
+        const text = readFileSync(join(pinnedLibraryRoot(), path), "utf8");
+        if (text.includes(`//#region ${sourcePath}?raw`))
+            return extractPackagedRawShader(text, sourcePath);
+        const file = ts.createSourceFile(
+            path,
+            text,
+            ts.ScriptTarget.Latest,
+            false,
+            ts.ScriptKind.JS,
+        );
+        for (const statement of file.statements) {
+            if (
+                (!ts.isImportDeclaration(statement) &&
+                    !ts.isExportDeclaration(statement)) ||
+                !statement.moduleSpecifier ||
+                !ts.isStringLiteral(statement.moduleSpecifier) ||
+                !statement.moduleSpecifier.text.startsWith(".")
+            )
+                continue;
+            const dependency = relative(
+                pinnedLibraryRoot(),
+                resolve(
+                    pinnedLibraryRoot(),
+                    dirname(path),
+                    statement.moduleSpecifier.text,
+                ),
+            );
+            const found = visit(dependency);
+            if (found !== undefined) return found;
+        }
+        return undefined;
+    };
+    const value =
+        visit(pinnedImplementationPath(modulePath)) ??
+        inlinedRawShader(modulePath, sourcePath);
+    if (value === undefined)
+        throw new Error(
+            `Pinned raw shader '${sourcePath}' was not reachable from ${modulePath}.`,
+        );
+    rawShaderCache.set(key, value);
+    return value;
 }
 
 /**
@@ -122,8 +267,9 @@ export function extractPackagedStringLiteral(
     source: string,
     name: string,
 ): string {
-    const marker = `const ${name} = "`;
-    const start = source.indexOf(marker);
+    const match = new RegExp(`\\b(?:const|let|var) ${name} = "`).exec(source);
+    const marker = match?.[0] ?? "";
+    const start = match?.index ?? -1;
     if (start < 0) {
         throw new Error(`Pinned packaged literal '${name}' was not found.`);
     }
@@ -154,8 +300,9 @@ export function extractPackagedTemplateLiteral(
     source: string,
     name: string,
 ): string {
-    const marker = `const ${name} = \``;
-    const start = source.indexOf(marker);
+    const match = new RegExp(`\\b(?:const|let|var) ${name} = \``).exec(source);
+    const marker = match?.[0] ?? "";
+    const start = match?.index ?? -1;
     if (start < 0) {
         throw new Error(
             `Pinned packaged template literal '${name}' was not found.`,
@@ -315,7 +462,7 @@ export function pinnedModuleTextUrl(
 ): string {
     const anchored = anchorSpecifiersInText(
         source,
-        join(pinnedLibraryRoot(), relativePath),
+        join(pinnedLibraryRoot(), pinnedImplementationPath(relativePath)),
         redirects,
     );
     return javascriptModuleUrl(
@@ -371,7 +518,10 @@ export async function importPinnedModuleFetching<T>(
             );
         },
     );
-    const modulePath = join(pinnedLibraryRoot(), relativePath);
+    const modulePath = join(
+        pinnedLibraryRoot(),
+        pinnedImplementationPath(relativePath),
+    );
     const shadowed = [
         "const fetch = (url) => new Promise((resolve) => " +
             `globalThis[${JSON.stringify(hook)}](url, resolve));`,
@@ -437,7 +587,10 @@ export async function importPinnedModuleObserving<T>(
     observe: Readonly<Record<string, readonly string[]>>,
     record: (symbol: string, value: unknown) => void,
 ): Promise<T> {
-    const modulePath = join(pinnedLibraryRoot(), relativePath);
+    const modulePath = join(
+        pinnedLibraryRoot(),
+        pinnedImplementationPath(relativePath),
+    );
     // The shim module stays importable, so the hook it names is not
     // released.
     const { hook } = installPinnedImportHook(record);
@@ -576,7 +729,10 @@ export async function importPinnedModuleUnasynced(
     extraExports: readonly string[] = [],
     redirects: ReadonlyMap<string, string> = new Map(),
 ): Promise<Record<string, unknown>> {
-    const modulePath = join(pinnedLibraryRoot(), relativePath);
+    const modulePath = join(
+        pinnedLibraryRoot(),
+        pinnedImplementationPath(relativePath),
+    );
     const anchor = (specifier: string): string =>
         redirects.get(specifier) ??
         pathToFileURL(resolve(dirname(modulePath), specifier)).href;

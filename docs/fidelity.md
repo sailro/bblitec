@@ -22,7 +22,7 @@ This page lists source/native contracts and substitutions. [Features](features.m
 | Workers/Window | AOT factories, typed cloning, realm loops, layout snapshots; 16 ms ResizeObserver polling |
 | Data | Typed storage, checked access, bounded sparse/JSON representation |
 | Strings/ICU | UTF-16 semantics over WTF-8 storage; host normalization/collation data |
-| Error | Message retained; name is Error, cause dropped, stack undefined |
+| Error | Identity, name, message and represented Error causes retained; AggregateError retains ordered errors. Cause/errors property reads are unadmitted; stack is undefined |
 | Weak collections | Keys retained strongly |
 | Object immutability | freeze/seal/preventExtensions return the original value without enforcing immutability |
 | Storage/files | Host preferences, native URL tokens, synchronized picker completion |
@@ -32,7 +32,10 @@ This page lists source/native contracts and substitutions. [Features](features.m
 | HTTP teardown | Realm close cancels requests and joins transport threads |
 | Environment | Native platform/language/CPU data; onLine=true, secure Window context; no client hints/device-memory estimate |
 | Graphics guards | Async Window/worker realms expose existing host graphics identity; computation-only realms may lack it |
+| Compute limits | Dawn queries device limits; SDL_GPU has no numeric shader-resource queries and uses 256-byte uniform offsets |
 | Device recovery | Ordinary engine reconstruction retains CPU owners; shared worker/window recovery refuses |
+| Engine disposal | A Window engine invalidates its run and releases its GPU lease; the shared native transport remains available to other engines |
+| GPU task timing | Native devices do not enable timestamp-query; pinned queries report unsupported and no durations are synthesized |
 | iOS Simulator | Explicit Dawn/Metal target with SDL UIKit hosting; no emulation of an iPhone GPU's capabilities |
 | UI | RmlUi and retained Canvas2D; [compatibility limits](ui.md) |
 | Camera touch | One finger uses pointer rotation; two-finger span changes feed the existing wheel zoom accumulator |

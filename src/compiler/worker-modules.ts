@@ -32,7 +32,10 @@ function globalNamed(
     );
 }
 
-/** Discovery follows resolved browser constructors, never a filename or demo protocol. */
+/** Replay a reached async API with an application scheduler and owned engines. */
+export class ApplicationRealmRequired extends Error {}
+
+/** Discovery follows resolved browser constructors. Library APIs activate on reach. */
 export function usesWorkers(frontend: CompilerProgram): boolean {
     const visit = (node: ts.Node): boolean =>
         (ts.isNewExpression(node) &&

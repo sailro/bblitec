@@ -9,7 +9,10 @@ import {
     readCheckSpec,
 } from "../src/tooling/check-spec.js";
 import { readCapturePath } from "../src/tooling/capture-path.js";
-import { applyObserveHooks } from "../src/tooling/observe-run.js";
+import {
+    applyObserveHooks,
+    observationSearch,
+} from "../src/tooling/observe-run.js";
 import { checkEnvironmentBase } from "../src/tooling/check-run.js";
 import { getScene, resolveScene } from "../src/scene-registry.js";
 
@@ -78,6 +81,36 @@ test("parses a declared check and expands tape shorthands", () => {
         drag: [1, 2, 3, 4],
         steps: 8,
     });
+});
+
+test("observations preserve registry queries, explicit overrides and no-query twins", () => {
+    const scene = getScene("scene12");
+    const spec = { steps: [] };
+    assert.equal(observationSearch(scene, spec), "?seekTime=0.5");
+    assert.equal(observationSearch(scene, spec, true), "");
+    assert.equal(observationSearch(scene, { ...spec, search: "" }), "");
+    assert.equal(
+        observationSearch(scene, { ...spec, search: "?animate=1" }, true),
+        "?animate=1",
+    );
+    assert.equal(
+        observationSearch(scene, spec, false, 20),
+        "?seekTime=0.5&captureFrame=20",
+    );
+    assert.equal(
+        observationSearch(
+            scene,
+            { ...spec, search: "?captureFrame=9&x=1" },
+            false,
+            20,
+        ),
+        "?captureFrame=20&x=1",
+    );
+    const parsed = parseCheckSpec(
+        JSON.stringify({ ...minimal, observe: { search: "", steps: [] } }),
+        "empty-query",
+    );
+    assert.equal(parsed.observe?.search, "");
 });
 
 test("refuses unknown keys, kinds and undeclared phases by name", () => {

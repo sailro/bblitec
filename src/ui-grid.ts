@@ -1,5 +1,17 @@
 import { splitUiCssList, uiCssValueTokens } from "./ui-css-syntax.js";
 
+/** Positive explicit column lines; other placement grammars remain unadmitted. */
+export function supportedUiGridColumn(value: string): boolean {
+    const normalized = value.trim().toLowerCase();
+    if (normalized === "auto") return true;
+    const match = /^([1-9]\d*)\s*\/\s*([1-9]\d*)$/.exec(normalized);
+    return (
+        !!match &&
+        Number(match[1]) < Number(match[2]) &&
+        Number(match[2]) <= 257
+    );
+}
+
 /** Native row-major, non-spanning track syntax, before density conversion. */
 export function supportedUiGridTracks(value: string): boolean {
     if (value.trim().toLowerCase() === "none") return true;

@@ -23,6 +23,38 @@ test("generated records describe their current owning fields", () => {
 });
 
 const tools = optionalNativeFixtureTools();
+test(
+    "returned callback containers retain aliases across captured resource releases",
+    { skip: !tools },
+    () => {
+        checkGeneratedCycles(
+            "returned-resource-scope",
+            `
+        interface Scope { readonly releases: (() => void)[]; disposed: boolean; }
+        function createScope(): Scope { return {releases: [], disposed: false}; }
+        function own<T>(scope: Scope, value: T, release: (value: T) => void): T {
+            scope.releases.push(() => release(value)); return value;
+        }
+        function run() {
+            const scope = createScope();
+            const alias = scope;
+            let calls = 0;
+            const register = (value: number) => own(scope, value, (number) => {
+                if (!alias.disposed) throw new Error("release did not retain its scope");
+                calls = calls * 10 + number;
+            });
+            register(3); register(5);
+            if (scope !== alias || alias.releases.length !== 2) throw new Error("scope alias");
+            const pending = scope.releases.splice(0);
+            scope.disposed = true;
+            for (let i = pending.length - 1; i >= 0; --i) pending[i]!();
+            if (calls !== 53 || alias.releases.length !== 0) throw new Error("release order");
+        }
+        run();
+    `,
+        );
+    },
+);
 function checkGeneratedCycles(
     label: string,
     sourceText: string,

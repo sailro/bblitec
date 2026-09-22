@@ -33,6 +33,20 @@ export function compileAssetDecoderConfiguration(
         return value.staticString;
     };
     const url = constantUrl(argumentAt(call, 0));
+    if (name === "setMeshoptBaseUrl") {
+        const base = url.endsWith("/") ? url : `${url}/`;
+        context.setAssetDecoderConfiguration(
+            {
+                meshopt: {
+                    javascript: context.resolveBundledAsset(
+                        `${base}meshopt_decoder.js`,
+                    ),
+                },
+            },
+            call,
+        );
+        return { kind: "void", cpp: "" };
+    }
     if (name === "setDracoBaseUrl") {
         const base = url.endsWith("/") ? url : `${url}/`;
         context.setAssetDecoderConfiguration(

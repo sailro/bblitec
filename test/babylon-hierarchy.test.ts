@@ -198,6 +198,10 @@ test("the complete Babylon loader preserves parent chains, split meshes and root
         join(include, "bblite/upstream/pinned_world_transform.hpp"),
         pinnedWorldTransformHeader(context),
     );
+    writeFileSync(
+        join(include, "bblite/upstream/light_matrix.hpp"),
+        new LightLowerer(context).lowerMatrix().header,
+    );
     writeFileSync(join(directory, "source.json"), JSON.stringify(packed));
     writeFileSync(join(directory, "expected.json"), JSON.stringify(expected));
     writeFileSync(
@@ -229,6 +233,7 @@ test("the complete Babylon loader preserves parent chains, split meshes and root
         `#include <bblite/pal_image.hpp>
 #include <fstream>
 #include <cassert>
+${new LightLowerer(context).lowerMatrix().source}
 ${new LightLowerer(context).lowerPointFactory().source}
 ${new BabylonLowerer(context).lowerLoaderAdapter().source}
 namespace bbl {

@@ -1,4 +1,5 @@
 import { isStringValue, valueForKind } from "./types.js";
+import { ApplicationRealmRequired } from "./worker-modules.js";
 import {
     emissionArray,
     EmissionSet,
@@ -8,7 +9,7 @@ import {
 import ts from "typescript";
 import { doubleLiteral } from "../cpp-literals.js";
 import { parseUiBorderImage, renderUiBorderImage } from "../ui-border-image.js";
-import { supportedUiGridTracks } from "../ui-grid.js";
+import { supportedUiGridColumn, supportedUiGridTracks } from "../ui-grid.js";
 import { supportedUiBoxShadow, supportedUiFilter } from "../ui-filters.js";
 import {
     findUiCssSyntax,
@@ -174,6 +175,11 @@ export class UiProjection {
     }
 
     public documentEngine(node: ts.Node): string {
+        if (
+            !this.context.options.workers &&
+            this.context.defaultEngine() === undefined
+        )
+            throw new ApplicationRealmRequired();
         return (
             documentEngine(this.context, node) ??
             this.context.requireDefaultEngine(node)
@@ -238,11 +244,18 @@ export class UiProjection {
         property: string,
         site: ts.Node,
     ): string | undefined {
+        if (property === "open") {
+            if (element.uiTag && element.uiTag !== "details")
+                this.context.fail(site, "UI open requires a details element.");
+            return property;
+        }
         if (property !== "hidden" && property !== "disabled") return undefined;
         if (
             property === "disabled" &&
             element.uiTag &&
-            !["button", "input", "textarea"].includes(element.uiTag)
+            !["button", "input", "textarea", "select", "option"].includes(
+                element.uiTag,
+            )
         ) {
             this.context.fail(
                 site,
@@ -1032,6 +1045,7 @@ export class UiProjection {
             "cursor",
             "display",
             "grid-template-columns",
+            "grid-column",
             "container-type",
             "grid-template-rows",
             "flex",
@@ -1655,6 +1669,16 @@ export class UiProjection {
                     site,
                     property,
                     "expected none, auto, non-negative px/fr tracks, minmax(px,fr), or repeat(integer, tracks), at most 256 tracks",
+                );
+            }
+            if (
+                property === "grid-column" &&
+                !supportedUiGridColumn(literalValue)
+            ) {
+                this.uiStyleRefusal(
+                    site,
+                    property,
+                    "expected auto or ascending positive numeric start/end lines, ending at most at line 257",
                 );
             }
             if (
@@ -3467,14 +3491,20 @@ export class UiProjection {
                     .toLowerCase();
                 if (inputType !== "file") {
                     if (
-                        ["text", "password", "range"].includes(inputType) &&
+                        [
+                            "text",
+                            "password",
+                            "range",
+                            "checkbox",
+                            "color",
+                        ].includes(inputType) &&
                         !element.uiFileInput
                     ) {
                         return `bbl::ui_set_attribute(${engine}, ${element.cpp}, "type", ${this.context.cppString(inputType)})`;
                     }
                     this.context.fail(
                         value,
-                        `Retained native <input> type '${inputType}' is not represented; static text, password, range and file inputs are supported, without changing a file input into another control.`,
+                        `Retained native <input> type '${inputType}' is not represented; static text, password, range, checkbox, color and file inputs are supported, without changing a file input into another control.`,
                     );
                 }
                 element.uiFileInput = true;
@@ -3585,6 +3615,39 @@ export class UiProjection {
                 directElement,
                 expression.left,
             );
+            if (["min", "max", "step"].includes(property)) {
+                if (directElement.uiTag !== "input")
+                    this.context.fail(
+                        expression.left,
+                        `UI ${property} requires an input element.`,
+                    );
+                this.context.emit(
+                    `bbl::ui_set_attribute(${engine}, ${directElement.cpp}, ${this.context.cppString(property)}, ${this.uiStringCpp(expression.right, `Input ${property}`)});`,
+                );
+                return true;
+            }
+            if (property === "checked") {
+                if (directElement.uiTag && directElement.uiTag !== "input")
+                    this.context.fail(
+                        expression.left,
+                        "UI checked requires an input element.",
+                    );
+                this.context.emit(
+                    `bbl::ui_set_checked(${engine}, ${directElement.cpp}, ${this.uiBooleanCpp(expression.right, "UI checked")});`,
+                );
+                return true;
+            }
+            if (property === "selected") {
+                if (directElement.uiTag && directElement.uiTag !== "option")
+                    this.context.fail(
+                        expression.left,
+                        "UI selected requires an option element.",
+                    );
+                this.context.emit(
+                    `bbl::ui_set_selected(${engine}, ${directElement.cpp}, ${this.uiBooleanCpp(expression.right, "UI selected")});`,
+                );
+                return true;
+            }
             const booleanAttribute = this.booleanAttribute(
                 directElement,
                 property,
@@ -3592,14 +3655,15 @@ export class UiProjection {
             );
             if (booleanAttribute) {
                 this.context.emit(
-                    `bbl::ui_set_boolean_attribute(${engine}, ${directElement.cpp}, ${this.context.cppString(booleanAttribute)}, ${this.context.compileBoolean(expression.right)});`,
+                    `bbl::ui_set_boolean_attribute(${engine}, ${directElement.cpp}, ${this.context.cppString(booleanAttribute)}, ${this.uiBooleanCpp(expression.right, `UI ${booleanAttribute}`)});`,
                 );
                 return true;
             }
             if (
                 property === "value" &&
-                (directElement.uiTag === "textarea" ||
-                    directElement.uiTag === "input") &&
+                ["textarea", "input", "select", "option", "output"].includes(
+                    directElement.uiTag ?? "",
+                ) &&
                 !directElement.uiFileInput
             ) {
                 this.context.emit(
@@ -4025,7 +4089,8 @@ export class UiProjection {
             !ts.isPropertyAccessExpression(callee) ||
             !(
                 callee.name.text === "getElementById" ||
-                (this.context.options.workers &&
+                ((this.context.options.workers ||
+                    this.context.options.nativeHostUi) &&
                     (callee.name.text === "querySelector" ||
                         callee.name.text === "querySelectorAll"))
             ) ||
@@ -4037,6 +4102,7 @@ export class UiProjection {
             return false;
         }
         if (this.context.options.workers) return true;
+        if (callee.name.text !== "getElementById") return true;
         const id = this.context.unwrap(argumentAt(call, 0));
         // A literal, or an inlined helper's parameter bound to one: a
         // demo's `bindToggle(buttonId, ...)` looks its button up by the

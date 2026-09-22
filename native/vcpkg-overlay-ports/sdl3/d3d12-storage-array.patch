@@ -1,0 +1,58 @@
+diff --git a/src/gpu/d3d12/SDL_gpu_d3d12.c b/src/gpu/d3d12/SDL_gpu_d3d12.c
+index 8dd20f2b..b4383f53 100644
+--- a/src/gpu/d3d12/SDL_gpu_d3d12.c
++++ b/src/gpu/d3d12/SDL_gpu_d3d12.c
+@@ -3690,7 +3690,9 @@ static D3D12Texture *D3D12_INTERNAL_CreateTexture(
+                     uavDesc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2DARRAY;
+                     uavDesc.Texture2DArray.MipSlice = levelIndex;
+                     uavDesc.Texture2DArray.FirstArraySlice = layerIndex;
+-                    uavDesc.Texture2DArray.ArraySize = 1;
++                    uavDesc.Texture2DArray.ArraySize = layerIndex == 0 &&
++                        SDL_GetBooleanProperty(createinfo->props, "bblite.gpu.texture.storage_array", false)
++                            ? layerCount : 1;
+                     uavDesc.Texture2DArray.PlaneSlice = 0;
+                 } else if (createinfo->type == SDL_GPU_TEXTURETYPE_3D) {
+                     uavDesc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE3D;
+@@ -5510,6 +5512,16 @@ static void D3D12_BeginComputePass(
+                 storageTextureBindings[i].cycle,
+                 D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+ 
++            /* Opt-in whole-array UAVs cover every layer of this mip. */
++            if (subresource->layer == 0 && SDL_GetBooleanProperty(container->header.info.props, "bblite.gpu.texture.storage_array", false)) {
++                for (Uint32 layer = 1; layer < container->header.info.layer_count_or_depth; ++layer) {
++                    Uint32 index = D3D12_INTERNAL_CalcSubresource(subresource->level, layer, container->header.info.num_levels);
++                    D3D12_INTERNAL_TextureSubresourceTransitionFromDefaultUsage(
++                        d3d12CommandBuffer, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
++                        &subresource->parent->subresources[index]);
++                }
++            }
++
+             d3d12CommandBuffer->computeReadWriteStorageTextureSubresources[i] = subresource;
+             d3d12CommandBuffer->computeReadWriteStorageTextureDescriptorHandles[i] = subresource->uavHandle.cpuHandle;
+ 
+@@ -5896,6 +5908,17 @@ static void D3D12_EndComputePass(
+                 D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+                 d3d12CommandBuffer->computeReadWriteStorageTextureSubresources[i]);
+ 
++            D3D12TextureSubresource *subresource = d3d12CommandBuffer->computeReadWriteStorageTextureSubresources[i];
++            D3D12TextureContainer *container = subresource->parent->container;
++            if (subresource->layer == 0 && SDL_GetBooleanProperty(container->header.info.props, "bblite.gpu.texture.storage_array", false)) {
++                for (Uint32 layer = 1; layer < container->header.info.layer_count_or_depth; ++layer) {
++                    Uint32 index = D3D12_INTERNAL_CalcSubresource(subresource->level, layer, container->header.info.num_levels);
++                    D3D12_INTERNAL_TextureSubresourceTransitionToDefaultUsage(
++                        d3d12CommandBuffer, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
++                        &subresource->parent->subresources[index]);
++                }
++            }
++
+             d3d12CommandBuffer->computeReadWriteStorageTextureSubresources[i] = NULL;
+         }
+     }
+@@ -9614,6 +9637,7 @@ static SDL_GPUDevice *D3D12_CreateDevice(bool debugMode, bool preferLowPower, SD
+     result->shader_formats = shaderFormats;
+     result->debug_mode = debugMode;
+     renderer->sdlGPUDevice = result;
++    SDL_SetBooleanProperty(renderer->props, "bblite.gpu.storage_texture_array", true);
+ 
+     return result;
+ }

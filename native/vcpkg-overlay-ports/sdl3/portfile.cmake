@@ -21,6 +21,8 @@ vcpkg_from_github(
         # Reserve complete graphics/compute descriptor bindings before
         # switching heaps, then republish every affected root table.
         d3d12-descriptor-heaps.patch
+        # Opt-in whole-array compute UAVs with matching subresource barriers.
+        d3d12-storage-array.patch
         # Supply buffer lengths for Tint's robust Metal storage accesses.
         metal-storage-buffer-sizes.patch
         metal-fence-query.patch

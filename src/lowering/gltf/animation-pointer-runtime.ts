@@ -287,11 +287,17 @@ struct GltfAnimationPointerLight {
     void publish(Engine& engine, const std::function<void(Engine&, LightHandle, double)>& set_angle) {
         auto& light = engine.lights.at(handle.value);
         const auto values = source();
-        const std::array<float*, 8> fields = {&light.intensity, &light.range, &light.diffuse_color.r, &light.diffuse_color.g,
-            &light.diffuse_color.b, &light.specular_color.r, &light.specular_color.g, &light.specular_color.b};
-        for (std::size_t field = 0; field < fields.size(); ++field) {
-            const auto index = field < 2 ? field : field + 1;
-            if (gltf_pointer_number_changed(values[index], observed_source[index]) && values[index]) *fields[field] = static_cast<float>(*values[index]);
+        const std::array<std::pair<std::size_t, float*>, 4> float_fields = {{{1, &light.range},
+            {6, &light.specular_color.r}, {7, &light.specular_color.g}, {8, &light.specular_color.b}}};
+        for (const auto& [index, field] : float_fields) {
+            if (gltf_pointer_number_changed(values[index], observed_source[index]) && values[index]) *field = static_cast<float>(*values[index]);
+        }
+        // Preserve this imported-light adapter's established Float32 boundary;
+        // source setters write the wider fields directly.
+        const std::array<std::pair<std::size_t, double*>, 4> double_fields = {{{0, &light.intensity},
+            {3, &light.diffuse_color.r}, {4, &light.diffuse_color.g}, {5, &light.diffuse_color.b}}};
+        for (const auto& [index, field] : double_fields) {
+            if (gltf_pointer_number_changed(values[index], observed_source[index]) && values[index]) *field = static_cast<float>(*values[index]);
         }
         if (const auto angle = props.get("angle"); !angle.nullish() &&
             std::bit_cast<std::uint64_t>(angle.number()) != std::bit_cast<std::uint64_t>(light.angle)) {

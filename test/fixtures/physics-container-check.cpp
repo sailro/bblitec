@@ -79,7 +79,7 @@ int main() {
         add_physics_shape_child_from_parent(world, empty, physics_node(TransformNodeHandle{0}),
                                             container, physics_node(TransformNodeHandle{1}));
     } catch (const std::runtime_error& error) {
-        singular = std::string(error.what()).find("singular parent") != std::string::npos;
+        singular = std::string(error.what()) == "#498";
     }
     assert(singular && empty.handle.ownership->children.empty());
     std::cout << "physics-container-check: ok\n";

@@ -393,6 +393,8 @@ void pal::run_engine(Engine& engine) {
 
 #if defined(BBLITE_WORKERS) && BBLITE_WORKERS
 js::Promise<js::PromiseVoid> pal::start_realm_engine(std::shared_ptr<Engine> engine) {
+    if (engine->device_disposed)
+        throw std::runtime_error("Cannot start an engine with a disposed GPU device.");
     engine->stopped = false;
     js::Promise<js::PromiseVoid> ready;
     run_realm_frames(std::move(engine), ready);

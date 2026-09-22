@@ -12,6 +12,8 @@ export interface SceneParityDefinition {
     independentEngines?: number;
     /** Exact upstream host HTML used for the reference page. */
     referenceHostPage?: string;
+    /** Capture authored overflow with visible browser scrollbars. */
+    referenceScrollbars?: boolean;
     /**
      * Offset the native screenshot gate from `referenceFrame`. This is for a
      * renderer boundary whose browser-side update becomes visible on the next
@@ -4699,6 +4701,29 @@ const sceneInputs: readonly SceneInput[] = [
             maxFullMad: 0.5,
             maxForegroundMad: 0.5,
             backgroundColor: [38, 74, 115],
+            backgroundThreshold: 30,
+            nativeEnvironment: fixedCaptureEnvironment(),
+        },
+    },
+    {
+        id: "ocean",
+        name: "Ocean",
+        source: "corpus/babylon-lite/lab/lite/src/demos/ocean.ts",
+        sourceOrigin: "babylon-lite-application",
+        title: "Babylon Lite Native - Ocean",
+        nativeHostUi: "ui/ocean-host.json",
+        parity: {
+            referenceHostPage: "corpus/babylon-lite/lab/lite/demo-ocean.html",
+            referenceScrollbars: true,
+            referenceSearch: "?seekTime=0.1",
+            referenceFrame: 30,
+            maxFullMad: 0.5,
+            maxForegroundMad: 0.5,
+            canvasThresholds: {
+                maxFullMad: 0.5,
+                maxForegroundMad: 0.5,
+            },
+            backgroundColor: [61, 110, 158],
             backgroundThreshold: 30,
             nativeEnvironment: fixedCaptureEnvironment(),
         },

@@ -88,3 +88,110 @@ index c39dbbf..351b0f8 100644
  		shrink_to_fit_width = Math::Min(shrink_to_fit_width, available_width);
  	}
  	return shrink_to_fit_width;
+diff --git a/Source/Core/Layout/BlockContainer.cpp b/Source/Core/Layout/BlockContainer.cpp
+index dcdd2590..77201233 100644
+--- a/Source/Core/Layout/BlockContainer.cpp
++++ b/Source/Core/Layout/BlockContainer.cpp
+@@ -16,6 +16,7 @@ BlockContainer::BlockContainer(ContainerBox* _parent_container, FloatedBoxSpace*
+ {
+ 	RMLUI_ASSERT(element);
+ 	RMLUI_ASSERT(box.GetSize().x >= 0.f);
++	bottom_margin = MarginStrut(box.GetEdge(BoxArea::Margin, BoxEdge::Bottom));
+ 
+ 	if (!space)
+ 	{
+@@ -36,6 +37,24 @@ bool BlockContainer::Close(BlockContainer* parent_block_container)
+ 	// Set this box's height, if necessary.
+ 	if (box.GetSize().y < 0)
+ 	{
++		// CSS 2.2 8.3.1: an auto-height in-flow block with no bottom
++		// border/padding shares its last block child's adjoining bottom margin.
++		// Export the margin to the parent flow instead of including it in height.
++		if (parent_block_container && min_height == 0.f &&
++			box.GetEdge(BoxArea::Padding, BoxEdge::Bottom) == 0.f &&
++			box.GetEdge(BoxArea::Border, BoxEdge::Bottom) == 0.f)
++		{
++			if (const LayoutBox* child = GetOpenLayoutBox())
++			{
++				if (const Box* child_box = child->GetIfBox())
++				{
++					const Vector2f child_margin = GetBottomMarginStrut(*child);
++					bottom_margin = {Math::Max(bottom_margin.x, child_margin.x), Math::Min(bottom_margin.y, child_margin.y)};
++					box_cursor -= child_box->GetEdge(BoxArea::Margin, BoxEdge::Bottom);
++					box.SetEdge(BoxArea::Margin, BoxEdge::Bottom, bottom_margin.x + bottom_margin.y);
++				}
++			}
++		}
+ 		float content_height = box_cursor;
+ 
+ 		if (!parent_block_container)
+@@ -298,29 +317,30 @@ Vector2f BlockContainer::NextBoxPosition(const Box& child_box, Style::Clear clea
+ 			const float open_bottom_margin = open_box->GetEdge(BoxArea::Margin, BoxEdge::Bottom);
+ 			const float margin_sum = open_bottom_margin + child_top_margin;
+ 
+-			// The collapsed margin size depends on the sign of each margin, according to CSS behavior. The margins have
+-			// already been added to the 'box_position', so subtract their sum as needed.
+-			const int num_negative_margins = int(child_top_margin < 0.f) + int(open_bottom_margin < 0.f);
+-			switch (num_negative_margins)
+-			{
+-			case 0:
+-				// Use the largest margin.
+-				box_position.y += Math::Max(child_top_margin, open_bottom_margin) - margin_sum;
+-				break;
+-			case 1:
+-				// Use the sum of the positive and negative margin. These are already added to the position, so do nothing.
+-				break;
+-			case 2:
+-				// Use the most negative margin.
+-				box_position.y += Math::Min(child_top_margin, open_bottom_margin) - margin_sum;
+-				break;
+-			}
++			// Keep the positive maximum and negative minimum separately when
++			// the preceding block exported margins from nested descendants.
++			const Vector2f previous = GetBottomMarginStrut(*block_box);
++			const Vector2f next = MarginStrut(child_top_margin);
++			const float collapsed = Math::Max(previous.x, next.x) + Math::Min(previous.y, next.y);
++			box_position.y += collapsed - margin_sum;
+ 		}
+ 	}
+ 
+ 	return box_position;
+ }
+ 
++Vector2f BlockContainer::MarginStrut(float margin)
++{
++	return {Math::Max(0.f, margin), Math::Min(0.f, margin)};
++}
++
++Vector2f BlockContainer::GetBottomMarginStrut(const LayoutBox& child)
++{
++	if (child.GetType() == Type::BlockContainer)
++		return static_cast<const BlockContainer&>(child).bottom_margin;
++	return MarginStrut(child.GetIfBox()->GetEdge(BoxArea::Margin, BoxEdge::Bottom));
++}
++
+ void BlockContainer::PlaceQueuedFloats(float vertical_position)
+ {
+ 	if (!queued_float_elements.empty())
+diff --git a/Source/Core/Layout/BlockContainer.h b/Source/Core/Layout/BlockContainer.h
+index 6cfb0a04..c8b1aa0d 100644
+--- a/Source/Core/Layout/BlockContainer.h
++++ b/Source/Core/Layout/BlockContainer.h
+@@ -109,6 +109,8 @@ private:
+ 	const InlineContainer* GetOpenInlineContainer() const;
+ 
+ 	const LayoutBox* GetOpenLayoutBox() const;
++	static Vector2f MarginStrut(float margin);
++	static Vector2f GetBottomMarginStrut(const LayoutBox& child);
+ 
+ 	/// Increment our cursor and content size, to enclose a sized block-level child box.
+ 	/// @param[in] child The child box.
+@@ -146,6 +148,8 @@ private:
+ 
+ 	// The vertical position of the next block box to be added to this box, relative to our box's top content edge.
+ 	float box_cursor = 0.f;
++	// Positive maximum and negative minimum of adjoining bottom margins.
++	Vector2f bottom_margin;
+ 
+ 	// Stores the floated boxes in the current block formatting context, if we are the root of the formatting context.
+ 	UniquePtr<FloatedBoxSpace> root_space;

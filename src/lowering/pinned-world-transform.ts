@@ -168,6 +168,15 @@ struct TrsLanes {
     Vec4 rotation_quaternion{0.0f, 0.0f, 0.0f, 1.0f};
 };
 
+// Observable imported-root values remain JavaScript numbers until matrix storage.
+struct TrsLanes64 {
+    Vec3d rotation{};
+    Vec3d scaling{1, 1, 1};
+    Vec3d position{};
+    bool has_rotation_quaternion = false;
+    Vec4d rotation_quaternion{0, 0, 0, 1};
+};
+
 // src/scene/world-matrix-state.ts composeTrsLocalMatrix, translated whole
 // over whichever record carries the lanes -- a mesh, a transform node or
 // TrsLanes: the pin composes in JavaScript-number width and stores once
@@ -200,40 +209,47 @@ std::array<float, 16> trs_matrix(const Record& mesh) {
     return narrow_mat4(trs_local_matrix(mesh));
 }
 
-// An imported clone root's outer position and rotation: the same
-// composition over a unit scale and no quaternion source.
-inline std::array<double, 16> outer_transform_local(
-    const Vec3& position, const Vec3& rotation) {
-    return trs_local_matrix(TrsLanes{
-        .rotation = rotation,
-        .position = Vec3d{position.x, position.y, position.z}});
+// world-matrix-state.ts getWorldMatrix: parent * local, with f32 matrix storage.
+inline std::array<float, 16> light_world_matrix(const LightRecord& light) {
+    const auto local = trs_matrix(light);
+    if (!light.parent_world_matrix) return local;
+    const auto parent = light.parent_world_matrix();
+    std::array<double, 16> world{};
+    mat4_multiply_into_f64(world, 0, parent, 0, local, 0);
+    return narrow_mat4(world);
 }
 
-inline std::array<float, 16> outer_transform_matrix(
-    const Vec3& position, const Vec3& rotation) {
-    return narrow_mat4(outer_transform_local(position, rotation));
+inline bool outer_transform_is_identity(const MeshRecord& mesh) {
+    const auto& position = mesh.outer_position;
+    const auto& scale = mesh.outer_scaling;
+    const auto& rotation = mesh.outer_rotation;
+    const auto& quaternion = mesh.outer_rotation_quaternion;
+    return position.x == 0 && position.y == 0 && position.z == 0 &&
+        scale.x == 1 && scale.y == 1 && scale.z == 1 &&
+        (mesh.outer_has_rotation_quaternion
+            ? quaternion.x == 0 && quaternion.y == 0 && quaternion.z == 0 && quaternion.w == 1
+            : rotation.x == 0 && rotation.y == 0 && rotation.z == 0);
 }
 
-// \`outer * world\` at double width: the clone root's composition on the
-// left of a mesh's own world, the operand order world-matrix-state.ts
-// getWorldMatrix multiplies a parent by (\`multiplyMat4IntoBuffer(out, 0,
-// parent, 0, local, 0)\`), through the pinned writer's F64 storage arm.
-// The pin multiplies only under a parent, and an unrotated, untranslated
-// root is the identity: its product is the world itself, cell for cell,
-// so that world is returned rather than composed per caster per frame.
+inline std::array<double, 16> outer_transform_local(const MeshRecord& mesh) {
+    return trs_local_matrix(TrsLanes64{
+        .rotation = mesh.outer_rotation,
+        .scaling = mesh.outer_scaling,
+        .position = mesh.outer_position,
+        .has_rotation_quaternion = mesh.outer_has_rotation_quaternion,
+        .rotation_quaternion = mesh.outer_rotation_quaternion});
+}
+
+inline std::array<float, 16> outer_transform_matrix(const MeshRecord& mesh) {
+    return narrow_mat4(outer_transform_local(mesh));
+}
+
 inline std::array<double, 16> outer_transform_product(
-    const Vec3& position,
-    const Vec3& rotation,
-    const std::array<double, 16>& world) {
-    if (
-        position.x == 0.0f && position.y == 0.0f && position.z == 0.0f &&
-        rotation.x == 0.0f && rotation.y == 0.0f && rotation.z == 0.0f) {
-        return world;
-    }
-    std::array<double, 16> product{};
-    mat4_multiply_into_f64(
-        product, 0, outer_transform_local(position, rotation), 0, world, 0);
-    return product;
+    const MeshRecord& mesh, const std::array<double, 16>& world) {
+    if (outer_transform_is_identity(mesh)) return world;
+    std::array<double, 16> result{};
+    mat4_multiply_into_f64(result, 0, outer_transform_local(mesh), 0, world, 0);
+    return result;
 }
 
 // The float application of a world basis, scalarized from the pinned PBR

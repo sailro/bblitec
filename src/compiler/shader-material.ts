@@ -121,8 +121,9 @@ export function compileShaderMaterialOptions(
             "needAlphaTesting",
             "backFaceCulling",
             "depthWrite",
+            "depthCompare",
         ],
-        "Reached shader materials support source, attributes, uniforms, samplers, storage buffers, defines, alpha state and blend mode, culling, and depthWrite only.",
+        "Reached shader materials support source, attributes, uniforms, samplers, storage buffers, defines, alpha state and blend mode, culling, depthWrite and depthCompare only.",
     );
 
     const vertexExpression = context.objectProperty(object, "vertexSource");
@@ -215,6 +216,30 @@ export function compileShaderMaterialOptions(
         context.objectProperty(object, "depthWrite"),
         !needAlphaBlending,
     );
+    const depthCompareExpression = context.objectProperty(
+        object,
+        "depthCompare",
+    );
+    const depthCompare = depthCompareExpression
+        ? context.compileStringLiteral(depthCompareExpression)
+        : undefined;
+    if (
+        depthCompare !== undefined &&
+        ![
+            "never",
+            "less",
+            "equal",
+            "less-equal",
+            "greater",
+            "not-equal",
+            "greater-equal",
+            "always",
+        ].includes(depthCompare)
+    )
+        context.fail(
+            depthCompareExpression!,
+            `Unsupported shader depthCompare '${depthCompare}'.`,
+        );
 
     for (const program of shaderMaterialPrograms) {
         if (
@@ -233,7 +258,8 @@ export function compileShaderMaterialOptions(
             blendMode === (program.blendMode ?? "alpha") &&
             needAlphaTesting === program.needAlphaTesting &&
             backFaceCulling === program.backFaceCulling &&
-            depthWrite === program.depthWrite
+            depthWrite === program.depthWrite &&
+            depthCompare === program.depthCompare
         ) {
             let candidate: ShaderIrProgram;
             try {
@@ -335,6 +361,7 @@ export function compileShaderMaterialOptions(
         needAlphaTesting,
         backFaceCulling,
         depthWrite,
+        ...(depthCompare === undefined ? {} : { depthCompare }),
     };
     try {
         lowerWgslShaderProgram(sceneProgram);

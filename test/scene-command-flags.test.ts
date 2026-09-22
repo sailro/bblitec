@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { parseParityArguments } from "../src/parity-scene.js";
 import { flagNumber, parseFlags } from "../src/tooling/flags.js";
@@ -7,6 +9,46 @@ import {
     canonicalBackend,
     resolveBackend,
 } from "../src/tooling/artifacts.js";
+
+test("process advertises and accepts a single-scene live deployment without starting a build", () => {
+    const command = fileURLToPath(
+        new URL("../src/scene-command.js", import.meta.url),
+    );
+    const help = spawnSync(process.execPath, [command, "help"], {
+        encoding: "utf8",
+    });
+    assert.equal(help.status, 0, help.stderr);
+    assert.match(help.stdout, /process[^\n]*--live/);
+    const all = spawnSync(
+        process.execPath,
+        [command, "process", "all", "--live"],
+        {
+            encoding: "utf8",
+        },
+    );
+    assert.equal(all.status, 1);
+    assert.match(
+        all.stderr,
+        /process --live requires one scene or TypeScript source/,
+    );
+    const missing = spawnSync(
+        process.execPath,
+        [
+            command,
+            "process",
+            "missing-live-fixture",
+            "--live",
+            "--backend",
+            "both",
+        ],
+        { encoding: "utf8" },
+    );
+    assert.equal(missing.status, 1);
+    assert.match(
+        missing.stderr,
+        /Unknown scene or TypeScript source 'missing-live-fixture'/,
+    );
+});
 
 // The strict parser every scene subcommand shares. These are the
 // behaviors that were each a silent failure before it existed: an

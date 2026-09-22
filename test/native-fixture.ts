@@ -121,7 +121,10 @@ export function runNativeFixtureCompiler(
 export function runRmlUiFixture(
     t: TestContext,
     name: string,
-    options: { imageDecoder?: boolean } = {},
+    options: {
+        imageDecoder?: boolean;
+        includeDirectories?: readonly string[];
+    } = {},
 ): void {
     const tools = optionalNativeFixtureTools();
     const rml = resolve(
@@ -153,6 +156,7 @@ export function runRmlUiFixture(
         "native/include",
         "/I",
         "native/src",
+        ...(options.includeDirectories ?? []).flatMap((path) => ["/I", path]),
         `/external:I${join(rml, "include")}`,
         `/external:I${join(rml, "Backends")}`,
         `/external:I${join(nativeFixtureVcpkgRoot, "include")}`,

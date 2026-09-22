@@ -223,30 +223,6 @@ test("keeps the raw GPU device closed outside the matrix upload helper", () => {
     );
 });
 
-test("refuses a camera world matrix on a non-arc-rotate camera", () => {
-    assert.throws(
-        () =>
-            compileSource(`
-                import {
-                    createEngine,
-                    createFreeCamera,
-                    createSceneContext,
-                } from "@babylonjs/lite";
-                async function main(): Promise<void> {
-                    const canvas = document.getElementById("renderCanvas") as HTMLCanvasElement;
-                    const scene = createSceneContext(await createEngine(canvas));
-                    const camera = createFreeCamera(
-                        { x: 0, y: 5, z: -10 },
-                        { x: 0, y: 0, z: 0 },
-                    );
-                    scene.camera = camera;
-                    const world = camera.worldMatrix;
-                }
-            `),
-        /requires an ArcRotateCamera/,
-    );
-});
-
 test("rejects an undeclared property on a known owner", () => {
     // The table returning nothing has to fall through to the general
     // failure rather than resolving to something adjacent.

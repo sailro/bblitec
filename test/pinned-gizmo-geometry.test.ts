@@ -355,14 +355,18 @@ gizmo._bodyOuter.scaling;`,
             [LIGHT],
             `
 const gizmo = createLightGizmo({}, {scene:{camera:args[0] ? {worldMatrix:args[1]} : null}});
-gizmo.attachedLight = {position:args[2]};
+gizmo.attachedLight = {position:args[2], worldMatrix: Float32Array.of(1,0,0,0,0,1,0,0,0,0,1,0,args[2].x,args[2].y,args[2].z,1)};
 tick();
 gizmo.root.scaling;`,
             [present, camera, position],
         );
         result.push({
             operation: "light",
-            input: [Number(present), ...camera, ...vector(position)],
+            input: [
+                Number(present),
+                ...camera,
+                ...vector(position).map(Math.fround),
+            ],
             expected: vector(lightScale),
         });
     }

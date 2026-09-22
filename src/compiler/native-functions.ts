@@ -42,6 +42,7 @@ export interface NativeFunctionContext extends Pick<
     | "sourceFiles"
     | "lookupIdentifierValue"
     | "knownValueWithoutEvaluation"
+    | "evaluateBrowserValue"
     | "classOf"
     | "compileValue"
     | "probeEmission"
@@ -276,6 +277,16 @@ export class NativeFunctionLowerer {
         if (!declaration) {
             return undefined;
         }
+        if (
+            call.arguments.some((argument) => {
+                const value = this.context.evaluateBrowserValue(argument);
+                return (
+                    value?.kind === "search-params" ||
+                    (value?.kind === "object" && value.moduleUrl === true)
+                );
+            })
+        )
+            return undefined;
         if (
             requiresDefaultParameterBinding(
                 this.context.checker,

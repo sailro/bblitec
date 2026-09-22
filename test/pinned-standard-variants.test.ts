@@ -107,7 +107,7 @@ test("a textured two-light-shaped variant is the pin's own text", async () => {
     // The multi-slot expression of a point-light scene like Scene 9: the
     // pin's own loop over the mesh's light selection, not unrolled slots.
     assert.ok(fragment.includes(`array<LightEntry,${types.MAX_LIGHTS}>`));
-    assert.ok(fragment.includes(`min(mesh.lc,${types.MAX_LIGHTS}u)`));
+    assert.ok(fragment.includes(`min(mesh.lc&255u,${types.MAX_LIGHTS}u)`));
     assert.match(fragment, /for\(var li=0u;li<lc;li\+\+\)/);
     assert.match(fragment, /let lightIndex=mli\(li\);/);
     assert.match(
@@ -829,7 +829,7 @@ test("the native-support block flows from the pin's own declarations", async () 
         ),
     );
     // Selector rows and tables land as given.
-    assert.ok(block.includes(`{${flags.DISABLE_LIGHTING}u, 0u, 1, 1},`));
+    assert.ok(block.includes(`{${flags.DISABLE_LIGHTING}u, 0u, 1, 1, 0u},`));
     assert.ok(block.includes("standard_renderable_mesh_features"));
     // Deterministic emission.
     assert.equal(

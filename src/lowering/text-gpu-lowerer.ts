@@ -237,7 +237,9 @@ ${this.draw()}
                         ? "color_format"
                         : path === "target._depthStencilFormat"
                           ? "depth_format"
-                          : undefined;
+                          : path === "target._depthCompare"
+                            ? "depth_compare"
+                            : undefined;
                 if (field && ts.isStringLiteral(node.right))
                     return `target.${field}.value_or(${stringLiteral(node.right.text)})`;
             }
@@ -878,7 +880,7 @@ template<class Ops> void create_text_atlas_metadata(TextAtlasGpuState& gpu, doub
                     if (ts.isObjectBindingPattern(declaration.name)) {
                         c.assertExpressionShape(
                             declaration.initializer!,
-                            "getOrCreateTextPipeline(engine, colorFormat, sampleCount, depthFormat, depthWrite, r)",
+                            "getOrCreateTextPipeline(engine, colorFormat, sampleCount, depthFormat, depthWrite, r, depthCompare)",
                             "Text resolved pipeline boundary",
                         );
                         if (

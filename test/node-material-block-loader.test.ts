@@ -46,6 +46,39 @@ function compileLoader(loader: string, name = "loadBlock") {
     `);
 }
 
+test("explicit node block descriptors survive factory and binding aliases", () => {
+    for (const expression of [
+        "createNodeMaterialBlockLoader([input, output])",
+        "makeLoader()",
+        "alias",
+    ]) {
+        const result = compileLoader(
+            `
+            import {createNodeMaterialBlockLoader, nodeInputBlock as input, nodeVertexOutputBlock as output} from "babylon-lite";
+            function makeLoader(){return createNodeMaterialBlockLoader([input, output]);}
+            const alias = makeLoader();
+        `,
+            expression,
+        );
+        assert.deepEqual(
+            result.manifest.nodeMaterials[0]!.blockEmitters?.map(
+                (emitter) => emitter.className,
+            ),
+            ["InputBlock", "VertexOutputBlock"],
+        );
+    }
+    assert.throws(
+        () =>
+            compileLoader(
+                `
+        import {createNodeMaterialBlockLoader,nodeInputBlock} from "babylon-lite";
+    `,
+                "createNodeMaterialBlockLoader([nodeInputBlock,nodeInputBlock])",
+            ),
+        /select a class twice/,
+    );
+});
+
 test("recognizes the pinned geometry loader by import symbol and keeps its graph identity", () => {
     for (const name of ["loadNodeBlockEmitterWithGeometry", "loadBlock"]) {
         const result = compileLoader(

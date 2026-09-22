@@ -4,6 +4,8 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import test from "node:test";
 import { importPinnedModule } from "../src/pinned-shader-composer.js";
+import { LoweringContext } from "../src/lowering/context.js";
+import { materialShadowReceiverCpp } from "../src/lowering/material-shadow-receiver.js";
 import {
     cppFunction,
     cppRecord,
@@ -43,6 +45,7 @@ test(
 #include <bblite/runtime.hpp>
 #include <cassert>
 namespace bbl::upstream {
+${materialShadowReceiverCpp(new LoweringContext())}
 enum class RenderMaterialKind { pbr, standard };
 struct RenderDrawCommand { struct Item {
     RenderMaterialKind material_kind = RenderMaterialKind::pbr;
@@ -82,22 +85,24 @@ ${[
 int main() {
     using namespace bbl;
     Engine engine; Scene scene;
+    engine.lights.emplace_back(); scene.lights.push_back(LightHandle{0u});
     engine.meshes.resize(2); engine.materials.resize(2);
     engine.materials[1].source_material = {0};
     upstream::RenderDrawCommand draw;
     for (unsigned mesh = 0; mesh < 2; ++mesh) {
         draw.item.mesh = {mesh};
-        for (bool receiver : {false, true}) for (unsigned view = 0; view < 3; ++view) {
+        for (bool shadows : {false, true}) for (bool receiver : {false, true}) for (unsigned view = 0; view < 3; ++view) {
+            engine.lights[0].shadow_generator = ShadowGeneratorHandle{shadows ? 0u : invalid_handle};
             auto& record = engine.meshes[mesh]; record.receives_shadows = receiver;
             auto& material = engine.materials[1];
             material.no_color = view == 1; material.esm_shadow = view == 2;
             draw.item.material = {1};
-            const auto expected = upstream::base | (receiver && view == 0 ? upstream::pinned_msh_receive_shadows : 0);
+            const auto expected = upstream::base | (shadows && receiver && view == 0 ? upstream::pinned_msh_receive_shadows : 0);
             draw.item.material_kind = upstream::RenderMaterialKind::pbr;
             const auto pbr = pal::pinned_variant_key(scene, engine, draw);
             assert(pbr.resolved && pbr.material_index == 0 && pbr.material_view == view && pbr.mesh_features == expected);
             draw.item.material_kind = upstream::RenderMaterialKind::standard;
-            const auto standard = pal::standard_variant_key(engine, draw);
+            const auto standard = pal::standard_variant_key(scene, engine, draw);
             assert(standard.resolved && standard.mesh_features == expected);
         }
     }
@@ -111,7 +116,7 @@ int main() {
         draw.item.material_kind = upstream::RenderMaterialKind::pbr;
         assert(pal::pinned_variant_key(scene, engine, draw).mesh_features == expected);
         draw.item.material_kind = upstream::RenderMaterialKind::standard;
-        assert(pal::standard_variant_key(engine, draw).mesh_features == expected);
+        assert(pal::standard_variant_key(scene, engine, draw).mesh_features == expected);
     }
     record.thin_instanced = false; record.instance_colors.clear();
     record.composition_feature_row = 0;
@@ -120,7 +125,7 @@ int main() {
     draw.item.material_kind = upstream::RenderMaterialKind::pbr;
     assert(pal::pinned_variant_key(scene, engine, draw).mesh_features == (upstream::base | (1u << 21)));
     draw.item.material_kind = upstream::RenderMaterialKind::standard;
-    assert(pal::standard_variant_key(engine, draw).mesh_features == (upstream::base | (1u << 21)));
+    assert(pal::standard_variant_key(scene, engine, draw).mesh_features == (upstream::base | (1u << 21)));
 }
 `,
         );

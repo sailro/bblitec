@@ -50,6 +50,14 @@ export interface PinnedMaterialInput {
     [key: string]: unknown;
 }
 
+/** The pin's declared layout, including properties WGSL cannot express. */
+export interface PinnedMeshBindingLayoutEntry {
+    binding: number;
+    visibility: number;
+    texture?: { sampleType?: string };
+    sampler?: { type?: string };
+}
+
 /** A composed variant plus the feature bits that produced it. */
 export interface PinnedPbrVariant {
     /** The pin's own name for the permutation, e.g. `ibl|clearcoat`. */
@@ -59,6 +67,7 @@ export interface PinnedPbrVariant {
     vertexWgsl: string;
     fragmentWgsl: string;
     materialUboSpec: unknown;
+    meshBindingLayout: readonly PinnedMeshBindingLayoutEntry[];
 }
 
 /**
@@ -340,6 +349,9 @@ interface PinnedComposeFn {
         _fragmentWGSL: string;
         _fragmentKey: string;
         _materialUboSpec: unknown;
+        _meshBGLDescriptor: {
+            entries: readonly PinnedMeshBindingLayoutEntry[];
+        };
     };
 }
 
@@ -414,9 +426,9 @@ export async function composePinnedPbrVariant(
     if (receivesShadows) await reachCsmReceiverFactories(shadowLights);
     const pbrShadow = receivesShadows
         ? await importPinnedModule<{
-              createPbrShadowFragment: (
+              preparePbrShadowFragment: (
                   slots: readonly ShadowLightSlot[],
-              ) => unknown;
+              ) => Promise<(slots: readonly ShadowLightSlot[]) => unknown>;
           }>("material/pbr/fragments/pbr-shadow-fragment.js")
         : undefined;
     const [compose, templateExt, flatNormal, fog, thinInstance] =
@@ -465,7 +477,9 @@ export async function composePinnedPbrVariant(
         _fogBlock: fog.PBR_FOG_BLOCK,
         _createPbrTemplateExt: templateExt.createPbrTemplateExt,
         _flatNormalWgsl: flatNormal.FLAT_NORMAL_WGSL,
-        _createPbrShadowFragment: pbrShadow?.createPbrShadowFragment ?? null,
+        _createPbrShadowFragment: pbrShadow
+            ? await pbrShadow.preparePbrShadowFragment(shadowLights)
+            : null,
         _shadowLights: shadowLights,
         _createThinInstanceFragment: thinInstance.createThinInstanceFragment,
     };
@@ -503,6 +517,9 @@ export async function composePinnedPbrVariant(
                     _fragmentWGSL: string;
                     _fragmentKey: string;
                     _materialUboSpec: unknown;
+                    _meshBGLDescriptor: {
+                        entries: readonly PinnedMeshBindingLayoutEntry[];
+                    };
                 };
             }>("material/pbr/pbr-geometry-output-shader.js"),
         ]);
@@ -535,6 +552,7 @@ export async function composePinnedPbrVariant(
                 vertexWgsl: composed._vertexWGSL,
                 fragmentWgsl: composed._fragmentWGSL,
                 materialUboSpec: composed._materialUboSpec,
+                meshBindingLayout: composed._meshBGLDescriptor.entries,
             };
         } finally {
             activeGeometryAttachments = previous;
@@ -560,5 +578,6 @@ export async function composePinnedPbrVariant(
         vertexWgsl: composed._vertexWGSL,
         fragmentWgsl: composed._fragmentWGSL,
         materialUboSpec: composed._materialUboSpec,
+        meshBindingLayout: composed._meshBGLDescriptor.entries,
     };
 }

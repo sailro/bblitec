@@ -38,6 +38,7 @@ import { pinnedCsmFunctions } from "./pinned-csm.js";
 import { lowerComputeAabb, positionsView } from "./pinned-compute-aabb.js";
 import type { ComposedEsmShadow } from "../pinned-esm-shadow.js";
 import { pinnedHeader } from "./pinned-header.js";
+import { lowerShadowEnabled } from "./shadow-enabled.js";
 
 const baseModule = "src/shadow/shadow-base.ts";
 const spotModule = "src/shadow/pcf-spotlight-shadow-generator.ts";
@@ -249,6 +250,17 @@ function lowerComputeSpotLightMatrix(context: LoweringContext): string {
     const bindings = new Map<string, PinnedBinding>([
         ...vec3MemberBindings("light.direction"),
         ...vec3MemberBindings("light.position"),
+        [
+            "light.worldMatrix",
+            { cpp: "light_world_matrix(light)", type: "f32" },
+        ],
+        [
+            "light.direction",
+            {
+                cpp: "Vec3d{light.direction.x, light.direction.y, light.direction.z}",
+                type: "vec3",
+            },
+        ],
         // `angle` is the full cone angle the pinned factory stored; the
         // native record keeps its cosine for shading and the angle itself
         // for this projection.
@@ -355,6 +367,17 @@ function lowerComputeDirectionalLightMatrix(context: LoweringContext): string {
     const bindings = new Map<string, PinnedBinding>([
         ...vec3MemberBindings("light.direction"),
         ...vec3MemberBindings("light.position"),
+        [
+            "light.worldMatrix",
+            { cpp: "light_world_matrix(light)", type: "f32" },
+        ],
+        [
+            "light.direction",
+            {
+                cpp: "Vec3d{light.direction.x, light.direction.y, light.direction.z}",
+                type: "vec3",
+            },
+        ],
         ["orthoMinZ", { cpp: "ortho_min_z", type: "scalar" }],
         ["orthoMaxZ", { cpp: "ortho_max_z", type: "scalar" }],
         ...eyeOffsetBindings,
@@ -964,9 +987,9 @@ interface PinnedShadowTarget {
     format: string;
     /** `samples`. */
     samples: number;
-    /** `_depthCompare`, as this runtime's own enumerator. */
+    /** `depthCompare`, as this runtime's own enumerator. */
     compare: string;
-    /** `_depthClearValue`. */
+    /** `depthClearValue`. */
     clear: number;
 }
 
@@ -1076,12 +1099,12 @@ function assertPcfResourceContracts(
         samples,
         compare: nativeDepthCompare(
             context.stringValue(
-                context.propertyInitializer(targetLiteral, "_depthCompare"),
+                context.propertyInitializer(targetLiteral, "depthCompare"),
                 baseFile,
             ),
         ),
         clear: context.numericValue(
-            context.propertyInitializer(targetLiteral, "_depthClearValue"),
+            context.propertyInitializer(targetLiteral, "depthClearValue"),
             baseFile,
         ),
     };
@@ -1143,7 +1166,7 @@ function assertShadowRenderGateContracts(context: LoweringContext): void {
         );
         context.expectShapeCount(
             declaration,
-            "sg._light.worldMatrixVersion",
+            "sg._light._lightVersion",
             `${renderer} light version read`,
         );
         context.expectShapeCount(
@@ -1513,6 +1536,7 @@ export function pinnedShadowHeader(
 #include <bblite/js_data.hpp>
 #include <bblite/runtime.hpp>
 #include <bblite/upstream/pinned_world_transform.hpp>
+#include <bblite/upstream/light_matrix.hpp>
 #include <bblite/upstream/renderer_plan.hpp>
 
 namespace bbl::upstream {
@@ -1837,6 +1861,8 @@ inline ShadowReceiverBlock shadow_receiver_block(
     return shadow_receiver_bytes(shadow_info_block(generator));
 }
 
+${lowerShadowEnabled(context)}
+
 // ${context.provenance(
         esmModule,
         "renderEsmShadowMap",
@@ -1890,6 +1916,8 @@ struct ShadowRefreshGate {
     std::uint64_t last_caster_list_version = 0;
     Vec3 last_light_position{};
     Vec3 last_light_direction{};
+    std::array<float, 16> last_light_matrix{};
+    double last_light_angle = 0.0;
     Vec3d last_fo_offset{};
 #if BBLITE_SHADOWS_CSM
     std::array<float, 16> last_camera_view_projection{};
@@ -1963,6 +1991,7 @@ inline bool shadow_refresh_due(
     // here is that same order, minus the version sum and the lane updates
     // a flag fixed at creation makes unreadable.
     if (generator.force_refresh_every_frame) return true;
+    const auto light_matrix = light_world_matrix(light);
     const std::uint64_t caster_version = shadow_caster_version_sum(
         engine, generator.caster_meshes, generator.morph_shadow_bounds);
 #if BBLITE_SHADOWS_CSM
@@ -1989,6 +2018,8 @@ inline bool shadow_refresh_due(
         light.direction.x == gate.last_light_direction.x &&
         light.direction.y == gate.last_light_direction.y &&
         light.direction.z == gate.last_light_direction.z &&
+        light_matrix == gate.last_light_matrix &&
+        light.angle == gate.last_light_angle &&
         camera_unchanged) {
         return false;
     }
@@ -1997,6 +2028,8 @@ inline bool shadow_refresh_due(
     gate.last_caster_list_version = generator.caster_list_version;
     gate.last_light_position = light.position;
     gate.last_light_direction = light.direction;
+    gate.last_light_matrix = light_matrix;
+    gate.last_light_angle = light.angle;
     gate.last_fo_offset = eye;
 #if BBLITE_SHADOWS_CSM
     if (csm_camera != nullptr) {
@@ -2307,7 +2340,7 @@ export function shadowFactorySource(
         );
         for (const [owner, name, shape] of [
             [csmDescriptor, "dFormat", '"depth32float"'],
-            [csmDescriptor, "_depthCompare", '"less-equal"'],
+            [csmDescriptor, "depthCompare", '"less-equal"'],
             [csmTarget, "_ownsDepthTexture", "false"],
         ] as const) {
             context.assertExpressionShape(

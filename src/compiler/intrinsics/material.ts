@@ -1,4 +1,8 @@
 import { EmissionMap } from "../emission-transaction.js";
+import {
+    compileCreateStorageBuffer,
+    type StorageBufferIntrinsicContext,
+} from "./storage-buffer.js";
 import type { LoweringServices } from "../lowering-services.js";
 import ts from "typescript";
 import { argumentAt } from "../syntax.js";
@@ -8,11 +12,20 @@ import {
     type LocalCubemapIntrinsicContext,
 } from "./local-cubemap.js";
 import type { Value } from "../types.js";
+import {
+    emitMaterialPluginResources,
+    foldMaterialPluginList,
+    type MaterialPluginResourceContext,
+} from "../material-plugin.js";
 import type { IntrinsicCallContext } from "./context.js";
 import { enclosingLoopControl } from "../loop-control.js";
 import { requiredStaticColor3, staticColor3Value } from "./material-options.js";
 import { isToneMappingExport } from "../../pinned-tone-mapping.js";
 import { linearDepthDefaultPlanes } from "../linear-depth-material.js";
+import {
+    compileBlockLoader,
+    type NodeMaterialContext,
+} from "../node-material.js";
 import { isTypedArrayType } from "../data-types.js";
 import {
     compileOptionalStaticBoolean,
@@ -30,14 +43,18 @@ import type {
 export interface MaterialIntrinsicContext
     extends
         IntrinsicCallContext,
+        StorageBufferIntrinsicContext,
+        NodeMaterialContext,
         LocalCubemapIntrinsicContext,
         ObjectValidationContext,
         PositiveIntegerContext,
+        MaterialPluginResourceContext,
         Pick<
             LoweringServices,
             | "engineHasStarted"
             | "hasRegisteredScene"
             | "recordScenePbrSheen"
+            | "recordScenePbrPlugins"
             | "recordScenePbrNoColorView"
             | "recordScenePbrUnlit"
             | "recordAssetSceneUnlit"
@@ -473,6 +490,7 @@ function compileCreatePbrMaterial(
         metallicF0Factor,
         usePhysicalLightFalloff,
         scenePbrMaterialIndex,
+        plugins,
     } = context.compilePbrMaterialOptions(argumentAt(call, 0));
     context.expectSameEngine(baseColor, orm, call);
     context.reachFeature("material:pbr", call);
@@ -572,7 +590,7 @@ function compileCreatePbrMaterial(
         `.metallic_f0_factor = ${metallicF0Factor}, ` +
         `.use_physical_light_falloff = ` +
         `${usePhysicalLightFalloff}})`;
-    if (baseColorFile || ormFile) {
+    if (baseColorFile || ormFile || plugins) {
         const temporary = context.allocateTemporaryCppName("material");
         context.emit({
             kind: "declaration",
@@ -588,6 +606,24 @@ function compileCreatePbrMaterial(
         if (ormFile) {
             context.emit(
                 `bbl::set_material_orm_file(${engine}, ${temporary}, ${ormFile});`,
+            );
+        }
+        if (plugins) {
+            const folded = foldMaterialPluginList(context, plugins, "pbr");
+            context.recordScenePbrPlugins(
+                folded.manifests,
+                scenePbrMaterialIndex,
+            );
+            emitMaterialPluginResources(
+                context,
+                {
+                    kind: "material",
+                    cpp: temporary,
+                    engineCpp: engine,
+                    scenePbrMaterialIndex,
+                },
+                plugins,
+                folded,
             );
         }
         return {
@@ -820,31 +856,6 @@ function compileCreateShaderMaterial(
     };
 }
 
-function compileCreateStorageBuffer(
-    context: MaterialIntrinsicContext,
-    call: ts.CallExpression,
-): Value | undefined {
-    context.expectArgumentCount(call, 2, 3);
-    const engineValue = context.compileValue(argumentAt(call, 0));
-    context.expectKind(engineValue, "engine", argumentAt(call, 0));
-    const engine = context.requireDefaultEngine(call);
-    const data = compileStorageBufferData(
-        context,
-        argumentAt(call, 1),
-        "createStorageBuffer",
-    );
-    const label = call.arguments[2]
-        ? context.cppString(context.compileStringLiteral(argumentAt(call, 2)))
-        : '""';
-    context.reachFeature("material:shader-storage", call);
-    return {
-        kind: "storage-buffer",
-        cpp:
-            `bbl::create_storage_buffer(${engine}, ` + `${data.cpp}, ${label})`,
-        engineCpp: engine,
-    };
-}
-
 function compileUpdateStorageBuffer(
     context: MaterialIntrinsicContext,
     call: ts.CallExpression,
@@ -854,6 +865,7 @@ function compileUpdateStorageBuffer(
     context.expectKind(engine, "engine", argumentAt(call, 0));
     const buffer = context.compileValue(argumentAt(call, 1));
     context.expectKind(buffer, "storage-buffer", argumentAt(call, 1));
+    context.expectSameEngine(engine, buffer, call);
     const data = compileStorageBufferData(
         context,
         argumentAt(call, 2),
@@ -1744,6 +1756,16 @@ function compileEnableMaterialPlugins(
     return { kind: "void", cpp: "" };
 }
 
+function compileEnablePbrMaterialPluginVertexData(
+    context: MaterialIntrinsicContext,
+    call: ts.CallExpression,
+): Value {
+    context.expectArgumentCount(call, 0, 0);
+    context.reachFeature("material:plugins", call);
+    context.reachFeature("material:pbr-plugin-vertex-data", call);
+    return { kind: "void", cpp: "" };
+}
+
 function compileEnableStandardSkeleton(
     context: MaterialIntrinsicContext,
     call: ts.CallExpression,
@@ -1872,9 +1894,25 @@ const materialIntrinsicHandlers = new EmissionMap<
     ["setPbrSheen", compileSetPbrSheen],
     ["setAlphaToCoverage", compileSetAlphaToCoverage],
     ["createStandardMaterial", compileCreateStandardMaterial],
+    [
+        "createNodeMaterialBlockLoader",
+        (context, call) => {
+            const nodeBlockLoader = compileBlockLoader(context, call);
+            return {
+                kind: "browser",
+                cpp: "",
+                browserValue: { kind: "object" },
+                nodeBlockLoader,
+            };
+        },
+    ],
     ["parseNodeMaterialFromSnippet", compileParseNodeMaterialFromSnippet],
     ["enableMaterialUvTransform", compileEnableMaterialUvTransform],
     ["enableMaterialPlugins", compileEnableMaterialPlugins],
+    [
+        "enablePbrMaterialPluginVertexData",
+        compileEnablePbrMaterialPluginVertexData,
+    ],
     [
         "enableStandardSkeleton",
         (context, call) =>

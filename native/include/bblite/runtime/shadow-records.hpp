@@ -52,6 +52,9 @@ struct ShadowCascade {
  * with, and the biased one the caster pass renders through.
  */
 struct ShadowGeneratorRecord {
+    /** Installed by the source runtime enable wrapper; absence uses the original hook. */
+    std::optional<bool> runtime_enabled;
+    std::uint64_t runtime_enabled_version = 0;
     ShadowFilter filter = ShadowFilter::pcf_spot;
     std::uint32_t map_size = 512;
     double bias = 0.0;

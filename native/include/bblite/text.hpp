@@ -147,6 +147,7 @@ struct TextTargetSignature {
     std::optional<std::string> color_format;
     std::optional<std::uint32_t> sample_count;
     std::optional<std::string> depth_format;
+    std::optional<std::string> depth_compare = std::nullopt;
 };
 struct TextRenderableState {
     TextData data;

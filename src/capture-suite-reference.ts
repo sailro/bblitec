@@ -124,7 +124,7 @@ export function flattenedBundledDemoAssetPath(
     if (markerIndex < 0) return undefined;
     const prefix = relativePath.slice(0, markerIndex + marker.length);
     const parts = relativePath.slice(prefix.length).split("/");
-    for (let omitted = 1; omitted < parts.length - 1; omitted += 1) {
+    for (let omitted = 1; omitted < parts.length; omitted += 1) {
         const candidate = `${prefix}${parts.slice(omitted).join("/")}`;
         const candidatePath = resolve(root, candidate);
         if (
@@ -352,6 +352,8 @@ const seededRandomScript =
     " }; })();";
 
 export interface SuiteCaptureOptions {
+    /** Preserve browser scrollbars, including their layout width. */
+    showScrollbars?: boolean;
     /** CSS canvas size for device-local diagnostics; canonical references use 1280x720. */
     viewport?: { width: number; height: number };
     seededRandom?: boolean;
@@ -629,6 +631,15 @@ ${seedScript}${fixedFrameScript}${hostUiScript}<script type="module" src="${entr
                 return;
             }
         }
+        if (
+            path.startsWith(`${root}${sep}`) &&
+            existsSync(path) &&
+            statSync(path).isFile()
+        ) {
+            response.writeHead(200, { "Content-Type": mimeType(path) });
+            response.end(readFileSync(path));
+            return;
+        }
         const bundledRelative = bundledDemoAssetPath(relative);
         const bundledPath =
             bundledRelative === undefined
@@ -658,66 +669,57 @@ ${seedScript}${fixedFrameScript}${hostUiScript}<script type="module" src="${entr
             response.end(readFileSync(flattenedPath));
             return;
         }
-        if (
-            !path.startsWith(`${root}${sep}`) ||
-            !existsSync(path) ||
-            !statSync(path).isFile()
-        ) {
-            // Pinned lab/public assets back every scene source: corpus
-            // scenes and project-owned gates share the demo asset roots.
-            {
-                const cached = pinnedAssets.get(url.pathname);
-                if (cached) {
-                    response.writeHead(200, {
-                        "Content-Type": cached.contentType,
-                    });
-                    response.end(cached.bytes);
-                    return;
-                }
-                const pin = upstreamSource().readUpstreamPin();
-                const publicAsset = pinnedLabPublicAssetPath(relative);
-                const assetUrl =
-                    "https://raw.githubusercontent.com/" +
-                    `BabylonJS/Babylon-Lite/${pin.sourceVersion}` +
-                    `/lab/public/${publicAsset}`;
-                let fetched: Response;
-                try {
-                    fetched = await fetch(assetUrl, {
-                        signal: AbortSignal.timeout(30_000),
-                    });
-                } catch (error: unknown) {
-                    response.writeHead(502);
-                    response.end(
-                        error instanceof Error ? error.message : String(error),
-                    );
-                    return;
-                }
-                if (fetched.ok) {
-                    const asset = {
-                        bytes: new Uint8Array(await fetched.arrayBuffer()),
-                        // raw.githubusercontent.com serves every blob as
-                        // octet-stream, which `WebAssembly.instantiateStreaming`
-                        // refuses; the extension is the better authority
-                        // wherever this table knows the type.
-                        contentType:
-                            knownMimeType(url.pathname) ??
-                            fetched.headers.get("content-type") ??
-                            mimeType(url.pathname),
-                    };
-                    pinnedAssets.set(url.pathname, asset);
-                    response.writeHead(200, {
-                        "Content-Type": asset.contentType,
-                    });
-                    response.end(asset.bytes);
-                    return;
-                }
+        // Pinned lab/public assets back every scene source: corpus
+        // scenes and project-owned gates share the demo asset roots.
+        {
+            const cached = pinnedAssets.get(url.pathname);
+            if (cached) {
+                response.writeHead(200, {
+                    "Content-Type": cached.contentType,
+                });
+                response.end(cached.bytes);
+                return;
             }
-            response.writeHead(404);
-            response.end("Not found");
-            return;
+            const pin = upstreamSource().readUpstreamPin();
+            const publicAsset = pinnedLabPublicAssetPath(relative);
+            const assetUrl =
+                "https://raw.githubusercontent.com/" +
+                `BabylonJS/Babylon-Lite/${pin.sourceVersion}` +
+                `/lab/public/${publicAsset}`;
+            let fetched: Response;
+            try {
+                fetched = await fetch(assetUrl, {
+                    signal: AbortSignal.timeout(30_000),
+                });
+            } catch (error: unknown) {
+                response.writeHead(502);
+                response.end(
+                    error instanceof Error ? error.message : String(error),
+                );
+                return;
+            }
+            if (fetched.ok) {
+                const asset = {
+                    bytes: new Uint8Array(await fetched.arrayBuffer()),
+                    // raw.githubusercontent.com serves every blob as
+                    // octet-stream, which `WebAssembly.instantiateStreaming`
+                    // refuses; the extension is the better authority
+                    // wherever this table knows the type.
+                    contentType:
+                        knownMimeType(url.pathname) ??
+                        fetched.headers.get("content-type") ??
+                        mimeType(url.pathname),
+                };
+                pinnedAssets.set(url.pathname, asset);
+                response.writeHead(200, {
+                    "Content-Type": asset.contentType,
+                });
+                response.end(asset.bytes);
+                return;
+            }
         }
-        response.writeHead(200, { "Content-Type": mimeType(path) });
-        response.end(readFileSync(path));
+        response.writeHead(404);
+        response.end("Not found");
     };
     return createServer((request, response) => {
         void handleRequest(request, response).catch((error: unknown) => {
@@ -928,6 +930,7 @@ export async function captureSuiteReference(
         {
             serverName: "parity server",
             browserArgs: screenshotCaptureBrowserArgs,
+            showScrollbars: options.showScrollbars ?? false,
             viewport: { width: 1280, height: 720 },
             pageErrorPrefix: "Reference page error",
             consoleErrorPrefix: "Reference console error",

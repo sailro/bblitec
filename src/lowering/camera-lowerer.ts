@@ -1,5 +1,6 @@
 import ts from "typescript";
 import { LoweredSource, LoweringContext } from "./context.js";
+import { lowerPinnedBody } from "./pinned-body-lowerer.js";
 import { CameraMutationLowerer } from "./camera-mutation-lowerer.js";
 
 import type { PinnedBinding } from "./pinned-numeric-lowerer.js";
@@ -57,6 +58,9 @@ export class CameraLowerer {
             this.context.unwrapExpression(call.arguments[index]!);
         const parentOperand = operand(2);
         const localOperand = operand(4);
+        let composition: ts.Node = call;
+        while (composition.parent && !ts.isMethodDeclaration(composition))
+            composition = composition.parent;
         if (
             call.arguments.length !== 6 ||
             !ts.isIdentifier(parentOperand) ||
@@ -69,12 +73,20 @@ export class CameraLowerer {
         }
         if (
             !this.context.expressionMatchesShape(
-                this.context.variableInitializer(file, parentOperand.text),
+                this.context.variableInitializer(
+                    composition,
+                    parentOperand.text,
+                ),
                 "_parent.worldMatrix",
             ) ||
             !this.context.expressionMatchesShape(
-                this.context.variableInitializer(file, localOperand.text),
-                "getLocalMatrix()",
+                this.context.unwrapExpression(
+                    this.context.variableInitializer(
+                        composition,
+                        localOperand.text,
+                    ),
+                ),
+                "_cachedLocal ??= getLocalMatrix()",
             )
         ) {
             this.context.contractError(
@@ -382,130 +394,144 @@ CameraHandle create_arc_rotate_camera(
         };
     }
 
+    /** Translate the source projector, including each nullable plane fallback. */
+    public lowerOrthographicProjection(): string {
+        const { file, declaration } = this.context.functionDeclaration(
+            "src/camera/orthographic.ts",
+            "writeOrthoProjection",
+        );
+        return lowerPinnedBody(
+            file,
+            declaration.body!.statements,
+            {
+                bindings: new Map<string, PinnedBinding>([
+                    ["camera.ortho", { cpp: "camera", type: "opaque" }],
+                    [
+                        "b.halfHeight",
+                        { cpp: "camera.ortho_half_height", type: "scalar" },
+                    ],
+                    ["aspectRatio", { cpp: "aspect", type: "scalar" }],
+                    ["out", { cpp: "projection", type: "opaque" }],
+                    [
+                        "camera.nearPlane",
+                        { cpp: "camera.near_plane", type: "scalar" },
+                    ],
+                    [
+                        "camera.farPlane",
+                        { cpp: "camera.far_plane", type: "scalar" },
+                    ],
+                ]),
+                calls: new Map([
+                    [
+                        "writeOrthoOffCenterMat4LHIntoBuffer",
+                        (args) =>
+                            `mat4_ortho_off_center_lh_to_ref(${args.join(", ")})`,
+                    ],
+                ]),
+                expression: (node, lowerer) => {
+                    if (
+                        !ts.isBinaryExpression(node) ||
+                        node.operatorToken.kind !==
+                            ts.SyntaxKind.QuestionQuestionToken ||
+                        !ts.isPropertyAccessExpression(node.left) ||
+                        node.left.expression.getText(file) !== "b"
+                    )
+                        return undefined;
+                    const plane = node.left.name.text;
+                    if (!["left", "right", "bottom", "top"].includes(plane))
+                        this.context.contractError(
+                            node,
+                            "Unknown orthographic plane.",
+                        );
+                    return `camera.ortho_${plane}.value_or(${lowerer.expression(node.right)})`;
+                },
+            },
+            "        ",
+        );
+    }
+
     public lowerOrthographic(): LoweredSource {
         const modulePath = "src/camera/orthographic.ts";
         const symbolName = "enableOrthographicCamera";
-        // The reached surface stores one extent and derives the four
-        // planes from it, so the pinned default and that derivation are
-        // the contract this lowering depends on. The emission below
-        // stores exactly two facts — the `orthographic` flag and
-        // `ortho_half_height` — and each assertion here is the reason
-        // those two suffice; the pairings are named at each assert.
         const { declaration: enable } = this.context.functionDeclaration(
             modulePath,
             symbolName,
         );
-        const orthoAssignment = this.context
-            .findNodes(enable, (node): node is ts.BinaryExpression =>
-                ts.isBinaryExpression(node),
-            )
-            .find(
-                (expression) =>
-                    expression.operatorToken.kind ===
-                        ts.SyntaxKind.EqualsToken &&
-                    this.context.propertyPath(expression.left)?.join(".") ===
-                        "camera.ortho",
-            );
-        if (!orthoAssignment) {
+        const publication = this.context.findNodes(
+            enable,
+            (node): node is ts.BinaryExpression =>
+                ts.isBinaryExpression(node) &&
+                this.context.propertyPath(node.left)?.join(".") ===
+                    "camera.ortho",
+        )[0];
+        if (!publication)
             this.context.contractError(
                 enable,
-                "Expected the orthographic bounds to be published on the camera.",
+                "Missing orthographic bounds publication.",
             );
-        }
-        // ^ Paired with the emitted `record.orthographic = true`: the
-        // record flag is the native form of the published bounds, the
-        // one bit the projection branch dispatches on.
+        this.context.assertExpressionShape(
+            publication,
+            "camera.ortho = ortho",
+            "Orthographic bounds publication",
+        );
+        this.context.assertExpressionShape(
+            this.context.callExpression(enable, "invalidateProjection"),
+            "invalidateProjection(camera)",
+            "Orthographic projection invalidation",
+        );
         const { declaration: bounds } = this.context.functionDeclaration(
             modulePath,
             "createOrthographicBounds",
         );
-        // Paired with the compiler intrinsic (`enableOrthographicCamera`
-        // in src/compiler/intrinsics/camera.ts), which seeds "1.0" when
-        // the scene passes no options. The native factory takes the
-        // already-resolved extent, so the default is consumed there, not
-        // emitted here.
         this.context.assertExpressionShape(
             this.context.variableInitializer(bounds, "halfHeight"),
             "options.halfHeight ?? 1",
             "Orthographic half-extent default",
         );
-        const { declaration: writer } = this.context.functionDeclaration(
-            modulePath,
-            "writeOrthoProjection",
-        );
-        // This derivation and the seven projection arguments below are
-        // the sufficiency proof for the emitted single-extent store:
-        // every plane is ±halfWidth/±halfHeight with halfWidth derived
-        // from the one stored extent, and near/far are the camera's own
-        // scalars, already on the record — so `ortho_half_height` is the
-        // only new state the native camera needs. They also guard the
-        // renderer's orthographic branch (renderer-lowerer.ts, the
-        // `if (camera.orthographic)` arm of build_view_projection),
-        // which re-derives left/right/bottom/top from
-        // `ortho_half_height * aspect` and hands them to the pinned
-        // mat4 writer translated whole from its own AST; the plane
-        // derivation is asserted only here.
-        this.context.assertExpressionShape(
-            this.context.variableInitializer(writer, "halfWidth"),
-            "halfHeight * aspectRatio",
-            "Orthographic horizontal extent",
-        );
-        const projection = this.context
-            .findNodes(writer, (node): node is ts.CallExpression =>
-                ts.isCallExpression(node),
-            )
-            .find(
-                (call) =>
-                    this.context.propertyPath(call.expression)?.join(".") ===
-                    "writeOrthoOffCenterMat4LHIntoBuffer",
-            );
-        if (!projection) {
-            this.context.contractError(
-                writer,
-                "Expected the orthographic writer to call writeOrthoOffCenterMat4LHIntoBuffer.",
-            );
-        }
-        const planes = [
-            "out",
-            "b.left ?? -halfWidth",
-            "b.right ?? halfWidth",
-            "b.bottom ?? -halfHeight",
-            "b.top ?? halfHeight",
-            "camera.nearPlane",
-            "camera.farPlane",
-        ];
-        if (projection.arguments.length !== planes.length) {
-            this.context.contractError(
-                projection,
-                `Expected ${planes.length} orthographic projection arguments.`,
-            );
-        }
-        planes.forEach((expected, index) => {
+        const planes = this.context.objectInitializer(bounds, "planes");
+        for (const plane of ["left", "right", "bottom", "top"])
             this.context.assertExpressionShape(
-                projection.arguments[index]!,
-                expected,
-                `Orthographic projection argument ${index}`,
+                this.context.propertyInitializer(planes, plane),
+                `options.${plane} ?? null`,
+                `Orthographic ${plane} default`,
             );
-        });
+        const { file, declaration: invalidate } =
+            this.context.functionDeclaration(
+                modulePath,
+                "invalidateProjection",
+            );
+        const invalidation = lowerPinnedBody(
+            file,
+            invalidate.body!.statements,
+            {
+                bindings: new Map([
+                    [
+                        "camera._projRev",
+                        { cpp: "record.projection_revision", type: "scalar" },
+                    ],
+                ]),
+                calls: new Map(),
+            },
+        );
         return {
             modulePath,
             symbolName,
             header: "",
             source: `// ${this.context.provenance(modulePath, symbolName)}
 #include <bblite/runtime.hpp>
-
 namespace bbl {
-
-CameraHandle enable_orthographic_camera(
-    Engine& engine,
-    CameraHandle camera,
-    double half_height) {
+CameraHandle enable_orthographic_camera(Engine& engine, CameraHandle camera, double half_height,
+    std::optional<double> left, std::optional<double> right, std::optional<double> bottom, std::optional<double> top) {
     CameraRecord& record = engine.cameras[camera.value];
     record.orthographic = true;
     record.ortho_half_height = half_height;
+    record.ortho_left = left;
+    record.ortho_right = right;
+    record.ortho_bottom = bottom;
+    record.ortho_top = top;
+${invalidation}
     return camera;
 }
-
 } // namespace bbl
 `,
         };
@@ -792,8 +818,7 @@ CameraHandle create_default_camera(Engine& engine, Scene& scene) {
             Vec3{local_max.x, local_max.y, local_max.z},
         };
         const std::array<float, 16> local = upstream::trs_matrix(mesh);
-        const std::array<float, 16> outer = upstream::outer_transform_matrix(
-            mesh.outer_position, mesh.outer_rotation);
+        const std::array<float, 16> outer = upstream::outer_transform_matrix(mesh);
         for (const Vec3 corner : corners) extend_bounds(transform_bounds_point(corner, local, outer), minimum, maximum);
         has_bounds = true;
     }
@@ -1631,33 +1656,35 @@ void apply_free_camera_inertia(CameraRecord& camera) {
         camera.inertial_direction.y != 0.0 ||
         camera.inertial_direction.z != 0.0;
     if (has_rotation) {
-        camera.free_yaw += camera.inertial_yaw_offset;
-        camera.free_pitch += camera.inertial_pitch_offset;
+        write_camera_scalar(camera, &CameraRecord::free_yaw,
+            camera.free_yaw + camera.inertial_yaw_offset);
+        write_camera_scalar(camera, &CameraRecord::free_pitch,
+            camera.free_pitch + camera.inertial_pitch_offset);
         constexpr double max_pitch = pi_double / ${dvalue(pitchDivisor)} - ${dvalue(pitchMargin)};
-        camera.free_pitch =
-            std::max(-max_pitch, std::min(max_pitch, camera.free_pitch));
+        write_camera_scalar(camera, &CameraRecord::free_pitch,
+            std::max(-max_pitch, std::min(max_pitch, camera.free_pitch)));
     }
     const double cosine_yaw = std::cos(camera.free_yaw);
     const double sine_yaw = std::sin(camera.free_yaw);
     const double cosine_pitch = std::cos(camera.free_pitch);
     const double sine_pitch = std::sin(camera.free_pitch);
     if (has_movement) {
-        camera.position.x +=
+        write_camera_vector_component(camera, &CameraRecord::position, &Vec3d::x, camera.position.x + (
             sine_yaw * cosine_pitch * camera.inertial_direction.z +
-            cosine_yaw * camera.inertial_direction.x;
-        camera.position.y +=
+            cosine_yaw * camera.inertial_direction.x));
+        write_camera_vector_component(camera, &CameraRecord::position, &Vec3d::y, camera.position.y + (
             sine_pitch * camera.inertial_direction.z +
-            camera.inertial_direction.y;
-        camera.position.z +=
+            camera.inertial_direction.y));
+        write_camera_vector_component(camera, &CameraRecord::position, &Vec3d::z, camera.position.z + (
             cosine_yaw * cosine_pitch * camera.inertial_direction.z -
-            sine_yaw * camera.inertial_direction.x;
+            sine_yaw * camera.inertial_direction.x));
     }
     if (has_movement || has_rotation) {
-        camera.target = Vec3d{
+        set_camera_vector(camera, &CameraRecord::target, Vec3d{
             camera.position.x + sine_yaw * cosine_pitch,
             camera.position.y + sine_pitch,
             camera.position.z + cosine_yaw * cosine_pitch,
-        };
+        });
     }
     camera.inertial_direction.x *= camera.inertia;
     camera.inertial_direction.y *= camera.inertia;

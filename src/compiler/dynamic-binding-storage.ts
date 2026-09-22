@@ -1,8 +1,12 @@
 import ts from "typescript";
+import type { DataType } from "./data-types.js";
 
 /** A reached assignment proves that a lexical binding must retain dynamic object storage. */
 export class DynamicBindingStorageRequired extends Error {
-    constructor(readonly declaration: ts.VariableDeclaration) {
+    constructor(
+        readonly declaration: ts.VariableDeclaration,
+        readonly dataType?: DataType,
+    ) {
         super("A lexical record binding requires dynamic object storage.");
     }
 }

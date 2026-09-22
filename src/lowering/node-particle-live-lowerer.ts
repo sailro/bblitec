@@ -1540,6 +1540,8 @@ class SystemLowering implements ValueModel<StaticValue, StaticValue> {
         file: ts.SourceFile,
     ): void {
         const text = call.getText(file);
+        if (fn.module === "src/lite-error.ts" && name === "ThrowLiteError")
+            return;
         if (calls.has(text)) return;
         const annotations = fn.declaration.parameters.map(
             (parameter) => parameter.type?.getText(fn.file) ?? "",

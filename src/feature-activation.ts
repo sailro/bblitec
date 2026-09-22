@@ -280,6 +280,84 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
             "upstream targets the browser and has no platform abstraction",
         consumers: CMAKE,
     },
+    "engine:gpu-retirement": {
+        provenance: "src/engine/gpu-resource-retirement.ts",
+        consumers: CMAKE,
+    },
+    "engine:dispose": {
+        provenance: "src/engine/engine-dispose.ts",
+        consumers: CMAKE,
+    },
+    "compute:storage-texture": {
+        provenance:
+            "src/resource/compute-storage-texture.ts + src/resource/compute-storage-texture-view.ts",
+        consumers: CMAKE,
+    },
+    "compute:texture-mipmaps": {
+        provenance: "src/compute/compute-storage-texture-mipmaps.ts",
+        consumers: CMAKE,
+    },
+    "compute:storage-buffer": {
+        provenance: "src/resource/storage-buffer.ts",
+        consumers: CMAKE,
+    },
+    "compute:storage-readback": {
+        provenance: "src/resource/storage-buffer.ts#readStorageBuffer",
+        consumers: CMAKE,
+    },
+    "compute:binding-decl": {
+        provenance: "src/compute/compute-binding.ts",
+        consumers: CMAKE,
+    },
+    "compute:shader": {
+        provenance: "src/compute/compute-shader.ts",
+        consumers: CMAKE,
+    },
+    "compute:dispatch": {
+        provenance:
+            "src/compute/compute-dispatch.ts + src/compute/compute-dynamic-offset.ts",
+        consumers: CMAKE,
+    },
+    "compute:bindings": {
+        provenance:
+            "src/compute/compute-bindings.ts + src/compute/compute-buffer-binding.ts",
+        consumers: CMAKE,
+    },
+    "compute:one-shot": {
+        provenance: "src/compute/compute-one-shot.ts",
+        consumers: CMAKE,
+    },
+    "compute:task": {
+        provenance: "src/compute/compute-task.ts",
+        consumers: CMAKE,
+    },
+    "compute:task-execution": {
+        provenance:
+            "src/compute/compute-task.ts + src/frame-graph/compute-pass.ts",
+        consumers: CMAKE,
+    },
+    "compute:frame-graph": {
+        provenance:
+            "src/frame-graph/frame-graph.ts + src/frame-graph/frame-graph-actions.ts",
+        consumers: CMAKE,
+    },
+    "compute:uniform-buffer": {
+        provenance: "src/compute/compute-uniform-buffer.ts",
+        consumers: CMAKE,
+    },
+    "compute:uniform-arena": {
+        provenance: "src/compute/compute-uniform-arena.ts",
+        consumers: CMAKE,
+    },
+    "compute:uniform-writer": {
+        provenance: "src/compute/compute-uniform-writer.ts",
+        consumers: CMAKE,
+    },
+    "compute:uniform-layout": {
+        provenance:
+            "src/compute/compute-uniform-writer.ts#createComputeUniformLayout",
+        consumers: CMAKE,
+    },
     "engine:device-recovery": {
         provenance:
             "src/engine/device-lost-recovery.ts + src/engine/device-lost-scene-recovery.ts; native device and scene-resource reconstruction",
@@ -305,6 +383,10 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
         provenance: "src/scene/scene-camera.ts (default framing)",
         consumers: CMAKE,
     },
+    "camera:configurable-free": {
+        provenance: "src/camera/configurable-free-camera-controls.ts",
+        consumers: CMAKE,
+    },
     "camera:free": {
         provenance:
             "src/camera/free-camera.ts + src/camera/free-camera-controls.ts",
@@ -318,6 +400,11 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
     },
     "camera:orthographic": {
         provenance: "src/camera/orthographic.ts",
+        consumers: CMAKE,
+    },
+    "camera:world-matrix-version": {
+        provenance:
+            "src/scene/world-matrix-state.ts (camera worldMatrixVersion)",
         consumers: CMAKE,
     },
     "camera:view-projection": {
@@ -334,6 +421,21 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
     },
     "environment:env": {
         provenance: "src/loader-env/load-env.ts + src/loader-env/env-parse.ts",
+        consumers: CMAKE,
+    },
+    "environment:sky-atmosphere": {
+        provenance:
+            "src/loader-env/procedural-sky-environment.ts (atmosphere and irradiance)",
+        consumers: CMAKE,
+    },
+    "light:parameters": {
+        provenance:
+            "src/light/set-light-intensity.ts + src/light/set-light-diffuse-color.ts",
+        consumers: CMAKE,
+    },
+    "environment:procedural-sky": {
+        provenance:
+            "src/loader-env/procedural-sky-environment.ts (load and update)",
         consumers: CMAKE,
     },
     "environment:hdr": {
@@ -662,6 +764,11 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
         provenance: "src/mesh/mesh-factories.ts",
         consumers: CMAKE,
     },
+    "mesh:resize-geometry": {
+        provenance:
+            "src/mesh/mesh-factories.ts (resizeMeshGeometry, resizeSharedMeshGeometry)",
+        consumers: CMAKE,
+    },
     "mesh:update-positions": {
         provenance: "src/mesh/mesh-factories.ts (updateMeshPositions)",
         consumers: CMAKE,
@@ -784,6 +891,10 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
     "math:normalize-vec3": {
         provenance:
             "src/math/normalize-vec3-tuple-or-up.ts + src/math/normalize-vec3.ts",
+        consumers: CMAKE,
+    },
+    "math:quaternion": {
+        provenance: "src/math/quat-euler.ts",
         consumers: CMAKE,
     },
     "math:mat4-invert": {
@@ -990,6 +1101,11 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
         provenance:
             "src/material/plugin/enable-material-plugins.ts + " +
             "src/material/plugin/plugin-bridge-shared.ts",
+        consumers: CMAKE,
+    },
+    "material:pbr-plugin-vertex-data": {
+        provenance:
+            "src/material/plugin/enable-pbr-material-plugin-vertex-data.ts + src/material/plugin/pbr-plugin-vertex-bridge.ts",
         consumers: CMAKE,
     },
     "material:plugin-index": {
@@ -1234,6 +1350,11 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
         provenance:
             "src/effect/effect-renderer.ts createEffectRenderer " +
             "(a RenderingContext on the engine, like a SpriteRenderer)",
+        consumers: CMAKE,
+    },
+    "frame-graph:surface-target": {
+        provenance:
+            "src/texture/rtt-surface.ts createSurfaceRenderTargetTexture/onRenderTargetTextureResize",
         consumers: CMAKE,
     },
     "frame-graph:resources": {

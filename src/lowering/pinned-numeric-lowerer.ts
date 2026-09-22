@@ -29,6 +29,7 @@ import {
     TranslationActivity,
 } from "./translation-trace.js";
 import { cppIdentifier } from "../cpp-literals.js";
+import { isPinnedErrorCall } from "./pinned-error.js";
 import {
     isAssignmentExpression,
     isUpdateExpression,
@@ -46,6 +47,7 @@ import { CPP_RECORD, type CppRecordShape, cppVector } from "./cpp-types.js";
 import {
     PINNED_ARITHMETIC_OPERATORS,
     PINNED_ASSIGNMENT_OPERATORS,
+    PINNED_COMPARISON_OPERATORS,
 } from "./pinned-operators.js";
 
 /**
@@ -588,18 +590,37 @@ export class PinnedNumericLowerer {
                     statement,
                     "try requires a catch-free finally block",
                 );
-            const rejectExit = (node: ts.Node): void => {
+            const rejectExit = (
+                node: ts.Node,
+                loops = 0,
+                switches = 0,
+            ): void => {
+                if (ts.isFunctionLike(node)) return;
                 if (
                     ts.isReturnStatement(node) ||
                     ts.isLabeledStatement(node) ||
-                    ts.isBreakStatement(node) ||
-                    ts.isContinueStatement(node)
+                    (ts.isBreakStatement(node) &&
+                        (node.label || loops + switches === 0)) ||
+                    (ts.isContinueStatement(node) &&
+                        (node.label || loops === 0))
                 )
                     this.fail(
                         node,
                         "finally lowering does not admit early returns or loop exits",
                     );
-                ts.forEachChild(node, rejectExit);
+                const loop =
+                    ts.isForStatement(node) ||
+                    ts.isForOfStatement(node) ||
+                    ts.isForInStatement(node) ||
+                    ts.isWhileStatement(node) ||
+                    ts.isDoStatement(node);
+                ts.forEachChild(node, (child) =>
+                    rejectExit(
+                        child,
+                        loops + Number(loop),
+                        switches + Number(ts.isSwitchStatement(node)),
+                    ),
+                );
             };
             rejectExit(statement);
             const body = this.withBindings(() =>
@@ -648,6 +669,24 @@ export class PinnedNumericLowerer {
         }
         if (ts.isExpressionStatement(statement)) {
             const expression = unwrapExpression(statement.expression);
+            if (
+                ts.isCallExpression(expression) &&
+                isPinnedErrorCall(this.file, expression)
+            ) {
+                const [code, ...args] = expression.arguments;
+                if (!code || !ts.isNumericLiteral(code))
+                    this.fail(expression, "literal Lite error code");
+                // The packaged default decoder exposes #<code>. Evaluate the
+                // interpolation arguments in order even though native Error
+                // records do not expose the package's optional `lite` array.
+                return [
+                    ...args.map(
+                        (argument) =>
+                            `${indent}(void)(${this.expression(argument)});`,
+                    ),
+                    `${indent}throw std::runtime_error(${JSON.stringify(`#${code.text}`)});`,
+                ];
+            }
             if (
                 ts.isBinaryExpression(expression) &&
                 expression.operatorToken.kind === ts.SyntaxKind.EqualsToken
@@ -753,6 +792,13 @@ export class PinnedNumericLowerer {
                 `${indent}}`,
             ];
         }
+        if (ts.isDoStatement(statement)) {
+            return [
+                `${indent}do {`,
+                ...this.branch(statement.statement, indent),
+                `${indent}} while (${this.condition(statement.expression)});`,
+            ];
+        }
         if (ts.isForStatement(statement)) {
             const initializer = statement.initializer;
             // A hoisted loop variable's `for` assigns rather than declares
@@ -797,7 +843,19 @@ export class PinnedNumericLowerer {
             if (
                 !ts.isVariableDeclarationList(initializer) ||
                 initializer.declarations.length !== 1 ||
-                !ts.isIdentifier(initializer.declarations[0]!.name)
+                !(
+                    ts.isIdentifier(initializer.declarations[0]!.name) ||
+                    (ts.isArrayBindingPattern(
+                        initializer.declarations[0]!.name,
+                    ) &&
+                        initializer.declarations[0]!.name.elements.every(
+                            (element) =>
+                                ts.isBindingElement(element) &&
+                                ts.isIdentifier(element.name) &&
+                                !element.dotDotDotToken &&
+                                !element.initializer,
+                        ))
+                )
             ) {
                 this.fail(statement, "for-of initializer");
             }
@@ -1611,6 +1669,12 @@ export class PinnedNumericLowerer {
     }
 
     private expressionStatement(expression: ts.Expression): string {
+        const sequence = unwrapExpression(expression);
+        if (
+            ts.isBinaryExpression(sequence) &&
+            sequence.operatorToken.kind === ts.SyntaxKind.CommaToken
+        )
+            return `${this.expressionStatement(sequence.left)}, ${this.expressionStatement(sequence.right)}`;
         if (ts.isBinaryExpression(expression)) {
             // `indices = indices.reverse()`: the method the caller declared
             // receiver-returning already IS the store, so the assignment
@@ -2333,6 +2397,8 @@ export class PinnedNumericLowerer {
             return binding.cpp;
         }
         if (ts.isPrefixUnaryExpression(node)) {
+            if (node.operator === ts.SyntaxKind.TildeToken)
+                return `js::bitwise_not(${this.expression(node.operand)})`;
             // `--buffer.alive` in value position: the pin reads the slot it
             // just released, and both sides mean the decremented value.
             if (
@@ -2439,6 +2505,15 @@ export class PinnedNumericLowerer {
                     known ? node.whenTrue : node.whenFalse,
                 );
             }
+            return renderPinnedArithmetic(
+                node,
+                (child) =>
+                    child === node.condition &&
+                    this.absenceTest(child) !== undefined
+                        ? cppPrimary(`!(${this.absenceTest(child)})`)
+                        : this.renderExpression(child),
+                this.scope.expressionSpelling,
+            );
         }
         if (ts.isPropertyAccessExpression(node)) {
             return this.propertyAccess(node);
@@ -2813,6 +2888,38 @@ export class PinnedNumericLowerer {
         return absent ? `!(${absent})` : this.expression(expression);
     }
 
+    /** Joins of proven boolean operands retain boolean storage and short-circuiting. */
+    private booleanValue(expression: ts.Expression): boolean {
+        const node = unwrapExpression(expression);
+        if (ts.isCallExpression(node))
+            return (
+                callShapeOf(this.scope.callShapes, node, this.file) === "bool"
+            );
+        if (
+            node.kind === ts.SyntaxKind.TrueKeyword ||
+            node.kind === ts.SyntaxKind.FalseKeyword ||
+            (ts.isPrefixUnaryExpression(node) &&
+                node.operator === ts.SyntaxKind.ExclamationToken)
+        )
+            return true;
+        if (ts.isBinaryExpression(node)) {
+            if (PINNED_COMPARISON_OPERATORS.has(node.operatorToken.kind))
+                return true;
+            if (
+                node.operatorToken.kind === ts.SyntaxKind.BarBarToken ||
+                node.operatorToken.kind ===
+                    ts.SyntaxKind.AmpersandAmpersandToken
+            )
+                return (
+                    this.booleanValue(node.left) &&
+                    this.booleanValue(node.right)
+                );
+        }
+        return (
+            this.scope.bindings.get(node.getText(this.file))?.type === "bool"
+        );
+    }
+
     /** One property read off a binding the pin treats as optional. */
     private optionalMember(
         node: ts.PropertyAccessExpression,
@@ -2820,8 +2927,7 @@ export class PinnedNumericLowerer {
         | { present: string; member: { cpp: string; absent?: string } }
         | undefined {
         const owner = unwrapExpression(node.expression);
-        if (!ts.isIdentifier(owner)) return undefined;
-        const binding = this.scope.bindings.get(owner.text);
+        const binding = this.scope.bindings.get(owner.getText(this.file));
         const optional = binding?.optional;
         if (!optional) return undefined;
         const member = optional.members.get(node.name.text);
@@ -3248,7 +3354,11 @@ export class PinnedNumericLowerer {
                     `${this.expression(node.right)})`
                 );
             case ts.SyntaxKind.BarBarToken:
-                if (this.scope.booleanOr) {
+                if (
+                    this.scope.booleanOr ||
+                    (this.booleanValue(node.left) &&
+                        this.booleanValue(node.right))
+                ) {
                     if (
                         this.absenceTest(node.left) === undefined &&
                         this.absenceTest(node.right) === undefined
@@ -3273,7 +3383,11 @@ export class PinnedNumericLowerer {
                     `${this.expression(node.right)})`
                 );
             case ts.SyntaxKind.AmpersandAmpersandToken:
-                if (this.scope.booleanAnd) {
+                if (
+                    this.scope.booleanAnd ||
+                    (this.booleanValue(node.left) &&
+                        this.booleanValue(node.right))
+                ) {
                     if (
                         this.absenceTest(node.left) === undefined &&
                         this.absenceTest(node.right) === undefined

@@ -145,6 +145,7 @@ struct Graph {
     struct {
         struct {
             bool scene_stages = true;
+            RenderTextureRef depth{};
         } render;
     } task;
     struct Lists {
@@ -168,9 +169,12 @@ struct SdlGraph : Graph {
             grid_transparent_double_sided_pipeline = 0, shader_pipelines = 0,
             shader_a2c_pipelines = 0;
         SDL_GPUTextureFormat depth_format = SDL_GPU_TEXTUREFORMAT_D32_FLOAT;
+        SDL_GPUTextureFormat frame_color_format = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM;
+        SDL_GPUSampleCount sample_count = SDL_GPU_SAMPLECOUNT_1;
     } state;
     struct {
         SDL_GPUTextureFormat color_format = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM;
+        SDL_GPUTextureFormat depth_format = SDL_GPU_TEXTUREFORMAT_D32_FLOAT;
     } target;
     struct {
         SDL_GPUSampleCount samples = SDL_GPU_SAMPLECOUNT_1;
@@ -202,6 +206,14 @@ struct SdlGraph : Graph {
 #include "SdlGraphStages.hpp"
 };
 struct DawnGraph : Graph {
+    struct DawnTaskTarget {
+        WGPUTextureFormat color, depth;
+    };
+    struct {
+        WGPUTextureFormat color_format = WGPUTextureFormat_RGBA8Unorm,
+                          depth_format = WGPUTextureFormat_Depth32Float;
+    } target;
+    bool borrowed_depth_view = false;
     WGPURenderPassEncoder task_pass = nullptr;
     unsigned samples = 4;
     WGPURenderPipeline bound_pipeline = nullptr;
@@ -219,7 +231,9 @@ struct DawnGraph : Graph {
         WGPUBuffer ground_vertices = nullptr, ground_indices = nullptr;
     } state;
     static void draw_list_into(WGPURenderPassEncoder, int list, unsigned, WGPURenderPipeline&, bool,
-                               WGPUBindGroup, bool, std::uint32_t, int) {
+                               WGPUBindGroup, bool, std::uint32_t, int, DawnTaskTarget formats) {
+        assert(formats.color == WGPUTextureFormat_RGBA8Unorm &&
+               formats.depth == WGPUTextureFormat_Depth32Float);
         draw_list(list);
     }
     template <class Function, class... Args> static void count_gpu_draw(Function fn, Args... args) {
@@ -333,8 +347,34 @@ int main() {
                     sdl_graph.task_depth_pointer = depth;
                     sdl_graph.target_record.samples = samples;
                     draws.clear();
+                    if (scene_stages && (!depth || samples != sdl_graph.state.sample_count)) {
+                        bool rejected = false;
+                        try {
+                            sdl_graph.graph();
+                        } catch (const std::runtime_error&) {
+                            rejected = true;
+                        }
+                        assert(rejected && draws.empty());
+                        continue;
+                    }
                     sdl_graph.graph();
                     assert(draws == expected);
                 }
         }
+    for (bool mismatched_color : {false, true}) {
+        SdlGraph graph;
+        graph.task_depth_pointer = true;
+        if (mismatched_color)
+            graph.target.color_format = SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT;
+        else
+            graph.target.depth_format = SDL_GPU_TEXTUREFORMAT_D16_UNORM;
+        draws.clear();
+        bool rejected = false;
+        try {
+            graph.graph();
+        } catch (const std::runtime_error&) {
+            rejected = true;
+        }
+        assert(rejected && draws.empty());
+    }
 }

@@ -69,6 +69,89 @@ test("decoder setup refuses runtime selection and retained mutable overrides", (
     );
 });
 
+test("module URL provenance survives nested decoder bootstrap helpers", () => {
+    const publicDir = resolve("artifacts/decoder-configuration/public");
+    const result = compileSource(
+        `
+        import {setDracoBaseUrl, setMeshoptBaseUrl} from "@babylonjs/lite";
+        function asset(path: string, moduleUrl: string): string {
+            const url = new URL(path, moduleUrl);
+            return url.href;
+        }
+        function setup(moduleUrl: string): void {
+            const base = asset("./decoders/", moduleUrl);
+            setDracoBaseUrl(base);
+            setMeshoptBaseUrl(base);
+        }
+        setup(import.meta.url);
+    `,
+        { publicDir },
+    );
+    assert.deepEqual(result.manifest.assetDecoders, {
+        draco: {
+            javascript: resolve(publicDir, "decoders/draco_decoder.js"),
+            wasm: resolve(publicDir, "decoders/draco_decoder.wasm"),
+        },
+        meshopt: {
+            javascript: resolve(publicDir, "decoders/meshopt_decoder.js"),
+        },
+    });
+});
+
+test("meshopt packaging isolates configured decoders across concurrent assets", async () => {
+    const input = () => ({
+        json: {
+            asset: { version: "2.0" },
+            extensionsUsed: ["EXT_meshopt_compression"],
+            buffers: [{ byteLength: 4 }],
+            bufferViews: [
+                {
+                    buffer: 0,
+                    byteLength: 4,
+                    extensions: {
+                        EXT_meshopt_compression: {
+                            buffer: 0,
+                            byteOffset: 0,
+                            byteLength: 4,
+                            byteStride: 1,
+                            count: 4,
+                            mode: "ATTRIBUTES",
+                        },
+                    },
+                },
+            ],
+        },
+        binary: Buffer.alloc(4),
+    });
+    const decode = async (value: number) => {
+        const glb = input();
+        const decoders = prepareAssetDecoders(
+            { meshopt: { javascript: "decoder.js" } },
+            async () =>
+                new TextEncoder().encode(
+                    `globalThis.MeshoptDecoder={ready:Promise.resolve(),decodeGltfBuffer(target){target.fill(${value});}};`,
+                ),
+        );
+        assert.equal(
+            await resolveGlbGeometry(glb, "configured meshopt", decoders),
+            true,
+        );
+        return [...glb.binary];
+    };
+    assert.deepEqual(await Promise.all([decode(3), decode(7), decode(3)]), [
+        [3, 3, 3, 3],
+        [7, 7, 7, 7],
+        [3, 3, 3, 3],
+    ]);
+    await assert.rejects(
+        resolveGlbGeometry(input(), "invalid decoder", {
+            meshopt: async () =>
+                new TextEncoder().encode("globalThis.MeshoptDecoder={};"),
+        }),
+        /did not define MeshoptDecoder/,
+    );
+});
+
 test("loaded assets retain their realm's decoder setup and refuse later changes", () => {
     const program = (later: string) => `
         import {createEngine,loadGltf,setDracoBaseUrl} from "@babylonjs/lite";
@@ -80,6 +163,11 @@ test("loaded assets retain their realm's decoder setup and refuse later changes"
         }
         void main();`;
     const result = compileSource(program(""));
+    assert.doesNotThrow(() =>
+        compileSource(
+            program('setDracoBaseUrl("https://example.test/draco/");'),
+        ),
+    );
     assert.deepEqual(
         result.manifest.assets.find((asset) => asset.kind === "gltf")!
             .assetDecoders,

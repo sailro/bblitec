@@ -73,7 +73,7 @@ test("preserves the pinned setParent world and hierarchy contract", () => {
     );
     assert.match(
         source,
-        /record\.outer_position = Vec3\{\};\s*record\.outer_rotation = Vec3\{\};[\s\S]{0,1100}record\.gpu_world_transform = true;/,
+        /record\.outer_position = Vec3d\{\};\s*record\.outer_rotation = Vec3d\{\};[\s\S]{0,1300}record\.gpu_world_transform = true;/,
     );
     assert.match(
         source,
@@ -102,7 +102,7 @@ test("keeps imported authored winding separate from live parent reflection", () 
     );
     assert.match(
         renderer,
-        /const bool transform_mirrored =\s*pinned_mat4_determinant3\(mesh_world_matrix\(engine, mesh\)\) < 0\.0;\s*const bool clockwise_front_face =\s*mesh\.authored_clockwise_front_face != transform_mirrored;/,
+        /const bool transform_mirrored =\s*pinned_mat4_determinant3\(\s*matrix_product\(\s*outer_transform_matrix\(mesh\), mesh_world_matrix\(engine, mesh\)\)\) < 0\.0;\s*const bool clockwise_front_face =\s*mesh\.authored_clockwise_front_face != transform_mirrored;/,
     );
     assert.doesNotMatch(renderer, /mesh\.authored_clockwise_front_face\s*=/);
 });

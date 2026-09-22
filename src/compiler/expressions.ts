@@ -84,6 +84,7 @@ import {
 } from "./compressed-json.js";
 import { compileIsArrayOverData } from "./data-methods.js";
 import { dataTypesEqual, type DataType } from "./data-types.js";
+import { readCallableProperty } from "./properties.js";
 import {
     compileJsonCall,
     compileJsonRead,
@@ -165,6 +166,7 @@ export interface ExpressionContext
             | "audioSessionCpp"
             | "checker"
             | "options"
+            | "referenceSearch"
             | "evaluator"
             | "reachedNodeParticles"
             | "dataLowerer"
@@ -331,10 +333,13 @@ export function stringConcatPart(
     }
     if (
         value.dataType?.kind === "optional" &&
-        value.dataType.inner.kind === "string" &&
-        value.preserveUncheckedLookup
+        value.dataType.inner.kind === "string"
     ) {
-        return `([&]() -> std::string { const auto character = ${value.cpp}; return character.has_value() ? *character : std::string("undefined"); }())`;
+        const absent =
+            value.preserveUncheckedLookup || value.dataType.undefinedOnly
+                ? "undefined"
+                : "null";
+        return `([&]() -> std::string { const auto character = ${value.cpp}; return character.has_value() ? *character : std::string("${absent}"); }())`;
     }
     if (
         value.dataType?.kind === "union" &&
@@ -3478,21 +3483,24 @@ export class ExpressionLowerer {
             if (
                 index.kind !== "number" ||
                 index.staticNumber === undefined ||
-                ![12, 13, 14].includes(index.staticNumber)
+                !Number.isInteger(index.staticNumber) ||
+                index.staticNumber < 0 ||
+                index.staticNumber >= 16
             ) {
                 this.context.fail(
                     unwrapped.argumentExpression,
-                    "Reached camera world-matrix access supports translation indices 12-14.",
+                    "Camera world-matrix reads require a constant index from 0 through 15; mutable aliases are unsupported.",
                 );
             }
             // The pinned `getCameraPosition` reads these three back out
             // of the camera's float32 world matrix, so the rounded
             // stored value is what a scene observes -- not the double
             // the eye was composed at.
-            const element = index.staticNumber as 12 | 13 | 14;
+            const element = index.staticNumber;
             return {
                 kind: "number",
                 cpp: `bbl::upstream::camera_world_matrix(${this.context.requireEngine(owner, unwrapped)}.cameras[${owner.cpp}.value])[${element}]`,
+                impure: true,
                 ...(owner.engineCpp ? { engineCpp: owner.engineCpp } : {}),
             };
         }
@@ -3658,19 +3666,10 @@ export class ExpressionLowerer {
                 const entryLines = this.context.captureEmittedLines(() => {
                     entries = Object.entries(owner.recordProperties ?? {}).map(
                         ([name, value]) => {
-                            if (dynamicEnum) {
-                                return `{${this.context.dataTypes.enumMemberCpp(
-                                    key.dataType as Extract<
-                                        DataType,
-                                        {
-                                            kind: "enum";
-                                        }
-                                    >,
-                                    name,
-                                    unwrapped,
-                                )}, ${this.context.dataLowerer.compileKnownValueForSink(value, valueType, unwrapped)}}`;
-                            }
-                            if (dynamicString) {
+                            // The key's narrowed union need not contain every
+                            // property on its owner. Object property names stay
+                            // strings even when the index uses a finite union.
+                            if (dynamicString || dynamicEnum) {
                                 return `{${this.context.cppString(name)}, ${this.context.dataLowerer.compileKnownValueForSink(value, valueType, unwrapped)}}`;
                             }
                             const numericKey = Number(name);
@@ -3686,11 +3685,8 @@ export class ExpressionLowerer {
                 });
                 for (const line of entryLines) this.context.emit(line);
                 this.context.reachJsData();
-                const keyCpp = dynamicString
-                    ? "std::string"
-                    : dynamicEnum
-                      ? this.context.dataTypes.cppType(key.dataType!)
-                      : "double";
+                const keyCpp =
+                    dynamicString || dynamicEnum ? "std::string" : "double";
                 const mapType = `bbl::js::Map<${keyCpp}, ${valueCpp}>`;
                 const table = this.context.recordAccessor(
                     owner,
@@ -3702,10 +3698,18 @@ export class ExpressionLowerer {
                                 (value) => this.canHoistRecordValue(value),
                             )),
                 );
-                const lookup = `${table}.${totalClosedKey ? "at" : "get"}(${key.cpp})`;
+                const keyExpression =
+                    key.dataType?.kind === "enum"
+                        ? this.context.dataTypes.enumToStringCpp(
+                              key.dataType,
+                              key.cpp,
+                              unwrapped.argumentExpression,
+                          )
+                        : key.cpp;
+                const lookup = `${table}.${totalClosedKey ? "at" : "get"}(${keyExpression})`;
                 const ownedLookup = totalClosedKey
                     ? `bbl::js::snapshot_value(${lookup})`
-                    : `${table}.get_owned(${key.cpp})`;
+                    : `${table}.get_owned(${keyExpression})`;
                 const recordValues = Object.values(
                     owner.recordProperties ?? {},
                 );
@@ -4388,6 +4392,61 @@ export class ExpressionLowerer {
         callee: ts.PropertyAccessExpression,
         call: ts.CallExpression,
     ): Value | undefined {
+        if (
+            callee.name.text === "bind" &&
+            this.context.checker
+                .getTypeAtLocation(callee.expression)
+                .getCallSignatures().length > 0
+        ) {
+            this.context.expectArgumentCount(call, 1, 1);
+            if (
+                this.context.checker
+                    .getTypeAtLocation(callee.expression)
+                    .getCallSignatures()
+                    .some((signature) => signature.thisParameter)
+            )
+                return this.context.fail(
+                    callee,
+                    "Function.bind does not rebind a dynamic this parameter.",
+                );
+            const callable = this.compileValue(callee.expression);
+            if (
+                callable.kind !== "data" ||
+                callable.dataType?.kind !== "function"
+            )
+                return this.context.fail(
+                    callee,
+                    "Function.bind requires represented native function storage.",
+                );
+            const target = this.context.allocateTemporaryCppName(
+                "bound_function_target",
+            );
+            this.context.emit({
+                kind: "declaration",
+                type: "const auto",
+                name: target,
+                initializer: callable.cpp,
+            });
+            const receiver = this.compileValue(argumentAt(call, 0));
+            const receiverType =
+                receiver.dataType ??
+                this.context.dataLowerer.dataTypeAt(argumentAt(call, 0));
+            if (receiver.kind !== "json-null" && !receiverType)
+                return this.context.fail(
+                    call,
+                    "Function.bind requires a retained native thisArg.",
+                );
+            const type: DataType<"function"> = {
+                ...callable.dataType,
+                identity: true,
+            };
+            return {
+                kind: "data",
+                dataType: type,
+                freshData: true,
+                cpp: `bbl::js::bind_callback(${target}, ${receiver.kind === "json-null" ? "std::monostate{}" : this.context.dataLowerer.compileKnownValueForSink(receiver, receiverType!, argumentAt(call, 0))})`,
+            };
+        }
         // `renderer._beforeUpdate.push(hook)`: sprite-renderer.ts keeps
         // its per-frame hooks in an ordinary array a caller pushes onto,
         // and `spriteRendererUpdate` runs them before it reads its
@@ -4828,6 +4887,20 @@ export class ExpressionLowerer {
                 ? (this.context.classLowerer.hydrate(receiverValue) ??
                   receiverValue)
                 : undefined;
+            const callableProperty = instance
+                ? readCallableProperty(
+                      this.context,
+                      instance,
+                      callee.name.text,
+                      callee,
+                  )
+                : undefined;
+            if (callableProperty?.dataType?.kind === "function")
+                return this.context.dataLowerer.compileStoredCall(
+                    call,
+                    callableProperty.cpp,
+                    callableProperty.dataType,
+                );
             const optionalCall =
                 call.questionDotToken !== undefined ||
                 callee.questionDotToken !== undefined;

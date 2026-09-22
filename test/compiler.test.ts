@@ -935,7 +935,7 @@ test("lowers imported typed user functions and constants", () => {
     );
     assert.match(
         result.cpp,
-        /create_directional_light\(v_engine, bbl::Vec3\{0\.0f, \(-1\.0f\), 0\.0f\}, 0\.75f\)/,
+        /create_directional_light\(v_engine, bbl::Vec3\{0\.0f, \(-1\.0f\), 0\.0f\}, 0\.75\)/,
     );
     assert.match(
         result.cpp,
@@ -4897,16 +4897,16 @@ test("defaults omitted Uint8Array slice and subarray bounds", () => {
     );
     assert.match(
         result.cpp,
-        /const double (v_bblite_view_index_\d+) = 1\.0;\s+bbl::js::U8Array v_tail = bbl::js::U8Array\(v_buffer, bbl::js::buffer_view_index\(\1\)\);/,
+        /const double (v_bblite_view_index_\d+) = 1\.0;\s+auto (v_bblite_typed_view_\d+) = bbl::js::U8Array\(v_buffer, bbl::js::buffer_view_index\(\1\)\);\s+\[\[maybe_unused\]\] bbl::js::U8Array& v_tail = \2;/,
     );
     assert.doesNotMatch(result.cpp, /v_bblite_view_buffer_\d+ = v_buffer;/);
     assert.match(
         result.cpp,
-        /auto (v_bblite_view_buffer_\d+) = bbl::js::snapshot_value\(v_holder->buffer\);[\s\S]*v_holder->buffer = v_replacement;[\s\S]*bbl::js::U8Array v_retained = bbl::js::U8Array\(\1,/,
+        /auto (v_bblite_view_buffer_\d+) = bbl::js::snapshot_value\(v_holder->buffer\);\s+v_holder->buffer = v_replacement;\s+const double (v_bblite_view_index_\d+) = 1\.0;\s+auto (v_bblite_typed_view_\d+) = bbl::js::U8Array\(\1, bbl::js::buffer_view_index\(\2\)\);\s+\[\[maybe_unused\]\] bbl::js::U8Array& v_retained = \3;/,
     );
     assert.match(
         result.cpp,
-        /auto (v_bblite_constructed_receiver_\d+) = bbl::js::U8Array\([^\n]+\);\s+bbl::js::U8Array v_middle = \1\.slice\([^\n]+\1\.size\(\)/,
+        /const double (v_bblite_view_index_\d+) = 1\.0;\s+const double (v_bblite_view_index_\d+) = 1\.0;\s+auto (v_bblite_typed_view_\d+) = bbl::js::U8Array\(v_buffer, bbl::js::buffer_view_index\(\1\), bbl::js::buffer_view_index\(\2\)\);\s+auto (v_bblite_constructed_receiver_\d+) = \3;\s+bbl::js::U8Array v_middle = \4\.slice\(bbl::js::array_index\(0\.0\), bbl::js::array_index\(static_cast<double>\(\4\.size\(\)\)\)\);/,
     );
 });
 
@@ -13074,11 +13074,11 @@ test("lowers Scene 12's imported recursive mesh walk and animated root clones", 
     assert.equal(result.cpp.match(/bbl::clone_asset_root\(/g)?.length, 2);
     assert.match(
         result.cpp,
-        /set_asset_root_position_component\([^;]+1u, 3\.0f\)/,
+        /set_asset_root_position_component\([^;]+1u, 3\.0\)/,
     );
     assert.match(
         result.cpp,
-        /set_asset_root_position_component\([^;]+1u, \(-3\.0f\)\)/,
+        /set_asset_root_position_component\([^;]+1u, \(-3\.0\)\)/,
     );
     assert.equal(result.cpp.match(/bbl::add_asset_entities\(/g)?.length, 2);
     assert.match(result.cpp, /bbl::go_to_frame\([^;]+30\.0f, false\)/);
@@ -13472,7 +13472,7 @@ test("stringifies a native exception through a catch binding", () => {
 
     assert.match(result.cpp, /catch \(const std::exception&/);
     assert.match(result.cpp, /\.what\(\)/);
-    assert.match(result.cpp, /throw std::runtime_error/);
+    assert.match(result.cpp, /std::rethrow_exception\(bbl::js::make_error/);
     assert.doesNotMatch(result.cpp, /std::string v_[\w]*cause =/);
 });
 
@@ -17636,10 +17636,19 @@ test("refuses a depth-only render target in the Standard diffuse slot", () => {
     // the setter folds the colour arm, so the aspect has to refuse.
     assert.throws(
         () =>
-            compileSource(diffuseSlotScene("", renderTarget("")), {
-                fileName:
-                    "corpus/babylon-lite/lab/lite/src/lite/diffuse-depth.ts",
-            }),
+            compileSource(
+                diffuseSlotScene(
+                    "withSampledDepthTexture,",
+                    renderTarget("").replace(
+                        "    });",
+                        "    }, withSampledDepthTexture);",
+                    ),
+                ),
+                {
+                    fileName:
+                        "corpus/babylon-lite/lab/lite/src/lite/diffuse-depth.ts",
+                },
+            ),
         /diffuseTexture is sampled as colour, so it cannot be a depth attachment/,
     );
 });
@@ -18911,7 +18920,7 @@ test("an inline collection find keeps the loaded search loop and the runtime gua
     assert.match(result.cpp, /_found/);
     assert.match(
         result.cpp,
-        /throw std::runtime_error\("walk was not found"\);/,
+        /std::rethrow_exception\(bbl::js::make_error\("Error", "walk was not found", std::exception_ptr\{\}\)\);/,
     );
     assert.doesNotMatch(result.cpp, /\.animation_groups\[0\]/);
 });
@@ -19944,12 +19953,14 @@ test("retains a whole typed-array buffer behind an escaping byte view", () => {
         void main();
     `);
 
-    const bytes = result.cpp.match(/bbl::js::U8Array (v_fn\d+_bytes) =/);
+    const bytes = result.cpp.match(
+        /auto (v_bblite_view_buffer_\d+) = bbl::js::ArrayBuffer\(v_fn\d+_history\);\s+auto (v_bblite_typed_view_\d+) = bbl::js::U8Array\(\1\);\s+\[\[maybe_unused\]\] bbl::js::U8Array& (v_fn\d+_bytes) = \2;/,
+    );
     assert.ok(bytes);
     assert.match(
         result.cpp,
         new RegExp(
-            `bbl::update_storage_buffer\\([^;]+, ${bytes[1]}, 0\\.0f\\)`,
+            `bbl::update_storage_buffer\\([^;]+, ${bytes[3]}, 0\\.0f\\)`,
         ),
     );
 });

@@ -1,116 +1,10 @@
 import { EmissionSet, EmissionMap } from "./emission-transaction.js";
 import type { LoweringServices } from "./lowering-services.js";
-/**
- * The `MaterialPlugin` a scene declares, folded to plain data.
- *
- * A plugin is a plain object upstream (`material/plugin/material-plugin.ts`
- * is types only), and everything the pin's bridges read off one for the
- * reached slice is a constant the scene wrote: its `name`, the WGSL
- * `getCustomCode(shaderType)` returns per injection point, and the texture
- * and sampler NAMES `getSamplers()` declares. So the plugin is folded
- * rather than executed — the fidelity rule's first answer, and the one
- * available here because the value is literal text rather than something
- * only an engine can produce.
- *
- * What the fold does NOT do is decide where that text lands. The injection
- * point to template slot mapping, the concatenation of several plugins into
- * one slot, the binding declarations the sampler pairs become and the
- * per-signature index that keys the compose and pipeline caches are all
- * `plugin-bridge-shared.ts`, executed at composition
- * (`src/pinned-material-plugins.ts`). This module only reads the scene's
- * declaration and checks each point name against the pin's own two tables,
- * so a plugin naming a point upstream has no slot for fails here with a
- * source location instead of composing a fragment that silently drops it.
- *
- * The two texture members are folded as a pair. `getSamplers` declares the
- * bindings, `bindTextures` fills them positionally, and `getActiveTextures`
- * enumerates the same textures for the pin's acquire and release — upstream
- * trusts the plugin author to keep the three in step, and a mismatch there
- * binds the wrong texture or retires a live one. Nothing runs at generation
- * that could observe the disagreement, so the fold proves it instead: equal
- * counts, and the same RESOLVED texture at each position — the declaration
- * each reference names, never the C++ spelling it renders as.
- *
- * A plugin reached through a factory folds the same way. Scene code writes
- * `mat.plugins = [createStudMaterialPlugin(studs)]` as readily as it writes
- * the object inline, because the texture members close over the argument.
- * The call is therefore seen THROUGH rather than executed: the callee is
- * resolved by the compiler's own identifier-to-declaration resolver, its
- * body has to be one return of an object literal, and its parameters are
- * bound to the values the call site passed. No statement runs and no branch
- * is taken, so the object folded is the one the pin would have been handed.
- *
- * The declared names are checked against the WHOLE material's composition,
- * because that is the scope the pin composes in: one fragment out of the
- * whole plugin list, spliced into a variant that already declares the
- * Standard family's own bindings. So a name is refused when a second plugin
- * in the same list declares it, and when it is one the composed variant
- * declares for itself — the latter read from the one list the generated
- * `standard_binding_resources` table is rendered from, never restated here.
- *
- * Everything past that refuses by name: `priority`, `isEnabled`, `defines`,
- * `getUniforms` and `writeUbo`. The last two would put a uniform block into
- * the PBR material UBO or build the Standard self-managed `pluginUbo`,
- * which is a second bind-group contract no measurement covers. So does a
- * PBR material's `getSamplers`, whose entries the pin appends inside
- * `createPbrMeshBindGroup` against a row keyed by material index — a
- * different path from the Standard record lane this port binds.
- */
-/**
- * The `MaterialPlugin` a scene declares, folded to plain data.
- *
- * A plugin is a plain object upstream (`material/plugin/material-plugin.ts`
- * is types only), and everything the pin's bridges read off one for the
- * reached slice is a constant the scene wrote: its `name`, the WGSL
- * `getCustomCode(shaderType)` returns per injection point, and the texture
- * and sampler NAMES `getSamplers()` declares. So the plugin is folded
- * rather than executed — the fidelity rule's first answer, and the one
- * available here because the value is literal text rather than something
- * only an engine can produce.
- *
- * What the fold does NOT do is decide where that text lands. The injection
- * point to template slot mapping, the concatenation of several plugins into
- * one slot, the binding declarations the sampler pairs become and the
- * per-signature index that keys the compose and pipeline caches are all
- * `plugin-bridge-shared.ts`, executed at composition
- * (`src/pinned-material-plugins.ts`). This module only reads the scene's
- * declaration and checks each point name against the pin's own two tables,
- * so a plugin naming a point upstream has no slot for fails here with a
- * source location instead of composing a fragment that silently drops it.
- *
- * The two texture members are folded as a pair. `getSamplers` declares the
- * bindings, `bindTextures` fills them positionally, and `getActiveTextures`
- * enumerates the same textures for the pin's acquire and release — upstream
- * trusts the plugin author to keep the three in step, and a mismatch there
- * binds the wrong texture or retires a live one. Nothing runs at generation
- * that could observe the disagreement, so the fold proves it instead: equal
- * counts, and the same RESOLVED texture at each position — the declaration
- * each reference names, never the C++ spelling it renders as.
- *
- * A plugin reached through a factory folds the same way. Scene code writes
- * `mat.plugins = [createStudMaterialPlugin(studs)]` as readily as it writes
- * the object inline, because the texture members close over the argument.
- * The call is therefore seen THROUGH rather than executed: the callee is
- * resolved by the compiler's own identifier-to-declaration resolver, its
- * body has to be one return of an object literal, and its parameters are
- * bound to the values the call site passed. No statement runs and no branch
- * is taken, so the object folded is the one the pin would have been handed.
- *
- * The declared names are checked against the WHOLE material's composition,
- * because that is the scope the pin composes in: one fragment out of the
- * whole plugin list, spliced into a variant that already declares the
- * Standard family's own bindings. So a name is refused when a second plugin
- * in the same list declares it, and when it is one the composed variant
- * declares for itself — the latter read from the one list the generated
- * `standard_binding_resources` table is rendered from, never restated here.
- *
- * Everything past that refuses by name: `priority`, `isEnabled`, `defines`,
- * `getUniforms` and `writeUbo`. The last two would put a uniform block into
- * the PBR material UBO or build the Standard self-managed `pluginUbo`,
- * which is a second bind-group contract no measurement covers. So does a
- * PBR material's `getSamplers`, whose entries the pin appends inside
- * `createPbrMeshBindGroup` against a row keyed by material index — a
- * different path from the Standard record lane this port binds.
+/** Fold source plugin declarations and retain their live textures and UBO callbacks.
+ * Shader injection, binding layout and enabled-plugin ordering execute the pin's
+ * composers. The fold proves that bindTextures/getActiveTextures refer to the
+ * same ordered texture identities. PBR supports vertex fields and a material UBO;
+ * Standard retains its existing fragment texture contract.
  */
 import ts from "typescript";
 import { argumentAt } from "./syntax.js";
@@ -120,11 +14,10 @@ import { tryResolveFunctionDeclaration } from "./user-functions.js";
 import type {
     MaterialPluginManifest,
     MaterialPluginSamplerManifest,
+    MaterialPluginUniformManifest,
+    MaterialPluginVaryingManifest,
 } from "../pinned-material-plugins.js";
-// The pin's own Standard binding names, from the one list the generated
-// `standard_binding_resources` table is rendered from.
-// The pin's own Standard binding names, from the one list the generated
-// `standard_binding_resources` table is rendered from.
+// Names already served by the generated Standard binding table.
 import { standardBuiltinBindingNames } from "../pinned-standard-variants.js";
 import type { Value } from "./types.js";
 
@@ -132,7 +25,7 @@ import type { Value } from "./types.js";
 type MaterialPluginFamily = "standard" | "pbr";
 
 /** The compiler surface a fold needs; the entry orchestrator supplies it. */
-interface MaterialPluginContext extends Pick<
+export interface MaterialPluginContext extends Pick<
     LoweringServices,
     | "checker"
     | "resolveStaticExpression"
@@ -142,8 +35,65 @@ interface MaterialPluginContext extends Pick<
     | "compileStaticString"
     | "compileValue"
     | "withBoundParameters"
+    | "withRecordScopes"
+    | "compileStoredDataFunction"
+    | "dataLowerer"
+    | "dataValue"
     | "fail"
 > {}
+
+export interface MaterialPluginResourceContext
+    extends
+        MaterialPluginContext,
+        Pick<
+            LoweringServices,
+            | "emit"
+            | "reachFeature"
+            | "requireEngine"
+            | "expectSameEngine"
+            | "boundPixelsTextures"
+            | "cppString"
+        > {}
+
+/** Retain the callbacks and textures the composed source bridge consumes. */
+export function emitMaterialPluginResources(
+    context: MaterialPluginResourceContext,
+    target: Value,
+    source: ts.Node,
+    plugins: FoldedMaterialPlugins,
+    signatureIndex = 0,
+): void {
+    const engine = context.requireEngine(target, source);
+    context.reachFeature("material:plugin-index", source);
+    context.emit(
+        `bbl::set_material_plugins(${engine}, ${target.cpp}, static_cast<std::uint8_t>(${signatureIndex}));`,
+    );
+    const samplers = plugins.manifests.flatMap(
+        (plugin) => plugin.samplers ?? [],
+    );
+    plugins.textures.forEach((texture, index) => {
+        context.expectSameEngine(target, texture.value, texture.node);
+        const storage = texture.value.textureStorage;
+        if (storage === "pixels")
+            context.boundPixelsTextures.add(texture.value.cpp);
+        context.reachFeature("material:plugin-textures", texture.node);
+        const helper =
+            storage === "pixels"
+                ? "add_material_plugin_pixels_texture"
+                : storage === "stored"
+                  ? "add_material_plugin_texture"
+                  : "add_material_plugin_file_texture";
+        const sampler = samplers[index]!;
+        context.emit(
+            `bbl::${helper}(${engine}, ${target.cpp}, ${texture.value.cpp}, ${context.cppString(sampler.texture)}, ${context.cppString(sampler.sampler)});`,
+        );
+    });
+    for (const writer of plugins.uniformWriters) {
+        context.emit(
+            `bbl::add_material_plugin_uniform_writer(${engine}, ${target.cpp}, ${writer});`,
+        );
+    }
+}
 
 /** One texture a plugin's `bindTextures` binds, and where it came from. */
 interface MaterialPluginTextureBinding {
@@ -217,7 +167,9 @@ function resolveTextureIdentity(
         return { root: "this", path };
     }
     const symbol = ts.isIdentifier(node)
-        ? context.checker.getSymbolAtLocation(node)
+        ? ts.isShorthandPropertyAssignment(node.parent)
+            ? context.checker.getShorthandAssignmentValueSymbol(node.parent)
+            : context.checker.getSymbolAtLocation(node)
         : undefined;
     if (!symbol) {
         context.fail(
@@ -237,7 +189,7 @@ function resolveTextureIdentity(
 }
 
 /** A folded `material.plugins = [...]` right-hand side. */
-interface FoldedMaterialPlugins {
+export interface FoldedMaterialPlugins {
     /** The plugin list, in the order the scene wrote it. */
     manifests: MaterialPluginManifest[];
     /**
@@ -247,6 +199,7 @@ interface FoldedMaterialPlugins {
      * declarations were composed in.
      */
     textures: readonly MaterialPluginTextureBinding[];
+    uniformWriters: readonly string[];
 }
 
 /** The plugin members whose presence reaches machinery this port lacks. */
@@ -257,11 +210,6 @@ const refusedMembers: Readonly<Record<string, string>> = {
     isEnabled:
         "is the pin's toggle; a disabled plugin still takes an index, and " +
         "the toggle is a run-time rebuild",
-    defines: "folds into the signature and reaches no composed WGSL here",
-    getUniforms:
-        "puts fields into the PBR material UBO and builds the Standard " +
-        "self-managed pluginUbo, neither of which this port binds",
-    writeUbo: "fills the uniforms getUniforms declares",
 };
 
 /**
@@ -413,6 +361,9 @@ export function foldMaterialPluginList(
     return {
         manifests: folded.map((plugin) => plugin.manifest),
         textures: folded.flatMap((plugin) => plugin.textures),
+        uniformWriters: folded.flatMap((plugin) =>
+            plugin.uniformWriter ? [plugin.uniformWriter] : [],
+        ),
     };
 }
 
@@ -420,6 +371,7 @@ export function foldMaterialPluginList(
 interface FoldedMaterialPlugin {
     manifest: MaterialPluginManifest;
     textures: readonly MaterialPluginTextureBinding[];
+    uniformWriter?: string;
 }
 
 /**
@@ -437,6 +389,7 @@ interface PluginObjectSite {
     object: ts.ObjectLiteralExpression;
     /** The factory parameters, bound while the object's members are folded. */
     bindings: readonly { name: ts.Identifier; value: Value }[];
+    owner?: Value;
 }
 
 function pluginObjectSite(
@@ -451,6 +404,14 @@ function pluginObjectSite(
     }
     if (ts.isCallExpression(resolved)) {
         return pluginFactorySite(context, resolved);
+    }
+    const owner = context.compileValue(expression);
+    for (const method of Object.values(owner.recordMethods ?? {})) {
+        if (
+            !ts.isIdentifier(method) &&
+            ts.isObjectLiteralExpression(method.parent)
+        )
+            return { object: method.parent, bindings: [], owner };
     }
     context.fail(
         expression,
@@ -539,9 +500,18 @@ function foldMaterialPlugin(
     declared: Map<string, string>,
 ): FoldedMaterialPlugin {
     const site = pluginObjectSite(context, expression);
-    return context.withBoundParameters(site.bindings, () =>
-        foldPluginObject(context, expression, site.object, family, declared),
-    );
+    const fold = () =>
+        context.withBoundParameters(site.bindings, () =>
+            foldPluginObject(
+                context,
+                expression,
+                site.object,
+                family,
+                declared,
+                site.owner,
+            ),
+        );
+    return site.owner ? context.withRecordScopes(site.owner, fold) : fold();
 }
 
 function foldPluginObject(
@@ -550,12 +520,18 @@ function foldPluginObject(
     object: ts.ObjectLiteralExpression,
     family: MaterialPluginFamily,
     declared: Map<string, string>,
+    owner?: Value,
 ): FoldedMaterialPlugin {
     let name: string | undefined;
     let getCustomCode: ts.FunctionLikeDeclaration | undefined;
     let getSamplers: ts.FunctionLikeDeclaration | undefined;
     let bindTextures: ts.FunctionLikeDeclaration | undefined;
     let getActiveTextures: ts.FunctionLikeDeclaration | undefined;
+    let uniforms: readonly MaterialPluginUniformManifest[] | undefined;
+    let varyings: readonly MaterialPluginVaryingManifest[] | undefined;
+    let defines:
+        Readonly<Record<string, string | number | boolean>> | undefined;
+    let uniformWriter: string | undefined;
     const method = (
         property: ts.ObjectLiteralElementLike,
         member: string,
@@ -602,22 +578,113 @@ function foldPluginObject(
             continue;
         }
         if (member === "getSamplers") {
-            if (family === "pbr") {
-                // The family constraint refuses at the declaration rather
-                // than at the assignment, so nothing downstream compiles a
-                // texture value for a binding this port cannot build.
+            getSamplers = method(property, member);
+            continue;
+        }
+        if (member === "defines") {
+            if (!ts.isPropertyAssignment(property))
                 context.fail(
                     property,
-                    "A PBR material plugin declaring samplers needs the " +
-                        "PBR family's own plugin bind-group contract: its " +
-                        "draw resolves the variant by material index and " +
-                        "appends the plugin's entries in " +
-                        "createPbrMeshBindGroup, which is a different path " +
-                        "from the Standard record lane this port binds and " +
-                        "which no scene measures.",
+                    "Plugin defines require a constant record.",
                 );
+            const record = context.compileValue(
+                property.initializer,
+            ).recordProperties;
+            if (!record)
+                context.fail(
+                    property,
+                    "Plugin defines require a constant record.",
+                );
+            defines = Object.fromEntries(
+                Object.entries(record).map(([key, value]) => {
+                    const constant =
+                        value.staticBoolean ??
+                        value.staticNumber ??
+                        value.staticString;
+                    if (constant === undefined)
+                        context.fail(
+                            property,
+                            `Plugin define ${key} must be constant.`,
+                        );
+                    return [key, constant];
+                }),
+            );
+            continue;
+        }
+        if (member === "getUniforms" || member === "getVaryings") {
+            if (family !== "pbr")
+                context.fail(
+                    property,
+                    "Standard plugin UBO and varying transport is not admitted.",
+                );
+            const declaration = method(property, member);
+            let returned = foldSingleReturn(
+                context,
+                declaration,
+                `MaterialPlugin.${member}`,
+            );
+            if (member === "getUniforms") {
+                const object = context.unwrap(returned);
+                if (
+                    !ts.isObjectLiteralExpression(object) ||
+                    object.properties.length !== 1
+                )
+                    context.fail(
+                        returned,
+                        "Plugin uniforms require exactly the ubo declaration array.",
+                    );
+                const property = object.properties.find(
+                    (property) =>
+                        property.name &&
+                        context.propertyName(property.name) === "ubo",
+                );
+                if (!property || !ts.isPropertyAssignment(property))
+                    context.fail(
+                        returned,
+                        "Plugin uniforms require a ubo declaration array.",
+                    );
+                returned = property.initializer;
             }
-            getSamplers = method(property, member);
+            const fields = foldPluginFieldDeclarations(
+                context,
+                returned,
+                member === "getUniforms",
+            );
+            if (member === "getUniforms") uniforms = fields;
+            else varyings = fields;
+            continue;
+        }
+        if (member === "writeUbo") {
+            if (family !== "pbr")
+                context.fail(
+                    property,
+                    "Standard plugin UBO transport is not admitted.",
+                );
+            const declaration = method(property, member);
+            if (
+                !ts.isMethodDeclaration(declaration) &&
+                !ts.isArrowFunction(declaration) &&
+                !ts.isFunctionExpression(declaration)
+            )
+                context.fail(
+                    declaration,
+                    "Plugin writer requires a source method.",
+                );
+            uniformWriter = context.compileStoredDataFunction(
+                declaration,
+                {
+                    kind: "function",
+                    parameters: [
+                        { kind: "f32array" },
+                        {
+                            kind: "map",
+                            key: { kind: "string" },
+                            value: { kind: "number" },
+                        },
+                    ],
+                },
+                owner,
+            );
             continue;
         }
         if (member === "bindTextures") {
@@ -669,7 +736,7 @@ function foldPluginObject(
         );
     }
     const samplers = getSamplers
-        ? foldSamplerDeclarations(context, name, getSamplers, declared)
+        ? foldSamplerDeclarations(context, name, getSamplers, declared, family)
         : undefined;
     const textures = foldPluginTextures(
         context,
@@ -685,9 +752,68 @@ function foldPluginObject(
             ...(fragment ? { fragment } : {}),
             ...(vertex ? { vertex } : {}),
             ...(samplers ? { samplers } : {}),
+            ...(defines ? { defines } : {}),
+            ...(uniforms ? { uniforms } : {}),
+            ...(varyings ? { varyings } : {}),
         },
         textures,
+        ...(uniformWriter ? { uniformWriter } : {}),
     };
+}
+
+function foldPluginFieldDeclarations(
+    context: MaterialPluginContext,
+    expression: ts.Expression,
+    uniform: boolean,
+): readonly MaterialPluginUniformManifest[] {
+    const array = context.probeStaticArrayLiteral(expression);
+    if (!array)
+        context.fail(
+            expression,
+            "Plugin shader fields require a static array.",
+        );
+    return array.elements.map((element) => {
+        const object = context.unwrap(element);
+        if (!ts.isObjectLiteralExpression(object))
+            context.fail(
+                element,
+                "Plugin shader fields require named records.",
+            );
+        const fields: {
+            name?: string;
+            type?: string;
+            visibility?: "vertex" | "fragment" | "vertex-fragment";
+        } = {};
+        for (const property of object.properties) {
+            if (!ts.isPropertyAssignment(property))
+                context.fail(
+                    property,
+                    "Plugin shader fields require named values.",
+                );
+            const key = context.propertyName(property.name);
+            const value = context.compileStaticString(property.initializer);
+            if (key === "name" || key === "type") fields[key] = value;
+            else if (
+                key === "visibility" &&
+                uniform &&
+                (value === "vertex" ||
+                    value === "fragment" ||
+                    value === "vertex-fragment")
+            )
+                fields.visibility = value;
+            else context.fail(property, "Unrepresented plugin shader field.");
+        }
+        if (!fields.name || !fields.type)
+            context.fail(
+                element,
+                "Plugin shader fields require name and type.",
+            );
+        return {
+            name: fields.name,
+            type: fields.type,
+            ...(fields.visibility ? { visibility: fields.visibility } : {}),
+        };
+    });
 }
 
 /**
@@ -709,6 +835,7 @@ function foldSamplerDeclarations(
     plugin: string,
     declaration: ts.FunctionLikeDeclaration,
     declared: Map<string, string>,
+    family: MaterialPluginFamily,
 ): readonly MaterialPluginSamplerManifest[] {
     const returned = foldSingleReturn(
         context,
@@ -738,6 +865,8 @@ function foldSamplerDeclarations(
             sampler?: string;
             textureType?: string;
             samplerType?: string;
+            visibility?: "vertex" | "fragment" | "vertex-fragment";
+            depthTexture?: boolean;
         } = {};
         for (const property of object.properties) {
             const field = property.name && context.propertyName(property.name);
@@ -752,7 +881,9 @@ function foldSamplerDeclarations(
                 field !== "texture" &&
                 field !== "sampler" &&
                 field !== "textureType" &&
-                field !== "samplerType"
+                field !== "samplerType" &&
+                field !== "visibility" &&
+                field !== "depthTexture"
             ) {
                 context.fail(
                     property,
@@ -760,7 +891,32 @@ function foldSamplerDeclarations(
                         "declaration.",
                 );
             }
+            if (field === "depthTexture") {
+                const value = context.compileValue(
+                    property.initializer,
+                ).staticBoolean;
+                if (value === undefined)
+                    context.fail(
+                        property,
+                        "Plugin texture depth type must be constant.",
+                    );
+                folded.depthTexture = value;
+                continue;
+            }
             const value = context.compileStaticString(property.initializer);
+            if (field === "visibility") {
+                if (
+                    value !== "vertex" &&
+                    value !== "fragment" &&
+                    value !== "vertex-fragment"
+                )
+                    context.fail(
+                        property,
+                        "Unrepresented plugin sampler visibility.",
+                    );
+                folded.visibility = value;
+                continue;
+            }
             if (field === "textureType" && value !== pinned.textureType) {
                 context.fail(
                     property,
@@ -770,7 +926,11 @@ function foldSamplerDeclarations(
                         "backends upload, and nothing measures another.",
                 );
             }
-            if (field === "samplerType" && value !== pinned.samplerType) {
+            if (
+                field === "samplerType" &&
+                value !== pinned.samplerType &&
+                value !== "sampler_non_filtering"
+            ) {
                 context.fail(
                     property,
                     `PluginSamplerDecl.samplerType '${value}' is not the ` +
@@ -786,6 +946,17 @@ function foldSamplerDeclarations(
                 element,
                 "A PluginSamplerDecl names both its texture and its " +
                     "sampler; the pin declares one binding for each.",
+            );
+        }
+        if (
+            family === "standard" &&
+            (folded.depthTexture ||
+                (folded.visibility && folded.visibility !== "fragment") ||
+                folded.samplerType === "sampler_non_filtering")
+        ) {
+            context.fail(
+                element,
+                "Standard plugin stage/depth transport is not admitted; a non-filtering sampler is a bind-group layout entry of its own.",
             );
         }
         for (const wgslName of [folded.texture, folded.sampler]) {
@@ -835,6 +1006,12 @@ function foldSamplerDeclarations(
                 : {}),
             ...(folded.samplerType !== undefined
                 ? { samplerType: folded.samplerType }
+                : {}),
+            ...(folded.visibility !== undefined
+                ? { visibility: folded.visibility }
+                : {}),
+            ...(folded.depthTexture !== undefined
+                ? { depthTexture: folded.depthTexture }
                 : {}),
         };
         return manifest;
@@ -973,40 +1150,154 @@ function foldTexturePushes(
         );
     }
     const textures: MaterialPluginTextureBinding[] = [];
-    for (const statement of body.statements) {
-        if (!ts.isExpressionStatement(statement)) {
+    const aliases = new Map<ts.Symbol, ResolvedTextureIdentity>();
+    const identityFor = (node: ts.Expression): ResolvedTextureIdentity => {
+        const identity = resolveTextureIdentity(context, member, node);
+        const alias =
+            identity.root === "this" ? undefined : aliases.get(identity.root);
+        return alias
+            ? { root: alias.root, path: [...alias.path, ...identity.path] }
+            : identity;
+    };
+    const elementsFor = (node: ts.Expression): readonly Value[] => {
+        if (!isPlainReference(context, node))
             context.fail(
-                statement,
-                `MaterialPlugin.${member}'s reached body is a sequence of ` +
-                    `${outName}.push(...) calls; a statement that computes ` +
-                    "would decide at run time what the pin reads once.",
+                node,
+                "Plugin texture lists require an existing array reference.",
+            );
+        const array = context.compileValue(node);
+        if (array.tupleElements || array.staticElements)
+            return array.tupleElements ?? array.staticElements!;
+        if (array.dataType?.kind === "product") {
+            return array.dataType.elements.map((_type, index) =>
+                context.dataLowerer.fixedTupleElement(array, index, node)!,
             );
         }
-        const call = context.unwrap(statement.expression);
+        const cardinality = array.collectionCardinality;
+        const sourceType = context.checker.getTypeAtLocation(node);
         if (
-            !ts.isCallExpression(call) ||
-            !ts.isPropertyAccessExpression(call.expression) ||
-            call.expression.name.text !== "push" ||
-            !ts.isIdentifier(call.expression.expression) ||
-            call.expression.expression.text !== outName
+            array.dataType?.kind === "vector" &&
+            cardinality?.kind === "array" &&
+            cardinality.count !== undefined &&
+            cardinality.varyingIn.size === 0 &&
+            context.checker.isTupleType(sourceType) &&
+            (sourceType as ts.TupleTypeReference).target.readonly
         ) {
-            context.fail(
-                statement,
-                `MaterialPlugin.${member} fills the pin's output array ` +
-                    `through ${outName}.push(...).`,
+            const element = array.dataType.element;
+            return Array.from({ length: cardinality.count }, (_unused, index) =>
+                context.dataValue(`${array.cpp}[${index}]`, element),
             );
         }
-        for (const argument of call.arguments) {
-            textures.push(
-                foldPluginTexture(
-                    context,
-                    plugin,
-                    member,
-                    pushedTexture(argument),
-                ),
-            );
+        return context.fail(
+            node,
+            "Plugin texture lists require a fixed, generation-known order.",
+        );
+    };
+    const walk = (statements: readonly ts.Statement[]): void => {
+        for (const statement of statements) {
+            if (ts.isForOfStatement(statement)) {
+                if (
+                    statement.awaitModifier ||
+                    !ts.isVariableDeclarationList(statement.initializer) ||
+                    statement.initializer.declarations.length !== 1
+                )
+                    context.fail(
+                        statement,
+                        "Plugin texture iteration requires one local binding.",
+                    );
+                const variable = statement.initializer.declarations[0]!;
+                if (!ts.isIdentifier(variable.name))
+                    context.fail(
+                        variable,
+                        "Plugin texture iteration requires a named local.",
+                    );
+                const name = variable.name;
+                const symbol = context.checker.getSymbolAtLocation(name);
+                if (!symbol)
+                    context.fail(
+                        variable,
+                        "Plugin texture iteration has no source binding.",
+                    );
+                const identity = identityFor(statement.expression);
+                const elements = elementsFor(statement.expression);
+                elements.forEach((value, index) => {
+                    aliases.set(symbol, {
+                        root: identity.root,
+                        path: [...identity.path, `[${index}]`],
+                    });
+                    context.withBoundParameters([{ name, value }], () =>
+                        walk(
+                            ts.isBlock(statement.statement)
+                                ? statement.statement.statements
+                                : [statement.statement],
+                        ),
+                    );
+                });
+                aliases.delete(symbol);
+                continue;
+            }
+            if (!ts.isExpressionStatement(statement)) {
+                context.fail(
+                    statement,
+                    `MaterialPlugin.${member}'s reached body is a sequence of ` +
+                        `${outName}.push(...) calls; a statement that computes ` +
+                        "would decide at run time what the pin reads once.",
+                );
+            }
+            const call = context.unwrap(statement.expression);
+            if (
+                !ts.isCallExpression(call) ||
+                !ts.isPropertyAccessExpression(call.expression) ||
+                call.expression.name.text !== "push" ||
+                !ts.isIdentifier(call.expression.expression) ||
+                call.expression.expression.text !== outName
+            ) {
+                context.fail(
+                    statement,
+                    `MaterialPlugin.${member} fills the pin's output array ` +
+                        `through ${outName}.push(...).`,
+                );
+            }
+            for (const argument of call.arguments) {
+                if (ts.isSpreadElement(argument)) {
+                    if (member !== "getActiveTextures")
+                        context.fail(
+                            argument,
+                            "Plugin binding records require explicit texture properties.",
+                        );
+                    const identity = identityFor(argument.expression);
+                    elementsFor(argument.expression).forEach((value, index) =>
+                        textures.push(
+                            foldPluginTexture(
+                                context,
+                                plugin,
+                                member,
+                                argument.expression,
+                                value,
+                                {
+                                    root: identity.root,
+                                    path: [...identity.path, `[${index}]`],
+                                },
+                            ),
+                        ),
+                    );
+                    continue;
+                }
+                const node = pushedTexture(argument);
+                textures.push(
+                    foldPluginTexture(
+                        context,
+                        plugin,
+                        member,
+                        node,
+                        undefined,
+                        identityFor(node),
+                    ),
+                );
+            }
         }
-    }
+    };
+    walk(body.statements);
     return textures;
 }
 
@@ -1022,7 +1313,8 @@ function pluginTextureBindingTexture(
     if (
         !property ||
         rest.length > 0 ||
-        !ts.isPropertyAssignment(property) ||
+        (!ts.isPropertyAssignment(property) &&
+            !ts.isShorthandPropertyAssignment(property)) ||
         !property.name ||
         context.propertyName(property.name) !== "texture"
     ) {
@@ -1033,7 +1325,9 @@ function pluginTextureBindingTexture(
                 "reads no GPU handle off it.",
         );
     }
-    return property.initializer;
+    return ts.isShorthandPropertyAssignment(property)
+        ? property.name
+        : property.initializer;
 }
 
 /** One pushed texture, lowered to the local the scene created it in. */
@@ -1042,6 +1336,8 @@ function foldPluginTexture(
     plugin: string,
     member: string,
     node: ts.Expression,
+    knownValue?: Value,
+    identity?: ResolvedTextureIdentity,
 ): MaterialPluginTextureBinding {
     // A plain reference, so lowering it reads a binding rather than
     // emitting: the two members name the SAME textures, so each is compiled
@@ -1056,7 +1352,14 @@ function foldPluginTexture(
                 "be lowered once per member here.",
         );
     }
-    const value = context.compileValue(node);
+    const compiled = knownValue ?? context.compileValue(node);
+    const value: Value =
+        compiled.kind === "texture" &&
+        !compiled.textureStorage &&
+        compiled.dataType?.kind === "handle" &&
+        compiled.dataType.handle === "texture"
+            ? { ...compiled, textureStorage: "stored" }
+            : compiled;
     if (value.kind !== "texture") {
         context.fail(
             node,
@@ -1064,7 +1367,11 @@ function foldPluginTexture(
                 `${member} takes a Texture2D.`,
         );
     }
-    if (value.textureStorage !== "file" && value.textureStorage !== "pixels") {
+    if (
+        value.textureStorage !== "file" &&
+        value.textureStorage !== "pixels" &&
+        value.textureStorage !== "stored"
+    ) {
         context.fail(
             node,
             `MaterialPlugin "${plugin}" binds a ` +
@@ -1077,7 +1384,7 @@ function foldPluginTexture(
     return {
         value,
         node,
-        identity: resolveTextureIdentity(context, member, node),
+        identity: identity ?? resolveTextureIdentity(context, member, node),
     };
 }
 

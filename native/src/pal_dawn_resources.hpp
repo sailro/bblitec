@@ -7,6 +7,13 @@
 
 namespace bbl::pal {
 
+inline std::string view_text(WGPUStringView view) {
+    if (!view.data)
+        return {};
+    return view.length == WGPU_STRLEN ? std::string(view.data)
+                                      : std::string(view.data, view.length);
+}
+
 /** Owns one API reference; raw construction and assignment adopt that reference. */
 template <typename Handle, auto Release, auto AddRef = nullptr> class DawnOwned {
 public:
@@ -67,6 +74,7 @@ struct DawnSampledTexture {
     DawnTextureView view;
     DawnSampler sampler;
     std::uint64_t uploaded_version = 0;
+    std::shared_ptr<GpuTextureLease> borrowed_image;
 };
 
 template <typename Handle>

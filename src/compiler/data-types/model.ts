@@ -7,6 +7,7 @@ export type HandleKind =
     | "gpu-texture"
     | "device-recovery"
     | "gpu-environment"
+    | "procedural-sky-environment"
     | "node-input"
     | "text-data"
     | "text-renderable"
@@ -35,6 +36,19 @@ export type HandleKind =
     | "shadow-generator"
     | "hierarchy-instance-pool"
     | "storage-buffer"
+    | "compute-storage-texture"
+    | "compute-texture-resource"
+    | "compute-sampler"
+    | "compute-binding-decl"
+    | "compute-binding-set"
+    | "compute-shader"
+    | "compute-dispatch"
+    | "compute-task"
+    | "compute-one-shot"
+    | "compute-uniform-arena"
+    | "compute-uniform-writer"
+    | "compute-uniform-layout"
+    | "uniform-buffer"
     | "material"
     | "physics-body"
     | "physics-aggregate"
@@ -64,6 +78,7 @@ export type TypedArrayKind =
     | "u32array"
     | "i32array";
 export interface DataKinds {
+    error: { kind: "error" };
     "event-target": { kind: "event-target" };
     "http-response": { kind: "http-response" };
     "search-params": { kind: "search-params" };

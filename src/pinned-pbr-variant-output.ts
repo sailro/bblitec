@@ -23,13 +23,20 @@ function stageName(stage: "vert" | "frag", text: string): string {
     return `pbr-${stage}-${digest}.${stage}.wgsl`;
 }
 
-/** Stable identity of one vertex/fragment pipeline pair. */
-function pipelineDigest(vertex: string, fragment: string): string {
-    return createHash("sha256")
+/** Stable identity of the stages and their source binding layout. */
+function pipelineDigest(
+    vertex: string,
+    fragment: string,
+    meshBindingLayout?: PinnedRenderableVariant["meshBindingLayout"],
+): string {
+    const digest = createHash("sha256")
         .update(vertex)
         .update("\0")
-        .update(fragment)
-        .digest("hex");
+        .update(fragment);
+    if (meshBindingLayout?.length) {
+        digest.update("\0").update(JSON.stringify(meshBindingLayout));
+    }
+    return digest.digest("hex");
 }
 
 /** How a renderable selects this variant, as the pin's own composition key. */
@@ -50,11 +57,14 @@ export interface PinnedVariantManifestEntry {
     fragmentKey: string;
     /** Stable identity of this vertex/fragment pipeline pair. */
     pipeline: string;
-    /** Every renderable key that composes exactly these stages. */
+    /** Every renderable key that composes these stages and binding layout. */
     selectors: readonly PinnedVariantSelector[];
     vertex: string;
     fragment: string;
     materialUbo: unknown;
+    pluginUniformFields?: readonly string[];
+    pluginTextureBindings?: readonly string[];
+    meshBindingLayout?: PinnedRenderableVariant["meshBindingLayout"];
     /** The composed stages, for the emitter; omitted from `variants.json`. */
     vertexWgsl: string;
     fragmentWgsl: string;
@@ -63,7 +73,7 @@ export interface PinnedVariantManifestEntry {
 /**
  * Emits `upstream/pbr-variants/` and returns the manifest entries.
  *
- * Variants are keyed by their composed text rather than by `fragmentKey`: the
+ * Variants are keyed by their composed text and layout rather than `fragmentKey`: the
  * key names the material's feature set, and two renderables that share it still
  * compose different stages when their light mode, tone mapping or mesh
  * attributes differ. Keying on the text is what makes one file mean one pipeline.
@@ -84,6 +94,7 @@ export function writePinnedPbrVariants(
         const pipeline = pipelineDigest(
             variant.vertexWgsl,
             variant.fragmentWgsl,
+            variant.meshBindingLayout,
         );
         const entry = byStages.get(pipeline) ?? { variant, selectors: [] };
         if (
@@ -139,6 +150,15 @@ export function writePinnedPbrVariants(
             vertex,
             fragment,
             materialUbo: variant.materialUboSpec,
+            ...(variant.pluginUniformFields
+                ? { pluginUniformFields: variant.pluginUniformFields }
+                : {}),
+            ...(variant.pluginTextureBindings
+                ? { pluginTextureBindings: variant.pluginTextureBindings }
+                : {}),
+            ...(variant.meshBindingLayout
+                ? { meshBindingLayout: variant.meshBindingLayout }
+                : {}),
             vertexWgsl: variant.vertexWgsl,
             fragmentWgsl: variant.fragmentWgsl,
         });

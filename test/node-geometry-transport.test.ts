@@ -147,6 +147,7 @@ test(
                 scene: object,
                 mesh: object,
                 view: object,
+                resources: object,
             ): {
                 bind(
                     engine: object,
@@ -194,7 +195,6 @@ test(
             {
                 surface: { engine: recordingEngine },
                 lights: [],
-                _meshAuxDisposables: new Map(),
             },
             childMesh,
             {
@@ -210,10 +210,13 @@ test(
                             _textureBindings: [],
                             _geometryGpBinding: null,
                             _usesMeshAttributeFlags: false,
+                            _meshUboFloats: 20,
+                            _pipelineForMesh: () => ({}),
                         }),
                     },
                 },
             },
+            { _lifetimeDisposers: [], _owners: 0 },
         );
         const bound = renderable.bind(recordingEngine, {});
         bound.update();

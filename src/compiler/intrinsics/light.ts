@@ -9,7 +9,11 @@ export interface LightIntrinsicContext
         IntrinsicCallContext,
         Pick<
             LoweringServices,
-            "compileVec3" | "compileNumber" | "requireDefaultEngine"
+            | "compileVec3"
+            | "compileNumber"
+            | "requireDefaultEngine"
+            | "requireEngine"
+            | "pinValueToTemporary"
         > {}
 
 export function compileLightIntrinsic(
@@ -18,6 +22,25 @@ export function compileLightIntrinsic(
     call: ts.CallExpression,
 ): Value | undefined {
     switch (importedName) {
+        case "setLightIntensity":
+        case "setLightDiffuseColor": {
+            context.expectArgumentCount(call, 2, 2);
+            const light = context.pinValueToTemporary(
+                context.compileValue(argumentAt(call, 0)),
+                "light_owner",
+                call,
+            );
+            context.expectKind(light, "light", argumentAt(call, 0));
+            const color = importedName === "setLightDiffuseColor";
+            const value = color
+                ? context.compileVec3(argumentAt(call, 1), "double")
+                : context.compileNumber(argumentAt(call, 1), "double");
+            context.reachFeature("light:parameters", call);
+            return {
+                kind: "void",
+                cpp: `bbl::${color ? "set_light_diffuse_color" : "set_light_intensity"}(${context.requireEngine(light, call)}.lights.at(${light.cpp}.value),${value})`,
+            };
+        }
         case "createHemisphericLight": {
             context.expectArgumentCount(call, 0, 2);
             const engine = context.requireDefaultEngine(call);
@@ -25,7 +48,7 @@ export function compileLightIntrinsic(
                 ? context.compileVec3(call.arguments[0])
                 : "bbl::Vec3{0.0f, 1.0f, 0.0f}";
             const intensity = call.arguments[1]
-                ? context.compileNumber(call.arguments[1])
+                ? context.compileNumber(call.arguments[1], "double")
                 : "1.0f";
             context.reachFeature("light:hemispheric", call);
             return {
@@ -44,7 +67,7 @@ export function compileLightIntrinsic(
             const engine = context.requireDefaultEngine(call);
             const direction = context.compileVec3(argumentAt(call, 0));
             const intensity = call.arguments[1]
-                ? context.compileNumber(call.arguments[1])
+                ? context.compileNumber(call.arguments[1], "double")
                 : "1.0f";
             context.reachFeature("light:directional", call);
             return {
@@ -63,7 +86,7 @@ export function compileLightIntrinsic(
             const engine = context.requireDefaultEngine(call);
             const position = context.compileVec3(argumentAt(call, 0));
             const intensity = call.arguments[1]
-                ? context.compileNumber(call.arguments[1])
+                ? context.compileNumber(call.arguments[1], "double")
                 : "1.0f";
             context.reachFeature("light:point", call);
             return {
@@ -90,7 +113,7 @@ export function compileLightIntrinsic(
             const angle = context.compileNumber(argumentAt(call, 2), "double");
             const exponent = context.compileNumber(argumentAt(call, 3));
             const intensity = call.arguments[4]
-                ? context.compileNumber(call.arguments[4])
+                ? context.compileNumber(call.arguments[4], "double")
                 : "1.0f";
             context.reachFeature("light:spot", call);
             return {

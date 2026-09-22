@@ -12,6 +12,7 @@ std::string asset_path(std::string_view) {
 }
 std::string environment_variable(const char*) { return {}; }
 double performance_milliseconds() { return 0; }
+void update_window_document() {}
 Engine& window_document_engine() {
     static Engine document;
     return document;
@@ -41,6 +42,11 @@ int main() {
     assert(engine.ui_elements.at(roots.body.value).children.empty());
     std::vector<const bbl::UiElementRecord*> authored;
     for (std::size_t index = 0; index < engine.ui_elements.size(); ++index) {
+        const auto id = engine.ui_elements[index].attributes.find("id");
+        if (id != engine.ui_elements[index].attributes.end() && id->second == "host") {
+            assert(!engine.ui_elements[index].attached_to_root);
+            continue;
+        }
         if (index != roots.html.value && index != roots.head.value && index != roots.body.value)
             authored.push_back(&engine.ui_elements.at(index));
     }

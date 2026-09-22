@@ -23,11 +23,98 @@ export interface GeneratedSourceRule {
 }
 
 export const generatedSourceRules: readonly GeneratedSourceRule[] = [
+    {
+        source: "upstream/src/compute_one_shot.cpp",
+        features: ["compute:one-shot"],
+    },
+    {
+        source: "upstream/src/compute_bindings.cpp",
+        features: ["compute:bindings"],
+    },
+    {
+        source: "upstream/src/compute_buffer_binding.cpp",
+        features: ["compute:bindings"],
+    },
+    {
+        source: "upstream/src/compute_binding_resolvers.cpp",
+        features: ["compute:bindings"],
+    },
     { source: "upstream/src/engine.cpp", features: [] },
+    { source: "upstream/src/compute_task.cpp", features: ["compute:task"] },
+    {
+        source: "upstream/src/compute_task_execution.cpp",
+        features: ["compute:task-execution"],
+    },
+    {
+        source: "upstream/src/compute_dispatch.cpp",
+        features: ["compute:dispatch"],
+    },
+    {
+        source: "upstream/src/compute_frame_graph.cpp",
+        features: ["compute:frame-graph"],
+    },
+    {
+        source: "upstream/src/storage_readback.cpp",
+        features: ["compute:storage-readback"],
+    },
+    { source: "upstream/src/compute_shader.cpp", features: ["compute:shader"] },
+    {
+        source: "upstream/src/compute_binding_decl.cpp",
+        features: ["compute:binding-decl"],
+    },
+    {
+        source: "upstream/src/compute_uniform_writer.cpp",
+        features: ["compute:uniform-writer"],
+    },
+    {
+        source: "upstream/src/compute_uniform_arena.cpp",
+        features: ["compute:uniform-arena"],
+    },
+    {
+        source: "upstream/src/storage_buffer.cpp",
+        features: ["compute:storage-buffer"],
+    },
+    {
+        source: "upstream/src/compute_texture.cpp",
+        features: ["compute:storage-texture"],
+    },
+    {
+        source: "upstream/src/compute_texture_mipmaps.cpp",
+        features: ["compute:texture-mipmaps"],
+    },
+    {
+        source: "upstream/src/procedural_sky_atmosphere.cpp",
+        features: ["environment:sky-atmosphere"],
+    },
+    {
+        source: "upstream/src/procedural_sky_loader.cpp",
+        features: ["environment:procedural-sky"],
+    },
+    {
+        source: "upstream/src/procedural_sky_update.cpp",
+        features: ["environment:procedural-sky"],
+    },
+    {
+        source: "upstream/src/managed_resources.cpp",
+        features: ["compute:storage-texture", "compute:uniform-buffer"],
+    },
+    {
+        source: "upstream/src/uniform_buffer.cpp",
+        features: ["compute:uniform-buffer"],
+    },
+    {
+        source: "upstream/src/camera_configurable_free.cpp",
+        features: ["camera:configurable-free"],
+    },
+    {
+        source: "upstream/src/gpu_retirement.cpp",
+        features: ["engine:gpu-retirement"],
+    },
     {
         source: "upstream/src/device_recovery.cpp",
         features: ["engine:device-recovery"],
     },
+    { source: "upstream/src/engine_dispose.cpp", features: ["engine:dispose"] },
     { source: "upstream/src/scene_core.cpp", features: [] },
     { source: "upstream/src/variant_data.cpp", features: [] },
     { source: "upstream/src/text_data.cpp", features: ["text:data"] },
@@ -279,6 +366,7 @@ export const generatedSourceRules: readonly GeneratedSourceRule[] = [
             "mesh:tube",
             "mesh:from-data",
             "mesh:update-positions",
+            "mesh:resize-geometry",
             "mesh:ground",
             "mesh:ground-heightmap",
             "mesh:morph-targets",

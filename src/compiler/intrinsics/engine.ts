@@ -16,10 +16,15 @@ import {
 } from "./post-process-options.js";
 import { isScreenSpaceIntrinsic } from "../../pinned-screen-space.js";
 import { validateObjectProperties } from "../option-helpers.js";
+import {
+    compileGpuTaskTimingIntrinsic,
+    type GpuTaskTimingIntrinsicContext,
+} from "./gpu-task-timing.js";
 
 export interface EngineIntrinsicContext
     extends
         IntrinsicCallContext,
+        GpuTaskTimingIntrinsicContext,
         EngineOptionContext,
         Pick<
             LoweringServices,
@@ -30,6 +35,7 @@ export interface EngineIntrinsicContext
             | "fail"
             | "expectSameEngine"
             | "requireDefaultEngine"
+            | "requireEngine"
             | "allocateTemporaryCppName"
             | "compileEngineCreation"
             | "compileRenderTargetOptions"
@@ -48,6 +54,7 @@ export interface EngineIntrinsicContext
             | "objectProperty"
             | "propertyName"
             | "compileFrameCallback"
+            | "compileVoidCallback"
         > {}
 
 function reachRenderer(
@@ -63,7 +70,30 @@ export function compileEngineIntrinsic(
     importedName: string,
     call: ts.CallExpression,
 ): Value | undefined {
+    const timing = compileGpuTaskTimingIntrinsic(context, importedName, call);
+    if (timing) return timing;
     switch (importedName) {
+        case "waitForGpuIdle":
+        case "waitForGpuResourceRetirements": {
+            context.expectArgumentCount(call, 1, 1);
+            context.reachFeature("engine:gpu-retirement", call);
+            const engine = context.compileValue(argumentAt(call, 0));
+            context.expectKind(engine, "engine", call);
+            if (!engine.ownedEngineCpp)
+                return context.fail(
+                    call,
+                    "GPU completion requires a realm-owned engine.",
+                );
+            return {
+                kind: "promise",
+                cpp:
+                    importedName === "waitForGpuIdle"
+                        ? `bbl::pal::submitted_gpu_work(${engine.cpp}.offscreen_run)`
+                        : `bbl::wait_for_gpu_resource_retirements(bbl::pal::gpu_retirement_state(${engine.cpp}))`,
+                promiseType: "bbl::js::PromiseVoid",
+                promiseResult: { kind: "void", cpp: "" },
+            };
+        }
         case "createEngine":
             return context.compileEngineCreation(
                 call,
@@ -227,19 +257,64 @@ export function compileEngineIntrinsic(
             };
         }
 
-        case "createRenderTargetTexture": {
-            context.expectArgumentCount(call, 2, 2);
+        case "createRenderTargetTexture":
+        case "createSurfaceRenderTargetTexture": {
+            context.expectArgumentCount(call, 2, 3);
+            const sampleDepth = call.arguments[2];
+            if (
+                sampleDepth &&
+                context.symbols.importedName(sampleDepth) !==
+                    "withSampledDepthTexture"
+            ) {
+                context.fail(
+                    sampleDepth,
+                    "Render-target depth sampling requires withSampledDepthTexture.",
+                );
+            }
             const engine = context.compileValue(argumentAt(call, 0));
             context.expectKind(engine, "engine", argumentAt(call, 0));
             const options = context.compileRenderTargetOptions(
                 argumentAt(call, 1),
             );
+            const surfaceSized =
+                importedName === "createSurfaceRenderTargetTexture";
+            if (surfaceSized) {
+                context.reachFeature("frame-graph:surface-target", call);
+                context.reachFeature("engine:gpu-retirement", call);
+            }
+            if ((options.surface !== undefined) !== surfaceSized) {
+                context.fail(
+                    call,
+                    `${importedName} requires ${surfaceSized ? "surface-backed" : "fixed pixel"} dimensions.`,
+                );
+            }
+            if (options.surface)
+                context.expectSameEngine(engine, options.surface, call);
+            if (
+                sampleDepth &&
+                (!options.signature.depthFormat ||
+                    options.signature.samples !== 1)
+            ) {
+                context.fail(
+                    call,
+                    "withSampledDepthTexture requires a single-sample depth attachment.",
+                );
+            }
+            if (!options.hasColor && !sampleDepth) {
+                context.fail(
+                    call,
+                    "A colorless render-target texture requires withSampledDepthTexture.",
+                );
+            }
             context.reachFeature("frame-graph:resources", call);
+            const optionsCpp = sampleDepth
+                ? `[&]() { auto options = ${options.cpp}; options.sampled_depth = true; return options; }()`
+                : options.cpp;
             return {
                 kind: "render-target-texture",
                 cpp:
                     `bbl::create_render_target_texture(` +
-                    `${engine.cpp}, ${options.cpp})`,
+                    `${engine.cpp}, ${optionsCpp}${surfaceSized ? ", true" : ""})`,
                 renderTextureSource: "render-target",
                 renderTargetSignature: options.signature,
                 // `rtt.ts` hands back the colour attachment when the
@@ -248,6 +323,37 @@ export function compileEngineIntrinsic(
                 // depth. The `.texture` read carries this through.
                 ...(options.hasColor ? {} : { isDepthTexture: true as const }),
                 engineCpp: engine.engineCpp ?? engine.cpp,
+            };
+        }
+
+        case "onRenderTargetTextureResize": {
+            context.expectArgumentCount(call, 2, 2);
+            const target = context.compileValue(argumentAt(call, 0));
+            context.expectKind(target, "render-target-texture", call);
+            const engine = context.requireEngine(target, call);
+            context.reachFeature("frame-graph:resources", call);
+            context.reachFeature("frame-graph:surface-target", call);
+            context.reachFeature("engine:gpu-retirement", call);
+            return {
+                kind: "data",
+                cpp: `bbl::on_render_target_texture_resize(${engine}, ${target.cpp}, ${context.compileVoidCallback(argumentAt(call, 1))})`,
+                dataType: { kind: "function", parameters: [], identity: true },
+            };
+        }
+
+        case "enableRenderTaskMeshRefresh": {
+            context.expectArgumentCount(call, 1, 1);
+            const task = context.compileValue(argumentAt(call, 0));
+            context.expectKind(task, "task", call);
+            if (!task.renderTask)
+                context.fail(
+                    call,
+                    "Mesh refresh requires a retained render task.",
+                );
+            reachRenderer(context, call);
+            return {
+                kind: "void",
+                cpp: `bbl::enable_render_task_mesh_refresh(${context.requireEngine(task, call)}, ${task.cpp})`,
             };
         }
 

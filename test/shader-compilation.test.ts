@@ -277,6 +277,94 @@ function fixtureRoot(t: { after: (cleanup: () => void) => void }): string {
 }
 
 test(
+    "compute stages compile writable resources into SDL compute binding spaces",
+    { skip: !tools.tint || !tools.dxc },
+    (t) => {
+        const root = fixtureRoot(t);
+        const directory = join(root, "generated/compute/upstream/shaders");
+        mkdirSync(directory, { recursive: true });
+        writeFileSync(
+            join(directory, "kernel.comp.native.wgsl"),
+            `
+struct Params { offset: u32, scale: f32, padding: vec2f };
+@group(2) @binding(9) var<storage, read_write> outputData: array<f32>;
+@group(1) @binding(5) var outputTex: texture_storage_2d<rg32float, write>;
+@group(3) @binding(7) var<uniform> params: Params;
+@group(0) @binding(8) var<storage, read> inputData: array<f32>;
+@group(1) @binding(0) var inputTex: texture_2d<f32>;
+@group(1) @binding(1) var inputSampler: sampler;
+@compute @workgroup_size(4, 2, 1)
+fn run(@builtin(global_invocation_id) id: vec3u) {
+    let value = inputData[min(params.offset + id.x, arrayLength(&inputData) - 1u)] * params.scale + textureSampleLevel(inputTex, inputSampler, vec2f(0.5), 0.0).x;
+    outputData[min(id.x, arrayLength(&outputData) - 1u)] = value;
+    textureStore(outputTex, vec2i(id.xy), vec4f(value, value + 1.0, 0.0, 0.0));
+}`,
+        );
+        writeFileSync(
+            join(directory, "composition.json"),
+            JSON.stringify({
+                modules: [
+                    {
+                        output: "upstream/shaders/kernel.comp.native.wgsl",
+                        entryPoint: "run",
+                        pinnedBindings: true,
+                    },
+                ],
+            }),
+        );
+        const result = compileOfflineShaders({
+            directories: [directory],
+            repositoryRoot: root,
+            target: "all",
+            tools,
+        });
+        assert.equal(result.compiled, 1);
+        const hlsl = readFileSync(join(directory, "kernel.comp.hlsl"), "utf8");
+        assert.match(hlsl, /outputTex\s*:\s*register\(u0, space1\)/);
+        assert.match(hlsl, /outputData\s*:\s*register\(u1, space1\)/);
+        assert.match(hlsl, /cbuffer_params\s*:\s*register\(b0, space2\)/);
+        assert.match(hlsl, /inputTex\s*:\s*register\(t0, space0\)/);
+        assert.match(hlsl, /inputData\s*:\s*register\(t1, space0\)/);
+        assert.match(hlsl, /numthreads\(4, 2, 1\)/);
+        const slots = readFileSync(
+            join(directory, "kernel.comp.slots"),
+            "utf8",
+        );
+        for (const slot of [
+            "@workgroup 4 2 1",
+            "b0 params 3 7 -1 -1",
+            "t0 inputTex 1 0 1 1",
+            "s0 inputSampler 1 1 -1 -1",
+            "r0 inputData 0 8 -1 -1",
+            "j0 outputTex 1 5 -1 -1",
+            "w0 outputData 2 9 -1 -1",
+        ])
+            assert.ok(slots.includes(slot), slot);
+        assert.ok(!existsSync(join(directory, "kernel.comp.demote.spv")));
+        const msl = readFileSync(join(directory, "kernel.comp.msl"), "utf8");
+        assert.match(msl, /kernel void main0\(/);
+        assert.match(msl, /inputTex\s*\[\[texture\(0\)\]\]/);
+        assert.match(msl, /outputTex\s*\[\[texture\(1\)\]\]/);
+        assert.match(msl, /params\s*\[\[buffer\(0\)\]\]/);
+        assert.match(msl, /inputData\s*\[\[buffer\(1\)\]\]/);
+        assert.match(msl, /outputData\s*\[\[buffer\(2\)\]\]/);
+        const binary = readFileSync(join(directory, "kernel.comp.spv"));
+        const executionMode = [...spirvInstructions(binary)].find(
+            (instruction) =>
+                instruction.opcode === 16 &&
+                binary.readUInt32LE(instruction.offset + 8) === 17,
+        );
+        assert.ok(executionMode, "LocalSize execution mode");
+        assert.deepEqual(
+            [12, 16, 20].map((offset) =>
+                binary.readUInt32LE(executionMode.offset + offset),
+            ),
+            [4, 2, 1],
+        );
+    },
+);
+
+test(
     "Vulkan discard has a helper-invocation variant and a baseline device fallback",
     { skip: !tools.tint || !tools.dxc },
     (t) => {

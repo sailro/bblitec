@@ -59,7 +59,7 @@ export function physicsViewerMaterialProgram(
         builder,
         builder.body.statements,
         `
-        const rebuildSingle = (s: SceneContext, mesh: Mesh, materialOverride?: Material): Renderable => buildLineRenderable(s, mesh, materialOverride);
+        const rebuildSingle: MeshRebuilder = buildLineRenderable;
         physicsDebugLineGroupBuilder._rebuildSingle = rebuildSingle;
         scene._disposables.push(clearPhysicsDebugLinePipelineCache);
         return { renderables: meshes.map((mesh) => rebuildSingle(scene, mesh)), rebuildSingle };
@@ -138,9 +138,11 @@ export function physicsViewerMaterialProgram(
         const meshData = new F32(16);
         packMat4IntoF32(meshData, mesh.worldMatrix);
         const meshUBO = createUniformBuffer(engine, meshData);
+        resources?._lifetimeDisposers.push(() => meshUBO.destroy());
         const materialData = new F32(4);
         materialData.set(material.color);
         const materialUBO = createUniformBuffer(engine, materialData);
+        resources?._lifetimeDisposers.push(() => materialUBO.destroy());
         const bindGroup = engine._device.createBindGroup({ layout: getMeshBindGroupLayout(engine), entries: [
             { binding: 0, resource: { buffer: meshUBO } }, { binding: 1, resource: { buffer: materialUBO } },
         ] });

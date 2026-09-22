@@ -3,6 +3,8 @@ import ts from "typescript";
 import { argumentAt } from "../syntax.js";
 import type { Value } from "../types.js";
 import type { IntrinsicCallContext } from "./context.js";
+import { renderClosure } from "../closure-captures.js";
+import { validateObjectProperties } from "../option-helpers.js";
 import {
     type CameraDeferralContext,
     compileCameraDeferralOptions,
@@ -29,6 +31,10 @@ export interface SceneIntrinsicContext
             | "expectSameEngine"
             | "compileFrameCallback"
             | "compileVoidCallback"
+            | "captureManagedClosureLines"
+            | "useNativeValue"
+            | "compileStringLiteral"
+            | "dataLowerer"
             | "emit"
             | "markEngineStart"
             | "compileAsyncEngineStart"
@@ -193,7 +199,9 @@ export function compileSceneIntrinsic(
                     `addTask requires a scene or frame-graph context, received ${scene.kind}.`,
                 );
             }
-            context.expectKind(task, "task", argumentAt(call, 1));
+            if (task.kind === "compute-task")
+                context.reachFeature("compute:frame-graph", call);
+            else context.expectKind(task, "task", argumentAt(call, 1));
             context.expectSameEngine(scene, task, call);
             const defaultTask =
                 scene.kind === "scene"
@@ -233,7 +241,10 @@ export function compileSceneIntrinsic(
         }
 
         case "attachControl":
-        case "attachFreeControl": {
+        case "attachFreeControl":
+        case "attachConfigurableFreeControl": {
+            const configurable =
+                importedName === "attachConfigurableFreeControl";
             // Only the ArcRotate hook takes a fourth argument: the pinned
             // `AttachControlOptions` bag of camera-deferral callbacks,
             // compiled as live predicates over the registered dispatcher.
@@ -241,7 +252,7 @@ export function compileSceneIntrinsic(
             context.expectArgumentCount(
                 call,
                 2,
-                importedName === "attachControl" ? 4 : 3,
+                importedName === "attachControl" || configurable ? 4 : 3,
             );
             const camera = context.compileValue(argumentAt(call, 0));
             const sceneArgument =
@@ -252,26 +263,68 @@ export function compileSceneIntrinsic(
             context.expectKind(camera, "camera", argumentAt(call, 0));
             context.expectKind(scene, "scene", sceneArgument);
             context.expectSameEngine(camera, scene, call);
-            context.noteTemporalCameraControl(call);
+            context.noteTemporalCameraControl(call, configurable);
             context.noteTextCameraControl(
                 call,
                 camera,
                 importedName === "attachControl",
             );
-            const deferrals = call.arguments[3]
-                ? compileCameraDeferralOptions(context, call.arguments[3])
-                : [];
-            if (importedName === "attachFreeControl") {
+            const deferrals =
+                !configurable && call.arguments[3]
+                    ? compileCameraDeferralOptions(context, call.arguments[3])
+                    : [];
+            if (importedName !== "attachControl") {
                 context.reachFeature("camera:free", call);
+            }
+            let configuration = "bbl::ConfigurableFreeControlOptions{}";
+            if (configurable) {
+                context.reachFeature("camera:configurable-free", call);
+                const options = call.arguments[3]
+                    ? context.expectObjectLiteral(call.arguments[3])
+                    : undefined;
+                const names = [
+                    "upKeys",
+                    "downKeys",
+                    "fastKeys",
+                    "fastMultiplier",
+                ] as const;
+                if (options)
+                    validateObjectProperties(
+                        context,
+                        options,
+                        names,
+                        "configurable free camera controls",
+                    );
+                const fields = names.map((name) => {
+                    const value = options
+                        ? context.objectProperty(options, name)
+                        : undefined;
+                    if (!value) return "std::nullopt";
+                    if (name === "fastMultiplier")
+                        return context.compileNumber(value, "double");
+                    const literal = context.unwrap(value);
+                    if (!ts.isArrayLiteralExpression(literal))
+                        return context.fail(
+                            value,
+                            "Configurable camera key lists require array literals.",
+                        );
+                    return `std::vector<std::string>{${literal.elements
+                        .map((key) => context.compileStringLiteral(key))
+                        .map((key) => JSON.stringify(key))
+                        .join(", ")}}`;
+                });
+                configuration = `bbl::ConfigurableFreeControlOptions{${fields.join(", ")}}`;
             }
             // The scene is checked but not passed: both pinned hooks read it
             // only to reach the canvas and the render loop. Install the
             // native control immediately and preserve the pin's returned
             // disposer, which disables controls and releases its callbacks.
             context.emit(
-                importedName === "attachFreeControl"
-                    ? `bbl::attach_free_control(${context.requireEngine(camera, call)}, ${camera.cpp});`
-                    : `bbl::attach_control(${context.requireEngine(camera, call)}, ${camera.cpp});`,
+                configurable
+                    ? `bbl::attach_configurable_free_control(${context.requireEngine(camera, call)}, ${camera.cpp}, ${configuration});`
+                    : importedName === "attachFreeControl"
+                      ? `bbl::attach_free_control(${context.requireEngine(camera, call)}, ${camera.cpp});`
+                      : `bbl::attach_control(${context.requireEngine(camera, call)}, ${camera.cpp});`,
             );
             const engine = context.requireEngine(camera, call);
             for (const { member, cpp } of deferrals) {
@@ -279,9 +332,19 @@ export function compileSceneIntrinsic(
                     `${engine}.cameras[${camera.cpp}.value].${member} = ${cpp};`,
                 );
             }
+            const cleanup = context.captureManagedClosureLines(() => {
+                context.useNativeValue(camera);
+                const owner = context.requireEngine(camera, call);
+                context.emit(
+                    `auto& record = ${owner}.cameras[${camera.cpp}.value];`,
+                );
+                context.emit(
+                    "record.controls_enabled = false; record.should_handle_pointer_down = {}; record.external_drag_active = {}; record.external_pick_pending = {}; record.configurable_free_pointer = {}; record.configurable_free_update = {};",
+                );
+            });
             return {
                 kind: "data",
-                cpp: `std::function<void()>{[&${engine}, camera = ${camera.cpp}]() { auto& record = ${engine}.cameras[camera.value]; record.controls_enabled = false; record.should_handle_pointer_down = {}; record.external_drag_active = {}; record.external_pick_pending = {}; }}`,
+                cpp: renderClosure(cleanup, ""),
                 dataType: { kind: "function", parameters: [] },
             };
         }

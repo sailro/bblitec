@@ -19,6 +19,7 @@ function typedArray(kind: TypedArrayKind) {
 }
 
 export const scalarKinds: DataKindOperations<
+    | "error"
     | "search-params"
     | "http-response"
     | "storage"
@@ -37,6 +38,7 @@ export const scalarKinds: DataKindOperations<
     | "handle"
     | TypedArrayKind
 > = {
+    error: leaf("bbl::js::Error", "error"),
     "event-target": leaf("bbl::DomEventTargetValue", "event-target"),
     "http-response": {
         ...leaf("bbl::pal::HttpResponse", "http-response", true),

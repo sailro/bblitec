@@ -89,6 +89,13 @@ test(
         }];
         const objectRead = objects[0]!({});
         if (objectRead() !== 7) throw new Error("defaulted object parameter capture took a value snapshot");
+        const bindSlots:((amount:number)=>number)[]=[amount=>amount+10];
+        let receiverCalls=0;
+        function boundReceiver():{tag:number} { receiverCalls++;bindSlots[0]=amount=>-amount;return {tag:7}; }
+        const bound=bindSlots[0]!.bind(boundReceiver());
+        if(receiverCalls!==1||bound(3)!==13||bindSlots[0]!(3)!==-3)throw new Error("bind target evaluation order");
+        const again=bound.bind(undefined);
+        if(again===bound||again(5)!==15)throw new Error("bound function identity");
     `);
         const output = resolve("artifacts/stored-callback-invocation");
         mkdirSync(output, { recursive: true });

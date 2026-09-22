@@ -40,6 +40,7 @@ import {
     sdlSpirvSource,
     sdlMslSource,
     shaderStageSlots,
+    computeShaderSlotMetadata,
     type SdlUniformAdaptation,
 } from "./shader-bindings.js";
 import {
@@ -381,7 +382,8 @@ export function compileOfflineShaders(
             if (
                 extension &&
                 (!selectedExtensions.has(extension) ||
-                    name.endsWith(".vert.demote.spv"))
+                    name.endsWith(".vert.demote.spv") ||
+                    name.endsWith(".comp.demote.spv"))
             )
                 rmSync(join(directory, name));
         }
@@ -408,7 +410,9 @@ export function compileOfflineShaders(
             let wgsl: string | undefined;
             let uniformAdaptation: SdlUniformAdaptation | undefined;
             for (const stage of sourceStages) {
-                const vertex = stage.stem.endsWith(".vert");
+                const vertex = stage.stem.endsWith(".comp")
+                    ? "compute"
+                    : stage.stem.endsWith(".vert");
                 const constants = shaderStageConstants(stage);
                 const key = sha256(
                     `tint:${tintHash}|script:${implementationHash}|entry:${stage.entryPoint}|pinned:${stage.pinnedBindings}|vertex:${vertex}|constants:${constants}|formats:${formats.tint.join(",")}|wgsl:${digestUpper(source)}`,
@@ -490,14 +494,15 @@ export function compileOfflineShaders(
                             `${source} (after SDL uniform adaptation)`,
                         );
                     }
-                    const normalized = stage.pinnedBindings
-                        ? remapPinnedVariantRegisters(hlsl, vertex)
-                        : normalizeTintHlslBindings(hlsl);
+                    const normalized =
+                        stage.pinnedBindings || vertex === "compute"
+                            ? remapPinnedVariantRegisters(hlsl, vertex)
+                            : normalizeTintHlslBindings(hlsl);
                     const slots = shaderStageSlots(normalized);
                     tree.write(`${stage.stem}.hlsl`, `${normalized}${EOL}`);
                     tree.write(
                         `${stage.stem}.slots`,
-                        `${slots.map((slot) => `${slot.kind}${slot.index} ${slot.name}`).join(EOL)}${EOL}`,
+                        `${(vertex === "compute" ? computeShaderSlotMetadata(hlsl, normalized) : slots.map((slot) => `${slot.kind}${slot.index} ${slot.name}`)).join(EOL)}${EOL}`,
                     );
                     tree.write(
                         `${stage.stem}.tint-reflection.txt`,
@@ -546,21 +551,30 @@ export function compileOfflineShaders(
         )) {
             const source = join(directory, name);
             const stem = name.slice(0, -".hlsl".length);
-            const profile = stem.endsWith(".vert") ? "vs_6_0" : "ps_6_0";
+            const profile = stem.endsWith(".comp")
+                ? "cs_6_0"
+                : stem.endsWith(".vert")
+                  ? "vs_6_0"
+                  : "ps_6_0";
             const entryPoint = stages.get(stem)?.entryPoint ?? "main";
             const hlsl = readFileSync(source, "utf8");
             assertUniformBufferCap(hlsl, source);
             const spirvSource = formats.binaries.some(
                 (format) => format.kind === "spirv",
             )
-                ? sdlSpirvSource(hlsl, stem.endsWith(".vert"))
+                ? sdlSpirvSource(
+                      hlsl,
+                      stem.endsWith(".comp")
+                          ? "compute"
+                          : stem.endsWith(".vert"),
+                  )
                 : "";
             const spirvDigest = sha256(spirvSource);
             let compiled = false;
             for (const format of formats.binaries) {
                 if (
                     format.extension === ".demote.spv" &&
-                    stem.endsWith(".vert")
+                    !stem.endsWith(".frag")
                 )
                     continue;
                 if (!tools.dxc)

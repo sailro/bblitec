@@ -5,6 +5,7 @@ import { join, resolve } from "node:path";
 import test from "node:test";
 import ts from "typescript";
 import { LoweringContext } from "../src/lowering/context.js";
+import { LightLowerer } from "../src/lowering/light-lowerer.js";
 import { pinnedCsmFunctions } from "../src/lowering/pinned-csm.js";
 import {
     csmShadowHeader,
@@ -186,7 +187,7 @@ interface PinCsm {
     _computeCsmCascades: (
         scene: { surface: { scRT: { _width: number; _height: number } } },
         camera: PinCamera,
-        light: { direction: Vector },
+        light: { direction: Vector; worldMatrix: Float32Array },
         config: PinConfig,
         casters: readonly PinCaster[],
         scratch: PinScratch,
@@ -393,7 +394,27 @@ test(
             const expected = pin._computeCsmCascades(
                 { surface: { scRT: { _width: 1280, _height: 720 } } },
                 camera,
-                { direction },
+                {
+                    direction,
+                    worldMatrix: Float32Array.of(
+                        1,
+                        0,
+                        0,
+                        0,
+                        0,
+                        1,
+                        0,
+                        0,
+                        0,
+                        0,
+                        1,
+                        0,
+                        0,
+                        0,
+                        0,
+                        1,
+                    ),
+                },
                 config,
                 inputs,
                 scratch,
@@ -586,6 +607,9 @@ using namespace bbl::upstream;
 struct Camera { double near_plane, far_plane; };
 struct Vector { double x, y, z; };
 struct Light { Vector direction; };
+std::array<float, 16> light_world_matrix(const Light&) {
+    return {1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1};
+}
 int case_number = -1;
 template <typename Actual, typename Expected>
 void same(const Actual& actual, const Expected& expected) {
@@ -688,6 +712,10 @@ test(
         const output = resolve("artifacts\\pinned-csm-header-check");
         const rendererIncludes = join(output, "bblite", "upstream");
         mkdirSync(rendererIncludes, { recursive: true });
+        writeFileSync(
+            join(rendererIncludes, "light_matrix.hpp"),
+            new LightLowerer(context).lowerMatrix().header,
+        );
         writeFileSync(
             join(rendererIncludes, "pinned_shadow.hpp"),
             pinnedShadowHeader(context, ["shadow:csm"]),

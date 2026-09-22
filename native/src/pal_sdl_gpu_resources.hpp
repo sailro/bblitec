@@ -74,6 +74,8 @@ inline bool wait_sdl_fence(SDL_GPUDevice* device, SDL_GPUFence* fence) {
 class SdlSampledTextures {
     SDL_GPUDevice* device_;
     std::vector<std::shared_ptr<OwnedSdlTexture>> shared_images_;
+    std::vector<std::shared_ptr<GpuTextureLease>> borrowed_images_;
+    std::vector<std::shared_ptr<void>> external_images_;
 
 public:
     std::vector<SDL_GPUTextureSamplerBinding> bindings;
@@ -87,9 +89,25 @@ public:
         bindings.push_back({shared_images_.back()->get(), nullptr});
         return bindings.back();
     }
+    void append_borrowed_texture(std::shared_ptr<GpuTextureSource> image, SDL_GPUTexture* texture,
+                                 SDL_GPUSampler* sampler) {
+        borrowed_images_.resize(bindings.size());
+        borrowed_images_.push_back(std::make_shared<GpuTextureLease>(std::move(image)));
+        bindings.push_back({texture, sampler});
+    }
+    void bind_external_texture(std::size_t index, std::shared_ptr<void> owner,
+                               SDL_GPUTextureSamplerBinding binding) {
+        external_images_.resize(bindings.size());
+        external_images_.at(index) = std::move(owner);
+        bindings.at(index) = binding;
+    }
     void clear() noexcept {
         for (std::size_t i = 0; i < bindings.size(); ++i) {
             const auto& binding = bindings[i];
+            if (i < borrowed_images_.size() && borrowed_images_[i])
+                continue;
+            if (i < external_images_.size() && external_images_[i])
+                continue;
             if (binding.texture && (i >= shared_images_.size() || !shared_images_[i]))
                 SDL_ReleaseGPUTexture(device_, binding.texture);
             if (binding.sampler)
@@ -97,6 +115,8 @@ public:
         }
         bindings.clear();
         shared_images_.clear();
+        borrowed_images_.clear();
+        external_images_.clear();
     }
 };
 

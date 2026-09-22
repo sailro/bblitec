@@ -276,6 +276,11 @@ export function browserDeploymentValue(
             "protocol",
         ].includes(unwrapped.name.text)
     ) {
+        if (
+            context.options.runtimeLocationSearch &&
+            ["search", "href"].includes(unwrapped.name.text)
+        )
+            return undefined;
         const url = deploymentUrl(context.options);
         url.search = context.options.search;
         return url[
@@ -430,6 +435,14 @@ export class BrowserErasure {
     public isBrowserOnlyExpression(expression: ts.Expression): boolean {
         if (this.context.isNativeWorkerExpression(expression)) return false;
         const unwrapped = this.context.unwrap(expression);
+        if (
+            ts.isCallExpression(unwrapped) &&
+            ts.isPropertyAccessExpression(unwrapped.expression) &&
+            ["set", "toString"].includes(unwrapped.expression.name.text) &&
+            this.evaluateBrowserValue(unwrapped.expression.expression)?.kind ===
+                "search-params"
+        )
+            return false;
         if (this.context.isNativeUiValueExpression(unwrapped)) return false;
         if (browserDeploymentValue(this.context, unwrapped) !== undefined)
             return false;
@@ -900,6 +913,14 @@ export class BrowserErasure {
     ): Value["browserValue"] | undefined {
         const unwrapped = this.context.unwrap(expression);
         const deployed = browserDeploymentValue(this.context, unwrapped);
+        if (
+            ts.isPropertyAccessExpression(unwrapped) &&
+            unwrapped.name.text === "url" &&
+            ts.isMetaProperty(unwrapped.expression) &&
+            unwrapped.expression.keywordToken === ts.SyntaxKind.ImportKeyword &&
+            unwrapped.expression.name.text === "meta"
+        )
+            return { kind: "object", moduleUrl: true };
         if (deployed === null) return { kind: "null" };
         if (typeof deployed === "boolean")
             return { kind: "boolean", value: deployed };
@@ -1012,6 +1033,7 @@ export class BrowserErasure {
             unwrapped.expression.text === "URLSearchParams" &&
             this.context.isDefaultLibraryIdentifier(unwrapped.expression)
         ) {
+            if (this.context.options.runtimeSearchParams) return undefined;
             const argument = unwrapped.arguments?.[0];
             const over = argument
                 ? this.evaluateBrowserValue(argument)
@@ -1027,6 +1049,7 @@ export class BrowserErasure {
             unwrapped.name.text === "search" &&
             this.browserGlobalNamed(unwrapped.expression)?.text === "location"
         ) {
+            if (this.context.options.runtimeLocationSearch) return undefined;
             return {
                 kind: "string",
                 value: this.context.referenceSearch(),
@@ -1458,7 +1481,7 @@ export class BrowserErasure {
     }
 
     /**
-     * A module-level helper taking no arguments whose body is a read of
+     * A module-level helper whose body is a read of
      * the query the reference pose fixes -- the corpus's
      * `readCaptureFrame()` / `readCaptureAfterFrames()` / `readSeekTime()`
      * family, which thirteen pinned scenes define and call exactly once.
@@ -1482,7 +1505,7 @@ export class BrowserErasure {
      *   - module level and synchronous, so the body closes over nothing
      *     whose value depends on when the call is asked about and its
      *     result is a value rather than a promise;
-     *   - no parameters and no arguments, so there is nothing to bind;
+     *   - each argument must fold and bind a plain parameter;
      *   - not already on the stack, so recursion refuses;
      *   - and every statement and expression must fold, so a helper
      *     reaching anything this evaluator does not model answers nothing
@@ -1491,14 +1514,19 @@ export class BrowserErasure {
     private evaluateBrowserHelperCall(
         call: ts.CallExpression,
     ): Value["browserValue"] | undefined {
-        if (call.arguments.length !== 0) return undefined;
         const callee = this.context.unwrap(call.expression);
         if (!ts.isIdentifier(callee)) return undefined;
         const declaration = this.context.moduleFunctionDeclaration(callee);
         const body = declaration?.body;
         if (
             !body ||
-            declaration.parameters.length !== 0 ||
+            declaration.parameters.length !== call.arguments.length ||
+            declaration.parameters.some(
+                (parameter) =>
+                    !ts.isIdentifier(parameter.name) ||
+                    parameter.initializer !== undefined ||
+                    parameter.dotDotDotToken !== undefined,
+            ) ||
             declaration.asteriskToken !== undefined ||
             declaration.modifiers?.some(
                 (modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword,
@@ -1507,20 +1535,35 @@ export class BrowserErasure {
         ) {
             return undefined;
         }
-        if (this.helperResults.has(declaration)) {
+        const cacheable = declaration.parameters.length === 0;
+        if (cacheable && this.helperResults.has(declaration)) {
             return this.helperResults.get(declaration);
         }
-        this.helperBodies.push({ body, bindings: new EmissionMap() });
+        const bindings = new EmissionMap<
+            string,
+            NonNullable<Value["browserValue"]>
+        >();
+        let browserArgument = false;
+        for (const [index, parameter] of declaration.parameters.entries()) {
+            const value = this.evaluateBrowserValue(call.arguments[index]!);
+            if (value === undefined || !ts.isIdentifier(parameter.name))
+                return undefined;
+            bindings.set(parameter.name.text, value);
+            browserArgument ||=
+                !isPrimitiveBrowserValue(value) &&
+                this.isBrowserOnlyExpression(call.arguments[index]!);
+        }
+        this.helperBodies.push({ body, bindings });
         let result: Value["browserValue"] | undefined;
         try {
-            if (this.readsBrowserState(body)) {
+            if (browserArgument || this.readsBrowserState(body)) {
                 const outcome = this.evaluateBrowserStatements(body.statements);
                 result = outcome?.returned ? outcome.value : undefined;
             }
         } finally {
             this.helperBodies.pop();
         }
-        this.helperResults.set(declaration, result);
+        if (cacheable) this.helperResults.set(declaration, result);
         return result;
     }
 

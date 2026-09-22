@@ -268,6 +268,15 @@ test("nullable vector guard tests presence without coercing its value", () => {
     assert.match(cpp, /projection = axis.x/);
 });
 
+test("nullable vector aliases retain presence in conditional expressions", () => {
+    const cpp = lower(
+        "const copy = axis; const projection = copy ? copy.x : 7;",
+        [["axis", { cpp: "axis", type: "vec3", absentCpp: "!axis_mode" }]],
+    );
+    assert.match(cpp, /!\(!axis_mode\).*\? axis.x : 7.0/);
+    assert.doesNotMatch(cpp, /axis \?/);
+});
+
 test("lowers a JavaScript numeric or-else to the value-selecting helper", () => {
     const emitted = lower("const length = value || 1;", [
         ["value", { cpp: "value", type: "scalar" }],
@@ -392,7 +401,7 @@ test("refuses an identifier with no binding", () => {
 
 test("refuses a statement kind it does not translate", () => {
     assert.throws(
-        () => lower("do { } while (1);"),
+        () => lower("with (value) {}"),
         /Unsupported pinned statement/,
     );
 });

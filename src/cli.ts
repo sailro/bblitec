@@ -1392,6 +1392,9 @@ async function main(): Promise<void> {
                 intrinsic: composite.intrinsic,
                 options: composite.options,
                 hasTarget: composite.hasTarget,
+                ...(composite.scalarAccesses
+                    ? { scalarAccesses: composite.scalarAccesses }
+                    : {}),
             }),
         ),
     );
@@ -1489,6 +1492,9 @@ async function main(): Promise<void> {
         sourceMeshWalks: (result.manifest.meshWalks?.length ?? 0) > 0,
         ...(assetLightNodes !== undefined ? { assetLightNodes } : {}),
         shaderPrograms,
+        ...(result.manifest.computePrograms
+            ? { computePrograms: result.manifest.computePrograms }
+            : {}),
         geometryOutputTasks: result.manifest.geometryOutputTasks,
         postProcessTasks: result.manifest.postProcessTasks,
         postProcessShaders,

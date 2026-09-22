@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { importPinnedModule } from "../src/pinned-shader-composer.js";
+import {
+    importPinnedModule,
+    importPinnedModuleWithExports,
+} from "../src/pinned-shader-composer.js";
 import { composePinnedPbrShader } from "./pinned-pbr-shader-fixture.js";
 
 test("composes the pinned PBR fragment through Babylon Lite's own composer", async () => {
@@ -12,7 +15,7 @@ test("composes the pinned PBR fragment through Babylon Lite's own composer", asy
 });
 
 test("the composer emits the clearcoat base-F0 remap the pin owns", async () => {
-    const { createClearcoatFragment } = await importPinnedModule<{
+    const { createClearcoatFragment } = await importPinnedModuleWithExports<{
         createClearcoatFragment: (
             features: number,
             features2: number,
@@ -20,13 +23,13 @@ test("the composer emits the clearcoat base-F0 remap the pin owns", async () => 
             hasBaseNormalMap: boolean,
             hasSpecularAA: boolean,
         ) => unknown;
-    }>("material/pbr/fragments/clearcoat-fragment.js");
+    }>("material/pbr/fragments/clearcoat-fragment.js", ["PBR_HAS_CLEARCOAT"]);
     const { createIblFragment } = await importPinnedModule<{
         createIblFragment: (hasNormalMap: boolean) => unknown;
     }>("material/pbr/fragments/ibl-fragment.js");
-    const { PBR_HAS_CLEARCOAT } = await importPinnedModule<{
+    const { PBR_HAS_CLEARCOAT } = await importPinnedModuleWithExports<{
         PBR_HAS_CLEARCOAT: number;
-    }>("material/pbr/pbr-flag-bits.js");
+    }>("material/pbr/fragments/clearcoat-fragment.js", ["PBR_HAS_CLEARCOAT"]);
 
     const composed = await composePinnedPbrShader({}, [
         createIblFragment(false),
@@ -44,7 +47,7 @@ test("the composer emits the clearcoat base-F0 remap the pin owns", async () => 
 });
 
 test("the composer refuses a fragment set missing a declared dependency", async () => {
-    const { createClearcoatFragment } = await importPinnedModule<{
+    const { createClearcoatFragment } = await importPinnedModuleWithExports<{
         createClearcoatFragment: (
             features: number,
             features2: number,
@@ -52,10 +55,10 @@ test("the composer refuses a fragment set missing a declared dependency", async 
             hasBaseNormalMap: boolean,
             hasSpecularAA: boolean,
         ) => unknown;
-    }>("material/pbr/fragments/clearcoat-fragment.js");
-    const { PBR_HAS_CLEARCOAT } = await importPinnedModule<{
+    }>("material/pbr/fragments/clearcoat-fragment.js", ["PBR_HAS_CLEARCOAT"]);
+    const { PBR_HAS_CLEARCOAT } = await importPinnedModuleWithExports<{
         PBR_HAS_CLEARCOAT: number;
-    }>("material/pbr/pbr-flag-bits.js");
+    }>("material/pbr/fragments/clearcoat-fragment.js", ["PBR_HAS_CLEARCOAT"]);
 
     // The clearcoat fragment declares `ibl` when composed with an environment.
     // The composer topologically sorts dependencies and throws on a missing

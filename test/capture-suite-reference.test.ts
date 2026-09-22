@@ -262,6 +262,29 @@ test("relocates the shared Havok binary to pinned lab/public root", () => {
     );
 });
 
+test("serves assets at the demo bundle root while preferring existing module-relative files", async () => {
+    const root = mkdtempSync(resolve(".capture-suite-bundle-root-"));
+    const directory = resolve(root, "lab/lite/src/demos");
+    mkdirSync(resolve(directory, "nested"), { recursive: true });
+    writeFileSync(resolve(directory, "brdf-lut.png"), "shared lut");
+    const server = createSuiteSceneServer("export {};");
+    try {
+        await new Promise<void>((done) => server.listen(0, "127.0.0.1", done));
+        const address = server.address();
+        assert.ok(address && typeof address !== "string");
+        const path = `${root.slice(resolve(".").length + 1).replaceAll("\\", "/")}/lab/lite/src/demos/nested/brdf-lut.png`;
+        const url = `http://127.0.0.1:${address.port}/${path}`;
+        const shared = await fetch(url);
+        assert.equal(shared.status, 200);
+        assert.equal(await shared.text(), "shared lut");
+        writeFileSync(resolve(directory, "nested/brdf-lut.png"), "local lut");
+        assert.equal(await (await fetch(url)).text(), "local lut");
+    } finally {
+        await new Promise<void>((done) => server.close(() => done()));
+        rmSync(root, { recursive: true, force: true });
+    }
+});
+
 test("builds a registration-ordered fixed browser RAF clock", () => {
     const script = fixedAnimationFrameScript(180);
 

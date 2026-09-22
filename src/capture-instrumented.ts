@@ -414,6 +414,9 @@ export async function runInstrumentedCapture(
     );
     const server = createSuiteSceneServer(moduleSource, {
         sourcePath: scene.source,
+        ...(scene.parity?.referenceHostPage
+            ? { hostPage: scene.parity.referenceHostPage }
+            : {}),
         ...(referenceFrame !== undefined
             ? { fixedAnimationFrame: referenceFrame }
             : {}),
@@ -435,6 +438,7 @@ export async function runInstrumentedCapture(
         {
             serverName: "capture server",
             browserArgs: screenshotCaptureBrowserArgs,
+            showScrollbars: scene.parity?.referenceScrollbars ?? false,
             viewport: { width: 1280, height: 720 },
             pageErrorPrefix: "Capture page error",
         },

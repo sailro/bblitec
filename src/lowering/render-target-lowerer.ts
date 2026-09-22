@@ -1,13 +1,18 @@
 import ts from "typescript";
 
 import type { LoweredSource, LoweringContext } from "./context.js";
+import { lowerSurfaceRenderTargetSize } from "./render-target-size.js";
+import { lowerRenderTargetLifecycle } from "./render-target-lifecycle.js";
 
 const renderTargetModule = "src/engine/render-target.ts";
 const rttModule = "src/texture/rtt.ts";
 
 /** Lowers render-target allocation independently of any renderer or task family. */
 export class RenderTargetLowerer {
-    public constructor(private readonly context: LoweringContext) {
+    public constructor(
+        private readonly context: LoweringContext,
+        private readonly surface = false,
+    ) {
         this.context.functionDeclaration(
             renderTargetModule,
             "createRenderTarget",
@@ -23,30 +28,42 @@ export class RenderTargetLowerer {
     private assertPinnedRenderTargetTextureArms(): void {
         const { declaration } = this.context.functionDeclaration(
             rttModule,
-            "createRenderTargetTexture",
+            "_createRenderTargetTexture",
         );
-        const missingColour = (name: string): boolean =>
-            !this.context.hasNode(
-                declaration,
-                (node) =>
-                    ts.isPrefixUnaryExpression(node) &&
-                    node.operator === ts.SyntaxKind.ExclamationToken &&
-                    this.context.propertyPath(node.operand)?.at(-1) === name,
-            );
-        if (missingColour("_colorTexture") || missingColour("_colorView")) {
+        this.context.assertExpressionShape(
+            this.context.variableInitializer(declaration, "hasColor"),
+            "!!descriptor.format",
+            "Render-target color selection",
+        );
+        const texture = this.context.unwrapExpression(
+            this.context.variableInitializer(declaration, "texture"),
+        );
+        if (!ts.isConditionalExpression(texture))
             this.context.contractError(
-                declaration,
-                "Expected the render-target texture to fork on the " +
-                    "absence of a colour texture and view.",
+                texture,
+                "Expected color/depth texture selection.",
             );
-        }
+        this.context.assertExpressionShape(
+            texture.condition,
+            "hasColor",
+            "Render-target color predicate",
+        );
+        this.context.assertExpressionShape(
+            texture.whenFalse,
+            "depthTexture",
+            "Render-target depth fallback",
+        );
+        const depth = this.context.functionDeclaration(
+            "src/texture/rtt-depth.ts",
+            "withSampledDepthTexture",
+        ).declaration;
         for (const [property, value] of [
             ["aspect", "depth-only"],
             ["_sampleType", "depth"],
         ] as const) {
             if (
                 !this.context.hasNode(
-                    declaration,
+                    depth,
                     (node) =>
                         ts.isPropertyAssignment(node) &&
                         this.context.propertyName(node.name) === property &&
@@ -74,11 +91,11 @@ export class RenderTargetLowerer {
                 "Expected the colour render-target view to carry invertY: true.",
             );
         }
-        for (const sampler of [
-            "getNearestSampler",
-            "getBilinearSampler",
+        for (const [owner, sampler] of [
+            [depth, "getNearestSampler"],
+            [declaration, "getBilinearSampler"],
         ] as const) {
-            if (!this.context.hasCall(declaration, sampler)) {
+            if (!this.context.hasCall(owner, sampler)) {
                 this.context.contractError(
                     declaration,
                     `Expected ${sampler} for render-target views.`,
@@ -100,8 +117,13 @@ export class RenderTargetLowerer {
 #include <bblite/runtime.hpp>
 
 #include <stdexcept>
+#include <bblite/js_data.hpp>
+${this.surface ? "#include <bblite/pal_async_engine.hpp>\n#include <bblite/js_aggregate_error.hpp>" : ""}
 
 namespace bbl {
+
+${lowerSurfaceRenderTargetSize(this.context)}
+${this.surface ? lowerRenderTargetLifecycle(this.context) : ""}
 
 RenderTargetHandle create_render_target(
     Engine& engine,
@@ -138,6 +160,10 @@ RenderTargetHandle create_render_target(
         // per cascade.
         options.depth_layers == 0 ? 1u : options.depth_layers,
         options.scale_rounding,
+        {},
+        options.resolve_surface_size,
+        {},
+        options.depth_format,
     });
     return RenderTargetHandle{
         static_cast<std::uint32_t>(engine.render_targets.size() - 1)};
@@ -145,19 +171,30 @@ RenderTargetHandle create_render_target(
 
 RenderTargetTexture create_render_target_texture(
     Engine& engine,
-    RenderTargetOptions options) {
-    if (options.width == 0 || options.height == 0) {
+    RenderTargetOptions options,
+    bool surface_sized) {
+    if (!surface_sized && (options.width == 0 || options.height == 0)) {
         throw std::runtime_error(
             "Render target textures require fixed dimensions.");
     }
-    if (!options.has_color && options.has_depth) {
-        options.sampled_depth = true;
+    if (surface_sized && (options.width != 0 || options.height != 0)) {
+        throw std::runtime_error("Surface render target textures require surface dimensions.");
+    }
+    if (options.sampled_depth && (!options.has_depth || options.samples != 1)) {
+        throw std::runtime_error("#650");
     }
     const RenderTargetHandle target =
         create_render_target(engine, options);
+${this.surface ? "    if (surface_sized) engine.render_targets[target.value].lifecycle = make_render_target_lifecycle(engine, true);" : ""}
+    RenderTextureRef depth;
+    if (options.sampled_depth) {
+        depth = render_target_texture(target);
+        depth.depth_only = true;
+    }
     return RenderTargetTexture{
         target,
         render_target_texture(target),
+        depth,
     };
 }
 
